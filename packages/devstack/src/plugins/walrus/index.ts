@@ -4,9 +4,9 @@
 // or describes a known deployment. The factory at this file folds the
 // four modes behind:
 //
-//   - `walrus(opts?)`           — env-driven mode selection. Defaults
-//                                  to local; overridable via the typed
-//                                  `opts.local` pass-through.
+//   - `walrus(opts?)`           — local-cluster shorthand. No env
+//                                  defaulting; use `walrusFor(...)`
+//                                  for known deployments.
 //   - `walrusFor(network)`  — mode-narrowed factory namespace
 //                                  (architecture Tension 11). Returns
 //                                  `{ local: …, known: … }` narrowed
@@ -17,7 +17,7 @@
 //
 // The plugin emits FOUR capability decls (per mode):
 //
-//   Local mode (full local cluster + admin signer):
+//   Local mode (full local cluster):
 //     1. `snapshotable`        — runtime/walrus/<name>/deploy/ subtree
 //                                 + storage-node managed containers.
 //     2. `codegenable`         — `walrus-network` bindings.
@@ -28,10 +28,9 @@
 //     7. `strategy-contributor:coinType:<WAL fullCoinType>`
 //                                                      — WAL faucet
 //                                                        strategy
-//                                                        (when seed
-//                                                        accounts + exchange).
+//                                                        (when exchange exists).
 //
-//   Known mode (read-only deployment — NO admin):
+//   Known mode (read-only deployment):
 //     1. `snapshotable`        — identity-guard only; no subtrees.
 //     2. `codegenable`         — `walrus-network` bindings (mode='known').
 //     3. `strategy-contributor:walrus-state-registry` — known entry.
@@ -42,7 +41,7 @@
 import { Effect, Path } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
@@ -53,7 +52,8 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountFundingCoinValue } from '../account/index.ts';
+import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import { suiResource } from '../sui/index.ts';
 
@@ -61,47 +61,27 @@ import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.t
 
 import { makeCodegenable } from './codegen.ts';
 import { walrusPluginKey } from './plugin-key.ts';
-import { WALRUS_ERROR_TAGS, walrusPluginError } from './errors.ts';
+import { WALRUS_ERROR_TAGS, walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { walFaucetStrategyKey, type WalFaucetStrategy } from './faucet-strategy.ts';
-import { bootWalrusService, refuseLocalClusterOnFork, type WalrusMode } from './service.ts';
+import { bootWalrusService, type WalrusMode } from './service.ts';
 import {
 	resolveLocalClusterOptions,
-	type WalrusAccountMember,
 	type WalrusLocalClusterOptions,
 } from './mode/local-cluster.ts';
 import {
 	resolveKnownDeploymentOptions,
 	type WalrusKnownDeploymentOptions,
-	type WalrusKnownNetwork,
 } from './mode/known-deploy.ts';
 import { makeSnapshotable, type WalrusSnapshotMode } from './snapshot.ts';
 import { makeLocalRoutables } from './routable.ts';
 import { WALRUS_STATE_REGISTRY_KEY, type WalrusStateEntry } from './registry-publish.ts';
 import { buildWalrusNetworkName, type WalrusStorageNode } from './storage-nodes.ts';
-import { swapSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './seed-wal.ts';
-import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
 // Resource — the resolved value all consumers read
 // ---------------------------------------------------------------------------
 
-/** The Walrus admin surface — local-mode only (distilled-doc
- *  invariant 14). `seedWal` swaps SUI for WAL on a registered seed
- *  account using the first seedAccount as the exchange signer.
- *
- *  Fails with `WalrusPluginError` when no seed accounts were wired
- *  (the admin signer is the first seedAccount; without one there is
- *  no signer to dispatch the swap). */
-export interface WalrusAdmin {
-	readonly seedWal: (args: {
-		readonly address: string;
-		readonly amount: bigint;
-	}) => Effect.Effect<{ readonly digest: string }, import('./errors.ts').WalrusPluginError>;
-}
-
-/** The Walrus resolved value carried by the resource. Mode-asymmetric:
- *  `admin` is `null` for known-deployment mode (distilled-doc
- *  invariant 14). */
+/** The Walrus resolved value carried by the resource. */
 export interface WalrusResolved {
 	readonly mode: 'local' | 'known';
 	readonly chain: string;
@@ -116,8 +96,6 @@ export interface WalrusResolved {
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
-	/** Admin surface — `null` in known-deployment mode. */
-	readonly admin: WalrusAdmin | null;
 	readonly walFaucetStrategy: WalFaucetStrategy | null;
 	readonly walCoinType: string | null;
 }
@@ -171,66 +149,24 @@ const withWalrusNetworkAddressing = (
 });
 
 // ---------------------------------------------------------------------------
-// Default option resolution (env-driven)
-// ---------------------------------------------------------------------------
-
-/** Read `DEVSTACK_NETWORK` env. Walrus's env mapping:
- *
- *   - undefined / 'localnet'  → local cluster
- *   - 'testnet'               → known(testnet)
- *   - 'mainnet'               → known(mainnet)
- *   - 'devnet'                → known(devnet)
- *   - '<x>-fork'              → rejected by the shared network parser
- *                                while fork mode is coming soon
- *
- *  The explicit mode-narrowed fork branch is preserved for future work,
- *  but env-driven fork selection is not release-supported yet. */
-type EnvMode =
-	| { readonly mode: 'local' }
-	| { readonly mode: 'known'; readonly network: WalrusKnownNetwork };
-
-const resolveDefaultMode = (): EnvMode => {
-	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-		?.env?.DEVSTACK_NETWORK;
-	const parsed = parseDevstackNetwork(env);
-	switch (parsed.mode) {
-		case 'local':
-			return { mode: 'local' };
-		case 'live':
-			return { mode: 'known', network: parsed.network };
-	}
-};
-
-// ---------------------------------------------------------------------------
 // Plugin construction (internal — used by walrus() + walrusFor())
 // ---------------------------------------------------------------------------
 
-const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMember>>(
-	opts: WalrusLocalClusterOptions<Accounts>,
-) => {
+const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 	// Synchronous factory-time validation (distilled-doc invariants
 	// 11 — `nodeCount >= 1` + `shards >= nodeCount`).
 	const resolved = resolveLocalClusterOptions(opts);
 
 	const walrusKey = walrusPluginKey(resolved.name);
 
-	// `dependsOn` MUST include every seed-account ref so the
-	// substrate's topological scheduler waits for each seed account's
-	// acquire (keypair mint + funding) before the Walrus service
-	// dispatches WAL swaps via the first-account-doubles-as-admin-signer
-	// path. Without this edge, the first WAL swap could race the
-	// account's funding and fail with `address-not-found`.
-	const seedAccountMembers = (opts.seedAccounts ?? []) as Accounts;
-	const dependencies = [suiResource, ...seedAccountMembers] as const;
-
 	return definePlugin({
 		id: walrusResource.id,
-		dependsOn: dependencies,
+		dependsOn: [suiResource] as const,
 		role: 'service',
 		pluginKey: walrusKey,
 		start: (deps) =>
 			Effect.gen(function* () {
-				const [sui, ...resolvedSeedAccounts] = deps;
+				const [sui] = deps;
 
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
@@ -323,7 +259,6 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 						// network and reach sui via `host.docker.internal`.
 						suiNetworkName: walrusNetworkName,
 						deployHostMountPath,
-						seedAccounts: resolvedSeedAccounts,
 					},
 					mode,
 				);
@@ -345,7 +280,6 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 					proxyUrl: boot.proxyUrl,
 					aggregatorUrl: boot.aggregatorUrl,
 					publisherUrl: boot.publisherUrl,
-					admin: makeAdminShape(boot.adminSigner, sui.sdk, boot.exchange),
 					walFaucetStrategy: boot.walFaucetStrategy,
 					walCoinType: boot.walCoinType,
 				};
@@ -365,8 +299,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 };
 
 const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
-	// Synchronous factory-time validation (distilled-doc invariants
-	// 14 + 16 — required systemObjectId/stakingPoolId/nodes; no admin).
+	// Synchronous factory-time validation for required deployment ids.
 	const resolved = resolveKnownDeploymentOptions(opts);
 
 	return definePlugin({
@@ -388,8 +321,6 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				proxyUrl: resolved.proxyUrl,
 				aggregatorUrl: resolved.aggregatorUrl,
 				publisherUrl: resolved.publisherUrl,
-				// Distilled-doc invariant 14: NO admin tag in known mode.
-				admin: null,
 				walFaucetStrategy: null,
 				walCoinType: null,
 			} satisfies WalrusResolved),
@@ -448,7 +379,10 @@ const makeLocalCapabilities = (parts: {
 						capabilityKey: walFaucetStrategyKey(resolved.walCoinType),
 						strategy: resolved.walFaucetStrategy,
 						autoMounted: true,
-					} satisfies StrategyContributorDecl<ReturnType<typeof walFaucetStrategyKey>, WalFaucetStrategy>,
+					} satisfies StrategyContributorDecl<
+						ReturnType<typeof walFaucetStrategyKey>,
+						WalFaucetStrategy
+					>,
 				];
 	const routables = makeLocalRoutables({
 		app: acquireCtx.identity.app,
@@ -505,67 +439,56 @@ const makeKnownCapabilities = (parts: {
 	return [snap, codegen, stateRegistry] as const;
 };
 
-/** Build the admin shape. `seedWal` dispatches via the first
- *  seedAccount (the WAL exchange admin signer per distilled-doc
- *  §"Configuration"). When no admin signer was wired OR no exchange
- *  was produced, the surface fails with a typed `WalrusPluginError`
- *  that names the missing input. */
-const makeAdminShape = (
-	adminSigner: AccountValue | null,
-	sdk: WalSwapSdk,
-	exchange: WalExchangeHandle | null,
-): WalrusAdmin => ({
-	seedWal: (args) => {
-		if (!adminSigner) {
-			return Effect.fail(
-				walrusPluginError(
-					'seed-wal',
-					'walrus.admin.seedWal: no seed account wired — pass `seedAccounts: [account(...)]` to the walrus options to enable the admin signer.',
-				),
-			);
-		}
-		if (!exchange) {
-			return Effect.fail(
-				walrusPluginError(
-					'seed-wal',
-					'walrus.admin.seedWal: no WAL exchange object resolved — admin swaps require a live exchange.',
-				),
-			);
-		}
-		return Effect.scoped(
-			swapSuiForWal({
-				signer: adminSigner,
-				sdk,
-				exchange,
-				recipientAddress: args.address,
-				paymentMist: args.amount,
+export interface WalCoinValue extends AccountFundingCoinValue {
+	readonly symbol: 'WAL';
+	readonly fullCoinType: `${string}::wal::WAL`;
+	readonly decimals: 9;
+	readonly source: 'walrus';
+}
+
+/** Resolve the local Walrus deployment's WAL coin as an account-funding
+ *  coin ref. Accounts that need WAL should use:
+ *
+ *      funding: [{ coin: walCoin(localWalrus), amount }]
+ *
+ *  The funding strategy itself is contributed by the Walrus service
+ *  once its local exchange exists. */
+export const walCoin = (walrusMember: ResourceRef<'walrus', WalrusResolved>) => {
+	const coinRef = resource<CoinResourceId<'wal'>, WalCoinValue>(coinResourceId('wal'));
+
+	return definePlugin({
+		id: coinRef.id,
+		dependsOn: walrusMember,
+		role: 'task',
+		start: (resolved): Effect.Effect<WalCoinValue, WalrusPluginError> =>
+			Effect.gen(function* () {
+				if (resolved.walCoinType === null) {
+					return yield* Effect.fail(
+						walrusPluginError(
+							'exchange',
+							'walCoin(...) requires a local Walrus deployment with a WAL package.',
+						),
+					);
+				}
+				return {
+					symbol: 'WAL',
+					fullCoinType: resolved.walCoinType as `${string}::wal::WAL`,
+					decimals: 9,
+					source: 'walrus',
+				} satisfies WalCoinValue;
 			}),
-		);
-	},
-});
+		errorContributions: walrusErrorContributions,
+	});
+};
 
 // ---------------------------------------------------------------------------
 // User-facing factories
 // ---------------------------------------------------------------------------
 
-/** Env-driven factory. Defaults to local mode; reads `DEVSTACK_NETWORK`
- *  for non-local defaults. On a fork network, auto-routes to the
- *  known-deployment branch with the upstream network's record.
- *
- *  Distilled-doc invariant 13: `walrus()` on `*-fork` MUST auto-route
- *  to known-deployment with the wrapped upstream's `KnownNetwork`. */
-export const walrus = <
-	const Accounts extends ReadonlyArray<WalrusAccountMember> = readonly [],
->(opts?: {
-	readonly local?: WalrusLocalClusterOptions<Accounts>;
-}) => {
-	const mode = resolveDefaultMode();
-	switch (mode.mode) {
-		case 'local':
-			return buildLocalPlugin(opts?.local ?? ({} as WalrusLocalClusterOptions<Accounts>));
-		case 'known':
-			return buildKnownPlugin({ network: mode.network });
-	}
+/** Local-cluster shorthand. Known deployments are selected through
+ *  `walrusFor(network).known(...)` so network choice stays explicit. */
+export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) => {
+	return buildLocalPlugin(opts?.local ?? {});
 };
 
 /** Mode-narrowed factory namespace.
@@ -581,9 +504,7 @@ export const walrus = <
  *  Runtime defense-in-depth: see `mode/fork-refusal.ts`. */
 export const walrusFor = defineModeNamespace({
 	local: {
-		local: <const Accounts extends ReadonlyArray<WalrusAccountMember> = readonly []>(
-			opts: WalrusLocalClusterOptions<Accounts> = {} as WalrusLocalClusterOptions<Accounts>,
-		) => buildLocalPlugin(opts),
+		local: (opts: WalrusLocalClusterOptions = {}) => buildLocalPlugin(opts),
 		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
 	},
 	live: {
@@ -593,10 +514,6 @@ export const walrusFor = defineModeNamespace({
 		// `.local` is intentionally absent — calling
 		// `walrusFor(forkNetwork).local(...)` is a compile error.
 		known: (opts: WalrusKnownDeploymentOptions) => buildKnownPlugin(opts),
-		// Defense-in-depth runtime refusal for callers that bypass
-		// the typed namespace (e.g. via dynamic dispatch). The
-		// factory throws synchronously with `ForkIncompatibleError`.
-		_localRefused: (network: string): never => refuseLocalClusterOnFork(network),
 	},
 });
 
@@ -604,7 +521,7 @@ export const walrusFor = defineModeNamespace({
 // Re-exports for advanced callers
 // ---------------------------------------------------------------------------
 
-export type { WalrusLocalClusterOptions, WalrusAccountMember } from './mode/local-cluster.ts';
+export type { WalrusLocalClusterOptions } from './mode/local-cluster.ts';
 export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/known-deploy.ts';
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';

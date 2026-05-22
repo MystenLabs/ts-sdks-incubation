@@ -1,12 +1,13 @@
-// Playwright config builder.
+// Playwright config helpers.
 //
 // Architecture (distilled/23-build-integrations.md § Playwright /
 // "What it produces"):
 //
-//   A canonical `PlaywrightTestConfig` (workers 1, fullyParallel
-//   false, `testDir: './e2e'`, CI-aware reporter/retries/forbidOnly,
-//   graceful-shutdown wiring with a SIGTERM + 10s timeout).
-//   `webServer` + `baseURL` low-level resolvers.
+//   Composable pieces for a canonical `PlaywrightTestConfig`
+//   (workers 1, fullyParallel false, `testDir: './e2e'`,
+//   CI-aware reporter/retries/forbidOnly, graceful-shutdown wiring
+//   with a SIGTERM + 10s timeout), plus `webServer` + `baseURL`
+//   low-level resolvers.
 //
 // Load-bearing invariants this module enforces:
 //   - `workers: 1` and `fullyParallel: false` — single supervisor per
@@ -21,11 +22,11 @@
 //   - `webServer.reuseExistingServer: !CI` — dev iteration reuses,
 //     CI always boots fresh.
 //
-// This module returns a `PlaywrightTestConfig`-shaped object. We do
-// NOT import `@playwright/test` at module init: the type is
+// This module returns `PlaywrightTestConfig`-shaped fragments. We do
+// NOT import `@playwright/test` at module init: the types are
 // structural and we accept the optional-peer cost rather than
 // importing transitively from a build-integration that must be
-// loadable without `@playwright/test` (matching the Vitest preset's
+// loadable without `@playwright/test` (matching the Vitest helpers'
 // optional-peer pattern).
 
 import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-context.ts';
@@ -35,60 +36,66 @@ import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-con
 // directly to keep `@playwright/test` an optional peer)
 // -----------------------------------------------------------------------------
 
-/** Subset of `PlaywrightTestConfig` this surface produces. The full
- *  type lives in `@playwright/test`; we keep this structural so the
- *  preset compiles without the peer. */
-export interface PlaywrightTestConfigShape {
+/** Base subset of `PlaywrightTestConfig` this surface produces. The
+ *  full type lives in `@playwright/test`; we keep this structural so
+ *  the helpers compile without the peer. */
+export interface PlaywrightBaseConfigShape {
 	readonly testDir: string;
 	readonly fullyParallel: boolean;
 	readonly forbidOnly: boolean;
 	readonly retries: number;
 	readonly workers: number;
 	readonly reporter: ReadonlyArray<readonly [string, Record<string, unknown>?]> | string;
-	readonly use: {
-		readonly baseURL: string;
-		readonly trace: 'on-first-retry' | 'off' | 'retain-on-failure';
-		readonly screenshot: 'only-on-failure' | 'off' | 'on';
-	} & Record<string, unknown>;
-	readonly projects: ReadonlyArray<{
-		readonly name: string;
-		readonly use: Record<string, unknown>;
-	}>;
-	readonly webServer: {
-		readonly command: string;
-		readonly url: string;
-		readonly reuseExistingServer: boolean;
-		readonly timeout: number;
-		readonly stdout: 'pipe' | 'ignore';
-		readonly stderr: 'pipe' | 'ignore';
-		readonly gracefulShutdown: { readonly signal: 'SIGTERM'; readonly timeout: number };
-		readonly env?: Record<string, string>;
-	};
 	readonly globalSetup?: string;
 	readonly globalTeardown?: string;
+}
+
+export type PlaywrightUseConfigShape = {
+	readonly baseURL: string;
+	readonly trace: 'on-first-retry' | 'off' | 'retain-on-failure';
+	readonly screenshot: 'only-on-failure' | 'off' | 'on';
+} & Record<string, unknown>;
+
+export interface PlaywrightProjectShape {
+	readonly name: string;
+	readonly use: Record<string, unknown>;
+}
+
+export interface PlaywrightWebServerConfigShape {
+	readonly command: string;
+	readonly url: string;
+	readonly reuseExistingServer: boolean;
+	readonly timeout: number;
+	readonly stdout: 'pipe' | 'ignore';
+	readonly stderr: 'pipe' | 'ignore';
+	readonly gracefulShutdown: { readonly signal: 'SIGTERM'; readonly timeout: number };
+	readonly env?: Record<string, string>;
 }
 
 // -----------------------------------------------------------------------------
 // Public option shape
 // -----------------------------------------------------------------------------
 
-/**
- * Options for `defineDevstackPlaywrightConfig`. Every field is
- * optional; defaults match the architecture invariants. Apps supply
- * only what they need to override.
- */
-export interface DefineDevstackPlaywrightConfigOptions extends ResolveStackContextOptions {
+export interface DevstackPlaywrightBaseConfigOptions {
 	/** Test directory. Default: `'./e2e'` (architecture invariant). */
 	readonly testDir?: string;
 
-	/** Endpoint key whose URL becomes `webServer.url` + `use.baseURL`.
-	 *  Default: `'app'` (the example app's vite dev server). */
-	readonly endpointKey?: string;
+	/** Path to a global-setup module. Default: not wired. Pass `null`
+	 *  to keep the property omitted when composing conditionally. */
+	readonly globalSetup?: string | null;
+}
+
+export interface DevstackPlaywrightEndpointOptions extends ResolveStackContextOptions {
+	/** Endpoint name whose URL becomes `webServer.url` + `use.baseURL`.
+	 *  Default: `'dev'` (the host-service dev server endpoint). */
+	readonly endpointName?: string;
 
 	/** Explicit baseURL override. When set, manifest discovery is
 	 *  bypassed entirely. */
 	readonly baseURL?: string;
+}
 
+export interface DevstackPlaywrightWebServerOptions extends DevstackPlaywrightEndpointOptions {
 	/** Command Playwright runs to bring up the stack. Default:
 	 *  `'pnpm dev'`. */
 	readonly command?: string;
@@ -105,22 +112,18 @@ export interface DefineDevstackPlaywrightConfigOptions extends ResolveStackConte
 	/** Extra env to forward to `webServer.command`. Merged after the
 	 *  preset's own env (PLAYWRIGHT=1, DEVSTACK_STACK). */
 	readonly env?: Record<string, string>;
+}
 
+export interface DevstackPlaywrightProjectsOptions {
 	/** Extra Playwright projects to append to the default Chromium
 	 *  project. */
-	readonly projects?: ReadonlyArray<{
-		readonly name: string;
-		readonly use: Record<string, unknown>;
-	}>;
+	readonly projects?: ReadonlyArray<PlaywrightProjectShape>;
+}
 
-	/** Path to a global-setup module. Defaults to the preset's bundled
-	 *  global-setup (verifies the stack is reachable and populates
-	 *  fixtures). Pass `null` to opt out. */
-	readonly globalSetup?: string | null;
-
-	/** `extend` — top-level keys win. Final escape hatch when the app
-	 *  needs an option this preset doesn't expose. */
-	readonly extend?: Partial<PlaywrightTestConfigShape>;
+export interface DevstackPlaywrightUseOptions extends DevstackPlaywrightEndpointOptions {
+	readonly trace?: PlaywrightUseConfigShape['trace'];
+	readonly screenshot?: PlaywrightUseConfigShape['screenshot'];
+	readonly use?: Omit<Partial<PlaywrightUseConfigShape>, 'baseURL'>;
 }
 
 // -----------------------------------------------------------------------------
@@ -131,83 +134,90 @@ const DEFAULT_TEST_DIR = './e2e';
 const DEFAULT_COMMAND = 'pnpm dev';
 const DEFAULT_WEBSERVER_TIMEOUT_MS = 300_000;
 const DEFAULT_GRACEFUL_SHUTDOWN_MS = 10_000;
-const DEFAULT_ENDPOINT_KEY = 'app';
+const DEFAULT_ENDPOINT_NAME = 'dev';
 
 // -----------------------------------------------------------------------------
-// Builder
+// Builders
 // -----------------------------------------------------------------------------
 
 /**
- * Construct the canonical Playwright config. This is a pure function;
- * the only side effect is the synchronous manifest read (delegated to
- * `resolveEndpointUrl` from `stack-context.ts`).
- *
- * Caller passes options; we apply defaults + the architecture
- * invariants; user `extend` block overrides at the top level.
+ * Resolve the browser app URL Playwright should target. This is the
+ * only helper here that may synchronously read the manifest; callers
+ * can pass `baseURL` to bypass discovery entirely.
  */
-export const buildPlaywrightConfig = (
-	options: DefineDevstackPlaywrightConfigOptions = {},
-): PlaywrightTestConfigShape => {
-	const env = options.env ? { ...options.env } : {};
-	const ci = Boolean(process.env.CI);
-
-	const endpointKey = options.endpointKey ?? DEFAULT_ENDPOINT_KEY;
-	const baseURL =
+export const resolveDevstackPlaywrightBaseURL = (
+	options: DevstackPlaywrightEndpointOptions = {},
+): string => {
+	const endpointName = options.endpointName ?? DEFAULT_ENDPOINT_NAME;
+	return (
 		options.baseURL ??
-		resolveEndpointUrl(endpointKey, {
+		resolveEndpointUrl(endpointName, {
 			...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 			...(options.manifestPath !== undefined ? { manifestPath: options.manifestPath } : {}),
 			...(options.stack !== undefined ? { stack: options.stack } : {}),
 			...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
-			...(options.env !== undefined
-				? { env: options.env as Readonly<Record<string, string | undefined>> }
-				: {}),
-		}).url;
+			...(options.env !== undefined ? { env: options.env } : {}),
+		}).url
+	);
+};
 
-	const presetEnv: Record<string, string> = {
-		PLAYWRIGHT: '1',
-		...(options.stack !== undefined ? { DEVSTACK_STACK: options.stack } : {}),
-		...env,
-	};
-
-	const baseConfig: PlaywrightTestConfigShape = {
+export const devstackPlaywrightBaseConfig = (
+	options: DevstackPlaywrightBaseConfigOptions = {},
+): PlaywrightBaseConfigShape => {
+	const ci = Boolean(process.env.CI);
+	return {
 		testDir: options.testDir ?? DEFAULT_TEST_DIR,
 		fullyParallel: false,
 		forbidOnly: ci,
 		retries: ci ? 2 : 0,
 		workers: 1,
 		reporter: ci ? [['github'], ['list']] : 'list',
-		use: {
-			baseURL,
-			trace: 'on-first-retry',
-			screenshot: 'only-on-failure',
-		},
-		projects: [
-			{
-				name: 'chromium',
-				use: { browserName: 'chromium' },
-			},
-			...(options.projects ?? []),
-		],
-		webServer: {
-			command: options.command ?? DEFAULT_COMMAND,
-			url: baseURL,
-			reuseExistingServer: !ci,
-			timeout: options.webServerTimeoutMs ?? DEFAULT_WEBSERVER_TIMEOUT_MS,
-			stdout: 'pipe',
-			stderr: 'pipe',
-			gracefulShutdown: {
-				signal: 'SIGTERM',
-				timeout: options.gracefulShutdownTimeoutMs ?? DEFAULT_GRACEFUL_SHUTDOWN_MS,
-			},
-			env: presetEnv,
-		},
 		globalSetup: options.globalSetup === null ? undefined : (options.globalSetup ?? undefined),
 	};
+};
 
-	// `extend` overrides at the top level — user wins.
-	if (options.extend !== undefined) {
-		return { ...baseConfig, ...options.extend } as PlaywrightTestConfigShape;
-	}
-	return baseConfig;
+export const devstackPlaywrightUse = (
+	options: DevstackPlaywrightUseOptions = {},
+): PlaywrightUseConfigShape => ({
+	baseURL: resolveDevstackPlaywrightBaseURL(options),
+	trace: options.trace ?? 'on-first-retry',
+	screenshot: options.screenshot ?? 'only-on-failure',
+	...(options.use ?? {}),
+});
+
+export const devstackPlaywrightProjects = (
+	options: DevstackPlaywrightProjectsOptions = {},
+): ReadonlyArray<PlaywrightProjectShape> => [
+	{
+		name: 'chromium',
+		use: { browserName: 'chromium' },
+	},
+	...(options.projects ?? []),
+];
+
+export const devstackPlaywrightWebServer = (
+	options: DevstackPlaywrightWebServerOptions = {},
+): PlaywrightWebServerConfigShape => {
+	const env = options.env ? { ...options.env } : {};
+	const ci = Boolean(process.env.CI);
+	const baseURL = resolveDevstackPlaywrightBaseURL(options);
+	const presetEnv: Record<string, string> = {
+		PLAYWRIGHT: '1',
+		...(options.stack !== undefined ? { DEVSTACK_STACK: options.stack } : {}),
+		...env,
+	};
+
+	return {
+		command: options.command ?? DEFAULT_COMMAND,
+		url: baseURL,
+		reuseExistingServer: !ci,
+		timeout: options.webServerTimeoutMs ?? DEFAULT_WEBSERVER_TIMEOUT_MS,
+		stdout: 'pipe',
+		stderr: 'pipe',
+		gracefulShutdown: {
+			signal: 'SIGTERM',
+			timeout: options.gracefulShutdownTimeoutMs ?? DEFAULT_GRACEFUL_SHUTDOWN_MS,
+		},
+		env: presetEnv,
+	};
 };

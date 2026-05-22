@@ -7,10 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
-import {
-	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-	deepbook,
-} from '../../../src/plugins/deepbook/index.ts';
+import { DEEPBOOK_TESTNET_DEEP_COIN_TYPE, deepbook } from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
 import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
@@ -26,12 +23,8 @@ const fakeResolvedAccount = {
 	publicKey: new Uint8Array(),
 	source: 'real',
 	funding: {
-		requested: [
-			{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n },
-		],
-		applied: [
-			{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n },
-		],
+		requested: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
+		applied: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
 	},
 	signAndExecute: null,
 	withTransactionSigner: null,
@@ -112,12 +105,10 @@ describe('account env and private-key variant surface', () => {
 	it('account factory accepts env key and inline privateKey option names', () => {
 		const envAccount = account('prod', {
 			kind: 'env',
-			name: 'prod',
 			key: 'ALICE_PRIVATE_KEY',
 		});
 		const inlineAccount = account('demo', {
 			kind: 'inline',
-			name: 'demo',
 			privateKey: 'suiprivkey1demo',
 		});
 
@@ -143,10 +134,10 @@ describe('account env and private-key variant surface', () => {
 
 	it('projects explicit empty funding as skipped', () => {
 		expect(
-			registryFundingFor(
-				account('alice', { kind: 'ephemeral', name: 'alice', funding: [] }),
-				{ requested: [], applied: [] },
-			),
+			registryFundingFor(account('alice', { kind: 'ephemeral', funding: [] }), {
+				requested: [],
+				applied: [],
+			}),
 		).toEqual({
 			status: 'skipped',
 			balanceMist: null,
@@ -157,10 +148,10 @@ describe('account env and private-key variant surface', () => {
 
 	it('projects non-ephemeral accounts without funding as skipped', () => {
 		expect(
-			registryFundingFor(
-				account('alice', { kind: 'env', name: 'alice', key: 'ALICE_KEY' }),
-				{ requested: [], applied: [] },
-			),
+			registryFundingFor(account('alice', { kind: 'env', key: 'ALICE_KEY' }), {
+				requested: [],
+				applied: [],
+			}),
 		).toEqual({
 			status: 'skipped',
 			balanceMist: null,
@@ -174,18 +165,13 @@ describe('account env and private-key variant surface', () => {
 		const dex = deepbook({ mode: 'known', network: 'testnet' });
 		const member = account('alice', {
 			kind: 'ephemeral',
-			name: 'alice',
 			funding: [
 				{ coin: 'sui', amount: 1_000_000_000n },
 				{ coin: deep, amount: 15_000_000n, via: dex },
 			],
 		});
 
-		expect(member.dependsOn.map((dependency) => dependency.id)).toEqual([
-			'sui',
-			deep.id,
-			dex.id,
-		]);
+		expect(member.dependsOn.map((dependency) => dependency.id)).toEqual(['sui', deep.id, dex.id]);
 	});
 });
 

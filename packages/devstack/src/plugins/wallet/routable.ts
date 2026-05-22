@@ -10,10 +10,9 @@
 // and writes the file-provider YAML without ever naming the wallet
 // plugin.
 //
-// IMPORTANT: this decl exists ONLY when a vite plugin is enabled on
-// the same stack (the task's "Routable contribution: wallet UI URL
-// (when the vite plugin is enabled)"). The factory in `index.ts`
-// adds it conditionally — see `wallet({ enableRouter: true })`.
+// The wallet always emits this decl. The router is the standard app
+// and wallet entrypoint, while the loopback URL remains an internal
+// fallback for tests and direct host tooling.
 
 import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
@@ -38,9 +37,7 @@ export const WALLET_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
 // Decl
 // ----------------------------------------------------------------------
 
-/** Construct the Routable decl. Plugin emits this only when a vite
- *  plugin is enabled on the same stack — otherwise there's no browser
- *  pairing target and the router edge is wasted. */
+/** Construct the Routable decl for the stack-scoped wallet endpoint. */
 export const makeWalletRoutable = (parts: {
 	readonly app: string;
 	readonly stack: string;

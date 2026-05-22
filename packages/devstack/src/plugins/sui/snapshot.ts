@@ -64,7 +64,7 @@ export const makeSnapshotable = (
 				postRestore: Effect.void,
 			};
 		}
-		case 'external':
+		case 'local-rpc':
 		case 'live': {
 			// No container, no capture. The decl still exists so the
 			// identity guard fires on restore (e.g. restoring a local

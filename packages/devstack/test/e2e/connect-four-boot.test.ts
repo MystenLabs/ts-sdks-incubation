@@ -8,8 +8,8 @@
 //     (PR3 action: real `ctx.tx → account.signAndExecute → wait`).
 //   - Exercises the publisher-account pattern (account('publisher')
 //     doubles as the connect_four package's publisher).
-//   - Composes a wallet with an explicit `allowedOrigins` allowlist
-//     (so origin-policy resolves with non-empty extras).
+//   - Composes a wallet that derives the stack-scoped router origin
+//     without caller-supplied origin flags.
 //
 // What this test pins (beyond the per-plugin ready state):
 //   - The action's resolved value carries a real, non-stub tx digest

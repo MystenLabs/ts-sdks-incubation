@@ -35,12 +35,13 @@ const sampleEnvelope = (overrides?: { endpoints?: Record<string, unknown> }) => 
 	manifestVersion: CURRENT_MANIFEST_VERSION,
 	services: {},
 	endpoints: overrides?.endpoints ?? {
-		app: {
+		'host-service/app#5:dev': {
+			name: 'dev',
 			url: 'http://main.app.localhost:8000',
 			displayUrl: 'http://main.app.localhost:8000',
 			wireProtocol: 'http',
-			pluginKey: 'app',
-			endpointKey: 'app',
+			pluginKey: 'host-service/app#5',
+			endpointKey: 'host-service/app#5:dev',
 		},
 	},
 	extras: {},
@@ -110,10 +111,13 @@ describe('readStackContext', () => {
 
 		const ctx = readStackContext({ cwd: workdir, env: {} });
 		expect(ctx.endpoint('app')).toBe('http://main.app.localhost:8000');
+		expect(ctx.endpoint('dev')).toBe('http://main.app.localhost:8000');
+		expect(ctx.endpointNames).toEqual(['dev']);
+		expect(ctx.manifestEndpointKeys).toEqual(['host-service/app#5:dev']);
 		expect(ctx.endpointMaybe('not-there')).toBeNull();
 	});
 
-	it('endpoint() throws PlaywrightEndpointNotFoundError for missing keys', () => {
+	it('endpoint() throws PlaywrightEndpointNotFoundError with endpoint names and raw keys', () => {
 		const stateDir = join(workdir, '.devstack');
 		mkdirSync(join(stateDir, 'stacks', 'main'), { recursive: true });
 		writeFileSync(
@@ -121,7 +125,16 @@ describe('readStackContext', () => {
 			JSON.stringify(sampleEnvelope()),
 		);
 		const ctx = readStackContext({ cwd: workdir, env: {} });
-		expect(() => ctx.endpoint('missing')).toThrow(PlaywrightEndpointNotFoundError);
+		try {
+			ctx.endpoint('missing');
+			expect.fail('expected endpoint lookup to throw');
+		} catch (error) {
+			expect(error).toBeInstanceOf(PlaywrightEndpointNotFoundError);
+			const err = error as PlaywrightEndpointNotFoundError;
+			expect(err.available).toEqual(['dev']);
+			expect(err.manifestKeys).toEqual(['host-service/app#5:dev']);
+			expect(err.message).toContain('resolved endpoint name `missing`');
+		}
 	});
 });
 
@@ -134,6 +147,27 @@ describe('conventionalUrlFor', () => {
 	it('maps the app endpoint to the shared dev-server conventional route', () => {
 		const url = conventionalUrlFor('app', { stack: 'main', port: 80, app: 'wallet' });
 		expect(url).toBe('http://dev.wallet.localhost:80');
+	});
+
+	it('uses the conventional dev-server port when resolving app cold-start URLs', () => {
+		const prior = process.env.DEVSTACK_ROUTER_PORT;
+		delete process.env.DEVSTACK_ROUTER_PORT;
+		try {
+			const url = conventionalUrlFor('app', { stack: 'main', app: 'wallet' });
+			expect(url).toBe('http://dev.wallet.localhost:5175');
+		} finally {
+			if (prior === undefined) delete process.env.DEVSTACK_ROUTER_PORT;
+			else process.env.DEVSTACK_ROUTER_PORT = prior;
+		}
+	});
+
+	it('honors an injected router port env when resolving conventional URLs', () => {
+		const url = conventionalUrlFor('app', {
+			stack: 'main',
+			app: 'wallet',
+			env: { DEVSTACK_ROUTER_PORT: '8181' },
+		});
+		expect(url).toBe('http://dev.wallet.localhost:8181');
 	});
 
 	it('returns null for unknown endpoints', () => {
@@ -161,16 +195,23 @@ describe('resolveEndpointUrl', () => {
 		);
 		const resolved = resolveEndpointUrl('app', { cwd: workdir, env: {} });
 		expect(resolved.source).toBe('manifest');
+		expect(resolved.endpointName).toBe('dev');
 		expect(resolved.url).toBe('http://main.app.localhost:8000');
 	});
 
 	it('falls back to conventional URL when no manifest is present', () => {
-		const resolved = resolveEndpointUrl('app', {
-			cwd: workdir,
-			env: {},
-			port: 80,
-		});
-		expect(resolved.source).toBe('conventional');
-		expect(resolved.url).toMatch(/^http:\/\/dev\.pw-stack-ctx-.*\.localhost:80$/);
+		const prior = process.env.DEVSTACK_ROUTER_PORT;
+		delete process.env.DEVSTACK_ROUTER_PORT;
+		try {
+			const resolved = resolveEndpointUrl('app', {
+				cwd: workdir,
+				env: {},
+			});
+			expect(resolved.source).toBe('conventional');
+			expect(resolved.url).toMatch(/^http:\/\/dev\.pw-stack-ctx-.*\.localhost:5175$/);
+		} finally {
+			if (prior === undefined) delete process.env.DEVSTACK_ROUTER_PORT;
+			else process.env.DEVSTACK_ROUTER_PORT = prior;
+		}
 	});
 });

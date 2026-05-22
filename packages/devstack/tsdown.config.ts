@@ -7,12 +7,9 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
 	entry: [
 		'src/index.ts',
-		'src/build-integrations/vite/index.ts',
 		'src/build-integrations/vitest/index.ts',
 		'src/build-integrations/vitest/setup.ts',
 		'src/build-integrations/playwright/index.ts',
-		'src/build-integrations/browser/index.ts',
-		'src/build-integrations/browser/setup.ts',
 		'src/build-integrations/runtime/index.ts',
 		'src/cli/main.ts',
 	],

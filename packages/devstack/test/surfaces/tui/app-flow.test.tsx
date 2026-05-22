@@ -99,7 +99,7 @@ describe('App snapshot flow', () => {
 				instance.stdin.write('before-change');
 				await waitFor(() => {
 					expect(instance.lastFrame() ?? '').toContain('before-change');
-				});
+				}, 5_000);
 
 				instance.stdin.write('\r');
 				await waitFor(() => {

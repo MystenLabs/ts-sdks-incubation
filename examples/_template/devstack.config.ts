@@ -21,8 +21,6 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5179;
-const DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
-const ROUTER_DEV_ORIGIN = 'http://dev.template.localhost:5175' as const;
 
 const localnet = sui();
 const alice = account('alice');
@@ -34,12 +32,10 @@ const hello = localPackage('hello', {
 });
 const devWallet = wallet({
 	accounts: [alice, bob],
-	allowedOrigins: [DEV_ORIGIN, ROUTER_DEV_ORIGIN],
 });
 const app = hostService({
 	name: 'app',
-	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	env: {
 		VITE_TEMPLATE_AUTO_APPROVE: '1',

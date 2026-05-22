@@ -79,31 +79,26 @@ import { withAddressLease } from './lease.ts';
 export type AccountOptions<Funding extends AccountFunding = AccountFunding> =
 	| {
 			readonly kind: 'ephemeral';
-			readonly name: string;
 			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'keystore';
-			readonly name: string;
 			readonly path: string;
 			readonly aliasOrAddress: string;
 			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'env';
-			readonly name: string;
 			readonly key: string;
 			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'inline';
-			readonly name: string;
 			readonly privateKey: string | Uint8Array;
 			readonly funding?: Funding;
 	  }
 	| {
 			readonly kind: 'signer';
-			readonly name: string;
 			readonly signer: {
 				readonly toSuiAddress: () => string;
 				readonly getKeyScheme: () => string;
@@ -120,10 +115,12 @@ export type AccountOptions<Funding extends AccountFunding = AccountFunding> =
 	  }
 	| {
 			readonly kind: 'impersonate';
-			readonly name: string;
 			readonly address: string;
 			readonly funding?: Funding;
 	  };
+
+export type ResolvedAccountOptions<Funding extends AccountFunding = AccountFunding> =
+	AccountOptions<Funding> & { readonly name: string };
 
 // -----------------------------------------------------------------------------
 // Resolved value (the Tag's resolved-shape)
@@ -219,7 +216,7 @@ export const validateAccountName = (name: string): Effect.Effect<void, AccountAc
  *  funding helpers stay typed at the resolved-fields level (mode,
  *  chain, sdk) rather than at the wide `SuiClient` shape. */
 export interface AccountSuiShim {
-	readonly mode: 'local' | 'external' | 'live' | 'fork';
+	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
 	readonly chain: ChainId;
 	/** SDK shim — exposes `executeTransaction` + `waitForTransaction`
 	 *  for the signAndExecute pipeline. */
@@ -248,7 +245,7 @@ export interface AccountAcquireContext {
 
 /** Dispatch on the variant discriminator. */
 const resolveVariant = (
-	opts: AccountOptions,
+	opts: ResolvedAccountOptions,
 	ctx: AccountAcquireContext,
 ): Effect.Effect<ResolvedKeypair, AccountAcquireError> => {
 	switch (opts.kind) {
@@ -619,7 +616,7 @@ const buildClosures = (
 /** Acquire an account. Coordinates variant dispatch + funding +
  *  the resolved-value projection. */
 export const acquireAccount = (
-	opts: AccountOptions,
+	opts: ResolvedAccountOptions,
 	ctx: AccountAcquireContext,
 ): Effect.Effect<AccountValue, AccountAcquireError, StrategyRegistryService | LeaseBrokerService> =>
 	Effect.gen(function* () {

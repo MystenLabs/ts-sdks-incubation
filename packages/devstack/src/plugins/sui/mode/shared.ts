@@ -49,7 +49,7 @@ export interface WaitForTransactionsReady {
 }
 
 /** Fork admin surface — mode-narrowed. Only the fork-mode factory's
- *  resolved value carries this; local/external/live values have a
+ *  resolved value carries this; local/local-rpc/live values have a
  *  type-level `null`.
  *
  *  Distilled-doc opportunity: today's `Fiber` handle is discarded
@@ -80,6 +80,9 @@ export interface SuiClient {
 	readonly rpcUrl: string;
 	/** Host-reachable faucet base URL when this network has a faucet. */
 	readonly faucetUrl: string | null;
+	/** Faucet URL used by account funding strategies. Local mode keeps
+	 *  this on the direct validator port used by the funds-ready gate. */
+	readonly fundingFaucetUrl: string | null;
 	/** Host-reachable GraphQL URL when the mode exposes one. */
 	readonly graphqlUrl: string | null;
 	/** Container-reachable mirrors of the host URLs. Loopback hosts are

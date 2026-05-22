@@ -31,7 +31,7 @@ import { Data } from 'effect';
  * conventional URL fallback in the endpoint declaration registry.
  *
  * Recovery: run `devstack up` once to materialize the manifest, OR
- * pass an explicit `baseURL` to `defineDevstackPlaywrightConfig` to
+ * pass an explicit `baseURL` to the Playwright config helpers to
  * bypass the discovery path.
  */
 export class PlaywrightManifestDiscoveryError extends Data.TaggedError(
@@ -69,7 +69,8 @@ export class PlaywrightManifestShapeError extends Data.TaggedError('PlaywrightMa
 // -----------------------------------------------------------------------------
 
 /**
- * The manifest decoded but `endpoints[endpointKey]` is not present.
+ * The manifest decoded but the requested endpoint name/alias is not
+ * present.
  * Typically caused by a typo in user config or by referencing an
  * endpoint owned by a plugin not present in the resolved stack.
  */
@@ -78,7 +79,9 @@ export class PlaywrightEndpointNotFoundError extends Data.TaggedError(
 )<{
 	readonly message: string;
 	readonly endpointKey: string;
+	readonly endpointName?: string;
 	readonly available: ReadonlyArray<string>;
+	readonly manifestKeys?: ReadonlyArray<string>;
 	readonly recoveryHint: string;
 }> {}
 

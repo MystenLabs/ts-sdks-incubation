@@ -6,8 +6,7 @@
 Anchor doc: `notes/redesign/architecture.md` (2813 lines, 7 revision rounds). This guide distills
 the invariants; that doc is the design source of truth.
 
-Companion: see `STYLE_GUIDE.md` for code-level patterns. See `notes/UNRESOLVED-BLOCKERS.md` for the
-current release gate.
+Companion: see `STYLE_GUIDE.md` for code-level patterns.
 
 ---
 
@@ -23,7 +22,7 @@ the contract.
 | **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook — one folder each exposing `definePlugin({ id, dependsOn, start, capabilities })` factories. Renderer plugins (TUI Ink, plain, silent) also here. Per-plugin tagged errors, Snapshotable / Routable / NetworkResolver-mode / Codegenable / StrategyContributor decls.                                                                                                                                                                                                                                                               | L0, L1, other plugins through public resource/plugin refs at factory boundaries; never internal service modules                                      | other plugin INTERNAL modules. Other services' source.                                                                                          |
 | **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen orchestrator. Each walks a registry of plugin capability contributions; never names services.                                                                                                                                                                                                                                                                                                                                                                                                                      | L0, L1, capability decls from `contracts/`                                                                                                           | L2 plugin INTERNALS, named plugins. Hardcoded paths.                                                                                            |
 | **L4 surfaces**                  | CLI (`surfaces/cli/`), TUI (`surfaces/tui/`), programmable API, bin entry (`cli/main.ts`). All surfaces are symmetric peers: subscribe to typed event stream + publish typed commands.                                                                                                                                                                                                                                                                                                                                                                                                                                    | L0 (events/commands/manifest schema), L3 (Codegenable decls; manifest writer output). Cascade-formatter (surface-shared exception per architecture). | L1 directly. Any L2 plugin module. Any direct engine method calls — only `CommandPublisher` + `EventSubscriber`.                                |
-| **L5 build integrations + apps** | `build-integrations/{vite,vitest,playwright,browser,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | The shared `build-integrations/runtime/` helpers + the on-disk manifest + codegen-emitted files + env vars + the typed global bridge slot            | L0–L3 directly. Engine subscription.                                                                                                            |
+| **L5 build integrations + apps** | `build-integrations/{vitest,playwright,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | The shared `build-integrations/runtime/` helpers + the on-disk manifest + codegen-emitted files + env vars + the typed global Playwright bridge slot | L0–L3 directly. Engine subscription.                                                                                                            |
 
 ### Substrate name-blindness
 
@@ -255,15 +254,15 @@ Runtime values flow via:
 2. Codegen-emitted files in `src/generated/*`.
 3. Env vars (`DEVSTACK_STATE_DIR`, `DEVSTACK_MANIFEST_PATH`, etc. — registered in `vitest/env.ts`).
 4. The typed global bridge slot (`__devstackDAppKit__` — owned by
-   `build-integrations/vite/dapp-kit-slot.ts`).
+   `build-integrations/runtime/dapp-kit-slot.ts`).
 
 L5 build integrations are the only seam. Devstack is dev-tooling, not app-runtime.
 
-The manifest discovery boundary is consolidated: Vite, Vitest, Playwright, and the canonical runtime
+The manifest discovery boundary is consolidated: Vitest, Playwright, and the canonical runtime
 resolver all converge on the supervisor-written cwd-walkup path
 (`<cwd>/.devstack/stacks/<stack>/manifest.json`).
-`test/build-integrations/manifest-path-parity.test.ts` pins that behavior so the Vite preset cannot
-drift back to the old HOME-rooted path.
+`test/build-integrations/manifest-path-parity.test.ts` pins that behavior so integration presets
+cannot drift back to the old HOME-rooted path.
 
 ---
 
@@ -290,14 +289,14 @@ dispatch tests in the same patch.
 - `ManifestDiscoveryError` / `ManifestShapeError` / `NoConventionalRouteError` (plain-class errors
   per build-integration's sync-API discipline)
 
-Other integrations MUST delegate. Vite, Vitest, Playwright, and Browser now use the shared runtime
+Other integrations MUST delegate. Vitest and Playwright use the shared runtime
 discovery/shape/cold-start primitives; keep new integration readers on that path instead of adding
 framework-local manifest discovery.
 
 Only `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses. They are
-sync-blocking app startup reads, so callers use plain `try` / `catch`. Per-integration Vite, Vitest,
-Playwright, and Browser errors may use `Data.TaggedError` for integration-specific failures; they
-still delegate manifest discovery/shape/cold-start behavior to `runtime/`.
+sync-blocking app startup reads, so callers use plain `try` / `catch`. Per-integration Vitest and
+Playwright errors may use `Data.TaggedError` for integration-specific failures; they still delegate
+manifest discovery/shape/cold-start behavior to `runtime/`.
 
 ---
 
@@ -367,7 +366,7 @@ internals.
 
 Endpoint ownership rule: `RoutableDecl` + `RouterService.contributeRoute(...)` is the authoritative
 public endpoint path for in-stack services. Resolved-value URL projection is a fallback only for
-plugins with no routable contribution, such as live/external network modes. Plugins may keep direct
+plugins with no routable contribution, such as live/local-rpc network modes. Plugins may keep direct
 probe, loopback, or `hostGateway` URLs on their resolved values for sibling bootstrapping, but those
 fields are not public endpoint declarations once the plugin contributes a route.
 
@@ -432,17 +431,17 @@ L3 orchestrators     — snapshot, router, codegen, network resolver, manifest w
 L4 surfaces          — CLI, TUI, programmable API. CommandPublisher + EventSubscriber only.
                        Pluggable Renderer contract.
 
-L5 build integrations— vite/vitest/playwright/browser presets. Apps consume only L5.
+L5 build integrations— vitest/playwright/runtime helpers. Apps consume only L5.
 + apps                 Apps NEVER import devstack engine. Runtime values flow via
                        codegen + manifest + env + typed global slot.
 ```
 
 ---
 
-## Release gate
+## Release-Critical Surfaces
 
-`notes/UNRESOLVED-BLOCKERS.md` is the live release ledger. Historical parity rows have been retired;
-do not reopen old cutover lists without revalidating them against source.
+Historical parity rows have been retired; do not reopen old cutover lists without revalidating them
+against source.
 
 Current release-critical surfaces are wired directly:
 
@@ -453,8 +452,7 @@ Current release-critical surfaces are wired directly:
 - The Action plugin exposes `ctx.signAndExecute(account, build)`; connect-four exercises the helper
   in its example config and e2e boot test.
 
-The package cannot ship while `UNRESOLVED-BLOCKERS.md` lists open P0 gates. Resolved or retired
-historical review notes do not create release gates by themselves.
+Resolved or retired historical review notes do not create release gates by themselves.
 
 ---
 
@@ -466,7 +464,6 @@ Process for changing a load-bearing boundary:
 2. Open a PR that updates THIS doc with the new boundary + justification.
 3. Run the migration (lift code into / out of the affected layer; consolidate / split files; etc.).
 4. Update `STYLE_GUIDE.md` if the rule has a code-level pattern.
-5. Update `notes/UNRESOLVED-BLOCKERS.md` if the rule changes release readiness.
 
 DO NOT silently violate. DO NOT codify violations as "the new convention" without an explicit PR.
 
@@ -476,5 +473,4 @@ DO NOT silently violate. DO NOT codify violations as "the new convention" withou
 
 This architecture was originally distilled from historical redesign, review, API comparison, parity,
 and phase notes. Those source notes have since been retired or replaced by focused cleanup plans.
-Use `notes/UNRESOLVED-BLOCKERS.md` as the live release ledger and this document for current
-architectural invariants.
+Use this document for current architectural invariants.

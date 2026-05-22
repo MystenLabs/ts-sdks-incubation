@@ -3,43 +3,21 @@
 import { describe, expect, it } from '@effect/vitest';
 
 import {
-	clearDAppKitSlot,
 	DAPP_KIT_SLOT_KEY,
-	readDAppKitSlot,
-	writeDAppKitSlot,
-} from '../../../src/build-integrations/runtime/index.ts';
+	type DAppKitSlot,
+} from '../../../src/build-integrations/runtime/dapp-kit-slot.ts';
 
 describe('dapp-kit slot (canonical)', () => {
 	it('uses the architected slot key', () => {
 		expect(DAPP_KIT_SLOT_KEY).toBe('__devstackDAppKit__');
 	});
 
-	it('reads `undefined` when the slot is empty', () => {
-		clearDAppKitSlot();
-		expect(readDAppKitSlot()).toBeUndefined();
-	});
-
-	it('round-trips a slot value', () => {
-		writeDAppKitSlot({
-			slotVersion: 1,
-			identity: { app: 'wallet', stack: 'main', chain: 'sui:local' },
-			endpoints: { 'sui-rpc': { url: 'http://x/' } },
-			flags: { devWalletLabel: 'Dev Wallet' },
-		});
-		const read = readDAppKitSlot();
-		expect(read?.identity.app).toBe('wallet');
-		expect(read?.endpoints['sui-rpc']?.url).toBe('http://x/');
-		clearDAppKitSlot();
-	});
-
-	it('clearDAppKitSlot removes the slot', () => {
-		writeDAppKitSlot({
-			slotVersion: 1,
-			identity: { app: 'a', stack: 'b', chain: 'c' },
-			endpoints: {},
-			flags: {},
-		});
-		clearDAppKitSlot();
-		expect(readDAppKitSlot()).toBeUndefined();
+	it('keeps the slot as a raw app-owned bridge, not a runtime writer helper', () => {
+		const selectAccount = () => {};
+		(globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__ = {
+			selectAccount,
+		};
+		expect(globalThis.__devstackDAppKit__?.selectAccount).toBe(selectAccount);
+		delete (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
 	});
 });

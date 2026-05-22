@@ -33,16 +33,36 @@ Use `wallet()` or `wallet({ accounts })` to expose the dev wallet server and gen
 config:
 
 ```ts
-import { defineDevstack, account, sui, wallet } from '@mysten-incubation/devstack';
+import {
+	defineDevstack,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const DEV_PORT = 5173;
 
 const localnet = sui();
 const alice = account('alice');
 const bob = account('bob');
-const devWallet = wallet({ accounts: [alice, bob] });
+const devWallet = wallet({
+	accounts: [alice, bob],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [devWallet] as const,
+});
 
-export default defineDevstack({ members: [localnet, devWallet] });
+export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 ```
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`
 call. The wallet binds to `127.0.0.1` by default, stores its pairing token under the stack runtime
-root, and emits generated config at `src/generated/dapp-kit/config.ts`.
+root, emits generated config at `src/generated/dapp-kit/config.ts`, and automatically allows the
+stack-scoped dev-server route such as `http://dev.<app>.localhost:5175`. Add `allowedOrigins` only
+for nonstandard browser origins.

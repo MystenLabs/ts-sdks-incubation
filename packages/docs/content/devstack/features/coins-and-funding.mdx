@@ -1,41 +1,102 @@
 ---
 title: Coins and Funding
-description: Current coin declaration and funding forms.
+description: Coin declaration forms, managed coins, and funding rules.
 ---
 
-The `coin` namespace has explicit forms. There is no string-guessing `coin(value)` entry.
+The `coin` namespace has explicit forms. There is no string-guessing `coin(value)` entry because
+devstack needs to know whether the coin comes from a package it owns, a protocol builtin, or an
+already-deployed on-chain type.
 
-```ts
-import { defineDevstack, account, coin, localPackage, sui } from '@mysten-incubation/devstack';
+```ts title="devstack.config.ts"
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+	HOST_SERVICE_PORT_TOKEN,
+	account,
+	coin,
+	defineDevstack,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
 
 const localnet = sui();
 const publisher = account('publisher');
 
 const managed = localPackage('managed_coin', {
-	sourcePath: './move/managed_coin',
+	sourcePath: resolve(HERE, 'move/managed_coin'),
 	publisher,
 });
 
-const managedCoin = coin.fromPackage(managed, 'MANAGED_COIN');
+const studio = coin.fromPackage(managed, 'MANAGED_COIN');
 
 const alice = account('alice', {
 	funding: [
 		{ coin: 'sui', amount: 1_000_000_000n },
-		{ coin: managedCoin, amount: 1_000n },
+		{ coin: studio, amount: 1_000n },
 	],
 });
 
-export default defineDevstack({ members: [localnet, alice] });
+const devWallet = wallet({
+	accounts: [publisher, alice],
+});
+
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [managed, studio, devWallet] as const,
+});
+
+export default defineDevstack({ members: [localnet, app], stackName: 'main' });
 ```
 
-Available forms:
+## Coin Forms
 
-- `coin.builtin('sui')` uses the protocol SUI type.
-- `coin.fromPackage(member, witness)` adds a dependency edge on the publishing member. Local package
-  coins that keep the TreasuryCap with the publisher also contribute a centralized funding strategy,
-  so account funding can mint them without a bespoke seed action.
-- `coin.known(fullCoinType)` resolves an on-chain type through metadata reads.
+- `coin.builtin('sui')` uses the protocol SUI type, `0x2::sui::SUI`, with known decimals.
+- `coin.fromPackage(member, witness)` resolves a coin published by a `localPackage(...)` or
+  `knownPackage(...)` member. It adds a dependency edge on the package member, so package publish
+  and discovery complete before account funding tries to use the coin.
+- `coin.known(fullCoinType)` resolves an already-deployed on-chain type through metadata reads.
 
-Funding is best-effort for custom strategies. Missing strategies are treated as a no-op for
-cross-coin funding entries, while explicit or default SUI funding fails loudly if no faucet-bearing
-strategy exists for the active chain.
+## Managed Coins
+
+A managed coin is a coin devstack can both identify and mint for accounts. Today that means:
+
+- the coin is declared with `coin.fromPackage(localPackageMember, witness)`;
+- the package publish output includes the coin metadata and a TreasuryCap for that witness;
+- the local package publisher remains available as the funding signer.
+
+When those conditions hold, the coin contributes a `coinType:<fullCoinType>` funding strategy.
+Account funding can then mint the coin directly:
+
+```ts
+const alice = account('alice', {
+	funding: [{ coin: studio, amount: 1_000n }],
+});
+```
+
+## Fundable vs Detectable
+
+Devstack can detect more coins than it can fund.
+
+- SUI is fundable when the active Sui service contributes a faucet strategy for the current chain.
+  Explicit SUI funding fails loudly if no SUI strategy exists.
+- Managed local package coins are fundable when devstack has a TreasuryCap and a signer for that
+  cap.
+- `walCoin(localWalrus)` and service-provided coins are fundable only when that service contributes
+  a matching `coinType:<fullCoinType>` strategy.
+- `coin.known(fullCoinType)` can read metadata for an external coin, but it does not prove devstack
+  can mint or source that coin. Add a funding strategy through the service that owns the funding
+  mechanism, or pass `via` to the account funding entry when a provider member contributes it.
+
+Devstack cannot infer mint authority from a type string, recover a TreasuryCap for an arbitrary live
+coin, or detect that a package publisher transferred the cap away after publish. Missing non-SUI
+coin strategies are treated as a no-op so optional service funding can be ergonomic; missing SUI
+funding is an error because default account funding depends on it.

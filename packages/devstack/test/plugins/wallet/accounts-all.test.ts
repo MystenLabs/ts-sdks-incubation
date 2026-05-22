@@ -145,6 +145,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
 			resolveAccounts: () => Effect.succeed([]),
 			routerFrontedUrl: null,
+			routedAppOrigin: null,
 			supervisorCtx: undefined,
 		};
 

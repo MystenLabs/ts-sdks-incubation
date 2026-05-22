@@ -1,23 +1,22 @@
 // Deepbook plugin — barrel + factories.
 //
-// Architecture: Deepbook is a task plugin that resolves a local or
-// known DeepBook deployment and emits bindings.
+// Architecture: Deepbook is a task plugin that resolves a known
+// DeepBook deployment, or an explicit caller-supplied override, and
+// emits bindings.
 //
 // Mode discipline:
 //
-//   - `deepbook(opts)`             — env-driven mode selection.
-//                                     Defaults to local.
-//   - `deepbookFor(network).local` — mode-narrowed namespace.
-//                                     fork branch has NO `.local` —
-//                                     compile error on fork networks.
+//   - `deepbook(opts)`             — explicit mode selection.
+//   - `deepbookFor(network).override` — local-branch override for
+//                                     caller-supplied deployment ids.
 //   - `deepbookFor(network).known` — known-deployment branch (live +
 //                                     fork networks; wraps an already-
 //                                     deployed canonical instance).
 //
 // Capability decls emitted:
 //
-//   Local mode:
-//     1. snapshotable        — `deepbook/<name>` subtree.
+//   Override mode:
+//     1. snapshotable        — identity guard only.
 //     2. codegenable         — `deepbook-network` bindings.
 //
 //   Known mode:
@@ -32,26 +31,18 @@ import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { suiResource } from '../sui/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
-import {
-	DEEPBOOK_ERROR_TAGS,
-	deepbookConfigError,
-	deepbookPluginError,
-	forkIncompatibleError,
-	type DeepbookError,
-	type DeepbookPluginError,
-} from './errors.ts';
+import { DEEPBOOK_ERROR_TAGS, deepbookConfigError } from './errors.ts';
 import { makeDeepbookCodegenable, type DeepbookBindings } from './codegen.ts';
 import {
 	makeDeepbookDeepFundingContribution,
 	makeDeepbookDeepFundingStrategy,
 	type DeepbookDeepFundingStrategy,
 } from './faucet-strategy.ts';
-import { makeKnownSnapshotable, makeLocalSnapshotable } from './snapshot.ts';
-import type { AccountMemberAlias, DeepbookPool, PythHandle } from './types.ts';
+import { makeKnownSnapshotable } from './snapshot.ts';
+import type { DeepbookPool, PythHandle } from './types.ts';
 
 // ---------------------------------------------------------------------------
 // Resource — the resolved value all consumers read
@@ -70,7 +61,7 @@ const makeDeepbookResource = <Name extends string>(name: Name) =>
  *   - `margin` / `serverUrl` / `indexerUrl` / `marketMakerRunning`
  *     are `null` when the corresponding sub-feature is not enabled. */
 export interface DeepbookResolved {
-	readonly mode: 'local' | 'known';
+	readonly mode: 'override' | 'known';
 	readonly chain: string;
 	readonly packageId: string;
 	readonly registryId: string;
@@ -95,12 +86,13 @@ export interface DeepbookCommonOptions {
 	readonly name?: string;
 }
 
-/** Local mode wraps an explicitly supplied local deployment. */
-export interface DeepbookLocalOptions<
-	Publisher extends AccountMemberAlias = AccountMemberAlias,
-> extends DeepbookCommonOptions {
-	/** Publisher account — Direct Member Ref (locked API decision). */
-	readonly publisher: Publisher;
+/** Override mode wraps an explicitly supplied deployment. It does not
+ *  publish or manage DeepBook locally. */
+export interface DeepbookOverrideOptions extends DeepbookCommonOptions {
+	readonly packageId: string;
+	readonly registryId: string;
+	readonly adminCapId: string;
+	readonly chain?: string;
 }
 
 export type DeepbookKnownNetwork = 'mainnet' | 'testnet';
@@ -124,12 +116,12 @@ interface DeepbookKnownExplicitOptions extends DeepbookKnownCommonOptions {
 
 export type DeepbookKnownOptions = DeepbookKnownNetworkOptions | DeepbookKnownExplicitOptions;
 
-export type DeepbookOptions<Publisher extends AccountMemberAlias = AccountMemberAlias> =
-	| ({ readonly mode: 'local' } & DeepbookLocalOptions<Publisher>)
+export type DeepbookOptions =
+	| ({ readonly mode: 'override' } & DeepbookOverrideOptions)
 	| ({ readonly mode: 'known' } & DeepbookKnownOptions);
 
 // ---------------------------------------------------------------------------
-// Plugin construction — local
+// Plugin construction — override
 // ---------------------------------------------------------------------------
 
 const DEFAULT_NAME = 'deepbook';
@@ -166,83 +158,33 @@ const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 	},
 };
 
-const LOCAL_DEPLOYMENT_ENV = [
-	'DEEPBOOK_PACKAGE_OVERRIDE_PACKAGE_ID',
-	'DEEPBOOK_PACKAGE_OVERRIDE_REGISTRY_ID',
-	'DEEPBOOK_PACKAGE_OVERRIDE_ADMIN_CAP_ID',
-] as const;
-
-const readRequiredLocalDeployment = (
-	env: Record<string, string | undefined> | undefined,
-): Effect.Effect<
-	{
-		readonly packageId: string;
-		readonly registryId: string;
-		readonly adminCapId: string;
-	},
-	DeepbookPluginError
-> => {
-	const packageId = env?.DEEPBOOK_PACKAGE_OVERRIDE_PACKAGE_ID;
-	const registryId = env?.DEEPBOOK_PACKAGE_OVERRIDE_REGISTRY_ID;
-	const adminCapId = env?.DEEPBOOK_PACKAGE_OVERRIDE_ADMIN_CAP_ID;
-	const missing = LOCAL_DEPLOYMENT_ENV.filter((key) => env?.[key] === undefined || env[key] === '');
-	if (missing.length > 0) {
-		return Effect.fail(
-			deepbookPluginError(
-				'publish',
-				`deepbook local mode requires explicit deployment ids: ${missing.join(', ')}.`,
-			),
-		);
-	}
-	return Effect.succeed({
-		packageId: packageId as string,
-		registryId: registryId as string,
-		adminCapId: adminCapId as string,
-	});
-};
-
-const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
-	opts: DeepbookLocalOptions<Publisher>,
-) => {
+const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
-	if (!opts.publisher) {
-		// Synchronous factory-time refusal — mirrors walrus / seal
-		// patterns. Surfaces as a thrown DeepbookConfigError to the
-		// user at config-construction time, not at acquire.
+	if (!opts.packageId || !opts.registryId || !opts.adminCapId) {
 		throw deepbookConfigError(
-			'publisher',
-			`deepbook({mode:'local', name:'${name}'}) requires a publisher account ref.`,
-			`Pass \`publisher: <accountMember>\` — the account member returned by \`account('publisher')\`.`,
+			'packageId',
+			`deepbook({mode:'override', name:'${name}'}) requires packageId, registryId, and adminCapId.`,
+			`Pass explicit deployment ids or use deepbook({mode:'known', network:'testnet'}).`,
 		);
 	}
-
 	const deepbookResource = makeDeepbookResource(name);
+	const snap = makeKnownSnapshotable({ name });
 
 	return definePlugin({
 		id: deepbookResource.id,
-		dependsOn: { sui: suiResource, publisher: opts.publisher },
+		dependsOn: [suiResource] as const,
 		role: 'task',
 		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
-			Effect.gen(function* () {
-				const { sui, publisher } = deps;
-
-				yield* Effect.annotateCurrentSpan({
-					'deepbook.name': name,
-					'deepbook.chain': sui.chain,
-					'deepbook.publisher': publisher.address,
-				});
-
-				const env = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-					.process?.env;
-				const deployment = yield* readRequiredLocalDeployment(env);
-
+			Effect.sync(() => {
+				const [sui] = deps;
+				const chain = opts.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {
-					mode: 'local',
-					chain: sui.chain,
-					packageId: deployment.packageId,
-					registryId: deployment.registryId,
-					adminCapId: deployment.adminCapId,
+					mode: 'override',
+					chain,
+					packageId: opts.packageId,
+					registryId: opts.registryId,
+					adminCapId: opts.adminCapId,
 					pools: [],
 					pyth: null,
 					margin: null,
@@ -252,35 +194,8 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 					deepFundingStrategy: null,
 				};
 				return resolved;
-			}).pipe(
-				Effect.catch((err: unknown) => {
-					// Typed plugin errors flow through; other errors
-					// (substrate primitives) are wrapped under a
-					// `'publish'` phase tag so the cascade walker keeps
-					// the plugin attribution.
-					if (
-						typeof err === 'object' &&
-						err !== null &&
-						'_tag' in err &&
-						(err._tag === 'DeepbookPluginError' ||
-							err._tag === 'DeepbookConfigError' ||
-							err._tag === 'ForkIncompatibleError')
-					) {
-						return Effect.fail(err as DeepbookError);
-					}
-					return Effect.fail(
-						deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`),
-					);
-				}),
-			),
-		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
-			const snap: SnapshotableDecl = makeLocalSnapshotable({
-				name,
-				app: acquireCtx.identity.app,
-				stack: acquireCtx.identity.stack,
-				indexerEnabled: false,
-				serverEnabled: false,
-			});
+			}),
+		capabilities: ({ value: resolved }) => {
 			const bindings: DeepbookBindings = {
 				name,
 				chain: resolved.chain,
@@ -385,66 +300,26 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 };
 
 // ---------------------------------------------------------------------------
-// Default option resolution (env-driven)
-// ---------------------------------------------------------------------------
-
-const resolveDefaultMode = <const Publisher extends AccountMemberAlias>(
-	opts?: DeepbookLocalOptions<Publisher>,
-): DeepbookOptions<Publisher> => {
-	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-		?.env?.DEVSTACK_NETWORK;
-	if (env === undefined || env === 'localnet') {
-		if (!opts || !opts.publisher) {
-			throw deepbookConfigError(
-				'publisher',
-				`deepbook() on localnet requires \`publisher: <accountMember>\`.`,
-				`Pass options via deepbook({mode:'local', publisher: <accountMember>, ...}).`,
-			);
-		}
-		return { mode: 'local', ...opts };
-	}
-	// Non-local default: refuse — known mode requires explicit
-	// packageId/registryId. The user passes them via
-	// `deepbookFor(network).known({...})` or `deepbook({mode:'known',...})`.
-	throw deepbookConfigError(
-		'mode',
-		`deepbook(): cannot auto-default to known mode on network='${env}'.`,
-		`Use deepbookFor(network).known({packageId, registryId, ...}).`,
-	);
-};
-
-// ---------------------------------------------------------------------------
 // User-facing factories
 // ---------------------------------------------------------------------------
 
-/** Env-driven factory. Defaults to local mode on localnet (requires
- *  `publisher`). Other modes route through `deepbookFor(network)`. */
-type DeepbookLocalMember<Publisher extends AccountMemberAlias> = ReturnType<
-	typeof buildLocalPlugin<Publisher>
->;
+/** Explicit DeepBook factory. Override mode wraps caller-supplied ids;
+ *  known mode wraps built-in or explicit known deployment ids. */
+type DeepbookOverrideMember = ReturnType<typeof buildOverridePlugin>;
 type DeepbookKnownMember = ReturnType<typeof buildKnownPlugin>;
 
-export function deepbookCore<const Publisher extends AccountMemberAlias>(
-	opts: { readonly mode: 'local' } & DeepbookLocalOptions<Publisher>,
-): DeepbookLocalMember<Publisher>;
+export function deepbookCore(
+	opts: { readonly mode: 'override' } & DeepbookOverrideOptions,
+): DeepbookOverrideMember;
 export function deepbookCore(
 	opts: { readonly mode: 'known' } & DeepbookKnownOptions,
 ): DeepbookKnownMember;
-export function deepbookCore<const Publisher extends AccountMemberAlias>(
-	opts: DeepbookLocalOptions<Publisher>,
-): DeepbookLocalMember<Publisher>;
-export function deepbookCore<const Publisher extends AccountMemberAlias>(
-	opts?: DeepbookLocalOptions<Publisher> | DeepbookOptions<Publisher>,
-): DeepbookLocalMember<Publisher> | DeepbookKnownMember {
-	const resolved: DeepbookOptions<Publisher> =
-		opts !== undefined && 'mode' in opts
-			? (opts as DeepbookOptions<Publisher>)
-			: resolveDefaultMode(opts as DeepbookLocalOptions<Publisher> | undefined);
-	switch (resolved.mode) {
-		case 'local':
-			return buildLocalPlugin(resolved);
+export function deepbookCore(opts: DeepbookOptions): DeepbookOverrideMember | DeepbookKnownMember {
+	switch (opts.mode) {
+		case 'override':
+			return buildOverridePlugin(opts);
 		case 'known':
-			return buildKnownPlugin(resolved);
+			return buildKnownPlugin(opts);
 	}
 }
 
@@ -452,30 +327,25 @@ export function deepbookCore<const Publisher extends AccountMemberAlias>(
  *
  *  Usage:
  *      const local = { mode: 'local', chain: 'sui:localnet' } as const;
- *      deepbookFor(local).local({publisher})                // OK
- *      deepbookFor(local).known({...})                      // OK (always available)
+ *      deepbookFor(local).override({packageId, registryId, adminCapId}) // OK
+ *      deepbookFor(local).known({...})                                  // OK
  *
  *      const fork = { mode: 'fork', chain: 'sui:mainnet-fork', upstream: 'mainnet' } as const;
- *      deepbookFor(fork).local({publisher})                 // COMPILE ERROR
+ *      deepbookFor(fork).override({...})                    // COMPILE ERROR
  *
- *  The fork branch has NO `.local` entry — `deepbookFor(forkNetwork).local`
- *  is a compile-time refusal. Defense-in-depth runtime refusal via
- *  `forkIncompatibleError`. */
+ *  The fork branch has NO `.override` entry — `deepbookFor(forkNetwork).override`
+ *  is a compile-time refusal. */
 export const deepbookFor = defineModeNamespace({
 	local: {
-		local: <const Publisher extends AccountMemberAlias>(opts: DeepbookLocalOptions<Publisher>) =>
-			buildLocalPlugin(opts),
+		override: (opts: DeepbookOverrideOptions) => buildOverridePlugin(opts),
 		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
 	},
 	live: {
 		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
 	},
 	fork: {
-		// `.local` intentionally absent — compile-time refusal.
+		// `.override` intentionally absent — compile-time refusal.
 		known: (opts: DeepbookKnownOptions) => buildKnownPlugin(opts),
-		_localRefused: (network: string): never => {
-			throw forkIncompatibleError(network);
-		},
 	},
 });
 
@@ -485,7 +355,6 @@ export const deepbook = deepbookCore;
 // Re-exports for advanced callers
 // ---------------------------------------------------------------------------
 
-export { deepbookPluginKey } from './plugin-key.ts';
 export {
 	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,

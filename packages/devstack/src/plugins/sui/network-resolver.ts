@@ -9,11 +9,11 @@
 //
 // Mode → `NetworkConfig.mode` mapping:
 //
-//   - `local`    → `mode: 'local'`
-//   - `external` → `mode: 'local'` (the chain itself is still
-//                   local in semantics — caller wrapped their own
-//                   localnet; downstream plugins shouldn't branch
-//                   on container-vs-external below the resolver).
+//   - `local`     → `mode: 'local'`
+//   - `local-rpc` → `mode: 'local'` (the chain itself is still
+//                    local in semantics — caller wrapped their own
+//                    localnet; downstream plugins shouldn't branch
+//                    on container-vs-local-rpc below the resolver).
 //   - `live`     → `mode: 'live'`
 //   - `fork`     → `mode: 'fork'` — and the resolver SHALL emit the
 //                   upstream's REAL chain id, not a fork-local
@@ -50,7 +50,7 @@ export interface ResolvedSuiNetwork {
 const toSubstrateMode = (mode: SuiPluginMode): NetworkMode => {
 	switch (mode) {
 		case 'local':
-		case 'external':
+		case 'local-rpc':
 			return 'local';
 		case 'live':
 			return 'live';

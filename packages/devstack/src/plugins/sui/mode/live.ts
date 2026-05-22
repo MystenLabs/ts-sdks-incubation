@@ -152,7 +152,7 @@ export const bootLiveMode = (
 
 		// ----- 3. Resolve chain id -------------------------------------------
 		const chain =
-			opts.chainOverride ??
+			opts.chain ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_LIVE_CHAIN_ID_TIMEOUT,
 				span: 'devstack.plugin.sui.live.fetchChainId',

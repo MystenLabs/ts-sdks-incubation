@@ -1,22 +1,30 @@
 ---
 title: Vitest
-description: Current Vitest config preset and setup helpers.
+description: Current Vitest config helpers and setup hooks.
 ---
 
 Use the `vitest` subpath for node-mode unit and integration tests.
 
 ```ts title="vitest.config.ts"
-import { defineDevstackVitestConfig } from '@mysten-incubation/devstack/vitest';
+import { defineConfig } from 'vitest/config';
+import {
+	devstackVitestServerConfig,
+	devstackVitestTestConfig,
+} from '@mysten-incubation/devstack/vitest';
 
-export default defineDevstackVitestConfig({
-	threads: 'single',
-	testSetup: { requireDevstack: true },
+export default defineConfig({
+	server: devstackVitestServerConfig(),
+	test: devstackVitestTestConfig({
+		threads: 'single',
+		testSetup: { requireDevstack: true },
+	}),
 });
 ```
 
 Current exports from `@mysten-incubation/devstack/vitest` include:
 
-- `defineDevstackVitestConfig`
+- `devstackVitestTestConfig`
+- `devstackVitestServerConfig`
 - `useDevstackTestSetup`
 - `runDevstackBeforeAll`
 - `runDevstackAfterAll`
@@ -41,9 +49,9 @@ import { getStackContext } from '@mysten-incubation/devstack/vitest';
 
 test('has a wallet endpoint', () => {
 	const ctx = getStackContext();
-	expect(ctx?.manifest.endpoints.wallet?.url).toMatch(/^http/);
+	expect(ctx?.endpoint('wallet-app')).toMatch(/^http/);
 });
 ```
 
-The preset does not boot a supervisor by itself. Start one with `devstack up`, or run
+The helpers do not boot a supervisor by themselves. Start one with `devstack up`, or run
 `devstack apply` before tests that only need generated files and a manifest.

@@ -33,7 +33,7 @@ import {
 } from './stack-context.ts';
 import { readStashedFixture } from './global-setup.ts';
 import { PlaywrightWalletAdapterError } from './errors.ts';
-import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/browser.ts';
+import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/dapp-kit-slot.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an
@@ -49,10 +49,10 @@ export interface PlaywrightPageLike {
 // Wallet adapter — HTTP client targeting the wallet plugin's endpoint
 // -----------------------------------------------------------------------------
 
-/** Endpoint key the dev-wallet plugin emits into the manifest's flat
- *  endpoint lookup. The endpoint declaration owns the literal key;
- *  this string is the contract between the wallet plugin and this
- *  surface. */
+/** Public alias for the dev-wallet endpoint. The manifest stores raw
+ *  keys as `${pluginKey}:${endpointName}` and the actual endpoint name
+ *  is `wallet-app`; `readStackContext(...).endpointMaybe('wallet')`
+ *  maps this alias through the Playwright boundary. */
 export const WALLET_ENDPOINT_KEY = 'wallet' as const;
 
 export interface WalletAdapterOptions extends ResolveStackContextOptions {
@@ -138,16 +138,18 @@ const resolveWalletUrl = (options: WalletAdapterOptions): string => {
 			cause,
 		});
 	}
-	const entry = ctx.manifest.endpoints[WALLET_ENDPOINT_KEY];
-	if (entry === undefined) {
+	const walletUrl = ctx.endpointMaybe(WALLET_ENDPOINT_KEY);
+	if (walletUrl === null) {
 		throw new PlaywrightWalletAdapterError({
 			message:
-				`manifest has no \`${WALLET_ENDPOINT_KEY}\` endpoint — is the ` +
-				`dev-wallet plugin present in your stack?`,
+				`manifest has no \`${WALLET_ENDPOINT_KEY}\` endpoint (alias for ` +
+				`\`wallet-app\`) — is the dev-wallet plugin present in your stack? ` +
+				`Available endpoint names: ${ctx.endpointNames.join(', ') || '(none)'}. ` +
+				`Raw manifest keys: ${ctx.manifestEndpointKeys.join(', ') || '(none)'}.`,
 			operation: 'fetch',
 		});
 	}
-	return entry.url;
+	return walletUrl;
 };
 
 // -----------------------------------------------------------------------------

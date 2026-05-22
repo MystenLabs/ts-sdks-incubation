@@ -37,7 +37,7 @@ export interface ImpersonateVariantArgs {
 	readonly address: string;
 	/** Sui's resolved runtime mode — gates the refusal-outside-fork
 	 *  check. */
-	readonly suiMode: 'local' | 'external' | 'live' | 'fork';
+	readonly suiMode: 'local' | 'local-rpc' | 'live' | 'fork';
 }
 
 /** The synthetic impersonation signer object. THROWS SYNCHRONOUSLY

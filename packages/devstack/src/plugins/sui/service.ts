@@ -3,8 +3,8 @@
 // Architecture: the four modes are NOT four separate plugins. They
 // are one plugin with internal mode dispatch. The factory at the
 // barrel (`index.ts`) constructs a `SuiOptions` discriminator from
-// either env or typed options; the `acquire` body below dispatches
-// on `opts.mode` and assembles the mode-appropriate subsystems.
+// typed options; the `acquire` body below dispatches on `opts.mode`
+// and assembles the mode-appropriate subsystems.
 //
 // What this file does:
 //
@@ -26,7 +26,7 @@ import type { SeedManifestMismatchError, SuiPluginError } from './errors.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type { SuiOptions } from './mode/spec.ts';
-import { bootExternalMode } from './mode/external.ts';
+import { bootLocalRpcMode } from './mode/external.ts';
 import { bootForkMode } from './mode/fork.ts';
 import { bootLiveMode } from './mode/live.ts';
 import { bootLocalMode } from './mode/local.ts';
@@ -61,8 +61,8 @@ export const bootSuiService = (
 			return bootLocalMode(runtime, identity, portBroker, opts).pipe(
 				Effect.map(({ resolved, client }) => ({ resolved, client })),
 			);
-		case 'external':
-			return bootExternalMode(opts).pipe(
+		case 'local-rpc':
+			return bootLocalRpcMode(opts).pipe(
 				Effect.map(({ resolved, client }) => ({ resolved, client })),
 			);
 		case 'live':

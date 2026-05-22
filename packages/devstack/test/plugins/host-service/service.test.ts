@@ -99,14 +99,25 @@ describe('hostService option validation', () => {
 		);
 	});
 
-	it('requires command and rejects script services', () => {
+	it('requires either command or script', () => {
 		expect(() => hostService({} as never)).toThrowError(
 			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'command' }),
 		);
 		expect(() => hostService({ command: 'pnpm', script: 'pnpm dev' } as never)).toThrowError(
-			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'script' }),
+			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'command' }),
 		);
-		expect(() => hostService({ script: 'pnpm dev' } as never)).toThrowError(
+		expect(() => hostService({ script: 'pnpm dev', args: ['--watch'] } as never)).toThrowError(
+			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'args' }),
+		);
+	});
+
+	it('accepts script services for shell command lines', () => {
+		const member = hostService({ script: `pnpm exec vite --port ${HOST_SERVICE_PORT_TOKEN}` });
+		expect(member.dependsOn).toEqual([]);
+	});
+
+	it('validates script as a non-empty string', () => {
+		expect(() => hostService({ script: '' })).toThrowError(
 			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'script' }),
 		);
 	});
@@ -172,6 +183,36 @@ describe('acquireHostService', () => {
 			message: 'vite ready',
 			pluginKey: 'host-service-test#0',
 		});
+	});
+
+	it('renders script services through the platform shell', async () => {
+		const child = new FakeChild();
+		const calls: SpawnCall[] = [];
+		const options = normalizeHostServiceOptions({
+			name: 'frontend',
+			script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+			ready: { kind: 'log', pattern: 'ready' },
+		});
+
+		await Effect.runPromise(
+			acquire(options, (command, args, spawnOptions) => {
+				calls.push({ command, args, options: spawnOptions });
+				setTimeout(() => child.stdout.write('ready\n'), 0);
+				return child;
+			}),
+		);
+
+		expect(calls).toHaveLength(1);
+		const call = calls[0];
+		if (call === undefined) throw new Error('expected one spawn call');
+		if (process.platform === 'win32') {
+			expect(call.args.slice(-1)).toEqual([
+				'pnpm exec vite --host 127.0.0.1 --strictPort --port 6173',
+			]);
+		} else {
+			expect(call.command).toBe('/bin/sh');
+			expect(call.args).toEqual(['-c', 'pnpm exec vite --host 127.0.0.1 --strictPort --port 6173']);
+		}
 	});
 
 	it('can use stderr as the readiness log stream', async () => {

@@ -1,6 +1,17 @@
-import { defineDevstackPlaywrightConfig } from '@mysten-incubation/devstack/playwright';
+import { defineConfig } from '@playwright/test';
+import {
+	devstackPlaywrightBaseConfig,
+	devstackPlaywrightProjects,
+	devstackPlaywrightUse,
+	devstackPlaywrightWebServer,
+} from '@mysten-incubation/devstack/playwright';
 
 // `pnpm dev` runs the public devstack lifecycle before starting Vite.
-export default defineDevstackPlaywrightConfig({
-	baseURL: 'http://dev.template.localhost:5175',
+const baseURL = 'http://dev.template.localhost:5175';
+
+export default defineConfig({
+	...devstackPlaywrightBaseConfig(),
+	use: devstackPlaywrightUse({ baseURL }),
+	projects: devstackPlaywrightProjects(),
+	webServer: devstackPlaywrightWebServer({ baseURL }),
 });

@@ -93,10 +93,6 @@ export interface WalletOptions<
 	 *  Off by default to close the cross-stack pairing risk (see
 	 *  `origin-policy.ts` for the long-form rationale). */
 	readonly allowLocalhostVite?: boolean;
-	/** When true, the plugin emits its `RoutableDecl` so the router
-	 *  fronts the wallet under a stack-scoped hostname. Implicitly
-	 *  true if any vite plugin is composed on the same stack. */
-	readonly enableRouter?: boolean;
 }
 
 // ----------------------------------------------------------------------
@@ -143,8 +139,12 @@ export interface WalletAcquireContext {
 	readonly resolveAccounts: () => Effect.Effect<ReadonlyArray<AccountValue>, WalletBootError>;
 	/** Stable router-fronted base URL for this wallet on the stack-scoped
 	 *  hostname (e.g. `http://wallet.<app>.localhost:<router-port>`). Null
-	 *  when the router isn't running or `enableRouter: false`. */
+	 *  only in tests that bypass the router derivation. */
 	readonly routerFrontedUrl: string | null;
+	/** Stable router-fronted dev-server origin for this stack. Added to
+	 *  the wallet allowlist so app+wallet stacks work without repeating
+	 *  router origins in user configs. */
+	readonly routedAppOrigin: string | null;
 	/** Supervisor context captured for log/span propagation on handler
 	 *  fibers (the in-process HTTP server forks per-request from this). */
 	readonly supervisorCtx: unknown;
@@ -220,6 +220,7 @@ export const acquireWallet = (
 			app: ctx.app,
 			stack: ctx.stack,
 			vitePortForThisStack: ctx.vitePortForThisStack,
+			routedAppOrigin: ctx.routedAppOrigin,
 			extraOrigins: opts.allowedOrigins ?? [],
 			allowLocalhostVite: opts.allowLocalhostVite ?? false,
 		});

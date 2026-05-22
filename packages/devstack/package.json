@@ -24,10 +24,6 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./vite": {
-			"types": "./dist/build-integrations/vite/index.d.mts",
-			"import": "./dist/build-integrations/vite/index.mjs"
-		},
 		"./vitest": {
 			"types": "./dist/build-integrations/vitest/index.d.mts",
 			"import": "./dist/build-integrations/vitest/index.mjs"
@@ -39,14 +35,6 @@
 		"./playwright": {
 			"types": "./dist/build-integrations/playwright/index.d.mts",
 			"import": "./dist/build-integrations/playwright/index.mjs"
-		},
-		"./browser": {
-			"types": "./dist/build-integrations/browser/index.d.mts",
-			"import": "./dist/build-integrations/browser/index.mjs"
-		},
-		"./browser/setup": {
-			"types": "./dist/build-integrations/browser/setup.d.mts",
-			"import": "./dist/build-integrations/browser/setup.mjs"
 		},
 		"./runtime": {
 			"types": "./dist/build-integrations/runtime/index.d.mts",
@@ -88,17 +76,12 @@
 		"ink-testing-library": "^4.0.0",
 		"tsdown": "^0.21.10",
 		"typescript": "catalog:",
-		"vite": "catalog:",
 		"vitest": "^4.1.6"
 	},
 	"peerDependencies": {
-		"vite": "catalog:",
 		"vitest": "^4.1.6"
 	},
 	"peerDependenciesMeta": {
-		"vite": {
-			"optional": true
-		},
 		"vitest": {
 			"optional": true
 		}

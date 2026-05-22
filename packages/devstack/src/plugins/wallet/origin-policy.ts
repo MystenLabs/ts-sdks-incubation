@@ -56,6 +56,7 @@ export interface OriginPolicyInputs {
 	readonly app: string;
 	readonly stack: string;
 	readonly vitePortForThisStack: number | null;
+	readonly routedAppOrigin: string | null;
 	readonly extraOrigins: ReadonlyArray<string>;
 	readonly allowLocalhostVite: boolean;
 }
@@ -102,6 +103,10 @@ export const resolveOriginPolicy = (
 			if (inputs.allowLocalhostVite) {
 				allowed.add(`http://localhost:${inputs.vitePortForThisStack}`);
 			}
+		}
+
+		if (inputs.routedAppOrigin !== null) {
+			allowed.add(inputs.routedAppOrigin);
 		}
 
 		for (const o of inputs.extraOrigins) {

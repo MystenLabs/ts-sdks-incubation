@@ -1,7 +1,5 @@
 import { describe, expect, it } from '@effect/vitest';
 
-import { DevstackNetworkParseError } from '../../src/api/inference-network.ts';
-import { seal } from '../../src/plugins/seal/index.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
 import { walrus } from '../../src/plugins/walrus/index.ts';
 
@@ -18,16 +16,10 @@ const withNetwork = (value: string | undefined, run: () => void): void => {
 };
 
 describe('plugin DEVSTACK_NETWORK defaults', () => {
-	it('sui and walrus reject unknown DEVSTACK_NETWORK instead of falling back to local', () => {
+	it('sui and walrus factories do not read DEVSTACK_NETWORK at import/config time', () => {
 		withNetwork('bogus-network', () => {
-			expect(() => sui()).toThrow(DevstackNetworkParseError);
-			expect(() => walrus()).toThrow(DevstackNetworkParseError);
-		});
-	});
-
-	it('seal uses the same unknown-network parser before mode dispatch', () => {
-		withNetwork('bogus-network', () => {
-			expect(() => seal()).toThrow(DevstackNetworkParseError);
+			expect(() => sui()).not.toThrow();
+			expect(() => walrus()).not.toThrow();
 		});
 	});
 });

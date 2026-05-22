@@ -5,15 +5,15 @@
 //
 //   - local                       — `walrusLocalCluster(...)`
 //   - live (testnet/mainnet)      — `walrusKnownDeployment(...)`
-//   - fork-known (`*-fork`)       — auto-routes to known-deployment
-//                                    with the wrapped upstream
+//   - fork-known (`*-fork`)       — known-deployment wrapper for the
+//                                    wrapped upstream
 //   - fork-localcluster-refused   — synchronous refusal at factory
 //                                    time
 //
 // Architecture: Walrus is ONE plugin with internal mode dispatch.
 // The factory at the barrel (`index.ts`) constructs the discriminator
-// from typed options (or from the resolved network); this file
-// dispatches on the discriminator and assembles mode-appropriate
+// from typed options; this file dispatches on the discriminator and
+// assembles mode-appropriate
 // subsystems.
 //
 // What this file does:

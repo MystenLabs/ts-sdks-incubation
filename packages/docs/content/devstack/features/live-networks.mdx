@@ -3,10 +3,21 @@ title: Live Networks
 description: Running the same stack shape against public networks.
 ---
 
-Pick a Sui mode explicitly when the config should not default from `DEVSTACK_NETWORK`.
+Pick a Sui mode explicitly in the config. `sui()` is the local shorthand; public networks use
+`sui({ mode: 'live', network })`.
 
 ```ts
-import { defineDevstack, sui, account, knownPackage, wallet } from '@mysten-incubation/devstack';
+import {
+	defineDevstack,
+	sui,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	knownPackage,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const DEV_PORT = 5173;
 
 const alice = account('alice', {
 	kind: 'env',
@@ -17,15 +28,24 @@ const registry = knownPackage('registry', {
 	packageId: '0x...',
 });
 const liveSui = sui({ mode: 'live', network: 'testnet' });
-const devWallet = wallet({ accounts: [alice] });
+const devWallet = wallet({
+	accounts: [alice],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [registry, devWallet] as const,
+});
 
 export default defineDevstack({
-	members: [liveSui, registry, devWallet],
-	stackName: 'testnet',
+	members: [liveSui, app],
+	stackName: 'main',
 });
 ```
 
-The CLI can also set the network before config import:
+The CLI can also select the surface network for mode-narrowed configs:
 
 ```bash
 devstack up --network testnet

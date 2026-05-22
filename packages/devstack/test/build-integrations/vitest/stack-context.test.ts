@@ -36,19 +36,21 @@ const minimalManifest = (overrides: Partial<{ stack: string }> = {}) => ({
 	manifestVersion: 1,
 	services: {},
 	endpoints: {
-		'sui-rpc': {
+		'sui#0:rpc': {
+			name: 'rpc',
 			url: 'http://localhost:9000',
 			displayUrl: null,
 			wireProtocol: 'http',
 			pluginKey: 'sui',
-			endpointKey: 'rpc',
+			endpointKey: 'sui#0:rpc',
 		},
-		'app.dev': {
+		'host-service/app#0:dev': {
+			name: 'dev',
 			url: 'http://localhost:5173',
 			displayUrl: 'http://dev.demo.localhost:5175',
 			wireProtocol: 'http',
 			pluginKey: 'dev',
-			endpointKey: 'primary',
+			endpointKey: 'host-service/app#0:dev',
 		},
 	},
 	extras: {},
@@ -121,14 +123,14 @@ describe('loadStackContext', () => {
 		const ctx = loadStackContext(baseOpts({ stack: 'test' }));
 		expect(ctx).toBeDefined();
 		expect(ctx?.identity.stack).toBe('test');
-		expect(ctx?.endpoint('sui-rpc')).toBe('http://localhost:9000');
+		expect(ctx?.endpoint('rpc')).toBe('http://localhost:9000');
 	});
 
 	it('displayEndpoint falls back to url when displayUrl is null', () => {
 		tmp.writeManifest('test', minimalManifest());
 		const ctx = loadStackContext(baseOpts({ stack: 'test' }));
-		expect(ctx?.displayEndpoint('sui-rpc')).toBe('http://localhost:9000');
-		expect(ctx?.displayEndpoint('app.dev')).toBe('http://dev.demo.localhost:5175');
+		expect(ctx?.displayEndpoint('rpc')).toBe('http://localhost:9000');
+		expect(ctx?.displayEndpoint('dev')).toBe('http://dev.demo.localhost:5175');
 	});
 
 	it('endpoint() returns undefined for unknown names', () => {

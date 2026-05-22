@@ -9,13 +9,6 @@
 //
 //   - `localPackage(name, opts)`  — build + publish a Move source tree.
 //   - `knownPackage(name, opts)`  — verify-only against a fixed id.
-//   - `package(name, opts)`       — convenience: switches on the
-//                                    presence of `opts.packageId`.
-//                                    Prefer the explicit factories at
-//                                    call sites — the convenience form
-//                                    is for ergonomic compose blocks
-//                                    where the user is paging through
-//                                    options.
 //
 // Type split (distilled doc Invariant 9): `localPackage` resolves to
 // `LocalPackage`; `knownPackage` resolves to `KnownPackage`. The
@@ -59,7 +52,7 @@ import {
 	type ResolvedLocalPackage,
 } from './registry.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import { PACKAGE_ERROR_TAGS, type PublishError } from './errors.ts';
+import { PACKAGE_ERROR_TAGS } from './errors.ts';
 
 const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
 
@@ -110,11 +103,11 @@ export type { PublishExecutor } from './mode-local.ts';
  *  extension contribution instead of importing package internals. */
 export type PackageCaptureMap = Readonly<Record<string, string>>;
 
-export type PackageCaptureCallback = (
+type PackageCaptureCallback = (
 	output: LocalPackagePublishOutput,
 ) => Readonly<Record<string, string>>;
 
-export type PackageCapture = PackageCaptureMap | PackageCaptureCallback;
+export type PackageCapture = PackageCaptureMap;
 
 export type CapturedPackageValues<Capture> = Capture extends PackageCaptureCallback
 	? Readonly<Record<string, string>>
@@ -154,17 +147,11 @@ export interface LocalPackageOptions<
 	Capture extends PackageCapture | undefined = undefined,
 > {
 	readonly sourcePath: string;
-	/** Optional Effect-resolved source path (distilled doc Invariant
-	 *  15 — vendored-fetch round-trips through publish). When set,
-	 *  `sourcePath` is the SYNCHRONOUS placeholder used for type
-	 *  inference; the actual path is resolved at acquire time. */
-	readonly resolveSourcePath?: Effect.Effect<string, PublishError>;
 	readonly mvrPlaceholder?: string;
 	readonly excludeFromCodegen?: boolean;
 	/** Capture created objects from the publish output. The record
 	 *  form maps output keys to object-type suffixes, e.g.
-	 *  `{ boardId: '::board::Board' }`; the callback form is the
-	 *  escape hatch for custom output projections. */
+	 *  `{ boardId: '::board::Board' }`. */
 	readonly capture?: Capture;
 	/** Publisher account — the signer for the publish tx. Pass the
 	 *  result of `account('alice')` (the same plugin/resource ref used
@@ -226,7 +213,6 @@ const normalizeCapture = <Capture extends PackageCapture | undefined>(
 	capture: Capture,
 ): PackageCaptureCallback | undefined => {
 	if (capture === undefined) return undefined;
-	if (typeof capture === 'function') return capture;
 	return (output) => {
 		const captured: Record<string, string> = {};
 		for (const [key, suffix] of Object.entries(capture)) {
@@ -294,8 +280,6 @@ const buildLocalPlugin = <
 				// (host CLI not routed).
 				const containerRuntime = yield* ContainerRuntimeService;
 
-				const sourcePath = opts.resolveSourcePath ? yield* opts.resolveSourcePath : opts.sourcePath;
-
 				// Build the concrete `PublishExecutor` once per acquire.
 				// Hands the resolved SuiSdkShim (for `Transaction.build`,
 				// `executeTransaction`, `waitForTransaction`) and the
@@ -311,7 +295,7 @@ const buildLocalPlugin = <
 				const mode = {
 					mode: 'local',
 					packageName: name,
-					sourcePath,
+					sourcePath: opts.sourcePath,
 					chainId: sui.chain,
 					publisherAddress: publisherAccount.address,
 					mvrOverride: opts.mvrPlaceholder,
@@ -497,27 +481,3 @@ export const localPackage = <
  *  bindings emitter rejects this at compose time. */
 export const knownPackage = <Name extends string>(name: Name, opts: KnownPackageOptions) =>
 	buildKnownPlugin(name, opts);
-
-/** Convenience entry point — branches on `'packageId' in opts`.
- *  Prefer the explicit `localPackage` / `knownPackage` factories
- *  at call sites; this exists so the user-facing `package(...)`
- *  vocabulary matches the distilled doc's surface. */
-export function pkg<
-	Name extends string,
-	const Publisher extends PublisherAccountMember,
-	const Capture extends PackageCapture | undefined = undefined,
->(
-	name: Name,
-	opts: LocalPackageOptions<Publisher, Capture>,
-): ReturnType<typeof buildLocalPlugin<Name, Publisher, Capture>>;
-export function pkg<Name extends string>(
-	name: Name,
-	opts: KnownPackageOptions,
-): ReturnType<typeof buildKnownPlugin<Name>>;
-export function pkg<
-	Name extends string,
-	const Publisher extends PublisherAccountMember,
-	const Capture extends PackageCapture | undefined = undefined,
->(name: Name, opts: LocalPackageOptions<Publisher, Capture> | KnownPackageOptions) {
-	return 'packageId' in opts ? buildKnownPlugin(name, opts) : buildLocalPlugin(name, opts);
-}

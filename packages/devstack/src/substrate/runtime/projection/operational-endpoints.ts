@@ -15,7 +15,7 @@ const SENSITIVE_URL_FIELD = /pair|token|secret|password|private|bearer/i;
 export interface OperationalEndpointProjectionOptions {
 	/** Routable capabilities are the authoritative public endpoint
 	 * source. Resolved-value URL scraping is only a fallback for
-	 * plugins with no router contribution, such as live/external
+	 * plugins with no router contribution, such as live/local-rpc
 	 * network modes. */
 	readonly routablesPresent?: boolean;
 }

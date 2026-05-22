@@ -19,7 +19,7 @@ import type { ResolvedSuiNetwork } from './network-resolver.ts';
 /** The typed shape the emitted file exports. */
 export interface SuiNetworkBindings {
 	readonly chain: string;
-	readonly mode: 'local' | 'external' | 'live' | 'fork';
+	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
 	readonly rpcUrl: string;
 	readonly faucetUrl: string | null;
 	readonly graphqlUrl: string | null;

@@ -3,8 +3,8 @@
 // `EndpointRegistry` wraps the manifest's flat `endpoints` map with
 // the small set of queries every consumer asks of it:
 //
-//   - `byName(name)`: the load-bearing lookup. Vite alias, Playwright
-//     `baseURL`, codegen emitters all key off endpoint name.
+//   - `byName(name)`: the load-bearing lookup. Playwright `baseURL`
+//     and codegen emitters all key off endpoint name.
 //   - `byPluginKey(key)`: group endpoints by the plugin that emitted
 //     them. The CLI `status` command uses this to print one block
 //     per plugin.

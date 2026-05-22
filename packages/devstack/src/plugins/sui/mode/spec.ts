@@ -2,8 +2,8 @@
 //
 // Architecture: the four modes are NOT four separate plugins. They
 // are one plugin with internal mode dispatch, exposed at the
-// authoring surface via a single `sui()` factory (env-driven mode)
-// or `suiFor(network)` (typed mode narrowing).
+// authoring surface via a single `sui()` local shorthand or
+// `suiFor(network)` (typed mode narrowing).
 //
 // The factory namespace shape (architecture Tension 11) is realised
 // via `defineModeNamespace({ local, live, fork })` in the barrel —
@@ -12,17 +12,14 @@
 import type { Duration } from 'effect';
 
 /** Internal mode discriminator. Distinct from the substrate's
- *  `NetworkMode` because we surface a degenerate `external`
+ *  `NetworkMode` because we surface a degenerate `local-rpc`
  *  sub-mode (caller-supplied RPC URL — no container needed) under
  *  the substrate-level `'local'` branch. */
-export type SuiPluginMode = 'local' | 'external' | 'live' | 'fork';
+export type SuiPluginMode = 'local' | 'local-rpc' | 'live' | 'fork';
 
-/** Common Sui plugin options. Each mode adds its own pin. */
+/** Common Sui plugin options. Mode-specific identity pins live on the
+ *  modes that actually accept caller-supplied endpoints. */
 export interface SuiCommonOptions {
-	/** Override the chain id resolver. Useful when the caller wants
-	 *  to deterministically pin the cache namespace ("this stack is
-	 *  on chain X"). */
-	readonly chainOverride?: string;
 	/** Ready-probe timeout. Per-mode defaults are mode-specific. */
 	readonly readyTimeout?: Duration.Duration;
 }
@@ -47,13 +44,16 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly ports?: Readonly<Record<number, number>>;
 }
 
-/** Local external-RPC mode — caller already has a Sui process; we
+/** Local RPC mode — caller already has a Sui process; we
  *  wrap it. NO container, NO postgres sidecar, NO build image. */
-export interface SuiExternalOptions extends SuiCommonOptions {
-	readonly mode: 'external';
+export interface SuiLocalRpcOptions extends SuiCommonOptions {
+	readonly mode: 'local-rpc';
 	readonly rpcUrl: string;
 	readonly faucetUrl?: string;
 	readonly graphqlUrl?: string;
+	/** Optional chain id pin for caller-owned endpoints. Omit to
+	 *  probe the RPC endpoint. */
+	readonly chain?: string;
 }
 
 /** Live testnet / mainnet / custom-RPC mode. */
@@ -65,6 +65,9 @@ export interface SuiLiveOptions extends SuiCommonOptions {
 	readonly rpcUrl?: string;
 	readonly faucetUrl?: string;
 	readonly graphqlUrl?: string;
+	/** Optional chain id pin for custom/caller-owned live endpoints.
+	 *  Omit to probe the RPC endpoint. */
+	readonly chain?: string;
 }
 
 /** Fork mode — sui-fork binary mirroring a real chain at a
@@ -88,4 +91,4 @@ export interface SuiForkOptions extends SuiCommonOptions {
 }
 
 /** The discriminated union of all four mode option records. */
-export type SuiOptions = SuiLocalOptions | SuiExternalOptions | SuiLiveOptions | SuiForkOptions;
+export type SuiOptions = SuiLocalOptions | SuiLocalRpcOptions | SuiLiveOptions | SuiForkOptions;

@@ -121,9 +121,9 @@ const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => 
 /** Project the decoded envelope to a plain `StackContext`. */
 const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext => {
 	const entries: ResolvedEndpoint[] = [];
-	for (const [name, raw] of Object.entries(envelope.endpoints)) {
+	for (const raw of Object.values(envelope.endpoints)) {
 		entries.push({
-			name,
+			name: raw.name,
 			url: raw.url,
 			displayUrl: raw.displayUrl,
 			wireProtocol: raw.wireProtocol,
@@ -155,8 +155,9 @@ export const manifestEnvelopeFromStackContext = (ctx: StackContext): ManifestEnv
 	services: ctx.services,
 	endpoints: Object.fromEntries(
 		ctx.endpoints.all().map((e) => [
-			e.name,
+			e.endpointKey,
 			{
+				name: e.name,
 				url: e.url,
 				displayUrl: e.displayUrl,
 				wireProtocol: e.wireProtocol,
@@ -175,7 +176,6 @@ export const manifestEnvelopeFromStackContext = (ctx: StackContext): ManifestEnv
  *
  * Used by:
  *   - Apps' generated `stack-handle.ts` at startup.
- *   - Vite preset alias resolution.
  *   - Playwright config-load (`baseURL`, `webServer.url`).
  *   - CLI surfaces that prefer sync-then-Effect.try over a native
  *     Effect read.

@@ -10,6 +10,7 @@ describe('plugins/wallet/origin-policy', () => {
 				app: 'private-content',
 				stack: 'private-content',
 				vitePortForThisStack: 5175,
+				routedAppOrigin: null,
 				extraOrigins: [],
 				allowLocalhostVite: false,
 			});
@@ -18,6 +19,22 @@ describe('plugins/wallet/origin-policy', () => {
 			expect(policy.allowed.has('http://dev.private-content.private-content.localhost:5175')).toBe(
 				true,
 			);
+		}),
+	);
+
+	it.effect('allows the routed app origin without caller supplied extras', () =>
+		Effect.gen(function* () {
+			const policy = yield* resolveOriginPolicy({
+				app: 'wallet-demo',
+				stack: 'main',
+				vitePortForThisStack: null,
+				routedAppOrigin: 'http://dev.wallet-demo.localhost:5175',
+				extraOrigins: [],
+				allowLocalhostVite: false,
+			});
+
+			expect(policy.allowed.has('http://dev.wallet-demo.localhost:5175')).toBe(true);
+			expect(policy.allowed.has('http://localhost:5175')).toBe(false);
 		}),
 	);
 });

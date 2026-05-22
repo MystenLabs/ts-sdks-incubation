@@ -15,8 +15,6 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5173;
-const DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
-const ROUTER_DEV_ORIGIN = 'http://dev.token-studio.token-studio.localhost:5175' as const;
 
 const localnet = sui();
 const alice = account('alice');
@@ -30,13 +28,10 @@ const managedCoin = localPackage('managed_coin', {
 const studioCoin = coin.fromPackage(managedCoin, 'MANAGED_COIN');
 const devWallet = wallet({
 	accounts: [alice, bob, carol],
-	enableRouter: true,
-	allowedOrigins: [DEV_ORIGIN, ROUTER_DEV_ORIGIN],
 });
 const app = hostService({
 	name: 'app',
-	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },

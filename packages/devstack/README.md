@@ -12,21 +12,46 @@ current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
 Create a `devstack.config.ts` in your app:
 
 ```ts
-import { account, defineDevstack, localPackage, sui, wallet } from '@mysten-incubation/devstack';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	account,
+	defineDevstack,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
 
 const localnet = sui();
 const publisher = account('publisher');
 const alice = account('alice');
 
 const hello = localPackage('hello', {
-	sourcePath: './move/hello',
+	sourcePath: resolve(HERE, 'move/hello'),
 	publisher,
 });
 
-const devWallet = wallet({ accounts: [publisher, alice] });
+const devWallet = wallet({
+	accounts: [publisher, alice],
+});
+
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [hello, devWallet] as const,
+});
 
 export default defineDevstack({
-	members: [localnet, hello, devWallet],
+	members: [localnet, app],
 	stackName: 'main',
 	codegen: { outputDir: 'src/generated' },
 });
@@ -52,8 +77,7 @@ and logs stay under `.devstack/`.
 - Root API: stack composition, built-in factories, plugin-author helpers, and public types.
 - CLI: `devstack up`, `apply`, `status`, `doctor`, `config`, `schema --json`, `snapshot`, `prune`,
   and `wipe`.
-- Build integrations: `@mysten-incubation/devstack/vite`, `/vitest`, `/playwright`, `/browser`, and
-  `/runtime`.
+- Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, and `/runtime`.
 
 App code should consume generated files and the runtime manifest. It should not import devstack
 engine internals directly.

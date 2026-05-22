@@ -199,11 +199,9 @@ export const bootLocalMode = (
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
-		const chain =
-			opts.chainOverride ??
-			(yield* sharedFetchChainId(sdkClient, {
-				span: 'devstack.plugin.sui.local.fetchChainId',
-			}));
+		const chain = yield* sharedFetchChainId(sdkClient, {
+			span: 'devstack.plugin.sui.local.fetchChainId',
+		});
 
 		// ----- 5. waitForTransactionsReady (memoised) -----------------------
 		yield* setCurrentPluginPhase('preparing Sui funds-ready gate');
@@ -220,6 +218,7 @@ export const bootLocalMode = (
 			chain,
 			rpcUrl,
 			faucetUrl,
+			fundingFaucetUrl: directFaucetUrl,
 			graphqlUrl,
 			waitForTransactionsReady,
 			buildImage: image,

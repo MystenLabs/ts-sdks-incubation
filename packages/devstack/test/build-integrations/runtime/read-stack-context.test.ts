@@ -13,6 +13,7 @@ import {
 	ManifestShapeError,
 	readStackContext,
 	CONSUMER_MANIFEST_VERSION,
+	manifestEnvelopeFromStackContext,
 } from '../../../src/build-integrations/runtime/index.ts';
 import { buildEnvelope, writeManifest } from '../../../src/substrate/runtime/manifest/index.ts';
 
@@ -28,12 +29,13 @@ const validEnvelope = (overrides: Partial<Record<string, unknown>> = {}): object
 		'router/main': { hostnameSuffix: '.localhost' },
 	},
 	endpoints: {
-		'sui-rpc': {
+		'sui#0:rpc': {
+			name: 'rpc',
 			url: 'http://sui-rpc.demo.localhost:5174',
 			displayUrl: 'http://sui-rpc.demo.localhost:5174',
 			wireProtocol: 'http',
 			pluginKey: 'sui/main',
-			endpointKey: 'sui-rpc-key',
+			endpointKey: 'sui#0:rpc',
 		},
 	},
 	extras: {},
@@ -49,10 +51,11 @@ describe('readStackContext (sync)', () => {
 		expect(ctx.identity).toEqual({ app: 'demo', stack: 'main', chain: 'sui:local' });
 		expect(ctx.manifestPath).toBe(manifestPath);
 		expect(ctx.manifestVersion).toBe(CONSUMER_MANIFEST_VERSION);
-		const rpc = ctx.endpoints.byName('sui-rpc');
+		const rpc = ctx.endpoints.byName('rpc');
 		expect(rpc).toBeDefined();
 		expect(rpc?.url).toBe('http://sui-rpc.demo.localhost:5174');
 		expect(rpc?.wireProtocol).toBe('http');
+		expect(manifestEnvelopeFromStackContext(ctx).endpoints).toHaveProperty('sui#0:rpc');
 	});
 
 	it.effect('round-trips app extras through the manifest writer and runtime reader', () =>

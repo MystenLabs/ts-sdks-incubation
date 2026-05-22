@@ -2,8 +2,8 @@
 //
 // Architecture (distilled/23-build-integrations.md § Per-integration
 // requirements → Vitest):
-//   - One-call config helper (`defineDevstackVitestConfig`) is the
-//     primary export.
+//   - Composable config helpers keep apps on Vitest's normal
+//     `defineConfig(...)` surface.
 //   - Test-setup hooks + the captured stack-context fixture are
 //     opt-in; apps that want them import them explicitly.
 //   - The env-var contract names + the typed errors are re-exported
@@ -16,7 +16,11 @@
 //     beforeAll/afterAll pairing; suites that want it import from the
 //     `./setup` subpath if they truly need it).
 
-export { defineDevstackVitestConfig, type DevstackVitestConfigOptions } from './config.ts';
+export {
+	devstackVitestServerConfig,
+	devstackVitestTestConfig,
+	type DevstackVitestTestConfigOptions,
+} from './config.ts';
 
 export {
 	getStackContext,

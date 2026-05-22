@@ -1,0 +1,38 @@
+---
+title: DeepBook
+description: Known DeepBook deployments and explicit override mode.
+---
+
+Known mode references an existing DeepBook deployment. Pass explicit ids, or use a supported network
+shortcut when available.
+
+```ts title="devstack.config.ts"
+import { deepbook, defineDevstack, sui } from '@mysten-incubation/devstack';
+
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const dex = deepbook({
+	mode: 'known',
+	packageId: '0x...',
+	registryId: '0x...',
+});
+
+export default defineDevstack({ members: [liveSui, dex] });
+```
+
+Override mode wraps explicit deployment ids when you already manage the deployment yourself:
+
+```ts title="devstack.config.ts"
+const dex = deepbook({
+	mode: 'override',
+	packageId: '0x...',
+	registryId: '0x...',
+	adminCapId: '0x...',
+});
+```
+
+Override mode does not publish or manage DeepBook locally. The current surface does not claim local
+pool creation, Pyth, margin, or market-maker behavior unless those fields are present in the
+resolved value.
+
+`deepbook(...)` returns a service member. Known testnet/mainnet helpers may also contribute funding
+strategies for service-owned coins when the mode supports them.

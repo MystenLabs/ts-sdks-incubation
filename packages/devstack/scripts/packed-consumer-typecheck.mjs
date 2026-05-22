@@ -39,12 +39,11 @@ const runSmoke = (label, command, args, cwd) => {
 
 const runtimeImportSmoke = [
 	"await import('@mysten-incubation/devstack');",
-	"await import('@mysten-incubation/devstack/vite');",
 	"await import('@mysten-incubation/devstack/runtime');",
 ].join('\n');
 
 const removedSubpathSmoke = `
-for (const subpath of ['contracts', 'substrate']) {
+for (const subpath of ['browser', 'browser/setup', 'contracts', 'substrate', 'vite']) {
 \ttry {
 \t\tawait import(\`@mysten-incubation/devstack/\${subpath}\`);
 \t} catch (error) {
@@ -113,7 +112,7 @@ try {
 					strict: true,
 					skipLibCheck: true,
 					verbatimModuleSyntax: true,
-					types: [],
+					types: ['node'],
 				},
 				include: ['src/**/*.ts', consumerConfigFile],
 			},
@@ -125,7 +124,6 @@ try {
 		join(consumerRoot, 'src/index.ts'),
 		[
 			"import '@mysten-incubation/devstack';",
-			"import '@mysten-incubation/devstack/vite';",
 			"import '@mysten-incubation/devstack/runtime';",
 			'',
 		].join('\n'),
@@ -153,7 +151,14 @@ export default defineDevstack({ members: [installedConsumerSmokePlugin], stackNa
 
 	run(
 		'npm',
-		['install', join(tempRoot, tarball), 'effect@4.0.0-beta.65', 'typescript@5.9.3', 'vite@6.4.2'],
+		[
+			'install',
+			join(tempRoot, tarball),
+			'@types/node@24.12.2',
+			'effect@4.0.0-beta.65',
+			'typescript@5.9.3',
+			'vite@6.4.2',
+		],
 		{
 			cwd: consumerRoot,
 			stdio: 'ignore',

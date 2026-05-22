@@ -42,37 +42,17 @@ describe('resolveLocalClusterOptions', () => {
 		);
 	});
 
-	it('coerces seedPaymentMist to bigint default when unset', () => {
+	it('keeps account funding out of the resolved local options', () => {
 		const r = resolveLocalClusterOptions({});
-		expect(typeof r.seedPaymentMist).toBe('bigint');
-		expect(r.seedPaymentMist).toBe(500_000_000n);
-	});
-
-	it('honors a user-supplied seedPaymentMist override', () => {
-		const r = resolveLocalClusterOptions({ seedPaymentMist: 1_000_000_000n });
-		expect(r.seedPaymentMist).toBe(1_000_000_000n);
-	});
-
-	it('records seedAccountCount=0 when seedAccounts is omitted', () => {
-		const r = resolveLocalClusterOptions({});
-		expect(r.seedAccountCount).toBe(0);
-	});
-
-	it('records seedAccountCount=0 when seedAccounts is an empty array', () => {
-		const r = resolveLocalClusterOptions({ seedAccounts: [] });
-		expect(r.seedAccountCount).toBe(0);
-	});
-
-	it('records the length of the supplied seedAccounts tuple', () => {
-		// The member tuple is opaque at this level — `resolveLocalClusterOptions`
-		// only counts. The barrel receives each account as a resolved dependency.
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const fakeMembers: any = [
-			{ id: 'account/alice' },
-			{ id: 'account/bob' },
-			{ id: 'account/carol' },
-		];
-		const r = resolveLocalClusterOptions({ seedAccounts: fakeMembers });
-		expect(r.seedAccountCount).toBe(3);
+		expect(Object.keys(r).sort()).toEqual([
+			'containerApiPort',
+			'epochDuration',
+			'name',
+			'nodeCount',
+			'readyTimeoutMs',
+			'shards',
+			'suiVersion',
+			'version',
+		]);
 	});
 });

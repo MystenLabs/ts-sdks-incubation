@@ -1,3 +1,3 @@
-import { defineDevstackViteConfig } from '@mysten-incubation/devstack/vite';
+import { defineConfig } from 'vite';
 
-export default defineDevstackViteConfig({ port: 5181 });
+export default defineConfig({});

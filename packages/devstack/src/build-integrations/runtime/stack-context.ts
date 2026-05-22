@@ -7,8 +7,8 @@
 //
 //   - The identity tuple they keyed off (for assertions / display).
 //   - A typed `EndpointRegistry` for `byName` / `byKind` lookups (the
-//     load-bearing query the Vite alias + Playwright `baseURL`
-//     resolvers run).
+//     load-bearing query Playwright `baseURL` resolvers and generated
+//     code run).
 //   - The opaque `services` and `extras` records — each plugin's
 //     Codegenable contribution emits a typed file for the per-service
 //     slice; consumers reach for those, not the raw map.
@@ -44,10 +44,9 @@ export interface ResolvedEndpoint {
 	readonly endpointKey: string;
 }
 
-/** Read-only projection of the manifest. Consumers — Vite preset
- *  alias, Playwright `baseURL` / `webServer`, codegen emitters that
- *  read their own slice, the CLI's `status` command — key off the
- *  fields here.
+/** Read-only projection of the manifest. Consumers — Playwright
+ *  `baseURL` / `webServer`, codegen emitters that read their own
+ *  slice, the CLI's `status` command — key off the fields here.
  *
  *  Field shape is deliberately a SUPER-SET of "what the substrate
  *  schema decoded": discovery surfaces add the resolved `manifestPath`

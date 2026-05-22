@@ -115,6 +115,7 @@ const makeFakeSui = (opts: FakeSdkClientOpts): SuiClient => {
 		} as unknown as SuiClient['sdk'],
 		rpcUrl: 'http://127.0.0.1:9000',
 		faucetUrl: null,
+		fundingFaucetUrl: null,
 		graphqlUrl: null,
 		hostGateway: {
 			rpcUrl: 'http://host.docker.internal:9000',

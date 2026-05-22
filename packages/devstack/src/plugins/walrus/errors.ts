@@ -31,11 +31,11 @@ export type WalrusPhase =
 	| 'exchange'
 	| 'storage-node'
 	| 'proxy'
-	| 'seed-wal'
+	| 'fund-wal'
 	| 'register-known';
 
 /** Generic Walrus plugin error. Raised by the plugin's acquire
- *  body, its admin surface (`seedWal`), and the per-mode builders. */
+ *  body, WAL funding strategy, and the per-mode builders. */
 export interface WalrusPluginError {
 	readonly _tag: 'WalrusPluginError';
 	readonly phase: WalrusPhase;
@@ -62,14 +62,12 @@ export const walrusPluginError = (
  * nodes need JSON-RPC against the chain. Letting the supervisor
  * partway through the image build before the nodes fail to dial
  * would be confusing — we refuse synchronously at factory time
- * with an actionable hint pointing at `walrus()` (auto-routes to
- * known-deployment) or `walrusFor(network).known({...})`.
+ * with an actionable hint pointing at `walrusFor(network).known({...})`.
  *
  * Primary refusal is TYPE-LEVEL via the `walrusFor(network).<mode>`
  * mode-narrowed namespace — fork networks expose only `.known`, so
  * calling `.local` is a compile error. This runtime shape is
- * defense-in-depth for callers that sneak through (e.g. the
- * env-driven `walrus()` factory composing `walrusFor` indirectly).
+ * defense-in-depth for callers that sneak through dynamic dispatch.
  */
 export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
 	new ForkIncompatibleError({
@@ -78,8 +76,7 @@ export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
 		message: `walrus local-cluster does not support fork networks.`,
 		hint:
 			`walrus local-cluster requires JSON-RPC, which sui-fork does not expose. ` +
-			`Use walrus() (auto-routes to known-deployment) or ` +
-			`walrusFor(network).known({...}) instead.`,
+			`Use walrusFor(network).known({...}) instead.`,
 	});
 
 /** Configuration error — synchronous factory-time guards

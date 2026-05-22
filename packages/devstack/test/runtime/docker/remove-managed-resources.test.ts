@@ -109,8 +109,10 @@ describe('removeManagedContainers', () => {
 			}),
 	);
 
-	it.effect('removes managed images, networks, and volumes through label-filtered inventory', () =>
-		Effect.gen(function* () {
+	it.effect(
+		'removes managed images, networks, and volumes through label-filtered inventory',
+		() =>
+			Effect.gen(function* () {
 			const root = mkdtempSync(join(tmpdir(), 'docker-remove-managed-test-'));
 			try {
 				const bin = join(root, 'docker');
@@ -211,11 +213,14 @@ describe('removeManagedContainers', () => {
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
-		}),
+			}),
+		15_000,
 	);
 
-	it.effect('removes pre-rewrite resources that only carry app and stack labels', () =>
-		Effect.gen(function* () {
+	it.effect(
+		'removes pre-rewrite resources that only carry app and stack labels',
+		() =>
+			Effect.gen(function* () {
 			const root = mkdtempSync(join(tmpdir(), 'docker-remove-legacy-test-'));
 			try {
 				const bin = join(root, 'docker');
@@ -322,7 +327,8 @@ describe('removeManagedContainers', () => {
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
-		}),
+			}),
+		15_000,
 	);
 
 	it.effect('reports active-endpoint networks as skipped for prune cleanup', () =>

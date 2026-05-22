@@ -149,6 +149,12 @@ export type BootOptions = BootSource & {
 	readonly appName: string;
 	readonly stackName: string;
 	readonly chainId?: string;
+	/** Opt-in: reuse a runtime root across invocations to simulate a
+	 *  process restart of the same stack. Omitted means isolated temp root. */
+	readonly runtimeRoot?: string;
+	/** Opt-in: reuse router profile state across invocations. Useful with
+	 *  `runtimeRoot` for warm-restart e2e coverage. */
+	readonly routerStateRoot?: string;
 	/** Opt-in: project `{digest, objectChanges}` from a specific
 	 *  ready key's resolved value. Used by the connect-four test to assert
 	 *  the openLobby action produced a real digest + created object. */
@@ -224,13 +230,11 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		chain: chainId(opts.chainId ?? 'sui:local'),
 	};
 
-	// One fresh tmpdir per call. Each test gets its own runtime root, so
-	// test isolation is per-invocation. The OS reaps the dir on
-	// cleanup; the substrate's finalizers unwind any container/state
-	// files at the `Effect.scoped` boundary.
-	const runtimeRoot = mkdtempSync(join(tmpdir(), `e2e-boot-${opts.appName}-`));
+	// One fresh tmpdir per call by default. Tests can pass a root to
+	// exercise warm restarts against the same persisted state.
+	const runtimeRoot = opts.runtimeRoot ?? mkdtempSync(join(tmpdir(), `e2e-boot-${opts.appName}-`));
 	const routerProfile = productionRouterProfile({
-		stateRoot: mkdtempSync(join(tmpdir(), `e2e-router-${opts.appName}-`)),
+		stateRoot: opts.routerStateRoot ?? mkdtempSync(join(tmpdir(), `e2e-router-${opts.appName}-`)),
 		env: { DOCKER_CONTEXT: 'test-context', DOCKER_HOST: undefined },
 	});
 	const routerDispatchDir = routerProfile.dispatchDir;

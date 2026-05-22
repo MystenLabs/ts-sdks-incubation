@@ -65,7 +65,7 @@ export const flatLocalStack = defineDevstack({
 	stackName: 'complex-flat',
 });
 
-const suiExternal = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
+const suiExternal = sui({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' });
 const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },

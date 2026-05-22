@@ -11,8 +11,6 @@ import {
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEV_PORT = 5181;
-const ROUTER_DEV_ORIGIN = 'http://dev.fork-greeting.fork-greeting.localhost:5175' as const;
 
 const forkedNetwork = sui({ mode: 'fork', upstream: 'testnet' });
 const publisher = account('publisher');
@@ -26,9 +24,6 @@ const greeting = localPackage('greeting', {
 });
 const devWallet = wallet({
 	accounts: [publisher, alice, bob],
-	enableRouter: true,
-	allowLocalhostVite: true,
-	allowedOrigins: [ROUTER_DEV_ORIGIN, `http://localhost:${DEV_PORT}`],
 });
 const stack: Stack = defineDevstack({
 	members: [forkedNetwork, greeting, devWallet],

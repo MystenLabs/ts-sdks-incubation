@@ -1,9 +1,7 @@
-// Vitest build-integration — config builder.
+// Vitest build-integration config helpers.
 //
 // Architecture (distilled/23-build-integrations.md § Per-integration
 // requirements → Vitest, § Outputs / capabilities, § Invariants):
-//   - One call collapses the app's `vitest.config.ts` to a single
-//     line: `export default defineDevstackVitestConfig();`.
 //   - Canonical include/exclude: src globs in, e2e/dist/node_modules
 //     out (`e2e/**` runs through the Playwright integration).
 //   - `passWithNoTests: true` so codegen-derived stacks without unit
@@ -23,13 +21,12 @@
 //     `fileParallelism` (vitest 4: top-level `fileParallelism: false`
 //     replaces the v3 `poolOptions.threads.singleThread`) for
 //     stack-shared-state suites that can't safely parallelize.
-//   - `test`, `extend` are escape hatches: caller-provided fields win
-//     over the preset's defaults.
+//   - Caller-provided `test` fields win over the preset's defaults.
 //
 // No I/O happens at config-build time (per architecture § Lifecycle
 // states: vitest preset call is synchronous + side-effect free).
 
-import { defineConfig, type ViteUserConfig } from 'vitest/config';
+import type { ViteUserConfig } from 'vitest/config';
 
 import type { TestSetupOptions } from './setup.ts';
 
@@ -37,14 +34,11 @@ import type { TestSetupOptions } from './setup.ts';
 // Public options
 // -----------------------------------------------------------------------------
 
-export interface DevstackVitestConfigOptions {
+export interface DevstackVitestTestConfigOptions {
 	/** Extra `test` fields. Caller-provided keys win over the preset's
 	 *  defaults; the preset's include/exclude/passWithNoTests are the
 	 *  start, the caller's fields are merged shallowly. */
 	readonly test?: NonNullable<ViteUserConfig['test']>;
-	/** Top-level `ViteUserConfig` escape hatch. Keys here win over the
-	 *  preset's top-level fields. */
-	readonly extend?: ViteUserConfig;
 	/** Wire the devstack `beforeAll` / `afterAll` setup file. `true`
 	 *  uses defaults; an options object configures the captured
 	 *  fixture (e.g. `{ requireDevstack: true }`). Default: not wired. */
@@ -77,8 +71,7 @@ const DEVSTACK_SETUP_MODULE = '@mysten-incubation/devstack/vitest/setup';
 
 /** Runtime-root prefix the watcher MUST ignore — per architecture §
  *  Invariants → "No-restart on harmless changes". The 500ms manifest
- *  tick would otherwise re-trigger reloads. Mirrors the Vite preset's
- *  `server.watch.ignored` pattern but for vitest's watch pass. */
+ *  tick would otherwise re-trigger reloads. */
 const WATCH_IGNORED_PATTERNS = ['**/.devstack/**', '**/node_modules/**', '**/dist/**'];
 
 // -----------------------------------------------------------------------------
@@ -86,32 +79,36 @@ const WATCH_IGNORED_PATTERNS = ['**/.devstack/**', '**/node_modules/**', '**/dis
 // -----------------------------------------------------------------------------
 
 /**
- * Build the canonical devstack Vitest config. Apps reduce their
- * `vitest.config.ts` to a single call:
+ * Build the devstack-owned part of Vitest's `test` block. Apps keep a
+ * normal `defineConfig(...)` call and compose this value into it:
  *
- *     import { defineDevstackVitestConfig }
+ *     import { defineConfig } from 'vitest/config';
+ *     import { devstackVitestServerConfig, devstackVitestTestConfig }
  *       from '@mysten-incubation/devstack/vitest';
  *
- *     export default defineDevstackVitestConfig();
+ *     export default defineConfig({
+ *       server: devstackVitestServerConfig(),
+ *       test: devstackVitestTestConfig(),
+ *     });
  *
  * For chain-mode integration tests against a real devstack, build a
  * devstack handle and pass `handle.layer` to `@effect/vitest`'s
- * `it.layer(...)` directly. The preset does not boot devstack — the
+ * `it.layer(...)` directly. This helper does not boot devstack — the
  * test file owns its lifecycle.
  *
  * For suites that need a shared StackContext fixture (manifest read
  * once per file), opt into the setup file:
  *
- *     export default defineDevstackVitestConfig({
+ *     test: devstackVitestTestConfig({
  *       testSetup: { requireDevstack: true },
- *     });
+ *     })
  *
  * The setup file's `beforeAll` populates a captured fixture readable
  * via `getStackContext()` from inside `it`/`test` bodies.
  */
-export const defineDevstackVitestConfig = (
-	options: DevstackVitestConfigOptions = {},
-): ViteUserConfig => {
+export const devstackVitestTestConfig = (
+	options: DevstackVitestTestConfigOptions = {},
+): NonNullable<ViteUserConfig['test']> => {
 	const setupFiles: Array<string> = [];
 	if (options.testSetup) {
 		setupFiles.push(DEVSTACK_SETUP_MODULE);
@@ -134,7 +131,7 @@ export const defineDevstackVitestConfig = (
 
 	const typecheckOverride = options.typecheck === true ? { typecheck: { enabled: true } } : {};
 
-	const baseTest: NonNullable<ViteUserConfig['test']> = {
+	return {
 		include: ['src/**/*.{test,spec}.ts?(x)', 'test/**/*.{test,spec}.ts?(x)'],
 		exclude: ['e2e/**', 'node_modules', 'dist', '.turbo', '**/.devstack/**'],
 		passWithNoTests: true,
@@ -144,20 +141,17 @@ export const defineDevstackVitestConfig = (
 		// Caller overrides last. Shallow merge.
 		...options.test,
 	};
-
-	const baseConfig: ViteUserConfig = {
-		test: baseTest,
-		server: {
-			watch: {
-				// vite's chokidar watcher honors `ignored` even in test mode.
-				ignored: WATCH_IGNORED_PATTERNS,
-			},
-		},
-		...options.extend,
-	};
-
-	return defineConfig(baseConfig);
 };
+
+/** Build the devstack-owned part of Vitest's Vite server config.
+ *  Callers that need additional server options should merge them in
+ *  their own `defineConfig(...)` file. */
+export const devstackVitestServerConfig = (): NonNullable<ViteUserConfig['server']> => ({
+	watch: {
+		// vite's chokidar watcher honors `ignored` even in test mode.
+		ignored: WATCH_IGNORED_PATTERNS,
+	},
+});
 
 // -----------------------------------------------------------------------------
 // Test-visible internals (do not re-export from the integration barrel)

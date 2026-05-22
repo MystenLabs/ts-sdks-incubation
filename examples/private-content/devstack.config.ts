@@ -12,42 +12,44 @@ import {
 	seal,
 	sui,
 	type Stack,
+	walCoin,
 } from '@mysten-incubation/devstack';
 
-import {
-	PRIVATE_CONTENT_APP_ORIGIN,
-	PRIVATE_CONTENT_LOCALHOST_ORIGIN,
-	PRIVATE_CONTENT_APP_PORT,
-	PRIVATE_CONTENT_ROUTER_ORIGIN,
-} from './devstack.shared.ts';
+import { PRIVATE_CONTENT_APP_PORT } from './devstack.shared.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const localnet = sui();
-const publisher = account('publisher');
-const alice = account('alice');
-const bob = account('bob');
+const walrusCluster = walrus({ local: { nodeCount: 4 } });
+const wal = walCoin(walrusCluster);
+const walFunding = [
+	{ coin: 'sui', amount: 1_000_000_000n },
+	{ coin: wal, amount: 500_000_000n },
+] as const;
+const publisher = account('publisher', {
+	kind: 'ephemeral',
+	funding: walFunding,
+});
+const alice = account('alice', {
+	kind: 'ephemeral',
+	funding: walFunding,
+});
+const bob = account('bob', {
+	kind: 'ephemeral',
+	funding: walFunding,
+});
 
 const vault = localPackage('vault', {
 	sourcePath: resolve(HERE, 'move/vault'),
 	publisher,
 });
-const walrusCluster = walrus({ local: { nodeCount: 4, seedAccounts: [publisher, alice, bob] } });
 const sealKeyServer = seal({ mode: 'local-keygen', signer: publisher });
 const devWallet = wallet({
-	accounts: 'all',
-	enableRouter: true,
-	allowLocalhostVite: true,
-	allowedOrigins: [
-		PRIVATE_CONTENT_APP_ORIGIN,
-		PRIVATE_CONTENT_LOCALHOST_ORIGIN,
-		PRIVATE_CONTENT_ROUTER_ORIGIN,
-	],
+	accounts: [publisher, alice, bob],
 });
 const app = hostService({
 	name: 'app',
-	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	port: PRIVATE_CONTENT_APP_PORT,
 	ready: { kind: 'http' },

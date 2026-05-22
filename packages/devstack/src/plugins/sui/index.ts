@@ -5,9 +5,9 @@
 // Deepbook fork variants) reads its resolved `SuiClient` via the
 // `suiResource`. The factory at this file folds the four modes behind:
 //
-//   - `sui(opts?)`         — env-driven mode selection. Defaults to
-//                              local; overridable via the typed
-//                              `opts` record (one mode per call).
+//   - `sui(opts?)`         — local shorthand. Defaults to an in-stack
+//                              local validator; pass a typed `opts`
+//                              record to select a different mode.
 //   - `suiFor(network)`    — mode-narrowed factory namespace (per
 //                              architecture Tension 11). Returns
 //                              `{ local: …, live: …, fork: … }`
@@ -26,7 +26,7 @@
 //   5. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
 //
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
-// external + live no — the caller fronts their own RPC). They land
+// local-rpc + live no — the caller fronts their own RPC). They land
 // in the per-mode builder under `mode/*.ts`; this barrel composes
 // them into the plugin capability array.
 
@@ -61,45 +61,25 @@ import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
 import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
-	SuiExternalOptions,
 	SuiForkOptions,
 	SuiLiveOptions,
+	SuiLocalRpcOptions,
 	SuiLocalOptions,
 	SuiOptions,
 } from './mode/spec.ts';
-import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
 // Resource identity
 // ---------------------------------------------------------------------------
 
-/** The Sui plugin's resource identity. The id is `'sui'` (singular). */
-export const suiResource = resource<'sui', SuiClient>('sui');
-const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
-
 type SuiResolved = SuiClient & {
+	readonly mode: SuiOptions['mode'];
 	readonly seedObjects: SeedObjectsAccumulator;
 };
 
-// ---------------------------------------------------------------------------
-// Default option resolution
-// ---------------------------------------------------------------------------
-
-/** Read `DEVSTACK_NETWORK` env (architecture: resolver precedence
- *  is CLI > env > config > default). The CLI override and config
- *  paths land in the surface layer; this helper covers the
- *  env-default path the factory uses when no `opts` is passed. */
-const resolveDefaultMode = (): SuiOptions => {
-	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-		?.env?.DEVSTACK_NETWORK;
-	const parsed = parseDevstackNetwork(env);
-	switch (parsed.mode) {
-		case 'local':
-			return { mode: 'local' };
-		case 'live':
-			return { mode: 'live', network: parsed.network };
-	}
-};
+/** The Sui plugin's resource identity. The id is `'sui'` (singular). */
+export const suiResource = resource<'sui', SuiResolved>('sui');
+const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Plugin construction (internal — used by sui() + suiFor())
@@ -123,7 +103,7 @@ const buildPlugin = (opts: SuiOptions) => {
 				const { client } = yield* bootSuiService(runtime, identity, portBroker, opts);
 
 				const seedObjects = yield* makeSeedObjectsAccumulator();
-				return { ...client, seedObjects };
+				return { ...client, mode: opts.mode, seedObjects };
 			}),
 		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
 		errorContributions: suiErrorContributions,
@@ -191,13 +171,13 @@ const makePluginCapabilities = (
 	};
 
 	const faucetContribution =
-		resolved.faucetUrl === null
+		resolved.fundingFaucetUrl === null
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: suiLocalStrategy({ faucetUrl: resolved.faucetUrl }),
+						strategy: suiLocalStrategy({ faucetUrl: resolved.fundingFaucetUrl }),
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<
 						`faucet:request:${string}`,
@@ -228,9 +208,10 @@ const makePluginCapabilities = (
 // User-facing factories
 // ---------------------------------------------------------------------------
 
-/** Env-driven factory. Defaults to `local` mode; reads
- *  `DEVSTACK_NETWORK` for non-local defaults. */
-export const sui = (opts?: SuiOptions) => buildPlugin(opts ?? resolveDefaultMode());
+/** Local Sui shorthand. Network/env selection belongs to the CLI or
+ *  `defineDevstackWith(...)`; plain `sui()` always means an in-stack
+ *  local validator. */
+export const sui = (opts: SuiOptions = { mode: 'local' }) => buildPlugin(opts);
 
 /** Mode-narrowed factory namespace.
  *
@@ -240,13 +221,13 @@ export const sui = (opts?: SuiOptions) => buildPlugin(opts ?? resolveDefaultMode
  *      suiFor(network).fork({...})     // type error: 'fork' not in 'local' branch
  *
  *  The namespace MIRRORS the four mode option records: `local`,
- *  `external` (mapped onto the substrate `'local'` branch),
+ *  `localRpc` (mapped onto the substrate `'local'` branch),
  *  `live`, `fork`. */
 export const suiFor = defineModeNamespace({
 	local: {
 		local: (opts: Omit<SuiLocalOptions, 'mode'> = {}) => buildPlugin({ mode: 'local', ...opts }),
-		external: (opts: Omit<SuiExternalOptions, 'mode'>) =>
-			buildPlugin({ mode: 'external', ...opts }),
+		localRpc: (opts: Omit<SuiLocalRpcOptions, 'mode'>) =>
+			buildPlugin({ mode: 'local-rpc', ...opts }),
 	},
 	live: {
 		testnet: (opts: Omit<SuiLiveOptions, 'mode' | 'network'> = {}) =>
@@ -278,7 +259,7 @@ export type { ResolvedSuiNetwork } from './network-resolver.ts';
 export type {
 	SuiOptions,
 	SuiLocalOptions,
-	SuiExternalOptions,
+	SuiLocalRpcOptions,
 	SuiLiveOptions,
 	SuiForkOptions,
 	SuiPluginMode,

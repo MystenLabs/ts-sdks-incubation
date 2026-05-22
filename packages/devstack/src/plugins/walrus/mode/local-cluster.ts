@@ -3,8 +3,7 @@
 // Distilled-doc reference (06-walrus.md §"Lifecycle: Startup —
 // local cluster"). Eight ordered phases:
 //
-//   0. Yield deps (Sui, Identity, ChainProbe, faucet strategy opt,
-//                  seed accounts).
+//   0. Yield deps (Sui, Identity, ChainProbe, faucet strategy opt).
 //   1. Image build — upstream cargo image (bootstrap asset) +
 //                    wrapper image (inline; content-addressed on
 //                    the upstream tag + suiVersion).
@@ -26,10 +25,7 @@
 //                             OBJECT_NOT_FOUND.
 //   6. Proxy URL pick — nodes[0].rpcUrl is the representative
 //                        aggregator/publisher.
-//  7a. WAL faucet strategy register — opt-in, only when exchange +
-//      seed accounts exist.
-//  7b. Admin seed surface — exposes the same SDK swap path for
-//      explicit post-boot WAL grants.
+//  7a. WAL faucet strategy register — opt-in when an exchange exists.
 //   8. Registries — package + endpoint + walrus-state.
 //
 // What this file owns: the dispatch shape + the typed options
@@ -50,11 +46,8 @@ import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/chain-probe.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
 import type { ChainId } from '../../../substrate/brand.ts';
-import type { ResourceRef } from '../../../api/define-plugin.ts';
 import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
-import type { AccountResourceId } from '../../account/index.ts';
-import type { AccountValue } from '../../account/service.ts';
 import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
 import type { WalrusStorageNode } from '../storage-nodes.ts';
 import {
@@ -71,27 +64,11 @@ import {
 	resolveCargoImage,
 } from '../bootstrap-assets/cargo-image.ts';
 import { makeWalFaucetStrategy, walCoinType, type WalFaucetStrategy } from '../faucet-strategy.ts';
-import {
-	resolveWalExchange,
-	seedWalAccounts,
-	type WalExchangeHandle,
-	type WalSwapSdk,
-} from '../seed-wal.ts';
-
-/** A user-supplied seed account ref. The user passes the result of
- *  `account('publisher')` — NOT a magic-string token. Generic over the
- *  literal account name so the walrus dependency tuple preserves each
- *  per-account resource id. */
-export type WalrusAccountMember<Name extends string = string> = ResourceRef<
-	AccountResourceId<Name>,
-	AccountValue
->;
+import { resolveWalExchange, type WalExchangeHandle, type WalSwapSdk } from '../wal-swap.ts';
 
 /** Options for the local-cluster mode. Mirrors v3
  *  `WalrusLocalClusterOptions<Name>` (06-walrus.md §"Configuration"). */
-export interface WalrusLocalClusterOptions<
-	Accounts extends ReadonlyArray<WalrusAccountMember> = ReadonlyArray<WalrusAccountMember>,
-> {
+export interface WalrusLocalClusterOptions {
 	/** Engine row name + on-disk dir suffix + registry key.
 	 *  Default `'walrus'`. */
 	readonly name?: string;
@@ -116,18 +93,6 @@ export interface WalrusLocalClusterOptions<
 	/** Per-node TCP ready-probe timeout (ms). Defaults to
 	 *  `DEFAULT_NODE_READY_TIMEOUT_MS`. */
 	readonly readyTimeoutMs?: number;
-	/** SUI MIST to spend per seed account on SUI → WAL swap. */
-	readonly seedPaymentMist?: bigint;
-	/** Seed account refs that should receive WAL. Each entry is the
-	 *  plugin/resource ref returned by `account('name')`. The ref is
-	 *  threaded through `dependsOn` so the walrus
-	 *  local service waits for each seed account's acquire (keypair mint +
-	 *  funding) before the WAL faucet strategy registers.
-	 *
-	 *  The FIRST entry doubles as the WAL-exchange admin signer
-	 *  (distilled-doc §"Configuration"). Omitted / empty array → no
-	 *  WAL faucet strategy registers. */
-	readonly seedAccounts?: Accounts;
 }
 
 /** Resolved local-cluster boot artifacts. */
@@ -140,22 +105,15 @@ export interface LocalClusterBootResult {
 	readonly proxyUrl: string;
 	readonly exchangeObjectId: string | undefined;
 	readonly exchange: WalExchangeHandle | null;
-	/** WAL faucet strategy — present only when the local cluster has
-	 *  BOTH a non-empty exchange object AND at least one seed account.
-	 *  The barrel registers this onto the `coinType:<fullCoinType>`
-	 *  strategy contributor decl. `null` otherwise. */
+	/** WAL faucet strategy — present only when the local cluster has a
+	 *  non-empty exchange object. The barrel registers this onto the
+	 *  `coinType:<fullCoinType>` strategy contributor decl. `null`
+	 *  otherwise. */
 	readonly walFaucetStrategy: WalFaucetStrategy | null;
-	readonly walCoinType: string | null;
-	/** Admin signer for the WAL exchange — the first entry of
-	 *  `seedAccounts` when supplied; `null` when no seed accounts
-	 *  were wired. The barrel projects this into `WalrusAdmin.seedWal`
-	 *  so admin calls route through a real signer. */
-	readonly adminSigner: AccountValue | null;
+	readonly walCoinType: string;
 }
 
-/** Defaults applied to options. `seedAccountCount` is the count of
- *  the user-supplied member tuple; the resolved `AccountValue`s flow
- *  through `LocalClusterDeps` at acquire-time. */
+/** Defaults applied to options. */
 export interface ResolvedLocalClusterOptions {
 	readonly name: string;
 	readonly nodeCount: number;
@@ -165,8 +123,6 @@ export interface ResolvedLocalClusterOptions {
 	readonly containerApiPort: number;
 	readonly epochDuration: string;
 	readonly readyTimeoutMs: number;
-	readonly seedPaymentMist: bigint;
-	readonly seedAccountCount: number;
 }
 
 /** Synchronous factory-time validation. Mirrors v3's
@@ -212,8 +168,6 @@ export const resolveLocalClusterOptions = (
 		containerApiPort: opts.containerApiPort ?? DEFAULT_CONTAINER_API_PORT,
 		epochDuration: opts.epochDuration ?? '24h',
 		readyTimeoutMs: opts.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS,
-		seedPaymentMist: opts.seedPaymentMist ?? 500_000_000n,
-		seedAccountCount: opts.seedAccounts?.length ?? 0,
 	};
 };
 
@@ -234,12 +188,6 @@ export interface LocalClusterDeps {
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
-	/** Resolved seed account values — projected from
-	 *  `WalrusLocalClusterOptions.seedAccounts` by the barrel from
-	 *  resolved dependencies. The first entry (when present) is the WAL
-	 *  exchange admin signer. Empty array → no WAL faucet strategy
-	 *  registers + admin surface raises a typed startup error. */
-	readonly seedAccounts: ReadonlyArray<AccountValue>;
 }
 
 /** Boot the local cluster. Returns the resolved value the plugin
@@ -378,36 +326,19 @@ export const bootLocalCluster = (
 		}
 		const proxyUrl = nodes[0]!.rpcUrl;
 
-		// ---- exchange resolution + WAL seed/faucet strategy ------
-		// Seed each configured account with WAL and register a
-		// `coinType:<fullCoinType>` strategy that swaps SUI → WAL on demand iff BOTH:
-		//   - the deploy produced a WAL exchange object, AND
-		//   - at least one seed account was wired through opts.
-		// The first seed account doubles as the admin signer
-		// (distilled-doc §"Configuration"). The dispatch site (faucet
-		// plugin) sees a context-free `(req) => Effect.Effect<...>`.
+		// ---- exchange resolution + WAL funding strategy ------
+		// Register a `coinType:<fullCoinType>` strategy that swaps the
+		// requesting account's SUI into WAL on demand. Accounts opt in via
+		// their normal `funding` list.
 		yield* setCurrentPluginPhase('resolving WAL exchange');
 		const exchange = yield* resolveWalExchange(deps.probe, state.exchangeObject);
-		const adminSigner = deps.seedAccounts[0];
-		if (exchange && deps.seedAccounts.length > 0) {
-			yield* setCurrentPluginPhase(`seeding WAL for ${deps.seedAccounts.length} account(s)`);
-			yield* seedWalAccounts({
-				exchange,
-				sdk: deps.suiSdk,
-				signers: deps.seedAccounts,
-				paymentMist: opts.seedPaymentMist,
-			});
-		}
-		const walFaucetStrategy: WalFaucetStrategy | null =
-			exchange && adminSigner
-				? makeWalFaucetStrategy({
-						exchange,
-						sdk: deps.suiSdk,
-						signer: adminSigner,
-						defaultPaymentMist: opts.seedPaymentMist,
-					})
-				: null;
-		const resolvedWalCoinType = walFaucetStrategy === null ? null : walCoinType(state.walrusPackageId);
+		const walFaucetStrategy: WalFaucetStrategy | null = exchange
+			? makeWalFaucetStrategy({
+					exchange,
+					sdk: deps.suiSdk,
+				})
+			: null;
+		const resolvedWalCoinType = walCoinType(state.walrusPackageId);
 
 		return {
 			mode: 'local' as const,
@@ -420,7 +351,6 @@ export const bootLocalCluster = (
 			exchange,
 			walFaucetStrategy,
 			walCoinType: resolvedWalCoinType,
-			adminSigner: adminSigner ?? null,
 		};
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.localCluster.boot', {

@@ -32,7 +32,7 @@ import { chainId } from '../../../src/substrate/brand.ts';
 import {
 	acquireAccount,
 	type AccountAcquireContext,
-	type AccountOptions,
+	type ResolvedAccountOptions,
 	type AccountValue,
 } from '../../../src/plugins/account/service.ts';
 import type { SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
@@ -114,7 +114,7 @@ const ctx: AccountAcquireContext = {
 	emitAutoPromotionEvent: () => Effect.void,
 };
 
-const makeOpts = (name: string, signer: StubSigner): AccountOptions => ({
+const makeOpts = (name: string, signer: StubSigner): ResolvedAccountOptions => ({
 	kind: 'signer',
 	name,
 	signer,

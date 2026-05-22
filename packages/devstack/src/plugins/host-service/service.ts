@@ -52,13 +52,10 @@ export type HostServiceReadyProbe =
 			readonly timeoutMs?: number;
 	  };
 
-interface HostServiceCommandOptions<After extends ReadonlyArray<AnyResourceRef>> {
+interface HostServiceBaseOptions<After extends ReadonlyArray<AnyResourceRef>> {
 	readonly name?: string;
 	readonly endpointName?: string;
 	readonly after?: After;
-	readonly command: string;
-	readonly args?: ReadonlyArray<string>;
-	readonly script?: never;
 	readonly cwd?: string;
 	readonly port?: number;
 	readonly env?: Readonly<Record<string, string>>;
@@ -66,9 +63,25 @@ interface HostServiceCommandOptions<After extends ReadonlyArray<AnyResourceRef>>
 	readonly shutdownGraceMs?: number;
 }
 
+interface HostServiceCommandOptions<
+	After extends ReadonlyArray<AnyResourceRef>,
+> extends HostServiceBaseOptions<After> {
+	readonly command: string;
+	readonly args?: ReadonlyArray<string>;
+	readonly script?: never;
+}
+
+interface HostServiceScriptOptions<
+	After extends ReadonlyArray<AnyResourceRef>,
+> extends HostServiceBaseOptions<After> {
+	readonly script: string;
+	readonly command?: never;
+	readonly args?: never;
+}
+
 export type HostServiceOptions<
 	After extends ReadonlyArray<AnyResourceRef> = ReadonlyArray<AnyResourceRef>,
-> = HostServiceCommandOptions<After>;
+> = HostServiceCommandOptions<After> | HostServiceScriptOptions<After>;
 
 export interface HostServiceResolvedOptions {
 	readonly serviceName: string;
@@ -116,6 +129,19 @@ const DEFAULT_HTTP_READY_TIMEOUT_MS = 60_000;
 const DEFAULT_HTTP_READY_INTERVAL_MS = 250;
 const DEFAULT_LOG_READY_TIMEOUT_MS = 60_000;
 
+const shellInvocationFor = (script: string): { command: string; args: ReadonlyArray<string> } => {
+	if (process.platform === 'win32') {
+		return {
+			command: process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe',
+			args: ['/d', '/s', '/c', script],
+		};
+	}
+	return {
+		command: '/bin/sh',
+		args: ['-c', script],
+	};
+};
+
 const configErrorFor =
 	(serviceName: string) => (issue: Parameters<typeof hostServiceConfigError>[1]) =>
 		hostServiceConfigError(serviceName, issue);
@@ -157,9 +183,17 @@ export const normalizeHostServiceOptions = (
 	expectNonEmptyString(serviceName, { field: 'name', mkError });
 	expectNonEmptyString(endpointName, { field: 'endpointName', mkError });
 
-	const script = (options as { readonly script?: unknown }).script;
-	if (script !== undefined) {
-		throw mkError({ field: 'script', message: 'script is not supported; use command and args' });
+	const rawCommand = (options as { readonly command?: unknown }).command;
+	const rawArgs = (options as { readonly args?: unknown }).args;
+	const rawScript = (options as { readonly script?: unknown }).script;
+	if (rawCommand !== undefined && rawScript !== undefined) {
+		throw mkError({ field: 'command', message: 'use either command or script, not both' });
+	}
+	if (rawCommand === undefined && rawScript === undefined) {
+		throw mkError({ field: 'command', message: 'is required unless script is provided' });
+	}
+	if (rawScript !== undefined && rawArgs !== undefined) {
+		throw mkError({ field: 'args', message: 'args are only supported with command' });
 	}
 
 	const preferredPort = expectOptionalPort(options.port, { field: 'port', mkError });
@@ -171,12 +205,19 @@ export const normalizeHostServiceOptions = (
 			mkError,
 		}) ?? DEFAULT_SHUTDOWN_GRACE_MS;
 	const ready = normalizeReadyProbe(serviceName, options.ready);
+	const invocation =
+		rawScript !== undefined
+			? shellInvocationFor(expectNonEmptyString(rawScript, { field: 'script', mkError }))
+			: {
+					command: expectNonEmptyString(rawCommand, { field: 'command', mkError }),
+					args: options.args ?? [],
+				};
 
 	return {
 		serviceName,
 		endpointName,
-		command: expectNonEmptyString(options.command, { field: 'command', mkError }),
-		args: options.args ?? [],
+		command: invocation.command,
+		args: invocation.args,
 		cwd,
 		...(preferredPort === undefined ? {} : { preferredPort }),
 		env,

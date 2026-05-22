@@ -166,16 +166,12 @@ export {
 export {
 	sui,
 	suiFor,
-	type SuiClient,
-	type ForkAdminSurface,
-	type WaitForTransactionsReady,
 	type ResolvedSuiNetwork,
 	type SuiOptions,
 	type SuiLocalOptions,
-	type SuiExternalOptions,
+	type SuiLocalRpcOptions,
 	type SuiLiveOptions,
 	type SuiForkOptions,
-	type SuiPluginMode,
 	type SuiNetworkBindings,
 	type SuiError,
 	type SuiPluginError,
@@ -189,9 +185,6 @@ export {
 	type ChainProbeMode,
 	type FundsReadyStrategy,
 	type FundsReadyError,
-	type SeedObjectsAccumulator,
-	type ForkMeta,
-	type SuiProbeKey,
 } from './plugins/sui/index.ts';
 
 // --- Account ------------------------------------------------------------
@@ -211,6 +204,7 @@ export {
 	type AccountVariantKind,
 	type AccountFunding,
 	type AccountFundingEntry,
+	type AccountFundingCoinValue,
 	type AccountFundingResult,
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
@@ -229,20 +223,13 @@ export {
 export {
 	localPackage,
 	knownPackage,
-	pkg,
-	pickCreatedByType,
 	type LocalPackageOptions,
 	type KnownPackageOptions,
 	type LocalPackageResolved,
 	type KnownPackageResolved,
 	type PackageResolved,
 	type PackageCapture,
-	type PackageCaptureCallback,
-	type PackageCaptureMap,
-	type PickCreatedByTypeOptions,
 	type PublisherAccountMember,
-	type LocalPackagePublishOutput,
-	type PackagePublishObjectChange,
 	type PublishError,
 	type PackageBindings,
 	type ResolvedLocalPackage,
@@ -271,21 +258,14 @@ export {
 
 export {
 	wallet,
-	WALLET_ACCOUNTS_ALL,
 	type WalletOptions,
 	type WalletValue,
 	type WalletAccountMember,
-	type WalletAccountsAll,
-	type DappKitConfigBindings,
 	type WalletError,
 	type WalletBootError,
 	type WalletBootPhase,
 	type WalletRequestError,
 	type WalletRequestPhase,
-	type OriginPolicy,
-	type OriginPolicyInputs,
-	type OriginCheckResult,
-	type PairingToken,
 } from './plugins/wallet/index.ts';
 
 // --- Host Service -------------------------------------------------------
@@ -303,10 +283,6 @@ export {
 
 export {
 	postgres,
-	POSTGRES_TCP_ENDPOINT_NAME,
-	credentialedUrl,
-	plainUrl,
-	withDatabase,
 	type PostgresPluginOptions,
 	type Postgres,
 	type PostgresServiceOptions,
@@ -323,36 +299,14 @@ export {
 // --- Faucet -------------------------------------------------------------
 
 export {
-	faucet,
-	faucetCapabilityKey,
 	defineFaucetStrategy,
-	suiLocalStrategy,
-	suiLiveStrategy,
-	LIVE_FAUCET_URLS,
-	requestFundsOnce,
-	requestFundsWithRetry,
-	DEFAULT_FETCH_DEADLINE_MS,
-	DEFAULT_INITIAL_DELAY_MS,
-	DEFAULT_MAX_ATTEMPTS,
-	DEFAULT_TIMEOUT_MS,
-	BACKOFF_FACTOR,
-	type FaucetService,
-	type FaucetServiceOptions,
 	type FaucetStrategyContribution,
-	type FaucetRequest,
-	type FaucetDispatcher,
 	type FaucetError,
 	type FaucetUnreachable,
 	type FaucetExhausted,
 	type FaucetBodyError,
-	type FaucetStrategyMissing,
 	type FaucetConfigError,
 	type FaucetStrategy,
-	type SuiLocalStrategyOptions,
-	type SuiLiveStrategyOptions,
-	type SuiLiveNetwork,
-	type FaucetPostOptions,
-	type RetryOptions,
 } from './plugins/faucet/index.ts';
 
 // --- Action -------------------------------------------------------------
@@ -372,7 +326,8 @@ export {
 export {
 	walrus,
 	walrusFor,
-	type WalrusAdmin,
+	walCoin,
+	type WalCoinValue,
 	type WalrusResolved,
 	type WalrusLocalClusterOptions,
 	type WalrusKnownDeploymentOptions,
@@ -384,8 +339,6 @@ export {
 	type WalrusPluginError,
 	type WalrusConfigError,
 	type WalrusPhase,
-	type WalFaucetStrategy,
-	type WalFaucetRequest,
 } from './plugins/walrus/index.ts';
 
 // --- Seal ---------------------------------------------------------------
@@ -393,7 +346,6 @@ export {
 export {
 	seal,
 	sealFor,
-	sealLocalKeygenStrict,
 	type SealOptions,
 	type SealCommonOptions,
 	type SealLocalKeygenOptions,
@@ -404,7 +356,6 @@ export {
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
 	type SealResolved,
-	type SealKeyManager,
 	type SealError,
 	type SealAnyError,
 	type SealConfigError,
@@ -417,13 +368,9 @@ export {
 export {
 	deepbook,
 	deepbookFor,
-	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
-	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-	makeDeepbookDeepFundingContribution,
-	makeDeepbookDeepFundingStrategy,
 	type DeepbookResolved,
 	type DeepbookCommonOptions,
-	type DeepbookLocalOptions,
+	type DeepbookOverrideOptions,
 	type DeepbookKnownOptions,
 	type DeepbookKnownNetwork,
 	type DeepbookOptions,
@@ -433,8 +380,6 @@ export {
 	type DeepbookPluginError,
 	type DeepbookConfigError,
 	type DeepbookPhase,
-	type DeepbookDeepFundingStrategy,
-	type DeepbookDeepFundingStrategyOptions,
 	type AccountMemberAlias,
 	type DeepbookPool,
 	type PythHandle,

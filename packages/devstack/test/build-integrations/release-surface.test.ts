@@ -63,7 +63,9 @@ describe('release surface static checks', () => {
 		expect(pkg.files).not.toContain('src');
 		expect(pkg.exports).not.toHaveProperty('./samples');
 		expect(pkg.exports).toHaveProperty('./vitest/setup');
-		expect(pkg.exports).toHaveProperty('./browser/setup');
+		expect(pkg.exports).not.toHaveProperty('./vite');
+		expect(pkg.exports).not.toHaveProperty('./browser');
+		expect(pkg.exports).not.toHaveProperty('./browser/setup');
 	});
 
 	it('points every public export at built JavaScript and declaration files', () => {
@@ -136,34 +138,19 @@ describe('release surface static checks', () => {
 	it('build entries match the public release surface', () => {
 		const config = readText('tsdown.config.ts');
 
-		expect(config).toContain("'src/build-integrations/browser/setup.ts'");
+		expect(config).not.toContain("'src/build-integrations/vite/index.ts'");
+		expect(config).not.toContain("'src/build-integrations/browser/index.ts'");
+		expect(config).not.toContain("'src/build-integrations/browser/setup.ts'");
 		expect(config).not.toContain("'src/samples/index.ts'");
 	});
 
-	it('browser setup reaches only the slot-only runtime barrel', () => {
-		const setup = readText('src/build-integrations/browser/setup.ts');
-		const setupGlobals = readText('src/build-integrations/browser/setup-globals.ts');
-		const browserIndex = readText('src/build-integrations/browser/index.ts');
+	it('does not expose dapp-kit slot writer helpers from the runtime subpath', () => {
+		const runtimeIndex = readText('src/build-integrations/runtime/index.ts');
 
-		expect(setupGlobals).toContain('../runtime/browser.ts');
-		expect(setupGlobals).not.toContain('../runtime/index.ts');
-		expect(setup).toContain('./setup-globals.ts');
-		expect(setup).not.toContain('../runtime/index.ts');
-		expect(browserIndex).toContain('../runtime/browser.ts');
-		expect(browserIndex).not.toContain('../runtime/index.ts');
-		expect(browserIndex).toContain('./setup-globals.ts');
-		expect(browserIndex).not.toContain('./setup.ts');
-	});
-
-	it('imports the public browser barrel without running browser setup', async () => {
-		Reflect.deleteProperty(globalThis, '__devstackDAppKit__');
-
-		const browserSpecifier: string = '@mysten-incubation/devstack/browser';
-		const browser = (await import(browserSpecifier)) as Record<string, unknown>;
-
-		expect(browser.defineDevstackBrowserConfig).toBeTypeOf('function');
-		expect(browser.setupDevstackBrowserGlobals).toBeTypeOf('function');
-		expect(Object.hasOwn(globalThis, '__devstackDAppKit__')).toBe(false);
+		expect(runtimeIndex).not.toContain('writeDAppKitSlot');
+		expect(runtimeIndex).not.toContain('readDAppKitSlot');
+		expect(runtimeIndex).not.toContain('clearDAppKitSlot');
+		expect(runtimeIndex).not.toContain("from './dapp-kit-slot.ts'");
 	});
 
 	it('exposes plugin-author runtime services from the root barrel', async () => {
@@ -199,6 +186,27 @@ describe('release surface static checks', () => {
 			'DynamicDiscriminator',
 			'StaticDiscriminator',
 			'ActionObjectChange',
+			'SuiExternalOptions',
+			'chainOverride',
+			'ForkMeta',
+			'SeedObjectsAccumulator',
+			'WaitForTransactionsReady',
+			'PackageCaptureCallback',
+			'PackageCaptureMap',
+			'LocalPackagePublishOutput',
+			'PackagePublishObjectChange',
+			'PickCreatedByTypeOptions',
+			'pickCreatedByType',
+			'FaucetDispatcher',
+			'FaucetRequest',
+			'requestFundsOnce',
+			'requestFundsWithRetry',
+			'enableRouter',
+			'WALLET_ACCOUNTS_ALL',
+			'WalletAccountsAll',
+			'sealLocalKeygenStrict',
+			'DeepbookLocalOptions',
+			'_localRefused',
 		]) {
 			expect(root).not.toContain(leaked);
 			expect(substrate).not.toContain(leaked);

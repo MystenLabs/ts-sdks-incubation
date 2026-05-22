@@ -89,6 +89,7 @@ export const selectDevstackAccount = async (accountName: string) => {
 	});
 };
 
+// Expose the narrow slot contract the Playwright `connectAs` helper consumes.
 (
 	globalThis as { __devstackDAppKit__?: { selectAccount?: typeof selectDevstackAccount } }
 ).__devstackDAppKit__ = { selectAccount: selectDevstackAccount };

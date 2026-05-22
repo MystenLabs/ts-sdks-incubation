@@ -37,7 +37,7 @@ import {
 import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { CoinResourceId, CoinValue } from '../coin/index.ts';
+import type { CoinResourceId } from '../coin/index.ts';
 
 import {
 	accountAcquireError,
@@ -57,7 +57,15 @@ import type { AccountValue } from './service.ts';
  *  Architecture (Direct Member Refs): cross-plugin references at the
  *  user-facing surface are plugin/resource refs directly — no opaque
  *  tag or string discriminator vocabulary. */
-export type CoinMember<Sym extends string = string> = ResourceRef<CoinResourceId<Sym>, CoinValue>;
+export interface AccountFundingCoinValue {
+	readonly fullCoinType: string;
+	readonly symbol?: string;
+}
+
+export type CoinMember<Sym extends string = string> = ResourceRef<
+	CoinResourceId<Sym>,
+	AccountFundingCoinValue
+>;
 
 /** Optional dependency edge for the plugin that contributes the
  *  funding strategy. Coin refs force the coin metadata edge; `via`
@@ -148,7 +156,7 @@ export interface FundEphemeralDefaultArgs {
 	readonly accountName: string;
 	readonly address: string;
 	readonly amountMist: bigint;
-	readonly suiMode: 'local' | 'external' | 'live' | 'fork';
+	readonly suiMode: 'local' | 'local-rpc' | 'live' | 'fork';
 	/** Resolved sui chain id — the substrate-level chain identity used
 	 *  to compose the faucet strategy's capability key
 	 *  (`faucet:request:<chainId>`). */
@@ -210,7 +218,7 @@ export const fundEphemeralDefault = (
 							`Registered keys: [${err.registeredKeys.join(', ')}].`,
 						hint:
 							parts.suiMode === 'fork'
-								? 'Fork networks have no HTTP faucet — supply a fork-admin-cap-mint strategy via faucet({strategies:[...]}) keyed by this chain id.'
+								? 'Fork networks have no HTTP faucet — compose a plugin that contributes defineFaucetStrategy(...) for this chain id.'
 								: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
 					}),
 				),

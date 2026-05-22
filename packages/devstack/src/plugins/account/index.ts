@@ -8,16 +8,16 @@
 // User-facing factory shape:
 //
 //   account('alice')                                  // default ephemeral
-//   account('alice', { kind: 'ephemeral', name: 'alice', funding: [{ coin: 'sui', amount: 5_000_000_000n }] })
-//   account('alice', { kind: 'keystore', name: 'alice', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
-//   account('alice', { kind: 'env',      name: 'alice', key: 'ALICE_PRIVATE_KEY' })
-//   account('alice', { kind: 'inline',   name: 'alice', privateKey: 'suiprivkey1...' })
-//   account('alice', { kind: 'signer',   name: 'alice', signer: hardwareWallet })
-//   account('alice', { kind: 'impersonate', name: 'alice', address: '0xabc...' })
+//   account('alice', { kind: 'ephemeral', funding: [{ coin: 'sui', amount: 5_000_000_000n }] })
+//   account('alice', { kind: 'keystore', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
+//   account('alice', { kind: 'env',      key: 'ALICE_PRIVATE_KEY' })
+//   account('alice', { kind: 'inline',   privateKey: 'suiprivkey1...' })
+//   account('alice', { kind: 'signer',   signer: hardwareWallet })
+//   account('alice', { kind: 'impersonate', address: '0xabc...' })
 //
 // **Bare-form default**: `account('alice')` is shorthand for
 //
-//   { kind: 'ephemeral', name: 'alice' } plus default SUI funding.
+//   { kind: 'ephemeral' } plus default SUI funding.
 //
 // Distilled-doc invariant (12-account.md "Make the bare-form auto-
 // promotion to fork-impersonate funding discoverable"): on fork-
@@ -69,6 +69,7 @@ import {
 	acquireAccount,
 	type AccountAcquireContext,
 	type AccountOptions,
+	type ResolvedAccountOptions,
 	type AccountValue,
 } from './service.ts';
 
@@ -180,10 +181,10 @@ export const account = <const N extends string, const Funding extends AccountFun
 	// `AccountOptions` union does not include "kind absent" — we
 	// inject the default here so the rest of the body sees a
 	// fully-discriminated value.
-	const resolved: AccountOptions = opts === undefined ? { kind: 'ephemeral', name } : opts;
-	// Defensive: if the user passed a different `name:` than the
-	// outer factory arg, prefer the OUTER one (it drives the resource id).
-	const opts2: AccountOptions = { ...resolved, name } as AccountOptions;
+	const opts2: ResolvedAccountOptions =
+		opts === undefined
+			? { kind: 'ephemeral', name }
+			: ({ ...opts, name } as ResolvedAccountOptions);
 
 	const accountRef = accountResource(name);
 
@@ -251,7 +252,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 
 				const acquireCtx: AccountAcquireContext = {
 					sui: {
-						mode: sui.fork !== null ? 'fork' : 'local',
+						mode: sui.mode,
 						chain: sui.chain,
 						sdk: sui.sdk,
 					},
@@ -342,7 +343,7 @@ const fundingEntryKey = (entry: ProjectedFundingEntry): string =>
 // Re-exports for advanced callers (Coin, Wallet, Package)
 // ---------------------------------------------------------------------------
 
-export type { AccountOptions, AccountValue, TxResult } from './service.ts';
+export type { AccountOptions, ResolvedAccountOptions, AccountValue, TxResult } from './service.ts';
 export type {
 	AccountError,
 	AccountAcquireError,
@@ -355,6 +356,7 @@ export { ACCOUNT_ERROR_TAGS } from './errors.ts';
 export type {
 	AccountFunding,
 	AccountFundingEntry,
+	AccountFundingCoinValue,
 	AccountFundingResult,
 	AccountFundingRequest,
 	AccountFundingStrategy,

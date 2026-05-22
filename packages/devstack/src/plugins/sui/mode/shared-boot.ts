@@ -13,7 +13,7 @@
 //   - `noopWaitForTransactionsReady` — trivially-succeeding gate for
 //     faucet-less networks (live mainnet, fork).
 //   - `assembleSuiClient(...)` — collapses the boilerplate that
-//     local/external/live all repeat (sdk shim + chainProbe + the
+//     local/local-rpc/live all repeat (sdk shim + chainProbe + the
 //     `fork: null` discriminator).
 //
 // Why not jam this into `mode/local.ts`: external + live can't
@@ -219,6 +219,7 @@ export const assembleSuiClient = (parts: {
 	readonly chain: string;
 	readonly rpcUrl: string;
 	readonly faucetUrl?: string;
+	readonly fundingFaucetUrl?: string;
 	readonly graphqlUrl?: string;
 	readonly waitForTransactionsReady: WaitForTransactionsReady;
 	/** Image ref consumed by package's path (b) (`docker run --rm`)
@@ -240,6 +241,7 @@ export const assembleSuiClient = (parts: {
 		sdk: sdkShim,
 		rpcUrl: parts.rpcUrl,
 		faucetUrl: parts.faucetUrl ?? null,
+		fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
 		graphqlUrl: parts.graphqlUrl ?? null,
 		hostGateway: parts.hostGateway ?? {
 			rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),

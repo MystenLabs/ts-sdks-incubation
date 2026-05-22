@@ -1,12 +1,26 @@
 ---
 title: Quickstart
-description: Create a current devstack config and wire the build integrations.
+description: Create a current devstack config with a supervised dev server.
 ---
 
 Start with a `devstack.config.ts` at the app root:
 
 ```ts title="devstack.config.ts"
-import { defineDevstack, account, localPackage, sui, wallet } from '@mysten-incubation/devstack';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	defineDevstack,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
 
 export const localnet = sui();
 export const publisher = account('publisher');
@@ -14,28 +28,35 @@ export const alice = account('alice');
 export const bob = account('bob');
 
 export const hello = localPackage('hello', {
-	sourcePath: './move/hello',
+	sourcePath: resolve(HERE, 'move/hello'),
 	publisher,
 });
-export const devWallet = wallet({ accounts: [publisher, alice, bob] });
+export const devWallet = wallet({
+	accounts: [publisher, alice, bob],
+});
+export const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [hello, devWallet] as const,
+});
 
 export default defineDevstack({
-	members: [localnet, hello, devWallet],
-	stackName: 'quickstart',
+	members: [localnet, app],
+	stackName: 'main',
 	codegen: { outputDir: 'src/generated' },
 });
 ```
 
-Add a Vite config that uses the current build integration:
+Add a plain Vite config. The stack passes the allocated port through the `hostService` command.
 
 ```ts title="vite.config.ts"
 import react from '@vitejs/plugin-react';
-import { defineDevstackViteConfig } from '@mysten-incubation/devstack/vite';
+import { defineConfig } from 'vite';
 
-export default defineDevstackViteConfig({
-	port: 5173,
-	plugins: [react()],
-});
+export default defineConfig({ plugins: [react()] });
 ```
 
 The generated files are importable from application code. For dapp-kit wiring, consume the generated
@@ -73,8 +94,6 @@ export const dAppKit = createDAppKit({
 		}),
 	],
 });
-
-(globalThis as { __devstackDAppKit__?: typeof dAppKit }).__devstackDAppKit__ = dAppKit;
 ```
 
 Run the stack:

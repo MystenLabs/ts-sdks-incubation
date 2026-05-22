@@ -1,4 +1,4 @@
-// Sui plugin — local external-RPC mode.
+// Sui plugin — local caller-owned RPC mode.
 //
 // Caller already has a Sui process running and supplies the RPC URL
 // (optionally faucet and GraphQL). Used in CI, custom-runtime
@@ -14,7 +14,7 @@
 //   - The chain-id fetch IS the only readiness sentinel; must have
 //     a bounded timeout.
 //
-// External mode contributes a `NetworkResolver` and a `ChainProbe`
+// Local-RPC mode contributes a `NetworkResolver` and a `ChainProbe`
 // but does NOT contribute a `Snapshotable`-managed container or a
 // `Routable` entrypoint (the caller's own router fronts the RPC).
 //
@@ -49,24 +49,24 @@ import {
 	makeResolvedNetwork,
 	noopWaitForTransactionsReady,
 } from './shared-boot.ts';
-import type { SuiExternalOptions } from './spec.ts';
+import type { SuiLocalRpcOptions } from './spec.ts';
 
-/** Default chain-id fetch timeout for external RPCs. The wire
+/** Default chain-id fetch timeout for caller-owned local RPCs. The wire
  *  latency is the dominant cost; 30s is the documented ceiling. */
 export const DEFAULT_EXTERNAL_CHAIN_ID_TIMEOUT = Duration.seconds(30);
 
-/** Resolved external-mode boot artifacts. */
-export interface ExternalModeBootResult {
+/** Resolved local-RPC-mode boot artifacts. */
+export interface LocalRpcModeBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;
 }
 
-/** Build the external-mode boot Effect. No container, no sidecar,
+/** Build the local-RPC-mode boot Effect. No container, no sidecar,
  *  no build image. Just probe chain id + wire `waitForTransactionsReady`
  *  conditional on `faucetUrl`. */
-export const bootExternalMode = (
-	opts: SuiExternalOptions,
-): Effect.Effect<ExternalModeBootResult, SuiPluginError, Scope.Scope> =>
+export const bootLocalRpcMode = (
+	opts: SuiLocalRpcOptions,
+): Effect.Effect<LocalRpcModeBootResult, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Construct the grpc client ----------------------------------
 		// `network: 'localnet'` is semantically correct: external is a
@@ -82,17 +82,17 @@ export const bootExternalMode = (
 			catch: (cause): SuiPluginError =>
 				suiPluginError(
 					'chain-id-fetch',
-					`sui external mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${stringifyCause(cause)}`,
+					`sui local-rpc mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${stringifyCause(cause)}`,
 					cause,
 				),
 		});
 
 		// ----- 2. Resolve chain id -------------------------------------------
 		const chain =
-			opts.chainOverride ??
+			opts.chain ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_EXTERNAL_CHAIN_ID_TIMEOUT,
-				span: 'devstack.plugin.sui.external.fetchChainId',
+				span: 'devstack.plugin.sui.localRpc.fetchChainId',
 			}));
 
 		// ----- 3. Build waitForTransactionsReady -----------------------------
@@ -113,7 +113,7 @@ export const bootExternalMode = (
 			waitForTransactionsReady,
 		});
 		const resolved = makeResolvedNetwork({
-			mode: 'external',
+			mode: 'local-rpc',
 			chain,
 			rpc: opts.rpcUrl,
 			source: 'config',
@@ -123,8 +123,8 @@ export const bootExternalMode = (
 
 		return { resolved, client };
 	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.external.boot', {
-			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'external' },
+		Effect.withSpan('devstack.plugin.sui.localRpc.boot', {
+			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'local-rpc' },
 		}),
 	);
 

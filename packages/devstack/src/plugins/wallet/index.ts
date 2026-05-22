@@ -23,8 +23,7 @@
 //   1. Snapshotable — pairing token under `wallet/token`.
 //   2. Codegenable — `dapp-kit-config` bindings (the dev-wallet
 //      adapter consumes this). Sensitive flag set — 0o600 + gitignore.
-//   3. Routable — wallet UI URL (when `enableRouter: true` OR a vite
-//      plugin is composed on the same stack).
+//   3. Routable — wallet UI URL on the stack-scoped router.
 
 import { Effect } from 'effect';
 
@@ -34,6 +33,10 @@ import { IdentityContext, StackPathsService } from '../../substrate/runtime/path
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
 import { suiResource } from '../sui/index.ts';
+import {
+	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
+	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
+} from '../host-service/routable.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
 import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
@@ -211,25 +214,41 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// The first dependency is the hard Sui ordering edge; the
 				// remaining values mirror the explicit account tuple.
 				const [, ...resolvedAccounts] = deps;
-				const routerFrontedUrl =
-					opts.enableRouter === true
-						? yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
-								Effect.map((hostname) =>
-									renderUrl({
-										protocol: 'http',
-										hostname,
-										port: WALLET_ENTRYPOINT_PORT,
-									}),
-								),
-								Effect.mapError((err) =>
-									walletBootError({
-										phase: 'route-url',
-										message: `wallet router URL construction failed: ${err.detail}`,
-										cause: err,
-									}),
-								),
-							)
-						: null;
+				const routerFrontedUrl = yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
+					Effect.map((hostname) =>
+						renderUrl({
+							protocol: 'http',
+							hostname,
+							port: WALLET_ENTRYPOINT_PORT,
+						}),
+					),
+					Effect.mapError((err) =>
+						walletBootError({
+							phase: 'route-url',
+							message: `wallet router URL construction failed: ${err.detail}`,
+							cause: err,
+						}),
+					),
+				);
+				const routedAppOrigin = yield* routerHostname(
+					identity,
+					HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
+				).pipe(
+					Effect.map((hostname) =>
+						renderUrl({
+							protocol: 'http',
+							hostname,
+							port: HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
+						}),
+					),
+					Effect.mapError((err) =>
+						walletBootError({
+							phase: 'route-url',
+							message: `wallet app-origin URL construction failed: ${err.detail}`,
+							cause: err,
+						}),
+					),
+				);
 
 				const acquireCtx: WalletAcquireContext = {
 					app: identity.app,
@@ -261,6 +280,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 							),
 					resolveAccounts: () => Effect.succeed(resolvedAccounts),
 					routerFrontedUrl,
+					routedAppOrigin,
 					supervisorCtx: undefined,
 				};
 
@@ -280,9 +300,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				stack: acquireCtx.identity.stack,
 				port: resolved.localPort,
 			});
-			return opts.enableRouter === true
-				? ([snapshot, codegen, routable] as const)
-				: ([snapshot, codegen] as const);
+			return [snapshot, codegen, routable] as const;
 		},
 	});
 }

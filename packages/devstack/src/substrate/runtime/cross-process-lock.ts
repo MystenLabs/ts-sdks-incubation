@@ -125,7 +125,7 @@ export const layerCrossProcessLockFlock: Layer.Layer<CrossProcessLock, never, St
  * Documented in the architecture as acceptable for "no cross-process
  * safety needed" use cases (one-shot CLI invocations, unit tests
  * with a tmpdir per-test, etc.). NOT safe under `pnpm dev` where
- * Vite + devstack share a runtime root.
+ * A dev server and devstack share a runtime root.
  */
 export const layerCrossProcessLockInProcess: Layer.Layer<CrossProcessLock> = Layer.effect(
 	CrossProcessLock,

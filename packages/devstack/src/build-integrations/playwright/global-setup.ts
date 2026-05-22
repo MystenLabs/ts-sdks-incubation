@@ -104,7 +104,7 @@ export const buildGlobalSetup = (options: DefineGlobalSetupOptions = {}): Playwr
 		const ctx = readStackContext(options);
 
 		if (options.requireNonEmptyEndpoints === true) {
-			if (Object.keys(ctx.manifest.endpoints).length === 0) {
+			if (ctx.endpointNames.length === 0) {
 				throw new Error(
 					`devstack manifest at ${ctx.manifestPath} has no endpoints. ` +
 						`The supervisor likely failed before its eager snapshot ` +
@@ -116,13 +116,14 @@ export const buildGlobalSetup = (options: DefineGlobalSetupOptions = {}): Playwr
 		const required = options.requireEndpoints ?? [];
 		const missing: string[] = [];
 		for (const key of required) {
-			if (ctx.manifest.endpoints[key] === undefined) missing.push(key);
+			if (ctx.endpointMaybe(key) === null) missing.push(key);
 		}
 		if (missing.length > 0) {
 			throw new Error(
 				`devstack manifest at ${ctx.manifestPath} is missing required ` +
 					`endpoints: ${missing.join(', ')}. ` +
-					`available: ${Object.keys(ctx.manifest.endpoints).join(', ') || '(none)'}.`,
+					`available endpoint names: ${ctx.endpointNames.join(', ') || '(none)'}. ` +
+					`raw manifest keys: ${ctx.manifestEndpointKeys.join(', ') || '(none)'}.`,
 			);
 		}
 
@@ -155,10 +156,8 @@ interface GlobalSlot {
 
 const stashStackContext = (ctx: StackContext): void => {
 	const fixture: PlaywrightStackFixture = {
-		endpoints: Object.fromEntries(
-			Object.entries(ctx.manifest.endpoints).map(([k, e]) => [k, e.url]),
-		),
-		walletEndpoint: ctx.manifest.endpoints['wallet']?.url ?? null,
+		endpoints: Object.fromEntries(ctx.endpointNames.map((name) => [name, ctx.endpoint(name)])),
+		walletEndpoint: ctx.endpointMaybe('wallet'),
 		manifestPath: ctx.manifestPath,
 		stack: ctx.manifest.identity.stack,
 		app: ctx.manifest.identity.app,

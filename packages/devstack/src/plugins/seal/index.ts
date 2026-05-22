@@ -16,7 +16,7 @@
 //
 // Public surface:
 //
-//   - `seal(opts?)`             — env-driven mode selection.
+//   - `seal(opts)`              — explicit mode selection.
 //   - `sealFor(network).<mode>` — mode-narrowed factory namespace.
 //     Mode-narrowing makes `sealFor(forkNetwork).localKeygen(...)`
 //     a COMPILE-time refusal (architecture Tension 11 + type-prototype
@@ -38,7 +38,6 @@ import { Effect, FileSystem, Path } from 'effect';
 import { definePlugin, type ResourceRef } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { NetworkConfig } from '../../substrate/network.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
@@ -50,12 +49,7 @@ import { suiResource } from '../sui/index.ts';
 import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
-import {
-	forkIncompatibleError,
-	sealConfigError,
-	SEAL_ERROR_TAGS,
-	type SealError,
-} from './errors.ts';
+import { SEAL_ERROR_TAGS, type SealError } from './errors.ts';
 import type { ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
@@ -79,7 +73,6 @@ import {
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
 import { bootSealService, type SealMode } from './service.ts';
-import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
 
@@ -179,8 +172,8 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 	opts: SealLocalKeygenOptions<Signer>,
 ) => {
 	// Synchronous factory-time defaults. Localnet-signer-required is
-	// enforced one layer up by the type-narrowed `sealLocalKeygenStrict`
-	// + the typed `signer:` field on SealLocalKeygenOptions.
+	// enforced by the typed `signer:` field on
+	// SealLocalKeygenOptions.
 	const resolved = resolveLocalKeygenOptions(opts, '<default-seal-version>');
 
 	const sealResource = makeSealResource(resolved.name);
@@ -400,49 +393,21 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 };
 
 // ---------------------------------------------------------------------------
-// Default option resolution
-// ---------------------------------------------------------------------------
-
-/** Read `DEVSTACK_NETWORK` env to pick a mode default. The shared
- *  parser refuses `*-fork` networks while fork mode is coming soon. */
-const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keygen' }> => {
-	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
-		?.env?.DEVSTACK_NETWORK;
-	const parsed = parseDevstackNetwork(env);
-	switch (parsed.mode) {
-		case 'local':
-			// Local-keygen requires a signer; the env-default path
-			// cannot satisfy that. Callers MUST pass opts on localnet.
-			throw sealConfigError({
-				field: 'signer',
-				message:
-					'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor(network).localKeygen({...}).',
-			});
-		case 'live':
-			return { mode: 'live', network: parsed.network };
-	}
-};
-
-// ---------------------------------------------------------------------------
 // User-facing factories
 // ---------------------------------------------------------------------------
 
-/** Env-driven factory. Defaults to local-keygen if `DEVSTACK_NETWORK`
- *  is unset (but throws synchronously without an explicit signer).
- *
- *  Distilled-doc invariant #14: synchronous throw when `signer` is
- *  missing on localnet. */
+/** Explicit Seal factory. `local-keygen` requires a signer; live and
+ *  fork-known modes must be selected directly or through `sealFor`. */
 export const seal = <const Signer extends SealSignerMember = SealSignerMember>(
-	opts?: SealOptions<Signer>,
+	opts: SealOptions<Signer>,
 ) => {
-	const resolved = opts ?? resolveDefaultMode();
-	switch (resolved.mode) {
+	switch (opts.mode) {
 		case 'local-keygen':
-			return buildLocalKeygenPlugin(resolved);
+			return buildLocalKeygenPlugin(opts);
 		case 'live':
-			return buildLivePlugin(resolved);
+			return buildLivePlugin(opts);
 		case 'fork-known':
-			return buildForkKnownPlugin(resolved);
+			return buildForkKnownPlugin(opts);
 	}
 };
 
@@ -460,10 +425,7 @@ export const seal = <const Signer extends SealSignerMember = SealSignerMember>(
  *
  *  Distilled-doc invariant #8 (fork-localkeygen-refused): the
  *  fork-mode branch has NO `localKeygen` entry — that's the
- *  type-level refusal. For callers that explicitly opt out of the
- *  type narrowing (e.g. dynamic compose code), the local-keygen
- *  factory ALSO throws synchronously if invoked under a `*-fork`
- *  network — see `localKeygenStrict` below. */
+ *  type-level refusal. */
 export const sealFor = defineModeNamespace({
 	local: {
 		localKeygen: <const Signer extends SealSignerMember>(opts: SealLocalKeygenOptions<Signer>) =>
@@ -482,35 +444,6 @@ export const sealFor = defineModeNamespace({
 		forkKnown: (opts: SealForkKnownOptions) => buildForkKnownPlugin(opts),
 	},
 });
-
-// ---------------------------------------------------------------------------
-// fork-localkeygen-refused — the synchronous throw form
-// ---------------------------------------------------------------------------
-
-/** Direct local-keygen factory with explicit fork-network check.
- *
- *  The mode-narrowed namespace above makes `sealFor(forkNetwork)
- *  .localKeygen(...)` a TYPE-LEVEL refusal (the `fork` branch has
- *  no `localKeygen` key). Callers that bypass the type narrowing
- *  (e.g. by computing the network at runtime) can use this
- *  factory; it RUNTIME-throws `ForkIncompatibleError` on `*-fork`
- *  networks.
- *
- *  Distilled-doc invariant #8 + §Failure modes. */
-export const sealLocalKeygenStrict = <const Signer extends SealSignerMember>(
-	network: NetworkConfig,
-	opts: SealLocalKeygenOptions<Signer>,
-) => {
-	if (network.mode === 'fork') {
-		throw forkIncompatibleError({
-			variant: 'sealLocalKeygen',
-			network: network.chain,
-			message: `seal.localKeygen does not support fork networks. The seal key-server's chain client is JSON-RPC-bound; sui-fork only exposes gRPC for simulate_transaction.`,
-			hint: `Use sealFor({mode:'fork'}).forkKnown({upstream:'<mainnet|testnet|devnet>'}) — routes to the wrapped upstream's known-deployment key server.`,
-		});
-	}
-	return buildLocalKeygenPlugin(opts);
-};
 
 // ---------------------------------------------------------------------------
 // Type-only error re-export

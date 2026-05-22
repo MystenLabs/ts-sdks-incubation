@@ -1,11 +1,6 @@
 // Walrus registry publish — mode-based registry contribution shapes.
 //
-// Distilled-doc invariant (06-walrus.md §"Hard requirements" item
-// 14): `walrusKnownDeployment` MUST NOT publish an admin handle. The
-// current public shape carries admin on `WalrusResolved.admin`: local
-// mode exposes a non-null admin value, and known mode sets it to null.
-// This file is the runtime publishing layer for the downstream
-// registries:
+// This file is the runtime publishing layer for the downstream registries:
 //
 //   - WalrusStateRegistry  — `{name, systemObjectId}` entry. Local
 //                            uses `opts.name`; known uses the fixed

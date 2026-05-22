@@ -15,7 +15,7 @@
 // those blobs — that's the plugin's job.
 //
 // What this module provides is the READ-SIDE bridge: build
-// integrations (Vite alias, Vitest preset) call `readEnvelope()` to
+// integrations (Vitest, Playwright, generated app code) call `readEnvelope()` to
 // pull the on-disk envelope for endpoint lookups. Same path the
 // codegen orchestrator can call AFTER the manifest writer fires —
 // for any future emitter that wants the on-disk endpoint table.

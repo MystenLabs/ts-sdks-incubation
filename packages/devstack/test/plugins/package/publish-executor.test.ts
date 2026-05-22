@@ -8,7 +8,7 @@ import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-r
 import {
 	acquireAccount,
 	type AccountAcquireContext,
-	type AccountOptions,
+	type ResolvedAccountOptions,
 } from '../../../src/plugins/account/service.ts';
 import type { SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
 import { makePublishExecutor } from '../../../src/plugins/package/publish-executor.ts';
@@ -68,7 +68,7 @@ const accountCtx: AccountAcquireContext = {
 	emitAutoPromotionEvent: () => Effect.void,
 };
 
-const accountOpts: AccountOptions = {
+const accountOpts: ResolvedAccountOptions = {
 	kind: 'signer',
 	name: 'publisher',
 	signer: {

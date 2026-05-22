@@ -110,8 +110,8 @@ that owns the value:
 2. Schema-bearing substrate/orchestrator failures use `Schema.TaggedErrorClass`.
 3. Runtime adapters, CLI/cross-process/observability, and per-integration L5 errors use
    `Data.TaggedError`.
-4. `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses; Vite,
-   Vitest, Playwright, and Browser integration-specific errors may use `Data.TaggedError`.
+4. `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses; Vitest,
+   Playwright, and Browser integration-specific errors may use `Data.TaggedError`.
 
 Rules that apply across all four styles:
 
@@ -301,7 +301,7 @@ Existing dirs: `test/substrate/`, `test/plugins/`, `test/orchestrators/`, `test/
 
 ## 10. Mode-narrowed factory namespaces
 
-For plugins with modes (sui local/external/live, walrus local-cluster/known, seal
+For plugins with modes (sui local/local-rpc/live, walrus local-cluster/known, seal
 local-keygen/live/fork-known, deepbook local/live/fork):
 
 - Use `defineModeNamespace` and call the returned namespace with `network` (per
@@ -467,7 +467,7 @@ Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
   capability. This keeps direct loopback/probe URLs from competing with router-fronted URLs.
 - Direct URLs used for boot probes, sibling containers, or host-gateway access must be named as such
   (`direct*`, `probe*`, `hostGateway`) and should not be treated as public endpoint declarations.
-- For live/external modes with no router contribution, resolved-value URL fields may still surface
+- For live/local-rpc modes with no router contribution, resolved-value URL fields may still surface
   as operational endpoints.
 
 ---

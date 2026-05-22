@@ -8,10 +8,14 @@ Runtime state is stack-scoped:
 ```txt
 .devstack/stacks/<stack>/
   manifest.json
-  projection.v1.json
+  projection.v3.json
   runtime/
   snapshots/
 ```
+
+`projection.v3.json` is the persisted operator read model used by `devstack status`, the TUI, and
+plain renderer startup sweeps. If the file is missing, malformed, or from an unsupported shape,
+devstack treats it as absent and rebuilds status from the next running stack rather than crashing.
 
 The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is running:
 

@@ -1,4 +1,4 @@
-// Manifest envelope schema — name-blind.
+// Manifest envelope schema.
 //
 // Architecture § Manifest data model: envelope shape is fixed at L0,
 // per-service projection is each plugin's responsibility (lives in
@@ -71,8 +71,9 @@ export const resolveManifestExtras = (
 	});
 
 /** Flat endpoint entry — the manifest's load-bearing surface for
- *  build integrations (Vite alias, Vitest preset). */
+ *  build integrations. */
 export interface EndpointEntry {
+	readonly name: string;
 	readonly url: string;
 	readonly displayUrl: string | null;
 	readonly wireProtocol: 'http' | 'h2c' | string;
@@ -93,6 +94,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	endpoints: Schema.Record(
 		Schema.String,
 		Schema.Struct({
+			name: Schema.String,
 			url: Schema.String,
 			displayUrl: Schema.NullOr(Schema.String),
 			wireProtocol: Schema.String,

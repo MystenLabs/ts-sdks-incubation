@@ -15,9 +15,6 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5176;
-const LOCALHOST_DEV_ORIGIN = `http://localhost:${DEV_PORT}` as const;
-const LOOPBACK_DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
-const ROUTER_DEV_ORIGIN = 'http://dev.connect-four.connect-four.localhost:5175' as const;
 
 const localnet = sui();
 const publisher = account('publisher');
@@ -38,14 +35,10 @@ const openLobby = action('connect-four.openLobby', {
 });
 const devWallet = wallet({
 	accounts: [alice, bob, publisher],
-	enableRouter: true,
-	allowLocalhostVite: true,
-	allowedOrigins: [ROUTER_DEV_ORIGIN, LOCALHOST_DEV_ORIGIN, LOOPBACK_DEV_ORIGIN],
 });
 const app = hostService({
 	name: 'app',
-	command: 'pnpm',
-	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	env: {
 		VITE_CONNECT_FOUR_AUTO_APPROVE: '1',

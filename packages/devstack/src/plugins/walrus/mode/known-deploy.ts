@@ -3,14 +3,10 @@
 //
 // Distilled-doc reference (06-walrus.md §"Lifecycle: Startup —
 // known deployment"). Purely synchronous body — no ordered phases.
-// The factory either throws (missing required field) or returns a
+// The factory validates required deployment fields and returns a
 // resolved value whose tags are eager `Layer.succeed(...)` constants.
 //
 // Distilled-doc invariants honored:
-//   - 14: NO admin tag — known deployment cannot publish a signer.
-//         The plugin's resolved shape omits `admin` here; the
-//         type-level admin omission flows through `walrusFor(net).known`
-//         (no admin in the resolved shape).
 //   - 15: `WalrusProxyTag` only when ALL three URLs (proxy,
 //         aggregator, publisher) are present. Encoded as
 //         `proxyUrl / aggregatorUrl / publisherUrl: string | null`
@@ -144,7 +140,7 @@ export const resolveKnownDeploymentOptions = (
 			`walrusKnownDeployment: explicit 'nodes' committee is required — ` +
 				`Walrus ${opts.network ?? 'custom'} has nodes fetched dynamically by the SDK`,
 			`pass an empty array if you accept the SDK-driven committee lookup, ` +
-				`or use walrus()/walrusFor(network).local({...}) for a self-hosted cluster`,
+				`or use walrus()/walrusFor(network).local({...}) for a local self-hosted cluster`,
 		);
 	}
 

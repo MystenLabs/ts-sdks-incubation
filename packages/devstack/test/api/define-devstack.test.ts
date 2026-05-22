@@ -19,7 +19,6 @@ import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.t
 import { definePlugin, isPlugin, isResourceRef, resource } from '../../src/api/define-plugin.ts';
 import { account } from '../../src/plugins/account/index.ts';
 import { coin } from '../../src/plugins/coin/index.ts';
-import { faucet } from '../../src/plugins/faucet/index.ts';
 import { hostService } from '../../src/plugins/host-service/index.ts';
 import { localPackage } from '../../src/plugins/package/index.ts';
 import { postgres } from '../../src/plugins/postgres/index.ts';
@@ -36,7 +35,7 @@ const standalone = definePlugin({
 	start: () => Effect.succeed({ id: 1 } as const),
 });
 
-const localnet = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
+const localnet = sui({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' });
 const bareSuiResource = resource<'sui', { readonly chain: string }>('sui');
 const customNeedsSui = definePlugin({
 	id: 'custom/needs-sui',
@@ -121,7 +120,7 @@ describe('defineDevstack — explicit sui provider', () => {
 
 describe('defineDevstack — plugin entrypoint expansion', () => {
 	it('treats sui() as a definePlugin resource ref', () => {
-		const plugin = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
+		const plugin = sui({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' });
 
 		expect(isPlugin(plugin)).toBe(true);
 		expect(isResourceRef(plugin)).toBe(true);
@@ -130,7 +129,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 	});
 
 	it('treats dependency-free service factories as definePlugin resource refs', () => {
-		for (const plugin of [postgres(), faucet()] as const) {
+		for (const plugin of [postgres()] as const) {
 			expect(isPlugin(plugin)).toBe(true);
 			expect(isResourceRef(plugin)).toBe(true);
 			expect(plugin.dependsOn).toEqual([]);

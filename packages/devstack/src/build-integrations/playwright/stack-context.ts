@@ -6,17 +6,19 @@
 // a conventional URL when the manifest isn't on disk yet. The
 // decode + version-gate + walk-up live in `runtime/`; this surface
 // re-shapes the result into playwright-flavored typed errors and the
-// `endpoint(key)` accessor in-spec helpers use.
+// endpoint-name accessors in-spec helpers use.
 
 import {
 	discoverManifestPath as runtimeDiscoverManifestPath,
 	coldStartUrl as runtimeColdStartUrl,
 	conventionalRoutesFromHints,
+	EndpointRegistry,
 	manifestEnvelopeFromStackContext,
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
 	type DiscoverManifestPathOptions,
+	type ResolvedEndpoint as RuntimeResolvedEndpoint,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
 import type { EndpointEntry, ManifestEnvelope } from '../../substrate/manifest.ts';
@@ -53,16 +55,49 @@ export interface ResolveStackContextOptions {
 export interface StackContext {
 	readonly manifest: ManifestEnvelope;
 	readonly manifestPath: string;
-	readonly endpoint: (endpointKey: string) => string;
-	readonly endpointMaybe: (endpointKey: string) => string | null;
-	readonly endpointEntry: (endpointKey: string) => EndpointEntry;
+	readonly endpointNames: ReadonlyArray<string>;
+	readonly manifestEndpointKeys: ReadonlyArray<string>;
+	readonly endpoint: (endpointNameOrAlias: string) => string;
+	readonly endpointMaybe: (endpointNameOrAlias: string) => string | null;
+	readonly endpointEntry: (endpointNameOrAlias: string) => EndpointEntry;
 }
 
 export interface ResolvedEndpoint {
 	readonly url: string;
 	readonly source: 'manifest' | 'conventional';
 	readonly endpointKey: string;
+	readonly endpointName: string;
 }
+
+const PLAYWRIGHT_ENDPOINT_ALIASES: Readonly<Record<string, string>> = {
+	app: 'dev',
+	wallet: 'wallet-app',
+};
+
+const PLAYWRIGHT_DEFAULT_ROUTER_PORTS: Readonly<Record<string, number>> = {
+	app: 5175,
+	dev: 5175,
+	wallet: 5175,
+	'wallet-app': 5175,
+};
+
+export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string =>
+	PLAYWRIGHT_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
+
+const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegistry => {
+	const entries: RuntimeResolvedEndpoint[] = [];
+	for (const raw of Object.values(envelope.endpoints)) {
+		entries.push({
+			name: raw.name,
+			url: raw.url,
+			displayUrl: raw.displayUrl,
+			wireProtocol: raw.wireProtocol,
+			pluginKey: raw.pluginKey as string,
+			endpointKey: raw.endpointKey as string,
+		});
+	}
+	return new EndpointRegistry(entries);
+};
 
 // -----------------------------------------------------------------------------
 // Discovery
@@ -169,22 +204,33 @@ export const conventionalUrlFor = (
 		readonly port?: number;
 		readonly app?: string;
 		readonly cwd?: string;
+		readonly env?: Readonly<Record<string, string | undefined>>;
 	} = {},
 ): string | null => {
 	const stack = opts.stack ?? 'main';
-	const port = opts.port ?? Number.parseInt(process.env[PLAYWRIGHT_ENV.ROUTER_PORT] ?? '', 10);
+	const env = opts.env ?? (process.env as Record<string, string | undefined>);
+	const envPort = Number.parseInt(env[PLAYWRIGHT_ENV.ROUTER_PORT] ?? '', 10);
+	const resolvedPort =
+		opts.port ??
+		(Number.isFinite(envPort) && envPort > 0 ? envPort : undefined) ??
+		PLAYWRIGHT_DEFAULT_ROUTER_PORTS[endpointKey];
 
-	if (!Number.isFinite(port) || port <= 0) return null;
+	if (resolvedPort === undefined || !Number.isFinite(resolvedPort) || resolvedPort <= 0) {
+		return null;
+	}
+	const port = resolvedPort;
 
 	const routes = conventionalRoutesFromHints(
 		[
 			{ endpoint: 'app', service: 'dev' },
+			{ endpoint: 'dev', service: 'dev' },
 			{ endpoint: 'sui-rpc', service: 'sui-rpc' },
 			{ endpoint: 'sui-faucet', service: 'sui-faucet' },
 			{ endpoint: 'walrus-aggregator', service: 'walrus-aggregator' },
 			{ endpoint: 'walrus-publisher', service: 'walrus-publisher' },
 			{ endpoint: 'seal', service: 'seal' },
-			{ endpoint: 'wallet', service: 'wallet' },
+			{ endpoint: 'wallet', service: 'api' },
+			{ endpoint: 'wallet-app', service: 'api' },
 		],
 		port,
 	);
@@ -245,40 +291,69 @@ const projectFromRuntime = (ctx: RuntimeStackContext): StackContext => {
 export const makeStackContext = (
 	envelope: ManifestEnvelope,
 	manifestPath: string,
-): StackContext => ({
-	manifest: envelope,
-	manifestPath,
-	endpoint: (endpointKey: string): string => {
-		const entry = envelope.endpoints[endpointKey];
-		if (entry === undefined) {
-			throw new PlaywrightEndpointNotFoundError({
-				message: `no endpoint \`${endpointKey}\` in manifest at ${manifestPath}`,
-				endpointKey,
-				available: Object.keys(envelope.endpoints),
-				recoveryHint:
-					`Check the plugin emitting this endpoint is present in your stack, ` +
-					`or check for a typo in the endpoint key.`,
-			});
-		}
-		return entry.url;
-	},
-	endpointMaybe: (endpointKey: string): string | null =>
-		envelope.endpoints[endpointKey]?.url ?? null,
-	endpointEntry: (endpointKey: string): EndpointEntry => {
-		const entry = envelope.endpoints[endpointKey];
-		if (entry === undefined) {
-			throw new PlaywrightEndpointNotFoundError({
-				message: `no endpoint \`${endpointKey}\` in manifest at ${manifestPath}`,
-				endpointKey,
-				available: Object.keys(envelope.endpoints),
-				recoveryHint:
-					`Check the plugin emitting this endpoint is present in your stack, ` +
-					`or check for a typo in the endpoint key.`,
-			});
-		}
-		return entry;
-	},
-});
+): StackContext => {
+	const endpoints = endpointRegistryFromEnvelope(envelope);
+	const manifestEndpointKeys = Object.keys(envelope.endpoints).sort();
+	const endpointNames = endpoints.names();
+	const notFound = (endpointKey: string, endpointName: string): PlaywrightEndpointNotFoundError =>
+		new PlaywrightEndpointNotFoundError({
+			message:
+				`no endpoint \`${endpointKey}\` (resolved endpoint name \`${endpointName}\`) ` +
+				`in manifest at ${manifestPath}`,
+			endpointKey,
+			endpointName,
+			available: endpointNames,
+			manifestKeys: manifestEndpointKeys,
+			recoveryHint:
+				`Available endpoint names: ${endpointNames.join(', ') || '(none)'}. ` +
+				`Raw manifest keys: ${manifestEndpointKeys.join(', ') || '(none)'}. ` +
+				`Check the plugin emitting this endpoint is present in your stack, ` +
+				`or check for a typo in the endpoint name.`,
+		});
+	const findEndpoint = (endpointNameOrAlias: string): RuntimeResolvedEndpoint | undefined =>
+		endpoints.byName(playwrightEndpointNameFor(endpointNameOrAlias));
+	const rawEntryFor = (resolved: RuntimeResolvedEndpoint): EndpointEntry => {
+		const byMapKey = envelope.endpoints[resolved.endpointKey];
+		if (byMapKey !== undefined) return byMapKey;
+		const byEntryKey = Object.values(envelope.endpoints).find(
+			(entry) => (entry.endpointKey as string) === resolved.endpointKey,
+		);
+		if (byEntryKey !== undefined) return byEntryKey;
+		return {
+			name: resolved.name,
+			url: resolved.url,
+			displayUrl: resolved.displayUrl,
+			wireProtocol: resolved.wireProtocol,
+			pluginKey: resolved.pluginKey as never,
+			endpointKey: resolved.endpointKey as never,
+		};
+	};
+
+	return {
+		manifest: envelope,
+		manifestPath,
+		endpointNames,
+		manifestEndpointKeys,
+		endpoint: (endpointNameOrAlias: string): string => {
+			const endpointName = playwrightEndpointNameFor(endpointNameOrAlias);
+			const entry = findEndpoint(endpointNameOrAlias);
+			if (entry === undefined) {
+				throw notFound(endpointNameOrAlias, endpointName);
+			}
+			return entry.url;
+		},
+		endpointMaybe: (endpointNameOrAlias: string): string | null =>
+			findEndpoint(endpointNameOrAlias)?.url ?? null,
+		endpointEntry: (endpointNameOrAlias: string): EndpointEntry => {
+			const endpointName = playwrightEndpointNameFor(endpointNameOrAlias);
+			const entry = findEndpoint(endpointNameOrAlias);
+			if (entry === undefined) {
+				throw notFound(endpointNameOrAlias, endpointName);
+			}
+			return rawEntryFor(entry);
+		},
+	};
+};
 
 /**
  * Resolve a URL for a single endpoint with cold-start fallback to the
@@ -286,12 +361,13 @@ export const makeStackContext = (
  * manifest and the conventional table miss.
  */
 export const resolveEndpointUrl = (
-	endpointKey: string,
+	endpointNameOrAlias: string,
 	options: ResolveStackContextOptions & {
 		readonly port?: number;
 		readonly hostSuffix?: string;
 	} = {},
 ): ResolvedEndpoint => {
+	const endpointName = playwrightEndpointNameFor(endpointNameOrAlias);
 	let ctx: StackContext | undefined;
 	try {
 		ctx = readStackContext(options);
@@ -299,23 +375,13 @@ export const resolveEndpointUrl = (
 		if (!(err instanceof PlaywrightManifestDiscoveryError)) throw err;
 	}
 	if (ctx !== undefined) {
-		const entry = ctx.manifest.endpoints[endpointKey];
-		if (entry !== undefined) {
-			return { url: entry.url, source: 'manifest', endpointKey };
-		}
-		throw new PlaywrightEndpointNotFoundError({
-			message: `no endpoint \`${endpointKey}\` in manifest at ${ctx.manifestPath}`,
-			endpointKey,
-			available: Object.keys(ctx.manifest.endpoints),
-			recoveryHint:
-				`Check the plugin emitting this endpoint is present in your stack, ` +
-				`or check for a typo in the endpoint key.`,
-		});
+		const entry = ctx.endpointEntry(endpointNameOrAlias);
+		return { url: entry.url, source: 'manifest', endpointKey: entry.endpointKey, endpointName };
 	}
 
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
 	const stack = options.stack ?? env[PLAYWRIGHT_ENV.STACK] ?? 'main';
-	const fallback = conventionalUrlFor(endpointKey, {
+	const fallback = conventionalUrlFor(endpointNameOrAlias, {
 		stack,
 		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 		...(options.hostSuffix !== undefined
@@ -324,18 +390,25 @@ export const resolveEndpointUrl = (
 				? { hostSuffix: env[PLAYWRIGHT_ENV.ROUTER_HOST_SUFFIX] }
 				: {}),
 		...(options.port !== undefined ? { port: options.port } : {}),
+		...(options.env !== undefined ? { env: options.env } : {}),
 	});
 	if (fallback !== null) {
-		return { url: fallback, source: 'conventional', endpointKey };
+		return {
+			url: fallback,
+			source: 'conventional',
+			endpointKey: endpointNameOrAlias,
+			endpointName,
+		};
 	}
 
 	throw new PlaywrightManifestDiscoveryError({
-		message: `no manifest found and no conventional fallback for endpoint \`${endpointKey}\``,
+		message:
+			`no manifest found and no conventional fallback for endpoint ` +
+			`\`${endpointNameOrAlias}\` (resolved endpoint name \`${endpointName}\`)`,
 		searchedPaths: [],
-		endpointKey,
+		endpointKey: endpointNameOrAlias,
 		recoveryHint:
 			`Run \`devstack up\` to materialize the manifest before invoking ` +
-			`playwright, or pass an explicit \`baseURL\` to ` +
-			`defineDevstackPlaywrightConfig.`,
+			`playwright, or pass an explicit \`baseURL\`.`,
 	});
 };

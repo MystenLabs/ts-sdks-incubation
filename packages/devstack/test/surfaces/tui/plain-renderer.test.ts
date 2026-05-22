@@ -9,6 +9,12 @@ import { describe, expect, it } from 'vitest';
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
 import type { EngineEvent } from '../../../src/substrate/events.ts';
 import { formatEventLine, formatHeartbeat } from '../../../src/surfaces/tui/plain-renderer.ts';
+import {
+	accountCells,
+	endpointLine,
+	packageCells,
+	statusLabel,
+} from '../../../src/surfaces/tui/display-derivation.ts';
 
 const STATIC_AT = Date.parse('2026-05-19T20:11:32.001Z');
 
@@ -172,6 +178,74 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('mode=hard-kill');
 		expect(line).toContain('signal=SIGTERM');
 		expect(line).toContain('exitCode=143');
+	});
+
+	it('keeps plain and TUI helpers aligned on shared operator facts', () => {
+		expect(
+			formatEventLine({
+				tag: 'lifecycle.statusChanged',
+				pluginKey: pluginKey('sui'),
+				from: 'acquiring',
+				to: 'ready',
+				at: STATIC_AT,
+			}),
+		).toContain(`to=${statusLabel('ready')}`);
+
+		const endpoint = {
+			endpointKey: endpointKey('e1'),
+			name: 'dev',
+			url: 'http://127.0.0.1:5173',
+			displayUrl: 'http://dev.app.localhost:5175',
+			wireProtocol: 'http',
+			registeredAt: STATIC_AT,
+		} as const;
+		const endpointPlain = formatEventLine({ tag: 'endpoint.registered', endpoint });
+		expect(endpointLine(endpoint)).toContain('http://dev.app.localhost:5175');
+		expect(endpointPlain).toContain('displayUrl=http://dev.app.localhost:5175');
+		expect(endpointPlain).toContain('url=http://127.0.0.1:5173');
+
+		const account = {
+			key: 'account/alice',
+			rowKey: pluginKey('account/alice#1'),
+			name: 'alice',
+			address: '0xabc',
+			scheme: 'ed25519',
+			source: 'real',
+			funding: {
+				status: 'funded',
+				balanceMist: null,
+				requestedMist: '1000000000',
+				entries: [
+					{
+						coin: 'SUI',
+						fullCoinType: '0x2::sui::SUI',
+						amount: '1000000000',
+						status: 'funded',
+					},
+				],
+			},
+			walletVisible: false,
+			updatedAt: STATIC_AT,
+		} as const;
+		const accountPlain = formatEventLine({ tag: 'account.updated', account, at: STATIC_AT });
+		expect(accountPlain).toContain(`address=${accountCells(account).address}`);
+		expect(accountPlain).toContain(`scheme=${accountCells(account).scheme}`);
+		expect(accountPlain).toContain('fundingEntries=SUI:1000000000:funded');
+
+		const pkg = {
+			key: 'package/vault',
+			rowKey: pluginKey('package/vault#1'),
+			name: 'vault',
+			kind: 'local',
+			packageId: '0x123',
+			upgradeCapId: null,
+			mvrPlaceholder: '@local/vault',
+			sourcePath: 'move/vault',
+			updatedAt: STATIC_AT,
+		} as const;
+		const packagePlain = formatEventLine({ tag: 'package.updated', package: pkg, at: STATIC_AT });
+		expect(packagePlain).toContain(`packageId=${packageCells(pkg).packageId}`);
+		expect(packagePlain).toContain(`kind=${packageCells(pkg).kind}`);
 	});
 
 	it('emits one line per heartbeat invocation', () => {

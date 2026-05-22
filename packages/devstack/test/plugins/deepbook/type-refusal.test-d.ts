@@ -42,10 +42,12 @@ const forkNet: NetworkConfig<'fork'> = {
 	checkpoint: '1',
 };
 
-declare const publisher: never;
-
-// --- Positive: local mode allows .local + .known ------------------------
-export const _localLocal = deepbookFor(localNet).local({ publisher });
+// --- Positive: local mode allows .override + .known ---------------------
+export const _localOverride = deepbookFor(localNet).override({
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
+});
 export const _localKnown = deepbookFor(localNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
@@ -54,15 +56,21 @@ export const _localKnownByNetwork = deepbookFor(localNet).known({
 	network: 'testnet',
 });
 
-// --- Negative: local mode does not expose unsupported feature options ----
-// @ts-expect-error — local pools are not a public option until they acquire real behavior
-export const _localPoolsRefused = deepbookFor(localNet).local({ publisher, pools: [] });
+// --- Negative: override mode does not expose unsupported feature options -
+export const _localPoolsRefused = deepbookFor(localNet).override({
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
+	// @ts-expect-error — local pools are not a public option until they acquire real behavior
+	pools: [],
+});
 
-export const _localMarketMakerRefused = deepbookFor(localNet).local({
-	publisher,
+export const _localMarketMakerRefused = deepbookFor(localNet).override({
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
 	// @ts-expect-error — market-maker cannot be configured while it has no real acquire path
 	marketMaker: {
-		signer: publisher,
 		strategy: { kind: 'bps', spreadBps: 10, levelSpacingBps: 100, levels: 3 },
 	},
 });
@@ -76,9 +84,13 @@ export const _liveKnownByNetwork = deepbookFor(liveNet).known({
 	network: 'mainnet',
 });
 
-// --- Negative: live mode has no .local -----------------------------------
-// @ts-expect-error — `.local` doesn't exist on the live branch
-export const _liveLocalRefused = deepbookFor(liveNet).local({ publisher });
+// --- Negative: live mode has no .override --------------------------------
+// @ts-expect-error — `.override` doesn't exist on the live branch
+export const _liveOverrideRefused = deepbookFor(liveNet).override({
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
+});
 
 // --- Positive: fork mode allows .known ----------------------------------
 export const _forkKnown = deepbookFor(forkNet).known({
@@ -89,6 +101,10 @@ export const _forkKnownByNetwork = deepbookFor(forkNet).known({
 	network: 'mainnet',
 });
 
-// --- Negative: fork mode has no .local ----------------------------------
-// @ts-expect-error — `.local` doesn't exist on the fork branch (mode refusal)
-export const _forkLocalRefused = deepbookFor(forkNet).local({ publisher });
+// --- Negative: fork mode has no .override --------------------------------
+// @ts-expect-error — `.override` doesn't exist on the fork branch (mode refusal)
+export const _forkOverrideRefused = deepbookFor(forkNet).override({
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
+});

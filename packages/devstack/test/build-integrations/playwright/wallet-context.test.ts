@@ -7,10 +7,16 @@
 //   - HTTP error responses (non-2xx) → typed error with status code
 //   - `signTransaction` posts JSON to `/sign-transaction`
 
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { PlaywrightWalletAdapterError } from '../../../src/build-integrations/playwright/errors.ts';
 import {
+	buildGlobalSetup,
+	readStashedFixture,
 	STACK_CONTEXT_SLOT,
 	type PlaywrightStackFixture,
 } from '../../../src/build-integrations/playwright/global-setup.ts';
@@ -19,6 +25,7 @@ import {
 	connectAs,
 	createWalletAdapter,
 } from '../../../src/build-integrations/playwright/wallet-context.ts';
+import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 
 const setFixture = (fixture: PlaywrightStackFixture | null) => {
 	const slot = globalThis as unknown as Record<string, unknown>;
@@ -30,6 +37,32 @@ const setDappKitSlot = (slotValue: unknown) => {
 	const slot = globalThis as unknown as Record<string, unknown>;
 	if (slotValue === null) delete slot[DAPP_KIT_SLOT];
 	else slot[DAPP_KIT_SLOT] = slotValue;
+};
+
+const writeWalletManifest = (walletUrl: string): string => {
+	const root = mkdtempSync(join(tmpdir(), 'pw-wallet-ctx-'));
+	const stateDir = join(root, '.devstack', 'stacks', 'main');
+	mkdirSync(stateDir, { recursive: true });
+	writeFileSync(
+		join(stateDir, 'manifest.json'),
+		JSON.stringify({
+			identity: { app: 'sample-app', stack: 'main', chain: 'localnet' },
+			manifestVersion: CURRENT_MANIFEST_VERSION,
+			services: {},
+			endpoints: {
+				'wallet#4:wallet-app': {
+					name: 'wallet-app',
+					url: walletUrl,
+					displayUrl: walletUrl,
+					wireProtocol: 'http',
+					pluginKey: 'wallet#4',
+					endpointKey: 'wallet#4:wallet-app',
+				},
+			},
+			extras: {},
+		}),
+	);
+	return root;
 };
 
 describe('createWalletAdapter', () => {
@@ -57,7 +90,7 @@ describe('createWalletAdapter', () => {
 
 	it('uses the global-setup fixture when present', () => {
 		setFixture({
-			endpoints: { wallet: 'http://from-fixture.localhost:42' },
+			endpoints: { 'wallet-app': 'http://from-fixture.localhost:42' },
 			walletEndpoint: 'http://from-fixture.localhost:42',
 			manifestPath: '/dev/null',
 			stack: 'main',
@@ -65,6 +98,31 @@ describe('createWalletAdapter', () => {
 		});
 		const adapter = createWalletAdapter();
 		expect(adapter.walletUrl).toBe('http://from-fixture.localhost:42');
+	});
+
+	it('resolves wallet by endpoint name from a raw manifest key', () => {
+		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
+		try {
+			const adapter = createWalletAdapter({ cwd: root, env: {} });
+			expect(adapter.walletUrl).toBe('http://wallet.sample-app.localhost:6173');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('global setup stashes wallet by endpoint name from a raw manifest key', async () => {
+		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
+		try {
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			const fixture = readStashedFixture();
+			expect(fixture?.walletEndpoint).toBe('http://wallet.sample-app.localhost:6173');
+			expect(fixture?.endpoints).toMatchObject({
+				'wallet-app': 'http://wallet.sample-app.localhost:6173',
+			});
+		} finally {
+			setFixture(null);
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it('signTransaction posts JSON and returns parsed body', async () => {

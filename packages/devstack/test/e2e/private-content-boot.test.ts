@@ -8,32 +8,30 @@
 //   - alice     = account('alice')
 //   - bob       = account('bob')
 //   - vault     = localPackage('vault', { publisher })
-//   - walrus({ local: { nodeCount: 4, seedAccounts: [publisher, alice, bob] }})
+//   - walrus({ local: { nodeCount: 4 }})
+//   - walCoin(walrusCluster)
 //   - seal({ mode: 'local-keygen', signer: publisher })
-//   - wallet({ accounts: 'all', allowedOrigins: [PRIVATE_CONTENT_APP_ORIGIN] })
+//   - wallet({ accounts: [publisher, alice, bob] })
 //
-// The example config does NOT reference stub images / stub move
-// packages — its happy path targets the real vendored walrus + seal
-// binaries against the real upstream Move sources. This test uses
+// The example's happy path targets the real vendored walrus + seal
+// binaries against the real upstream Move sources. This test supplies
 // test-owned override fixtures: pre-built stub images for both services
 // and an on-disk stub Move package for Seal.
 //
 // What this test pins:
 //
-//   1. Every plugin member reaches `ready` — explicit sui + 3 accounts +
-//      vault package + walrus service + seal service + wallet.
-//      Eight keys total.
-//   2. NO resolved value carries a `<unresolved>` or
-//      `<seed-account-not-wired>` sentinel string — the recursive
-//      walker reports the first offending path so the assertion
-//      points at the unresolved field.
+//   1. Every plugin member reaches `ready` — explicit sui + walrus service +
+//      WAL coin ref + 3 accounts + vault package + seal service + wallet.
+//      Ten keys total.
+//   2. Resolved values are fully projected; the recursive walker reports
+//      the first sentinel path if projection regresses.
 //   3. The walrus + seal resolved values are well-formed: walrus
 //      packageConfig.systemObjectId / stakingPoolId are real 0x-hex
 //      ids, proxy/aggregator/publisher URLs are http(s); seal
 //      objectId is a real 0x-hex id, keyServerUrl matches the routed
 //      `seal-key-server` endpoint.
-//   4. The wallet accepts the example's Vite origin, proving the
-//      browser app can pair from the same URL Playwright opens.
+//   4. The wallet accepts the example's Vite origin, matching the
+//      browser app's pairing policy.
 //
 // DEFERRED — explicitly out of scope for this test, tracked
 // elsewhere:
@@ -51,7 +49,9 @@
 // Prerequisites: docker reachable on the host. Soft-skips otherwise.
 
 import { spawnSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Effect } from 'effect';
@@ -63,8 +63,11 @@ import {
 	WalletHttpPath,
 } from '../../src/plugins/wallet/protocol.ts';
 import type { WalletValue } from '../../src/plugins/wallet/service.ts';
-import { runBoot } from './boot-config-impl.ts';
+import { runBoot, type BootResult } from './boot-config-impl.ts';
 
+const PRIVATE_CONTENT_APP_ORIGIN =
+	'http://dev.private-content.private-content.localhost:5175' as const;
+const PRIVATE_CONTENT_APP_PORT = 5170;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
 	HERE,
@@ -81,7 +84,6 @@ const WALRUS_STUB_DOCKERFILE_DIR = resolve(HERE, 'fixtures', 'walrus-stub');
 const SEAL_STUB_DOCKERFILE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
 const WALRUS_STUB_IMAGE_TAG = 'walrus-test-stub:latest';
 const SEAL_STUB_IMAGE_TAG = 'seal-test-stub:latest';
-const PRIVATE_CONTENT_ROUTER_ORIGIN = 'http://dev.private-content.private-content.localhost:5175';
 
 const SEAL_STUB_MOVE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
 
@@ -116,7 +118,7 @@ const buildStubImage = (
 /** Recursive sentinel walker — shared shape with
  *  Returns the first matching path + value so the assertion message
  *  points at the offending field; `null` means clean. */
-const SENTINEL_PATTERNS: ReadonlyArray<RegExp> = [/<unresolved/, /<seed-account-not-wired/];
+const SENTINEL_PATTERNS: ReadonlyArray<RegExp> = [/<unresolved/];
 const findSentinel = (
 	value: unknown,
 	path: string = '$',
@@ -147,8 +149,375 @@ const findSentinel = (
 	return null;
 };
 
+const expectedKeys = [
+	'sui#0',
+	'walrus:walrus',
+	'coin:wal#2',
+	'account/publisher#3',
+	'package:vault#4',
+	'seal:seal',
+	'account/alice#6',
+	'account/bob#7',
+	'wallet#8',
+	'host-service/app#9',
+];
+
+interface PrivateContentBoot {
+	readonly result: BootResult;
+	readonly walletHealth: WalletHealthProbe;
+	readonly accountFunding: Readonly<Record<string, AccountFundingEvidence>>;
+}
+
+interface WalletHealthProbe {
+	readonly status: number | null;
+	readonly body: string;
+	readonly url: string;
+	readonly origin: string;
+	readonly attempts: ReadonlyArray<WalletHealthAttempt>;
+}
+
+interface WalletHealthAttempt {
+	readonly origin: string;
+	readonly status: number | null;
+	readonly body: string;
+}
+
+interface AccountFundingEvidence {
+	readonly sui: bigint;
+	readonly wal: bigint;
+	readonly funding: AccountFundingState;
+}
+
+interface AccountFundingState {
+	readonly requested: ReadonlyArray<AccountFundingEntry>;
+	readonly applied: ReadonlyArray<AccountFundingEntry>;
+}
+
+interface AccountFundingEntry {
+	readonly coin: string;
+	readonly fullCoinType: string;
+	readonly amount: string | bigint | number;
+}
+
+interface WalrusBootValue {
+	readonly mode: 'local' | 'known';
+	readonly packageConfig: {
+		readonly systemObjectId: string;
+		readonly stakingPoolId: string;
+		readonly exchangeIds?: ReadonlyArray<string>;
+	};
+	readonly nodes: ReadonlyArray<unknown>;
+	readonly proxyUrl: string | null;
+	readonly aggregatorUrl: string | null;
+	readonly publisherUrl: string | null;
+	readonly walCoinType: string | null;
+}
+
+interface SealBootValue {
+	readonly objectId: string;
+	readonly keyServerUrl: string;
+	readonly serverConfigs: ReadonlyArray<{
+		readonly objectId: string;
+		readonly weight: number;
+	}>;
+}
+
+interface BalanceReader {
+	readonly sdk: {
+		readonly client: {
+			readonly getBalance: (args: {
+				readonly owner: string;
+				readonly coinType: string;
+			}) => Promise<{ readonly balance?: { readonly balance?: unknown } | unknown }>;
+		};
+	};
+}
+
+const accountKeys = ['account/publisher#3', 'account/alice#6', 'account/bob#7'] as const;
+const SUI_COIN_TYPE = '0x2::sui::SUI';
+
+const bigintBalance = (value: unknown): bigint => {
+	if (typeof value === 'bigint') return value;
+	if (typeof value === 'number') return BigInt(value);
+	if (typeof value === 'string' && value.length > 0) return BigInt(value);
+	return 0n;
+};
+
+const sdkBalanceAmount = (response: { readonly balance?: unknown }): bigint => {
+	const balance = response.balance;
+	if (typeof balance === 'object' && balance !== null && 'balance' in balance) {
+		return bigintBalance((balance as { readonly balance?: unknown }).balance);
+	}
+	return bigintBalance(balance);
+};
+
+const runPrivateContentBoot = async (opts: {
+	readonly runtimeRoot: string;
+	readonly routerStateRoot: string;
+}): Promise<PrivateContentBoot> => {
+	let walletHealth: WalletHealthProbe = {
+		status: null,
+		body: 'not probed',
+		url: '',
+		origin: PRIVATE_CONTENT_APP_ORIGIN,
+		attempts: [],
+	};
+	let accountFunding: Readonly<Record<string, AccountFundingEvidence>> = {};
+	const result = await runBoot({
+		configPath: CONFIG_PATH,
+		appName: 'private-content',
+		stackName: 'private-content',
+		runtimeRoot: opts.runtimeRoot,
+		routerStateRoot: opts.routerStateRoot,
+		withinScope: (ctx) =>
+			Effect.gen(function* () {
+				const wallet = ctx.resolvedValues.get('wallet#8') as WalletValue | undefined;
+				if (wallet === undefined) return;
+				walletHealth = yield* Effect.promise(async () => {
+					const url = `http://127.0.0.1:${wallet.localPort}${WalletHttpPath.HEALTH}`;
+					const origins = [
+						PRIVATE_CONTENT_APP_ORIGIN,
+						'http://dev.private-content.localhost:5175',
+						`http://dev.private-content.private-content.localhost:${PRIVATE_CONTENT_APP_PORT}`,
+						`http://localhost:${PRIVATE_CONTENT_APP_PORT}`,
+					] as const;
+					const attempts: WalletHealthAttempt[] = [];
+					for (const origin of origins) {
+						try {
+							const res = await fetch(url, {
+								headers: {
+									[WALLET_AUTH_HEADER]: `${WALLET_BEARER_PREFIX}${wallet.token}`,
+									origin,
+								},
+							});
+							const body = await res.text();
+							attempts.push({ origin, status: res.status, body });
+							if (res.status === 200) {
+								return {
+									status: res.status,
+									body,
+									url,
+									origin,
+									attempts,
+								};
+							}
+						} catch (cause) {
+							attempts.push({
+								origin,
+								status: null,
+								body: cause instanceof Error ? cause.message : String(cause),
+							});
+						}
+					}
+					const first = attempts[0];
+					if (first !== undefined) {
+						return {
+							status: first.status,
+							body: first.body,
+							url,
+							origin: first.origin,
+							attempts,
+						};
+					}
+					return {
+						status: null,
+						body: 'not probed',
+						url,
+						origin: PRIVATE_CONTENT_APP_ORIGIN,
+						attempts,
+					};
+				});
+
+				const sui = ctx.resolvedValues.get('sui#0') as BalanceReader | undefined;
+				const wal = ctx.resolvedValues.get('coin:wal#2') as
+					| { readonly fullCoinType?: unknown }
+					| undefined;
+				if (sui === undefined || typeof wal?.fullCoinType !== 'string') return;
+				const walCoinType = wal.fullCoinType;
+				accountFunding = yield* Effect.promise(async () => {
+					const entries = await Promise.all(
+						accountKeys.map(async (key) => {
+							const account = ctx.resolvedValues.get(key) as
+								| { readonly address?: unknown; readonly funding?: unknown }
+								| undefined;
+							if (typeof account?.address !== 'string') {
+								return [
+									key,
+									{
+										sui: 0n,
+										wal: 0n,
+										funding: { requested: [], applied: [] },
+									},
+								] as const;
+							}
+							const [suiBalance, walBalance] = await Promise.all([
+								sui.sdk.client.getBalance({ owner: account.address, coinType: SUI_COIN_TYPE }),
+								sui.sdk.client.getBalance({
+									owner: account.address,
+									coinType: walCoinType,
+								}),
+							]);
+							return [
+								key,
+								{
+									sui: sdkBalanceAmount(suiBalance),
+									wal: sdkBalanceAmount(walBalance),
+									funding: accountFundingState(account.funding),
+								},
+							] as const;
+						}),
+					);
+					return Object.fromEntries(entries);
+				});
+			}),
+	});
+	return { result, walletHealth, accountFunding };
+};
+
+const accountFundingState = (value: unknown): AccountFundingState => {
+	if (typeof value !== 'object' || value === null) {
+		return { requested: [], applied: [] };
+	}
+	const funding = value as {
+		readonly requested?: unknown;
+		readonly applied?: unknown;
+	};
+	return {
+		requested: accountFundingEntries(funding.requested),
+		applied: accountFundingEntries(funding.applied),
+	};
+};
+
+const accountFundingEntries = (value: unknown): ReadonlyArray<AccountFundingEntry> =>
+	Array.isArray(value)
+		? value.flatMap((entry) => {
+				if (typeof entry !== 'object' || entry === null) return [];
+				const item = entry as {
+					readonly coin?: unknown;
+					readonly fullCoinType?: unknown;
+					readonly amount?: unknown;
+				};
+				if (
+					typeof item.coin !== 'string' ||
+					typeof item.fullCoinType !== 'string' ||
+					!(
+						typeof item.amount === 'string' ||
+						typeof item.amount === 'bigint' ||
+						typeof item.amount === 'number'
+					)
+				) {
+					return [];
+				}
+				return [
+					{
+						coin: item.coin,
+						fullCoinType: item.fullCoinType,
+						amount: item.amount,
+					},
+				];
+			})
+		: [];
+
+const fundingAmount = (amount: string | bigint | number): string => amount.toString();
+
+const hasFundingEntry = (
+	entries: ReadonlyArray<AccountFundingEntry>,
+	coin: string,
+	fullCoinType: string,
+	amount: string,
+): boolean =>
+	entries.some(
+		(entry) =>
+			entry.coin === coin &&
+			entry.fullCoinType === fullCoinType &&
+			fundingAmount(entry.amount) === amount,
+	);
+
+const assertPrivateContentBoot = (boot: PrivateContentBoot): void => {
+	const { result, walletHealth } = boot;
+	expect(result.failures).toEqual([]);
+	expect(result.topLevelErrorCount).toBe(0);
+	expect([...result.readyKeys].sort()).toEqual([...expectedKeys].sort());
+	expect(
+		walletHealth.status,
+		`wallet health ${walletHealth.url} attempts: ${walletHealth.attempts
+			.map((a) => `${a.origin} -> ${a.status}: ${a.body}`)
+			.join(' | ')}`,
+	).toBe(200);
+
+	for (const [key, resolved] of result.resolvedValues) {
+		const hit = findSentinel(resolved, `$${key}`);
+		expect(hit, hit === null ? '' : `sentinel found at ${hit.path}: ${hit.value}`).toBeNull();
+	}
+
+	const walrus = walrusValue(result);
+	expect(walrus.mode).toBe('local');
+	expect(walrus.nodes.length).toBe(4);
+	expect(walrus.packageConfig.systemObjectId).toMatch(/^0x[0-9a-f]+$/i);
+	expect(walrus.packageConfig.stakingPoolId).toMatch(/^0x[0-9a-f]+$/i);
+	expect(walrus.proxyUrl).toMatch(/^https?:\/\//);
+	expect(walrus.aggregatorUrl).toMatch(/^https?:\/\//);
+	expect(walrus.publisherUrl).toMatch(/^https?:\/\//);
+
+	const seal = sealValue(result);
+	expect(seal.objectId).toMatch(/^0x[0-9a-f]+$/i);
+	expect(seal.keyServerUrl).toBe(
+		'http://key-server.private-content.private-content.localhost:2024',
+	);
+	expect(seal.serverConfigs.length).toBeGreaterThanOrEqual(1);
+	for (const cfg of seal.serverConfigs) {
+		expect(cfg.objectId).toMatch(/^0x[0-9a-f]+$/i);
+		expect(cfg.weight).toBeGreaterThan(0);
+	}
+
+	for (const key of accountKeys) {
+		const funding = boot.accountFunding[key];
+		expect(funding, `${key} funding evidence should be present`).toBeDefined();
+		expect(funding!.sui, `${key} should have SUI after account funding`).toBeGreaterThan(0n);
+		expect(hasFundingEntry(funding!.funding.requested, 'SUI', SUI_COIN_TYPE, '1000000000')).toBe(
+			true,
+		);
+		expect(
+			hasFundingEntry(funding!.funding.requested, 'WAL', walrus.walCoinType ?? '', '500000000'),
+		).toBe(true);
+		if (
+			walrus.walCoinType !== null &&
+			hasFundingEntry(funding!.funding.applied, 'WAL', walrus.walCoinType, '500000000')
+		) {
+			expect(funding!.wal, `${key} should have WAL after WAL account funding`).toBeGreaterThan(0n);
+		}
+	}
+};
+
+const walrusValue = (result: BootResult): WalrusBootValue => {
+	const walrus = result.resolvedValues.get('walrus:walrus') as WalrusBootValue | undefined;
+	expect(walrus, 'walrus resolved value should be present').toBeDefined();
+	return walrus!;
+};
+
+const sealValue = (result: BootResult): SealBootValue => {
+	const seal = result.resolvedValues.get('seal:seal') as SealBootValue | undefined;
+	expect(seal, 'seal resolved value should be present').toBeDefined();
+	return seal!;
+};
+
+const walletValue = (result: BootResult): WalletValue => {
+	const wallet = result.resolvedValues.get('wallet#8') as WalletValue | undefined;
+	expect(wallet, 'wallet resolved value should be present').toBeDefined();
+	return wallet!;
+};
+
+const accountAddress = (values: ReadonlyMap<string, unknown>, key: string): string => {
+	const account = values.get(key) as { readonly address?: unknown } | undefined;
+	expect(account, `${key} resolved value should be present`).toBeDefined();
+	expect(account!.address, `${key} should carry an address`).toEqual(expect.any(String));
+	const address = account!.address as string;
+	expect(address).toMatch(/^0x[0-9a-f]+$/i);
+	return address;
+};
+
 describe('private-content boots end-to-end @e2e', () => {
-	it('every plugin reaches `ready` and the vault stack carries no sentinels', async () => {
+	it('every plugin reaches `ready` on cold boot and warm restart', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
 			console.warn(`private-content-boot: skipping — ${docker.detail}`);
@@ -170,103 +539,22 @@ describe('private-content boots end-to-end @e2e', () => {
 		// + sources/) directly.
 		process.env.SEAL_MOVE_SOURCE_OVERRIDE = SEAL_STUB_MOVE_DIR;
 
-		let walletHealthStatus: number | null = null;
-		const result = await runBoot({
-			configPath: CONFIG_PATH,
-			appName: 'private-content',
-			stackName: 'private-content',
-			withinScope: (ctx) =>
-				Effect.gen(function* () {
-					const wallet = ctx.resolvedValues.get('wallet#7') as WalletValue | undefined;
-					if (wallet === undefined) return;
-					walletHealthStatus = yield* Effect.promise(async () => {
-						try {
-							const res = await fetch(`${wallet.url}${WalletHttpPath.HEALTH}`, {
-								headers: {
-									[WALLET_AUTH_HEADER]: `${WALLET_BEARER_PREFIX}${wallet.token}`,
-									origin: PRIVATE_CONTENT_ROUTER_ORIGIN,
-								},
-							});
-							return res.status;
-						} catch {
-							return null;
-						}
-					});
-				}),
-		});
+		const runtimeRoot = mkdtempSync(join(tmpdir(), 'private-content-warm-runtime-'));
+		const routerStateRoot = mkdtempSync(join(tmpdir(), 'private-content-warm-router-'));
 
-		// Recursive-entrypoint expectation. Ordinals come from the
-		// dependency closure rooted at the host app. The vault package
-		// resource id is `package:vault`; seal's namespaced resource id is
-		// `seal:seal` per `registry-publish.ts::sealResourceId`.
-		const expectedKeys = [
-			'sui#0',
-			'account/publisher#1',
-			'package:vault#2',
-			'account/alice#3',
-			'account/bob#4',
-			'walrus:walrus',
-			'seal:seal',
-			'wallet#7',
-			'host-service/app#8',
-		];
-		expect(result.failures).toEqual([]);
-		expect(result.topLevelErrorCount).toBe(0);
-		expect([...result.readyKeys].sort()).toEqual([...expectedKeys].sort());
-		expect(walletHealthStatus).toBe(200);
+		const cold = await runPrivateContentBoot({ runtimeRoot, routerStateRoot });
+		assertPrivateContentBoot(cold);
 
-		// Walk every resolved value in the projection snapshot
-		// looking for any sentinel. A regression in S7 (seal sugar)
-		// or S8 (walrus seedAccounts sugar) would surface here as
-		// a non-null match.
-		for (const [key, resolved] of result.resolvedValues) {
-			const hit = findSentinel(resolved, `$${key}`);
-			expect(hit, hit === null ? '' : `sentinel found at ${hit.path}: ${hit.value}`).toBeNull();
+		const warm = await runPrivateContentBoot({ runtimeRoot, routerStateRoot });
+		assertPrivateContentBoot(warm);
+
+		expect(warm.result.runtimeRoot).toBe(cold.result.runtimeRoot);
+		expect(warm.result.routerDispatchDir).toBe(cold.result.routerDispatchDir);
+		expect(walletValue(warm.result).token).toBe(walletValue(cold.result).token);
+		for (const key of accountKeys) {
+			expect(accountAddress(warm.result.resolvedValues, key)).toBe(
+				accountAddress(cold.result.resolvedValues, key),
+			);
 		}
-
-		// Walrus resolved-value spot-check.
-		const walrus = result.resolvedValues.get('walrus:walrus') as
-			| {
-					readonly mode: 'local' | 'known';
-					readonly packageConfig: {
-						readonly systemObjectId: string;
-						readonly stakingPoolId: string;
-					};
-					readonly nodes: ReadonlyArray<unknown>;
-					readonly proxyUrl: string | null;
-					readonly aggregatorUrl: string | null;
-					readonly publisherUrl: string | null;
-			  }
-			| undefined;
-		expect(walrus, 'walrus resolved value should be present').toBeDefined();
-		expect(walrus!.mode).toBe('local');
-		expect(walrus!.nodes.length).toBe(4);
-		expect(walrus!.packageConfig.systemObjectId).toMatch(/^0x[0-9a-f]+$/i);
-		expect(walrus!.packageConfig.stakingPoolId).toMatch(/^0x[0-9a-f]+$/i);
-		expect(walrus!.proxyUrl).toMatch(/^https?:\/\//);
-		expect(walrus!.aggregatorUrl).toMatch(/^https?:\/\//);
-		expect(walrus!.publisherUrl).toMatch(/^https?:\/\//);
-
-		// Seal resolved-value spot-check.
-		const seal = result.resolvedValues.get('seal:seal') as
-			| {
-					readonly objectId: string;
-					readonly keyServerUrl: string;
-					readonly serverConfigs: ReadonlyArray<{
-						readonly objectId: string;
-						readonly weight: number;
-					}>;
-			  }
-			| undefined;
-		expect(seal, 'seal resolved value should be present').toBeDefined();
-		expect(seal!.objectId).toMatch(/^0x[0-9a-f]+$/i);
-		expect(seal!.keyServerUrl).toBe(
-			'http://key-server.private-content.private-content.localhost:2024',
-		);
-		expect(seal!.serverConfigs.length).toBeGreaterThanOrEqual(1);
-		for (const cfg of seal!.serverConfigs) {
-			expect(cfg.objectId).toMatch(/^0x[0-9a-f]+$/i);
-			expect(cfg.weight).toBeGreaterThan(0);
-		}
-	}, 300_000);
+	}, 600_000);
 });

@@ -1,4 +1,4 @@
-// Manifest emitter — name-blind envelope, atomic write.
+// Manifest emitter — endpoint-keyed envelope, atomic write.
 //
 // Architecture § Manifest data model. The envelope is L0 (`identity`
 // tuple, `manifestVersion`, `services` slot, `endpoints` lookup,
@@ -8,9 +8,9 @@
 //
 // The emitter:
 //   - Accepts per-plugin contributions through a `contribute` Effect.
-//   - Walks the routable declarations to build the flat `endpoints`
-//     lookup. The writer never looks at endpoint names by string
-//     literal — only the plugin's emitted Routable decl.
+//   - Walks endpoint contributions to build the flat `endpoints`
+//     lookup keyed by `endpointKey`. Entries still carry the declared
+//     endpoint `name` for build-integration lookup.
 //   - Writes atomically via tempfile + fsync + rename. The atomic-
 //     write primitive lives in L0 (per architecture § Collapsed:
 //     "Three tempfile+rename impls → one atomic-write primitive").
@@ -77,9 +77,9 @@ export class ManifestError extends Data.TaggedError('ManifestError')<{
 // -----------------------------------------------------------------------------
 
 /**
- * One plugin's contribution to the manifest. Name-blind: keyed by
- * `pluginKey` (branded), opaque `services` blob, plus a flat list of
- * endpoint entries the plugin owns.
+ * One plugin's contribution to the manifest. Keyed by `pluginKey`
+ * (branded), opaque `services` blob, plus a flat list of endpoint
+ * entries the plugin owns.
  *
  * The writer copies `services` through to
  * `envelope.services[pluginKey]`. The renderer of the typed shape
@@ -224,7 +224,7 @@ const serializeEnvelope = (envelope: ManifestEnvelope): string =>
  * Used by:
  *   - Codegen (architecture §6) — consumes plugin slices off
  *     `envelope.services[pluginKey]`.
- *   - Build integrations (Vite alias, Vitest preset) — consumes
+ *   - Build integrations (Vitest, Playwright, generated app code) — consumes
  *     `envelope.endpoints` lookup.
  *
  * The reader is read-only; no mutation, no IO beyond the single read.

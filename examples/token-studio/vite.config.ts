@@ -1,5 +1,5 @@
-import { defineDevstackViteConfig } from '@mysten-incubation/devstack/vite';
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
 
-export default defineDevstackViteConfig({ port: 5173, plugins: [react(), tailwindcss()] });
+export default defineConfig({ plugins: [react(), tailwindcss()] });

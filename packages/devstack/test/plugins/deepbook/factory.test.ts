@@ -5,7 +5,6 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { account } from '../../../src/plugins/account/index.ts';
 import {
 	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
@@ -23,24 +22,27 @@ const TESTNET_PYTH = {
 	wormholeStateId: '0x31358d198147da50db32eda2562951d53973a0c0ad5ed738e9b17d88b213d790',
 	feeds: [],
 };
+const OVERRIDE_IDS = {
+	packageId: '0xoverride-pkg',
+	registryId: '0xoverride-reg',
+	adminCapId: '0xoverride-admin',
+} as const;
 
 describe('deepbook(opts) — primary factory', () => {
-	it('refuses local mode without a publisher (sync DeepbookConfigError)', () => {
-		expect(() => deepbook({ mode: 'local' } as never)).toThrow(/publisher/);
+	it('refuses override mode without explicit deployment ids', () => {
+		expect(() => deepbook({ mode: 'override' } as never)).toThrow(/packageId/);
 	});
 
-	it('produces a branded plugin for local mode', () => {
-		const publisher = account('publisher');
-		const member = deepbook({ mode: 'local', publisher });
+	it('produces a branded plugin for override mode', () => {
+		const member = deepbook({ mode: 'override', ...OVERRIDE_IDS });
 		expect(isPlugin(member)).toBe(true);
 		expect(member.id).toMatch(/^deepbook\//);
 		expect(member.role).toBe('task');
 	});
 
-	it('represents the publisher direct-value ref in dependencies', () => {
-		const publisher = account('publisher');
-		const member = deepbook({ mode: 'local', publisher });
-		expect(member.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/publisher']);
+	it('depends only on Sui for override mode', () => {
+		const member = deepbook({ mode: 'override', ...OVERRIDE_IDS });
+		expect(member.dependsOn.map((resource) => resource.id)).toEqual(['sui']);
 	});
 
 	it('produces a task for known mode', () => {
@@ -147,11 +149,9 @@ describe('deepbook(opts) — primary factory', () => {
 			network: 'testnet',
 		});
 		const resolved = Effect.runSync(
-			member.start([{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never]) as Effect.Effect<
-				DeepbookResolved,
-				unknown,
-				never
-			>,
+			member.start([
+				{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never,
+			]) as Effect.Effect<DeepbookResolved, unknown, never>,
 		);
 		const caps =
 			typeof member.capabilities === 'function'
@@ -163,9 +163,7 @@ describe('deepbook(opts) — primary factory', () => {
 				cap.capabilityKey === DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 		);
 
-		expect(DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY).toBe(
-			`coinType:${DEEPBOOK_TESTNET_DEEP_COIN_TYPE}`,
-		);
+		expect(DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY).toBe(`coinType:${DEEPBOOK_TESTNET_DEEP_COIN_TYPE}`);
 		expect(strategy).toBeDefined();
 		expect(strategy?.kind).toBe('strategy-contributor');
 		if (strategy?.kind === 'strategy-contributor') {
@@ -186,10 +184,10 @@ describe('deepbook(opts) — primary factory', () => {
 });
 
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
-	it('exposes `.local` on a local network', () => {
+	it('exposes `.override` on a local network', () => {
 		const network = { mode: 'local' as const, chain: chainId('sui:localnet') };
 		const factories = deepbookFor(network);
-		expect(typeof factories.local).toBe('function');
+		expect(typeof factories.override).toBe('function');
 		expect(typeof factories.known).toBe('function');
 	});
 
@@ -197,13 +195,13 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 		const network = { mode: 'live' as const, chain: chainId('sui:testnet') };
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
-		// `factories.local` doesn't exist on this branch — accessing
+		// `factories.override` doesn't exist on this branch — accessing
 		// it would be a compile error. Runtime check: the property
 		// is undefined.
-		expect((factories as { local?: unknown }).local).toBeUndefined();
+		expect((factories as { override?: unknown }).override).toBeUndefined();
 	});
 
-	it('exposes `.known` and refuses `.local` on a fork network', () => {
+	it('exposes `.known` and refuses `.override` on a fork network', () => {
 		const network = {
 			mode: 'fork' as const,
 			chain: chainId('sui:mainnet-fork'),
@@ -212,10 +210,9 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
 		// Defense-in-depth runtime refusal — the type-level refusal
-		// is the primary mechanism (`.local` does not exist on the
+		// is the primary mechanism (`.override` does not exist on the
 		// fork branch's typed surface).
-		expect((factories as { local?: unknown }).local).toBeUndefined();
-		expect(() => factories._localRefused?.('sui:mainnet-fork')).toThrow(/fork/i);
+		expect((factories as { override?: unknown }).override).toBeUndefined();
 	});
 });
 

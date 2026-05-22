@@ -1,15 +1,15 @@
-// Deepbook local-mode plugin — minimal-boot smoke test.
+// Deepbook override-mode plugin — minimal-boot smoke test.
 //
 // Pins the public-surface composition contract:
 //
-//   defineDevstack(suiPlugin, publisher, deepbook({mode:'local', publisher}))
+//   defineDevstack(suiPlugin, deepbook({mode:'override', packageId, registryId, adminCapId}))
 //
 // compiles, validates (no `__MissingProvidersError`), and the resulting
 // Stack handle exposes a `deepbook/<name>` resource id.
-//
-// Unsupported local sub-features such as pools, local Pyth publishing,
+
+// Unsupported sub-features such as pools, local Pyth publishing,
 // margin, server, indexer, and market-maker are intentionally absent
-// from the public local options until they have real acquire behavior.
+// from the public override options until they have real acquire behavior.
 // Known deployments do surface the matching Pyth state handles; the
 // exact binding shape is pinned in `test/plugins/deepbook/factory.test.ts`.
 // The type-level refusals live in `test/plugins/deepbook/type-refusal.test-d.ts`.
@@ -17,8 +17,7 @@
 // This is NOT a docker-driven boot — that lives in the (future)
 // `deepbook-real-boot.test.ts` once the Move-publish substrate path
 // lands. The deepbook acquire body today short-circuits to a
-// resolved value populated from override env (matches the
-// walrus-stub-boot.test.ts staged-stub pattern). Boot via the
+// resolved value populated from explicit override ids. Boot via the
 // docker harness would still require the upstream Move + indexer +
 // server images.
 //
@@ -29,38 +28,40 @@
 import { describe, expect, it } from 'vitest';
 
 import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
-import { account } from '../../src/plugins/account/index.ts';
 import { deepbook } from '../../src/plugins/deepbook/index.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
 
+const override = {
+	mode: 'override',
+	packageId: '0xpkg',
+	registryId: '0xreg',
+	adminCapId: '0xadmin',
+} as const;
+
 describe('deepbook + sui.local() composes via defineDevstack', () => {
-	it('local mode composes with a publisher account ref', () => {
+	it('override mode composes with explicit deployment ids', () => {
 		const suiPlugin = sui();
-		const publisher = account('publisher');
-		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
+		const dex = deepbook({ ...override, name: 'main' });
 
 		const stack = defineDevstack({
-			members: [suiPlugin, publisher, dex],
+			members: [suiPlugin, dex],
 			stackName: 'deepbook-smoke',
 		});
 		expect(stack._tag).toBe('Stack');
-		expect(readStackEngine(stack).members.length).toBe(3);
+		expect(readStackEngine(stack).members.length).toBe(2);
 		const ids = readStackEngine(stack).members.map((m) => m.id);
 		expect(ids).toContain('sui');
-		expect(ids).toContain('account/publisher');
 		expect(ids).toContain('deepbook/main');
 	});
 
-	it('local mode threads the publisher account ref through dependencies', () => {
-		const publisher = account('publisher');
+	it('override mode depends on sui only', () => {
 		const dex = deepbook({
-			mode: 'local',
-			publisher,
+			...override,
 			name: 'arena',
 		});
 		expect(dex.id).toBe('deepbook/arena');
 		expect(dex.role).toBe('task');
-		expect(dex.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/publisher']);
+		expect(dex.dependsOn.map((resource) => resource.id)).toEqual(['sui']);
 	});
 
 	it('known mode wraps a canonical deployment', () => {
@@ -78,14 +79,12 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 	});
 
 	it('default name is `deepbook` when no name is supplied', () => {
-		const publisher = account('publisher');
-		const dex = deepbook({ mode: 'local', publisher });
+		const dex = deepbook(override);
 		expect(dex.id).toBe('deepbook/deepbook');
 	});
 
 	it('declares a stable plugin metadata key', () => {
-		const publisher = account('publisher');
-		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
+		const dex = deepbook({ ...override, name: 'main' });
 		expect(String(dex.pluginKey)).toBe('deepbook:main');
 	});
 });
