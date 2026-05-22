@@ -13,8 +13,7 @@ Runtime state is stack-scoped:
   snapshots/
 ```
 
-The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is
-running:
+The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is running:
 
 ```bash
 devstack snapshot save
@@ -78,5 +77,5 @@ Important caveats:
 - Snapshot docs should point at `orchestrators/snapshot` and `cli/snapshot-reader` source when
   inspecting behavior. Old engine and snapshot-smoke paths are not current.
 
-Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in
-non-interactive shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.
+Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in non-interactive
+shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.

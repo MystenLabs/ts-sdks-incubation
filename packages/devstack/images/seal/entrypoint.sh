@@ -22,11 +22,12 @@
 # restart), so signal-induced termination is safe — the next start
 # reads MASTER_KEY from env again and recomputes everything.
 #
-# Master-key staging: the plugin bind-mounts a 0o600 env-file at
-# /etc/seal/master-key.env containing `MASTER_KEY=<hex>`. We source
-# it BEFORE exec'ing the key-server so the secret lands in the
-# child's environment, NEVER in `docker inspect` / host process
-# env. Distilled-doc invariant #3.
+# Master-key staging: the plugin bind-mounts a 0o600 env-file
+# containing `MASTER_KEY=<hex>`, then passes its container path via
+# MASTER_KEY_ENVFILE (defaulting to /etc/seal/master-key.env). We
+# source it BEFORE exec'ing the key-server so the secret lands in the
+# child's environment, NEVER in `docker inspect` / host process env.
+# Distilled-doc invariant #3.
 #
 # The keygen path (`runOneShot({ entrypoint: 'seal-cli', argv: ['genkey'] })`)
 # bypasses this entrypoint entirely via the runtime's --entrypoint
@@ -43,14 +44,15 @@ set -eu
 . /usr/local/lib/devstack/signal-forward.sh
 
 # Source the master-key env-file if it's present at the well-known
-# bind-mount path. `set -a` exports every VAR=value pair to the
-# child process environment. Idempotent: if the file is absent,
-# we fall through with no error (the binary will fail with its own
-# typed message, which is the right level of detail for callers).
-if [ -r /etc/seal/master-key.env ]; then
+# bind-mount path. `set -a` exports every VAR=value pair to the child
+# process environment. Idempotent: if the file is absent, we fall
+# through with no error (the binary will fail with its own typed
+# message, which is the right level of detail for callers).
+MASTER_KEY_ENVFILE_PATH="${MASTER_KEY_ENVFILE:-/etc/seal/master-key.env}"
+if [ -r "$MASTER_KEY_ENVFILE_PATH" ]; then
 	set -a
 	# shellcheck disable=SC1091
-	. /etc/seal/master-key.env
+	. "$MASTER_KEY_ENVFILE_PATH"
 	set +a
 fi
 

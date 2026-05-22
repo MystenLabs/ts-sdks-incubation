@@ -21,10 +21,36 @@ archaeology.
 - This repo is still prototype-only. Break wrong APIs directly; do not add shims, deprecated
   exports, or parallel v2 surfaces.
 
+## P0 release gates
+
+No open P0 release gates are listed here. Keep new release blockers above the evidence ledger until
+they have fresh proof.
+
 ## P0 release evidence
 
-No P0 release blockers are currently open. Keep this section as the release-readiness evidence
-ledger.
+Keep this section as the release-readiness evidence ledger. Evidence below is not enough to release
+until every open P0 release gate above is closed.
+
+### Private-content `up` proof - resolved 2026-05-22
+
+Private-content was added back to the release gate list and then rerun through the full attached
+`up` lifecycle after the Docker Desktop bind-mount and Seal env-file fixes.
+
+Current evidence:
+
+- From `examples/private-content`,
+  `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs up --renderer plain --verbose`
+  reached ready on 2026-05-22. Sui, publisher/alice/bob, the Vault package, wallet, Seal, Walrus,
+  and the Vite app all reached ready.
+- The proof covered the real Walrus path: contract deploy, four storage-node containers, WAL
+  exchange resolution, WAL seeding for the three configured accounts, endpoint registration for
+  `walrus-node-0..3`, `walrus-aggregator`, and `walrus-publisher`, and app readiness at the routed
+  dev endpoint.
+- The same session handled shutdown via `SIGINT`: app, Walrus, Seal, wallet, and Sui all
+  transitioned through stopping/stopped without an unclean-shutdown error.
+- Follow-up
+  `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs wipe --yes --json`
+  returned `ok: true`; a Docker label check found no remaining `private-content` containers.
 
 ### Private-content browser proof - resolved 2026-05-22
 
@@ -234,11 +260,10 @@ Current evidence:
 
 ## Current evidence
 
-- `examples/README.md` now lists `_template`, `connect-four`, `deepbook-trader`,
-  `private-content`, and `token-studio` as runnable apps. `fork-greeting` is marked coming soon.
-- The release snapshot workflow now targets the current curated example directories:
-  `connect-four`, `private-content`, and `deepbook-trader`. Stale `arena`/`deepbook-full` workflow
-  entries are gone.
+- `examples/README.md` now lists `_template`, `connect-four`, `deepbook-trader`, `private-content`,
+  and `token-studio` as runnable apps. `fork-greeting` is marked coming soon.
+- The release snapshot workflow now targets the current curated example directories: `connect-four`,
+  `private-content`, and `deepbook-trader`. Stale `arena`/`deepbook-full` workflow entries are gone.
 - `examples/fork-greeting` is restored as a coming-soon config-only example. Its config uses
   `sui({ mode: 'fork', upstream: 'testnet' })`, so it typechecks but runtime apply/dev fail through
   the intentional fork-coming-soon path.
@@ -284,10 +309,9 @@ Current evidence:
   `pnpm --filter @mysten-incubation/devstack typecheck`,
   `pnpm --filter @mysten-incubation/devstack build`,
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/api/define-devstack.test.ts test/plugins/coin/funding-strategy.test.ts test/plugins/coin/registry.test.ts test/plugins/coin/discovery.test.ts test/plugins/account/funding.test.ts test/plugins/account/variants.test.ts test/e2e/token-studio-boot.test.ts`
-  (6 files / 47 tests),
-  `pnpm --filter @mysten-incubation/docs build`, and
-  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`. A residue scan over live
-  source, built dist, docs content, examples, and README found no `coin.local`,
+  (6 files / 47 tests), `pnpm --filter @mysten-incubation/docs build`, and
+  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`. A residue scan over live source,
+  built dist, docs content, examples, and README found no `coin.local`,
   `SYMBOL_FORM_NO_DEP_EDGE_WARNING`, `resolveBySymbol`, or symbol `CoinAddressForm` branch.
 - Devstack focused boot/plugin checks passed:
   `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts`

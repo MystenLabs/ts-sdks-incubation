@@ -18,12 +18,12 @@
 //      IMPLEMENTATION CONSTRAINT: the L1 `EnsureContainerSpec`
 //      contract today does NOT expose an `envFiles:` slot — only
 //      `env:`. We work around this by bind-mounting the env-file
-//      into the container at a known path; the cargo image's
-//      entrypoint shell (see Hard requirement #7) is responsible
-//      for `set -a; . /etc/seal/master-key.env; set +a` BEFORE
-//      exec'ing the daemon, so the secret never appears in
-//      `docker inspect`. ARCHITECTURE REVISION TRACKED: add
-//      `envFiles` to `EnsureContainerSpec`.
+//      into the container under a stack-root bind mount; the cargo
+//      image's entrypoint shell (see Hard requirement #7) is
+//      responsible for `set -a; . "$MASTER_KEY_ENVFILE"; set +a`
+//      BEFORE exec'ing the daemon, so the secret never appears in
+//      `docker inspect`. ARCHITECTURE REVISION TRACKED: add `envFiles`
+//      to `EnsureContainerSpec`.
 //
 //   #5 (NO host-port publish): the `ports:` field is INTENTIONALLY
 //      absent from the `EnsureContainerSpec` we pass to the runtime.
@@ -37,6 +37,7 @@
 //      this file does NOT re-declare it.
 
 import { Effect, type Scope } from 'effect';
+import { basename, dirname } from 'node:path';
 
 import type {
 	ContainerHandle,
@@ -73,6 +74,8 @@ export const INSIDE_CONFIG_PATH = '/etc/seal/key-server-config.yaml' as const;
  *  sources this before exec'ing the daemon (Hard requirement #3 +
  *  #7). */
 export const INSIDE_MASTER_KEY_ENVFILE = '/etc/seal/master-key.env' as const;
+
+const INSIDE_RUNTIME_ROOT = '/devstack/runtime' as const;
 
 /** Container-side env defaults. NB: `MASTER_KEY` is NOT here — it
  *  flows via the bind-mounted env-file sourced by the entrypoint
@@ -144,6 +147,13 @@ export interface KeyServerContainerSpec {
 	 *  0o700 parent. Distilled-doc invariant #2. Bind-mounted (see
 	 *  file header for the missing-envFiles workaround). */
 	readonly masterKeyEnvFileHostPath: string;
+	/** Mount source on host. Docker Desktop can reject freshly-created
+	 *  nested file/leaf-directory bind sources even when a parent mount
+	 *  can see them, so key-server mounts the stack root and points the
+	 *  entrypoint at the config/envfile inside that mount. */
+	readonly runtimeRootHostPath: string;
+	readonly configContainerPath: string;
+	readonly masterKeyEnvFileContainerPath: string;
 	/** Inner docker network for sui DNS resolution. */
 	readonly network: string;
 	/** Router routing spec — Traefik file-provider stamped per
@@ -194,6 +204,10 @@ export interface KeyServerSpecInputs {
 export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContainerSpec => {
 	const masterKeyEnvFileHostPath = `${inputs.servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
 	const configHostPath = `${inputs.servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
+	const runtimeRootHostPath = dirname(dirname(inputs.servicePath));
+	const serviceDirName = basename(inputs.servicePath);
+	const configContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${KEY_SERVER_CONFIG_BASENAME}`;
+	const masterKeyEnvFileContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${MASTER_KEY_ENVFILE_BASENAME}`;
 	void inputs.routedHostname; // flows through routedUrl
 	return {
 		image: inputs.image,
@@ -201,6 +215,9 @@ export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContai
 		labels: inputs.labels,
 		configHostPath,
 		masterKeyEnvFileHostPath,
+		runtimeRootHostPath,
+		configContainerPath,
+		masterKeyEnvFileContainerPath,
 		network: inputs.suiNetwork,
 		routing: [
 			{
@@ -227,19 +244,18 @@ export const buildKeyServerEnsureContainerSpec = (
 	// The bind-mounted env-file is sourced by the entrypoint
 	// shell BEFORE the daemon exec. See file header on the
 	// L1 `envFiles:` gap.
-	env: { ...CONTAINER_ENV },
+	env: {
+		...CONTAINER_ENV,
+		CONFIG_PATH: spec.configContainerPath,
+		MASTER_KEY_ENVFILE: spec.masterKeyEnvFileContainerPath,
+	},
 	networkAttach: [spec.network],
 	// Distilled-doc invariant #5 — `ports` intentionally absent.
 	extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
 	mounts: [
 		{
-			source: spec.configHostPath,
-			target: INSIDE_CONFIG_PATH,
-			readonly: true,
-		},
-		{
-			source: spec.masterKeyEnvFileHostPath,
-			target: INSIDE_MASTER_KEY_ENVFILE,
+			source: spec.runtimeRootHostPath,
+			target: INSIDE_RUNTIME_ROOT,
 			readonly: true,
 		},
 	],

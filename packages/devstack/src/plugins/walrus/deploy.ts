@@ -30,7 +30,7 @@
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
 import { access, mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type {
@@ -276,10 +276,13 @@ export const runDeployOneShot = (
 		yield* ensureDeployOutputDir(inputs);
 
 		const outputOwner = hostBindMountOwner();
+		const outputParentHostPath = dirname(inputs.outputDirHostPath);
+		const outputMountTarget = '/opt/walrus/runtime';
+		const outputDirInContainer = join(outputMountTarget, basename(inputs.outputDirHostPath));
 		const argv: ReadonlyArray<string> = [
 			'deploy',
 			'--output-dir',
-			'/opt/walrus/outputs',
+			outputDirInContainer,
 			'--committee-size',
 			String(inputs.committeeSize),
 			'--shards',
@@ -303,8 +306,8 @@ export const runDeployOneShot = (
 					argv,
 					mounts: [
 						{
-							source: inputs.outputDirHostPath,
-							target: '/opt/walrus/outputs',
+							source: outputParentHostPath,
+							target: outputMountTarget,
 						},
 					],
 					...(outputOwner === undefined ? {} : { env: { DEVSTACK_HOST_UID_GID: outputOwner } }),

@@ -23,6 +23,7 @@
 //   - The deploy one-shot — `deploy.ts`.
 
 import { Duration, Effect, Scope } from 'effect';
+import { basename, dirname, join } from 'node:path';
 
 import type {
 	ContainerHandle,
@@ -172,6 +173,9 @@ export const startStorageNodes = (
 
 		const stopGrace = Duration.seconds(spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS);
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS);
+		const deployParentHostPath = dirname(spec.deployHostMountPath);
+		const deployMountTarget = '/opt/walrus/runtime';
+		const deployOutputDirInContainer = join(deployMountTarget, basename(spec.deployHostMountPath));
 
 		const indices = Array.from({ length: spec.nodeCount }, (_, i) => i);
 
@@ -198,6 +202,7 @@ export const startStorageNodes = (
 							configHash: `${spec.deployConfigHash}|node=${i}`,
 							env: {
 								HOSTNAME: nodeHostname,
+								DEPLOY_OUTPUT_DIR: deployOutputDirInContainer,
 								// Storage node dials the per-stack sui faucet
 								// over docker DNS. Resolves once dual-home is
 								// in place — see secondary-network attach
@@ -217,11 +222,12 @@ export const startStorageNodes = (
 							extraHosts: { 'host.docker.internal': 'host-gateway' },
 							mounts: [
 								{
-									// Mount the deploy outputs (per-node key + config)
-									// read-only; the run.sh inside the image selects
-									// `dryrun-node-<i>.{yaml,keystore}` by hostname.
-									source: spec.deployHostMountPath,
-									target: '/opt/walrus/outputs',
+									// Mount the parent directory and point the
+									// entrypoint at the deploy child. Docker Desktop
+									// can reject freshly-created nested leaf bind
+									// sources even when a parent mount can see them.
+									source: deployParentHostPath,
+									target: deployMountTarget,
 									readonly: true,
 								},
 							],

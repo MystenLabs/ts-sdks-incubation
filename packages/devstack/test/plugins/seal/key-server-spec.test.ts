@@ -113,11 +113,17 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 
 	it('env map does NOT carry MASTER_KEY (invariant #3)', () => {
 		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
+		const ensureSpec = buildKeyServerEnsureContainerSpec(spec);
 		// The spec returns a constant env map; assert MASTER_KEY is
 		// neither set there nor in the shared CONTAINER_ENV.
 		expect('MASTER_KEY' in CONTAINER_ENV).toBe(false);
+		expect('MASTER_KEY' in ensureSpec.env!).toBe(false);
 		expect(CONTAINER_ENV.CONFIG_PATH).toBe(INSIDE_CONFIG_PATH);
 		expect(CONTAINER_ENV.MASTER_KEY_ENVFILE).toBe(INSIDE_MASTER_KEY_ENVFILE);
+		expect(ensureSpec.env?.CONFIG_PATH).toBe(
+			'/devstack/runtime/seal/seal/key-server-config.yaml',
+		);
+		expect(ensureSpec.env?.MASTER_KEY_ENVFILE).toBe('/devstack/runtime/seal/seal/master-key.env');
 		// Sanity: master-key envfile path the spec uses for the bind-
 		// mount source is under the servicePath dir (so the host file
 		// the entrypoint shell sources is the rendered one).
@@ -157,6 +163,25 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
 		expect(spec.configHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/key-server-config.yaml`);
 		expect(spec.masterKeyEnvFileHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/master-key.env`);
+		expect(spec.runtimeRootHostPath).toBe('/tmp/devstack/runtime');
+		expect(spec.configContainerPath).toBe(
+			'/devstack/runtime/seal/seal/key-server-config.yaml',
+		);
+		expect(spec.masterKeyEnvFileContainerPath).toBe(
+			'/devstack/runtime/seal/seal/master-key.env',
+		);
+	});
+
+	it('mounts the stack root instead of fresh leaf files for Docker Desktop visibility', () => {
+		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
+		const ensureSpec = buildKeyServerEnsureContainerSpec(spec);
+		expect(ensureSpec.mounts).toEqual([
+			{
+				source: '/tmp/devstack/runtime',
+				target: '/devstack/runtime',
+				readonly: true,
+			},
+		]);
 	});
 
 	it('signal-forwarding stop grace is 15s (invariant #7 — daemon needs SIGINT-forward window)', () => {

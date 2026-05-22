@@ -21,7 +21,7 @@
 set -euo pipefail
 
 mkdir -p /root/.sui/sui_config /var/walrus
-WORKING_DIR=/opt/walrus/outputs
+WORKING_DIR="${DEPLOY_OUTPUT_DIR:-/opt/walrus/outputs}"
 
 echo "run-walrus: preparing ${HOSTNAME} config from ${WORKING_DIR}"
 

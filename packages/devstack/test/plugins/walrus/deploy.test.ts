@@ -183,7 +183,19 @@ describe('parseDeployOutput', () => {
 	it.effect('passes host uid/gid so bind-mounted deploy output remains snapshot-readable', () =>
 		Effect.gen(function* () {
 			const expectedOwner = hostBindMountOwnerForTest();
+			const outputDir = '/tmp/devstack/walrus/deploy';
 			const runtime = oneShotRuntime((spec) => {
+				expect(spec.argv?.slice(0, 3)).toEqual([
+					'deploy',
+					'--output-dir',
+					'/opt/walrus/runtime/deploy',
+				]);
+				expect(spec.mounts).toEqual([
+					{
+						source: '/tmp/devstack/walrus',
+						target: '/opt/walrus/runtime',
+					},
+				]);
 				expect(spec.env).toEqual(
 					expectedOwner === undefined ? undefined : { DEVSTACK_HOST_UID_GID: expectedOwner },
 				);
@@ -198,7 +210,7 @@ describe('parseDeployOutput', () => {
 				});
 			});
 
-			const state = yield* Effect.scoped(runDeployOneShot(runtime, deployInputs()));
+			const state = yield* Effect.scoped(runDeployOneShot(runtime, deployInputs(outputDir)));
 			expect(state.walrusPackageId).toBe('0xabc111');
 		}),
 	);
