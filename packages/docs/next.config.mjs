@@ -23,15 +23,6 @@ const config = {
 			},
 		];
 	},
-	redirects: () => {
-		return [
-			{
-				source: '/',
-				destination: '/dev-wallet',
-				statusCode: 302,
-			},
-		];
-	},
 };
 
 export default withMDX(config);
