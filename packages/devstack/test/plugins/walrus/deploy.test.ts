@@ -203,6 +203,60 @@ describe('parseDeployOutput', () => {
 		}),
 	);
 
+	it.effect('waits for the centralized Sui funds-ready gate before walrus-deploy', () =>
+		Effect.gen(function* () {
+			const events: string[] = [];
+			const runtime = oneShotRuntime(() => {
+				events.push('deploy');
+				expect(events).toEqual(['funds-ready', 'deploy']);
+				return Effect.succeed({
+					exitCode: 0,
+					stdout: [
+						'package_id: 0xabc111',
+						'system_object: 0xabc222',
+						'staking_object: 0xabc333',
+					].join('\n'),
+					stderr: '',
+				});
+			});
+
+			const state = yield* Effect.scoped(
+				runDeployOneShot(runtime, {
+					...deployInputs(),
+					waitForFundsReady: Effect.sync(() => {
+						events.push('funds-ready');
+					}),
+				}),
+			);
+
+			expect(state.walrusPackageId).toBe('0xabc111');
+			expect(events).toEqual(['funds-ready', 'deploy']);
+		}),
+	);
+
+	it.effect('does not start walrus-deploy when the funds-ready gate fails', () =>
+		Effect.gen(function* () {
+			const runtime = oneShotRuntime(() => Effect.die('walrus-deploy should not run'));
+
+			const exit = yield* Effect.scoped(
+				runDeployOneShot(runtime, {
+					...deployInputs(),
+					waitForFundsReady: Effect.fail(new Error('faucet not funds-ready')),
+				}).pipe(Effect.exit),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value._tag).toBe('WalrusPluginError');
+				expect(error.value.phase).toBe('deploy');
+				expect(error.value.message).toContain('funding gate failed before walrus-deploy');
+				expect(error.value.message).toContain('faucet not funds-ready');
+			}
+		}),
+	);
+
 	it.live('retries Docker Desktop bind-source visibility races', () =>
 		Effect.gen(function* () {
 			const outputDir = join(mkdtempSync(join(tmpdir(), 'devstack-walrus-bind-race-')), 'deploy');

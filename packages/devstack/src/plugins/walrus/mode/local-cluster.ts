@@ -226,6 +226,7 @@ export interface LocalClusterDeps {
 	readonly suiChainId: ChainId;
 	readonly suiRpcUrlInNetwork: string;
 	readonly walrusFaucetUrlInNetwork: string;
+	readonly waitForFundsReady: Effect.Effect<void, unknown>;
 	readonly app: string;
 	readonly stack: string;
 	/** Pre-allocated /24 prefix from `subnetForStack`. */
@@ -330,6 +331,7 @@ export const bootLocalCluster = (
 			outputDirHostPath: deps.deployHostMountPath,
 			suiRpcUrlInNetwork: deps.suiRpcUrlInNetwork,
 			walrusFaucetUrlInNetwork: deps.walrusFaucetUrlInNetwork,
+			waitForFundsReady: deps.waitForFundsReady,
 			committeeSize: opts.nodeCount,
 			shards: opts.shards,
 			epochDuration: opts.epochDuration,

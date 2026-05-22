@@ -146,12 +146,67 @@ cp "$HOME/.sui/sui_config/sui.keystore" "$ADMIN_KEYSTORE"
 sed -e "s|$HOME/.sui/sui_config/sui.keystore|$ADMIN_KEYSTORE|" \
 	"$HOME/.sui/sui_config/client.yaml" > "$ADMIN_WALLET_YAML"
 
-# Faucet the admin so the publish has gas.
+# Faucet the admin so the publish has gas. This mirrors the central
+# SUI faucet strategy's wire contract: non-2xx and body-level Failure are
+# "not funded yet", not success. The local faucet can briefly return
+# HTTP failure while it is transaction-ready for one account but still
+# serializing another request, so deploy uses a bounded retry instead of
+# letting curl's exit 22 abort the whole one-shot.
 echo "deploy-walrus: faucet → $ADMIN_ADDR ($FAUCET_URL)"
-FAUCET_RESPONSE=$(curl -fsS -X POST \
-	-H 'Content-Type: application/json' \
-	-d "{\"FixedAmountRequest\":{\"recipient\":\"$ADMIN_ADDR\"}}" \
-	"$FAUCET_URL")
+FAUCET_RESPONSE=""
+FAUCET_MAX_ATTEMPTS=45
+FAUCET_RETRY_SLEEP=2
+FAUCET_RESPONSE_FILE="$WORKING_DIR/faucet-response.json"
+
+request_admin_faucet_once() {
+	local response_file="$1"
+	local http_code=""
+	local curl_status=0
+	local body=""
+
+	rm -f "$response_file"
+	http_code=$(curl -sS -X POST \
+		-o "$response_file" \
+		-w '%{http_code}' \
+		-H 'Content-Type: application/json' \
+		-d "{\"FixedAmountRequest\":{\"recipient\":\"$ADMIN_ADDR\"}}" \
+		"$FAUCET_URL") || curl_status=$?
+	[ -f "$response_file" ] && body="$(cat "$response_file")"
+
+	if [ "$curl_status" -ne 0 ]; then
+		echo "deploy-walrus: faucet POST failed (curl=$curl_status http=${http_code:-000}): ${body:0:400}" >&2
+		return 1
+	fi
+	if ! [[ "$http_code" =~ ^[0-9][0-9][0-9]$ ]]; then
+		echo "deploy-walrus: faucet POST returned malformed HTTP status '$http_code': ${body:0:400}" >&2
+		return 1
+	fi
+	if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+		echo "deploy-walrus: faucet POST returned HTTP $http_code: ${body:0:400}" >&2
+		return 1
+	fi
+	if echo "$body" | grep -q '"Failure"'; then
+		echo "deploy-walrus: faucet body reported Failure: ${body:0:400}" >&2
+		return 1
+	fi
+
+	FAUCET_RESPONSE="$body"
+	return 0
+}
+
+for attempt in $(seq 1 "$FAUCET_MAX_ATTEMPTS"); do
+	if request_admin_faucet_once "$FAUCET_RESPONSE_FILE"; then
+		break
+	fi
+	if [ "$attempt" -lt "$FAUCET_MAX_ATTEMPTS" ]; then
+		echo "deploy-walrus: faucet attempt $attempt/$FAUCET_MAX_ATTEMPTS failed; retrying in ${FAUCET_RETRY_SLEEP}s" >&2
+		sleep "$FAUCET_RETRY_SLEEP"
+	fi
+done
+if [ -z "$FAUCET_RESPONSE" ]; then
+	echo "deploy-walrus: faucet did not accept admin funding after $FAUCET_MAX_ATTEMPTS attempts" >&2
+	exit 1
+fi
 echo "deploy-walrus: faucet response: ${FAUCET_RESPONSE:0:200}..."
 
 # Poll balance until faucet's coins settle.

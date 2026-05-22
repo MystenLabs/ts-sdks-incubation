@@ -116,6 +116,9 @@ export interface DeployInputs {
 	/** Docker network the deploy one-shot attaches to, so its in-network
 	 *  Sui RPC + faucet hostnames resolve. */
 	readonly suiNetworkName: string;
+	/** Centralized Sui funding readiness gate. Local Sui exposes this so
+	 *  callers don't race the faucet's socket-ready / funds-ready gap. */
+	readonly waitForFundsReady?: Effect.Effect<void, unknown>;
 }
 
 /** Default deploy one-shot timeout. Walrus genesis publish runs the
@@ -159,8 +162,11 @@ const hostBindMountOwner = (): string | undefined => {
 const excerpt = (label: string, value: string): string => {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return '';
-	const max = 1_200;
-	const body = trimmed.length > max ? `${trimmed.slice(0, max)}...` : trimmed;
+	const max = 2_400;
+	const body =
+		trimmed.length > max
+			? `${trimmed.slice(0, 1_100)}...<truncated ${trimmed.length - 2_200} chars>...${trimmed.slice(-1_100)}`
+			: trimmed;
 	return ` ${label}=${JSON.stringify(body)}`;
 };
 
@@ -188,6 +194,16 @@ const isBindSourceMissing = (result: {
 	result.exitCode === 125 &&
 	/bind source path does not exist/i.test(result.stderr) &&
 	/invalid mount config/i.test(result.stderr);
+
+const stringifyCause = (cause: unknown): string => {
+	if (cause instanceof Error) return cause.message;
+	if (typeof cause === 'string') return cause;
+	try {
+		return JSON.stringify(cause);
+	} catch {
+		return String(cause);
+	}
+};
 
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
@@ -246,6 +262,17 @@ export const runDeployOneShot = (
 	inputs: DeployInputs,
 ): Effect.Effect<CachedDeployState, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
+		if (inputs.waitForFundsReady !== undefined) {
+			yield* inputs.waitForFundsReady.pipe(
+				Effect.mapError((cause) =>
+					walrusPluginError(
+						'deploy',
+						`walrus deploy funding gate failed before walrus-deploy: ${stringifyCause(cause)}`,
+						{ cause },
+					),
+				),
+			);
+		}
 		yield* ensureDeployOutputDir(inputs);
 
 		const outputOwner = hostBindMountOwner();
@@ -270,34 +297,36 @@ export const runDeployOneShot = (
 		];
 
 		const runAttempt = () =>
-			runtime.runOneShot({
-				image: inputs.walrusImage,
-				argv,
-				mounts: [
-					{
-						source: inputs.outputDirHostPath,
-						target: '/opt/walrus/outputs',
-					},
-				],
-				...(outputOwner === undefined ? {} : { env: { DEVSTACK_HOST_UID_GID: outputOwner } }),
-				network: inputs.suiNetworkName,
-				// Same `host-gateway` rationale as storage-nodes.ts —
-				// deploy one-shot dials sui's host-bound RPC + faucet via
-				// `host.docker.internal`. Native Linux Docker needs the
-				// explicit mapping; Docker Desktop is a no-op.
-				extraHosts: { 'host.docker.internal': 'host-gateway' },
-				timeoutMillis: DEPLOY_TIMEOUT_MS,
-			}).pipe(
-				Effect.catch((cause) =>
-					Effect.fail(
-						walrusPluginError(
-							'deploy',
-							`walrus deploy one-shot failed: ${cause.reason}: ${cause.detail}`,
-							{ cause },
+			runtime
+				.runOneShot({
+					image: inputs.walrusImage,
+					argv,
+					mounts: [
+						{
+							source: inputs.outputDirHostPath,
+							target: '/opt/walrus/outputs',
+						},
+					],
+					...(outputOwner === undefined ? {} : { env: { DEVSTACK_HOST_UID_GID: outputOwner } }),
+					network: inputs.suiNetworkName,
+					// Same `host-gateway` rationale as storage-nodes.ts —
+					// deploy one-shot dials sui's host-bound RPC + faucet via
+					// `host.docker.internal`. Native Linux Docker needs the
+					// explicit mapping; Docker Desktop is a no-op.
+					extraHosts: { 'host.docker.internal': 'host-gateway' },
+					timeoutMillis: DEPLOY_TIMEOUT_MS,
+				})
+				.pipe(
+					Effect.catch((cause) =>
+						Effect.fail(
+							walrusPluginError(
+								'deploy',
+								`walrus deploy one-shot failed: ${cause.reason}: ${cause.detail}`,
+								{ cause },
+							),
 						),
 					),
-				),
-			);
+				);
 
 		let result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 		for (let attempt = 0; ; attempt += 1) {

@@ -312,6 +312,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 						suiChainId: sui.chain,
 						suiRpcUrlInNetwork,
 						walrusFaucetUrlInNetwork,
+						waitForFundsReady: sui.waitForTransactionsReady.wait,
 						app: identity.app,
 						stack: identity.stack,
 						subnetPrefix: walrusSubnetPrefix,
