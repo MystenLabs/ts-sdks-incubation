@@ -160,7 +160,7 @@ Docs to update:
 
 Examples/tests to update:
 
-- `packages/devstack/examples-test/complex.ts`
+- `packages/devstack/test/fixtures/typecheck/complex.ts`
 - `packages/devstack/test/plugins/network-defaults.test.ts`
 - `packages/devstack/test/plugins/sui/local-image.test.ts`
 - `packages/devstack/test/plugins/sui/local-ports.test.ts`

@@ -97,18 +97,19 @@ Target shape:
 - Keep `allowLocalhostVite` as an explicit insecure opt-in for tests, but avoid requiring it for
   stack-scoped routed app flows.
 
-### Public wallet barrel exports too many internals
+### Wallet source barrel exports too many internals
 
 Current shape:
 
-- The wallet barrel exports protocol schemas, pairing helpers, origin policy helpers, server
-  dispatch/start functions, routable builders, codegen builders, and snapshot builders.
-- Most app authors only need `wallet`, `WalletOptions`, generated dapp-kit config, and maybe
-  protocol types for tests.
+- The package root is already narrow, but the wallet source barrel still exports protocol schemas,
+  pairing helpers, origin policy helpers, server dispatch/start functions, routable builders,
+  codegen builders, and snapshot builders.
+- Most app authors only need package-root `wallet`, `WalletOptions`, generated dapp-kit config, and
+  maybe protocol types for tests.
 
 Target shape:
 
-- Keep root exports small.
+- Keep package-root exports small.
 - Move server internals, pairing helpers, CORS helpers, and codegen/snapshot builders behind
   internal source imports or test utilities.
 - Keep protocol request/response types public only if the dev-wallet package consumes them from the
@@ -131,9 +132,10 @@ Target shape:
 
 - Remove `WalletOptions.enableRouter` if routing can be derived from stack/router state. Otherwise
   update docs to present it as a required explicit flag.
-- Move `WALLET_EXPAND_ACCOUNTS_ALL` and `WalletExpandAccountsAllExpander` out of root exports.
-- Stop exporting wallet server internals from the root barrel: `dispatch`, `startHttpServer`,
-  `WalletServerConfig`, `WalletServerHandle`, and `makeWalletRoutable`.
+- Move `WALLET_EXPAND_ACCOUNTS_ALL` and `WalletExpandAccountsAllExpander` behind an internal
+  composer hook if `accounts: 'all'` remains.
+- Stop exporting wallet server internals from the source barrel unless tests or
+  `@mysten-incubation/dev-wallet` need them through a narrower test/internal path.
 - Stop exporting wallet implementation helpers unless required by `@mysten-incubation/dev-wallet`:
   `mintToken`, `acquirePairingToken`, `tokenPath`, `composePairUrl`, `parsePairUrl`,
   `parseBearerHeader`, `safeBearerEquals`, `redactToken`, `resolveOriginPolicy`, `checkOrigin`, and

@@ -12,9 +12,9 @@ import {
 	definePlugin,
 	resource,
 	sui,
-} from '../src/index.ts';
+} from '../../../src/index.ts';
 import { Effect } from 'effect';
-import type { NetworkConfig } from '../src/index.ts';
+import type { NetworkConfig } from '../../../src/index.ts';
 
 const keyvalResource = resource<'keyval', { readonly url: string }>('keyval');
 

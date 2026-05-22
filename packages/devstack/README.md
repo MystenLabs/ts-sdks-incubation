@@ -1,73 +1,67 @@
 # @mysten-incubation/devstack
 
-> **Current-state warning (2026-05-21):** this package is not release-ready. For current handoff,
-> blocker status, and orchestration instructions, start with `notes/UNRESOLVED-BLOCKERS.md`.
-> Historical notes/reviews were deleted; use git history for archaeology.
+Devstack composes a local Sui development environment from one TypeScript config. It can boot Sui,
+fund accounts, publish Move packages, run the dev wallet, start app servers, wire services such as
+Walrus, Seal, and DeepBook, and generate typed files for app and test code.
 
-The next-generation devstack substrate: type-system, user-facing API surface, runtime,
-orchestrators, and plugins.
+This package is still prototype-stage inside the monorepo and is not published to npm yet. The
+current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
 
-This directory is the canonical `@mysten-incubation/devstack` package after the package-directory
-cutover. The example, docs, CI, and install-smoke follow-up work remains tracked in the blocker
-ledger.
+## Quick Start
 
-## Scope
+Create a `devstack.config.ts` in your app:
 
-This package contains:
+```ts
+import { account, defineDevstack, localPackage, sui, wallet } from '@mysten-incubation/devstack';
 
-- Capability contracts as TypeScript interfaces.
-- The substrate primitives (lifecycle, plugin shape, manifest envelope, renderer projection,
-  state-store, cross-process roster protocol, typed events/commands, OnChainArtifactPublisher,
-  cache).
-- The user-facing API: `defineDevstack({ members, ...options })`, plugin authoring helpers,
-  capability declaration helpers, mode-narrowed factories, and branded primitives.
-- L2 plugins (sui, walrus, seal, deepbook, postgres, account, wallet, package, coin, faucet,
-  action).
-- Orchestrators (snapshot, router, codegen) and surfaces (CLI, TUI).
+const localnet = sui();
+const publisher = account('publisher');
+const alice = account('alice');
 
-For agents/orchestrators picking up this work, start with the rolling blocker ledger at
-`notes/UNRESOLVED-BLOCKERS.md`. That compact first-read file is enough to begin a clean
-orchestration session.
+const hello = localPackage('hello', {
+	sourcePath: './move/hello',
+	publisher,
+});
 
-## Boundary
+const devWallet = wallet({ accounts: [publisher, alice] });
 
-Plugin authors and engine implementers import from this package. **Apps do not.** Apps consume
-codegen output emitted via the `Codegenable` contract; the engine, contracts, and substrate
-primitives are not reachable from L5 example code. This is enforced at lint time and observable here
-through the absence of any app-shaped entry point.
-
-## Layout
-
-```
-src/
-  substrate/      lifecycle SM, resource-native plugin shape, manifest,
-                  projection, state-store, cross-process protocol, typed events
-  contracts/      capability contracts
-  primitives/     on-chain-artifact publisher, cache
-  api/            defineDevstack, definePlugin, capability helpers,
-                  mode-narrowed factories
-  plugins/        L2 plugins (sui, walrus, seal, deepbook, postgres,
-                  account, wallet, package, coin, faucet, action)
-  orchestrators/  snapshot, router, codegen
-  surfaces/       CLI + TUI
+export default defineDevstack({
+	members: [localnet, hello, devWallet],
+	stackName: 'main',
+	codegen: { outputDir: 'src/generated' },
+});
 ```
 
-## Effect v4
-
-This package targets Effect v4 beta (catalog pin). The substrate uses `Scope`, `Layer`, `Context`,
-`Effect.gen`, and `Schema` for runtime contracts. App-facing generated outputs avoid Effect types;
-plugin-author and engine surfaces intentionally expose them.
-
-### Packed consumer typechecking
-
-The package-level smoke audit uses the common application posture of `skipLibCheck: true`.
-Devstack's plugin-author and engine surfaces intentionally expose Effect v4 beta types, so strict
-library checking would typecheck Effect's beta declarations rather than just devstack's package
-boundary. The smoke audit packs the package, installs it in a clean temp consumer, checks the
-installed CLI, checks ESM imports for the root, `/vite`, and `/runtime` exports, boots a minimal
-stack, and verifies the consumer compiles with `skipLibCheck` enabled:
+Run the stack during development:
 
 ```bash
-pnpm --filter @mysten-incubation/devstack build
-pnpm --filter @mysten-incubation/devstack smoke:pack-consumer
+pnpm devstack up
 ```
+
+Run one-shot setup before typechecking, building, or tests:
+
+```bash
+pnpm devstack apply
+```
+
+Generated files are written under `src/generated` by default. Runtime state, manifests, snapshots,
+and logs stay under `.devstack/`.
+
+## Package Surface
+
+- Root API: stack composition, built-in factories, plugin-author helpers, and public types.
+- CLI: `devstack up`, `apply`, `status`, `doctor`, `config`, `schema --json`, `snapshot`, `prune`,
+  and `wipe`.
+- Build integrations: `@mysten-incubation/devstack/vite`, `/vitest`, `/playwright`, `/browser`, and
+  `/runtime`.
+
+App code should consume generated files and the runtime manifest. It should not import devstack
+engine internals directly.
+
+## Docs
+
+- [Quickstart](https://ts-sdks-incubation.vercel.app/devstack/quickstart)
+- [Local development](https://ts-sdks-incubation.vercel.app/devstack/features/local-dev)
+- [Vitest integration](https://ts-sdks-incubation.vercel.app/devstack/features/testing-vitest)
+- [Playwright integration](https://ts-sdks-incubation.vercel.app/devstack/features/testing-playwright)
+- [Services](https://ts-sdks-incubation.vercel.app/devstack/features/services)

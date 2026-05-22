@@ -5,7 +5,7 @@
 
 import { Effect } from 'effect';
 
-import { defineDevstack, definePlugin, resource } from '../src/index.ts';
+import { defineDevstack, definePlugin, resource } from '../../../src/index.ts';
 
 const keyvalResource = resource<'keyval', { readonly url: string }>('keyval');
 

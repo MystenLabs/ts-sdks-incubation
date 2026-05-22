@@ -8,6 +8,6 @@
 		"allowImportingTsExtensions": true,
 		"rootDir": "."
 	},
-	"include": ["src/**/*", "examples-test/**/*", "test/**/*"],
+	"include": ["src/**/*", "test/**/*"],
 	"exclude": ["node_modules"]
 }

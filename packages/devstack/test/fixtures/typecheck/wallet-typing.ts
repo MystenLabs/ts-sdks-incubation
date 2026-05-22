@@ -6,9 +6,9 @@
 // `WalletAccountMember<Name>` so each literal resource id survives into the
 // recursive stack-composition dependency closure.
 
-import { defineDevstack, sui } from '../src/index.ts';
-import { account } from '../src/plugins/account/index.ts';
-import { wallet } from '../src/plugins/wallet/index.ts';
+import { defineDevstack, sui } from '../../../src/index.ts';
+import { account } from '../../../src/plugins/account/index.ts';
+import { wallet } from '../../../src/plugins/wallet/index.ts';
 
 const localnet = sui();
 const alice = account('alice');

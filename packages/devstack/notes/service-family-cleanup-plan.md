@@ -103,21 +103,22 @@ Target shape:
   intended current network.
 - Make docs clear about which values are built in and which must be supplied.
 
-### Root exports include service internals
+### Root and source-barrel exports include service internals
 
 Current shape:
 
-- Walrus root exports include `WAL_FAUCET_STRATEGY_KEY`, `WalFaucetStrategy`, `WalFaucetRequest`,
-  `WALRUS_STATE_REGISTRY_KEY`, `WalrusStateEntry`, and `WALRUS_ROUTER_PORT`.
-- Seal exports registry/resource helper shapes and `SealKeyManager`.
-- DeepBook exports `deepbookPluginKey` from the plugin barrel.
-- Postgres exports connection string helpers and TCP endpoint constants from the root.
+- Walrus root exports still include faucet strategy internals such as `WalFaucetStrategy` and
+  `WalFaucetRequest`, while plugin-source barrels still expose registry/router internals.
+- Seal root exports include `sealLocalKeygenStrict` and `SealKeyManager`.
+- DeepBook root exports include funding-strategy and Pyth helper surfaces, and the plugin-source
+  barrel exports `deepbookPluginKey`.
+- Postgres root exports connection string helpers and TCP endpoint constants.
 
 Target shape:
 
 - Root exports should expose factories, option types, resolved values, bindings, and public errors.
-- Registry keys, plugin keys, router ports, key managers, and faucet strategy internals should be
-  internal unless a first-party custom-plugin example imports them.
+- Registry keys, plugin keys, router ports, key managers, strict refusal helpers, and faucet
+  strategy internals should be internal unless a first-party custom-plugin example imports them.
 - Keep Postgres connection helpers only if docs/examples use them as app-facing utilities.
 
 ### Postgres comments preserve future-live architecture
@@ -139,10 +140,10 @@ Target shape:
   first-party uses.
 - Change Walrus local options so admin signer and seed recipients are separate fields.
 - Rename or delete DeepBook `mode: 'local'` unless it performs a real local deployment.
-- Remove service internals from the root barrel:
-  - Walrus registry/faucet/router constants unless still required by tests through root imports.
-  - Seal registry resource helpers and key manager types unless app-facing.
-  - DeepBook plugin-key export.
+- Remove service internals from package-root and plugin-source barrels:
+  - Walrus faucet/registry/router internals unless still required by tests through root imports.
+  - Seal strict refusal helpers, registry/resource helpers, and key manager types unless app-facing.
+  - DeepBook plugin-key, funding-strategy, and Pyth helper internals unless app-facing.
 - Trim Postgres public docs/comments to current local-only behavior.
 
 ## 4. Internal implementation changes
