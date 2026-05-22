@@ -19,8 +19,9 @@ name: Devstack E2E
 #   2. restore: per-example. Downloads the artifact, extracts to
 #             `.devstack/stacks/<stack>/snapshots/`, runs
 #             `devstack snapshot restore baseline`, then reads the restored
-#             snapshot catalog through the CLI and verifies restored runtime
-#             files/images.
+#             snapshot catalog through the CLI, resolves the `baseline`
+#             label to its canonical snapshot directory id, and verifies
+#             restored runtime files/images.
 
 on:
   pull_request:
@@ -180,7 +181,10 @@ jobs:
             const snapshots = JSON.parse(snapshotRaw);
             const status = JSON.parse(statusRaw);
             const entries = snapshots.data?.entries ?? [];
-            if (!snapshots.ok || !entries.some((entry) => entry.snapshotId === "baseline")) {
+            const baseline = entries.find(
+              (entry) => entry.name === "baseline" || entry.snapshotId === "baseline",
+            );
+            if (!snapshots.ok || baseline === undefined) {
               throw new Error("restored snapshot catalog does not contain baseline");
             }
             if (!status.ok) {
@@ -191,7 +195,7 @@ jobs:
             }
 
             const stackRoot = join(".devstack", "stacks", expectedStack);
-            const metaPath = join(stackRoot, "snapshots", "baseline", "meta.json");
+            const metaPath = join(stackRoot, "snapshots", baseline.snapshotId, "meta.json");
             const meta = JSON.parse(readFileSync(metaPath, "utf8"));
             if (meta.app !== expectedApp) {
               throw new Error(`restored snapshot app mismatch: ${meta.app}`);
