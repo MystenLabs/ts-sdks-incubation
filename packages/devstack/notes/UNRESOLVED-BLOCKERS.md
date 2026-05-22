@@ -2,14 +2,17 @@
 
 Last updated: 2026-05-22.
 
-This file is intentionally short. Resolved worker logs and migration history were removed so future
-sessions start from the current product truth instead of old cleanup noise. Use git history for
-archaeology.
+This file tracks current release gates only. Closed investigations, worker logs, and historical
+proof details belong in git history, not in the live blocker ledger.
 
 ## Current decisions
 
 - The example set is curated. Deleted mini/examples stay deleted: `effect-app`, `hello-world`,
   `plugin-author-redis`, `postgres-mini`, `seal-mini`, and `walrus-mini`.
+- Forking is a coming-soon feature, not a release gate. Do not advertise `fork-greeting` as a
+  runnable release target until the fork runtime path has real product proof.
+- Local DeepBook swaps remain unavailable until local DeepBook, Pyth, and pool acquisition are
+  first-class. The shipped DeepBook demo stays localnet-only and shows the unavailable swap state.
 - Walrus local-cluster images use upstream release tarballs only. Do not reintroduce Rust/Cargo
   source builds.
 - Walrus release images are pinned to upstream `testnet-v1.49.1` tarballs. The image build verifies
@@ -23,338 +26,54 @@ archaeology.
 
 ## P0 release gates
 
-No open P0 release gates are listed here. Keep new release blockers above the evidence ledger until
-they have fresh proof.
+No open P0 release gates.
 
-Release proof checklist:
+## Required release proof
 
-- Private-content `up` must be current before release. The latest proof is recorded in the
-  Private-content `up` evidence item below.
+Before a release candidate, rerun the current proof from a clean checkout and clean package build.
+Keep any new failure above `P0 release gates` until it is fixed and reproved.
 
-## P0 release evidence
+- Devstack package proof:
+  - `pnpm --filter @mysten-incubation/devstack typecheck`
+  - `pnpm --filter @mysten-incubation/devstack build`
+  - `pnpm --filter @mysten-incubation/devstack test`
+  - `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`
+- Docs and scaffold proof:
+  - `pnpm --filter @mysten-incubation/docs build`
+  - `pnpm --filter @mysten-incubation/create-devstack-app typecheck`
+  - `pnpm --filter @mysten-incubation/create-devstack-app build`
+  - `pnpm --filter @mysten-incubation/create-devstack-app run check-template`
+- Example typechecks against generated config:
+  - `_template`
+  - `connect-four`
+  - `deepbook-trader`
+  - `private-content`
+  - `token-studio`
+  - `fork-greeting`
+- Private-content attached lifecycle proof remains required before release:
+  - Build `@mysten-incubation/devstack` and `@mysten-incubation/dev-wallet` first.
+  - From `examples/private-content`, run
+    `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs up --renderer plain --verbose`.
+  - Verify Sui, configured accounts, the Vault package, wallet, Seal, Walrus, and the Vite app all
+    reach ready.
+  - Verify `SIGINT` shuts the stack down cleanly, then run
+    `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs wipe --yes --json`
+    and confirm no stack-owned Docker resources remain.
+- Browser/product proof:
+  - `pnpm --filter @mysten-incubation/private-content test:e2e`
+  - `pnpm --filter @mysten-incubation/token-studio test:e2e`
+  - `pnpm --filter @mysten-incubation/deepbook-trader test:e2e`
+- Real Docker proof:
+  - `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack test:e2e`
+  - `node packages/devstack/dist/cli/main.mjs prune --dry-run --json`
+- Preview-distribution proof:
+  - The `Continuous Releases (pkg.pr.new)` PR workflow must pass.
+  - A preview-installed scaffolded app must run `devstack apply`, verify its manifest identity, and
+    wipe clean.
 
-Keep this section as the release-readiness evidence ledger. Evidence below is not enough to release
-until every open P0 release gate above is closed.
+## Non-release follow-ups
 
-### Private-content `up` proof - resolved 2026-05-22
+These are intentionally not P0 release gates:
 
-Private-content was added back to the release gate list and then rerun through the full attached
-`up` lifecycle after the Docker Desktop bind-mount and Seal env-file fixes.
-
-Current evidence:
-
-- From `examples/private-content`,
-  `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs up --renderer plain --verbose`
-  reached ready on 2026-05-22. Sui, publisher/alice/bob, the Vault package, wallet, Seal, Walrus,
-  and the Vite app all reached ready.
-- The proof covered the real Walrus path: contract deploy, four storage-node containers, WAL
-  exchange resolution, WAL seeding for the three configured accounts, endpoint registration for
-  `walrus-node-0..3`, `walrus-aggregator`, and `walrus-publisher`, and app readiness at the routed
-  dev endpoint.
-- The same session handled shutdown via `SIGINT`: app, Walrus, Seal, wallet, and Sui all
-  transitioned through stopping/stopped without an unclean-shutdown error.
-- Follow-up
-  `DEVSTACK_APP=private-content node ../../packages/devstack/dist/cli/main.mjs wipe --yes --json`
-  returned `ok: true`; a Docker label check found no remaining `private-content` containers.
-
-### Private-content browser proof - resolved 2026-05-22
-
-Private-content now has real app code and a Playwright spec for:
-
-`encrypt -> Walrus store -> Walrus fetch -> Seal decrypt`
-
-Current boot evidence verifies the stack shape and resolved Walrus/Seal values. The real browser
-roundtrip has now been rerun after the latest Walrus/Sui readiness fix.
-
-Resolved 2026-05-21: the previous local Walrus readiness failure was not a Walrus release-binary
-problem. The root cause was Sui localnet pruning. `packages/devstack/images/sui/entrypoint.sh`
-patched only `fullnode.yaml`, while `sui start` localnet also reads `network.yaml` and per-validator
-YAML files that still had aggressive pruning (`num-epochs-to-retain: 0`). Walrus then bootstrapped
-from a package-publish checkpoint that Sui had already pruned, producing
-`Checkpoint 20194 not found` and shutting the storage node down.
-
-Current status:
-
-- Sui entrypoint now patches every generated YAML containing `authority-store-pruning-config`,
-  including `num-epochs-to-retain-for-checkpoints`.
-- Docker image content hashes now include files under the build context, so entrypoint/script edits
-  invalidate managed image tags instead of reusing stale images.
-- `pnpm --filter @mysten-incubation/private-content typecheck` passed on 2026-05-21 after
-  `devstack apply` booted Sui, accounts, the vault package, Seal, wallet, and Walrus. The old
-  `storage-node-3 never became ready` / `Checkpoint ... not found` failure did not recur.
-
-Current evidence:
-
-- `pnpm --filter @mysten-incubation/private-content test:e2e` passed on 2026-05-22.
-- The test booted Sui, accounts, the vault package, Seal, wallet, Walrus, and the host app, then
-  passed `e2e/seal-flow.spec.ts` in Chromium.
-
-### Live TUI/operator proof - resolved 2026-05-22
-
-The TUI/CLI surface has targeted tests and a manual live proof against a real stack lifecycle:
-
-- boot/progress display
-- log stream placement
-- endpoint/extras grouping
-- failure cause rendering
-- shutdown
-- hard-kill/second-signal behavior
-
-Current evidence:
-
-- The live proof found and fixed a real router-profile blocker before closing this item. Router
-  profiles now prefer the stable Docker endpoint context identity over daemon ID when both are
-  available. The previous daemon-ID profile tried to bind the fixed router ports while an older
-  context-profile router was already running; the rebuilt CLI now resolves to the context profile
-  and adopts the existing router singleton.
-- TUI row grouping now uses a renderer-owned classifier table and has built-in-family coverage in
-  `test/surfaces/tui/display-derivation.test.ts`.
-- CLI reference docs are pinned to `COMMAND_TREE` by `test/surfaces/cli/docs-drift.test.ts`.
-- Focused operator verification passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/surfaces/tui/display-derivation.test.ts test/surfaces/tui/dashboard.test.tsx test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/no-display-vocab.test.ts test/cli/main.test.ts test/cli/flags.test.ts test/surfaces/cli/dispatch.test.ts test/surfaces/cli/envelope.test.ts test/surfaces/cli/docs-drift.test.ts test/substrate/runtime/projection/persisted.test.ts test/substrate/runtime/projection/update.test.ts`
-  (11 files / 104 tests).
-- Focused router-profile verification passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/runtime-composition.test.ts test/orchestrators/router/traefik-container.test.ts test/surfaces/cli/commands/doctor-probes.test.ts`
-  (3 files / 23 tests).
-- Focused signal/escalation verification passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/surfaces/tui/input-commands.test.ts test/surfaces/tui/event-log.test.ts test/surfaces/tui/plain-renderer.test.ts test/substrate/runtime/supervisor.test.ts`
-  (4 files / 40 tests).
-- Real-Docker router traffic passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/router-real-traffic.test.ts`
-  (1 file / 1 test).
-- Manual live TUI proof passed on 2026-05-22 from `examples/_template`:
-  `node ../../packages/devstack/dist/cli/main.mjs up --app tui-proof --stack main --state-dir .devstack-tui-proof --renderer tui --verbose`.
-  The PTY reached `running`, `6/6 ready`, 5 URLs, 2 accounts, 1 package, and no errors. The visible
-  rows grouped Services, Packages, and Accounts; showed Sui `rpc`/`faucet`/`graphql`, wallet, and
-  app URLs; showed the `hello` package ID/MVR; and showed Alice/Bob addresses.
-- The same manual session handled `SIGINT`: the TUI logged
-  `Stack shutdown requested; waiting for graceful stop`, displayed `shutting-down`, showed
-  App/Wallet as stopped and Sui as stopping, then exited cleanly. A follow-up
-  `wipe --app tui-proof --stack main --state-dir .devstack-tui-proof --yes --json` returned
-  `ok: true`, and no `tui-proof` containers, networks, or volumes remained.
-- `pnpm --filter @mysten-incubation/docs build` passed on 2026-05-22.
-- `pnpm --filter @mysten-incubation/devstack typecheck` and
-  `pnpm --filter @mysten-incubation/devstack build` passed on 2026-05-22 after the parallel boundary
-  lane settled. They were rerun after the router-profile fix.
-
-### Installed-consumer boot - resolved 2026-05-22
-
-The packed-consumer smoke now packs the current devstack package, installs it into a clean temp
-consumer, verifies root/Vite/runtime imports, verifies removed `contracts` and `substrate` subpaths
-stay unexported, runs `devstack apply` against a minimal plugin stack from the installed package,
-checks the manifest and marker file, checks stack-context reads, and runs a skip-lib-check consumer
-typecheck.
-
-Current evidence:
-
-- `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` passed on 2026-05-22 with the
-  dist/images-only package shape.
-
-### Docker/manual lifecycle proof
-
-Current status:
-
-- Docker Desktop grouping labels are implemented and unit-pinned for containers, networks, and
-  volumes. Docker Desktop visual grouping was manually verified by the user on 2026-05-22.
-- `wipe` has a stack-scoped managed-resource path that removes containers, networks, and volumes by
-  ownership labels. The runtime also classifies Docker bridge-pool exhaustion as
-  `network-address-pool-exhausted` with a wipe/prune/subnet hint.
-- The broader long-lived-host story is closed for devstack-owned resources: `prune` inventories
-  devstack-labeled containers, networks, volumes, and managed images; defaults to containers,
-  networks, and volumes; removes managed networks best-effort with active-endpoint/in-use skips; and
-  leaves shared router profile groups unselected by default.
-- Unlabelled/foreign Docker networks remain outside devstack's destructive scope by design.
-
-Current evidence:
-
-- Focused Docker cleanup checks passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/remove-managed-resources.test.ts test/orchestrators/snapshot/cleanup.test.ts test/runtime/docker/error-mapping.test.ts test/surfaces/cli/dispatch.test.ts`
-  (4 files / 37 tests).
-- Built CLI dry-run passed on 2026-05-22:
-  `node packages/devstack/dist/cli/main.mjs prune --dry-run --json`. The inventory reported 5
-  devstack-labeled networks, selected 3 non-shared networks for dry-run removal, and left shared
-  router profile groups unselected by default.
-
-### Final package preview proof - resolved 2026-05-22
-
-Local tarball proof and the real preview-distribution path are both current.
-
-Current evidence:
-
-- The `pkg-pr-new` CLI refuses local publishing with
-  `Continuous Releases are only available in GitHub Actions`, so the actual preview proof was run
-  through the PR workflow.
-- The `Continuous Releases (pkg.pr.new)` PR workflow passed on 2026-05-22 for the release-readiness
-  branch. It ran `pnpm turbo build --filter "./packages/*"`, reran
-  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`, and published preview packages
-  for `@mysten-incubation/create-devstack-app`, `@mysten-incubation/dev-wallet`,
-  `@mysten-incubation/devstack`, and `@mysten-incubation/tsconfig`.
-- A temp consumer installed the preview `@mysten-incubation/create-devstack-app`, ran the published
-  `create-devstack-app` bin with `preview-smoke --no-install --no-git`, then installed the
-  scaffolded app against the preview `@mysten-incubation/devstack`, `@mysten-incubation/dev-wallet`,
-  and `@mysten-incubation/tsconfig` packages from `pkg.pr.new`.
-- In that preview-installed scaffolded app, `pnpm exec devstack --help` found the preview CLI and
-  `DEVSTACK_APP=preview-smoke pnpm exec devstack apply --state-dir .devstack-preview --app preview-smoke --stack main --network localnet`
-  booted the stack. The generated manifest had `identity.app === "preview-smoke"` and
-  `identity.stack === "main"`, and the scaffolded Vite app reached ready.
-- The temp proof stack was wiped with
-  `devstack wipe --state-dir .devstack-preview --app preview-smoke --stack main --yes --json`,
-  returning `ok: true`; follow-up Docker checks found no `preview-smoke` containers, volumes, or
-  networks.
-- `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` packs devstack, installs the
-  tarball into a clean temp consumer, verifies root/Vite/runtime imports, verifies removed subpaths
-  stay unexported, boots a minimal installed stack, checks the manifest and stack context, and runs
-  a skip-lib-check consumer typecheck. It was rerun after the router-profile fix.
-- `pnpm --filter @mysten-incubation/devstack exec npm pack --dry-run --json` passed on 2026-05-22.
-  The file list is `dist`, `images`, `README.md`, and `package.json`; no `src`, generated app
-  bindings, samples, nested `node_modules`, Move build output, or local runtime state are shipped.
-- `pnpm --filter @mysten-incubation/create-devstack-app exec npm pack --dry-run --json` passed on
-  2026-05-22. The file list is `dist`, `template`, `README.md`, and `package.json`.
-- A create-devstack-app tarball smoke passed on 2026-05-22: install the local `.tgz`, run the
-  published `create-devstack-app` bin with `--no-install --no-git`, verify the generated app name
-  and `DEVSTACK_APP` scripts are rewritten, verify the router origin is rewritten, and verify
-  `src/generated` is absent.
-
-## Resolved P1 blockers and release classifications
-
-- Packed declaration repair step resolved on 2026-05-22.
-  `packages/devstack/scripts/repair-effect-dts-imports.mjs` was removed, and
-  `packages/devstack/package.json` now builds with plain `tsdown`. The root cause was the
-  devstack-local catch-all `paths: { "*": ["./*"] }` mapping, which made declaration generation name
-  Effect helper subpaths as physical `node_modules/effect/dist/*` specifiers. With that mapping
-  removed from `packages/devstack/tsconfig.json`, `tsdown` emits public Effect subpaths directly.
-  `test/build-integrations/release-surface.test.ts` now scans packed `.d.mts` files for
-  package-local Effect specifiers, `.pnpm/effect`, and `.js` Effect subpath imports.
-- Release docs current API sweep passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/docs build`, plus a stale-marker scan over README, docs,
-  examples, and the scaffolder template for removed API terms.
-- Snapshot identity conflict rejection and start-time/PID identity resolved on 2026-05-22. The
-  identity guard now has focused conflict/fail-closed coverage, and snapshot reservations have
-  focused PID/start-time tests for live-holder refusal, finalizer cleanup, and stale same-PID
-  start-time orphan sweep. The orphan sweep bug where parsed reservations were treated as
-  foreign-host alive was fixed by forcing the reservation liveness check through the same-host path.
-  Verification:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/snapshot/identity-guard.test.ts test/orchestrators/snapshot/restore.test.ts test/substrate/runtime/cross-process/snapshot-reservation.test.ts test/substrate/runtime/cross-process/roster.test.ts test/substrate/runtime/cross-process/stack-lock.test.ts test/surfaces/cli/commands/supervisor-presence.test.ts`
-  (6 files / 45 tests).
-- The standalone wallet example was removed on 2026-05-22 after the curated wallet-backed
-  transaction demo moved to `examples/deepbook-trader`. The old send/balance app shell is
-  intentionally not carried forward.
-- Token-studio product proof resolved on 2026-05-22:
-  `pnpm --filter @mysten-incubation/token-studio test:e2e` passed both browser mint/transfer flows
-  against a real devstack stack.
-- Fork-greeting is no longer a release blocker. Forking is a coming-soon feature, so
-  `examples/fork-greeting` remains prototype coverage but is no longer advertised as a runnable
-  release target. Fork network selection now fails explicitly with a coming-soon error through the
-  CLI/env parser, and direct `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`. The
-  `fork-greeting` config now requests fork mode directly, so trying to apply it fails at config
-  import with `Sui fork mode is coming soon; 'testnet' forks are not available in this release.`
-- Docker-dependent tests that soft-skip are classified as follows: Docker absence is an environment
-  gap for release-gate lanes, not a passing result; fake-Docker runtime tests remain the normal
-  package regression lane; real-Docker e2e files belong in a separate Docker lane. The prior
-  `test/e2e/router-real-traffic.test.ts` fixture label mismatch is resolved; keep future failures
-  classified by current evidence rather than the stale `ForeignDockerResource` defect.
-- Exported example/template `devstack.config.ts` declarations no longer infer internal package
-  `dist` paths. `Stack` now has an erased public annotation form, and direct node-config checks
-  previously passed for the then-current examples; the renamed DeepBook app now passes
-  `pnpm --filter @mysten-incubation/deepbook-trader typecheck`.
-- Public symbol-form coin lookup was removed on 2026-05-22. `coin.local(...)`,
-  `SYMBOL_FORM_NO_DEP_EDGE_WARNING`, the symbol `CoinAddressForm` branch, and the symbol resolver
-  are gone from live source/docs/dist. `coin.fromPackage(pkg, witness)` now keys graph resources by
-  package plus witness (`coin:<package>/<witness>`), while codegen can still export by display
-  symbol. A compile-only test pins same-witness package ids as distinct.
-
-## Current evidence
-
-- `examples/README.md` now lists `_template`, `connect-four`, `deepbook-trader`, `private-content`,
-  and `token-studio` as runnable apps. `fork-greeting` is marked coming soon.
-- The release snapshot workflow now targets the current curated example directories: `connect-four`,
-  `private-content`, and `deepbook-trader`. Stale `arena`/`deepbook-full` workflow entries are gone.
-- `examples/fork-greeting` is restored as a coming-soon config-only example. Its config uses
-  `sui({ mode: 'fork', upstream: 'testnet' })`, so it typechecks but runtime apply/dev fail through
-  the intentional fork-coming-soon path.
-- Stale e2e boot tests for deleted examples were removed. Remaining boot tests point at final
-  directory names instead of `*-rewrite`.
-- `private-content-boot.test.ts` uses the test-owned
-  `packages/devstack/test/e2e/fixtures/walrus-stub` fixture instead of the deleted
-  `examples/walrus-mini` path.
-- Private-content now builds workspace dependencies before `devstack apply` in its build/typecheck
-  scripts so a clean checkout has `@mysten-incubation/devstack` and `@mysten-incubation/dev-wallet`
-  `dist/` outputs before Vite/TypeScript load package exports.
-- Sui pruning patch syntax check passed: `sh -n packages/devstack/images/sui/entrypoint.sh`.
-- Docker build-cache regression check passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/build-content-hash.test.ts`
-  (1 file / 5 tests).
-- Package build passed after the Docker build-context hash change:
-  `pnpm --filter @mysten-incubation/devstack build`.
-- Private-content typecheck passed after the Walrus/Sui readiness and dependency-build fixes:
-  `pnpm --filter @mysten-incubation/private-content typecheck`.
-- Private-content boot passed after building devstack from the working tree:
-  `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack exec vitest run test/e2e/private-content-boot.test.ts test/e2e/deepbook-boot.test.ts`
-  (2 files / 6 tests).
-- `deepbook-trader` is now localnet-only for examples. It consumes generated account, Sui, wallet,
-  and local DEEP coin bindings, funds Alice with SUI plus local DEEP through the centralized funding
-  pipeline, and explicitly disables swaps until local DeepBook/Pyth/pool acquisition is first-class.
-- DeepBook trader checks passed: `pnpm --filter @mysten-incubation/deepbook-trader typecheck`,
-  `pnpm --filter @mysten-incubation/deepbook-trader build`,
-  `pnpm --filter @mysten-incubation/deepbook-trader test:e2e` (2 Chromium smokes), and
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/host-service/service.test.ts test/runtime/docker/build-content-hash.test.ts test/surfaces/cli/dispatch.test.ts`
-  (3 files / 35 tests).
-- Release workflow/fork/example verification passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack typecheck`,
-  `pnpm --filter @mysten-incubation/devstack build`,
-  `pnpm --filter @mysten-incubation/example-fork-greeting typecheck`,
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/service.test.ts test/orchestrators/router/traefik-container.test.ts test/build-integrations/release-surface.test.ts test/surfaces/cli/docs-drift.test.ts test/surfaces/cli/dispatch.test.ts test/plugins/sui/fork-coming-soon.test.ts`
-  (6 files / 69 tests), plus direct node-config typechecks for `_template`, `connect-four`,
-  `deepbook-trader`, `private-content`, and `token-studio`.
-- `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` passed again after the
-  workflow/router/fork cleanup. It verified the packed CLI, runtime ESM import, removed subpaths,
-  minimal installed boot, and skip-lib-check consumer typecheck.
-- `pnpm --filter @mysten-incubation/docs build` passed after the CLI reference drift update.
-- Coin public-surface cleanup verification passed on 2026-05-22:
-  `pnpm --filter @mysten-incubation/devstack typecheck`,
-  `pnpm --filter @mysten-incubation/devstack build`,
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/api/define-devstack.test.ts test/plugins/coin/funding-strategy.test.ts test/plugins/coin/registry.test.ts test/plugins/coin/discovery.test.ts test/plugins/account/funding.test.ts test/plugins/account/variants.test.ts test/e2e/token-studio-boot.test.ts`
-  (6 files / 47 tests), `pnpm --filter @mysten-incubation/docs build`, and
-  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`. A residue scan over live source,
-  built dist, docs content, examples, and README found no `coin.local`,
-  `SYMBOL_FORM_NO_DEP_EDGE_WARNING`, `resolveBySymbol`, or symbol `CoinAddressForm` branch.
-- Devstack focused boot/plugin checks passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts`
-  (1 file / 14 tests) and
-  `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/deepbook-boot.test.ts test/e2e/private-content-boot.test.ts`
-  (2 files / 6 tests).
-- Local Pyth publishing remains unwired and intentionally absent from the public local DeepBook
-  options until it has real acquire behavior; the shipped `deepbook-trader` demo must stay on
-  localnet and show the unavailable swap state instead of falling back to public testnet.
-- Seal now derives a deterministic per-stack Docker subnet and passes it to `ensureNetwork`,
-  avoiding the local `network-address-pool-exhausted` failure seen at `seal:seal#6`.
-- DeepBook known deployments include Pyth state IDs for testnet/mainnet, and `deepbook-network`
-  generated bindings emit those IDs.
-- Focused tests passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts test/plugins/seal/key-server-spec.test.ts test/plugins/walrus/storage-nodes.test.ts`
-  (3 files / 35 tests).
-- Package typecheck passed: `pnpm --filter @mysten-incubation/devstack typecheck`.
-- CLI surface was rebuilt around Stricli command-scoped parsing. Focused CLI/TUI tests passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/surfaces/cli test/cli test/surfaces/tui/input-commands.test.ts test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/error-pane.test.ts`
-  (13 files / 76 tests).
-- CLI prune is now direct/offline, `wipe` and `snapshot restore` refuse to mutate while an attached
-  `devstack up` session is live, and removed peer commands fail as unknown routes.
-- Built CLI smoke passed for `schema --json`, `prune --dry-run --json`, invalid
-  `apply --renderer plain`, invalid `snapshot restore --config`, and removed `down --json`.
-- Package build passed after the CLI rewrite: `pnpm --filter @mysten-incubation/devstack build`.
-- Earlier working-tree checks also passed: `pnpm --filter @mysten-incubation/devstack build`,
-  `pnpm --filter @mysten-incubation/deepbook-trader typecheck`, and
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/key-server-spec.test.ts test/plugins/walrus/storage-nodes.test.ts`.
-- Docker host was reachable locally on 2026-05-21: `docker info --format '{{.ServerVersion}}'`
-  returned `29.4.0`.
-- Docker runtime regression suite passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker` (12 files / 97
-  tests).
-- Focused Docker lifecycle/image roundtrip passed:
-  `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/snapshot-container-image-roundtrip.test.ts`
-  (1 file / 1 test).
-- Focused real-Docker router traffic passed after the fixture pre-created the router network with
-  router-managed labels (`app=devstack-router`, `stack=<profile.networkName>`, `composeUi: false`)
-  instead of `router-real-traffic/e2e` labels:
-  `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack exec vitest run test/e2e/router-real-traffic.test.ts`
-  (1 file / 1 test).
+- Full fork-network runtime support.
+- Full local DeepBook/Pyth/pool acquisition and real DeepBook swaps.

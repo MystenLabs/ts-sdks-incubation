@@ -10,14 +10,14 @@ This plan covers the built-in service plugin families:
 - `packages/devstack/src/plugins/seal`
 - `packages/devstack/src/plugins/deepbook`
 - `packages/devstack/src/plugins/postgres`
-- service docs and examples, especially `examples/private-content` and `examples/deepbook-full`.
+- service docs and examples, especially `examples/private-content` and `examples/deepbook-trader`.
 
 The goal is to make service factories mode-explicit, delete placeholder/local-only surfaces that do
 not represent real built-in workflows, and keep the private-content and DeepBook examples honest.
 
-Composite/lifted-sibling cleanup has already happened. Router entrypoint ownership and substrate
-boundary decoupling are tracked in `boundary-cleanup-plan.md`; this plan focuses on each service
-family's public API and plugin-local architecture.
+Composite/lifted-sibling cleanup, router entrypoint ownership, and substrate boundary decoupling
+have already happened. This plan focuses on each service family's public API and plugin-local
+architecture.
 
 ## 2. Audit findings
 
@@ -159,7 +159,7 @@ Target shape:
 ## 5. Built-in plugin/component migration steps
 
 1. Convert private-content Walrus/Seal config to the chosen explicit mode forms.
-2. Convert deepbook-full to the chosen known/override DeepBook form.
+2. Convert deepbook-trader to the chosen known/override DeepBook form.
 3. Update mode-narrowed type refusal tests for removed underscore properties.
 4. Remove root exports and fix tests to import implementation details from internal paths only.
 5. Re-run service docs and examples against generated bindings.
@@ -176,7 +176,7 @@ Docs to update:
 Examples to update:
 
 - `examples/private-content/devstack.config.ts`
-- `examples/deepbook-full/devstack.config.ts`
+- `examples/deepbook-trader/devstack.config.ts`
 - any template that shows service factories.
 
 Tests to update:
@@ -207,7 +207,7 @@ pnpm --filter @mysten-incubation/devstack exec vitest run \
 	test/plugins/barrel-imports.test.ts \
 	test/build-integrations/release-surface.test.ts
 pnpm --filter @mysten-incubation/private-content test:e2e
-pnpm --filter @mysten-incubation/deepbook-full build
+pnpm --filter @mysten-incubation/deepbook-trader build
 ```
 
 Residue scans:
@@ -225,12 +225,11 @@ rg -n "Cloud SQL|Neon|RDS|deferred" packages/devstack/src/plugins/postgres packa
 - Walrus admin signer and WAL seed recipients are explicit.
 - DeepBook does not advertise a fake local deployment mode.
 - Root exports contain only app/plugin-author service APIs.
-- Private-content and deepbook-full still build or pass their focused e2e command.
+- Private-content and deepbook-trader still build or pass their focused e2e command.
 - Typecheck, focused service tests, and release-surface tests pass.
 
 ## 9. Explicit out-of-scope items
 
-- Router entrypoint ownership and substrate boundary work; tracked in `boundary-cleanup-plan.md`.
 - Implementing a full local DeepBook deployment if the cleanup chooses to delete/rename the fake
   local mode.
 - Adding new managed cloud Postgres modes.

@@ -15,9 +15,8 @@ This plan covers the human/operator-facing surfaces:
 The goal is to make CLI, TUI, and plain renderer behavior derive from stable projection contracts
 without leaking stale engine vocabulary or hardcoding plugin internals in the surfaces.
 
-Release proof for TUI/manual lifecycle is tracked in `UNRESOLVED-BLOCKERS.md` and
-`release-cleanup-plan.md`; it is now resolved there. This plan is for remaining API/architecture
-cleanup of the surfaces themselves.
+Release proof for TUI/manual lifecycle is tracked in `UNRESOLVED-BLOCKERS.md`. This plan is for
+remaining API/architecture cleanup of the surfaces themselves.
 
 ## Current status
 
@@ -60,22 +59,6 @@ Remaining P1 cleanup:
 
 ## 2. Audit findings
 
-### TUI grouping parses plugin keys
-
-Current shape:
-
-- `surfaces/tui/display-derivation.ts` derives row sections by parsing row keys for words such as
-  `package`, `account`, `action`, `faucet`, `wallet`, `vite`, and `server`.
-- This keeps display vocabulary out of projection rows, but it still couples renderer behavior to
-  plugin naming conventions.
-
-Target shape:
-
-- Keep projection free of renderer labels, but avoid ad hoc string parsing.
-- Add a small renderer-owned classification helper table keyed by stable plugin role/resource
-  prefixes, or add a non-display lifecycle category if the architecture accepts it.
-- Pin the chosen shape with tests so adding a new built-in plugin does not silently land in `Other`.
-
 ### Status output exposes partial plugin-specific state
 
 Current shape:
@@ -90,20 +73,6 @@ Target shape:
 - If curated, add explicit sections for service state that are already in projection/codegen.
 - If generic, keep account/package detail but document why only these plugin-specific projections
   exist.
-
-### CLI command schema is static and easy to drift
-
-Current shape:
-
-- `surfaces/cli/command-tree.ts` manually lists commands, options, side effects, and Docker needs.
-- Dispatcher/flag parsing lives elsewhere.
-- Docs can drift from the command tree.
-
-Target shape:
-
-- Treat `COMMAND_TREE` as the source of truth and generate/reference docs from it, or add tests that
-  check docs mention every public command.
-- Avoid duplicating command lifecycle tables in docs.
 
 ### Plain renderer is event-shaped, TUI is projection-shaped
 
@@ -135,7 +104,6 @@ Target shape:
 
 ## 3. Specific public API changes
 
-- Avoid adding CLI flags until the command tree/docs source-of-truth issue is settled.
 - Do not expose renderer-specific display fields on projection rows.
 - If a row category/classification field is added, name it as lifecycle/operator metadata, not
   `title`, `primary`, `extras`, or another display-only term.
@@ -144,11 +112,6 @@ Target shape:
 
 ## 4. Internal implementation changes
 
-- Replace key-substring grouping in `display-derivation.ts` with a table-driven classifier or a
-  typed lifecycle category.
-- Update TUI tests to cover every built-in plugin family.
-- Add a CLI docs drift test from `COMMAND_TREE` to
-  `packages/docs/content/devstack/reference/cli.mdx`.
 - Share pure formatting helpers between plain renderer and TUI where it removes duplication without
   coupling the renderers.
 - Audit projection persistence after any row/category changes and bump version only if serialized
@@ -156,11 +119,11 @@ Target shape:
 
 ## 5. Built-in plugin/component migration steps
 
-1. Inventory every built-in plugin key/resource id and expected TUI section.
-2. Add failing tests for current `Other` or misclassified rows.
-3. Implement the classifier/category cleanup.
-4. Update CLI docs or generate docs from command tree.
-5. Re-run status/plain/TUI tests and manual release proof from `release-cleanup-plan.md`.
+1. Decide whether `status` is a curated operator summary or a generic projection dump.
+2. Add cross-renderer tests for shared account, package, endpoint, lifecycle, and error facts.
+3. Audit projection persistence after any row/category changes and bump the version only if the
+   serialized shape changes.
+4. Re-run status/plain/TUI tests and the manual release proof listed in `UNRESOLVED-BLOCKERS.md`.
 
 ## 6. Docs, examples, and test updates
 
@@ -212,8 +175,6 @@ rg -n "devstack (up|apply|status|doctor|config|schema|snapshot|prune|wipe)" pack
 
 ## 8. Acceptance criteria
 
-- TUI row grouping no longer depends on ad hoc substring parsing of plugin keys.
-- CLI docs cannot drift from `COMMAND_TREE` without a test failure or generation step.
 - Plain renderer and TUI show equivalent key facts for lifecycle, endpoint, account, and package
   events.
 - Projection persistence behavior is documented and versioned correctly.
@@ -221,7 +182,6 @@ rg -n "devstack (up|apply|status|doctor|config|schema|snapshot|prune|wipe)" pack
 
 ## 9. Explicit out-of-scope items
 
-- The live TUI/manual lifecycle proof gates in `release-cleanup-plan.md`.
+- Historical live TUI/manual lifecycle proof logs.
 - Changing terminal UI design beyond data classification and drift-proofing.
 - Adding a new programmable API distinct from `runStack(...).state`.
-- Boundary-layer engine cleanup tracked in `boundary-cleanup-plan.md`.

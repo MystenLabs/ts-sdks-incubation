@@ -20,8 +20,9 @@ addressing, and faucet strategy registration currently work, but their public AP
 internal mechanics and preserve several footguns. This repo is unreleased, so cleanup should be
 breaking and atomic.
 
-`boundary-cleanup-plan.md` owns the deeper Coin/Package event-boundary and plugin-layer decoupling.
-This plan owns the public API and plugin-local cleanup around that boundary work.
+The Coin/Package event-boundary and plugin-layer decoupling has already been completed. This plan
+owns the remaining public API and plugin-local cleanup around account, funding, faucet, and package
+ergonomics.
 
 ## 2. Audit findings
 
@@ -74,34 +75,6 @@ Target shape:
 - Internalize HTTP retry helpers under the Sui/faucet implementation unless they are intentionally
   public.
 
-### `coin.local(symbol)` has no dependency edge
-
-Current shape:
-
-- `coin.local('SYMBOL')` resolves from the registry without depending on the publisher.
-- The docs warn users to compose the publisher before the consumer.
-- `SYMBOL_FORM_NO_DEP_EDGE_WARNING` exists only to document the footgun.
-
-Target shape:
-
-- Prefer `coin.fromPackage(packageMember, witness)` for all package-produced local coins.
-- Delete `coin.local(symbol)` from the public namespace unless a real built-in consumer requires a
-  symbol-only lookup.
-- If retained internally, keep it under an internal helper and remove the public warning constant.
-
-### Coin resource ids can collide
-
-Current shape:
-
-- `coin.fromPackage(pkg, witness)` uses `coin:<lowercase witness>` as the resource id.
-- Two packages with the same witness name collide even though they are distinct coin types.
-
-Target shape:
-
-- Key package-scoped coin resources by package identity plus witness, for example
-  `coin:${packageName}/${witness}`.
-- Codegen can still export by display symbol, but compose-time identity must be package-scoped.
-
 ### Package surface exposes internals and escape hatches
 
 Current shape:
@@ -120,19 +93,19 @@ Target shape:
   plugin that needs it, not in the basic package factory.
 - Keep only record-form `capture: { key: '::module::Type' }` publicly.
 - Move publish executor, receipt helper, and callback types behind internal source imports or a
-  neutral contract module used by the boundary cleanup.
+  neutral contract module if another plugin needs them.
 
-### Cache-hit coin discovery is fragile
+### Cache-hit coin discovery must stay current
 
 Current shape:
 
-- Package registers discovered coin records only when `publishReceipt !== null`.
-- Cache hits assume the previous boot already registered the same coin records.
+- Package records discovered coin records from the current package-owned publish output path.
+- Cache hits must not assume a previous boot registered the same coin records.
 
 Target shape:
 
-- After the boundary work, package receipt replay or coin discovery should run for both fresh
-  publish and verified cache-hit paths.
+- Package receipt replay or coin discovery should run for both fresh publish and verified cache-hit
+  paths.
 - A cold process with a valid package cache must still populate `coin.fromPackage(...)`.
 
 ## 3. Specific public API changes
@@ -145,13 +118,11 @@ Target shape:
   remains after migration.
 - Keep or delete `defineFaucetStrategy` explicitly. If kept, document it as plugin-author API, not a
   stack member API.
-- Delete `coin.local` and `SYMBOL_FORM_NO_DEP_EDGE_WARNING` from the public `coin` namespace.
-- Change `coin.fromPackage` resource ids from witness-only to package-scoped.
 - Delete `pkg(...)` from `packages/devstack/src/plugins/package/index.ts` and root exports.
 - Remove `LocalPackageOptions.resolveSourcePath`.
 - Remove public `PackageCaptureCallback`; keep only record-form capture.
 - Internalize `PublishExecutor`, `pickCreatedByType`, `PublishReceipt`, and `PublishObjectChange`
-  unless the boundary cleanup moves them to a neutral contract module.
+  unless they move to a neutral contract module.
 
 ## 4. Internal implementation changes
 
@@ -160,22 +131,17 @@ Target shape:
 - Update `packages/devstack/src/plugins/account/funding.ts` so SUI default funding and custom coin
   funding have clearly separated code paths and event fields.
 - Move faucet HTTP helpers behind internal modules if the dispatcher plugin is deleted.
-- Update `packages/devstack/src/plugins/coin/index.ts`, `registry.ts`, and `codegen.ts` for the
-  package-scoped coin id.
-- Update `packages/devstack/src/plugins/package/index.ts`, `mode-local.ts`, and `publish-receipt.ts`
+- Update `packages/devstack/src/plugins/package/index.ts`, `mode-local.ts`, and `publish-output.ts`
   to separate public capture maps from internal receipt projection.
-- Coordinate cache-hit discovery with `packages/devstack/notes/boundary-cleanup-plan.md`.
+- Keep cache-hit discovery aligned with the current package-owned contribution path.
 
 ## 5. Built-in plugin/component migration steps
 
 1. Migrate account variant constructors and tests to no-inner-name options.
 2. Keep examples and docs on the single `funding` list with the `{ coin: 'sui', amount }` shorthand.
-3. Replace any `coin.local(...)` first-party usage with `coin.fromPackage(...)` or
-   `coin.known(...)`.
-4. Update wallet, token-studio, private-content, connect-four, and fork-greeting configs if
+3. Update wallet, token-studio, private-content, connect-four, and fork-greeting configs if
    package/coin refs change.
-5. Delete `faucet()` docs and tests if the dispatcher member is removed.
-6. Apply the boundary Coin/Package receipt event work before deleting internal receipt imports.
+4. Delete `faucet()` docs and tests if the dispatcher member is removed.
 
 ## 6. Docs, examples, and test updates
 
@@ -189,8 +155,8 @@ Docs to update:
 
 Examples to update:
 
-- `examples/wallet/devstack.config.ts`
 - `examples/token-studio/devstack.config.ts`
+- `examples/deepbook-trader/devstack.config.ts`
 - `examples/private-content/devstack.config.ts`
 - `examples/connect-four/devstack.config.ts`
 - `examples/fork-greeting/devstack.config.ts`
@@ -205,9 +171,6 @@ Tests to update or add:
 - `test/plugins/package/public-ergonomics.test-d.ts`
 - `test/plugins/package/capture.test.ts`
 - `test/build-integrations/release-surface.test.ts`
-
-Add a type test proving a package-scoped coin id does not collide when two packages use the same
-witness name.
 
 ## 7. Verification commands
 
@@ -238,9 +201,6 @@ rg -n "faucet\\(|FaucetDispatcher|requestFundsOnce|requestFundsWithRetry" packag
 
 - Account public options cannot specify an inner `name`.
 - SUI funding has one documented public option name.
-- Package-produced coins use dependency-carrying `coin.fromPackage(...)` in first-party examples.
-- No public `coin.local` warning constant remains.
-- `coin.fromPackage` ids are package-scoped and collision-tested.
 - `pkg(...)`, `resolveSourcePath`, and callback capture are gone from the public package surface.
 - Faucet exports match real built-in use; dispatcher-only APIs are deleted unless covered by a
   first-party custom-strategy test.
@@ -248,8 +208,6 @@ rg -n "faucet\\(|FaucetDispatcher|requestFundsOnce|requestFundsWithRetry" packag
 
 ## 9. Explicit out-of-scope items
 
-- The neutral publish-receipt event and plugin-layer boundary work; tracked in
-  `boundary-cleanup-plan.md`.
 - Adding new funding strategy types beyond preserving current SUI and WAL behavior.
 - Changing Sui custody/security semantics for live accounts.
 - Expanding package codegen or generated Move bindings beyond what the cleanup requires.

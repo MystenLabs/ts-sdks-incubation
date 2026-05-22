@@ -10,15 +10,15 @@ This plan covers the dev wallet and app host-entrypoint surface:
 - `packages/devstack/src/plugins/host-service`
 - `packages/devstack/src/build-integrations/{vite,playwright,browser,runtime}`
 - wallet/app docs under `packages/docs/content/devstack`
-- examples `_template`, `wallet`, `token-studio`, `private-content`, `connect-four`, and
+- examples `_template`, `token-studio`, `private-content`, `connect-four`, `deepbook-trader`, and
   `fork-greeting`.
 
 The goal is to make the app-and-wallet path feel like one coherent dev-app entrypoint instead of a
 set of loosely related primitives. Preserve the wallet security behavior, pairing protocol,
 generated dapp-kit config, browser tests, and host-service supervision.
 
-`boundary-cleanup-plan.md` owns router default entrypoint ownership and build-integration
-deduplication. This plan owns the public app/wallet API.
+Boundary-layer router ownership and build-integration deduplication have already happened. This plan
+owns the remaining public app/wallet API.
 
 ## Current status
 
@@ -36,9 +36,8 @@ Current verification:
   passed (3 files / 40 tests).
 - `pnpm --filter @mysten-incubation/create-devstack-app run check-template` passed.
 - `pnpm --filter @mysten-incubation/create-devstack-app typecheck` passed.
-- Direct node-config typechecks passed for `wallet`, `token-studio`, `private-content`,
-  `deepbook-full`, `connect-four`, and `_template`; `example-fork-greeting` package typecheck
-  passed.
+- Direct node-config typechecks passed for the then-current examples; rerun after the remaining
+  wallet-entrypoint cleanup lands against the current curated example set.
 
 Still open:
 
@@ -98,22 +97,6 @@ Target shape:
 - Keep `allowLocalhostVite` as an explicit insecure opt-in for tests, but avoid requiring it for
   stack-scoped routed app flows.
 
-### Host-service dependency wiring is easy to miss
-
-Current shape:
-
-- `hostService({ needs: [...] })` controls ordering.
-- Examples compose only `[localnet, app]`, so the app's `needs` must include wallet, packages,
-  actions, and services.
-- `needs` values are not passed to the host-service start body; they are only ordering edges.
-
-Target shape:
-
-- Rename `needs` to `dependsOn` or `after` to match plugin vocabulary.
-- If dependencies are only ordering edges, call them `after`.
-- If host-service should receive resolved dependency values later, use `dependsOn`.
-- Update examples and docs so app entrypoints always make ordering explicit.
-
 ### Public wallet barrel exports too many internals
 
 Current shape:
@@ -146,7 +129,6 @@ Target shape:
 
 ## 3. Specific public API changes
 
-- Rename `HostServiceOptions.needs` to `after` or `dependsOn`; pick one and update all callsites.
 - Remove `WalletOptions.enableRouter` if routing can be derived from stack/router state. Otherwise
   update docs to present it as a required explicit flag.
 - Move `WALLET_EXPAND_ACCOUNTS_ALL` and `WalletExpandAccountsAllExpander` out of root exports.
@@ -164,20 +146,16 @@ Target shape:
 - Update wallet composer expansion in `packages/devstack/src/api/define-devstack.ts` and
   `define-devstack-with.ts` if `accounts: 'all'` remains.
 - Move wallet implementation-only exports to internal module imports in tests.
-- Update `packages/devstack/src/plugins/host-service/service.ts` and `index.ts` for the chosen
-  `after`/`dependsOn` naming.
 - Update `build-integrations/runtime/dapp-kit-slot.ts`, `vite/setup-globals.ts`,
   `playwright/wallet-context.ts`, and example app glue so selection bridge code is shared.
-- Coordinate router entrypoint derivation with `boundary-cleanup-plan.md`.
+- Keep router entrypoint derivation aligned with the current plugin-owned entrypoint architecture.
 
 ## 5. Built-in plugin/component migration steps
 
-1. Pick and apply the host-service dependency name.
-2. Update every example `hostService({ needs: [...] })` callsite.
-3. Decide wallet routing derivation and update wallet capabilities accordingly.
-4. Move wallet internal exports and update tests to import from source-internal paths when needed.
-5. Replace duplicated example dapp-kit Playwright slots with the shared helper/snippet.
-6. Update create-devstack-app template after examples are migrated.
+1. Decide wallet routing derivation and update wallet capabilities accordingly.
+2. Move wallet internal exports and update tests to import from source-internal paths when needed.
+3. Replace duplicated example dapp-kit Playwright slots with the shared helper/snippet.
+4. Update create-devstack-app template after examples are migrated.
 
 ## 6. Docs, examples, and test updates
 
@@ -192,8 +170,6 @@ Docs to update:
 Examples/template to update:
 
 - `examples/_template/devstack.config.ts`
-- `examples/wallet/devstack.config.ts`
-- `examples/wallet/src/dapp-kit.ts`
 - `examples/token-studio/devstack.config.ts`
 - `examples/token-studio/src/dapp-kit.ts`
 - `examples/private-content/devstack.config.ts`
@@ -221,13 +197,12 @@ pnpm --filter @mysten-incubation/devstack exec vitest run \
 	test/plugins/wallet/accounts-all.test.ts \
 	test/plugins/wallet/origin-policy.test.ts \
 	test/plugins/wallet/pairing-token.test.ts \
-	test/plugins/host-service/service.test.ts \
 	test/build-integrations/playwright/wallet-context.test.ts \
 	test/build-integrations/vite/dapp-kit-slot.test.ts \
 	test/build-integrations/runtime/dapp-kit-slot.test.ts \
 	test/build-integrations/release-surface.test.ts
 pnpm --filter @mysten-incubation/create-devstack-app run check-template
-pnpm --filter @mysten-incubation/wallet test:e2e
+pnpm --filter @mysten-incubation/deepbook-trader test:e2e
 pnpm --filter @mysten-incubation/token-studio test:e2e
 ```
 
@@ -241,19 +216,17 @@ rg -n "enableRouter: true" examples packages/docs/content/devstack packages/crea
 
 ## 8. Acceptance criteria
 
-- Host-service ordering vocabulary matches the plugin API vocabulary and all examples use it.
 - Standard app + wallet examples do not require redundant router/origin flags.
 - Wallet internals are no longer root public exports unless they are consumed by the dev-wallet
   package.
 - The Playwright dapp-kit bridge is shared or generated; examples do not carry divergent polling
   code.
-- Wallet e2e and token-studio e2e pass.
+- DeepBook-trader wallet e2e and token-studio e2e pass.
 - Create-devstack-app template check passes.
 
 ## 9. Explicit out-of-scope items
 
 - Changing the dev-wallet package UI or wallet-standard adapter behavior.
 - Weakening origin + bearer enforcement.
-- Router entrypoint ownership and build-integration runtime consolidation; tracked in
-  `boundary-cleanup-plan.md`.
+- Generic router entrypoint ownership and build-integration runtime consolidation.
 - Adding multi-wallet or production wallet support.

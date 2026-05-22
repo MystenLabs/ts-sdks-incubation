@@ -100,18 +100,19 @@ Target shape:
 - Do not advertise runnable fork examples or CLI commands before that proof exists.
 - When fork support resumes, replace the coming-soon refusals with a tested support matrix.
 
-### Network parser aliases are public behavior without contract tests
+### Network parser aliases are public behavior
 
 Current shape:
 
 - `parseDevstackNetwork(...)` accepts `local`, `localnet`, `sui:local`, `sui:localnet`, and live
   names. Fork names are recognized only to produce the coming-soon refusal.
+- `test/api/inference-network.test.ts` now pins the current alias and refusal behavior.
 - Docs mention `devstack up --network testnet` but not the full alias contract.
 
 Target shape:
 
 - Decide the canonical accepted CLI/env names.
-- Test the accepted alias table and error messages.
+- Keep the accepted alias table and error messages pinned as the mode surface changes.
 - Avoid leaking chain-id aliases if the public CLI should only accept `localnet`, `testnet`,
   `mainnet`, `devnet`, and `*-fork`.
 
@@ -141,12 +142,11 @@ Target shape:
 
 ## 5. Built-in plugin/component migration steps
 
-1. Add tests around `parseDevstackNetwork(...)` aliases before changing behavior.
-2. Choose and apply the `external` vocabulary.
-3. Split `SuiClient` and migrate built-in consumers one slice at a time.
-4. Update mode-narrowed namespaces and type refusal tests.
-5. Update examples to use explicit `sui({ mode: ... })` or `suiFor(network)` consistently.
-6. Remove root exports that no first-party custom-plugin example uses.
+1. Choose and apply the `external` vocabulary.
+2. Split `SuiClient` and migrate built-in consumers one slice at a time.
+3. Update mode-narrowed namespaces and type refusal tests.
+4. Update examples to use explicit `sui({ mode: ... })` or `suiFor(network)` consistently.
+5. Remove root exports that no first-party custom-plugin example uses.
 
 ## 6. Docs, examples, and test updates
 
