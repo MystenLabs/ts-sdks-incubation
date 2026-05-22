@@ -26,6 +26,11 @@ archaeology.
 No open P0 release gates are listed here. Keep new release blockers above the evidence ledger until
 they have fresh proof.
 
+Release proof checklist:
+
+- Private-content `up` must be current before release. The latest proof is recorded in the
+  Private-content `up` evidence item below.
+
 ## P0 release evidence
 
 Keep this section as the release-readiness evidence ledger. Evidence below is not enough to release
