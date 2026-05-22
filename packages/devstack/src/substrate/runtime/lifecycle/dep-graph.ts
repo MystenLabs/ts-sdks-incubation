@@ -3,9 +3,9 @@
 //
 // Architecture § Plugin lifecycle within a stack:
 //   "Resolution. Upstream keys (concrete or capability-typed) resolve
-//   once. Bootstrap asset dedup-by-key fires before scheduler emits the
-//   level-0 batch. Scheduling. Plugin enters `pending`. When all
-//   upstream keys are `ready`, scheduler begins `acquiring`. Per-key
+//   once. Bootstrap asset dedup-by-key fires before the scheduler
+//   starts node fibers. Scheduling. Plugin enters `pending`. When all
+//   upstream keys are `ready`, the node begins `acquiring`. Per-key
 //   serialization: only one acquire at a time per key."
 //
 // This module is the pure dep-graph math: members in, levels out.

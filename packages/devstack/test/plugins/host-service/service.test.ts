@@ -3,11 +3,19 @@ import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option } from 'effect';
+import { Effect, Exit, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
 import { pluginKey } from '../../../src/substrate/brand.ts';
-import type { LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
+import {
+	Logger,
+	type LoggerShape,
+} from '../../../src/substrate/runtime/observability/index.ts';
+import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
+import {
+	PortBrokerService,
+	type PortBroker,
+} from '../../../src/substrate/runtime/port-broker/index.ts';
 import {
 	acquireHostService,
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
@@ -20,12 +28,9 @@ import {
 	type HostProcessChild,
 	type HostProcessSpawnOptions,
 	type HostServiceResolvedOptions,
+	type HostServiceValue,
 } from '../../../src/plugins/host-service/index.ts';
-import {
-	PostAcquireTasksService,
-	PostAcquireTaskFailed,
-	layerPostAcquireTasks,
-} from '../../../src/substrate/runtime/post-acquire-tasks.ts';
+import { layerPostAcquireTasks } from '../../../src/substrate/runtime/post-acquire-tasks.ts';
 
 class FakeChild extends EventEmitter implements HostProcessChild {
 	readonly stdout = new PassThrough();
@@ -265,7 +270,43 @@ describe('acquireHostService', () => {
 		}
 	});
 
-	it.effect('defers process spawn through the post-acquire task barrier', () => {
+	it.effect('starts the process before returning from plugin acquire', () => {
+		loggerLines.length = 0;
+		const broker: PortBroker = {
+			allocate: () =>
+				Effect.succeed({
+					port: 6173,
+					kind: 'http',
+					release: Effect.void,
+				}),
+		};
+		const member = hostService({
+			name: 'frontend',
+			command: process.execPath,
+			args: ['-e', `console.log('ready'); setInterval(() => {}, 1000);`],
+			ready: { kind: 'log', pattern: 'ready', timeoutMs: 1_000 },
+		});
+
+		return Effect.scoped(
+			Effect.gen(function* () {
+				const start = member.start(undefined).pipe(
+					Effect.provideService(PortBrokerService, broker),
+					Effect.provideService(Logger, fakeLogger),
+					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
+					Effect.provide(layerPostAcquireTasks),
+				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
+				const value = yield* start;
+				expect(value.url).toBe('http://127.0.0.1:6173');
+				yield* Effect.promise<void>(() => new Promise((resolveReady) => setTimeout(resolveReady, 0)));
+				expect(loggerLines).toContainEqual({
+					message: 'ready',
+					pluginKey: 'host-service-test#0',
+				});
+			}),
+		);
+	});
+
+	it.effect('starts a prepared process once', () => {
 		const child = new FakeChild();
 		const calls: SpawnCall[] = [];
 		const options = normalizeHostServiceOptions({
@@ -275,43 +316,39 @@ describe('acquireHostService', () => {
 			ready: { kind: 'log', pattern: 'ready' },
 		});
 
-		return Effect.gen(function* () {
-			const tasks = yield* PostAcquireTasksService;
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const prepared = yield* prepareHostService(options, {
-						allocatePort: () => Effect.succeed(6173),
-						logger: fakeLogger,
-						pluginKey: pluginKey('host-service-test#0'),
-						spawner: (command, args, spawnOptions) => {
-							calls.push({ command, args, options: spawnOptions });
-							setTimeout(() => child.stdout.write('ready\n'), 0);
-							return child;
-						},
-						processEnv: { PATH: '/usr/bin' },
-					});
+		return Effect.scoped(
+			Effect.gen(function* () {
+				const prepared = yield* prepareHostService(options, {
+					allocatePort: () => Effect.succeed(6173),
+					logger: fakeLogger,
+					pluginKey: pluginKey('host-service-test#0'),
+					spawner: (command, args, spawnOptions) => {
+						calls.push({ command, args, options: spawnOptions });
+						setTimeout(() => child.stdout.write('ready\n'), 0);
+						return child;
+					},
+					processEnv: { PATH: '/usr/bin' },
+				});
 
-					yield* tasks.register({
-						pluginKey: pluginKey('host-service-test#0'),
-						label: 'host-service/frontend',
-						run: prepared.start,
-					});
+				expect(prepared.value.url).toBe('http://127.0.0.1:6173');
+				expect(calls).toHaveLength(0);
 
-					expect(prepared.value.url).toBe('http://127.0.0.1:6173');
-					expect(calls).toHaveLength(0);
+				yield* prepared.start;
+				expect(calls).toHaveLength(1);
 
-					yield* tasks.runAll;
-					expect(calls).toHaveLength(1);
-
-					yield* tasks.runAll;
-					expect(calls).toHaveLength(1);
+				yield* prepared.start;
+				expect(calls).toHaveLength(1);
+			}),
+		).pipe(
+			Effect.tap(() =>
+				Effect.sync(() => {
+					expect(child.signals).toEqual(['SIGTERM']);
 				}),
-			);
-			expect(child.signals).toEqual(['SIGTERM']);
-		}).pipe(Effect.provide(layerPostAcquireTasks));
+			),
+		);
 	});
 
-	it.effect('cleans failed readiness attempts and retries the deferred start', () => {
+	it.effect('cleans failed readiness attempts and retries prepared start', () => {
 		const children: FakeChild[] = [];
 		const calls: SpawnCall[] = [];
 		const options = normalizeHostServiceOptions({
@@ -321,49 +358,44 @@ describe('acquireHostService', () => {
 			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5 },
 		});
 
-		return Effect.gen(function* () {
-			const tasks = yield* PostAcquireTasksService;
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const prepared = yield* prepareHostService(options, {
-						allocatePort: () => Effect.succeed(6173),
-						logger: fakeLogger,
-						pluginKey: pluginKey('host-service-test#0'),
-						spawner: (command, args, spawnOptions) => {
-							const child = new FakeChild();
-							children.push(child);
-							calls.push({ command, args, options: spawnOptions });
-							if (children.length === 2) {
-								setTimeout(() => child.stdout.write('ready\n'), 0);
-							}
-							return child;
-						},
-						processEnv: { PATH: '/usr/bin' },
-					});
+		return Effect.scoped(
+			Effect.gen(function* () {
+				const prepared = yield* prepareHostService(options, {
+					allocatePort: () => Effect.succeed(6173),
+					logger: fakeLogger,
+					pluginKey: pluginKey('host-service-test#0'),
+					spawner: (command, args, spawnOptions) => {
+						const child = new FakeChild();
+						children.push(child);
+						calls.push({ command, args, options: spawnOptions });
+						if (children.length === 2) {
+							setTimeout(() => child.stdout.write('ready\n'), 0);
+						}
+						return child;
+					},
+					processEnv: { PATH: '/usr/bin' },
+				});
 
-					yield* tasks.register({
-						pluginKey: pluginKey('host-service-test#0'),
-						label: 'host-service/frontend',
-						run: prepared.start,
-					});
+				const first = yield* Effect.exit(prepared.start);
+				expect(Exit.isFailure(first)).toBe(true);
+				const firstError = Exit.findErrorOption(first);
+				expect(Option.isSome(firstError)).toBe(true);
+				if (Option.isSome(firstError)) {
+					expect(firstError.value).toBeInstanceOf(HostServiceAcquireError);
+				}
+				expect(calls).toHaveLength(1);
+				expect(children[0]?.signals).toEqual(['SIGTERM']);
 
-					const first = yield* Effect.exit(tasks.runAll);
-					expect(Exit.isFailure(first)).toBe(true);
-					const firstError = Exit.findErrorOption(first);
-					expect(Option.isSome(firstError)).toBe(true);
-					if (Option.isSome(firstError)) {
-						expect(firstError.value).toBeInstanceOf(PostAcquireTaskFailed);
-						expect(firstError.value.pluginKey).toBe('host-service-test#0');
-					}
-					expect(calls).toHaveLength(1);
-					expect(children[0]?.signals).toEqual(['SIGTERM']);
-
-					yield* tasks.runAll;
-					expect(calls).toHaveLength(2);
+				yield* prepared.start;
+				expect(calls).toHaveLength(2);
+			}),
+		).pipe(
+			Effect.tap(() =>
+				Effect.sync(() => {
+					expect(children[1]?.signals).toEqual(['SIGTERM']);
 				}),
-			);
-			expect(children[1]?.signals).toEqual(['SIGTERM']);
-		}).pipe(Effect.provide(layerPostAcquireTasks));
+			),
+		);
 	});
 
 	it('fails acquire when the process exits before readiness', async () => {

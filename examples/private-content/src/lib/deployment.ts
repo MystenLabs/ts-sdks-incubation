@@ -18,10 +18,16 @@ const seal: SealView = {
 	serverConfigs: sealBindings.serverConfigs,
 };
 
+const walletAccounts = {
+	publisher: accounts.publisher,
+	alice: accounts.alice,
+	bob: accounts.bob,
+} as const;
+
 export const deployment = {
 	rpcUrl: services.sui?.rpc.url ?? '',
 	faucetUrl: services.sui?.faucet?.url,
-	accounts,
+	accounts: walletAccounts,
 	vaultPackageId: packages.vault?.packageId,
 	seal,
 	walrus,

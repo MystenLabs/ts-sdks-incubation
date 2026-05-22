@@ -515,8 +515,8 @@ describe('RouterService.contributeRoute', () => {
 			const fetch: HttpProbeFetch = async (input) => {
 				calls.push(String(input));
 				if (calls.length === 1) return new Response('gateway timeout', { status: 504 });
-				return new Response('ok', {
-					status: 200,
+				return new Response('not found from backend', {
+					status: 404,
 					headers: { [ROUTE_READINESS_HEADER]: readyHeader },
 				});
 			};
@@ -542,6 +542,51 @@ describe('RouterService.contributeRoute', () => {
 					]);
 					const applied = yield* SubscriptionRef.get(router.applied);
 					expect(applied).toHaveLength(1);
+				}).pipe(
+					Effect.provide(
+						makeStackLayerWithRouteReadinessProbe(profile, fetch, { timeoutMs: 2_000 }),
+					),
+				),
+			);
+		}),
+	);
+
+	it.live('keeps probing when Traefik serves a gateway response with the route header', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const calls: number[] = [];
+			let readyHeader = '';
+			const fetch: HttpProbeFetch = async () => {
+				calls.push(calls.length + 1);
+				if (calls.length === 1) {
+					return new Response('bad gateway', {
+						status: 502,
+						headers: { [ROUTE_READINESS_HEADER]: readyHeader },
+					});
+				}
+				return new Response('ok', {
+					status: 200,
+					headers: { [ROUTE_READINESS_HEADER]: readyHeader },
+				});
+			};
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					readyHeader = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+					const endpoint = yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: walletApiDispatch,
+						upstream: { type: 'host-loopback', port: 6173 },
+						cors: true,
+						wireProtocol: 'http',
+					});
+
+					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(calls).toEqual([1, 2]);
 				}).pipe(
 					Effect.provide(
 						makeStackLayerWithRouteReadinessProbe(profile, fetch, { timeoutMs: 2_000 }),

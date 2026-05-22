@@ -434,6 +434,72 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('starts downstream nodes as soon as their own dependencies are ready', () =>
+		Effect.gen(function* () {
+			const slowWalrusStarted = yield* Deferred.make<void>();
+			const releaseSlowWalrus = yield* Deferred.make<void>();
+			const sealStarted = yield* Ref.make(false);
+
+			const root = definePlugin({
+				id: 'test:root',
+				role: 'task' as const,
+				start: () => Effect.succeed({ v: 'root' as const }),
+			});
+			const signer = definePlugin({
+				id: 'test:signer',
+				role: 'task' as const,
+				dependsOn: { root },
+				start: () => Effect.succeed({ v: 'signer' as const }),
+			});
+			const slowWalrus = definePlugin({
+				id: 'test:walrus',
+				role: 'service' as const,
+				dependsOn: { root },
+				start: () =>
+					Effect.gen(function* () {
+						yield* Deferred.succeed(slowWalrusStarted, void 0).pipe(Effect.ignore);
+						yield* Deferred.await(releaseSlowWalrus);
+						return { v: 'walrus' as const };
+					}),
+			});
+			const seal = definePlugin({
+				id: 'test:seal',
+				role: 'service' as const,
+				dependsOn: { signer },
+				start: () =>
+					Effect.gen(function* () {
+						yield* Ref.set(sealStarted, true);
+						return { v: 'seal' as const };
+					}),
+			});
+			const stack: SupervisedStack = {
+				_tag: 'Stack',
+				members: [root, signer, slowWalrus, seal],
+				options: {},
+			};
+			const state = yield* makeProjectionRef();
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+
+					yield* Deferred.await(slowWalrusStarted);
+					yield* startup.handle.registry.awaitReady(pluginKey('test:signer#1'));
+					for (let i = 0; i < 10; i++) {
+						if (yield* Ref.get(sealStarted)) break;
+						yield* Effect.yieldNow;
+					}
+
+					expect(yield* Ref.get(sealStarted)).toBe(true);
+					yield* Deferred.succeed(releaseSlowWalrus, void 0).pipe(Effect.ignore);
+					yield* Fiber.join(bootFiber);
+					yield* startup.handle.registry.awaitReady(pluginKey('test:seal#3'));
+				}),
+			);
+		}),
+	);
+
 	it.effect('hard-kill command publishes shutdown escalation and flips shutdown state', () =>
 		Effect.gen(function* () {
 			const state = yield* makeProjectionRef();

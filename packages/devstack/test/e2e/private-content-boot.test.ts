@@ -4,13 +4,14 @@
 // roundtrip lives in the example's Playwright spec.
 //
 // Stack shape (per `examples/private-content/devstack.config.ts`):
-//   - publisher = account('publisher')
-//   - alice     = account('alice')
-//   - bob       = account('bob')
-//   - vault     = localPackage('vault', { publisher })
+//   - sealPublisher = account('seal_publisher') with SUI funding only
+//   - publisher     = account('publisher') with SUI + WAL funding
+//   - alice         = account('alice') with SUI + WAL funding
+//   - bob           = account('bob') with SUI + WAL funding
+//   - vault         = localPackage('vault', { publisher: sealPublisher })
 //   - walrus({ local: { nodeCount: 4 }})
 //   - walCoin(walrusCluster)
-//   - seal({ mode: 'local-keygen', signer: publisher })
+//   - seal({ mode: 'local-keygen', signer: sealPublisher })
 //   - wallet({ accounts: [publisher, alice, bob] })
 //
 // The example's happy path targets the real vendored walrus + seal
@@ -21,8 +22,8 @@
 // What this test pins:
 //
 //   1. Every plugin member reaches `ready` — explicit sui + walrus service +
-//      WAL coin ref + 3 accounts + vault package + seal service + wallet.
-//      Ten keys total.
+//      WAL coin ref + 4 accounts + vault package + seal service + wallet.
+//      Eleven keys total.
 //   2. Resolved values are fully projected; the recursive walker reports
 //      the first sentinel path if projection regresses.
 //   3. The walrus + seal resolved values are well-formed: walrus
@@ -151,15 +152,16 @@ const findSentinel = (
 
 const expectedKeys = [
 	'sui#0',
+	'account/seal_publisher#1',
+	'package:vault#2',
 	'walrus:walrus',
-	'coin:wal#2',
-	'account/publisher#3',
-	'package:vault#4',
 	'seal:seal',
-	'account/alice#6',
-	'account/bob#7',
-	'wallet#8',
-	'host-service/app#9',
+	'coin:wal#5',
+	'account/publisher#6',
+	'account/alice#7',
+	'account/bob#8',
+	'wallet#9',
+	'host-service/app#10',
 ];
 
 interface PrivateContentBoot {
@@ -233,7 +235,9 @@ interface BalanceReader {
 	};
 }
 
-const accountKeys = ['account/publisher#3', 'account/alice#6', 'account/bob#7'] as const;
+const sealPublisherKey = 'account/seal_publisher#1' as const;
+const walletAccountKeys = ['account/publisher#6', 'account/alice#7', 'account/bob#8'] as const;
+const accountKeys = [sealPublisherKey, ...walletAccountKeys] as const;
 const SUI_COIN_TYPE = '0x2::sui::SUI';
 const WARM_RESTART_BUDGET_MS = 90_000;
 
@@ -330,7 +334,7 @@ const runPrivateContentBoot = async (opts: {
 				});
 
 				const sui = ctx.resolvedValues.get('sui#0') as BalanceReader | undefined;
-				const wal = ctx.resolvedValues.get('coin:wal#2') as
+				const wal = ctx.resolvedValues.get('coin:wal#5') as
 					| { readonly fullCoinType?: unknown }
 					| undefined;
 				if (sui === undefined || typeof wal?.fullCoinType !== 'string') return;
@@ -472,7 +476,28 @@ const assertPrivateContentBoot = (boot: PrivateContentBoot): void => {
 		expect(cfg.weight).toBeGreaterThan(0);
 	}
 
-	for (const key of accountKeys) {
+	const sealPublisherFunding = boot.accountFunding[sealPublisherKey];
+	expect(
+		sealPublisherFunding,
+		`${sealPublisherKey} funding evidence should be present`,
+	).toBeDefined();
+	expect(
+		sealPublisherFunding!.sui,
+		`${sealPublisherKey} should have SUI after account funding`,
+	).toBeGreaterThan(0n);
+	expect(
+		hasFundingEntry(sealPublisherFunding!.funding.requested, 'SUI', SUI_COIN_TYPE, '1000000000'),
+	).toBe(true);
+	expect(
+		sealPublisherFunding!.funding.requested.some((entry) => entry.coin === 'WAL'),
+		`${sealPublisherKey} should not request WAL funding`,
+	).toBe(false);
+	expect(
+		sealPublisherFunding!.funding.applied.some((entry) => entry.coin === 'WAL'),
+		`${sealPublisherKey} should not apply WAL funding`,
+	).toBe(false);
+
+	for (const key of walletAccountKeys) {
 		const funding = boot.accountFunding[key];
 		expect(funding, `${key} funding evidence should be present`).toBeDefined();
 		expect(funding!.sui, `${key} should have SUI after account funding`).toBeGreaterThan(0n);
@@ -504,7 +529,7 @@ const sealValue = (result: BootResult): SealBootValue => {
 };
 
 const walletValue = (result: BootResult): WalletValue => {
-	const wallet = result.resolvedValues.get('wallet#8') as WalletValue | undefined;
+	const wallet = result.resolvedValues.get('wallet#9') as WalletValue | undefined;
 	expect(wallet, 'wallet resolved value should be present').toBeDefined();
 	return wallet!;
 };

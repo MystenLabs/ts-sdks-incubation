@@ -393,6 +393,11 @@ const directLoopbackHost = '127.0.0.1';
 export const DEFAULT_ROUTE_READINESS_TIMEOUT_MS = 60_000;
 const DEFAULT_ROUTE_READINESS_INTERVAL_MS = 100;
 const DEFAULT_ROUTE_READINESS_REQUEST_TIMEOUT_MS = 750;
+const proxyGatewayStatuses = new Set([502, 503, 504]);
+
+const responseHasReadyRoute = (response: Response, resolved: ResolvedRoute): boolean =>
+	response.headers.get(ROUTE_READINESS_HEADER) === resolved.dispatchFileId &&
+	!proxyGatewayStatuses.has(response.status);
 
 const resolveDisabledDirectRoute = (
 	identity: Identity,
@@ -482,8 +487,7 @@ const waitForPublicRouteReadiness = (
 		intervalMs,
 		requestTimeoutMs,
 		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-		validate: (response) =>
-			response.headers.get(ROUTE_READINESS_HEADER) === resolved.dispatchFileId,
+		validate: (response) => responseHasReadyRoute(response, resolved),
 	}).pipe(
 		Effect.mapError(
 			(cause): RouteReadinessProbeFailed =>
@@ -777,10 +781,7 @@ export const layerRouterService: Layer.Layer<
 						if (!cfg.disabled) {
 							yield* Effect.scoped(
 								Effect.gen(function* () {
-									yield* acquireStackLock(
-										profile.dispatchLockFile,
-										ROUTER_LOCK_TIMEOUT_MILLIS,
-									);
+									yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS);
 									yield* removeDispatchFile(fs, profile, resolved);
 								}),
 							).pipe(Effect.ignore);

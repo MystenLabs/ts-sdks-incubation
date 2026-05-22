@@ -429,8 +429,8 @@ const dispatchContributions = (
 
 /**
  * Run one node's `start` under its own scope. Steps:
- *  1. Transition `pending → acquiring` (publishes the event).
- *  2. Await upstreams (their ready-gates).
+ *  1. Await upstreams (their ready-gates).
+ *  2. Transition `pending → acquiring` (publishes the event).
  *  3. Build resolved dependency values from declared resource refs.
  *  4. Run the plugin's `start` Effect inside the entry's Scope,
  *     after providing the substrate-context services bundle so the
@@ -461,13 +461,6 @@ const acquireNode = (
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
 		if (entry === undefined) return;
-		yield* annotatePhase('acquire');
-		yield* logger.log(`supervisor/${key}`, key, {
-			level: 'debug',
-			message: 'plugin acquire start',
-			fields: { role: entry.node.member.role },
-		});
-		yield* registry.transition(key, 'acquiring').pipe(Effect.catch(() => Effect.void));
 		// Wait for upstreams. If any failed, mark this one failed too —
 		// the cause walker carries the upstream's `PluginAcquireFailed`.
 		const upstreamWait = awaitUpstreams(registry, entry.node).pipe(
@@ -488,6 +481,13 @@ const acquireNode = (
 			});
 			return;
 		}
+		yield* annotatePhase('acquire');
+		yield* logger.log(`supervisor/${key}`, key, {
+			level: 'debug',
+			message: 'plugin acquire start',
+			fields: { role: entry.node.member.role },
+		});
+		yield* registry.transition(key, 'acquiring').pipe(Effect.catch(() => Effect.void));
 		// Build resolved dependency values over the registry's resolved
 		// values, then run the plugin's `start` against the entry's
 		// Scope via `Scope.provide` — provides the scope to the acquire
@@ -668,10 +668,12 @@ const acquireNode = (
 	);
 
 // -----------------------------------------------------------------------------
-// Acquire a level batch in parallel
+// Acquire a key set in parallel. Each node waits on its own upstreams,
+// so downstream nodes begin as soon as their dependencies are ready
+// instead of waiting for unrelated nodes in the same topological level.
 // -----------------------------------------------------------------------------
 
-const acquireLevel = (
+const acquireKeys = (
 	registry: PluginRegistry,
 	keys: ReadonlyArray<PluginKey>,
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
@@ -690,7 +692,7 @@ const acquireLevel = (
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
-	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireLevel'));
+	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireKeys'));
 
 const acquireFullGraph = (
 	graph: ResolvedGraph,
@@ -705,19 +707,17 @@ const acquireFullGraph = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* annotateOp('acquireFullGraph');
-		for (const level of graph.levels) {
-			yield* acquireLevel(
-				registry,
-				level,
-				ref,
-				hub,
-				pluginContext,
-				sinks,
-				logger,
-				identity,
-				runtimeRoot,
-			);
-		}
+		yield* acquireKeys(
+			registry,
+			[...graph.nodes.keys()],
+			ref,
+			hub,
+			pluginContext,
+			sinks,
+			logger,
+			identity,
+			runtimeRoot,
+		);
 	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireFullGraph'));
 
 // -----------------------------------------------------------------------------
@@ -807,38 +807,28 @@ const doSelectiveRestart = (
 			});
 		}
 		yield* teardownKeys(graph, registry, plan.teardownOrder);
-		// Re-acquire in forward level order. The dep-graph levels still
-		// apply: a downstream node in the slice can't acquire until its
-		// upstream (which may or may not be in the slice itself) is back
-		// to `ready`. Nodes outside the slice are already `ready`.
-		// We need to mark slice nodes back to `pending` so the state
+		// Re-acquire the slice in parallel. Each node waits on its own
+		// upstream ready gate, so a downstream node in the slice can't
+		// acquire until its upstream is back to `ready`; unrelated
+		// siblings do not act as a level barrier. Nodes outside the
+		// slice are already `ready`. We need to mark slice nodes back
+		// to `pending` so the state
 		// machine accepts the `pending → acquiring` transition.
 		for (const key of plan.acquireOrder) {
 			yield* registry.resetForRestart(key, parentScope).pipe(Effect.catch(() => Effect.void));
 			yield* registry.transition(key, 'pending').pipe(Effect.catch(() => Effect.void));
 		}
-		// Re-bucket by level for parallel acquire within each level.
-		const sliceByLevel: Array<Array<PluginKey>> = graph.levels.map(() => []);
-		const sliceSet = new Set(plan.slice);
-		for (let i = 0; i < graph.levels.length; i++) {
-			for (const key of graph.levels[i]!) {
-				if (sliceSet.has(key)) sliceByLevel[i]!.push(key);
-			}
-		}
-		for (const level of sliceByLevel) {
-			if (level.length === 0) continue;
-			yield* acquireLevel(
-				registry,
-				level,
-				ref,
-				hub,
-				pluginContext,
-				sinks,
-				logger,
-				identity,
-				runtimeRoot,
-			);
-		}
+		yield* acquireKeys(
+			registry,
+			plan.acquireOrder,
+			ref,
+			hub,
+			pluginContext,
+			sinks,
+			logger,
+			identity,
+			runtimeRoot,
+		);
 		for (const root of roots) {
 			yield* publish(ref, hub, {
 				tag: 'restart.completed',

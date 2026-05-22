@@ -4,14 +4,13 @@
 // should be supervised by devstack rather than launched manually in a
 // sibling terminal.
 
-import { Effect, Option } from 'effect';
+import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
-import { PostAcquireTasksService } from '../../substrate/runtime/post-acquire-tasks.ts';
 
 import {
 	HOST_SERVICE_ERROR_TAGS,
@@ -74,15 +73,6 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					pluginKey: currentPlugin.key,
 				} satisfies HostServiceAcquireContext;
 				const prepared = yield* prepareHostService(normalized, acquireContext);
-				const postAcquireTasks = yield* Effect.serviceOption(PostAcquireTasksService);
-				if (Option.isSome(postAcquireTasks)) {
-					yield* postAcquireTasks.value.register({
-						pluginKey: currentPlugin.key,
-						label: `host-service/${normalized.serviceName}`,
-						run: prepared.start,
-					});
-					return prepared.value;
-				}
 				yield* prepared.start;
 				return prepared.value;
 			}),

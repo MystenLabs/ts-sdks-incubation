@@ -23,7 +23,7 @@ import type { PluginAcquireFailed, PluginRegistry, UnknownDependency } from './p
  * failed deferred propagates `PluginAcquireFailed`).
  *
  * Architecture § Scheduling: "When all upstream keys are `ready`,
- * scheduler begins `acquiring`."
+ * the node begins `acquiring`."
  */
 export const awaitUpstreams = (
 	registry: PluginRegistry,
