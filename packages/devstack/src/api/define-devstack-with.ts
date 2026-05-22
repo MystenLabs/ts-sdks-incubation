@@ -7,7 +7,7 @@
 // discriminator structurally, and the compiler refuses illegal-mode
 // factory access at the call site.
 
-import { MEMBER_BRAND, type AnyMember } from '../substrate/plugin.ts';
+import { isPlugin, type AnyPlugin, type ResourceValueOf } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
 import type { NetworkConfig, NetworkMode } from '../substrate/network.ts';
 import type { __MissingProvidersError, MissingProviders } from '../substrate/plugin.ts';
@@ -24,7 +24,6 @@ import {
 	type Stack,
 	type __UnsatisfiedWitnessesError,
 } from './define-devstack.ts';
-import type { Tag } from '../substrate/tag.ts';
 import type { WitnessProvidedBy, WitnessRequiredBy } from '../substrate/witness.ts';
 
 // --- Callback context ---------------------------------------------------
@@ -71,14 +70,14 @@ type ConflictingGroups<Members> =
 type WitnessesRequired<Members> =
 	Members extends ReadonlyArray<unknown>
 		? WitnessRequiredBy<
-				Members[number] extends { readonly provides: Tag<string, infer R> } ? R : never
+				Members[number] extends AnyPlugin ? ResourceValueOf<Members[number]> : never
 			>
 		: never;
 
 type WitnessesProvided<Members> =
 	Members extends ReadonlyArray<unknown>
 		? WitnessProvidedBy<
-				Members[number] extends { readonly provides: Tag<string, infer R> } ? R : never
+				Members[number] extends AnyPlugin ? ResourceValueOf<Members[number]> : never
 			>
 		: never;
 
@@ -91,13 +90,12 @@ type UnsatisfiedWitnesses<Members> = Exclude<
  *  caller's `Members` tuple on a clean check, branded error
  *  otherwise.
  *
- *  Validation runs against the auto-mounted tuple
- *  (`ComposedMembers<Members>`) so a builder returning
- *  `[account('alice')]` (no explicit sui) doesn't surface
- *  `MissingProviders<'sui'>` — the composer injects `sui()` at the
- *  call's tail. See `define-devstack.ts` D1 / api-surface-design.md §4. */
+ *  Validation runs against the recursively expanded tuple
+ *  (`ComposedMembers<Members>`) so plugin-valued dependencies are
+ *  included before missing-provider checks. Bare resource dependencies
+ *  still require an explicit provider in the returned member tuple. */
 type ValidateBuild<Members> =
-	Members extends ReadonlyArray<AnyMember>
+	Members extends ReadonlyArray<AnyPlugin>
 		? ComposedMembers<Members> extends infer M
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
@@ -124,21 +122,21 @@ type ValidateBuild<Members> =
  */
 export function defineDevstackWith<
 	Mode extends NetworkMode,
-	Members extends ReadonlyArray<AnyMember>,
+	Members extends ReadonlyArray<AnyPlugin>,
 >(
 	options: DevstackOptionsWith<Mode>,
 	build: (ctx: BuildCtx<Mode>) => ValidateBuild<Members>,
 ): Stack<ComposedMembers<Members>> {
-	const rawMembers = build({ network: options.network }) as ReadonlyArray<AnyMember>;
+	const rawMembers = build({ network: options.network }) as ReadonlyArray<AnyPlugin>;
 
 	// Defensive runtime check: every element returned by the builder
-	// must carry the `MEMBER_BRAND`. Type system enforces this, but a
-	// runtime check guards against `as unknown as AnyMember` casts.
+	// must be a plugin resource. Type system enforces this, but a
+	// runtime check guards against `as unknown as AnyPlugin` casts.
 	for (const m of rawMembers) {
-		if (!(MEMBER_BRAND in (m as object))) {
+		if (!isPlugin(m)) {
 			throw new Error(
 				'defineDevstackWith: builder returned a value that is not a plugin member ' +
-					'(missing MEMBER_BRAND). Did you forget to wrap it with definePlugin?',
+					'(missing plugin brand). Did you forget to wrap it with definePlugin?',
 			);
 		}
 	}

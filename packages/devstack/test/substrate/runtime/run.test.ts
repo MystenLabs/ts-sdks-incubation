@@ -5,11 +5,10 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Exit } from 'effect';
 
-import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import type { SupervisedStack } from '../../../src/substrate/runtime/supervisor.ts';
-import { defineTag } from '../../../src/substrate/tag.ts';
+import { definePlugin } from '../../../src/substrate/plugin.ts';
 import { runStackEffect } from '../../../src/substrate/runtime/run.ts';
 
 const identity: Identity = {
@@ -19,17 +18,12 @@ const identity: Identity = {
 };
 
 describe('substrate/runtime/run', () => {
-	it.effect('one-shot supervision fails when initial acquire fails', () =>
+	it.effect('one-shot supervision fails when initial start fails', () =>
 		Effect.gen(function* () {
-			const tagFail = defineTag<'test:one-shot-fail', { readonly ok: true }>(
-				'test:one-shot-fail',
-				'fail',
-			);
-			const pluginFail = defineNodePlugin({
-				provides: tagFail,
-				consumes: [] as const,
+			const pluginFail = definePlugin({
+				id: 'test:one-shot-fail',
 				kind: 'leaf-long-running' as const,
-				acquire: () =>
+				start: () =>
 					Effect.fail(new Error('initial acquire failed')) as Effect.Effect<
 						{ readonly ok: true },
 						Error,

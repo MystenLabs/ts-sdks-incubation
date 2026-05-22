@@ -157,11 +157,11 @@ describe('wallet boots end-to-end', () => {
 			withinScope: (ctx) =>
 				Effect.gen(function* () {
 					const sui = ctx.resolvedValues.get('sui#0') as SuiClient | undefined;
-					const alice = ctx.resolvedValues.get('account/alice#2') as AccountValue | undefined;
-					const bob = ctx.resolvedValues.get('account/bob#3') as AccountValue | undefined;
-					const carol = ctx.resolvedValues.get('account/carol#4') as AccountValue | undefined;
-					const mUsdc = ctx.resolvedValues.get('coin:mock_usdc#7') as CoinValue | undefined;
-					const mWeth = ctx.resolvedValues.get('coin:mock_weth#8') as CoinValue | undefined;
+					const alice = ctx.resolvedValues.get('account/alice#6') as AccountValue | undefined;
+					const bob = ctx.resolvedValues.get('account/bob#7') as AccountValue | undefined;
+					const carol = ctx.resolvedValues.get('account/carol#8') as AccountValue | undefined;
+					const mUsdc = ctx.resolvedValues.get('coin:mock_usdc#4') as CoinValue | undefined;
+					const mWeth = ctx.resolvedValues.get('coin:mock_weth#5') as CoinValue | undefined;
 					const wallet = ctx.resolvedValues.get('wallet#10') as WalletValue | undefined;
 
 					if (
@@ -195,23 +195,21 @@ describe('wallet boots end-to-end', () => {
 				}),
 		});
 
-		// Eleven-plugin expectation. Ordinals match the variadic
-		// position in `examples/wallet/devstack.config.ts`:
-		//   sui(0), publisher(1), alice(2), bob(3), carol(4),
-		//   usdc(5), weth(6), mUSDC(7), mWETH(8), seedTokens(9),
-		//   wallet(10).
+		// Recursive-entrypoint expectation. Ordinals come from the
+		// dependency closure rooted at the host app.
 		const expectedKeys = [
 			'sui#0',
 			'account/publisher#1',
-			'account/alice#2',
-			'account/bob#3',
-			'account/carol#4',
-			'package:mock_usdc#5',
-			'package:mock_weth#6',
-			'coin:mock_usdc#7',
-			'coin:mock_weth#8',
+			'package:mock_usdc#2',
+			'package:mock_weth#3',
+			'coin:mock_usdc#4',
+			'coin:mock_weth#5',
+			'account/alice#6',
+			'account/bob#7',
+			'account/carol#8',
 			'action:wallet.seedTokens#9',
 			'wallet#10',
+			'host-service/app#11',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);

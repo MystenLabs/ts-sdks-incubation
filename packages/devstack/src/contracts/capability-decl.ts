@@ -23,7 +23,7 @@ import type { StrategyContributorDecl } from './strategy-contributor.ts';
 export interface DevstackCapabilityRegistry {
 	readonly snapshotable: Omit<SnapshotableDecl, 'kind'>;
 	readonly routable: Omit<RoutableDecl, 'kind'>;
-	readonly codegenable: Omit<CodegenableDecl<unknown, string>, 'kind'>;
+	readonly codegenable: Omit<CodegenableDecl<string>, 'kind'>;
 	readonly 'strategy-contributor': Omit<
 		StrategyContributorDecl<string, unknown>,
 		'kind'

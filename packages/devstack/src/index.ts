@@ -11,7 +11,6 @@
 export {
 	defineDevstack,
 	type Stack,
-	type WithAutoSui,
 	type __UnsatisfiedWitnessesError,
 } from './api/define-devstack.ts';
 export {
@@ -98,7 +97,11 @@ export type {
 	DevstackCapabilityRegistry,
 	ExactCapabilityPayload,
 } from './contracts/capability-decl.ts';
-export type { CodegenableDecl } from './contracts/codegenable.ts';
+export type {
+	CodegenableDecl,
+	CodegenEmitContext,
+	CodegenEmitDone,
+} from './contracts/codegenable.ts';
 export type {
 	ContainerHandle,
 	ContainerRuntime,
@@ -152,7 +155,7 @@ export type {
 	DefaultNetwork,
 	DevstackNetworkModeRegistry,
 } from './substrate/network.ts';
-export type { DevstackOptions, OptionsLike } from './substrate/options.ts';
+export type { DevstackOptions } from './substrate/options.ts';
 export type {
 	ManifestExtras,
 	ManifestExtrasContext,
@@ -381,7 +384,7 @@ export {
 	ActionReceiptSchema,
 	signAndExecute,
 	type ActionOptions,
-	type ActionUpstreamMember,
+	type ActionUpstreamRef,
 	type ActionBuildContext,
 	type ActionError,
 	type ActionPhase,

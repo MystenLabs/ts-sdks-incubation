@@ -16,9 +16,11 @@ const alice = account('alice', {
 const registry = knownPackage('registry', {
 	packageId: '0x...',
 });
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const devWallet = wallet({ accounts: [alice] });
 
 export default defineDevstack({
-	members: [sui({ mode: 'live', network: 'testnet' }), alice, registry, wallet({ accounts: [alice] })],
+	members: [liveSui, registry, devWallet],
 	stackName: 'testnet',
 });
 ```

@@ -24,9 +24,7 @@
 import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
 import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
-import { defineTag } from '../../../src/substrate/tag.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	CapabilitySinksService,
@@ -42,7 +40,7 @@ import {
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
-import type { PluginErrorContribution } from '../../../src/substrate/plugin.ts';
+import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { CompositePrimitiveDecl } from '../../../src/contracts/composite-primitive.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
@@ -109,34 +107,11 @@ const makeCapture = () =>
 		return { ref, sinks };
 	});
 
-// Each plugin provides a distinct tag (different `id` literal) and
+// Each plugin provides a distinct resource id and
 // declares a single capability `kind`. The supervisor's resolve-graph
 // happily acquires each in topological order; we set them all as
 // independent leaves so the test exercises the harvest path without
 // depending on cross-plugin wiring.
-const tagSnap = defineTag<'test:snap', { readonly v: 'snap' }>('test:snap', 'plug-snap');
-const tagRoute = defineTag<'test:route', { readonly v: 'route' }>('test:route', 'plug-route');
-const tagCodegen = defineTag<'test:codegen', { readonly v: 'codegen' }>(
-	'test:codegen',
-	'plug-codegen',
-);
-const tagStrat = defineTag<'test:strat', { readonly v: 'strat' }>('test:strat', 'plug-strat');
-const tagAccountProjection = defineTag<'account/alice', { readonly v: 'account' }>(
-	'account/alice',
-	'account',
-);
-const tagPackageProjection = defineTag<'package:vault', { readonly v: 'package' }>(
-	'package:vault',
-	'package',
-);
-const tagComposite = defineTag<'test:composite', { readonly v: 'composite' }>(
-	'test:composite',
-	'plug-composite',
-);
-const tagErrorOnly = defineTag<'test:errorOnly', { readonly v: 'err' }>(
-	'test:errorOnly',
-	'plug-error-only',
-);
 
 const snapDecl: SnapshotableDecl = {
 	kind: 'snapshotable',
@@ -153,11 +128,15 @@ const routeDecl: RoutableDecl = {
 	cors: false,
 };
 
-const codegenDecl: CodegenableDecl<{ readonly hello: string }, 'demo-emitter'> = {
+const codegenDecl: CodegenableDecl<'demo-emitter'> = {
 	kind: 'codegenable',
 	emitterName: 'demo-emitter',
 	outputPath: 'demo/file.ts',
-	emit: () => Effect.succeed({ hello: 'world' }),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('hello', 'world');
+			return ctx.done();
+		}),
 };
 
 const strategyDecl: StrategyContributorDecl<'demo-strategy', { readonly run: 'ok' }> = {
@@ -239,68 +218,60 @@ const errorContribBeta: PluginErrorContribution = {
 // Test plugins — one leaf per capability kind, plus one error-only plugin.
 // -----------------------------------------------------------------------------
 
-const pluginSnap = defineNodePlugin({
-	provides: tagSnap,
-	consumes: [] as const,
+const pluginSnap = definePlugin({
+	id: 'test:snap',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ v: 'snap' as const }),
+	start: () => Effect.succeed({ v: 'snap' as const }),
 	capabilities: [snapDecl] as const,
 });
 
-const pluginRoute = defineNodePlugin({
-	provides: tagRoute,
-	consumes: [] as const,
+const pluginRoute = definePlugin({
+	id: 'test:route',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ v: 'route' as const }),
+	start: () => Effect.succeed({ v: 'route' as const }),
 	capabilities: [routeDecl] as const,
 });
 
-const pluginCodegen = defineNodePlugin({
-	provides: tagCodegen,
-	consumes: [] as const,
+const pluginCodegen = definePlugin({
+	id: 'test:codegen',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ v: 'codegen' as const }),
+	start: () => Effect.succeed({ v: 'codegen' as const }),
 	capabilities: [codegenDecl] as const,
 });
 
-const pluginStrat = defineNodePlugin({
-	provides: tagStrat,
-	consumes: [] as const,
+const pluginStrat = definePlugin({
+	id: 'test:strat',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ v: 'strat' as const }),
+	start: () => Effect.succeed({ v: 'strat' as const }),
 	capabilities: [strategyDecl] as const,
 });
 
-const pluginAccountProjection = defineNodePlugin({
-	provides: tagAccountProjection,
-	consumes: [] as const,
+const pluginAccountProjection = definePlugin({
+	id: 'account/alice',
 	kind: 'leaf-one-shot' as const,
-	acquire: () => Effect.succeed({ v: 'account' as const }),
+	start: () => Effect.succeed({ v: 'account' as const }),
 	capabilities: [accountStrategyDecl] as const,
 });
 
-const pluginPackageProjection = defineNodePlugin({
-	provides: tagPackageProjection,
-	consumes: [] as const,
+const pluginPackageProjection = definePlugin({
+	id: 'package:vault',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ v: 'package' as const }),
+	start: () => Effect.succeed({ v: 'package' as const }),
 	capabilities: [packageStrategyDecl] as const,
 });
 
-const pluginComposite = defineNodePlugin({
-	provides: tagComposite,
-	consumes: [] as const,
+const pluginComposite = definePlugin({
+	id: 'test:composite',
 	kind: 'composite' as const,
-	acquire: () => Effect.succeed({ v: 'composite' as const }),
+	start: () => Effect.succeed({ v: 'composite' as const }),
 	capabilities: [compositeDecl] as const,
 	errorContributions: [errorContribAlpha],
 });
 
-const pluginErrorOnly = defineNodePlugin({
-	provides: tagErrorOnly,
-	consumes: [] as const,
+const pluginErrorOnly = definePlugin({
+	id: 'test:errorOnly',
 	kind: 'leaf-one-shot' as const,
-	acquire: () => Effect.succeed({ v: 'err' as const }),
+	start: () => Effect.succeed({ v: 'err' as const }),
 	errorContributions: [errorContribBeta],
 });
 
@@ -317,12 +288,10 @@ describe('supervisor harvest loop', () => {
 			const readyEventSeen = yield* Deferred.make<void>();
 			const eventOrder = yield* Ref.make<ReadonlyArray<string>>([]);
 
-			const tagSlow = defineTag<'test:slow', { readonly v: 'slow' }>('test:slow', 'plug-slow');
-			const pluginSlow = defineNodePlugin({
-				provides: tagSlow,
-				consumes: [] as const,
+			const pluginSlow = definePlugin({
+				id: 'test:slow',
 				kind: 'leaf-long-running' as const,
-				acquire: () =>
+				start: () =>
 					Effect.gen(function* () {
 						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
 						yield* Deferred.await(releaseAcquire);
@@ -420,15 +389,10 @@ describe('supervisor harvest loop', () => {
 
 	it.effect('graceful shutdown tears down ready rows before awaitShutdown resolves', () =>
 		Effect.gen(function* () {
-			const tagShutdown = defineTag<'test:shutdown', { readonly v: 'shutdown' }>(
-				'test:shutdown',
-				'plug-shutdown',
-			);
-			const pluginShutdown = defineNodePlugin({
-				provides: tagShutdown,
-				consumes: [] as const,
+			const pluginShutdown = definePlugin({
+				id: 'test:shutdown',
 				kind: 'leaf-long-running' as const,
-				acquire: () => Effect.succeed({ v: 'shutdown' as const }),
+				start: () => Effect.succeed({ v: 'shutdown' as const }),
 			});
 			const state = yield* makeProjectionRef();
 			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginShutdown], options: {} };
@@ -701,19 +665,14 @@ describe('supervisor harvest loop', () => {
 					readonly kind: 'plugin-author:custom';
 					readonly payload: string;
 				}
-				const tagCustom = defineTag<'test:custom', { readonly v: 'custom' }>(
-					'test:custom',
-					'plug-custom',
-				);
 				const customDecl: CustomDecl = {
 					kind: 'plugin-author:custom',
 					payload: 'extension-path-fired',
 				};
-				const pluginCustom = defineNodePlugin({
-					provides: tagCustom,
-					consumes: [] as const,
+				const pluginCustom = definePlugin({
+					id: 'test:custom',
 					kind: 'leaf-long-running' as const,
-					acquire: () => Effect.succeed({ v: 'custom' as const }),
+					start: () => Effect.succeed({ v: 'custom' as const }),
 					// Cast: the custom decl isn't part of the built-in
 					// CapabilityDecl union. The substrate dispatches
 					// structurally on `kind`, so the union is the default
@@ -813,12 +772,10 @@ describe('supervisor harvest loop', () => {
 
 	it.effect('publishes operator-level plugin logs as log.appended events and row log tails', () =>
 		Effect.gen(function* () {
-			const tagLog = defineTag<'test:log', { readonly v: 'log' }>('test:log', 'plug-log');
-			const pluginLog = defineNodePlugin({
-				provides: tagLog,
-				consumes: [] as const,
+			const pluginLog = definePlugin({
+				id: 'test:log',
 				kind: 'leaf-long-running' as const,
-				acquire: () =>
+				start: () =>
 					Effect.gen(function* () {
 						const logger = yield* Logger;
 						const current = yield* CurrentPluginKey;
@@ -869,12 +826,14 @@ describe('supervisor harvest loop', () => {
 
 	it.effect('acquire failure publishes structured error and leaves a failed row', () =>
 		Effect.gen(function* () {
-			const tagFail = defineTag<'test:fail', { readonly v: 'fail' }>('test:fail', 'plug-fail');
-			const pluginFail = defineNodePlugin({
-				provides: tagFail,
-				consumes: [] as const,
+			const pluginFail = definePlugin({
+				id: 'test:fail',
 				kind: 'leaf-long-running' as const,
-				acquire: () => Effect.fail(new Error('boom from acquire')),
+				start: () =>
+					Effect.fail(new Error('boom from acquire')) as Effect.Effect<
+						{ readonly v: 'fail' },
+						Error
+					>,
 			});
 			const state = yield* makeProjectionRef();
 			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginFail], options: {} };
@@ -897,12 +856,10 @@ describe('supervisor harvest loop', () => {
 
 	it.effect('capability factory failure reports a structured error instead of marking ready', () =>
 		Effect.gen(function* () {
-			const tagCaps = defineTag<'test:caps', { readonly v: 'caps' }>('test:caps', 'plug-caps');
-			const pluginCaps = defineNodePlugin({
-				provides: tagCaps,
-				consumes: [] as const,
+			const pluginCaps = definePlugin({
+				id: 'test:caps',
 				kind: 'leaf-long-running' as const,
-				acquire: () => Effect.succeed({ v: 'caps' as const }),
+				start: () => Effect.succeed({ v: 'caps' as const }),
 				capabilities: (() => {
 					throw new Error('capability boom');
 				}) as never,

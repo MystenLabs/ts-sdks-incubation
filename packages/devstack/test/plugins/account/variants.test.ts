@@ -100,8 +100,8 @@ describe('account env and private-key variant surface', () => {
 			privateKey: 'suiprivkey1demo',
 		});
 
-		expect(envAccount.provides.id).toBe('account/prod');
-		expect(inlineAccount.provides.id).toBe('account/demo');
+		expect(envAccount.id).toBe('account/prod');
+		expect(inlineAccount.id).toBe('account/demo');
 	});
 
 	it('projects default ephemeral funding into account registry capabilities', () => {

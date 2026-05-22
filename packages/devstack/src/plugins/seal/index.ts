@@ -36,21 +36,17 @@
 
 import { Effect, FileSystem, Path } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMember } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { definePlugin, type ResourceRef } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { NetworkConfig } from '../../substrate/network.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
-import type { Tag } from '../../substrate/tag.ts';
-import type { AccountTagId } from '../account/index.ts';
+import type { AccountResourceId } from '../account/index.ts';
 import type { AccountValue } from '../account/service.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';
 import { makeSealComposite } from './composite.ts';
@@ -78,7 +74,7 @@ import {
 	type LocalKeygenDeps,
 } from './mode/local-keygen.ts';
 import {
-	makeSealTag,
+	makeSealResource,
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
 	type SealResolved,
@@ -91,18 +87,18 @@ import { parseDevstackNetwork } from '../../api/inference-network.ts';
 const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
-// Tag exports — distilled-doc §"TypeScript exports consumed elsewhere"
+// Resource exports — distilled-doc §"TypeScript exports consumed elsewhere"
 // ---------------------------------------------------------------------------
 
 export {
-	makeSealTag,
-	sealTagId,
+	makeSealResource,
+	sealResourceId,
 	type SealKeyServer,
 	type SealKeyServerEntry,
 	type SealResolved,
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
-	type SealTagId,
+	type SealResourceId,
 } from './registry-publish.ts';
 export type { SealKeyManager } from './key-manager.ts';
 export {
@@ -136,34 +132,26 @@ export interface SealCommonOptions {
 }
 
 /** A user-supplied signer account ref. The user passes the result of
- *  `account('publisher')` (a `StackMember` providing the per-name
- *  account tag) — NOT a magic-string token. Generic over the literal
- *  account name so the seal plugin's `consumes: [SuiTag,
- *  account/<name>]` preserves the per-account tag id for the
- *  substrate's `MissingProviders` check (mirrors the package plugin's
- *  `PublisherAccountMember`). */
-export type SealSignerMember<Name extends string = string> = StackMember<
-	Tag<AccountTagId<Name>, AccountValue>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
+ *  `account('publisher')` — NOT a magic-string token. Generic over the
+ *  literal account name so the seal dependency edge preserves the
+ *  per-account resource id. */
+export type SealSignerMember<Name extends string = string> = ResourceRef<
+	AccountResourceId<Name>,
+	AccountValue
 >;
 
 /** Local-keygen mode options. The `signer` field is REQUIRED — the
  *  Move publish + on-chain register both need it. The mode-narrowed
  *  factory's TypeScript shape enforces this (no `signer?` here). */
 export interface SealLocalKeygenOptions<
-	SignerName extends string = string,
+	Signer extends SealSignerMember = SealSignerMember,
 > extends SealCommonOptions {
 	/** Signer for the seal Move publish + on-chain key-server register.
-	 *  Pass the result of `account('publisher')` — the same `StackMember`
-	 *  reference used elsewhere in the stack. The substrate threads the
-	 *  upstream account tag through `consumes:` so the publish tx waits
-	 *  for the account's acquire (keypair mint + funding) to complete. */
-	readonly signer: SealSignerMember<SignerName>;
+	 *  Pass the result of `account('publisher')` — the same plugin/resource
+	 *  ref used elsewhere in the stack. The ref is threaded through
+	 *  `dependsOn` so the publish tx waits for the account's acquire
+	 *  (keypair mint + funding) to complete. */
+	readonly signer: Signer;
 	readonly version?: string;
 	readonly movePackagePath?: string;
 	readonly readyTimeoutMs?: number;
@@ -185,8 +173,8 @@ export interface SealForkKnownOptions extends SealCommonOptions {
 	readonly keyServerUrl?: string;
 }
 
-export type SealOptions<SignerName extends string = string> =
-	| ({ readonly mode: 'local-keygen' } & SealLocalKeygenOptions<SignerName>)
+export type SealOptions<Signer extends SealSignerMember = SealSignerMember> =
+	| ({ readonly mode: 'local-keygen' } & SealLocalKeygenOptions<Signer>)
 	| ({ readonly mode: 'live' } & SealLiveOptions)
 	| ({ readonly mode: 'fork-known' } & SealForkKnownOptions);
 
@@ -205,23 +193,15 @@ const DEFAULT_NAME = 'seal';
  *  declared at factory time, `ContainerRuntimeService` +
  *  `IdentityContext` wired via the supervisor's plugin runtime
  *  context, OCA publisher + chain probe yielded inside `acquire`. */
-const buildLocalKeygenPlugin = <SignerName extends string>(
-	opts: SealLocalKeygenOptions<SignerName>,
+const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
+	opts: SealLocalKeygenOptions<Signer>,
 ) => {
 	// Synchronous factory-time defaults. Localnet-signer-required is
 	// enforced one layer up by the type-narrowed `sealLocalKeygenStrict`
 	// + the typed `signer:` field on SealLocalKeygenOptions.
 	const resolved = resolveLocalKeygenOptions(opts, '<default-seal-version>');
 
-	const tag = makeSealTag(resolved.name);
-
-	// `consumes` carries the literal `account/<SignerName>` so the
-	// substrate's compose-time `MissingProviders` check confirms the
-	// named account is in the stack. The acquire body's resolved-value
-	// read goes through `consumeMember(opts.signer)` which hides the
-	// §14 localized cast.
-	const signerMember = consumeMember(opts.signer);
-	const consumesTuple = [SuiTag, signerMember.consumesTag] as const;
+	const sealResource = makeSealResource(resolved.name);
 
 	// Lifted siblings — declared at factory time so the topo scheduler
 	// places them at level 0 (parallel with sui's boot). Two siblings:
@@ -245,13 +225,14 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 		// value.
 		innerParticipants: [],
 	});
-	return defineNodePlugin({
-		provides: tag,
-		consumes: consumesTuple,
+	return definePlugin({
+		id: sealResource.id,
+		dependsOn: { sui: suiResource, signer: opts.signer },
 		kind: 'composite',
 		rebootCost: 'heavy',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.gen(function* () {
+				const { sui, signer: signerAccount } = deps;
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
 				//     via the supervisor's plugin runtime context.
@@ -273,15 +254,6 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
-
-				const sui = ctx.get(SuiTag);
-				// Direct member-ref accessor for the signer upstream —
-				// `consumeMember(opts.signer)` (built above) encapsulates
-				// the §14 localized cast for the resolved-value projection.
-				// Signer resolves to an AccountValue with `signTransaction`;
-				// Seal publish + register use it through the shared Sui SDK
-				// execution helper.
-				const signerAccount = signerMember.projectInScope(ctx);
 				const probe = yield* chainProbeFor<SealObjectProbeKey>(sui.chain);
 
 				// Resolve the seal service dir from the per-stack paths
@@ -332,7 +304,7 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 					),
 				);
 
-				const deps: LocalKeygenDeps = {
+				const localKeygenDeps: LocalKeygenDeps = {
 					runtime,
 					publisher,
 					signer: signerAccount,
@@ -354,7 +326,10 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 					routedUrl: routed.url,
 				};
 
-				const boot = (yield* bootLocalKeygen(deps, resolved)) satisfies SealLocalKeygenResolved;
+				const boot = (yield* bootLocalKeygen(
+					localKeygenDeps,
+					resolved,
+				)) satisfies SealLocalKeygenResolved;
 
 				const resolvedValue: SealResolved = {
 					...boot.keyServer,
@@ -367,7 +342,7 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 		// `SealKeyServer` + acquire context. Stamps the REAL
 		// objectId / keyServerUrl into codegen bindings and the
 		// real identity app/stack into the snapshot decl.
-		capabilities: (resolvedKs, acquireCtx) => {
+		capabilities: ({ value: resolvedKs, runtime: acquireCtx }) => {
 			const bindings: SealBindings = {
 				name: resolved.name,
 				objectId: resolvedKs.objectId,
@@ -385,7 +360,7 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 				name: resolved.name,
 				containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-seal-${resolved.name}-key-server`,
 			});
-			return capabilities(composite, snap, codegen, routable);
+			return [composite, snap, codegen, routable] as const;
 		},
 		errorContributions: sealErrorContributions,
 		liftedSiblings: siblingKeys,
@@ -396,7 +371,7 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
  *  participants), no Routable (URL is remote). */
 const buildLivePlugin = (opts: SealLiveOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
-	const tag = makeSealTag(name);
+	const sealResource = makeSealResource(name);
 	// Validate inputs at factory time so misconfigurations fail
 	// before any plugin row starts work.
 	const validated = validateLiveInputs({ name, ...opts });
@@ -410,12 +385,11 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	const snap = makeKnownSnapshotable({ name });
 	const codegen = makeSealCodegenable(bindings);
 
-	return defineNodePlugin({
-		provides: tag,
-		consumes: [] as const,
+	return definePlugin({
+		id: sealResource.id,
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'live', name, ...opts };
 				const publisher = yield* OnChainArtifactPublisherService;
@@ -426,7 +400,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 					manager: null,
 				} satisfies SealResolved;
 			}),
-		capabilities: capabilities(snap, codegen),
+		capabilities: [snap, codegen] as const,
 		errorContributions: sealErrorContributions,
 	});
 };
@@ -437,15 +411,14 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
  *  options may be undefined → resolved by the upstream lookup). */
 const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
-	const tag = makeSealTag(name);
+	const sealResource = makeSealResource(name);
 	const snap = makeKnownSnapshotable({ name });
 
-	return defineNodePlugin({
-		provides: tag,
-		consumes: [] as const,
+	return definePlugin({
+		id: sealResource.id,
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'fork-known', name, ...opts };
 				const publisher = yield* OnChainArtifactPublisherService;
@@ -456,7 +429,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 					manager: null,
 				} satisfies SealResolved;
 			}),
-		capabilities: (resolvedKs) => {
+		capabilities: ({ value: resolvedKs }) => {
 			const bindings: SealBindings = {
 				name,
 				objectId: resolvedKs.objectId,
@@ -464,7 +437,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 				serverConfigs: resolvedKs.serverConfigs,
 				mode: 'fork-known',
 			};
-			return capabilities(snap, makeSealCodegenable(bindings));
+			return [snap, makeSealCodegenable(bindings)] as const;
 		},
 		errorContributions: sealErrorContributions,
 	});
@@ -506,7 +479,9 @@ const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keyg
  *
  *  Distilled-doc invariant #14: synchronous throw when `signer` is
  *  missing on localnet. */
-export const seal = <SignerName extends string = string>(opts?: SealOptions<SignerName>) => {
+export const seal = <const Signer extends SealSignerMember = SealSignerMember>(
+	opts?: SealOptions<Signer>,
+) => {
 	const resolved = opts ?? resolveDefaultMode();
 	switch (resolved.mode) {
 		case 'local-keygen':
@@ -538,7 +513,7 @@ export const seal = <SignerName extends string = string>(opts?: SealOptions<Sign
  *  network — see `localKeygenStrict` below. */
 export const sealFor = defineModeNamespace({
 	local: {
-		localKeygen: <SignerName extends string>(opts: SealLocalKeygenOptions<SignerName>) =>
+		localKeygen: <const Signer extends SealSignerMember>(opts: SealLocalKeygenOptions<Signer>) =>
 			buildLocalKeygenPlugin(opts),
 	},
 	live: {
@@ -569,9 +544,9 @@ export const sealFor = defineModeNamespace({
  *  networks.
  *
  *  Distilled-doc invariant #8 + §Failure modes. */
-export const sealLocalKeygenStrict = <SignerName extends string>(
+export const sealLocalKeygenStrict = <const Signer extends SealSignerMember>(
 	network: NetworkConfig,
-	opts: SealLocalKeygenOptions<SignerName>,
+	opts: SealLocalKeygenOptions<Signer>,
 ) => {
 	if (network.mode === 'fork') {
 		throw forkIncompatibleError({

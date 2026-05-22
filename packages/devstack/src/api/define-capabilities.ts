@@ -8,9 +8,7 @@
 // Two surfaces:
 //
 //   - plain arrays (`[snapshotable(...), codegenable(...)]`) are the
-//     public plugin-authoring shape.
-//   - `capabilities(...decls)` remains internal convenience for older
-//     built-ins during the engine migration.
+//     plugin-authoring shape.
 //   - `CapabilityBuilder` — fluent alternative (chainable
 //     `.snapshot(decl).route(decl).codegen(decl)`) for cases where
 //     branching is convenient.
@@ -53,8 +51,8 @@ export const defineCapability =
 		capability<Kind, Data>(kind, data);
 
 export const codegenable = <const Emitter extends string>(
-	decl: Omit<CodegenableDecl<unknown, Emitter>, 'kind'>,
-): CodegenableDecl<unknown, Emitter> => capability('codegenable', decl);
+	decl: Omit<CodegenableDecl<Emitter>, 'kind'>,
+): CodegenableDecl<Emitter> => capability('codegenable', decl);
 
 export const snapshotable = (decl: Omit<SnapshotableDecl, 'kind'>): SnapshotableDecl =>
 	capability('snapshotable', decl);
@@ -77,15 +75,6 @@ export const capabilitySink = <
 ): CapabilitySink<Kind, Decl> => ({ kind, accept });
 
 /**
- * Variadic capability builder. The return type preserves the
- * per-decl narrow types as a readonly tuple — downstream `Caps`
- * inference flows through.
- */
-export function capabilities<Decls extends ReadonlyArray<CapabilityDecl>>(...decls: Decls): Decls {
-	return decls;
-}
-
-/**
  * Fluent capability builder. Each method appends one decl and
  * returns a new builder with the tuple's literal type extended.
  */
@@ -94,9 +83,9 @@ export interface CapabilityBuilder<Caps extends ReadonlyArray<CapabilityDecl>> {
 		decl: SnapshotableDecl,
 	) => CapabilityBuilder<readonly [...Caps, SnapshotableDecl]>;
 	readonly route: (decl: RoutableDecl) => CapabilityBuilder<readonly [...Caps, RoutableDecl]>;
-	readonly codegen: <Shape, Emitter extends string>(
-		decl: CodegenableDecl<Shape, Emitter>,
-	) => CapabilityBuilder<readonly [...Caps, CodegenableDecl<Shape, Emitter>]>;
+	readonly codegen: <Emitter extends string>(
+		decl: CodegenableDecl<Emitter>,
+	) => CapabilityBuilder<readonly [...Caps, CodegenableDecl<Emitter>]>;
 	readonly strategy: <Key extends string, Strategy>(
 		decl: StrategyContributorDecl<Key, Strategy>,
 	) => CapabilityBuilder<readonly [...Caps, StrategyContributorDecl<Key, Strategy>]>;

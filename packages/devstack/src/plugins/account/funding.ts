@@ -32,38 +32,28 @@ import {
 	faucetCapabilityFor,
 	StrategyRegistryService,
 } from '../../substrate/runtime/strategy-registry/index.ts';
+import type { ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
-import type { Tag } from '../../substrate/tag.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { CoinTagId, CoinValue } from '../coin/index.ts';
+import type { CoinResourceId, CoinValue } from '../coin/index.ts';
 
 import { accountAcquireError, type AccountAcquireError } from './errors.ts';
 import { withAddressLease } from './lease.ts';
 
-/** Direct member ref shape for a coin upstream. The user passes the
+/** Direct resource ref shape for a coin upstream. The user passes the
  *  result of `coin.local(...)` / `coin.witness(...)` / `coin.known(...)`
- *  / `coin.builtin(...)` (a `StackMember` providing a per-coin Tag) —
- *  NOT a bare string or discriminator. Generic over the literal symbol
- *  so the account's `consumes:` tuple preserves each per-coin tag id
- *  (`coin:USDC`, `coin:WAL`, ...).
+ *  / `coin.builtin(...)` — NOT a bare string or discriminator. Generic
+ *  over the literal symbol so the account's dependency tuple preserves
+ *  each per-coin resource id (`coin:USDC`, `coin:WAL`, ...).
  *
  *  Architecture (Direct Member Refs): cross-plugin references at the
- *  user-facing surface are the StackMember directly — no opaque tag /
- *  string discriminator vocabulary. */
-export type CoinMember<Sym extends string = string> = StackMember<
-	Tag<CoinTagId<Sym>, CoinValue>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
->;
+ *  user-facing surface are plugin/resource refs directly — no opaque
+ *  tag or string discriminator vocabulary. */
+export type CoinMember<Sym extends string = string> = ResourceRef<CoinResourceId<Sym>, CoinValue>;
 
 /** A single cross-cutting funding entry. `coin` is a direct member ref
  *  (the value returned by `coin.local(...)` etc.) — the account plugin
- *  threads it through `consumes:` so the substrate's dep graph forces
+ *  threads it through `dependsOn` so the substrate's dep graph forces
  *  the publishing / discovery edge to land before funding.
  *
  *  Distilled-doc invariant ("Strict upstream declaration"): coin
@@ -73,20 +63,12 @@ export interface CrossCuttingFundingEntry<M extends CoinMember = CoinMember> {
 	readonly amount: bigint;
 }
 
-/** Tuple of per-coin tags extracted from a tuple of coin
- *  `StackMember`s. Preserves each member's literal symbol so the
- *  account's `consumes:` tuple and `MissingProviders` keep their
- *  narrow ids. */
-export type FundingCoinTags<Funding extends ReadonlyArray<CrossCuttingFundingEntry>> = {
-	readonly [K in keyof Funding]: Funding[K]['coin']['provides'];
-};
-
 /** Internal projected shape — the acquire body in `account/index.ts`
- *  walks each funding entry's `coin` member via `ctx.use(member)`,
- *  reads `fullCoinType` from the resolved `CoinValue`, and passes the
- *  projected entries to `applyCrossCuttingFunding`. The funding pass
- *  never sees the raw member refs — keeps the strategy dispatch
- *  logic substrate-name-blind. */
+ *  receives each funding entry's resolved `CoinValue`, reads
+ *  `fullCoinType`, and passes the projected entries to
+ *  `applyCrossCuttingFunding`. The funding pass never sees the raw
+ *  member refs — keeps the strategy dispatch logic
+ *  substrate-name-blind. */
 export interface ProjectedFundingEntry {
 	readonly fullCoinType: string;
 	readonly amount: bigint;
@@ -236,8 +218,8 @@ export const fundEphemeralDefault = (
 /** Inputs the cross-cutting funding pass needs from the per-acquire ctx.
  *
  *  `funding` is the PROJECTED shape — the acquire body in
- *  `account/index.ts` walks each user-supplied `CoinMember` via
- *  `ctx.use(member)` and projects to `{fullCoinType, amount}` BEFORE
+ *  `account/index.ts` receives each user-supplied `CoinMember` as a
+ *  resolved dependency and projects to `{fullCoinType, amount}` BEFORE
  *  invoking this pass. Keeps the dispatch logic substrate-name-blind. */
 export interface ApplyCrossCuttingFundingArgs {
 	readonly accountName: string;

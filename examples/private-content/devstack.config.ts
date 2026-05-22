@@ -53,6 +53,6 @@ const app = hostService({
 	needs: [localnet, vault, walrusCluster, sealKeyServer, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, publisher, alice, bob, vault, walrusCluster, sealKeyServer, devWallet, app] });
+const stack = defineDevstack({ members: [localnet, app] });
 
 export default stack;

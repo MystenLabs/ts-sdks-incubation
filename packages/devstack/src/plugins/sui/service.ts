@@ -34,10 +34,9 @@ import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { PortBroker } from '../../substrate/runtime/port-broker/index.ts';
 
-/** Bundled result of one acquire — resolved metadata + the user-
- *  facing client. The barrel projects the resolved value through
- *  the plugin's `provides` tag; the resolved metadata feeds the
- *  Codegenable + NetworkResolver contributions. */
+/** Bundled result of one acquire — resolved metadata + the user-facing
+ *  client. The barrel projects this into the Sui resource value; the
+ *  resolved metadata feeds the Codegenable + NetworkResolver contributions. */
 export interface SuiBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;

@@ -6,8 +6,9 @@ description: Create a current devstack config and wire the build integrations.
 Start with a `devstack.config.ts` at the app root:
 
 ```ts title="devstack.config.ts"
-import { defineDevstack, sui, account, localPackage, wallet } from '@mysten-incubation/devstack';
+import { defineDevstack, account, localPackage, sui, wallet } from '@mysten-incubation/devstack';
 
+export const localnet = sui();
 export const publisher = account('publisher');
 export const alice = account('alice');
 export const bob = account('bob');
@@ -16,9 +17,10 @@ export const hello = localPackage('hello', {
 	sourcePath: './move/hello',
 	publisher,
 });
+export const devWallet = wallet({ accounts: [publisher, alice, bob] });
 
 export default defineDevstack({
-	members: [sui(), publisher, alice, bob, hello, wallet({ accounts: [publisher, alice, bob] })],
+	members: [localnet, hello, devWallet],
 	stackName: 'quickstart',
 	codegen: { outputDir: 'src/generated' },
 });

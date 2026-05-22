@@ -8,8 +8,9 @@ members such as `sui()`, `account()`, `localPackage()`, `wallet()`, `walrus()`, 
 `deepbook()`, and `action()`.
 
 ```ts title="devstack.config.ts"
-import { defineDevstack, sui, account, localPackage, wallet } from '@mysten-incubation/devstack';
+import { defineDevstack, account, localPackage, sui, wallet } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const publisher = account('publisher');
 const alice = account('alice');
 
@@ -17,9 +18,10 @@ const hello = localPackage('hello', {
 	sourcePath: './move/hello',
 	publisher,
 });
+const devWallet = wallet({ accounts: [publisher, alice] });
 
 export default defineDevstack({
-	members: [sui(), publisher, alice, hello, wallet({ accounts: [publisher, alice] })],
+	members: [localnet, hello, devWallet],
 	stackName: 'hello',
 });
 ```
@@ -30,10 +32,9 @@ The public package surface is:
   types.
 - Build integrations: `@mysten-incubation/devstack/vite`, `/vitest`, `/playwright`, `/browser`, and
   `/runtime`.
-- Authoring subpaths: `@mysten-incubation/devstack/contracts` and `/substrate`.
 
-There is no exported `advanced` or `dapp-kit` package subpath. App code reads generated files and
-the runtime manifest instead of importing private helpers.
+There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
+reads generated files and the runtime manifest instead of importing private helpers.
 
 ## Core Flow
 

@@ -29,19 +29,16 @@
 //     1. snapshotable        — identity guard only.
 //     2. codegenable         — `deepbook-network` bindings (mode='known').
 //
-// Tag id: `deepbook/<name>`. Plugin key: `deepbook:<name>`.
+// Resource id: `deepbook/<name>`. Plugin key: `deepbook:<name>`.
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMember } from '../../api/consume-members.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 
 import { makeDeepbookComposite } from './composite.ts';
 import {
@@ -57,16 +54,13 @@ import { makeKnownSnapshotable, makeLocalSnapshotable } from './snapshot.ts';
 import type { AccountMemberAlias, DeepbookPool, PythHandle } from './types.ts';
 
 // ---------------------------------------------------------------------------
-// Tag — the resolved value all consumers read
+// Resource — the resolved value all consumers read
 // ---------------------------------------------------------------------------
 
-export type DeepbookTagId<Name extends string> = `deepbook/${Name}`;
+export type DeepbookResourceId<Name extends string> = `deepbook/${Name}`;
 
-const makeDeepbookTag = <Name extends string>(name: Name) =>
-	defineTag<DeepbookTagId<Name>, DeepbookResolved>(
-		`deepbook/${name}` as DeepbookTagId<Name>,
-		'deepbook',
-	);
+const makeDeepbookResource = <Name extends string>(name: Name) =>
+	resource<DeepbookResourceId<Name>, DeepbookResolved>(`deepbook/${name}` as DeepbookResourceId<Name>);
 
 /** The deepbook resolved value. Mode-asymmetric:
  *
@@ -219,7 +213,7 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 		);
 	}
 
-	const tag = makeDeepbookTag(name);
+	const deepbookResource = makeDeepbookResource(name);
 
 	const composite = makeDeepbookComposite({
 		name,
@@ -227,18 +221,14 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 		innerParticipants: [],
 	});
 
-	const publisherMember = consumeMember(opts.publisher);
-	const consumesTuple = [SuiTag, publisherMember.consumesTag] as const;
-
-	return defineNodePlugin({
-		provides: tag,
-		consumes: consumesTuple,
+	return definePlugin({
+		id: deepbookResource.id,
+		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		kind: 'composite',
 		rebootCost: 'heavy',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
-				const publisher = publisherMember.projectInScope(ctx);
+				const { sui, publisher } = deps;
 
 				yield* Effect.annotateCurrentSpan({
 					'deepbook.name': name,
@@ -285,7 +275,7 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 					);
 				}),
 			),
-		capabilities: (resolved, acquireCtx) => {
+		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
 			const snap: SnapshotableDecl = makeLocalSnapshotable({
 				name,
 				app: acquireCtx.identity.app,
@@ -315,9 +305,9 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 				serverUrl: resolved.serverUrl,
 				indexerUrl: resolved.indexerUrl,
 			};
-			const codegen: CodegenableDecl<DeepbookBindings, 'deepbook-network'> =
+			const codegen: CodegenableDecl<'deepbook-network'> =
 				makeDeepbookCodegenable(bindings);
-			return capabilities(composite, snap, codegen);
+			return [composite, snap, codegen] as const;
 		},
 		errorContributions: deepbookErrorContributions,
 		liftedSiblings: [],
@@ -340,17 +330,17 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 			`Pass explicit ids or use deepbook({mode:'known', network:'testnet'}).`,
 		);
 	}
-	const tag = makeDeepbookTag(name);
+	const deepbookResource = makeDeepbookResource(name);
 	const snap = makeKnownSnapshotable({ name });
 
-	return defineNodePlugin({
-		provides: tag,
-		consumes: [SuiTag] as const,
+	return definePlugin({
+		id: deepbookResource.id,
+		dependsOn: [suiResource] as const,
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.sync(() => {
-				const sui = ctx.get(SuiTag);
+				const [sui] = deps;
 				const resolved: DeepbookResolved = {
 					mode: 'known',
 					chain: opts.chain ?? known?.chain ?? sui.chain,
@@ -366,7 +356,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				};
 				return resolved;
 			}),
-		capabilities: (resolved) => {
+		capabilities: ({ value: resolved }) => {
 			const bindings: DeepbookBindings = {
 				name,
 				chain: resolved.chain,
@@ -384,7 +374,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				serverUrl: null,
 				indexerUrl: null,
 			};
-			return capabilities(snap, makeDeepbookCodegenable(bindings));
+			return [snap, makeDeepbookCodegenable(bindings)] as const;
 		},
 		errorContributions: deepbookErrorContributions,
 	});

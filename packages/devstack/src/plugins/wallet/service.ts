@@ -39,10 +39,9 @@ import { WalletHttpPath } from './protocol.ts';
 // User-facing options
 // ----------------------------------------------------------------------
 
-import type { Tag } from '../../substrate/tag.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
+import type { ResourceRef } from '../../api/define-plugin.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
-import type { AccountTagId } from '../account/index.ts';
+import type { AccountResourceId } from '../account/index.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
  *  member in the stack. Expanded by the composer at `defineDevstack`
@@ -52,30 +51,13 @@ export const WALLET_ACCOUNTS_ALL = 'all' as const;
 export type WalletAccountsAll = typeof WALLET_ACCOUNTS_ALL;
 
 /** A user-supplied account ref. The user passes the result of
- *  `account('alice')` (a `StackMember` providing the per-name account
- *  tag) — NOT a bare tag value. Generic over the literal account name
- *  so the wallet's `consumes: [SuiTag, ...accountTags]` preserves each
- *  per-account tag id (`account/alice`, `account/bob`, ...). Without
- *  that, the stack-composition `MissingProviders` check widens to
- *  `account/${string}` and flags the call site even when the literal
- *  account is present (15-wallet.md "consumes: [SuiTag, ...accountTags]
- *  carries every account tag with its literal id"). */
-export type WalletAccountMember<Name extends string = string> = StackMember<
-	Tag<AccountTagId<Name>, AccountValue>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
+ *  `account('alice')` — NOT a bare string. Generic over the literal
+ *  account name so the wallet's dependency tuple preserves each
+ *  per-account resource id (`account/alice`, `account/bob`, ...). */
+export type WalletAccountMember<Name extends string = string> = ResourceRef<
+	AccountResourceId<Name>,
+	AccountValue
 >;
-
-/** Tuple of per-account tags extracted from a tuple of account
- *  `StackMember`s. Preserves each member's literal name so downstream
- *  `consumes:` tuples and `MissingProviders` keep their narrow ids. */
-export type WalletAccountTags<Members extends ReadonlyArray<WalletAccountMember>> = {
-	readonly [K in keyof Members]: Members[K]['provides'];
-};
 
 export interface WalletOptions<
 	Accounts extends ReadonlyArray<WalletAccountMember> = ReadonlyArray<WalletAccountMember>,
@@ -85,10 +67,10 @@ export interface WalletOptions<
 	 *
 	 *  Two shapes:
 	 *
-	 *   - Explicit tuple — each entry is the `StackMember` returned by
-	 *     `account('name')`. Pins the bound set at the wallet's call
-	 *     site; preserves each literal `account/${Name}` so the
-	 *     stack-level `MissingProviders` check fires at compose time.
+	 *   - Explicit tuple — each entry is the plugin/resource ref returned
+	 *     by `account('name')`. Pins the bound set at the wallet's call
+	 *     site; preserves each literal `account/${Name}` so stack
+	 *     composition can validate and recursively expand the refs.
 	 *
 	 *   - The literal `'all'` — shorthand for "every account member in
 	 *     the stack". The composer expands this against the final
@@ -118,7 +100,7 @@ export interface WalletOptions<
 }
 
 // ----------------------------------------------------------------------
-// Resolved value (what the WalletTag publishes)
+// Resolved value (what the wallet plugin publishes)
 // ----------------------------------------------------------------------
 
 export interface WalletValue {
@@ -199,8 +181,8 @@ export const acquireWallet = (
 			'wallet.chain': ctx.chain,
 		});
 
-		// 1. Resolve the consumed account tags. The barrel sets up
-		//    `resolveAccounts` to walk the BuildContext via each tag in
+		// 1. Resolve the dependency account values. The barrel sets up
+		//    `resolveAccounts` to walk the BuildContext via resolved dependencies in
 		//    `opts.accounts`; we just project to the address-keyed map.
 		//    Count is annotated AFTER resolution — `opts.accounts` may
 		//    be the `'all'` sentinel before composer expansion, so the

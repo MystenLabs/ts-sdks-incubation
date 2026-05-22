@@ -5,10 +5,14 @@ import type { ManifestExtras } from '../../substrate/manifest.ts';
 
 export const makeExtrasCodegenable = (
 	extras: ManifestExtras,
-): CodegenableDecl<ManifestExtras, 'app-extras'> => ({
+): CodegenableDecl<'app-extras'> => ({
 	kind: 'codegenable',
 	emitterName: 'app-extras',
 	outputPath: 'extras.ts',
 	sensitive: true,
-	emit: () => Effect.succeed({ extras }),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('extras', extras);
+			return ctx.done();
+		}),
 });

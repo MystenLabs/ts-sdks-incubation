@@ -5,7 +5,7 @@
 // stays name-free — see architectural constraint.)
 //
 // Demonstrates:
-//   - `defineNodePlugin` returning a composite member
+//   - `definePlugin` returning a composite plugin resource
 //   - `CompositePrimitive` capability decl with lifted siblings
 //   - Four capability decls in one tuple (Snapshotable, Routable,
 //     Codegenable, plus the CompositePrimitive itself surfaced via a
@@ -16,9 +16,7 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../api/define-capabilities.ts';
-import { defineNodePlugin } from '../api/define-plugin.ts';
-import { defineTag, type Tag } from '../api/tag.ts';
+import { definePlugin, resource } from '../api/define-plugin.ts';
 import { defineModeNamespace } from '../api/mode-narrowed-factory.ts';
 import { defineWitness, providesWitness, requiresWitness } from '../api/witness.ts';
 import type { CodegenableDecl } from '../contracts/codegenable.ts';
@@ -28,7 +26,7 @@ import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
 import { pluginKey } from '../substrate/brand.ts';
 import { litSiblingKey } from '../substrate/lifted-sibling.ts';
 import type { ProvidesWitness, RequiresWitness } from '../substrate/witness.ts';
-import { KeyvalTag, type KeyvalClient } from './trivial-leaf-plugin.ts';
+import { KeyvalResource, type KeyvalClient } from './trivial-leaf-plugin.ts';
 
 // --- Witness ------------------------------------------------------------
 
@@ -36,11 +34,10 @@ import { KeyvalTag, type KeyvalClient } from './trivial-leaf-plugin.ts';
  *  in the same network mode. The leaf-side provides a matching token. */
 export const KeyvalLocalWitness = defineWitness('keyval-local');
 
-// --- Tag + resolved value -----------------------------------------------
+// --- Resource + resolved value ------------------------------------------
 
-/** A bindings shape the codegen output exports. Plugin-typed; flows
- *  through `EmittedFor` so downstream consumers know the literal
- *  shape of their imported file. */
+/** A bindings shape the codegen output exports. The emitted module
+ *  owns the app-facing type of this imported file. */
 export interface ClusterBindings {
 	readonly clusterUrl: string;
 	readonly registryId: string;
@@ -56,21 +53,21 @@ export interface ClusterClient extends RequiresWitness<'keyval-local'> {
 }
 
 /** Companion shape used by the local-mode factory: the underlying
- *  leaf plugin's resolved value flows in via tag/provide. */
+ *  leaf plugin's resolved value flows in via `dependsOn`. */
 export interface ClusterClientWithLeaf extends ClusterClient, ProvidesWitness<'keyval-local'> {
 	readonly leaf: KeyvalClient;
 }
 
-export const ClusterTag = defineTag<'cluster', ClusterClient>('cluster', 'cluster');
+export const ClusterResource = resource<'cluster', ClusterClient>('cluster');
 
-// --- Inner-participant tag (private to the composite's local mode) ------
+// --- Inner-participant resource (private to the composite's local mode) --
 
 interface ClusterNodeMember {
 	readonly nodeId: number;
 	readonly ip: string;
 }
 
-const ClusterNodeTag = defineTag<'cluster.node', ClusterNodeMember>('cluster.node', 'cluster');
+const ClusterNodeResource = resource<'cluster.node', ClusterNodeMember>('cluster.node');
 
 // --- Lifted sibling key (literal-typed for compile-time dedup) ----------
 //
@@ -87,18 +84,7 @@ export function clusterImageSibling<Hash extends string>(hash: Hash) {
 
 // --- Composite acquire procedure ----------------------------------------
 
-function localCluster(): ReturnType<
-	typeof defineNodePlugin<
-		Tag<'cluster', ClusterClient>,
-		readonly [Tag<'keyval', KeyvalClient>],
-		readonly [
-			SnapshotableDecl,
-			RoutableDecl,
-			CodegenableDecl<ClusterBindings, 'cluster-bindings'>,
-			CompositePrimitiveDecl,
-		]
-	>
-> {
+function localCluster() {
 	const compositeKey = pluginKey('cluster');
 
 	const snap: SnapshotableDecl = {
@@ -115,11 +101,11 @@ function localCluster(): ReturnType<
 		cors: true,
 	};
 
-	const codegen: CodegenableDecl<ClusterBindings, 'cluster-bindings'> = {
+	const codegen: CodegenableDecl<'cluster-bindings'> = {
 		kind: 'codegenable',
 		emitterName: 'cluster-bindings',
 		outputPath: 'cluster/bindings.ts',
-		emit: () =>
+		emit: (_ctx) =>
 			Effect.sync(() => {
 				throw new Error('cluster.emit: not implemented yet (Phase 4)');
 			}),
@@ -127,13 +113,12 @@ function localCluster(): ReturnType<
 
 	// Inner participant — a hidden leaf that represents one node.
 	// Constructed inline because the composite owns its lifecycle.
-	const nodeMember = defineNodePlugin({
-		provides: ClusterNodeTag,
-		consumes: [] as const,
+	const nodeMember = definePlugin({
+		id: ClusterNodeResource.id,
 		kind: 'hidden-leaf',
-		acquire: () =>
+		start: () =>
 			Effect.sync<ClusterNodeMember>(() => {
-				throw new Error('cluster.node.acquire: not implemented yet (Phase 4)');
+				throw new Error('cluster.node.start: not implemented yet (Phase 4)');
 			}),
 	});
 
@@ -144,14 +129,13 @@ function localCluster(): ReturnType<
 		innerParticipants: [nodeMember],
 	};
 
-	return defineNodePlugin({
-		provides: ClusterTag,
-		consumes: [KeyvalTag] as const,
+	return definePlugin({
+		id: ClusterResource.id,
+		dependsOn: { leaf: KeyvalResource },
 		kind: 'composite',
 		rebootCost: 'heavy',
-		acquire: (ctx) =>
+		start: (_ctx, { leaf }) =>
 			Effect.gen(function* () {
-				const leaf = ctx.get(KeyvalTag);
 				// Phantom helpers — runtime values are `{}`, but the
 				// resolved-value's RequiresWitness/ProvidesWitness phantoms
 				// drive the stack-level type check.
@@ -159,11 +143,11 @@ function localCluster(): ReturnType<
 				void providesWitness(KeyvalLocalWitness);
 				return yield* Effect.sync<ClusterClient>(() => {
 					throw new Error(
-						`cluster.acquire: not implemented yet (Phase 4) — leaf endpoint=${leaf.endpoint}`,
+						`cluster.start: not implemented yet (Phase 4) — leaf endpoint=${leaf.endpoint}`,
 					);
 				});
 			}),
-		capabilities: capabilities(snap, route, codegen, composite),
+		capabilities: [snap, route, codegen, composite] as const,
 	});
 }
 
@@ -179,13 +163,12 @@ export const cluster = defineModeNamespace({
 	},
 	fork: {
 		forkedCluster: () =>
-			defineNodePlugin({
-				provides: ClusterTag,
-				consumes: [] as const,
+			definePlugin({
+				id: ClusterResource.id,
 				kind: 'composite',
-				acquire: () =>
+				start: () =>
 					Effect.sync<ClusterClient>(() => {
-						throw new Error('cluster.forkedCluster.acquire: not implemented yet (Phase 4)');
+						throw new Error('cluster.forkedCluster.start: not implemented yet (Phase 4)');
 					}),
 			}),
 	},
@@ -193,17 +176,15 @@ export const cluster = defineModeNamespace({
 		// Live mode exposes neither localCluster nor forkedCluster — the
 		// caller threads a known deployment manifest instead.
 		known: (manifestUrl: string) =>
-			defineNodePlugin({
-				provides: ClusterTag,
-				consumes: [] as const,
+			definePlugin({
+				id: ClusterResource.id,
 				kind: 'composite',
-				acquire: () =>
+				start: () =>
 					Effect.sync<ClusterClient>(() => {
-						throw new Error(`cluster.known.acquire(${manifestUrl}): not implemented yet (Phase 4)`);
+						throw new Error(`cluster.known.start(${manifestUrl}): not implemented yet (Phase 4)`);
 					}),
 			}),
 	},
 });
 
 export type { ClusterClient as ClusterClientType };
-export { ClusterTag as ClusterTagExported };

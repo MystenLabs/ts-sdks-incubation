@@ -20,10 +20,8 @@ import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
-/** The typed shape the emitted file exports. Per-account record
- *  keyed by name. Downstream consumers see this exact shape via
- *  `EmittedFor<Caps, 'account-map'>` at the `defineDevstack` call
- *  site. */
+/** The typed shape the emitted file exports. Per-account record keyed
+ *  by name. */
 export interface AccountBindings {
 	readonly name: string;
 	readonly address: string;
@@ -40,13 +38,14 @@ export interface AccountBindings {
 export const makeAccountCodegen = <Name extends string>(parts: {
 	readonly name: Name;
 	readonly resolved: AccountBindings;
-}): CodegenableDecl<AccountBindings, `account/${Name}`> => ({
+}): CodegenableDecl<`account/${Name}`> => ({
 	kind: 'codegenable',
 	emitterName: `account/${parts.name}` as `account/${Name}`,
 	outputPath: `accounts/${parts.name}.ts`,
 	sensitive: false,
-	emit: () =>
-		Effect.sync(() => ({
-			[parts.name]: parts.resolved,
-		})),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst(parts.name, parts.resolved);
+			return ctx.done();
+		}),
 });

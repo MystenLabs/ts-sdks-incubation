@@ -1,6 +1,6 @@
 // Capability contracts barrel.
 //
-// Nine contracts (architecture § Capability contracts):
+// Capability contracts (architecture § Capability contracts):
 //   1. ContainerRuntime
 //   2. Snapshotable
 //   3. Routable

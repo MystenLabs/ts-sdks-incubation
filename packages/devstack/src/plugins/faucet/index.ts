@@ -1,20 +1,19 @@
 // Faucet plugin — barrel + factories + author-side helpers.
 //
 // Architecture (distilled doc §Outputs):
-//   - The plugin's identity tag's resolved value is the dispatcher.
+//   - The plugin's resource's resolved value is the dispatcher.
 //   - The plugin emits ONE capability decl — a
 //     `StrategyContributor` for `faucet:dispatch`, marking this
 //     plugin as the dispatch facade. Other plugins' faucet-strategy
 //     contributions register against the same registry; they target
 //     `faucet:request:<chainId>` capability keys, NOT this one.
 //   - No Codegenable contribution: the dispatcher is dev-only
-//     plumbing; user app code reads dispatcher via the plugin's tag.
+//     plumbing; user app code reads dispatcher via the plugin resource.
 //     (Open question §Open questions #1 in the distilled doc — if a
 //     codegen helper lands later, this is the seam.)
 //
-// Tag value: the resolved value of `FaucetTag` is `FaucetService`
-// (carries `dispatcher`). Consumers (Account, Coin, Wallet) yield
-// the tag and call `service.dispatcher.request(...)`.
+// Resource value: the resolved value of the faucet plugin is
+// `FaucetService` (carries `dispatcher`).
 //
 // Author-side helper: `defineFaucetStrategy(...)` packages a
 // `{ chainId, strategy }` pair into a `StrategyContributorDecl` so
@@ -25,10 +24,8 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import {
 	FAUCET_CAPABILITY_KEY_PREFIX,
@@ -40,11 +37,11 @@ import { acquireFaucetService, type FaucetService, type FaucetServiceOptions } f
 import type { FaucetStrategy } from './strategies/sui-local.ts';
 
 // ---------------------------------------------------------------------------
-// Tag — the resolved value consumers read
+// Resource identity
 // ---------------------------------------------------------------------------
 
-/** The faucet plugin's identity tag. */
-export const FaucetTag = defineTag<'faucet', FaucetService>('faucet', 'faucet');
+/** The faucet plugin's resource identity. */
+const faucetResource = resource<'faucet', FaucetService>('faucet');
 const faucetErrorContributions = pluginErrorContributions(FAUCET_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
@@ -61,9 +58,9 @@ export const FAUCET_DISPATCH_KEY = 'faucet:dispatch' as const;
 // ---------------------------------------------------------------------------
 
 /**
- * Construct the faucet plugin. Auto-mounted by the orchestrator on
- * every stack (architecture: hidden when auto-mounted, visible when
- * user-supplied).
+ * Construct the faucet plugin. The Sui plugin registers its built-in
+ * funding strategy directly; compose `faucet()` only when you need the
+ * dispatcher facade or caller-supplied strategy contributions.
  *
  * Architecture: the Sui→Faucet built-in auto-registration runs on
  * the SUI side — Sui's acquire body yields the
@@ -90,23 +87,22 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
 		autoMounted: true,
 	};
 
-	return defineNodePlugin({
-		provides: FaucetTag,
+	return definePlugin({
+		id: faucetResource.id,
 		// Architecture: faucet is a LEAF — it declares NO upstream
 		// dep on Sui. Sui-strategy auto-registration runs OUT-OF-BAND
 		// (Sui contributes its own `faucet:request:<chainId>` strategy
 		// via the StrategyContributor capability mechanism when its
 		// mode has a faucet URL). The faucet plugin's body therefore
 		// just builds the dispatcher closure over the registry.
-		consumes: [] as const,
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				return yield* acquireFaucetService(opts);
 			}),
 		errorContributions: faucetErrorContributions,
-		capabilities: capabilities(dispatchContribution),
+		capabilities: [dispatchContribution] as const,
 	});
 };
 
@@ -116,18 +112,20 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
 
 /**
  * Build a `StrategyContributorDecl` for a faucet request strategy.
- * Use from a sibling plugin's `capabilities(...)` tuple so the
+ * Use from a sibling plugin's `capabilities` array so the
  * substrate auto-registers the strategy as the plugin acquires:
  *
  * ```ts
- * defineNodePlugin({
- *   ...,
- *   capabilities: capabilities(
+ * definePlugin({
+ *   id: 'my-faucet-strategy',
+ *   kind: 'leaf-long-running',
+ *   start: () => Effect.succeed({}),
+ *   capabilities: [
  *     defineFaucetStrategy({
  *       chainId: 'sui:my-net',
  *       strategy: makeMyFaucetStrategy(opts),
  *     }),
- *   ),
+ *   ],
  * });
  * ```
  *

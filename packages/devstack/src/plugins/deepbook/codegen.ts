@@ -35,12 +35,13 @@ export interface DeepbookBindings {
 
 export const makeDeepbookCodegenable = (
 	bindings: DeepbookBindings,
-): CodegenableDecl<DeepbookBindings, 'deepbook-network'> => ({
+): CodegenableDecl<'deepbook-network'> => ({
 	kind: 'codegenable',
 	emitterName: 'deepbook-network',
 	outputPath: `deepbook/${bindings.name}.ts`,
-	emit: () =>
-		Effect.sync(() => ({
-			deepbookBindings: bindings satisfies DeepbookBindings,
-		})),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('deepbookBindings', bindings satisfies DeepbookBindings);
+			return ctx.done();
+		}),
 });

@@ -68,12 +68,12 @@ describe('resolveLocalClusterOptions', () => {
 
 	it('records the length of the supplied seedAccounts tuple', () => {
 		// The member tuple is opaque at this level — `resolveLocalClusterOptions`
-		// only counts. The barrel resolves each member via `ctx.use(...)`.
+		// only counts. The barrel receives each account as a resolved dependency.
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const fakeMembers: any = [
-			{ provides: { id: 'account/alice' } },
-			{ provides: { id: 'account/bob' } },
-			{ provides: { id: 'account/carol' } },
+			{ id: 'account/alice' },
+			{ id: 'account/bob' },
+			{ id: 'account/carol' },
 		];
 		const r = resolveLocalClusterOptions({ seedAccounts: fakeMembers });
 		expect(r.seedAccountCount).toBe(3);

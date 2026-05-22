@@ -1,22 +1,21 @@
 // Complex callback-form stack with mode-narrowed factories,
-// tag/provide dependencies, and lifted siblings. The three
+// resource dependencies, and lifted siblings. The three
 // `@ts-expect-error` directives demonstrate the type system catching:
 //   1. removing a required dependency,
 //   2. using a mode-incompatible factory,
 //   3. two composites lifting siblings with conflicting `inputHash`
 //      under the same `(plugin, kind, scope)` group.
 
-import { defineDevstack, defineDevstackWith, definePlugin } from '../src/index.ts';
+import { chainId, defineDevstack, defineDevstackWith, definePlugin, sui } from '../src/index.ts';
 import { Effect } from 'effect';
 import { cluster, clusterImageSibling } from '../src/samples/composite-plugin.ts';
 import { keyval } from '../src/samples/trivial-leaf-plugin.ts';
 import type { NetworkConfig } from '../src/index.ts';
-import { chainId } from '../src/substrate/brand.ts';
 
 // --- Positive case ------------------------------------------------------
 //
 // Local-mode stack: keyval leaf + cluster composite (local factory).
-// The composite consumes `KeyvalTag` — the leaf provides it.
+// The composite depends on the `keyval` resource — the leaf provides it.
 
 const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: chainId('demo:local') };
 
@@ -27,11 +26,27 @@ export const localStack = defineDevstackWith(
 
 // --- Flat form, manual threading ---------------------------------------
 
-export const flatLocalStack = defineDevstack({ members: [keyval(), cluster.for(localNetwork).localCluster()], stackName: 'complex-flat', });
+export const flatLocalStack = defineDevstack({
+	members: [keyval(), cluster.for(localNetwork).localCluster()],
+	stackName: 'complex-flat',
+});
+
+const suiExternal = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
+const resourceRefConsumer = definePlugin({
+	id: 'resource-ref-consumer',
+	dependsOn: { sui: suiExternal },
+	kind: 'leaf-long-running',
+	start: (_ctx, { sui }) => Effect.succeed({ chain: sui.chain } as const),
+});
+
+export const recursiveSuiDependencyStack = defineDevstack({
+	members: [resourceRefConsumer],
+	stackName: 'recursive-sui-dependency',
+});
 
 // --- Negative case 1: removing the required leaf dependency ------------
 //
-// Cluster consumes KeyvalTag — without `keyval()` in the member set,
+// Cluster depends on the keyval resource — without `keyval()` in the member set,
 // MissingProviders<...> is `'keyval'` and the call site surfaces the
 // branded `__MissingProvidersError` (architecture open-question #11).
 

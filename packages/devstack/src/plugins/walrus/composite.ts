@@ -46,12 +46,12 @@ import type { LiftedSiblingKey } from '../../substrate/lifted-sibling.ts';
 import type { PhaseNarration } from '../../substrate/lifecycle.ts';
 import type { PluginKey } from '../../substrate/brand.ts';
 import { pluginKey } from '../../substrate/brand.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
+import type { AnyPlugin } from '../../substrate/plugin.ts';
 
 /** Build the CompositePrimitive contribution.
  *
  *  `innerParticipants` is the substrate-side view of the children:
- *  for the local-cluster path, this is N storage-node members + 1
+ *  for the local-cluster path, this is N storage-node plugins + 1
  *  deploy-one-shot member; for known-deployment, this is empty
  *  (the resolved value is a pure projection — no inner children to
  *  drive a lifecycle for).
@@ -61,7 +61,7 @@ import type { AnyMember } from '../../substrate/plugin.ts';
 export const makeWalrusComposite = (args: {
 	readonly compositeKey: string;
 	readonly liftedSiblings: ReadonlyArray<LiftedSiblingKey>;
-	readonly innerParticipants: ReadonlyArray<AnyMember>;
+	readonly innerParticipants: ReadonlyArray<AnyPlugin>;
 }): CompositePrimitiveDecl => ({
 	kind: 'composite-primitive',
 	compositeKey: pluginKey(args.compositeKey),

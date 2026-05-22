@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Effect, Exit } from 'effect';
 import { describe, expect, it } from 'vitest';
 
-import { defineNodePlugin } from '../../src/api/define-plugin.ts';
+import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { LifenessClassifierDecl } from '../../src/contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
 import type {
@@ -12,13 +12,7 @@ import type {
 	SnapshotMetadata,
 } from '../../src/orchestrators/snapshot/index.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
-import { defineTag } from '../../src/substrate/tag.ts';
 import { runBoot } from './boot-config-impl.ts';
-
-const snapshotSmokeTag = defineTag<'snapshot-smoke', { readonly ready: true }>(
-	'snapshot-smoke',
-	'snapshot-smoke',
-);
 
 const snapshotDecl: SnapshotableDecl = {
 	kind: 'snapshotable',
@@ -32,11 +26,10 @@ const livenessDecl: LifenessClassifierDecl = {
 	classify: () => Effect.succeed('alive'),
 };
 
-const snapshotSmokePlugin = defineNodePlugin({
-	provides: snapshotSmokeTag,
-	consumes: [] as const,
+const snapshotSmokePlugin = definePlugin({
+	id: 'snapshot-smoke',
 	kind: 'leaf-long-running' as const,
-	acquire: () => Effect.succeed({ ready: true as const }),
+	start: () => Effect.succeed({ ready: true as const }),
 	capabilities: [snapshotDecl, livenessDecl] as const,
 });
 
@@ -45,16 +38,10 @@ const stack = {
 	options: {},
 };
 
-const hostTreeTag = defineTag<
-	'snapshot-host-tree',
-	{ readonly dir: string; readonly file: string }
->('snapshot-host-tree', 'snapshot-host-tree');
-
-const hostTreePlugin = defineNodePlugin({
-	provides: hostTreeTag,
-	consumes: [] as const,
+const hostTreePlugin = definePlugin({
+	id: 'snapshot-host-tree',
 	kind: 'leaf-long-running' as const,
-	acquire: () =>
+	start: () =>
 		Effect.gen(function* () {
 			const paths = yield* StackPathsService;
 			const dir = join(paths.stackRoot, 'snapshot-host-tree');
@@ -63,7 +50,7 @@ const hostTreePlugin = defineNodePlugin({
 			writeFileSync(file, 'original contents\n');
 			return { dir, file };
 		}),
-	capabilities: (_resolved, ctx) =>
+	capabilities: ({ runtime }) =>
 		[
 			{
 				kind: 'snapshotable' as const,
@@ -72,9 +59,9 @@ const hostTreePlugin = defineNodePlugin({
 				missingTolerance: 'fatal' as const,
 				preRestore: Effect.succeed({
 					kind: 'snapshot-host-tree' as const,
-					app: ctx.identity.app,
-					stack: ctx.identity.stack,
-					network: ctx.chain,
+					app: runtime.identity.app,
+					stack: runtime.identity.stack,
+					network: runtime.chain,
 				}),
 			},
 			livenessDecl,

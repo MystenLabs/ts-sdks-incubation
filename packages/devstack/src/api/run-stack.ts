@@ -50,7 +50,7 @@ import {
 	type ProductionCodegenOptions,
 } from '../orchestrators/runtime-composition.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
-import type { AnyMember } from '../substrate/plugin.ts';
+import type { AnyPlugin } from '../substrate/plugin.ts';
 import { resolveStackName } from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
@@ -118,7 +118,7 @@ export interface RunHandle {
 // -----------------------------------------------------------------------------
 
 const resolveIdentity = (
-	stack: Stack<ReadonlyArray<AnyMember>>,
+	stack: Stack<ReadonlyArray<AnyPlugin>>,
 	opts: RunStackIdentityOptions | undefined,
 	cwd: string,
 ): Identity => {
@@ -171,7 +171,7 @@ const toBootError = (cause: Cause.Cause<unknown>): BootError => ({
  * fails) the deferred completes. `start` awaits it.
  */
 export const runStack = (
-	stack: Stack<ReadonlyArray<AnyMember>>,
+	stack: Stack<ReadonlyArray<AnyPlugin>>,
 	opts: RunStackOptions = {},
 ): RunHandle => {
 	const engineStack = readStackEngine(stack);

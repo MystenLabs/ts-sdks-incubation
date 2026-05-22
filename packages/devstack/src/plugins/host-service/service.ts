@@ -4,7 +4,7 @@ import { Effect, Exit, Ref } from 'effect';
 import type { Scope } from 'effect';
 
 import type { PluginKey } from '../../substrate/brand.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
+import type { AnyResourceRef } from '../../api/define-plugin.ts';
 import {
 	expectNonEmptyString,
 	expectOneOf,
@@ -52,7 +52,7 @@ export type HostServiceReadyProbe =
 			readonly timeoutMs?: number;
 	  };
 
-interface HostServiceCommandOptions<Needs extends ReadonlyArray<AnyMember>> {
+interface HostServiceCommandOptions<Needs extends ReadonlyArray<AnyResourceRef>> {
 	readonly name?: string;
 	readonly endpointName?: string;
 	readonly needs?: Needs;
@@ -66,7 +66,7 @@ interface HostServiceCommandOptions<Needs extends ReadonlyArray<AnyMember>> {
 	readonly shutdownGraceMs?: number;
 }
 
-interface HostServiceScriptOptions<Needs extends ReadonlyArray<AnyMember>> {
+interface HostServiceScriptOptions<Needs extends ReadonlyArray<AnyResourceRef>> {
 	readonly name?: string;
 	readonly endpointName?: string;
 	readonly needs?: Needs;
@@ -80,9 +80,9 @@ interface HostServiceScriptOptions<Needs extends ReadonlyArray<AnyMember>> {
 	readonly shutdownGraceMs?: number;
 }
 
-export type HostServiceOptions<Needs extends ReadonlyArray<AnyMember> = ReadonlyArray<AnyMember>> =
-	| HostServiceCommandOptions<Needs>
-	| HostServiceScriptOptions<Needs>;
+export type HostServiceOptions<
+	Needs extends ReadonlyArray<AnyResourceRef> = ReadonlyArray<AnyResourceRef>,
+> = HostServiceCommandOptions<Needs> | HostServiceScriptOptions<Needs>;
 
 export interface HostServiceResolvedOptions {
 	readonly serviceName: string;

@@ -124,7 +124,7 @@ const runOnce = (
 				chainId: chainId(CHAIN),
 				staticDiscriminator: {
 					actionName: 'e2e-test-action',
-					consumedTagIds: ['account/alice', 'package:connect_four'],
+					dependencyResourceIds: ['account/alice', 'package:connect_four'],
 				},
 				dynamicMaterial: Effect.succeed('cold-warm-roundtrip'),
 				body,

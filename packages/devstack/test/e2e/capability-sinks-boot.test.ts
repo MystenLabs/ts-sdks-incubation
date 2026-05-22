@@ -14,16 +14,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import type { RoutableDecl } from '../../src/contracts/routable.ts';
-import { capabilities } from '../../src/api/define-capabilities.ts';
-import { defineNodePlugin } from '../../src/api/define-plugin.ts';
-import { defineTag } from '../../src/substrate/tag.ts';
+import { definePlugin } from '../../src/api/define-plugin.ts';
 import { runBoot } from './boot-config-impl.ts';
 
 interface SinkProofValue {
 	readonly ready: true;
 }
-
-const SinkProofTag = defineTag<'sink-proof', SinkProofValue>('sink-proof', 'sink-proof');
 
 const routable: RoutableDecl = {
 	kind: 'routable',
@@ -37,24 +33,24 @@ const routable: RoutableDecl = {
 	wireProtocol: 'http',
 };
 
-const codegenable: CodegenableDecl<{ readonly message: string }, 'sink-proof-config'> = {
+const codegenable: CodegenableDecl<'sink-proof-config'> = {
 	kind: 'codegenable',
 	emitterName: 'sink-proof-config',
 	outputPath: 'sink-proof/config.ts',
-	emit: () =>
-		Effect.succeed({
-			sinkProofConfig: {
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('sinkProofConfig', {
 				message: 'delivered-through-codegen-sink',
-			},
+			});
+			return ctx.done();
 		}),
 };
 
-const sinkProofPlugin = defineNodePlugin({
-	provides: SinkProofTag,
-	consumes: [] as const,
+const sinkProofPlugin = definePlugin({
+	id: 'sink-proof',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ ready: true } satisfies SinkProofValue),
-	capabilities: capabilities(routable, codegenable),
+	start: () => Effect.succeed({ ready: true } satisfies SinkProofValue),
+	capabilities: [routable, codegenable] as const,
 });
 
 describe('runBoot router/codegen shared capability sink wiring', () => {

@@ -94,6 +94,13 @@ Still open:
 
 ## Open P1 blockers
 
+- Packed declaration output still depends on a post-`tsdown` repair step. A raw `tsdown` declaration
+  emit can produce package-local Effect specifiers such as `node_modules/effect/dist/*`; the package
+  build currently normalizes those through `scripts/repair-effect-dts-imports.mjs`. Before release,
+  replace that with a normal declaration generation path or otherwise prove the packed `.d.mts`
+  files contain no local `node_modules`/`effect/dist` specifiers without relying on a fragile repair.
+  The packed-consumer smoke intentionally uses `skipLibCheck: true`; strict checking of Effect beta
+  declaration internals is not the release gate.
 - Release docs still need a current API sweep.
 - Snapshot identity conflict rejection and start-time/PID identity need final evidence.
 - Wallet/token-studio/fork-greeting need current product evidence appropriate to their advertised

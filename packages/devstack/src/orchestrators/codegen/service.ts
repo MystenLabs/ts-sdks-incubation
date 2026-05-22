@@ -24,8 +24,8 @@
 //   2. Validate uniqueness: emitter name (literal) is globally
 //      unique; output path is globally unique.
 //   3. Run each emitter serially (distilled-doc § "Serial within a
-//      cycle"). Each emit returns a typed exports record.
-//   4. Render each exports record to a TS source string.
+//      cycle"). Each emit writes exports through a per-file context.
+//   4. Render each collected file emission to a TS source string.
 //   5. Emit each file with an atomic write + per-file no-touch
 //      idempotency.
 //   6. Run the Move-bindings emitter against the collected
@@ -41,7 +41,11 @@
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
 
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import type {
+	CodegenableDecl,
+	CodegenEmitDone,
+	CodegenEmitContext,
+} from '../../contracts/codegenable.ts';
 
 import {
 	emitBindings,
@@ -68,7 +72,7 @@ import { modeFor } from './permissions.ts';
 
 /** A type alias the orchestrator uses internally to avoid restating
  *  the wide-erased `CodegenableDecl` generic in every signature. */
-export type Codegenable = CodegenableDecl<unknown, string>;
+export type Codegenable = CodegenableDecl<string>;
 
 export interface RunEmitCycleInput {
 	/** All Codegenable contributions, as collected from the active
@@ -127,16 +131,8 @@ export const runEmitCycle = (
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
 		for (const decl of sortedDecls) {
-			const exported = yield* decl.emit().pipe(
-				Effect.mapError(
-					(cause) =>
-						new CodegenEmitFailed({
-							emitterName: decl.emitterName,
-							outputPath: decl.outputPath,
-							cause,
-						}),
-				),
-			);
+			const emission = yield* runEmitter(decl);
+			const exported = emission.exports;
 			collectAggregateExport(aggregates, decl, exported);
 			if (decl.emitterName === 'package') {
 				const bindings = exported['packageBindings'];
@@ -149,6 +145,7 @@ export const runEmitCycle = (
 				outputPath: decl.outputPath,
 				sensitive: decl.sensitive === true,
 				exports: exported,
+				imports: emission.imports,
 			});
 			if (rendered instanceof Error) {
 				// `renderFile` returns either a string or a
@@ -246,6 +243,38 @@ export const runEmitCycle = (
 // -----------------------------------------------------------------------------
 // Internals
 // -----------------------------------------------------------------------------
+
+interface CodegenEmission {
+	readonly exports: { readonly [key: string]: unknown };
+	readonly imports: ReadonlyArray<string>;
+}
+
+const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEmitFailed> =>
+	Effect.gen(function* () {
+		const exports: Record<string, unknown> = {};
+		const imports: Array<string> = [];
+		const done: CodegenEmitDone = { _tag: 'CodegenEmitDone' };
+		const ctx: CodegenEmitContext = {
+			exportConst: (name, value) => {
+				exports[name] = value;
+			},
+			importStatement: (statement) => {
+				imports.push(statement);
+			},
+			done: () => done,
+		};
+		yield* decl.emit(ctx).pipe(
+			Effect.mapError(
+				(cause) =>
+					new CodegenEmitFailed({
+						emitterName: decl.emitterName,
+						outputPath: decl.outputPath,
+						cause,
+					}),
+			),
+		);
+		return { exports, imports };
+	});
 
 /**
  * Uniqueness check: emitter name (literal) must be unique EXCEPT

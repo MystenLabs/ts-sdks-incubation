@@ -18,6 +18,7 @@ const LOCALHOST_DEV_ORIGIN = `http://localhost:${DEV_PORT}` as const;
 const LOOPBACK_DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
 const ROUTER_DEV_ORIGIN = 'http://dev.arena.arena.localhost:5175' as const;
 
+const localnet = sui();
 const publisher = account('publisher');
 const alice = account('alice');
 const bob = account('bob');
@@ -49,6 +50,6 @@ const app = hostService({
 	ready: { kind: 'http' },
 	needs: [openLobby, devWallet] as const,
 });
-const stack = defineDevstack({ members: [sui(), publisher, alice, bob, connectFour, openLobby, devWallet, app], stackName: 'arena' });
+const stack = defineDevstack({ members: [localnet, app], stackName: 'arena' });
 
 export default stack;

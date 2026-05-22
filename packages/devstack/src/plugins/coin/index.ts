@@ -22,10 +22,10 @@
 // surface forces the user to make the disambiguation explicit at the
 // call site.)
 //
-// Tag id: `'coin:<symbol>'` — one tag per declared coin instance, so
+// Resource id: `'coin:<symbol>'` — one tag per declared coin instance, so
 // the substrate's compose-time dedup detects collisions cleanly (two
 // `coin.local('mUSDC')` calls in one stack → typed error at compose
-// time). Mirrors the Package plugin's per-instance tag identity.
+// time). Mirrors the Package plugin's per-instance resource identity.
 //
 // IMPORTANT (distilled-doc 13-coin.md Pain point #4): the SYMBOL
 // form (`coin.local('SYMBOL')`) does NOT auto-derive a dependency edge
@@ -35,24 +35,19 @@
 // publishing `localPackage(...)` in their `needs:` list (or in the
 // `defineDevstack(...)` composition before the consumer). The
 // `coin.fromPackage(pkg, ...)` form forces the edge explicitly via the
-// `consumes` tuple — prefer it when the publisher is reachable.
+// `dependsOn` tuple — prefer it when the publisher is reachable.
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMember } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
-import type { Tag } from '../../substrate/tag.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
-import type { PackageTagId, PackageResolved } from '../package/index.ts';
+import type { PackageResourceId, PackageResolved } from '../package/index.ts';
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
@@ -66,14 +61,14 @@ import type { MintSdkShim } from './mint.ts';
 const coinErrorContributions = pluginErrorContributions(COIN_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
-// Tag — one per declared coin instance, keyed by symbol/witness/etc.
+// Resource — one per declared coin instance, keyed by symbol/witness/etc.
 // ---------------------------------------------------------------------------
 
-/** Tag id constructor. The symbolic name is part of the tag identity
+/** Resource id constructor. The symbolic name is part of the resource identity
  *  so the substrate's compose-time dedup catches collisions. */
-export const coinTagId = <Sym extends string>(symbol: Sym): `coin:${Sym}` => `coin:${symbol}`;
+export const coinResourceId = <Sym extends string>(symbol: Sym): `coin:${Sym}` => `coin:${symbol}`;
 
-export type CoinTagId<Sym extends string> = `coin:${Sym}`;
+export type CoinResourceId<Sym extends string> = `coin:${Sym}`;
 
 // ---------------------------------------------------------------------------
 // SDK shim projection
@@ -125,7 +120,7 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		...(resolved.packageId !== undefined ? { packageId: resolved.packageId } : {}),
 	};
 	const snap: SnapshotableDecl = makeCoinSnapshotable({ symbol });
-	const codegen: CodegenableDecl<CoinBindings, `coin/${string}`> = makeCoinCodegen({
+	const codegen: CodegenableDecl<`coin/${string}`> = makeCoinCodegen({
 		symbol,
 		resolved: bindings,
 	});
@@ -144,7 +139,7 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		strategy: { symbol },
 		autoMounted: true,
 	};
-	return capabilities(snap, codegen, registryContribution);
+	return [snap, codegen, registryContribution] as const;
 };
 
 // ---------------------------------------------------------------------------
@@ -156,17 +151,14 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
  *  Compose the publisher's `localPackage(...)` before this in the
  *  `defineDevstack(...)` member list. */
 export const local = <Sym extends string>(symbol: Sym) => {
-	const tag = defineTag<CoinTagId<Sym>, CoinValue>(coinTagId(symbol), 'coin');
-	return defineNodePlugin({
-		provides: tag,
-		// Dep edge on SuiTag — we still need the live chain id even
-		// when the user-facing rationale is "no publisher edge".
-		consumes: [SuiTag] as const,
+	const coinRef = resource<CoinResourceId<Sym>, CoinValue>(coinResourceId(symbol));
+	return definePlugin({
+		id: coinRef.id,
+		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, { sui }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'symbol', symbol };
@@ -178,7 +170,7 @@ export const local = <Sym extends string>(symbol: Sym) => {
 				});
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: (resolved) => buildCapabilities(symbol, resolved),
+		capabilities: ({ value }) => buildCapabilities(symbol, value),
 	});
 };
 
@@ -186,68 +178,42 @@ export const local = <Sym extends string>(symbol: Sym) => {
 // Form 2: coin.fromPackage(pkg, witness) — package-scoped registry lookup
 // ---------------------------------------------------------------------------
 
-/** A user-supplied package member ref. The user passes the result of
- *  `localPackage('foo', …)` / `knownPackage('foo', …)` (a `StackMember`
- *  providing the per-name package tag) — NOT a bare tag value. Generic
- *  over the literal package name so the witness-form coin's
- *  `consumes: [SuiTag, package:<name>]` preserves the per-package tag
- *  id for the substrate's `MissingProviders` check. Mirrors the
- *  Package plugin's `PublisherAccountMember`. */
-export type PackageMember<Name extends string = string> = StackMember<
-	Tag<PackageTagId<Name>, PackageResolved>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
+/** A user-supplied package ref. The user passes the result of
+ *  `localPackage('foo', …)` / `knownPackage('foo', …)` — NOT a bare string
+ *  value. Generic over the literal package name so the witness-form
+ *  coin's dependency preserves the per-package resource id. */
+export type PackageMember<Name extends string = string> = ResourceRef<
+	PackageResourceId<Name>,
+	PackageResolved
 >;
 
 /** Resolve a coin by `(publishing package member, witness)`. Forces
- *  a dep edge on the publishing package's tag — the substrate ensures
+ *  a dep edge on the publishing package's resource — the substrate ensures
  *  the publish has completed before this resolves.
  *
- *  Symbol used for the tag id is the witness name (lower-cased) so
- *  two witness-form coins for different packages get distinct tag
+ *  Symbol used for the resource id is the witness name (lower-cased) so
+ *  two witness-form coins for different packages get distinct resource
  *  ids.
  *
  *  Pass the package MEMBER (the value returned by `localPackage(...)`
- *  / `knownPackage(...)`), not its `.provides` tag. The factory
- *  projects `.provides` internally; the resolved-value type is read
- *  via `ctx.use(member)` in the acquire body. */
-export const fromPackage = <PkgName extends string, Wit extends string>(
-	pkg: PackageMember<PkgName>,
+ *  / `knownPackage(...)`). The factory
+ *  projects it to a dependency resource and receives the package value
+ *  in `start`. */
+export const fromPackage = <const Pkg extends PackageMember, Wit extends string>(
+	pkg: Pkg,
 	witnessName: Wit,
 ) => {
-	const symbol = witnessName.toLowerCase();
-	const tag = defineTag<CoinTagId<Lowercase<Wit>>, CoinValue>(
-		coinTagId(symbol) as CoinTagId<Lowercase<Wit>>,
-		'coin',
+	const symbol = witnessName.toLowerCase() as Lowercase<Wit>;
+	const coinRef = resource<CoinResourceId<Lowercase<Wit>>, CoinValue>(
+		coinResourceId(symbol) as CoinResourceId<Lowercase<Wit>>,
 	);
-	// Project the package tag from the user-supplied `StackMember`. The
-	// `consumes` tuple below carries the literal `package:<PkgName>` so
-	// the substrate's compose-time `MissingProviders` check confirms
-	// the named package is in the stack, and the acquire body's
-	// resolved-value read goes through `consumeMember(pkg)` (which
-	// hides the §14 localized cast).
-	const pkgMember = consumeMember(pkg);
-	const consumesTuple = [pkgMember.consumesTag, SuiTag] as const;
-
-	return defineNodePlugin({
-		provides: tag,
-		// Distilled-doc 13-coin.md Lifecycle path 3: witness form MUST
-		// yield the package tag first. Also depends on Sui for the live
-		// chain id and publisher seam.
-		consumes: consumesTuple,
+	return definePlugin({
+		id: coinRef.id,
+		dependsOn: { pkg, sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, { pkg: resolved, sui }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
-				// Direct member-ref accessor for the package upstream —
-				// `consumeMember(pkg)` (built above) encapsulates the §14
-				// localized cast for the resolved-value projection.
-				const resolved = pkgMember.projectInScope(ctx);
 				const oca = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = {
@@ -263,7 +229,7 @@ export const fromPackage = <PkgName extends string, Wit extends string>(
 				});
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: (resolved) => buildCapabilities(symbol, resolved),
+		capabilities: ({ value }) => buildCapabilities(symbol, value),
 	});
 };
 
@@ -276,24 +242,20 @@ export const fromPackage = <PkgName extends string, Wit extends string>(
  *  `Package(...)` publishes.
  *
  *  Soft-degrades to `decimals: 0` on RPC failure — distilled-doc
- *  invariant. Tag id uses a deterministic-but-readable derivation of
+ *  invariant. Resource id uses a deterministic-but-readable derivation of
  *  the coin type so collisions surface at compose time. */
 export const known = <FullType extends string>(fullCoinType: FullType) => {
-	// Derive a tag id from the type: keep it readable but unique. The
+	// Derive a resource id from the type: keep it readable but unique. The
 	// substrate's compose-time dedup uses string equality on the id.
 	const id = fullCoinType.replace(/^0x/, '').replace(/::/g, '_').slice(0, 60);
-	const tag = defineTag<CoinTagId<typeof id>, CoinValue>(
-		coinTagId(id) as CoinTagId<typeof id>,
-		'coin',
-	);
-	return defineNodePlugin({
-		provides: tag,
-		consumes: [SuiTag] as const,
+	const coinRef = resource<CoinResourceId<typeof id>, CoinValue>(coinResourceId(id) as CoinResourceId<typeof id>);
+	return definePlugin({
+		id: coinRef.id,
+		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, { sui }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'known', fullCoinType };
@@ -305,7 +267,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 				});
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: (resolved) => buildCapabilities(id, resolved),
+		capabilities: ({ value }) => buildCapabilities(id, value),
 	});
 };
 
@@ -318,15 +280,14 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
  *  decimals=9. No RPC, no registry. */
 export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => {
 	const symbol = name; // 'sui' today
-	const tag = defineTag<CoinTagId<Name>, CoinValue>(coinTagId(name), 'coin');
-	return defineNodePlugin({
-		provides: tag,
-		consumes: [SuiTag] as const,
+	const coinRef = resource<CoinResourceId<Name>, CoinValue>(coinResourceId(name));
+	return definePlugin({
+		id: coinRef.id,
+		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, { sui }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'builtin', name };
@@ -338,7 +299,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 				});
 			}),
 		errorContributions: coinErrorContributions,
-		capabilities: (resolved) => buildCapabilities(symbol, resolved),
+		capabilities: ({ value }) => buildCapabilities(symbol, value),
 	});
 };
 

@@ -50,7 +50,11 @@ const cliApplyCodegenPlugin = definePlugin({
 \t\t\temitterName: 'cli-apply-proof',
 \t\t\toutputPath: 'cli-apply-proof.ts',
 \t\t\tsensitive: false,
-\t\t\temit: () => Effect.succeed({ cliApplyProof: value }),
+\t\t\temit: (ctx) =>
+\t\t\t\tEffect.sync(() => {
+\t\t\t\t\tctx.exportConst('cliApplyProof', value);
+\t\t\t\t\treturn ctx.done();
+\t\t\t\t}),
 \t\t}),
 \t],
 });

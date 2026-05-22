@@ -8,17 +8,15 @@
 //
 // Downstream consumers — chain-aware code (e.g. SDK boots, wallet
 // pickers, frontend RPC selectors) — `import { suiNetwork } from
-// '<staging>/sui/network'` and get the typed `EmittedShape`
-// extracted via `EmittedFor<Caps, 'sui-network'>` at the
-// `defineDevstack` call site.
+// '<staging>/sui/network'`; the generated module owns that exported
+// value's type.
 
 import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 
-/** The typed shape the emitted file exports. Downstream consumers
- *  see this exact shape via `EmittedFor<Caps, 'sui-network'>`. */
+/** The typed shape the emitted file exports. */
 export interface SuiNetworkBindings {
 	readonly chain: string;
 	readonly mode: 'local' | 'external' | 'live' | 'fork';
@@ -34,11 +32,11 @@ export interface SuiNetworkBindings {
  *  cycles). */
 export const makeCodegenable = (
 	resolved: ResolvedSuiNetwork,
-): CodegenableDecl<SuiNetworkBindings, 'sui-network'> => ({
+): CodegenableDecl<'sui-network'> => ({
 	kind: 'codegenable',
 	emitterName: 'sui-network',
 	outputPath: 'sui/network.ts',
-	emit: () =>
+	emit: (ctx) =>
 		Effect.sync(() => {
 			const bindings: SuiNetworkBindings = {
 				chain: resolved.chain,
@@ -48,11 +46,7 @@ export const makeCodegenable = (
 				graphqlUrl: resolved.graphql ?? null,
 				forkUpstream: resolved.forkUpstream ?? null,
 			};
-			// The emit contract is a `{ readonly [key: string]: unknown }`
-			// record of named exports; the codegen orchestrator serialises
-			// to TS at a higher level.
-			return {
-				suiNetwork: bindings,
-			};
+			ctx.exportConst('suiNetwork', bindings);
+			return ctx.done();
 		}),
 });

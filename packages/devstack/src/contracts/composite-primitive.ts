@@ -18,7 +18,7 @@ import type { Effect, Scope } from 'effect';
 import type { PluginKey } from '../substrate/brand.ts';
 import type { PhaseNarration } from '../substrate/lifecycle.ts';
 import type { LiftedSiblingKey } from '../substrate/lifted-sibling.ts';
-import type { AnyMember } from '../substrate/plugin.ts';
+import type { AnyPlugin } from '../substrate/plugin.ts';
 
 /**
  * Composite plugin authoring contract. The `acquire` procedure of
@@ -31,10 +31,10 @@ export interface CompositePrimitiveDecl {
 	readonly kind: 'composite-primitive';
 	readonly compositeKey: PluginKey;
 	readonly liftedSiblings: ReadonlyArray<LiftedSiblingKey>;
-	/** Inner participants — declared at the type level as `AnyMember`
+	/** Inner participants — declared at the type level as `AnyPlugin`
 	 *  so the substrate can drive their lifecycle through the same
 	 *  acquire pipeline. */
-	readonly innerParticipants: ReadonlyArray<AnyMember>;
+	readonly innerParticipants: ReadonlyArray<AnyPlugin>;
 	/** Per-child phase narration. Substrate aggregates these under
 	 *  the composite row's `narrationByContributor`. */
 	readonly narrate?: (childKey: PluginKey) => Effect.Effect<PhaseNarration, never, Scope.Scope>;

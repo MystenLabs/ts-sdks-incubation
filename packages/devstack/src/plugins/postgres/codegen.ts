@@ -39,7 +39,7 @@ export interface MakeCodegenableOptions {
  *  endpoint). */
 export const makeCodegenable = (
 	opts: MakeCodegenableOptions,
-): CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'> => {
+): CodegenableDecl<'postgres-connection'> => {
 	const parts: PostgresConnectionParts = {
 		user: opts.user,
 		password: opts.password,
@@ -57,7 +57,7 @@ export const makeCodegenable = (
 		// fails with a typed error before write.
 		outputPath: `postgres/${opts.name}.ts`,
 		sensitive: true,
-		emit: () =>
+		emit: (ctx) =>
 			Effect.sync(() => {
 				const bindings: PostgresConnectionBindings = {
 					name: opts.name,
@@ -70,9 +70,8 @@ export const makeCodegenable = (
 					plainUrl: plainUrl(opts.host, opts.port),
 					database: opts.databases[0]!,
 				};
-				return {
-					postgresConnection: bindings,
-				};
+				ctx.exportConst('postgresConnection', bindings);
+				return ctx.done();
 			}),
 	};
 };

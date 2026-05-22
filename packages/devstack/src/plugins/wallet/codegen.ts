@@ -10,9 +10,7 @@
 //     bundle code — devstack itself NEVER imports dapp-kit).
 //
 //   - The emitted file lives at `dapp-kit/config.ts` under the staging
-//     dir. Downstream consumers see its shape via
-//     `EmittedFor<Caps, 'dapp-kit-config'>` at the `defineDevstack`
-//     call site.
+//     dir. The generated module owns the exported config value's type.
 //
 // SENSITIVE FLAG (task requirement #5 — manifest-vs-token threat
 // surface):
@@ -97,14 +95,14 @@ export interface DappKitConfigBindings {
  */
 export const makeWalletCodegen = (
 	resolved: DappKitConfigBindings,
-): CodegenableDecl<DappKitConfigBindings, 'dapp-kit-config'> => ({
+): CodegenableDecl<'dapp-kit-config'> => ({
 	kind: 'codegenable',
 	emitterName: 'dapp-kit-config',
 	outputPath: 'dapp-kit/config.ts',
 	// SENSITIVE: drives 0o600 + .gitignore. The architecture has this
 	// hook (`SnapshotableDecl` mirrors it for the snapshot subtree).
 	sensitive: true,
-	emit: () =>
+	emit: (ctx) =>
 		Effect.gen(function* () {
 			// Span annotation logs ONLY the redacted form — defense-in-
 			// depth so any debug-mode span dump doesn't leak the token.
@@ -112,8 +110,7 @@ export const makeWalletCodegen = (
 				'wallet.codegen.pairUrl': redactToken(resolved.pairUrl),
 				'wallet.codegen.walletUrl': resolved.walletUrl,
 			});
-			return {
-				dappKitConfig: resolved,
-			};
+			ctx.exportConst('dappKitConfig', resolved);
+			return ctx.done();
 		}),
 });

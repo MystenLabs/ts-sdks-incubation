@@ -6,11 +6,10 @@
 // OnChainArtifactPublisher primitive; the toolchain concerns (build,
 // scrub) live in `build.ts`. We just route.
 //
-// Substrate dependencies arrive via the plugin runtime context
-// (`BuildContext.get(tag)` / `BuildContext.use(member)`):
+// Substrate dependencies arrive via `definePlugin({ dependsOn })`:
 //
-//   - SuiTag                — resolved SuiClient + chainId
-//   - AccountTag (signer)   — publisher address + sign-and-execute
+//   - suiResource           — resolved SuiClient + chainId
+//   - publisher account     — publisher address + sign-and-execute
 //
 // And via the StrategyContributor registry (by capability key):
 //
@@ -34,7 +33,12 @@ import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import { acquireKnown, type KnownModeInputs } from './mode-known.ts';
 import { acquireLocal, type LocalModeInputs } from './mode-local.ts';
-import type { PackageRegistry, ResolvedPackage } from './registry.ts';
+import type {
+	PackageRegistry,
+	ResolvedKnownPackage,
+	ResolvedLocalPackage,
+	ResolvedPackage,
+} from './registry.ts';
 import type { PublishReceipt } from './publish-receipt.ts';
 import type { PublishError } from './errors.ts';
 
@@ -57,13 +61,35 @@ export interface BootPackageResult {
 	readonly receipt: PublishReceipt | null;
 }
 
+export interface BootLocalPackageResult {
+	readonly resolved: ResolvedLocalPackage;
+	readonly receipt: PublishReceipt | null;
+}
+
+export interface BootKnownPackageResult {
+	readonly resolved: ResolvedKnownPackage;
+	readonly receipt: null;
+}
+
 /** Dispatch on the typed mode. */
-export const bootPackageService = (
+export function bootPackageService(
+	publisher: OnChainArtifactPublisher,
+	probe: ChainProbe<SuiProbeKey>,
+	registry: PackageRegistry,
+	opts: { readonly mode: 'local' } & LocalModeInputs,
+): Effect.Effect<BootLocalPackageResult, PublishError | OnChainArtifactError, Scope.Scope>;
+export function bootPackageService(
+	publisher: OnChainArtifactPublisher,
+	probe: ChainProbe<SuiProbeKey>,
+	registry: PackageRegistry,
+	opts: { readonly mode: 'known' } & KnownModeInputs,
+): Effect.Effect<BootKnownPackageResult, PublishError | OnChainArtifactError, Scope.Scope>;
+export function bootPackageService(
 	publisher: OnChainArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	registry: PackageRegistry,
 	opts: PackageMode,
-): Effect.Effect<BootPackageResult, PublishError | OnChainArtifactError, Scope.Scope> => {
+): Effect.Effect<BootPackageResult, PublishError | OnChainArtifactError, Scope.Scope> {
 	switch (opts.mode) {
 		case 'local':
 			return acquireLocal(publisher, probe, registry, opts).pipe(
@@ -74,4 +100,4 @@ export const bootPackageService = (
 				Effect.map(({ resolved }) => ({ resolved, receipt: null })),
 			);
 	}
-};
+}

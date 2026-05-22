@@ -21,6 +21,7 @@ import {
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
+const localnet = sui();
 const publisher = account('publisher');
 const alice = account('alice');
 const bob = account('bob');
@@ -80,6 +81,6 @@ const app = hostService({
 	needs: [usdc, weth, mUSDC, mWETH, seedTokens, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [sui(), publisher, alice, bob, carol, usdc, weth, mUSDC, mWETH, seedTokens, devWallet, app], stackName: 'wallet' });
+const stack = defineDevstack({ members: [localnet, app], stackName: 'wallet' });
 
 export default stack;

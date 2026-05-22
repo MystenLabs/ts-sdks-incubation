@@ -28,44 +28,26 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMembers } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
-import { SuiTag } from '../sui/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import { suiResource } from '../sui/index.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
 import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
-import {
-	makeWalletRoutable,
-	WALLET_ENTRYPOINT_PORT,
-	WALLET_ROUTE_ROLE,
-} from './routable.ts';
+import { makeWalletRoutable, WALLET_ENTRYPOINT_PORT, WALLET_ROUTE_ROLE } from './routable.ts';
 import { makeWalletSnapshotable } from './snapshot.ts';
 import {
 	acquireWallet,
 	WALLET_ACCOUNTS_ALL,
 	type WalletAcquireContext,
 	type WalletAccountMember,
-	type WalletAccountTags,
 	type WalletOptions,
 	type WalletValue,
 } from './service.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
-
-/** Wallet `consumes:` shape — Sui (hard upstream for ordering) plus
- *  the per-account-tag tuple projected from the user-supplied account
- *  member tuple. Preserving each literal `account/${Name}` is load-
- *  bearing for the stack-composition `MissingProviders` check. */
-type WalletConsumes<Accounts extends ReadonlyArray<WalletAccountMember>> = readonly [
-	typeof SuiTag,
-	...WalletAccountTags<Accounts>,
-];
+import type { AnyPlugin } from '../../substrate/plugin.ts';
 
 /** Composer-side expander hook for `wallet({ accounts: 'all' })`. The
  *  wallet factory cannot know the stack's account members at its own
@@ -73,7 +55,7 @@ type WalletConsumes<Accounts extends ReadonlyArray<WalletAccountMember>> = reado
  *  AFTER the wallet factory has returned). The composer detects this
  *  symbol on a member returned by the wallet factory, collects every
  *  account-providing member from the final stack, and invokes the
- *  hook to produce the real wallet member with a populated `consumes`
+ *  hook to produce the real wallet member with a populated dependencies
  *  tuple — keeping the dep-graph edges accurate.
  *
  *  Symbol-keyed (not a named property) so it cannot collide with any
@@ -96,15 +78,15 @@ export const WALLET_EXPAND_ACCOUNTS_ALL: symbol = Symbol.for('devstack.wallet.ex
  *  leak into the user's inferred Stack type (see TS2742 note above). */
 export type WalletExpandAccountsAllExpander = (
 	accountMembers: ReadonlyArray<WalletAccountMember>,
-) => AnyMember;
+) => AnyPlugin;
 
 // ----------------------------------------------------------------------
-// Tag — the resolved value consumers read
+// Resource identity
 // ----------------------------------------------------------------------
 
-/** The wallet plugin's identity tag. ONE per stack (15-wallet.md
+/** The wallet plugin's resource identity. ONE per stack (15-wallet.md
  *  "singleton per stack"). The id is `'wallet'` (singular). */
-export const WalletTag = defineTag<'wallet', WalletValue>('wallet', 'wallet');
+const walletResource = resource<'wallet', WalletValue>('wallet');
 const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
 
 // ----------------------------------------------------------------------
@@ -153,18 +135,18 @@ export function wallet(
 	opts: Omit<WalletOptions, 'accounts'> & { readonly accounts: typeof WALLET_ACCOUNTS_ALL },
 ): ReturnType<typeof makeWalletMember<readonly []>>;
 export function wallet(): ReturnType<typeof makeWalletMember<readonly []>>;
-export function wallet(opts?: WalletOptions): AnyMember {
+export function wallet(opts?: WalletOptions): AnyPlugin {
 	const resolvedOpts: WalletOptions =
 		opts ?? ({ accounts: WALLET_ACCOUNTS_ALL } satisfies WalletOptions);
 	if (resolvedOpts.accounts === WALLET_ACCOUNTS_ALL) {
-		// Deferred placeholder. `consumes` carries only `[SuiTag]` —
+		// Deferred placeholder. `dependsOn` carries only `[suiResource]` —
 		// the composer rewrites the member once it knows which account
 		// members are in the stack (api-surface-design §4 D6). Without
 		// composer expansion, the wallet would race account funding;
-		// WITH composer expansion, every per-account `consumes` edge is
+		// WITH composer expansion, every per-account dependency edge is
 		// in place by the time the dep-graph builds.
 		//
-		// Type-level: the placeholder's `consumes` is `[SuiTag]`. A
+		// Type-level: the placeholder's `dependsOn` is `[suiResource]`. A
 		// wider `ReadonlyArray<account/${string}>` would widen the
 		// stack-level `MissingProviders` check to the template literal
 		// (which never reduces to any concrete `account/<name>`), so
@@ -190,32 +172,23 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 	opts: WalletOptions,
 	accounts: Accounts,
 ) {
-	// `consumes` MUST include every account tag's key (15-wallet.md
-	// "upstreamKeys MUST include SuiTag.key + every account tag" — same
+	// Dependencies MUST include every account ref (15-wallet.md
+	// "upstreamKeys MUST include suiResource.id + every account id" — same
 	// load-bearing invariant). The substrate's topological scheduler
-	// uses `consumes` to drive build order; without including the
-	// account tags here, the wallet would race account funding and the
+	// uses `dependsOn` to drive build order; without including the
+	// account refs here, the wallet would race account funding and the
 	// first `signTransaction` would fail with `address-not-found`.
 	//
-	// `consumeMembers` projects each member's `.provides` tag and
-	// pre-builds the `projectInScope` closure used inside `acquire` —
-	// the localized §14 cast lives inside the helper.
-	const consumedAccounts = consumeMembers(accounts);
-	const consumes = [
-		SuiTag,
-		...consumedAccounts.consumesTags,
-	] as unknown as WalletConsumes<Accounts>;
+	const dependencies = [suiResource, ...accounts] as const;
 
 	// The resolved-opts shape acquireWallet sees has accounts pinned to
 	// the resolved tuple — `'all'` is purely a user-surface convenience
 	// the composer never propagates to the supervisor.
 	const resolvedOpts: WalletOptions<Accounts> = { ...opts, accounts };
 
-	return defineNodePlugin({
-		provides: WalletTag,
-		// Hard upstreams: Sui (for ordering — wallet must boot strictly
-		// after Sui is ready) + every account (for ordering AND value).
-		consumes,
+	return definePlugin({
+		id: walletResource.id,
+		dependsOn: dependencies,
 		// `leaf-long-running` — the HTTP server is a long-lived host
 		// process; per-request handlers fork off the supervisor-context
 		// fiber but the server itself lives for the stack's lifetime.
@@ -224,7 +197,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// allocator + an http listen + a token-file read. The on-disk
 		// token survives so the dev-wallet pairing isn't disturbed.
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-
 				// broker from the supervisor-provided substrate context.
@@ -239,13 +212,9 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				const paths = yield* StackPathsService;
 				const portBroker = yield* PortBrokerService;
 
-				// Resolve each consumed account upstream via direct member
-				// refs. `consumes` above pins `m.provides` for each `m` in
-				// the resolved account list, so the runtime BuildContext
-				// walker is guaranteed to find the entry. The §14 cast
-				// lives inside `consumeMembers` — call site reads the
-				// resolved tuple directly.
-				const resolvedAccounts: ReadonlyArray<AccountValue> = consumedAccounts.projectInScope(ctx);
+				// The first dependency is the hard Sui ordering edge; the
+				// remaining values mirror the explicit account tuple.
+				const [, ...resolvedAccounts] = deps;
 				const routerFrontedUrl =
 					opts.enableRouter === true
 						? yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
@@ -307,7 +276,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// bindings (walletUrl, pairUrl, chain id, paths) into the
 		// codegen decl, and the real identity app/stack into the
 		// routable decl.
-		capabilities: (resolved, acquireCtx) => {
+		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
 			const snapshot = makeWalletSnapshotable();
 			const codegen = makeWalletCodegen(resolved.bindings);
 			const routable = makeWalletRoutable({
@@ -316,8 +285,8 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				port: resolved.localPort,
 			});
 			return opts.enableRouter === true
-				? capabilities(snapshot, codegen, routable)
-				: capabilities(snapshot, codegen);
+				? ([snapshot, codegen, routable] as const)
+				: ([snapshot, codegen] as const);
 		},
 	});
 }
@@ -330,7 +299,6 @@ export type {
 	WalletOptions,
 	WalletValue,
 	WalletAccountMember,
-	WalletAccountTags,
 	WalletAccountsAll,
 } from './service.ts';
 export { WALLET_ACCOUNTS_ALL } from './service.ts';

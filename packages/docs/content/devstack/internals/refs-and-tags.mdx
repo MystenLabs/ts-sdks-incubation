@@ -19,7 +19,7 @@ The public helpers are available from the root export:
 import { definePlugin, defineCapability, codegenable } from '@mysten-incubation/devstack';
 ```
 
-Direct member references are the public cross-plugin pattern:
+Direct plugin/resource references are the public cross-plugin pattern:
 
 ```ts
 const publisher = account('publisher');
@@ -33,8 +33,9 @@ The package factory records `publisher` in `dependsOn`. The supervisor then orde
 before the publish step, and TypeScript can report a missing provider at the `defineDevstack(...)`
 call site.
 
-Subpaths:
+Package exports:
 
-- `@mysten-incubation/devstack/substrate` exports brands, lifecycle types, manifest types, and
-  witness helpers.
-- `@mysten-incubation/devstack/contracts` exports capability declaration types.
+- The root package exports plugin-author helpers, capability declaration types, brands, lifecycle
+  types, manifest types, and witness helpers.
+- `/contracts` and `/substrate` are not package exports. Internal modules may still exist in source,
+  but app and plugin-author code should import from the root package or build-integration subpaths.

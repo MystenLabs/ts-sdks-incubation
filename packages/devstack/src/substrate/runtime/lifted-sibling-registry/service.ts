@@ -18,7 +18,7 @@ import type {
 	LiftedSiblingRegistry,
 } from '../../../primitives/lifted-sibling.ts';
 import type { LiftedSiblingKey } from '../../lifted-sibling.ts';
-import type { AnyMember } from '../../plugin.ts';
+import type { AnyPlugin } from '../../plugin.ts';
 
 /** Group key — the dedup discriminator. Two keys with the same
  *  group dedup if hashes match, conflict if they don't. */
@@ -28,7 +28,7 @@ const groupKeyOf = (key: LiftedSiblingKey): string => `${key.plugin}|${key.kind}
  *  member that registered it, and the hash for conflict detection. */
 interface Entry {
 	readonly key: LiftedSiblingKey;
-	readonly member: AnyMember;
+	readonly member: AnyPlugin;
 	readonly hash: string;
 }
 

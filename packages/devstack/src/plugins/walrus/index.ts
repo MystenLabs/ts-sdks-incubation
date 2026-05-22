@@ -18,7 +18,7 @@
 //
 // The plugin emits FOUR capability decls (per mode):
 //
-//   Local mode (4 of 4 tags + admin signer):
+//   Local mode (full local cluster + admin signer):
 //     1. `composite-primitive` — one engine row + N child members +
 //                                 2 lifted siblings.
 //     2. `snapshotable`        — runtime/walrus/<name>/deploy/ subtree
@@ -33,22 +33,19 @@
 //                                                         (when seed
 //                                                         accounts + exchange).
 //
-//   Known mode (3 of 4 tags — NO admin):
+//   Known mode (read-only deployment — NO admin):
 //     1. `snapshotable`        — identity-guard only; no subtrees.
 //     2. `codegenable`         — `walrus-network` bindings (mode='known').
 //     3. `strategy-contributor:walrus-state-registry` — known entry.
 //
-// Tag id: `'walrus'` (singular). The plugin's substrate-level plugin
-// key is the same string.
+// Resource id: `'walrus'` (singular). The plugin's substrate-level
+// plugin key is the same string.
 
 import { Effect, FileSystem, Path } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMembers } from '../../api/consume-members.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions, readConsumedTag } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
@@ -60,14 +57,14 @@ import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chai
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountValue } from '../account/service.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 
 import {
 	StrategyRegistryService,
 	chainProbeFor,
 } from '../../substrate/runtime/strategy-registry/index.ts';
 
-import { makeCodegenable, type WalrusBindings } from './codegen.ts';
+import { makeCodegenable } from './codegen.ts';
 import { makeWalrusComposite } from './composite.ts';
 import { WALRUS_ERROR_TAGS, walrusPluginError } from './errors.ts';
 import { defaultWalrusCargoImageSiblingKey } from './lifted-siblings/cargo-image.ts';
@@ -77,7 +74,6 @@ import { bootWalrusService, refuseLocalClusterOnFork, type WalrusMode } from './
 import {
 	resolveLocalClusterOptions,
 	type WalrusAccountMember,
-	type WalrusAccountTags,
 	type WalrusLocalClusterOptions,
 } from './mode/local-cluster.ts';
 import {
@@ -93,7 +89,7 @@ import { swapSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './seed-w
 import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
-// Tag — the resolved value all consumers read
+// Resource — the resolved value all consumers read
 // ---------------------------------------------------------------------------
 
 /** The Walrus admin surface — local-mode only (distilled-doc
@@ -110,7 +106,7 @@ export interface WalrusAdmin {
 	}) => Effect.Effect<{ readonly digest: string }, import('./errors.ts').WalrusPluginError>;
 }
 
-/** The Walrus resolved value carried by the tag. Mode-asymmetric:
+/** The Walrus resolved value carried by the resource. Mode-asymmetric:
  *  `admin` is `null` for known-deployment mode (distilled-doc
  *  invariant 14). */
 export interface WalrusResolved {
@@ -131,8 +127,8 @@ export interface WalrusResolved {
 	readonly admin: WalrusAdmin | null;
 }
 
-/** Walrus plugin tag. */
-export const WalrusTag = defineTag<'walrus', WalrusResolved>('walrus', 'walrus');
+/** Walrus plugin resource. */
+export const walrusResource = resource<'walrus', WalrusResolved>('walrus');
 const walrusErrorContributions = pluginErrorContributions(WALRUS_ERROR_TAGS);
 
 export interface WalrusNetworkIdentity {
@@ -217,16 +213,6 @@ const resolveDefaultMode = (): EnvMode => {
 // Plugin construction (internal — used by walrus() + walrusFor.for())
 // ---------------------------------------------------------------------------
 
-/** Walrus `consumes:` shape — Sui (hard upstream for ordering) plus
- *  the per-seed-account-tag tuple projected from the user-supplied
- *  seedAccounts member tuple. Mirrors wallet's `WalletConsumes` —
- *  preserving each literal `account/${Name}` is load-bearing for the
- *  stack-composition `MissingProviders` check. */
-type WalrusConsumes<Accounts extends ReadonlyArray<WalrusAccountMember>> = readonly [
-	typeof SuiTag,
-	...WalrusAccountTags<Accounts>,
-];
-
 const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMember>>(
 	opts: WalrusLocalClusterOptions<Accounts>,
 ) => {
@@ -257,27 +243,24 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 		innerParticipants: [],
 	});
 
-	// `consumes` MUST include every seed-account tag's key so the
+	// `dependsOn` MUST include every seed-account ref so the
 	// substrate's topological scheduler waits for each seed account's
 	// acquire (keypair mint + funding) before the walrus composite
 	// dispatches WAL swaps via the first-account-doubles-as-admin-signer
 	// path. Without this edge, the first WAL swap could race the
-	// account's funding and fail with `address-not-found`. (Mirrors
-	// wallet's `consumes: [SuiTag, ...accountTags]`.)
-	const seedAccountMembers: ReadonlyArray<WalrusAccountMember> = opts.seedAccounts ?? [];
-	const consumedSeedAccounts = consumeMembers(seedAccountMembers);
-	const consumes = [
-		SuiTag,
-		...consumedSeedAccounts.consumesTags,
-	] as unknown as WalrusConsumes<Accounts>;
+	// account's funding and fail with `address-not-found`.
+	const seedAccountMembers = (opts.seedAccounts ?? []) as Accounts;
+	const dependencies = [suiResource, ...seedAccountMembers] as const;
 
-	return defineNodePlugin({
-		provides: WalrusTag,
-		consumes,
+	return definePlugin({
+		id: walrusResource.id,
+		dependsOn: dependencies,
 		kind: 'composite',
 		rebootCost: 'heavy',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.gen(function* () {
+				const [sui, ...resolvedSeedAccounts] = deps;
+
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
 				//     via the supervisor's plugin runtime context.
@@ -294,27 +277,8 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
-
-				// `ctx.get(SuiTag)` widens when `Consumes` carries a
-				// template-literal-generic tag id (each `account/${Name}`
-				// from `opts.seedAccounts`) — TS cannot narrow `T extends
-				// Provided` and the SuiTag read returns the union of
-				// every provided value type. Localize a typed-cast for
-				// the one SuiTag read (mirrors account / package — same
-				// `__MemberNotConsumedError` reduction limitation,
-				// STYLE_GUIDE §14 + Open slot O10).
-				const sui = readConsumedTag(ctx, SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
-
-				// Resolve each seed account upstream via direct member
-				// refs. `consumes` above pins `m.provides` for each `m` in
-				// `opts.seedAccounts`, so the runtime BuildContext walker
-				// is guaranteed to find the entry. The §14 cast lives
-				// inside `consumeMembers` — call site reads the resolved
-				// tuple directly.
-				const resolvedSeedAccounts: ReadonlyArray<AccountValue> =
-					consumedSeedAccounts.projectInScope(ctx);
 
 				// Resolve the deploy-output bind-mount source from the
 				// per-stack paths bundle. The dir must exist before the
@@ -429,7 +393,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				};
 				return resolvedValue;
 			}),
-		capabilities: (resolvedValue, acquireCtx) =>
+		capabilities: ({ value: resolvedValue, runtime: acquireCtx }) =>
 			makeLocalCapabilities({
 				name: resolved.name,
 				nodeCount: resolved.nodeCount,
@@ -449,14 +413,14 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 	// 14 + 16 — required systemObjectId/stakingPoolId/nodes; no admin).
 	const resolved = resolveKnownDeploymentOptions(opts);
 
-	return defineNodePlugin({
-		provides: WalrusTag,
-		consumes: [SuiTag] as const,
+	return definePlugin({
+		id: walrusResource.id,
+		dependsOn: [suiResource] as const,
 		// Known deployment is a pure value-producer — no containers,
 		// no long-running children.
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.succeed({
 				mode: 'known',
 				chain: resolved.chain,
@@ -472,7 +436,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				// Distilled-doc invariant 14: NO admin tag in known mode.
 				admin: null,
 			} satisfies WalrusResolved),
-		capabilities: (resolvedValue, acquireCtx) =>
+		capabilities: ({ value: resolvedValue, runtime: acquireCtx }) =>
 			makeKnownCapabilities({
 				resolved: resolvedValue,
 				acquireCtx,
@@ -500,7 +464,7 @@ const makeLocalCapabilities = (parts: {
 		resolved.chain,
 		nodeCount,
 	);
-	const codegen: CodegenableDecl<WalrusBindings, 'walrus-network'> = makeCodegenable({
+	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
 		mode: 'local',
 		chain: resolved.chain,
 		systemObjectId: resolved.packageConfig.systemObjectId,
@@ -528,16 +492,13 @@ const makeLocalCapabilities = (parts: {
 		nodeCount,
 		containerApiPort,
 	});
-	// Variadic builder needs literal-typed inputs — we spread the
-	// routables tuple explicitly so the `Caps` generic preserves
-	// the per-decl narrow types.
-	return capabilities(
+	return [
 		composite,
 		snap,
 		codegen,
 		stateRegistry,
 		...(routables as readonly RoutableDecl[]),
-	);
+	] as const;
 };
 
 const makeKnownCapabilities = (parts: {
@@ -552,7 +513,7 @@ const makeKnownCapabilities = (parts: {
 		'walrusKnownDeployment',
 		resolved.chain,
 	);
-	const codegen: CodegenableDecl<WalrusBindings, 'walrus-network'> = makeCodegenable({
+	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
 		mode: 'known',
 		chain: resolved.chain,
 		systemObjectId: resolved.packageConfig.systemObjectId,
@@ -575,7 +536,7 @@ const makeKnownCapabilities = (parts: {
 			},
 			autoMounted: true,
 		};
-	return capabilities(snap, codegen, stateRegistry);
+	return [snap, codegen, stateRegistry] as const;
 };
 
 /** Build the admin shape. `seedWal` dispatches via the first
@@ -680,7 +641,6 @@ export const walrusFor = defineModeNamespace({
 export type {
 	WalrusLocalClusterOptions,
 	WalrusAccountMember,
-	WalrusAccountTags,
 } from './mode/local-cluster.ts';
 export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/known-deploy.ts';
 export type { WalrusStorageNode } from './storage-nodes.ts';

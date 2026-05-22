@@ -11,8 +11,7 @@
 //   - localPackage('managed_coin', { publisher: alice })
 //   - wallet({ accounts: [alice, bob, carol] })
 //
-// Six plugin keys, all leaves (wallet is a `defineNodePlugin` leaf
-// even though it depends on every account + sui — see wallet/index.ts).
+// Six plugin keys, with wallet depending on every account + sui.
 //
 // What this test pins beyond `ready`:
 //   - The published `managed_coin` package's receipt carries the
@@ -77,17 +76,17 @@ describe('token-studio boots end-to-end', () => {
 			stackName: 'main',
 		});
 
-		// Six-plugin expectation. Ordinals match the variadic position
-		// in the config: sui(0), alice(1), bob(2), carol(3),
-		// managed_coin(4), wallet(5). If the config order changes,
-		// update this list deliberately.
+		// Recursive-entrypoint expectation. Ordinals come from the
+		// dependency closure rooted at the host app.
 		const expectedKeys = [
 			'sui#0',
 			'account/alice#1',
-			'account/bob#2',
-			'account/carol#3',
-			'package:managed_coin#4',
-			'wallet#5',
+			'package:managed_coin#2',
+			'coin:managed_coin#3',
+			'account/bob#4',
+			'account/carol#5',
+			'wallet#6',
+			'host-service/app#7',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);
@@ -102,7 +101,7 @@ describe('token-studio boots end-to-end', () => {
 		// For this test (every invocation gets a fresh tmpdir runtime
 		// root, so cache state never carries over) the receipt is
 		// always populated.
-		const pkg = result.resolvedValues.get('package:managed_coin#4') as
+		const pkg = result.resolvedValues.get('package:managed_coin#2') as
 			| LocalPackageResolved
 			| undefined;
 		expect(pkg, 'managed_coin resolved value should be present').toBeDefined();

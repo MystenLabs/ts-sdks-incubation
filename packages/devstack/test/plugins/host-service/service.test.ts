@@ -5,8 +5,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Exit, Option } from 'effect';
 
-import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
-import { defineTag } from '../../../src/api/tag.ts';
+import { definePlugin } from '../../../src/api/define-plugin.ts';
 import { pluginKey } from '../../../src/substrate/brand.ts';
 import type { LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import {
@@ -84,12 +83,10 @@ const acquire = (
 		}),
 	);
 
-const NeededTag = defineTag<'test/needed', { readonly ok: true }>('test/needed', 'test');
-const neededMember = defineNodePlugin({
-	provides: NeededTag,
-	consumes: [] as const,
+const neededMember = definePlugin({
+	id: 'test/needed',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ ok: true } as const),
+	start: () => Effect.succeed({ ok: true } as const),
 });
 
 describe('hostService option validation', () => {
@@ -115,13 +112,13 @@ describe('hostService option validation', () => {
 describe('hostService needs', () => {
 	it('keeps no-needs services as dependency-free leaves', () => {
 		const member = hostService({ command: 'pnpm' });
-		expect(member.consumes).toEqual([]);
+		expect(member.dependsOn).toEqual([]);
 	});
 
-	it('projects needs members into consumes for startup ordering', () => {
+	it('projects needs members into dependencies for startup ordering', () => {
 		const member = hostService({ command: 'pnpm', needs: [neededMember] as const });
-		expect(member.consumes).toEqual([NeededTag]);
-		expect(member.consumes[0]).toBe(NeededTag);
+		expect(member.dependsOn).toEqual([neededMember]);
+		expect(member.dependsOn[0]).toBe(neededMember);
 	});
 });
 

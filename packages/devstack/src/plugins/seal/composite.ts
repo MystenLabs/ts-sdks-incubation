@@ -7,22 +7,22 @@
 //
 // Distilled-doc invariants pinned by this file:
 //
-//   #1 — closure-bound internal tag + two narrow projection layers
+//   #1 — closure-bound internal resource + two narrow projection layers
 //        + lifted-sibling artifacts: this is exactly the
 //        CompositePrimitive shape.
 //   #9 — peer-dep structural assignability (compile-time check via
 //        `_SealKeyServerEntryCheck`).
 //
-// Mode-asymmetric tag fan-out (architecture: AsymmetricTagFanout):
-// the `local-keygen` mode contributes BOTH the read-side tag AND
-// the admin tag; the known modes contribute the read-side tag
+// Mode-asymmetric resource fan-out (architecture: AsymmetricTagFanout):
+// the `local-keygen` mode contributes BOTH the read-side resource AND
+// the admin resource; the known modes contribute the read-side resource
 // ONLY. We don't model this as runtime branching here — the barrel
 // (`index.ts`) chooses the right CompositePrimitiveDecl per mode.
 
 import type { CompositePrimitiveDecl } from '../../contracts/composite-primitive.ts';
 import { pluginKey, type PluginKey } from '../../substrate/brand.ts';
 import type { LiftedSiblingKey } from '../../substrate/lifted-sibling.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
+import type { AnyPlugin } from '../../substrate/plugin.ts';
 
 // ---------------------------------------------------------------------------
 // Plugin-key constructor
@@ -47,11 +47,11 @@ export const sealPluginKey = (name: string): PluginKey => pluginKey(`seal:${name
  *                          just cargo-image if `movePackagePath`
  *                          was supplied at the factory layer).
  *   - `innerParticipants` — keygen + publish + register + container
- *                            as `AnyMember`-shaped values. */
+ *                            as plugins. */
 export const makeSealComposite = (inputs: {
 	readonly name: string;
 	readonly liftedSiblings: ReadonlyArray<LiftedSiblingKey>;
-	readonly innerParticipants: ReadonlyArray<AnyMember>;
+	readonly innerParticipants: ReadonlyArray<AnyPlugin>;
 }): CompositePrimitiveDecl => ({
 	kind: 'composite-primitive',
 	compositeKey: sealPluginKey(inputs.name),

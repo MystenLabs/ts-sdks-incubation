@@ -9,9 +9,8 @@
 //
 // Tag id discipline:
 //
-//   - The emitter name `'seal-key-server'` is the literal
-//     `EmittedFor<Caps, 'seal-key-server'>` key downstream consumers
-//     use. We pin it once here.
+//   - The emitter name `'seal-key-server'` is pinned here so the
+//     generated output and orchestrator attribution stay stable.
 
 import { Effect } from 'effect';
 
@@ -43,12 +42,13 @@ export interface SealBindings {
 /** Build the Codegenable contribution for a seal instance. */
 export const makeSealCodegenable = (
 	bindings: SealBindings,
-): CodegenableDecl<SealBindings, 'seal-key-server'> => ({
+): CodegenableDecl<'seal-key-server'> => ({
 	kind: 'codegenable',
 	emitterName: 'seal-key-server',
 	outputPath: `seal/${bindings.name}.ts`,
-	emit: () =>
-		Effect.sync(() => ({
-			sealBindings: bindings satisfies SealBindings,
-		})),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('sealBindings', bindings satisfies SealBindings);
+			return ctx.done();
+		}),
 });

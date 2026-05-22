@@ -71,23 +71,21 @@ describe('arena boots end-to-end', () => {
 			appName: 'arena',
 			stackName: 'arena',
 			// Project the action's resolved digest. The key matches
-			// the variadic ordinal of `openLobby` in the arena config
+			// the dependency-closure ordinal of `openLobby` in the arena config
 			// (see `expectedKeys` below).
-			digestFromKey: 'action:arena.openLobby#5',
+			digestFromKey: 'action:arena.openLobby#4',
 		});
 
-		// Eight-plugin expectation. Ordinals match the variadic position
-		// in the config: sui(0), publisher(1), alice(2), bob(3),
-		// connect_four(4), openLobby(5), wallet(6), app(7). If the config order
-		// changes, update this list AND the `digestFromKey` arg above
-		// deliberately.
+		// Recursive-entrypoint expectation. Ordinals come from the
+		// dependency closure rooted at the host app. If this changes,
+		// update this list AND the `digestFromKey` arg above deliberately.
 		const expectedKeys = [
 			'sui#0',
-			'account/publisher#1',
-			'account/alice#2',
-			'account/bob#3',
-			'package:connect_four#4',
-			'action:arena.openLobby#5',
+			'account/alice#1',
+			'account/publisher#2',
+			'package:connect_four#3',
+			'action:arena.openLobby#4',
+			'account/bob#5',
 			'wallet#6',
 			'host-service/app#7',
 		];

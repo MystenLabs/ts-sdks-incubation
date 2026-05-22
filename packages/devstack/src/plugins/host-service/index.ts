@@ -6,12 +6,12 @@
 
 import { Effect, Option } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMembers, type ConsumesTagsOf } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
+import {
+	definePlugin,
+	resource,
+	type AnyResourceRef,
+} from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
@@ -40,35 +40,29 @@ import {
 } from './service.ts';
 import { HOST_SERVICE_DEFAULT_ENDPOINT_NAME, makeHostServiceRoutable } from './routable.ts';
 
-export const hostServiceTagId = <Name extends string>(name: Name): `host-service/${Name}` =>
+export const hostServiceResourceId = <Name extends string>(name: Name): `host-service/${Name}` =>
 	`host-service/${name}`;
 
-export const hostServiceTag = <Name extends string>(name: Name) =>
-	defineTag<`host-service/${Name}`, HostServiceValue>(
-		hostServiceTagId(name),
-		hostServiceTagId(name),
-	);
+export const hostServiceResource = <Name extends string>(name: Name) =>
+	resource<`host-service/${Name}`, HostServiceValue>(hostServiceResourceId(name));
 
 const hostServiceErrorContributions = pluginErrorContributions(HOST_SERVICE_ERROR_TAGS);
 
-export type HostServiceNeeds = ReadonlyArray<AnyMember>;
-export type HostServiceConsumes<Needs extends HostServiceNeeds> = ConsumesTagsOf<Needs>;
+export type HostServiceNeeds = ReadonlyArray<AnyResourceRef>;
 
 export const hostService = <const Needs extends HostServiceNeeds = readonly []>(
 	options: HostServiceOptions<Needs>,
 ) => {
 	const normalized = normalizeHostServiceOptions(options);
-	const tag = hostServiceTag(normalized.serviceName);
+	const serviceResource = hostServiceResource(normalized.serviceName);
 	const needs = options.needs ?? ([] as unknown as Needs);
-	const consumedNeeds = consumeMembers(needs);
-	const consumes = consumedNeeds.consumesTags as HostServiceConsumes<Needs>;
 
-	return defineNodePlugin({
-		provides: tag,
-		consumes,
+	return definePlugin({
+		id: serviceResource.id,
+		dependsOn: needs,
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;
 				const logger = yield* Logger;
@@ -98,14 +92,14 @@ export const hostService = <const Needs extends HostServiceNeeds = readonly []>(
 				return prepared.value;
 			}),
 		errorContributions: hostServiceErrorContributions,
-		capabilities: (resolved) =>
-			capabilities(
+		capabilities: ({ value }) =>
+			[
 				makeHostServiceRoutable({
-					endpointName: resolved.endpointName,
-					serviceName: resolved.name,
-					port: resolved.port,
+					endpointName: value.endpointName,
+					serviceName: value.name,
+					port: value.port,
 				}),
-			),
+			] as const,
 	});
 };
 

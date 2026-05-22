@@ -64,9 +64,9 @@ export interface LiveModeInputs {
 // ---------------------------------------------------------------------------
 
 /** Validate the inputs at the factory boundary. Pure synchronous
- *  function — the substrate's `defineNodePlugin.acquire` is
- *  exclusively for Effect-flavored work; the throw here matches
- *  v3's pattern (distilled-doc §Failure modes). */
+ *  function. The plugin `start` body is reserved for Effect-flavored
+ *  work; the throw here matches v3's pattern (distilled-doc
+ *  §Failure modes). */
 export const validateLiveInputs = (
 	inputs: LiveModeInputs,
 ): {

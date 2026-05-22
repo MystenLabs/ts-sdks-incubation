@@ -14,9 +14,9 @@ Runtime surfaces:
 
 ```ts
 import { Effect } from 'effect';
-import { account, defineDevstack, runStack } from '@mysten-incubation/devstack';
+import { account, defineDevstack, runStack, sui } from '@mysten-incubation/devstack';
 
-const stack = defineDevstack({ members: [account('alice')], stackName: 'embedded' });
+const stack = defineDevstack({ members: [sui(), account('alice')], stackName: 'embedded' });
 const handle = runStack(stack, {
 	runtimeRoot: '.devstack',
 	identity: { app: 'demo', stack: 'embedded' },
@@ -27,9 +27,10 @@ await Effect.runPromise(handle.stop);
 await Effect.runPromise(handle.awaitShutdown);
 ```
 
-Boot order is derived from `consumes` edges. Members that need Sui can cause `defineDevstack` to
-auto-mount a default `sui()` when none is provided. `wallet({ accounts: 'all' })` is expanded after
-the full member list is known, so it consumes every account member in the final stack.
+Boot order is derived from `dependsOn` edges. Members that need Sui depend on the shared `sui`
+resource, so the stack includes one concrete `sui(...)` provider. `wallet({ accounts: 'all' })` is
+expanded after the full member list is known, so it depends on every account member in the final
+stack.
 
 The supervisor publishes typed events, maintains a live projection, writes the manifest, emits
 generated files, and serves commands from the attached TUI. Shutdown is attached to the running

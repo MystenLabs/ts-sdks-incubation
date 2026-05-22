@@ -69,7 +69,7 @@ export interface ForkAdminSurface {
 	) => Effect.Effect<{ readonly digest: string; readonly success: boolean }, SuiPluginError>;
 }
 
-/** The resolved value Sui publishes via its `provides` tag. */
+/** The resolved value Sui publishes via its resource id. */
 export interface SuiClient {
 	/** The SDK shim. Fork mode wraps this with the property-access
 	 *  blocklist (`fork-orchestration.wrapWithForkGuard`). */

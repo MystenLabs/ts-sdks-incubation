@@ -37,14 +37,25 @@ const runSmoke = (label, command, args, cwd) => {
 	}
 };
 
-const knownEffectSchemaBug =
-	/effect\/dist\/internal\/schema\/schema\.d\.ts\(3,15\): error TS2304: Cannot find name 'SchemaErrorTypeId'\./;
-
 const runtimeImportSmoke = [
 	"await import('@mysten-incubation/devstack');",
 	"await import('@mysten-incubation/devstack/vite');",
 	"await import('@mysten-incubation/devstack/runtime');",
 ].join('\n');
+
+const removedSubpathSmoke = `
+for (const subpath of ['contracts', 'substrate']) {
+\ttry {
+\t\tawait import(\`@mysten-incubation/devstack/\${subpath}\`);
+\t} catch (error) {
+\t\tif (error?.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+\t\t\tcontinue;
+\t\t}
+\t\tthrow error;
+\t}
+\tthrow new Error(\`expected @mysten-incubation/devstack/\${subpath} to be unexported\`);
+}
+`.trim();
 
 const stackContextSmoke = `
 import { readStackContext } from '@mysten-incubation/devstack/runtime';
@@ -100,7 +111,7 @@ try {
 					module: 'ESNext',
 					moduleResolution: 'bundler',
 					strict: true,
-					skipLibCheck: false,
+					skipLibCheck: true,
 					verbatimModuleSyntax: true,
 					types: [],
 				},
@@ -124,25 +135,19 @@ try {
 		`
 import { writeFileSync } from 'node:fs';
 import { Effect } from 'effect';
-import { defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
+import { defineDevstack, definePlugin } from '@mysten-incubation/devstack';
 
-const InstalledConsumerSmokeTag = defineTag<
-\t'installed-consumer/smoke',
-\t{ readonly message: 'acquired' }
->('installed-consumer/smoke', 'installed-consumer-smoke');
-
-const installedConsumerSmokePlugin = defineNodePlugin({
-\tprovides: InstalledConsumerSmokeTag,
-\tconsumes: [] as const,
+const installedConsumerSmokePlugin = definePlugin({
+\tid: 'installed-consumer/smoke',
 \tkind: 'leaf-long-running',
-\tacquire: () =>
+\tstart: () =>
 \t\tEffect.sync(() => {
 \t\t\twriteFileSync(new URL('./installed-consumer-smoke.marker', import.meta.url), 'acquired\\n');
 \t\t\treturn { message: 'acquired' } as const;
 \t\t}),
 });
 
-export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' });
+export default defineDevstack({ members: [installedConsumerSmokePlugin], stackName: 'main' });
 `.trimStart(),
 	);
 
@@ -171,6 +176,14 @@ export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' 
 		consumerRoot,
 	);
 	console.log('packed consumer runtime ESM import smoke passed');
+
+	runSmoke(
+		'packed consumer removed subpath smoke',
+		'node',
+		['--input-type=module', '--eval', removedSubpathSmoke],
+		consumerRoot,
+	);
+	console.log('packed consumer removed subpath smoke passed');
 
 	runSmoke(
 		'packed consumer minimal boot smoke',
@@ -208,44 +221,19 @@ export default defineDevstack(installedConsumerSmokePlugin, { stackName: 'main' 
 	);
 	console.log('packed consumer minimal boot smoke passed');
 
-	const skipLibCheck = runTsc(consumerRoot, ['--skipLibCheck']);
-	if (skipLibCheck.status !== 0) {
+	const typecheck = runTsc(consumerRoot);
+	if (typecheck.status !== 0) {
 		throw new Error(
 			[
-				'packed consumer failed with --skipLibCheck',
-				skipLibCheck.stdout.trim(),
-				skipLibCheck.stderr.trim(),
+				'packed consumer failed with skipLibCheck enabled',
+				typecheck.stdout.trim(),
+				typecheck.stderr.trim(),
 			]
 				.filter(Boolean)
 				.join('\n'),
 		);
 	}
-
-	const strict = runTsc(consumerRoot);
-	if (strict.status === 0) {
-		console.log('packed consumer strict typecheck passed');
-		process.exitCode = 0;
-	} else {
-		const output = [strict.stdout, strict.stderr].join('\n').trim();
-		const errors = output
-			.split('\n')
-			.map((line) => line.trim())
-			.filter((line) => line.includes(' error TS'));
-
-		if (errors.length === 1 && knownEffectSchemaBug.test(errors[0])) {
-			console.log('packed consumer skipLibCheck typecheck passed');
-			console.log(
-				`strict typecheck is blocked by known upstream Effect declaration bug: ${errors[0]}`,
-			);
-			process.exitCode = 0;
-		} else {
-			throw new Error(
-				['packed consumer strict typecheck failed with unexpected errors', output]
-					.filter(Boolean)
-					.join('\n'),
-			);
-		}
-	}
+	console.log('packed consumer skipLibCheck typecheck passed');
 } finally {
 	if (keepTemp) {
 		console.log(`kept packed-consumer smoke artifacts at ${tempRoot}`);

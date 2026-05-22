@@ -4,8 +4,8 @@ description: Current plugin-author entry points.
 ---
 
 A plugin is a function that returns a stack member. The root package exports the authoring helpers;
-the `contracts` and `substrate` subpaths expose the same lower-level vocabulary for isolated
-imports.
+`contracts` and `substrate` are internal source modules, not package subpaths for app or plugin
+author imports.
 
 ```ts
 import { Effect } from 'effect';
@@ -28,7 +28,11 @@ export const keyValue = () =>
 			codegenable({
 				emitterName: 'kv',
 				outputPath: 'kv.ts',
-				emit: () => Effect.succeed({ kv: value }),
+				emit: (ctx) =>
+					Effect.sync(() => {
+						ctx.exportConst('kv', value);
+						return ctx.done();
+					}),
 			}),
 		],
 	});
@@ -43,6 +47,6 @@ import { keyValue } from './devstack/key-value.js';
 export default defineDevstack({ members: [keyValue()] });
 ```
 
-Use direct member references for cross-plugin dependencies. For example, if a plugin needs an
-account, accept the `account('name')` plugin and put it in `dependsOn`; the resolved account value
-is passed to `start` as the second argument.
+Use direct plugin/resource references for cross-plugin dependencies. For example, if a plugin needs
+an account, accept the `account('name')` plugin and put it in `dependsOn`; the resolved account
+value is passed to `start` as the second argument.

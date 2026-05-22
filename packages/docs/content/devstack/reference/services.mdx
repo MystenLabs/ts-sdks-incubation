@@ -13,8 +13,24 @@ recursively. Options include `stackName`, `network`, `watchPaths`, `stateDir`, `
 
 ## `sui(opts?)`
 
-Starts or references the active Sui network. Modes include local, live, fork, and external. When a
-member consumes Sui and none is provided, `defineDevstack` auto-mounts a default `sui()`.
+Starts or references the active Sui network. Modes include local, live, fork, and external. Include
+one `sui(...)` member in any stack whose members depend on Sui. The `sui()` factory returns a plugin
+resource ref, so custom plugins can depend on a specific Sui member directly:
+
+```ts
+import { Effect } from 'effect';
+import { defineDevstack, definePlugin, sui } from '@mysten-incubation/devstack';
+
+const localnet = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
+const app = definePlugin({
+	id: 'app',
+	dependsOn: { sui: localnet },
+	kind: 'leaf-long-running',
+	start: (_ctx, { sui }) => Effect.succeed({ rpc: sui.rpcUrl }),
+});
+
+export default defineDevstack({ members: [localnet, app] });
+```
 
 ## `account(name, opts?)`
 
@@ -55,7 +71,13 @@ Starts the dev wallet HTTP server and emits generated dapp-kit config. Use `wall
 ## `faucet(opts?)`
 
 Creates a faucet dispatcher and registers caller-supplied strategies. Most local SUI funding is
-handled by the Sui strategy registered for the active chain.
+handled by the Sui strategy registered for the active chain. `faucet()` is a dependency-free plugin
+resource ref.
+
+## `postgres(opts?)`
+
+Starts a local Postgres container and emits generated connection bindings. `postgres()` is a
+dependency-free plugin resource ref; set `route: true` only when you need the TCP router entrypoint.
 
 ## `action(name, opts)`
 

@@ -9,8 +9,8 @@
 // file composes the spec:
 //
 //   - namespace      = `action`
-//   - chain          = SuiTag's resolved `chain`
-//   - contentHash    = hash of (actionName, consumedTagIds[], dynamic
+//   - chain          = Sui dependency's resolved `chain`
+//   - contentHash    = hash of (actionName, upstreamResourceIds[], dynamic
 //                      discriminator if any)
 //   - verifySchema   = `ActionReceiptSchema` — Schema-validated cached
 //                      shape so a corrupt entry surfaces as a miss
@@ -25,7 +25,7 @@
 //
 // Constraints honored:
 //
-//   - Cache key folds (name, chainId, consumedTagIds, discriminator?) —
+//   - Cache key folds (name, chainId, dependency resource ids, discriminator?) —
 //     16-action.md invariant #1.
 //   - Dynamic discriminator re-runs on EVERY acquire — invariant #6.
 //   - Lenient verify probe — invariant #4.
@@ -42,7 +42,6 @@ import type {
 	OnChainArtifactPublisher,
 } from '../../primitives/on-chain-artifact.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { AnyTag } from '../../substrate/tag.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import type { ActionBuildContext } from './build-context.ts';
 import { actionError, type ActionError } from './errors.ts';
@@ -110,16 +109,18 @@ export interface ActionAcquireInputs {
 }
 
 /** Resolve a `DynamicDiscriminator` against the action's
- *  `ActionBuildContext`. Two input shapes (per `DynamicDiscriminator`);
- *  both collapse onto `Effect<string | undefined, ActionError>`. */
-export const resolveDiscriminator = <Consumes extends ReadonlyArray<AnyTag>>(
+ *  action context and resolved dependency values. Two input shapes
+ *  (per `DynamicDiscriminator`) collapse onto
+ *  `Effect<string | undefined, ActionError>`. */
+export const resolveDiscriminator = <Deps>(
 	actionName: string,
-	dynamic: DynamicDiscriminator<Consumes> | undefined,
-	ctx: ActionBuildContext<Consumes>,
+	dynamic: DynamicDiscriminator<Deps> | undefined,
+	ctx: ActionBuildContext,
+	deps: Deps,
 ): Effect.Effect<string | undefined, ActionError> => {
 	if (dynamic === undefined) return Effect.succeed(undefined);
 	if (typeof dynamic === 'string') return Effect.succeed(dynamic);
-	return dynamic(ctx).pipe(
+	return dynamic(ctx, deps).pipe(
 		Effect.catch(
 			(cause): Effect.Effect<string, ActionError> =>
 				Effect.fail(

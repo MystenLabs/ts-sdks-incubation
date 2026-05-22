@@ -7,8 +7,6 @@ import { defineConfig } from 'tsdown';
 export default defineConfig({
 	entry: [
 		'src/index.ts',
-		'src/contracts/index.ts',
-		'src/substrate/index.ts',
 		'src/build-integrations/vite/index.ts',
 		'src/build-integrations/vitest/index.ts',
 		'src/build-integrations/vitest/setup.ts',

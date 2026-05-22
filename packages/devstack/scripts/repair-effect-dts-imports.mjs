@@ -5,6 +5,7 @@ const distRoot = new URL('../dist/', import.meta.url).pathname;
 
 const effectInternalImport =
 	/(["'])(?:(?:\.\.\/)+node_modules\/\.pnpm\/effect@[^/]+\/node_modules\/effect\/dist\/|node_modules\/effect\/dist\/)([^"']+?)(?:\.mjs)?\1/g;
+const effectJsSubpathImport = /(["'])effect\/([^"']+?)\.js\1/g;
 
 let changed = 0;
 
@@ -18,10 +19,15 @@ const visit = (dir) => {
 		if (!entry.isFile() || !entry.name.endsWith('.d.mts')) continue;
 
 		const before = readFileSync(path, 'utf8');
-		const after = before.replace(effectInternalImport, (_match, quote, subpath) => {
-			changed += 1;
-			return `${quote}effect/${subpath}${quote}`;
-		});
+		const after = before
+			.replace(effectInternalImport, (_match, quote, subpath) => {
+				changed += 1;
+				return `${quote}effect/${subpath}${quote}`;
+			})
+			.replace(effectJsSubpathImport, (_match, quote, subpath) => {
+				changed += 1;
+				return `${quote}effect/${subpath}${quote}`;
+			});
 		if (after !== before) {
 			writeFileSync(path, after);
 		}

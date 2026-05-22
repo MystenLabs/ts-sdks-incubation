@@ -2,18 +2,18 @@
 //
 // Distilled-doc 13-coin.md §Configuration: the user-facing
 // `coin(...)` factory takes one of FOUR address forms. Each form
-// resolves to a `ResolvedCoin` (the Tag's resolved value):
+// resolves to a `ResolvedCoin`:
 //
 //   1. **Symbol** — `coin.local('mUSDC')`. Registry lookup. NO dep
 //      edge on the publisher; the user is responsible for putting
 //      the publishing `localPackage(...)` in compose ordering.
 //      (Distilled-doc 13-coin.md Pain point #4: this is a footgun, but
 //      the alternative — auto-deriving a dep edge — requires the
-//      registry to carry tag identities, which is a layering
+//      registry to carry resource identities, which is a layering
 //      violation; documented warning in `index.ts` instead.)
 //
 //   2. **Package-scoped witness** — `coin.fromPackage(pkg, 'MOCK_USDC')`.
-//      Forces a dep edge on the publishing `Package`'s tag, then
+//      Forces a dependency edge on the publishing package resource, then
 //      reads its publish receipt's discovered coins. Statically typed
 //      against local packages only (KnownPackages have no receipt).
 //

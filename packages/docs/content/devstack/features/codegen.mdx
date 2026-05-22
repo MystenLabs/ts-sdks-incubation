@@ -29,12 +29,13 @@ extras.ts
 Configure the root in the stack options:
 
 ```ts
-import { defineDevstack, account } from '@mysten-incubation/devstack';
+import { defineDevstack, account, sui } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const alice = account('alice');
 
 export default defineDevstack({
-	members: [alice],
+	members: [localnet, alice],
 	codegen: {
 		outputDir: 'src/generated',
 		stackSubdir: null,

@@ -61,7 +61,7 @@ export interface OrchestratorSinks {
 	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly codegenable?: (
 		pluginKey: PluginKey,
-		decl: CodegenableDecl<unknown, string>,
+		decl: CodegenableDecl<string>,
 		ctx: HarvestContext,
 	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly strategy?: (
@@ -112,7 +112,7 @@ const buildDefaultSinks = (
 			orchestrator.routable ? orchestrator.routable(ctx.pluginKey, decl, ctx) : Effect.void,
 	});
 
-	push<'codegenable', CodegenableDecl<unknown, string>>({
+	push<'codegenable', CodegenableDecl<string>>({
 		kind: 'codegenable',
 		accept: (decl, ctx) =>
 			orchestrator.codegenable ? orchestrator.codegenable(ctx.pluginKey, decl, ctx) : Effect.void,

@@ -16,7 +16,7 @@
 import type { CompositePrimitiveDecl } from '../../contracts/composite-primitive.ts';
 import { pluginKey, type PluginKey } from '../../substrate/brand.ts';
 import type { LiftedSiblingKey } from '../../substrate/lifted-sibling.ts';
-import type { AnyMember } from '../../substrate/plugin.ts';
+import type { AnyPlugin } from '../../substrate/plugin.ts';
 
 /** Per-deepbook-instance plugin key. */
 export const deepbookPluginKey = (name: string): PluginKey => pluginKey(`deepbook:${name}`);
@@ -25,7 +25,7 @@ export const deepbookPluginKey = (name: string): PluginKey => pluginKey(`deepboo
 export const makeDeepbookComposite = (inputs: {
 	readonly name: string;
 	readonly liftedSiblings: ReadonlyArray<LiftedSiblingKey>;
-	readonly innerParticipants: ReadonlyArray<AnyMember>;
+	readonly innerParticipants: ReadonlyArray<AnyPlugin>;
 }): CompositePrimitiveDecl => ({
 	kind: 'composite-primitive',
 	compositeKey: deepbookPluginKey(inputs.name),

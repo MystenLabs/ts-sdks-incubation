@@ -11,10 +11,7 @@
 // `project_devstack_api_design_locked_decisions`).
 
 import type { AccountValue } from '../account/index.ts';
-import type { CapabilityDecl } from '../../contracts/capability-decl.ts';
-import type { LiftedSiblingKey } from '../../substrate/lifted-sibling.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
-import type { AnyTag, Tag } from '../../substrate/tag.ts';
+import type { ResourceRef } from '../../api/define-plugin.ts';
 
 // ---------------------------------------------------------------------------
 // Pyth — internal sub-module shapes (NOT a top-level plugin per memory
@@ -239,15 +236,11 @@ export interface DeepbookMarketMaker {
 // Member ref aliases — Direct Member Refs surface (locked API decision)
 // ---------------------------------------------------------------------------
 
-/** Account member alias — the user passes the value returned by
- *  `account('name')`. Composite-typed at the factory boundary so a
- *  package-shaped member is a TS error. The wide `Consumes` /
- *  `Caps` / `Siblings` generics let downstream `consumes:` arrays
- *  carry the user-typed member without losing narrow tag-id info. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type AccountMemberAlias<Name extends string = string> = StackMember<
-	Tag<`account/${Name}`, AccountValue>,
-	ReadonlyArray<AnyTag>,
-	ReadonlyArray<CapabilityDecl>,
-	ReadonlyArray<LiftedSiblingKey>
+/** Account ref alias — the user passes the value returned by
+ *  `account('name')`. Resource-typed at the factory boundary so a
+ *  package-shaped ref is a TS error while preserving the literal
+ *  `account/<name>` id. */
+export type AccountMemberAlias<Name extends string = string> = ResourceRef<
+	`account/${Name}`,
+	AccountValue
 >;

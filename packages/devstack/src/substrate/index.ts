@@ -48,7 +48,7 @@ export type {
 	NetworkConfig,
 	NetworkMode,
 } from './network.ts';
-export type { DevstackOptions, OptionsLike } from './options.ts';
+export type { DevstackOptions } from './options.ts';
 export type {
 	ProvidesWitness,
 	RequiresWitness,

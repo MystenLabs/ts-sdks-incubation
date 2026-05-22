@@ -1,7 +1,7 @@
 // Postgres plugin — barrel + `postgres(opts?)` factory.
 //
 // Architecture: Postgres is a topological leaf (no upstream service
-// tag references) and a single-mode service (local container only;
+// dependencies) and a single-mode service (local container only;
 // "live" modes — Cloud SQL / Neon / RDS — are a deferred decision in
 // the distilled doc, anticipated by the plain-endpoint shape but not
 // implemented). One factory; no mode-narrowed namespace.
@@ -31,10 +31,8 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -43,30 +41,25 @@ import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.t
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 
 import { makeCodegenable } from './codegen.ts';
-import type { PostgresConnectionBindings } from './connection.ts';
 import { POSTGRES_ERROR_TAGS, postgresConfigError, postgresPluginError } from './errors.ts';
 import { makePostgresRoutable } from './routable.ts';
 import { bootPostgresService, type Postgres, type PostgresServiceOptions } from './service.ts';
 import { makeSnapshotable } from './snapshot.ts';
 
 type PostgresCapabilities =
-	| readonly [SnapshotableDecl, CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'>]
+	| readonly [SnapshotableDecl, CodegenableDecl<'postgres-connection'>]
 	| readonly [
 			SnapshotableDecl,
-			CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'>,
+			CodegenableDecl<'postgres-connection'>,
 			RoutableDecl,
 	  ];
 
 // ---------------------------------------------------------------------------
-// Tag — the resolved value all consumers read
+// Resource identity
 // ---------------------------------------------------------------------------
 
-/** The Postgres plugin's identity tag. Built once at this barrel and
- *  imported by every consumer (substrate constraint: tags are not
- *  passed as runtime values).
- *
- *  Tag id matches the plugin key: `'postgres'`. */
-export const PostgresTag = defineTag<'postgres', Postgres>('postgres', 'postgres');
+/** The Postgres plugin's resource identity. */
+const postgresResource = resource<'postgres', Postgres>('postgres');
 const postgresErrorContributions = pluginErrorContributions(POSTGRES_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
@@ -101,12 +94,11 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 		mkError: postgresConfigError,
 	});
 
-	return defineNodePlugin<typeof PostgresTag, readonly [], PostgresCapabilities>({
-		provides: PostgresTag,
-		consumes: [] as const,
+	return definePlugin({
+		id: postgresResource.id,
 		kind: 'leaf-long-running',
 		rebootCost: 'heavy',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				// Substrate-context plumbing supplies real
 				// `ContainerRuntime` + `Identity` instances; the
@@ -139,33 +131,32 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 		// bindings — the static-form placeholders (`<app>`,
 		// `<stack>`, `<network-alias>`, `<derived-at-acquire>`)
 		// are gone.
-		capabilities: (resolved, acquireCtx) => {
-			const snap: SnapshotableDecl = makeSnapshotable({
-				app: acquireCtx.identity.app,
-				stack: acquireCtx.identity.stack,
+		capabilities: ({ value, runtime }): PostgresCapabilities => {
+			const snap = makeSnapshotable({
+				app: runtime.identity.app,
+				stack: runtime.identity.stack,
 				name,
 				databases,
 			});
-			const codegen: CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'> =
-				makeCodegenable({
-					name,
-					user: resolved.user,
-					password: resolved.password,
-					host: resolved.networkAlias,
-					port: resolved.port,
-					databases: resolved.databases,
-				});
-			const routable: RoutableDecl | null = opts.route
+			const codegen = makeCodegenable({
+				name,
+				user: value.user,
+				password: value.password,
+				host: value.networkAlias,
+				port: value.port,
+				databases: value.databases,
+			});
+			const routable = opts.route
 				? makePostgresRoutable({
-						app: acquireCtx.identity.app,
-						stack: acquireCtx.identity.stack,
+						app: runtime.identity.app,
+						stack: runtime.identity.stack,
 						name,
-						containerName: `${acquireCtx.identity.app}-${acquireCtx.identity.stack}-${name}`,
+						containerName: `${runtime.identity.app}-${runtime.identity.stack}-${name}`,
 					})
 				: null;
 			return routable === null
-				? capabilities(snap, codegen)
-				: capabilities(snap, codegen, routable);
+				? ([snap, codegen] as const)
+				: ([snap, codegen, routable] as const);
 		},
 	});
 };

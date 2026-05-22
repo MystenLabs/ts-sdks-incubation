@@ -7,8 +7,8 @@
 //
 // Responsibilities:
 //   - Resolve the plugin graph from a `Stack` value.
-//   - Acquire plugins in dep order; each plugin's `acquire` runs under
-//     its own Scope; ready-gate awaits its acquire effect.
+//   - Start plugins in dep order; each plugin's `start` runs under
+//     its own Scope; ready-gate awaits its start effect.
 //   - Maintain the per-plugin lifecycle state machine.
 //   - Emit typed `EngineEvent`s onto the projection ref + event hub.
 //   - Watch invalidation → selective restart through the dep-graph
@@ -51,7 +51,12 @@ import type { EngineCommand, EngineEvent } from '../events.ts';
 import type { Identity } from '../identity.ts';
 import type { LifecycleStatus, PluginKind } from '../lifecycle.ts';
 import type { DevstackOptions } from '../options.ts';
-import type { AcquireContext, AnyMember, PluginErrorContribution } from '../plugin.ts';
+import {
+	resolvePluginDependencies,
+	type AcquireContext,
+	type AnyPlugin,
+	type PluginErrorContribution,
+} from '../plugin.ts';
 import type { AccountProjection, SubscribableState } from '../projection.ts';
 import {
 	CapabilitySinksService,
@@ -78,7 +83,7 @@ import { operationalEndpointEventsFromResolvedValue } from './projection/operati
 import { declareAccount, setIdentity, updateRef } from './projection/update.ts';
 import {
 	awaitUpstreams,
-	buildContextFor,
+	buildDependencyReaderFor,
 	buildWatchIndex,
 	exactPrefixMatch,
 	installSignalHandler,
@@ -105,10 +110,10 @@ import {
 /** Minimum surface the supervisor reads off a `Stack`. The full
  *  `Stack<Members>` shape lives in `api/define-devstack.ts` and carries
  *  type-level provenance — at the runtime boundary the supervisor only
- *  needs the erased member list + options. */
+ *  needs the erased plugin list + options. */
 export interface SupervisedStack {
 	readonly _tag: 'Stack';
-	readonly members: ReadonlyArray<AnyMember>;
+	readonly members: ReadonlyArray<AnyPlugin>;
 	readonly options: DevstackOptions;
 }
 
@@ -310,7 +315,7 @@ export type { OrchestratorSinks } from './capability-sinks/index.ts';
 /**
  * Resolve a plugin's `capabilities` field to a concrete decl tuple.
  *
- * Two accepted shapes (see `StackMember.capabilities` for the
+ * Two accepted shapes (see `Plugin.capabilities` for the
  * authoring-side contract):
  *
  *   (a) Static — a plain `ReadonlyArray<CapabilityDecl>`. Returned
@@ -420,11 +425,11 @@ const dispatchContributions = (
 // -----------------------------------------------------------------------------
 
 /**
- * Run one node's `acquire` under its own scope. Steps:
+ * Run one node's `start` under its own scope. Steps:
  *  1. Transition `pending → acquiring` (publishes the event).
  *  2. Await upstreams (their ready-gates).
- *  3. Build the `BuildContext` over the registry.
- *  4. Run the plugin's `acquire` Effect inside the entry's Scope,
+ *  3. Build resolved dependency values from declared resource refs.
+ *  4. Run the plugin's `start` Effect inside the entry's Scope,
  *     after providing the substrate-context services bundle so the
  *     plugin's R-channel yields (`IdentityContext`,
  *     `ContainerRuntimeService`, etc.) resolve to live instances.
@@ -488,8 +493,8 @@ const acquireNode = (
 			});
 			return;
 		}
-		// Build the synchronous BuildContext over the registry's resolved
-		// values, then run the plugin's `acquire` against the entry's
+		// Build resolved dependency values over the registry's resolved
+		// values, then run the plugin's `start` against the entry's
 		// Scope via `Scope.provide` — provides the scope to the acquire
 		// effect's requirements WITHOUT closing it (unlike `Scope.use`,
 		// which closes on exit). Finalizers stay registered on the
@@ -502,9 +507,13 @@ const acquireNode = (
 		// the per-plugin union to `Scope.Scope` once these are provided;
 		// `Scope.provide` then absorbs the scope itself. After both,
 		// R = never — safe to run inside the supervisor's `never` fiber.
-		const ctx = buildContextFor(registry, entry.node);
+		const readDependency = buildDependencyReaderFor(registry, entry.node);
+		const deps = resolvePluginDependencies(entry.node.member, readDependency);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		const acquire = entry.node.member.acquire as (c: any) => Effect.Effect<unknown, unknown, any>;
+		const start = entry.node.member.start as (
+			ctx: Record<string, never>,
+			deps: unknown,
+		) => Effect.Effect<unknown, unknown, any>;
 		const currentPluginContext = pluginContext.pipe(
 			Context.add(CurrentPluginKey, { key }),
 			Context.add(CurrentPluginProgress, {
@@ -517,7 +526,7 @@ const acquireNode = (
 					}),
 			}),
 		);
-		const providedAcquire = Effect.provide(acquire(ctx), currentPluginContext) as Effect.Effect<
+		const providedAcquire = Effect.provide(start({}, deps), currentPluginContext) as Effect.Effect<
 			unknown,
 			unknown,
 			Scope.Scope
@@ -633,7 +642,7 @@ const acquireNode = (
 				at: Date.now(),
 			});
 			// `markReady` populates the synchronous resolved-value map AND
-			// resolves the deferred; downstream `BuildContext.get` reads
+			// resolves the deferred; downstream dependency resolution reads
 			// from the former.
 			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
 			yield* logger.log(`supervisor/${key}`, key, {
@@ -1267,7 +1276,7 @@ export const startSupervisor = (
 		// folds into the composite row via `compositeParent`.
 		for (const [key, node] of graph.nodes) {
 			if (node.compositeParent !== null) continue;
-			const declaredAccount = pendingAccountProjection(key, node.member.provides.id, Date.now());
+			const declaredAccount = pendingAccountProjection(key, node.member.id, Date.now());
 			yield* SubscriptionRef.update(state, (s) => ({
 				...(declaredAccount === null ? s : declareAccount(s, declaredAccount)),
 				rows: s.rows.some((r) => r.key === key)
@@ -1294,7 +1303,7 @@ export const startSupervisor = (
 
 		// Extract `RuntimeRoot` from the plugin context — needed to
 		// build the `AcquireContext` handed to dynamic capability
-		// factories (`StackMember.capabilities` as a function). The
+		// factories (`Plugin.capabilities` as a function). The
 		// runtimeRoot is the on-disk base under which the stack's
 		// state lives; identity carries app/stack/chain. Together
 		// they let plugins stamp REAL paths and chain ids into their
@@ -1509,14 +1518,14 @@ export const supervise = (
 
 const pendingAccountProjection = (
 	rowKey: PluginKey,
-	tagId: string,
+	resourceId: string,
 	updatedAt: number,
 ): AccountProjection | null => {
-	if (!tagId.startsWith('account/')) return null;
-	const name = tagId.slice('account/'.length);
+	if (!resourceId.startsWith('account/')) return null;
+	const name = resourceId.slice('account/'.length);
 	if (name.length === 0) return null;
 	return {
-		key: tagId as `account/${string}`,
+		key: resourceId as `account/${string}`,
 		rowKey,
 		name,
 		address: null,

@@ -7,18 +7,16 @@
 //                      attribution).
 //   - `chainId`      — substrate-folded automatically (substrate-side
 //                      of the OCA cache key).
-//   - `consumedKeys` — the literal tag-ids of every entry in
-//                      `consumes:`. Folded so reordering/changing
+//   - `consumedKeys` — the literal resource ids of every entry in
+//                      `dependsOn`. Folded so reordering/changing
 //                      upstream deps invalidates the cache. Static —
 //                      resolved at factory construction time.
 //   - `discriminator` — OPTIONAL caller-supplied extra material. Two
 //                      accepted shapes: a literal `string`, or a
-//                      callback `(ctx) => Effect<string>` receiving
-//                      the action's BuildContext so the body can
-//                      derive the discriminator from upstream resolved
-//                      refs (e.g. hash a freshly-published package
-//                      id). The callback form re-runs on EVERY acquire
-//                      (hit OR miss) — mirrors v3's `cacheKey:
+//                      callback `(ctx, deps) => Effect<string>`
+//                      receiving action helpers and resolved deps
+//                      shaped by `dependsOn`. The callback form re-runs
+//                      on EVERY acquire (hit OR miss) — mirrors v3's `cacheKey:
 //                      Effect<string>` semantics (16-action.md
 //                      invariant 5/6).
 //
@@ -29,7 +27,6 @@
 
 import type { Effect } from 'effect';
 
-import type { AnyTag } from '../../substrate/tag.ts';
 import type { ActionError } from './errors.ts';
 import type { ActionBuildContext } from './build-context.ts';
 
@@ -39,26 +36,26 @@ import type { ActionBuildContext } from './build-context.ts';
 export interface StaticDiscriminator {
 	/** Symbolic action name. */
 	readonly actionName: string;
-	/** Tag-id literals of every entry in `consumes:`, in declaration
+	/** Resource-id literals of every entry in `dependsOn`, in declaration
 	 *  order. Reordering MUST invalidate the cache (this is the v3
 	 *  behavior — `needs.map(n => n.key)` was folded in order). */
-	readonly consumedTagIds: ReadonlyArray<string>;
+	readonly dependencyResourceIds: ReadonlyArray<string>;
 }
 
 /** Dynamic portion (resolved at acquire time). Two accepted shapes:
  *
  *  - `string`    — literal cache-key fragment, used verbatim.
- *  - `(ctx) => Effect<string, ActionError>` — callback receiving the
- *                  action's `ActionBuildContext` (same shape the body
- *                  callback receives). The Effect is yielded at
+ *  - `(ctx, deps) => Effect<string, ActionError>` — callback receiving
+ *                  action helpers and resolved deps in the same shape
+ *                  as the body callback. The Effect is yielded at
  *                  acquire time so the callback can derive the
  *                  discriminator from upstream resolved values (e.g.
  *                  fold in a freshly-published package id). Re-runs
  *                  on EVERY acquire (hit OR miss). User errors
  *                  propagate as `ActionError({phase: 'discriminator'})`. */
-export type DynamicDiscriminator<Consumes extends ReadonlyArray<AnyTag> = ReadonlyArray<AnyTag>> =
+export type DynamicDiscriminator<Deps = unknown> =
 	| string
-	| ((ctx: ActionBuildContext<Consumes>) => Effect.Effect<string, ActionError>);
+	| ((ctx: ActionBuildContext, deps: Deps) => Effect.Effect<string, ActionError>);
 
 /** Build the content-hash input string from static + resolved-dynamic
  *  pieces. Canonical shape: newline-delimited so two strings with
@@ -69,7 +66,7 @@ export const composeDiscriminatorMaterial = (
 ): string => {
 	const lines: string[] = [
 		`action=${staticParts.actionName}`,
-		`consumes=${staticParts.consumedTagIds.join(',')}`,
+		`dependencies=`,
 	];
 	if (resolvedDynamic !== undefined) {
 		lines.push(`discriminator=${resolvedDynamic}`);

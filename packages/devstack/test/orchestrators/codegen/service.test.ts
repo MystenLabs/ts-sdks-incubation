@@ -13,7 +13,10 @@ import { pathToFileURL } from 'node:url';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 
-import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
+import type {
+	CodegenableDecl,
+	CodegenEmitContext,
+} from '../../../src/contracts/codegenable.ts';
 
 import {
 	MoveCodegenService,
@@ -30,17 +33,30 @@ import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/
 import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
 
 // Helper — synthesise a Codegenable for tests.
+const writeExports = (
+	ctx: CodegenEmitContext,
+	exports: { readonly [key: string]: unknown },
+): void => {
+	for (const [key, value] of Object.entries(exports)) {
+		ctx.exportConst(key, value);
+	}
+};
+
 const fakeDecl = (parts: {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive?: boolean;
 	readonly exports: { readonly [key: string]: unknown };
-}): CodegenableDecl<unknown, string> => ({
+}): CodegenableDecl<string> => ({
 	kind: 'codegenable',
 	emitterName: parts.emitterName,
 	outputPath: parts.outputPath,
 	sensitive: parts.sensitive,
-	emit: () => Effect.succeed(parts.exports),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			writeExports(ctx, parts.exports);
+			return ctx.done();
+		}),
 });
 
 const stubMoveLayers = Layer.mergeAll(
@@ -75,22 +91,21 @@ describe('codegen.runEmitCycle', () => {
 		return Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			let emits = 0;
-			const packageDecl: CodegenableDecl<unknown, string> = {
+			const packageDecl: CodegenableDecl<string> = {
 				kind: 'codegenable',
 				emitterName: 'package',
 				outputPath: 'package/single.ts',
-				emit: () =>
+				emit: (ctx) =>
 					Effect.sync(() => {
 						emits += 1;
-						return {
-							packageBindings: {
-								name: 'single',
-								packageId: '0x1',
-								mvrPlaceholder: '@local/single',
-								sourcePath: '/tmp/source/single',
-								excluded: false,
-							},
-						};
+						ctx.exportConst('packageBindings', {
+							name: 'single',
+							packageId: '0x1',
+							mvrPlaceholder: '@local/single',
+							sourcePath: '/tmp/source/single',
+							excluded: false,
+						});
+						return ctx.done();
 					}),
 			};
 

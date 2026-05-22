@@ -45,24 +45,25 @@ export interface PackageBindings {
 export const makeLocalCodegenable = (
 	resolved: ResolvedLocalPackage,
 	options: { readonly excluded: boolean },
-): CodegenableDecl<PackageBindings, 'package'> => ({
+): CodegenableDecl<'package'> => ({
 	kind: 'codegenable',
 	emitterName: 'package',
 	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
-	emit: () =>
-		Effect.sync(() => ({
+	emit: (ctx) =>
+		Effect.sync(() => {
 			// The orchestrator picks up these fields and threads them
 			// into `@mysten/codegen` along with the source-path read.
 			// The literal binding-file bytes are written by the
 			// orchestrator, NOT this plugin.
-			packageBindings: {
+			ctx.exportConst('packageBindings', {
 				name: resolved.name,
 				packageId: resolved.packageId,
 				mvrPlaceholder: resolved.mvrPlaceholder,
 				sourcePath: resolved.sourcePath,
 				excluded: options.excluded,
-			} satisfies PackageBindings,
-		})),
+			} satisfies PackageBindings);
+			return ctx.done();
+		}),
 });
 
 /** Build the Codegenable contribution for a known package. The
@@ -71,18 +72,19 @@ export const makeLocalCodegenable = (
  *  emitter. */
 export const makeKnownCodegenable = (
 	resolved: ResolvedKnownPackage,
-): CodegenableDecl<PackageBindings, 'package'> => ({
+): CodegenableDecl<'package'> => ({
 	kind: 'codegenable',
 	emitterName: 'package',
 	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
-	emit: () =>
-		Effect.sync(() => ({
-			packageBindings: {
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('packageBindings', {
 				name: resolved.name,
 				packageId: resolved.packageId,
 				mvrPlaceholder: resolved.mvrPlaceholder,
 				sourcePath: null,
 				excluded: true, // implicit — KnownPackages never emit bindings.
-			} satisfies PackageBindings,
-		})),
+			} satisfies PackageBindings);
+			return ctx.done();
+		}),
 });

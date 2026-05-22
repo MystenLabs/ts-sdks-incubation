@@ -25,9 +25,7 @@ import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
-/** The typed shape per emitted coin record. Downstream consumers
- *  see this exact shape via `EmittedFor<Caps, \`coin/${Symbol}\`>`
- *  at the `defineDevstack` call site. */
+/** The typed shape per emitted coin record. */
 export interface CoinBindings {
 	readonly symbol: string;
 	readonly fullCoinType: string;
@@ -48,13 +46,14 @@ export interface CoinBindings {
 export const makeCoinCodegen = <Symbol extends string>(parts: {
 	readonly symbol: Symbol;
 	readonly resolved: CoinBindings;
-}): CodegenableDecl<CoinBindings, `coin/${Symbol}`> => ({
+}): CodegenableDecl<`coin/${Symbol}`> => ({
 	kind: 'codegenable',
 	emitterName: `coin/${parts.symbol}` as `coin/${Symbol}`,
 	outputPath: `coins/${parts.symbol}.ts`,
 	sensitive: false,
-	emit: () =>
-		Effect.sync(() => ({
-			[parts.symbol]: parts.resolved,
-		})),
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst(parts.symbol, parts.resolved);
+			return ctx.done();
+		}),
 });

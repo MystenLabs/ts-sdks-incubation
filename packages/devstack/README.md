@@ -62,15 +62,14 @@ This package targets Effect v4 beta (catalog pin). The substrate uses `Scope`, `
 `Effect.gen`, and `Schema` for runtime contracts. App-facing generated outputs avoid Effect types;
 plugin-author and engine surfaces intentionally expose them.
 
-### Strict consumer typechecking
+### Packed consumer typechecking
 
-`skipLibCheck: false` is currently blocked by the published Effect v4 beta declarations: importing
-Effect types reaches `effect/dist/internal/schema/schema.d.ts`, which references the undeclared
-`SchemaErrorTypeId`. Until Effect publishes a fixed v4 beta, packed consumers must use
-`skipLibCheck: true`. The package-level smoke audit packs the package, installs it in a clean temp
-consumer, checks the installed CLI, checks ESM imports for the root, `/vite`, and `/runtime`
-exports, and verifies that consumer typechecking is blocked only by the known Effect declaration
-bug:
+The package-level smoke audit uses the common application posture of `skipLibCheck: true`. Devstack's
+plugin-author and engine surfaces intentionally expose Effect v4 beta types, so strict library
+checking would typecheck Effect's beta declarations rather than just devstack's package boundary. The
+smoke audit packs the package, installs it in a clean temp consumer, checks the installed CLI, checks
+ESM imports for the root, `/vite`, and `/runtime` exports, boots a minimal stack, and verifies the
+consumer compiles with `skipLibCheck` enabled:
 
 ```bash
 pnpm --filter @mysten-incubation/devstack build

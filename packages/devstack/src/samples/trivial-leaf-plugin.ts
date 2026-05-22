@@ -7,9 +7,7 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../api/define-capabilities.ts';
-import { defineNodePlugin } from '../api/define-plugin.ts';
-import { defineTag } from '../api/tag.ts';
+import { definePlugin, resource } from '../api/define-plugin.ts';
 import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
 import type { ProvidesWitness } from '../substrate/witness.ts';
 
@@ -24,9 +22,8 @@ export interface KeyvalClient extends ProvidesWitness<'keyval-local'> {
 	readonly ping: () => Effect.Effect<void>;
 }
 
-/** Tag identifying the keyval plugin's resolved value. Built once at
- *  the plugin's barrel. */
-export const KeyvalTag = defineTag<'keyval', KeyvalClient>('keyval', 'keyval');
+/** Resource identifying the keyval plugin's resolved value. */
+export const KeyvalResource = resource<'keyval', KeyvalClient>('keyval');
 
 /** Strategy capability key for the keyval ping gate — used by the
  *  composite sample to demonstrate strategy lookups across plugins
@@ -38,8 +35,7 @@ export interface KeyvalPingGateStrategy {
 	readonly waitPingable: Effect.Effect<void>;
 }
 
-/** Plugin factory. Returns a `StackMember` whose generics are narrow:
- *  the tag, the (empty) consumes tuple, and the single-cap tuple. */
+/** Plugin factory. Returns a plugin resource ref with one static capability. */
 export function keyval() {
 	const pingGate: StrategyContributorDecl<typeof KEYVAL_PING_GATE, KeyvalPingGateStrategy> = {
 		kind: 'strategy-contributor',
@@ -48,15 +44,14 @@ export function keyval() {
 		autoMounted: true,
 	};
 
-	return defineNodePlugin({
-		provides: KeyvalTag,
-		consumes: [] as const,
+	return definePlugin({
+		id: KeyvalResource.id,
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		acquire: () =>
+		start: () =>
 			Effect.sync<KeyvalClient>(() => {
-				throw new Error('keyval.acquire: not implemented yet (Phase 4)');
+				throw new Error('keyval.start: not implemented yet (Phase 4)');
 			}),
-		capabilities: capabilities(pingGate),
+		capabilities: [pingGate] as const,
 	});
 }

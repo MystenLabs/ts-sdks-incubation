@@ -3,7 +3,7 @@
 // Architecture: Sui is the most-depended-on plugin in the stack.
 // Every consumer (Account/Coin/Wallet/Faucet/Package; Walrus/Seal/
 // Deepbook fork variants) reads its resolved `SuiClient` via the
-// `SuiTag`. The factory at this file folds the four modes behind:
+// `suiResource`. The factory at this file folds the four modes behind:
 //
 //   - `sui(opts?)`         — env-driven mode selection. Defaults to
 //                              local; overridable via the typed
@@ -28,15 +28,13 @@
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
 // external + live no — the caller fronts their own RPC). They land
 // in the per-mode builder under `mode/*.ts`; this barrel composes
-// them via `capabilities()`.
+// them into the plugin capability array.
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -49,7 +47,7 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
-import { makeCodegenable, type SuiNetworkBindings } from './codegen.ts';
+import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { SEED_OBJECTS_CAPABILITY_KEY, type SeedObjectsAccumulator } from './seed-objects.ts';
@@ -70,16 +68,11 @@ import type {
 import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
 // ---------------------------------------------------------------------------
-// Tag — the resolved value all consumers read
+// Resource identity
 // ---------------------------------------------------------------------------
 
-/** The Sui plugin's identity tag. Built once at this barrel and
- *  imported by every consumer (substrate constraint: tags are not
- *  passed as runtime values — they're imported constants).
- *
- *  Tag id: `'sui'` (singular). The plugin's substrate-level plugin
- *  key is the same string. */
-export const SuiTag = defineTag<'sui', SuiClient>('sui', 'sui');
+/** The Sui plugin's resource identity. The id is `'sui'` (singular). */
+export const suiResource = resource<'sui', SuiClient>('sui');
 const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
@@ -110,12 +103,11 @@ const resolveDefaultMode = (): SuiOptions => {
 
 const buildPlugin = (opts: SuiOptions) => {
 	if (opts.mode === 'fork') resolveAutoTickIntervalMs(opts.autoTick);
-	return defineNodePlugin({
-		provides: SuiTag,
-		consumes: [] as const,
+	return definePlugin({
+		id: suiResource.id,
 		kind: 'leaf-long-running',
 		rebootCost: 'heavy',
-		acquire: () =>
+		start: () =>
 			Effect.gen(function* () {
 				// The substrate threads `ContainerRuntime` + `IdentityContext`
 				// via the plugin runtime context; the supervisor provides
@@ -159,7 +151,7 @@ const buildPlugin = (opts: SuiOptions) => {
 
 				return client;
 			}),
-		capabilities: (resolved, acquireCtx) => makePluginCapabilities(opts, resolved, acquireCtx),
+		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
 		errorContributions: suiErrorContributions,
 	});
 };
@@ -185,7 +177,7 @@ const makePluginCapabilities = (
 		acquireCtx.identity.stack,
 		realChain,
 	);
-	const codegen: CodegenableDecl<SuiNetworkBindings, 'sui-network'> = makeCodegenable({
+	const codegen: CodegenableDecl<'sui-network'> = makeCodegenable({
 		mode: opts.mode,
 		chain: realChain,
 		rpc: resolved.rpcUrl,
@@ -246,14 +238,14 @@ const makePluginCapabilities = (
 				})
 			: [];
 
-	return capabilities(
+	return [
 		snap,
 		codegen,
 		chainProbeContribution,
 		fundsReadyContribution,
 		seedObjectsContribution,
 		...localRoutables,
-	);
+	] as const;
 };
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,7 @@
 //   defineDevstack(suiPlugin, publisher, deepbook({mode:'local', publisher}))
 //
 // compiles, validates (no `__MissingProvidersError`), and the resulting
-// Stack handle exposes a `deepbook/<name>` provided tag id.
+// Stack handle exposes a `deepbook/<name>` resource id.
 //
 // Unsupported local sub-features such as pools, local Pyth publishing,
 // margin, server, indexer, and market-maker are intentionally absent
@@ -23,7 +23,7 @@
 // server images.
 //
 // The substrate-name-blind composition is the load-bearing surface
-// — pin it here so the composite's `consumes:` tuple and the
+// — pin it here so the composite's `dependsOn` tuple and the
 // per-account-member ordering don't silently drift.
 
 import { describe, expect, it } from 'vitest';
@@ -42,22 +42,22 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		const stack = defineDevstack({ members: [suiPlugin, publisher, dex], stackName: 'deepbook-smoke', });
 		expect(stack._tag).toBe('Stack');
 		expect(readStackEngine(stack).members.length).toBe(3);
-		const ids = readStackEngine(stack).members.map((m) => m.provides.id);
+		const ids = readStackEngine(stack).members.map((m) => m.id);
 		expect(ids).toContain('sui');
 		expect(ids).toContain('account/publisher');
 		expect(ids).toContain('deepbook/main');
 	});
 
-	it('local mode threads the publisher account ref through consumes', () => {
+	it('local mode threads the publisher account ref through dependencies', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({
 			mode: 'local',
 			publisher,
 			name: 'arena',
 		});
-		expect(dex.provides.id).toBe('deepbook/arena');
+		expect(dex.id).toBe('deepbook/arena');
 		expect(dex.kind).toBe('composite');
-		expect(dex.consumes.map((tag) => tag.id)).toEqual(['sui', 'account/publisher']);
+		expect(dex.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/publisher']);
 	});
 
 	it('known mode wraps a canonical deployment', () => {
@@ -70,14 +70,14 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 			name: 'live',
 		});
 		const stack = defineDevstack({ members: [suiPlugin, dex], stackName: 'deepbook-known-smoke', });
-		const ids = readStackEngine(stack).members.map((m) => m.provides.id);
+		const ids = readStackEngine(stack).members.map((m) => m.id);
 		expect(ids).toEqual(expect.arrayContaining(['sui', 'deepbook/live']));
 	});
 
 	it('default name is `deepbook` when no name is supplied', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({ mode: 'local', publisher });
-		expect(dex.provides.id).toBe('deepbook/deepbook');
+		expect(dex.id).toBe('deepbook/deepbook');
 	});
 
 	it('composite contributes the `composite-primitive` capability decl', () => {

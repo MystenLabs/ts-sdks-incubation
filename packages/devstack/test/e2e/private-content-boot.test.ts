@@ -20,9 +20,9 @@
 //
 // What this test pins:
 //
-//   1. Every plugin member reaches `ready` — sui + 3 accounts +
+//   1. Every plugin member reaches `ready` — explicit sui + 3 accounts +
 //      vault package + walrus composite + seal composite + wallet.
-//      Eight keys total: 7 user-declared args plus auto-mounted Sui.
+//      Eight keys total.
 //   2. NO resolved value carries a `<unresolved>` or
 //      `<seed-account-not-wired>` sentinel string — the recursive
 //      walker reports the first offending path so the assertion
@@ -200,23 +200,20 @@ describe('private-content boots end-to-end @e2e', () => {
 					}),
 		});
 
-		// Eight-ready-key expectation. User-declared ordinals match
-		// the variadic position in `examples/private-content/devstack.config.ts`:
-		//   publisher(0), alice(1), bob(2), vault(3), walrus(4),
-		//   seal(5), wallet(6). Sui is auto-mounted at the front by
-		//   the substrate when absent (S1 sugar) → sui#0 shifts
-		//   the user-declared ordinals up by 1. The vault package
-		//   tag id is `package:vault`; seal's namespaced tag id is
-		//   `seal:seal` per `registry-publish.ts::sealTagId`.
+		// Recursive-entrypoint expectation. Ordinals come from the
+		// dependency closure rooted at the host app. The vault package
+		// resource id is `package:vault`; seal's namespaced resource id is
+		// `seal:seal` per `registry-publish.ts::sealResourceId`.
 		const expectedKeys = [
 			'sui#0',
 			'account/publisher#1',
-			'account/alice#2',
-			'account/bob#3',
-			'package:vault#4',
+			'package:vault#2',
+			'account/alice#3',
+			'account/bob#4',
 			'walrus#5',
 			'seal:seal#6',
 			'wallet#7',
+			'host-service/app#8',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);

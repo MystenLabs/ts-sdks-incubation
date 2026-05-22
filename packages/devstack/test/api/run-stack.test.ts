@@ -25,77 +25,67 @@ import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Exit, Option, Stream, SubscriptionRef } from 'effect';
 
-import { capabilities } from '../../src/api/define-capabilities.ts';
 import { defineDevstack } from '../../src/api/define-devstack.ts';
-import { defineNodePlugin } from '../../src/api/define-plugin.ts';
+import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import { CodegenRenderError } from '../../src/orchestrators/codegen/errors.ts';
 import type { EngineEvent } from '../../src/substrate/events.ts';
 import { SupervisorPostAcquireFailed } from '../../src/substrate/runtime/supervisor.ts';
-import { defineTag } from '../../src/substrate/tag.ts';
 import { runStack } from '../../src/api/run-stack.ts';
 import {
 	discoverManifestPath,
 	readStackContext,
 } from '../../src/build-integrations/runtime/index.ts';
 
-// A trivial leaf plugin: provides one tag, consumes nothing, returns a
-// constant. Boot path: dep-graph → topological order [self] →
-// acquire(self) → ready. No docker, no network, no filesystem
+// A trivial leaf plugin: provides one resource, consumes nothing, returns a
+// constant. Boot path: dep-graph -> topological order [self] ->
+// start(self) -> ready. No docker, no network, no filesystem
 // dependencies beyond what the substrate touches (stack paths +
 // cache + manifest writer).
-const LeafTag = defineTag<'test/leaf', { readonly ok: true }>('test/leaf', 'test');
-const leaf = defineNodePlugin({
-	provides: LeafTag,
-	consumes: [] as const,
+const leaf = definePlugin({
+	id: 'test/leaf',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ ok: true } as const),
+	start: () => Effect.succeed({ ok: true } as const),
 });
 
-const CodegenTag = defineTag<'test/runtime-codegen', { readonly message: string }>(
-	'test/runtime-codegen',
-	'test',
-);
-
-const runtimeCodegenPlugin = defineNodePlugin({
-	provides: CodegenTag,
-	consumes: [] as const,
+const runtimeCodegenPlugin = definePlugin({
+	id: 'test/runtime-codegen',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ message: 'from-acquire' } as const),
-	capabilities: (resolved) =>
-		capabilities({
-			kind: 'codegenable',
-			emitterName: 'runtime-proof',
-			outputPath: 'runtime-proof.ts',
-			sensitive: false,
-			emit: () => Effect.succeed({ runtimeProof: resolved }),
-		} satisfies CodegenableDecl<
-			{ readonly runtimeProof: { readonly message: string } },
-			'runtime-proof'
-		>),
+	start: () => Effect.succeed({ message: 'from-acquire' } as const),
+	capabilities: ({ value: resolved }) =>
+		[
+			{
+				kind: 'codegenable',
+				emitterName: 'runtime-proof',
+				outputPath: 'runtime-proof.ts',
+				sensitive: false,
+				emit: (ctx) =>
+					Effect.sync(() => {
+						ctx.exportConst('runtimeProof', resolved);
+						return ctx.done();
+					}),
+			} satisfies CodegenableDecl<'runtime-proof'>,
+		] as const,
 });
 
-const FailingCodegenTag = defineTag<'test/failing-runtime-codegen', { readonly message: string }>(
-	'test/failing-runtime-codegen',
-	'test',
-);
-
-const failingRuntimeCodegenPlugin = defineNodePlugin({
-	provides: FailingCodegenTag,
-	consumes: [] as const,
+const failingRuntimeCodegenPlugin = definePlugin({
+	id: 'test/failing-runtime-codegen',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ message: 'from-acquire' } as const),
+	start: () => Effect.succeed({ message: 'from-acquire' } as const),
 	capabilities: () =>
-		capabilities({
-			kind: 'codegenable',
-			emitterName: 'runtime-failure-proof',
-			outputPath: 'runtime-failure-proof.ts',
-			sensitive: false,
-			emit: () => Effect.succeed({ runtimeFailureProof: () => 'not serializable' }),
-		} satisfies CodegenableDecl<
-			{ readonly runtimeFailureProof: { readonly message: string } },
-			'runtime-failure-proof'
-		>),
+		[
+			{
+				kind: 'codegenable',
+				emitterName: 'runtime-failure-proof',
+				outputPath: 'runtime-failure-proof.ts',
+				sensitive: false,
+				emit: (ctx) =>
+					Effect.sync(() => {
+						ctx.exportConst('runtimeFailureProof', () => 'not serializable');
+						return ctx.done();
+					}),
+			} satisfies CodegenableDecl<'runtime-failure-proof'>,
+		] as const,
 });
 
 const makeRuntimeRoot = () => mkdtempSync(join(tmpdir(), 'run-stack-test-'));

@@ -125,8 +125,8 @@ describe('_template boots end-to-end', () => {
 		const expectedKeys = [
 			'sui#0',
 			'account/alice#1',
-			'account/bob#2',
-			'package:hello#3',
+			'package:hello#2',
+			'account/bob#3',
 			'wallet#4',
 			'host-service/app#5',
 		];

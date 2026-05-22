@@ -185,7 +185,7 @@ export interface AccountTransactionSigner extends TransactionSignerScope<Account
 // Name validation
 // -----------------------------------------------------------------------------
 
-/** Architecture-distilled invariant: name flows into the tag id, an
+/** Architecture-distilled invariant: name flows into the resource id, an
  *  on-disk path, a manifest key, and container labels. Strict
  *  alphanumeric + `._-`; leading alphanumeric; length-bounded.
  *  Broader charsets would let typos traverse directories or break
@@ -223,12 +223,11 @@ export interface AccountSuiShim {
 	readonly sdk: SuiSdkShim;
 }
 
-/** Per-acquire context — supplied by the barrel from the
- *  BuildContext + per-stack identity.
+/** Per-acquire context — supplied by the barrel from resolved plugin
+ *  dependencies and per-stack identity.
  *
  *  `projectedFunding` carries the funding entries already resolved
- *  against the BuildContext: the barrel calls `ctx.use(member)` on
- *  each `opts.funding[i].coin` and projects to
+ *  from each `opts.funding[i].coin` dependency and projected to
  *  `{fullCoinType, amount}` BEFORE handing off to `acquireAccount`.
  *  The acquire body never sees the raw member refs — keeps the
  *  cross-cutting funding dispatch substrate-name-blind. */
@@ -239,8 +238,8 @@ export interface AccountAcquireContext {
 	readonly stack: string;
 	readonly emitAutoPromotionEvent: () => Effect.Effect<void>;
 	/** Projected cross-cutting funding entries. Empty when `opts.funding`
-	 *  is absent. The barrel walks each user-supplied `CoinMember` via
-	 *  `ctx.use(...)` and stamps the resolved `fullCoinType` here. */
+	 *  is absent. The barrel stamps each resolved coin dependency's
+	 *  `fullCoinType` here. */
 	readonly projectedFunding?: ProjectedFunding;
 }
 
@@ -659,8 +658,8 @@ export const acquireAccount = (
 		// --- cross-cutting funding (all variants) --------------------
 		//
 		// The barrel pre-projects each user-supplied `CoinMember` to
-		// `{fullCoinType, amount}` via `ctx.use(...)` so this dispatch
-		// stays substrate-name-blind. Missing / empty `projectedFunding`
+		// `{fullCoinType, amount}` from resolved dependencies so this
+		// dispatch stays substrate-name-blind. Missing / empty `projectedFunding`
 		// is a no-op (matches the "Optional Faucet is a noop" invariant).
 		const projected = ctx.projectedFunding ?? [];
 		if (projected.length > 0) {

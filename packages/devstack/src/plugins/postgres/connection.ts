@@ -42,8 +42,7 @@ export const plainUrl = (host: string, port: number): string => `postgres://${ho
 export const withDatabase = (baseUrl: string, db: string): string =>
 	`${baseUrl}/${encodeURIComponent(db)}`;
 
-/** Public typed shape emitted into codegen. Downstream user-app
- *  code reads this via `EmittedFor<Caps, 'postgres-connection'>`.
+/** Public typed shape emitted into codegen.
  *
  *  The credentialed URL is INCLUDED so consumers in the same user
  *  app process can dial. The manifest projection (substrate-level)

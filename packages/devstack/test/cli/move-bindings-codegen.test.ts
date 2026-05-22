@@ -46,15 +46,16 @@ const moveBindingsProofPlugin = definePlugin({
 \t\t\temitterName: 'package',
 \t\t\toutputPath: 'package/@local/hello.ts',
 \t\t\tsensitive: false,
-\t\t\temit: () =>
-\t\t\t\tEffect.succeed({
-\t\t\t\t\tpackageBindings: {
+\t\t\temit: (ctx) =>
+\t\t\t\tEffect.sync(() => {
+\t\t\t\t\tctx.exportConst('packageBindings', {
 \t\t\t\t\t\tname: 'hello',
 \t\t\t\t\t\tpackageId: '0x123',
 \t\t\t\t\t\tmvrPlaceholder: '@local/hello',
 \t\t\t\t\t\tsourcePath: ${JSON.stringify(movePackagePath)},
 \t\t\t\t\t\texcluded: false,
-\t\t\t\t\t},
+\t\t\t\t\t});
+\t\t\t\t\treturn ctx.done();
 \t\t\t\t}),
 \t\t}),
 \t],

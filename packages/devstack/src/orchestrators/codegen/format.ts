@@ -57,7 +57,7 @@ export interface RenderInput {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive: boolean;
-	/** The record returned by `Codegenable.emit()`. Each entry
+	/** The declarations written by `Codegenable.emit(ctx)`. Each entry
 	 *  becomes one `export const <key> = <literal> as const;`. */
 	readonly exports: { readonly [key: string]: unknown };
 	/** Optional import lines the emitter wants prepended (e.g. a

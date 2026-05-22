@@ -13,20 +13,18 @@ Local mode starts a local cluster. Use `seedAccounts` when you want the WAL swap
 ```ts
 import { defineDevstack, account, sui, walrus } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const admin = account('admin');
+const localWalrus = walrus({
+	local: {
+		nodeCount: 1,
+		shards: 4,
+		seedAccounts: [admin],
+	},
+});
 
 export default defineDevstack({
-	members: [
-		sui(),
-		admin,
-		walrus({
-		local: {
-			nodeCount: 1,
-			shards: 4,
-			seedAccounts: [admin],
-		},
-	}),
-	],
+	members: [localnet, localWalrus],
 });
 ```
 
@@ -38,18 +36,17 @@ URL defaults where the package has them.
 Local keygen mode requires a signer account:
 
 ```ts
-import { defineDevstack, account, seal } from '@mysten-incubation/devstack';
+import { defineDevstack, account, seal, sui } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const publisher = account('publisher');
+const keyServer = seal({
+	mode: 'local-keygen',
+	signer: publisher,
+});
 
 export default defineDevstack({
-	members: [
-		publisher,
-		seal({
-		mode: 'local-keygen',
-		signer: publisher,
-	}),
-	],
+	members: [localnet, keyServer],
 });
 ```
 
@@ -61,19 +58,16 @@ Local mode is a wrapper around explicit local deployment ids and requires a publ
 requires `packageId` and `registryId`.
 
 ```ts
-import { defineDevstack, account, deepbook } from '@mysten-incubation/devstack';
+import { defineDevstack, deepbook, sui } from '@mysten-incubation/devstack';
 
-const publisher = account('publisher');
-
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const dex = deepbook({
+	mode: 'known',
+	packageId: '0x...',
+	registryId: '0x...',
+});
 export default defineDevstack({
-	members: [
-		publisher,
-		deepbook({
-		mode: 'known',
-		packageId: '0x...',
-		registryId: '0x...',
-	}),
-	],
+	members: [liveSui, dex],
 });
 ```
 
@@ -85,12 +79,13 @@ behavior unless those fields are present in the resolved value.
 Use `knownPackage(name, { packageId })` for fixed deployed modules:
 
 ```ts
-import { defineDevstack, knownPackage } from '@mysten-incubation/devstack';
+import { defineDevstack, knownPackage, sui } from '@mysten-incubation/devstack';
 
+const liveSui = sui({ mode: 'live', network: 'testnet' });
 const registry = knownPackage('registry', {
 	packageId: '0x...',
 	mvrPlaceholder: '@demo/registry',
 });
 
-export default defineDevstack({ members: [registry] });
+export default defineDevstack({ members: [liveSui, registry] });
 ```

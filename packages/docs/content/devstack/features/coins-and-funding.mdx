@@ -6,8 +6,9 @@ description: Current coin declaration and funding forms.
 The `coin` namespace has explicit forms. There is no string-guessing `coin(value)` entry.
 
 ```ts
-import { defineDevstack, account, coin, localPackage } from '@mysten-incubation/devstack';
+import { defineDevstack, account, coin, localPackage, sui } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const publisher = account('publisher');
 
 const managed = localPackage('managed_coin', {
@@ -25,7 +26,7 @@ const alice = account('alice', {
 	],
 });
 
-export default defineDevstack({ members: [publisher, managed, suiCoin, managedCoin, alice] });
+export default defineDevstack({ members: [localnet, alice] });
 ```
 
 Available forms:

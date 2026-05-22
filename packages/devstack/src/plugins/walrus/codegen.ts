@@ -33,8 +33,7 @@ export interface WalrusNodeBinding {
 	readonly rpcUrl: string;
 }
 
-/** The typed shape the emitted file exports. Downstream consumers
- *  see this exact shape via `EmittedFor<Caps, 'walrus-network'>`. */
+/** The typed shape the emitted file exports. */
 export interface WalrusBindings {
 	readonly mode: 'local' | 'known';
 	readonly chain: string;
@@ -80,11 +79,11 @@ export interface MakeCodegenableInputs {
  *  cycles). */
 export const makeCodegenable = (
 	inputs: MakeCodegenableInputs,
-): CodegenableDecl<WalrusBindings, 'walrus-network'> => ({
+): CodegenableDecl<'walrus-network'> => ({
 	kind: 'codegenable',
 	emitterName: 'walrus-network',
 	outputPath: 'walrus/network.ts',
-	emit: () =>
+	emit: (ctx) =>
 		Effect.sync(() => {
 			const bindings: WalrusBindings = {
 				mode: inputs.mode,
@@ -99,6 +98,7 @@ export const makeCodegenable = (
 				publisherUrl: inputs.publisherUrl,
 				nodes: inputs.nodes,
 			};
-			return { walrus: bindings };
+			ctx.exportConst('walrus', bindings);
+			return ctx.done();
 		}),
 });

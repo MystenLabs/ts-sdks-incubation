@@ -1,5 +1,4 @@
-// Renderer capability contract (architecture §11 — sub-shape of
-// NodePlugin).
+// Renderer capability contract.
 //
 // Mounts once per process; the engine cycle re-runs many times; the
 // renderer never sees the cycle swap. Lifetime is process-scoped via

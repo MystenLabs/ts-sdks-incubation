@@ -34,12 +34,14 @@ Use `wallet()` or `wallet({ accounts })` to expose the dev wallet server and gen
 config:
 
 ```ts
-import { defineDevstack, account, wallet } from '@mysten-incubation/devstack';
+import { defineDevstack, account, sui, wallet } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const alice = account('alice');
 const bob = account('bob');
+const devWallet = wallet({ accounts: [alice, bob] });
 
-export default defineDevstack({ members: [alice, bob, wallet({ accounts: [alice, bob] })] });
+export default defineDevstack({ members: [localnet, devWallet] });
 ```
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`

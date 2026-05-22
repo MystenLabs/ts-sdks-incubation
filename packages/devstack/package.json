@@ -24,14 +24,6 @@
 			"types": "./dist/index.d.mts",
 			"import": "./dist/index.mjs"
 		},
-		"./contracts": {
-			"types": "./dist/contracts/index.d.mts",
-			"import": "./dist/contracts/index.mjs"
-		},
-		"./substrate": {
-			"types": "./dist/substrate/index.d.mts",
-			"import": "./dist/substrate/index.mjs"
-		},
 		"./vite": {
 			"types": "./dist/build-integrations/vite/index.d.mts",
 			"import": "./dist/build-integrations/vite/index.mjs"

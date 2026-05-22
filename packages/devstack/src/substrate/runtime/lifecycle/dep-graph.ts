@@ -19,7 +19,7 @@ import { Data, Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import { pluginKey as makePluginKey } from '../../brand.ts';
-import type { AnyMember } from '../../plugin.ts';
+import { uniqueResourceRefs, type AnyPlugin, type AnyResourceRef } from '../../plugin.ts';
 import type { CapabilityDecl } from '../../../contracts/index.ts';
 import type { CompositePrimitiveDecl } from '../../../contracts/composite-primitive.ts';
 
@@ -35,12 +35,12 @@ export class DepGraphCycleError extends Data.TaggedError('DepGraphCycleError')<{
 	readonly cycle: ReadonlyArray<PluginKey>;
 }> {}
 
-/** A `consumes` tag matched no provider. This is normally caught by
+/** A dependency resource matched no provider. This is normally caught by
  *  the compile-time `MissingProviders` check, but runtime composites
- *  whose `consumes` expands from a runtime parameter can hit it. */
+ *  whose dependencies expand from a runtime parameter can hit it. */
 export class UnresolvedDependencyError extends Data.TaggedError('UnresolvedDependencyError')<{
 	readonly pluginKey: PluginKey;
-	readonly missingTagId: string;
+	readonly missingResourceId: string;
 }> {}
 
 export type DepGraphError = DepGraphCycleError | UnresolvedDependencyError;
@@ -49,18 +49,19 @@ export type DepGraphError = DepGraphCycleError | UnresolvedDependencyError;
 // Node shape
 // -----------------------------------------------------------------------------
 
-/** A resolved node in the dep graph. Wraps the original `AnyMember`
+/** A resolved node in the dep graph. Wraps the original plugin
  *  with a substrate-assigned `PluginKey` and the flattened
  *  parent-composite key (if this node is an inner participant). */
 export interface DepNode {
 	readonly key: PluginKey;
-	readonly member: AnyMember;
+	readonly member: AnyPlugin;
 	/** Composite parent key — present when this node is a lifted inner
 	 *  participant; null for top-level members. Used by the supervisor
 	 *  to roll lifecycle into the composite row. */
 	readonly compositeParent: PluginKey | null;
-	/** Resolved upstream keys this node consumes. Length matches the
-	 *  member's `consumes.length`. */
+	/** Unique dependency refs and their resolved upstream keys. The two
+	 *  arrays are positional peers. */
+	readonly upstreamResources: ReadonlyArray<AnyResourceRef>;
 	readonly upstreamKeys: ReadonlyArray<PluginKey>;
 }
 
@@ -81,7 +82,7 @@ export interface ResolvedGraph {
 
 interface NamedMember {
 	readonly key: PluginKey;
-	readonly member: AnyMember;
+	readonly member: AnyPlugin;
 	readonly compositeParent: PluginKey | null;
 }
 
@@ -89,7 +90,7 @@ interface NamedMember {
  * Read the static `capabilities` array off a member if and only if it
  * is an array. The `capabilities` field can be either a static tuple
  * OR a dynamic factory `(resolved, acquireCtx) => Caps` (see
- * `StackMember.capabilities`); the dep-graph runs BEFORE acquire, so
+ * `Plugin.capabilities`); the dep-graph runs BEFORE start, so
  * a dynamic factory's output is not yet available here.
  *
  * Convention: `composite-primitive` decls MUST be static (the
@@ -97,7 +98,7 @@ interface NamedMember {
  * factories are reserved for snapshot/codegen/routable/strategy
  * decls whose values depend on acquire-resolved data.
  */
-const readStaticCapabilities = (member: AnyMember): ReadonlyArray<CapabilityDecl> => {
+const readStaticCapabilities = (member: AnyPlugin): ReadonlyArray<CapabilityDecl> => {
 	const caps = member.capabilities;
 	if (caps === undefined) return [];
 	if (typeof caps === 'function') return [];
@@ -109,20 +110,20 @@ const isCompositePrimitiveDecl = (decl: CapabilityDecl): decl is CompositePrimit
 	'compositeKey' in decl &&
 	'innerParticipants' in decl;
 
-/** Mint a stable PluginKey for a member. Composites have a declared
+/** Mint a stable PluginKey for a plugin. Composites have a declared
  *  `compositeKey` on their `CompositePrimitiveDecl`; leaves derive
- *  from the provided tag id + an ordinal so duplicates don't collide. */
-const mintKey = (member: AnyMember, ordinal: number): PluginKey => {
+ *  from the resource id + an ordinal so duplicates don't collide. */
+const mintKey = (member: AnyPlugin, ordinal: number): PluginKey => {
 	const composite = readStaticCapabilities(member).find(isCompositePrimitiveDecl);
 	if (composite !== undefined) {
 		return composite.compositeKey;
 	}
-	return makePluginKey(`${member.provides.id}#${ordinal}`);
+	return makePluginKey(`${member.id}#${ordinal}`);
 };
 
 /** Walk the member tuple and emit one named-member entry per node,
  *  expanding composites' `innerParticipants` inline. */
-const expand = (members: ReadonlyArray<AnyMember>): ReadonlyArray<NamedMember> => {
+const expand = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<NamedMember> => {
 	const out: NamedMember[] = [];
 	let ordinal = 0;
 	for (const member of members) {
@@ -132,7 +133,7 @@ const expand = (members: ReadonlyArray<AnyMember>): ReadonlyArray<NamedMember> =
 		if (composite !== undefined) {
 			for (const inner of composite.innerParticipants) {
 				out.push({
-					key: makePluginKey(`${key}/inner/${inner.provides.id}#${ordinal++}`),
+					key: makePluginKey(`${key}/inner/${inner.id}#${ordinal++}`),
 					member: inner,
 					compositeParent: key,
 				});
@@ -152,8 +153,8 @@ const expand = (members: ReadonlyArray<AnyMember>): ReadonlyArray<NamedMember> =
  * Steps:
  *  1. Expand composites — their `innerParticipants` become first-class
  *     nodes with a `compositeParent` link.
- *  2. Build the tag-id → key index (providers).
- *  3. For each node, resolve its `consumes` tags to upstream keys.
+ *  2. Build the resource-id → key index (providers).
+ *  3. For each node, resolve its dependency refs to upstream keys.
  *  4. Kahn's algorithm: peel zero-indegree nodes into level 0, decrement
  *     downstream indegrees, repeat.
  *  5. If any node remains, return `DepGraphCycleError`.
@@ -162,20 +163,20 @@ const expand = (members: ReadonlyArray<AnyMember>): ReadonlyArray<NamedMember> =
  * supervisor's acquire spans.
  */
 export const resolveGraph = (
-	members: ReadonlyArray<AnyMember>,
+	members: ReadonlyArray<AnyPlugin>,
 ): Effect.Effect<ResolvedGraph, DepGraphError> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({ 'devstack.dep-graph.memberCount': members.length });
 		const named = expand(members);
 
-		// Provider index: tag-id → key. Last writer wins; the
+		// Provider index: resource-id → key. Last writer wins; the
 		// compile-time `MissingProviders` check ensures uniqueness on
 		// the user-typed path, so a duplicate here would be a programmer
 		// error in a runtime-typed composite — we don't enforce uniqueness
 		// at runtime; the duplicate just resolves to the latest declaration.
-		const providerByTagId = new Map<string, PluginKey>();
+		const providerByResourceId = new Map<string, PluginKey>();
 		for (const { key, member } of named) {
-			providerByTagId.set(member.provides.id, key);
+			providerByResourceId.set(member.id, key);
 		}
 
 		const nodes = new Map<PluginKey, DepNode>();
@@ -188,11 +189,12 @@ export const resolveGraph = (
 
 		for (const { key, member, compositeParent } of named) {
 			const upstreamKeys: PluginKey[] = [];
-			for (const tag of member.consumes) {
-				const providerKey = providerByTagId.get(tag.id);
+			const upstreamResources = uniqueResourceRefs(member.dependsOn);
+			for (const resource of upstreamResources) {
+				const providerKey = providerByResourceId.get(resource.id);
 				if (providerKey === undefined) {
 					return yield* Effect.fail(
-						new UnresolvedDependencyError({ pluginKey: key, missingTagId: tag.id }),
+						new UnresolvedDependencyError({ pluginKey: key, missingResourceId: resource.id }),
 					);
 				}
 				upstreamKeys.push(providerKey);
@@ -210,6 +212,7 @@ export const resolveGraph = (
 				key,
 				member,
 				compositeParent,
+				upstreamResources,
 				upstreamKeys,
 			});
 		}

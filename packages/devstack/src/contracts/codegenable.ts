@@ -1,23 +1,41 @@
 // Codegenable capability contract (architecture §6).
 //
 // Lets a plugin contribute files to the user's source tree without
-// the codegen surface (L4) knowing the plugin exists. The
-// `CodegenableDecl` is literal-typed on its emit shape so a
-// downstream consumer of the emitted file is typed correctly.
-//
-// The explicit `CodegenableDecl<Shape, Emitter>` annotation is what
-// flows codegen emit types through to consumers. Without it (e.g.
-// erased to `CodegenableDecl<unknown, string>` only), the consumer's
-// `EmittedFor<member, 'sui-bindings'>` resolves to `never`.
+// the codegen surface (L4) knowing the plugin exists. The runtime
+// contract only needs the literal emitter name, output path,
+// sensitivity, and an emit operation that writes through an opaque
+// context. Generated files own their app-facing export types directly.
 
 import type { Effect } from 'effect';
 
 /**
- * Codegen contribution. `EmittedShape` is the typed handle the
- * emitted file exports; `Emitter` is a literal emitter name used
- * for downstream type extraction by literal name.
+ * Opaque per-file emission context.
+ *
+ * Plugin authors declare named generated exports by calling
+ * `exportConst(...)`. The orchestrator owns how those declarations are
+ * collected, rendered, grouped, permissioned, and written. Emitters do
+ * not return a raw `{ [exportName]: value }` record, which keeps the
+ * codegen contract focused on the public generated file shape instead
+ * of an internal renderer payload.
  */
-export interface CodegenableDecl<EmittedShape = unknown, Emitter extends string = string> {
+export interface CodegenEmitContext {
+	/** Add one `export const <name> = <value> as const;` to the file. */
+	readonly exportConst: (name: string, value: unknown) => void;
+	/** Add a raw import statement before the generated exports. */
+	readonly importStatement: (statement: string) => void;
+	/** Finish emission after all exports/imports have been written. */
+	readonly done: () => CodegenEmitDone;
+}
+
+export interface CodegenEmitDone {
+	readonly _tag: 'CodegenEmitDone';
+}
+
+/**
+ * Codegen contribution. `Emitter` is a literal emitter name used
+ * by the codegen orchestrator for attribution and grouping.
+ */
+export interface CodegenableDecl<Emitter extends string = string> {
 	readonly kind: 'codegenable';
 	readonly emitterName: Emitter;
 	/** Relative path under the codegen staging dir. */
@@ -25,27 +43,7 @@ export interface CodegenableDecl<EmittedShape = unknown, Emitter extends string 
 	/** Optional sensitivity flag — drives file permissions and
 	 *  `.gitignore` inclusion. */
 	readonly sensitive?: boolean;
-	/** Emit operation; receives the resolved-once user extras and
-	 *  returns the file's exports as a typed record. */
-	readonly emit: () => Effect.Effect<{ readonly [key: string]: unknown }>;
-	/** Optional phantom — covariant (return-position) per the
-	 *  phantom-variance rule. Drives downstream
-	 *  `EmittedFor<Member, Emitter>` extraction; declarations normally
-	 *  carry this through their explicit generic annotation instead of a
-	 *  concrete runtime property. */
-	readonly _emitted?: () => EmittedShape;
+	/** Emit operation; writes generated file declarations through the
+	 *  supplied context. */
+	readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
 }
-
-/** Extract the union of `{ emitter, shape }` from a member's
- *  capabilities tuple. */
-export type CodegenEntries<Caps extends ReadonlyArray<unknown>> = {
-	[K in keyof Caps]: Caps[K] extends CodegenableDecl<infer Shape, infer Emitter>
-		? { readonly emitter: Emitter; readonly shape: Shape }
-		: never;
-}[number];
-
-/** Pluck a single emitted shape by literal emitter name. */
-export type EmittedFor<Caps extends ReadonlyArray<unknown>, Emitter extends string> = Extract<
-	CodegenEntries<Caps>,
-	{ readonly emitter: Emitter }
->['shape'];

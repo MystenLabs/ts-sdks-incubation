@@ -3,19 +3,21 @@ title: Local Development
 description: How the local supervisor, manifest, and generated files fit together.
 ---
 
-Local mode is the default. `sui()` starts an in-stack local network, and any member that consumes
-Sui can also trigger the default `sui()` auto-mount when no explicit Sui member is present.
+Local mode is the default. `sui()` starts an in-stack local network; include it once in any stack
+whose members depend on Sui.
 
 ```ts
-import { defineDevstack, account, localPackage, wallet } from '@mysten-incubation/devstack';
+import { defineDevstack, account, localPackage, sui, wallet } from '@mysten-incubation/devstack';
 
+const localnet = sui();
 const alice = account('alice');
 const hello = localPackage('hello', {
 	sourcePath: './move/hello',
 	publisher: alice,
 });
+const devWallet = wallet({ accounts: [alice] });
 
-export default defineDevstack({ members: [alice, hello, wallet({ accounts: [alice] })] });
+export default defineDevstack({ members: [localnet, hello, devWallet] });
 ```
 
 State is scoped by app and stack name:
@@ -35,7 +37,7 @@ options bag:
 
 ```ts
 export default defineDevstack({
-	members: [alice, hello],
+	members: [localnet, hello],
 	stackName: 'local',
 	codegen: {
 		outputDir: 'src/generated',

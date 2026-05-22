@@ -27,9 +27,9 @@ const app = hostService({
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },
-	needs: [alice, dex] as const,
+	needs: [localnet, alice, dex] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, alice, dex, app] });
+const stack = defineDevstack({ members: [localnet, app] });
 
 export default stack;

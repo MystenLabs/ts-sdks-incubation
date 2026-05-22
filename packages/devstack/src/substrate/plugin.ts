@@ -1,279 +1,367 @@
-// NodePlugin contract — the universal plugin shape (architecture §1).
+// Resource-native plugin contract.
 //
-// Every L2 service and renderer satisfies this. The plugin's
-// substrate-level type carries THREE generic pieces of information:
-//
-//   1. `Provides` — the typed identity of its resolved value (Tag).
-//   2. `Consumes` — the typed upstream tag tuple.
-//   3. `Caps`    — the literal-typed capability tuple.
-//
-// The `Caps` generic is load-bearing. Without it, capability decls erase
-// to their union form and codegen-emitted shapes resolve to `never` for
-// downstream consumers.
+// Public plugin authors use `definePlugin({ id, dependsOn, start })`.
+// The substrate now consumes that same shape directly: resource ids
+// drive scheduling, resolved dependency values are constructed by the
+// supervisor, and plugin bodies run through `start(...)`.
 
 import type { Effect } from 'effect';
-import type { CapabilityDecl } from '../contracts/index.ts';
-import type { LiftedSiblingKey } from './lifted-sibling.ts';
-import type { PluginKind, RebootCost } from './lifecycle.ts';
-import type { AnyTag, ResolvedOf, Tag, TagIdOf } from './tag.ts';
+
+import type { CapabilityDecl } from '../contracts/capability-decl.ts';
 import type { ChainId } from './brand.ts';
 import type { Identity } from './identity.ts';
+import type { LiftedSiblingKey } from './lifted-sibling.ts';
+import type { PluginKind, RebootCost } from './lifecycle.ts';
 
-/** Member brand symbol. Distinguishes a `StackMember` from a
- *  trailing options bag at the variadic call site without requiring
- *  a delimiter. */
-export const MEMBER_BRAND: unique symbol = Symbol.for('devstack.member');
-export type MemberBrand = typeof MEMBER_BRAND;
+const resourceBrand: unique symbol = Symbol('devstack.resource');
+const pluginBrand: unique symbol = Symbol('devstack.plugin');
+const resourceValue: unique symbol = Symbol('devstack.resource.value');
+const dependencyInputBrand: unique symbol = Symbol('devstack.plugin.dependency-input');
 
-export interface MemberBranded {
-	readonly [MEMBER_BRAND]: true;
+export interface ResourceRef<Id extends string, Value = unknown> {
+	readonly id: Id;
+	readonly [resourceBrand]: true;
+	readonly [resourceValue]?: () => Value;
 }
 
-/** Plugin runtime context handed to `acquire`. Indexed by the
- *  upstream tag tuple's identity types.
- *
- *  Two accessors, same lookup:
- *
- *  - `get(tag)` — pass the tag directly. Typed against `Provided`; reduces
- *    cleanly when the consumes tuple is concrete at the call site.
- *  - `use(member)` — pass the upstream plugin MEMBER (the value returned
- *    by `account('alice')`, `localPackage(...)`, etc.). The member's
- *    literal-typed `provides` tag is extracted from the argument, so the
- *    returned resolved-value type reduces even when the outer plugin's
- *    `Consumes` generic carries the tuple (the case where `get(tag)`'s
- *    `T extends Provided` constraint widens to the substrate-erased
- *    `AnyTag` — the cast-as-escape-hatch documented in STYLE_GUIDE §14).
- *    Membership in `Consumes` is enforced structurally: a member whose
- *    provided tag id is not in the acquiring plugin's `Consumes` surfaces
- *    a `__MemberNotConsumedError<Id>` at the argument position. */
-export interface BuildContext<Provided extends AnyTag> {
-	get<T extends Provided>(tag: T): ResolvedOf<T>;
-	use<M extends AnyMember>(
-		member: M &
-			(TagIdOf<M['provides']> extends TagIdOf<Provided>
-				? unknown
-				: __MemberNotConsumedError<TagIdOf<M['provides']>>),
-	): ResolvedOf<M['provides']>;
-}
+export type AnyResourceRef = ResourceRef<string, unknown>;
 
-/** Branded structured error — surfaced when `ctx.use(member)` is called
- *  with a member whose provided tag id is not in the acquiring plugin's
- *  `Consumes`. Mirrors the shape of `__MissingProvidersError` /
- *  `__SiblingHashConflictError` / `__UnsatisfiedWitnessesError` so the
- *  diagnostic names the offending tag id at the IDE call site. */
-export interface __MemberNotConsumedError<NotConsumed extends string> {
-	readonly __member_not_consumed: NotConsumed;
-}
+export type ResourceIdOf<R extends AnyResourceRef> = R['id'];
 
-/**
- * Per-plugin error class metadata. Plugin-tagged errors live with
- * the plugin (architecture: per-plugin tagged errors).
- *
- * Plugins surface their error vocabulary via the optional
- * `errorContributions` field on `StackMember`; the supervisor's
- * harvest loop folds these into the substrate's `FormatterRegistry`
- * (consumed by the cascade formatter). The `formatter` slot is
- * optional — a plugin can register tags WITHOUT a custom renderer
- * (the cascade formatter's default render path handles the tagged
- * shape) and overlay a custom formatter when the default doesn't
- * surface a domain field nicely.
- */
+export type ResourceValueOf<R extends AnyResourceRef> =
+	R extends ResourceRef<string, infer Value> ? Value : never;
+
+export const defineId = <const Id extends string>(id: Id): Id => id;
+
+export const resource = <const Id extends string, Value = unknown>(
+	id: Id,
+): ResourceRef<Id, Value> =>
+	({
+		id,
+		[resourceBrand]: true,
+	}) as ResourceRef<Id, Value>;
+
+export const isResourceRef = (value: unknown): value is AnyResourceRef =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { readonly [resourceBrand]?: true })[resourceBrand] === true;
+
+export type DependencyInput =
+	| AnyResourceRef
+	| readonly AnyResourceRef[]
+	| Readonly<Record<string, AnyResourceRef>>;
+
+export type DependencyList<Input> = Input extends readonly AnyResourceRef[]
+	? Input
+	: Input extends AnyResourceRef
+		? readonly [Input]
+		: Input extends Readonly<Record<string, AnyResourceRef>>
+			? ReadonlyArray<Input[keyof Input]>
+			: readonly [];
+
+export type ResolvedDependencyList<Dependencies extends readonly AnyResourceRef[]> = readonly [
+	...{
+		readonly [K in keyof Dependencies]: Dependencies[K] extends AnyResourceRef
+			? ResourceValueOf<Dependencies[K]>
+			: never;
+	},
+];
+
+export type ResolvedDependencyObject<
+	Dependencies extends Readonly<Record<string, AnyResourceRef>>,
+> = {
+	readonly [K in keyof Dependencies]: Dependencies[K] extends AnyResourceRef
+		? ResourceValueOf<Dependencies[K]>
+		: never;
+};
+
+export type ResolvedDependencies<Input> = Input extends undefined
+	? undefined
+	: Input extends readonly AnyResourceRef[]
+		? ResolvedDependencyList<Input>
+		: Input extends AnyResourceRef
+			? ResourceValueOf<Input>
+			: Input extends Readonly<Record<string, AnyResourceRef>>
+				? ResolvedDependencyObject<Input>
+				: never;
+
+export interface StartContext {}
+
+type PluginStart<Deps> = (
+	ctx: StartContext,
+	deps: Deps,
+) => Effect.Effect<unknown, unknown, unknown>;
+
+type StartValue<Start> = Start extends (
+	...args: never
+) => Effect.Effect<infer Value, unknown, unknown>
+	? Value
+	: never;
+
 export interface PluginErrorContribution {
 	readonly _tag: 'PluginErrorContribution';
 	readonly errorTags: ReadonlyArray<string>;
-	/** Optional per-tag custom renderer. If absent, the cascade
-	 *  formatter's default tagged-error rendering applies. Recurse is
-	 *  the formatter-supplied callback for nested values (e.g. the
-	 *  error's `cause` field). */
 	readonly formatter?: (
 		value: { readonly _tag: string } & Readonly<Record<string, unknown>>,
 		recurse: (inner: unknown) => string,
 	) => string | null;
 }
 
-/**
- * Watch path declaration consumed by L3 watch dispatcher.
- *
- * `paths` are glob patterns relative to the user's app root. The L0
- * thick watcher (minimatch + 250ms debounce + content-hash dedup)
- * filters before dispatch.
- */
 export interface WatchDecl {
 	readonly paths: ReadonlyArray<string>;
-	/** If true, restart cascades to downstream consumers along
-	 *  dep-graph edges. Default `true`. */
 	readonly cascade?: boolean;
 }
 
-/**
- * Acquire-time context handed to a plugin's dynamic capability
- * factory AFTER `acquire` returns. Carries the resolved identity
- * triple + the on-disk runtime root so capability decls (snapshot
- * subtrees, codegen bindings, routable URLs) can stamp the REAL
- * values instead of factory-time placeholders.
- *
- * The substrate guarantees these fields are populated before the
- * factory runs (they come from the supervisor's plugin context).
- */
 export interface AcquireContext {
 	readonly identity: Identity;
 	readonly chain: ChainId;
 	readonly runtimeRoot: string;
 }
 
-/**
- * Dynamic capability factory — invoked POST-acquire with the
- * resolved value and the acquire context. Lets plugins construct
- * capability decls whose identity/chain/package-id fields reference
- * the actually-resolved data instead of placeholder strings.
- *
- * The static form (a plain `Caps` tuple) is still supported for
- * plugins that don't need acquire-time data.
- */
 export type CapabilitiesFactory<Caps extends ReadonlyArray<CapabilityDecl>, Resolved> = (
 	resolved: Resolved,
 	ctx: AcquireContext,
 ) => Caps;
 
-/**
- * Substrate-level plugin instance shape.
- *
- * Four generics:
- *  - `Provides` — the Tag this plugin resolves (its identity).
- *  - `Consumes` — typed upstream tag tuple.
- *  - `Caps`     — literal-typed capability decl tuple. MUST stay
- *                 narrow — see file header.
- *  - `Siblings` — literal-typed lifted-sibling-key tuple. Preserves
- *                 the literal `inputHash` so the stack-level dedup
- *                 conflict check can fire at compile time.
- */
-export interface StackMember<
-	Provides extends AnyTag,
-	Consumes extends ReadonlyArray<AnyTag>,
-	Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
-	Siblings extends ReadonlyArray<LiftedSiblingKey> = ReadonlyArray<LiftedSiblingKey>,
-> extends MemberBranded {
-	readonly provides: Provides;
-	readonly consumes: Consumes;
+export type CapabilitySource<Value, Caps extends ReadonlyArray<CapabilityDecl>> =
+	| Caps
+	| ((ctx: { readonly value: Value; readonly runtime: AcquireContext }) => Caps);
+
+interface PluginSpecBase<
+	Id extends string,
+	Deps,
+	Start extends PluginStart<Deps>,
+	Caps extends ReadonlyArray<CapabilityDecl>,
+	Siblings extends ReadonlyArray<LiftedSiblingKey>,
+> {
+	readonly id: Id;
 	readonly kind: PluginKind;
 	readonly rebootCost?: RebootCost;
 	readonly watch?: WatchDecl;
-	/**
-	 * Acquire procedure. Effect-flavored: the build runs inside the
-	 * plugin's Scope and may yield to substrate primitives. The
-	 * returned value MUST match the provided tag's resolved shape.
-	 *
-	 * The error channel `E` is the union of the plugin's tagged
-	 * errors plus engine-tagged errors injected by primitives the
-	 * plugin uses (lease broker exhaustion, lock contention, etc.);
-	 * the substrate-level shape stays open.
-	 *
-	 * The `R` channel carries the substrate-context services the
-	 * acquire body yields (e.g. `IdentityContext`, `ContainerRuntimeService`,
-	 * `RuntimeRoot`, `StackPathsService`, etc.). The supervisor's
-	 * acquire path provides these BEFORE running the effect — so from
-	 * the plugin's perspective, yielding any of them is type-safe and
-	 * resolves to the live substrate instance. `Scope.Scope` is
-	 * always available (the per-plugin scope owns acquire finalizers).
-	 *
-	 * The `any` on R is load-bearing: plugins declare their needs by
-	 * yielding the services they want from within `Effect.gen`, and
-	 * the inferred R is checked against the supervisor's provided set
-	 * at the boundary where the supervisor casts to invoke the effect.
-	 */
-	readonly acquire: (
-		ctx: BuildContext<Consumes[number]>,
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	) => Effect.Effect<ResolvedOf<Provides>, any, any>;
-	/**
-	 * Capability tuple. Two accepted shapes:
-	 *
-	 *   (a) Static — a plain `Caps` tuple. Read at factory time, all
-	 *       values known statically. Use this when the plugin's
-	 *       decls don't reference acquire-resolved data.
-	 *
-	 *   (b) Dynamic — a function `(resolved, acquireCtx) => Caps`.
-	 *       Invoked by the supervisor AFTER `acquire` succeeds,
-	 *       with the resolved plugin value + the closed identity /
-	 *       chain / runtimeRoot triple. Use this when decls want to
-	 *       reference the real chain id, package id, network alias,
-	 *       etc. (snapshot subtrees, codegen bindings, routable
-	 *       URLs).
-	 *
-	 * Backwards-compatible — existing static-form plugins keep
-	 * working unchanged.
-	 */
-	readonly capabilities?: Caps | CapabilitiesFactory<Caps, ResolvedOf<Provides>>;
+	readonly start: Start;
+	readonly capabilities?: CapabilitySource<StartValue<Start>, Caps>;
 	readonly liftedSiblings?: Siblings;
-	/** Opaque display projection hint — renderer-interpreted only.
-	 *  Engine never reads. */
 	readonly displayHint?: unknown;
-	/** Plugin-side error vocabulary. Harvested by the supervisor on
-	 *  successful acquire and folded into the substrate's
-	 *  `FormatterRegistry`. Substrate stays name-blind: it dispatches
-	 *  on `_tag` strings the plugin declares, never on a plugin
-	 *  identifier. Empty / absent => the cause walker still renders
-	 *  the tagged shape via its default path. */
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 }
 
-/** Erased member type for variadic upcasts. The two `any`s here are
- *  load-bearing — see `tag.ts` for the variance discussion. */
-export type AnyMember = StackMember<
+export type PluginSpec<
+	Id extends string,
+	DependsOn extends DependencyInput | undefined,
+	Deps,
+	Start extends PluginStart<Deps>,
+	Caps extends ReadonlyArray<CapabilityDecl>,
+	Siblings extends ReadonlyArray<LiftedSiblingKey>,
+> = PluginSpecBase<Id, Deps, Start, Caps, Siblings> & {
+	readonly dependsOn?: DependsOn;
+};
+
+export interface Plugin<
+	Id extends string,
+	Value,
+	Needs extends readonly AnyResourceRef[],
+	Caps extends ReadonlyArray<CapabilityDecl>,
+	Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
+> extends ResourceRef<Id, Value> {
+	readonly [pluginBrand]: true;
+	readonly [dependencyInputBrand]: DependencyInput | undefined;
+	readonly dependsOn: Needs;
+	readonly kind: PluginKind;
+	readonly rebootCost?: RebootCost;
+	readonly watch?: WatchDecl;
+	readonly start: (
+		ctx: StartContext,
+		deps: ResolvedDependencies<DependencyInput | undefined>,
+	) => Effect.Effect<Value, unknown, unknown>;
+	readonly capabilities?: Caps | CapabilitiesFactory<Caps, Value>;
+	readonly liftedSiblings?: Siblings;
+	readonly displayHint?: unknown;
+	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
+}
+
+export type AnyPlugin = Plugin<
+	string,
+	// Erased runtime plugin values must be `any` rather than `unknown`
+	// so concrete dynamic capability factories remain assignable under
+	// strict function parameter variance. Precise value types stay on
+	// concrete `Plugin<Id, Value, ...>` instances.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	Tag<string, any>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
+	any,
+	readonly AnyResourceRef[],
 	ReadonlyArray<CapabilityDecl>,
 	ReadonlyArray<LiftedSiblingKey>
 >;
 
-/** Type-level helpers consumed by the API layer for missing-provider
- *  diagnosis (architecture open-question #11 — branded error types).
- *
- *  IMPORTANT: `Members extends ReadonlyArray<AnyMember>` as a constraint
- *  causes the compiler to widen `Members[K]` to `AnyMember` inside
- *  dependent computations — `Tag<infer Id, ...>` then collapses to
- *  `Id = string` because the constraint's tag is the wide
- *  `Tag<string, any>`. Helpers therefore take the wider
- *  `ReadonlyArray<unknown>` constraint and pattern-match the per-member
- *  shape locally. Callers still pass their `AnyMember`-shaped tuple;
- *  the constraint widening is purely a per-helper concern. */
+export const isPlugin = (value: unknown): value is AnyPlugin =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { readonly [pluginBrand]?: true })[pluginBrand] === true;
+
+export const dependencyList = <Input extends DependencyInput | undefined>(
+	dependsOn: Input,
+): DependencyList<Input> => {
+	if (dependsOn === undefined) {
+		return [] as unknown as DependencyList<Input>;
+	}
+	if (Array.isArray(dependsOn)) {
+		return dependsOn as unknown as DependencyList<Input>;
+	}
+	if (isResourceRef(dependsOn)) {
+		return [dependsOn] as unknown as DependencyList<Input>;
+	}
+	return Object.values(dependsOn) as unknown as DependencyList<Input>;
+};
+
+export const uniqueResourceRefs = (refs: readonly AnyResourceRef[]): readonly AnyResourceRef[] => {
+	const seen = new Set<string>();
+	const unique: AnyResourceRef[] = [];
+	for (const ref of refs) {
+		if (seen.has(ref.id)) continue;
+		seen.add(ref.id);
+		unique.push(ref);
+	}
+	return unique;
+};
+
+export const resolveDependencyValues = <Input extends DependencyInput | undefined>(
+	dependsOn: Input,
+	read: (resource: DependencyList<Input>[number]) => unknown,
+): ResolvedDependencies<Input> => {
+	const readAny = (resourceRef: AnyResourceRef) =>
+		read(resourceRef as DependencyList<Input>[number]);
+
+	if (dependsOn === undefined) {
+		return undefined as ResolvedDependencies<Input>;
+	}
+	if (Array.isArray(dependsOn)) {
+		return dependsOn.map((resourceRef) => readAny(resourceRef)) as ResolvedDependencies<Input>;
+	}
+	if (isResourceRef(dependsOn)) {
+		return readAny(dependsOn) as ResolvedDependencies<Input>;
+	}
+	return Object.fromEntries(
+		Object.entries(dependsOn).map(([key, resourceRef]) => [key, readAny(resourceRef)]),
+	) as ResolvedDependencies<Input>;
+};
+
+export const resolvePluginDependencies = (
+	plugin: AnyPlugin,
+	read: (resource: AnyResourceRef) => unknown,
+): ResolvedDependencies<DependencyInput | undefined> =>
+	resolveDependencyValues(
+		plugin[dependencyInputBrand],
+		(resourceRef) => read(resourceRef as AnyResourceRef),
+	);
+
+export const pluginDependencyRefs = (plugin: AnyPlugin): readonly AnyResourceRef[] =>
+	dependencyList(plugin[dependencyInputBrand]) as readonly AnyResourceRef[];
+
+export function definePlugin<
+	const Id extends string,
+	const DependsOn extends readonly AnyResourceRef[],
+	const Start extends PluginStart<ResolvedDependencyList<DependsOn>> = PluginStart<
+		ResolvedDependencyList<DependsOn>
+	>,
+	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
+	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
+>(
+	spec: PluginSpecBase<Id, ResolvedDependencyList<DependsOn>, Start, Caps, Siblings> & {
+		readonly dependsOn: DependsOn;
+	},
+): Plugin<Id, StartValue<Start>, DependsOn, Caps, Siblings>;
+export function definePlugin<
+	const Id extends string,
+	const DependsOn extends Readonly<Record<string, AnyResourceRef>>,
+	const Start extends PluginStart<ResolvedDependencyObject<DependsOn>> = PluginStart<
+		ResolvedDependencyObject<DependsOn>
+	>,
+	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
+	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
+>(
+	spec: PluginSpecBase<Id, ResolvedDependencyObject<DependsOn>, Start, Caps, Siblings> & {
+		readonly dependsOn: DependsOn;
+	},
+): Plugin<Id, StartValue<Start>, DependencyList<DependsOn>, Caps, Siblings>;
+export function definePlugin<
+	const Id extends string,
+	const DependsOn extends AnyResourceRef,
+	const Start extends PluginStart<ResourceValueOf<DependsOn>> = PluginStart<
+		ResourceValueOf<DependsOn>
+	>,
+	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
+	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
+>(
+	spec: PluginSpecBase<Id, ResourceValueOf<DependsOn>, Start, Caps, Siblings> & {
+		readonly dependsOn: DependsOn;
+	},
+): Plugin<Id, StartValue<Start>, readonly [DependsOn], Caps, Siblings>;
+export function definePlugin<
+	const Id extends string,
+	const Start extends PluginStart<undefined> = PluginStart<undefined>,
+	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
+	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
+>(
+	spec: PluginSpecBase<Id, undefined, Start, Caps, Siblings> & {
+		readonly dependsOn?: undefined;
+	},
+): Plugin<Id, StartValue<Start>, readonly [], Caps, Siblings>;
+export function definePlugin(
+	spec: PluginSpecBase<
+		string,
+		ResolvedDependencies<DependencyInput | undefined>,
+		PluginStart<ResolvedDependencies<DependencyInput | undefined>>,
+		ReadonlyArray<CapabilityDecl>,
+		ReadonlyArray<LiftedSiblingKey>
+	> & {
+		readonly dependsOn?: DependencyInput;
+	},
+): AnyPlugin {
+	const dependsOn = uniqueResourceRefs(dependencyList(spec.dependsOn));
+	const capabilitiesField = spec.capabilities;
+	const capabilities =
+		typeof capabilitiesField === 'function'
+			? (value: unknown, runtime: AcquireContext) => capabilitiesField({ value, runtime })
+			: capabilitiesField;
+
+	return {
+		[resourceBrand]: true,
+		[pluginBrand]: true,
+		[dependencyInputBrand]: spec.dependsOn,
+		id: spec.id,
+		dependsOn,
+		kind: spec.kind,
+		start: spec.start as AnyPlugin['start'],
+		...(spec.rebootCost === undefined ? {} : { rebootCost: spec.rebootCost }),
+		...(spec.watch === undefined ? {} : { watch: spec.watch }),
+		...(capabilities === undefined ? {} : { capabilities }),
+		...(spec.liftedSiblings === undefined ? {} : { liftedSiblings: spec.liftedSiblings }),
+		...(spec.displayHint === undefined ? {} : { displayHint: spec.displayHint }),
+		...(spec.errorContributions === undefined
+			? {}
+			: { errorContributions: spec.errorContributions }),
+	} as AnyPlugin;
+}
+
 export type ProvidedIdsOf<Members> =
 	Members extends ReadonlyArray<unknown>
-		? Members[number] extends { readonly provides: Tag<infer Id, unknown> }
+		? Members[number] extends { readonly id: infer Id extends string }
 			? Id
 			: never
 		: never;
 
-/** ConsumedIdsOf — extracts the tag-id union consumed by any member.
- *
- *  IMPORTANT: the two-step shape
- *  `consumes: ReadonlyArray<infer C>; C extends Tag<infer Id, ...>` and
- *  the one-step `consumes: ReadonlyArray<Tag<infer Id, ...>>` BOTH
- *  widen `Id` to `string` when the member's `consumes` is the empty
- *  tuple `readonly []`. Empty-array element type infers as `never`,
- *  and `Tag<infer Id, ...>` on `never` collapses to `string` rather
- *  than `never`. Workaround: special-case the empty tuple via the
- *  `consumes['length']` discriminator before the inference site. */
 export type ConsumedIdsOf<Members> =
 	Members extends ReadonlyArray<unknown>
-		? Members[number] extends infer M
-			? M extends { readonly consumes: { readonly length: 0 } }
-				? never
-				: M extends { readonly consumes: ReadonlyArray<Tag<infer Id, unknown>> }
+		? Members[number] extends { readonly dependsOn: infer Dependencies }
+			? Dependencies extends ReadonlyArray<infer Dependency>
+				? Dependency extends { readonly id: infer Id extends string }
 					? Id
 					: never
+				: never
 			: never
 		: never;
 
 export type MissingProviders<Members> = Exclude<ConsumedIdsOf<Members>, ProvidedIdsOf<Members>>;
 
-/**
- * Branded error type for missing-provider diagnostics. Replaces the
- * opaque "not assignable to parameter of type 'never'" diagnostic
- * (architecture open question #11).
- */
 export interface __MissingProvidersError<Missing extends string> {
 	readonly __missing_providers: Missing;
 }

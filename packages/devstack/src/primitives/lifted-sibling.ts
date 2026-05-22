@@ -9,12 +9,12 @@
 import type { Effect, Scope } from 'effect';
 
 import type { LiftedSiblingKey } from '../substrate/lifted-sibling.ts';
-import type { AnyMember } from '../substrate/plugin.ts';
+import type { AnyPlugin } from '../substrate/plugin.ts';
 
 /** Outcome of registering a sibling under a key. */
 export type LiftedSiblingRegistration =
-	| { readonly result: 'registered'; readonly member: AnyMember }
-	| { readonly result: 'deduped'; readonly existing: AnyMember }
+	| { readonly result: 'registered'; readonly member: AnyPlugin }
+	| { readonly result: 'deduped'; readonly existing: AnyPlugin }
 	| { readonly result: 'conflict'; readonly conflict: LiftedSiblingConflict };
 
 /** Runtime conflict — same `(plugin, kind, scope)` with different
@@ -32,7 +32,7 @@ export interface LiftedSiblingConflict {
 export interface LiftedSiblingRegistry {
 	readonly register: (
 		key: LiftedSiblingKey,
-		factory: AnyMember,
+		factory: AnyPlugin,
 	) => Effect.Effect<LiftedSiblingRegistration, never, Scope.Scope>;
 	readonly list: () => Effect.Effect<ReadonlyArray<LiftedSiblingKey>>;
 }

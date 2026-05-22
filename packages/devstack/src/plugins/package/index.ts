@@ -23,18 +23,15 @@
 // at compose time, so misuse fails at compile time rather than at
 // emit time.
 //
-// Tag id: `'package:<name>'` — one tag per user-declared package
+// Resource id: `'package:<name>'` — one tag per user-declared package
 // (the symbolic name is part of the identity so two `localPackage`
 // calls in the same stack don't collide on the substrate's tag
 // registry). Substrate-side plugin key is the same string.
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMember } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -50,11 +47,9 @@ import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chai
 // at which point this import disappears in favour of `events.publish(...)`.
 import { CoinRegistryService, type CoinRecord } from '../coin/registry.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import type { StackMember } from '../../substrate/plugin.ts';
-import type { Tag } from '../../substrate/tag.ts';
-import type { AccountTagId } from '../account/index.ts';
+import type { AccountResourceId } from '../account/index.ts';
 import type { AccountValue } from '../account/service.ts';
 // Cross-plugin import — Open slot O5. The coin-discovery walker is a
 // PURE projection over `PublishReceipt`; it lives in the coin plugin
@@ -62,7 +57,7 @@ import type { AccountValue } from '../account/service.ts';
 // domain. Pending substrate harvest loop / event-bus (see comment above)
 // the walker is called directly from this barrel.
 import { discoverCoinsFromPublish } from '../coin/discovery.ts';
-import { makeKnownCodegenable, makeLocalCodegenable, type PackageBindings } from './codegen.ts';
+import { makeKnownCodegenable, makeLocalCodegenable } from './codegen.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
 import {
@@ -82,35 +77,27 @@ const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
 // ---------------------------------------------------------------------------
 
 /** A user-supplied publisher account ref. The user passes the result
- *  of `account('alice')` (a `StackMember` providing the per-name
- *  account tag) — NOT a bare tag value. Generic over the literal
- *  account name so the package's `consumes: [SuiTag, account/<name>]`
- *  preserves the per-account tag id for the substrate's
- *  `MissingProviders` check (mirrors the wallet plugin's per-account
- *  tag handling). */
-export type PublisherAccountMember<Name extends string = string> = StackMember<
-	Tag<AccountTagId<Name>, AccountValue>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
+ *  of `account('alice')` — NOT a bare string. Generic over the
+ *  literal account name so the package dependency preserves the
+ *  per-account resource id. */
+export type PublisherAccountMember<Name extends string = string> = ResourceRef<
+	AccountResourceId<Name>,
+	AccountValue
 >;
 
 // ---------------------------------------------------------------------------
-// Tag — one per declared package, keyed by symbolic name
+// Resource — one per declared package, keyed by symbolic name
 // ---------------------------------------------------------------------------
 
-/** Tag id constructor. The symbolic package name is part of the tag
+/** Resource id constructor. The symbolic package name is part of the tag
  *  identity so the substrate's compose-time dedup detects collisions
  *  cleanly (two `localPackage('foo', ...)` calls in one stack → typed
  *  error at compose time). */
-export const packageTagId = <Name extends string>(name: Name): `package:${Name}` =>
+export const packageResourceId = <Name extends string>(name: Name): `package:${Name}` =>
 	`package:${name}`;
 
-/** The literal-template tag id for a package by symbolic name. */
-export type PackageTagId<Name extends string> = `package:${Name}`;
+/** The literal-template resource id for a package by symbolic name. */
+export type PackageResourceId<Name extends string> = `package:${Name}`;
 
 /** Public resolved value shapes — re-exported from `registry.ts` to
  *  give consumers one stable import path. */
@@ -126,7 +113,7 @@ export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 
-/** Resolved value carried by the package tag. Local packages also
+/** Resolved value carried by the package resource. Local packages also
  *  expose the publish receipt so downstream consumers (Coin plugin,
  *  manifest emitter, capture-spec callers) can read it. */
 export type PackageCaptureMap = Readonly<Record<string, string>>;
@@ -169,7 +156,7 @@ export type PackageResolved = LocalPackageResolved | KnownPackageResolved;
 // ---------------------------------------------------------------------------
 
 export interface LocalPackageOptions<
-	PublisherName extends string = string,
+	Publisher extends PublisherAccountMember = PublisherAccountMember,
 	Capture extends PackageCapture | undefined = undefined,
 > {
 	readonly sourcePath: string;
@@ -186,15 +173,15 @@ export interface LocalPackageOptions<
 	 *  escape hatch for custom receipt projections. */
 	readonly capture?: Capture;
 	/** Publisher account — the signer for the publish tx. Pass the
-	 *  result of `account('alice')` (the same `StackMember` reference
-	 *  used in the rest of the stack — NOT a duplicate factory call).
+	 *  result of `account('alice')` (the same plugin/resource ref used
+	 *  in the rest of the stack — NOT a duplicate factory call).
 	 *
 	 *  Required for local packages: a publish tx must be signed by
 	 *  SOMEONE; we make the choice explicit so two packages in the
 	 *  same stack can publish under different accounts (no implicit
 	 *  "first account" convention to memorise). Distilled doc Invariant
 	 *  4 — "Signer MUST be an explicit upstream". */
-	readonly publisher: PublisherAccountMember<PublisherName>;
+	readonly publisher: Publisher;
 }
 
 export interface KnownPackageOptions {
@@ -239,38 +226,20 @@ const normalizeCapture = <Capture extends PackageCapture | undefined>(
 
 const buildLocalPlugin = <
 	Name extends string,
-	PublisherName extends string,
+	const Publisher extends PublisherAccountMember,
 	Capture extends PackageCapture | undefined,
 >(
 	name: Name,
-	opts: LocalPackageOptions<PublisherName, Capture>,
+	opts: LocalPackageOptions<Publisher, Capture>,
 ) => {
-	// Project the publisher account tag from the user-supplied
-	// `StackMember`. The `consumes` tuple below carries the literal
-	// `account/<PublisherName>` so the substrate's compose-time
-	// `MissingProviders` check can confirm the named account is in
-	// the stack, and the acquire body's `ctx.use(opts.publisher)`
-	// has the literal tag id in its `Consumes[number]` union (which
-	// the `BuildContext.use<M>` conditional requires to reduce — TS
-	// does not reduce `T extends X | T` for a template-literal
-	// generic `T`, so the literal MUST be in the tuple type).
-	const publisherMember = consumeMember(opts.publisher);
-	const consumesTuple = [SuiTag, publisherMember.consumesTag] as const;
+	const packageRef = resource<PackageResourceId<Name>, LocalPackageResolved<Capture>>(
+		packageResourceId(name),
+	);
 	const capture = normalizeCapture(name, opts.capture);
 
-	return defineNodePlugin({
-		// Tag identity carries the package's symbolic name so the
-		// substrate's compose-time dedup catches collisions.
-		provides: defineTag<PackageTagId<Name>, LocalPackageResolved<Capture>>(
-			packageTagId(name),
-			packageTagId(name),
-		),
-		// `consumes: [SuiTag, account/<publisher>]` — package publishing
-		// needs the live chain AND the publisher account signer. The
-		// dep edges ensure Sui's acquire (which registers the chain-
-		// probe) AND the publisher's acquire (which mints / funds the
-		// keypair) both complete before publish starts.
-		consumes: consumesTuple,
+	return definePlugin({
+		id: packageRef.id,
+		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		kind: 'leaf-long-running',
 		rebootCost: 'heavy',
 		watch: {
@@ -284,13 +253,8 @@ const buildLocalPlugin = <
 			],
 			cascade: true,
 		},
-		acquire: (ctx) =>
+		start: (_ctx, { sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
-				// Direct member-ref accessor for the publisher upstream —
-				// `consumeMember(opts.publisher)` (built above) encapsulates
-				// the §14 localized cast for the resolved-value projection.
-				const publisherAccount = publisherMember.projectInScope(ctx);
 				// Substrate-context primitives: OnChainArtifactPublisher
 				// is provided by the supervisor's pluginContext;
 				// ChainProbe is looked up via the StrategyRegistry
@@ -327,7 +291,7 @@ const buildLocalPlugin = <
 					...(sui.buildImage !== null ? { buildImage: sui.buildImage } : {}),
 				});
 
-				const mode: PackageMode = {
+				const mode = {
 					mode: 'local',
 					packageName: name,
 					sourcePath,
@@ -336,7 +300,7 @@ const buildLocalPlugin = <
 					mvrOverride: opts.mvrPlaceholder,
 					...(capture !== undefined ? { capture } : {}),
 					executor,
-				};
+				} satisfies PackageMode;
 
 				const { resolved, receipt } = yield* bootPackageService(publisher, probe, registry, mode);
 				const coins: Record<string, CoinRecord> = {};
@@ -355,8 +319,8 @@ const buildLocalPlugin = <
 				// acquire so the records land BEFORE downstream
 				// `coin.local(...)` / `coin.fromPackage(...)` plugins run
 				// their lookup. The substrate's compose-time ordering
-				// (`coin.local('USDC')` consumes SuiTag; localPackage
-				// consumes SuiTag + publisher account) doesn't carry an
+				// (`coin.local('USDC')` depends on suiResource; localPackage
+				// depends on suiResource + publisher account) doesn't carry an
 				// edge between Package → Coin — the symbol-form coin's
 				// no-edge documentation calls this out, and we close
 				// the loop here.
@@ -406,45 +370,38 @@ const buildLocalPlugin = <
 					}
 				}
 
-				const localResolved = resolved as ResolvedLocalPackage;
 				const projected: LocalPackageResolved<Capture> = {
-					...localResolved,
-					captured: localResolved.captured as CapturedPackageValues<Capture>,
+					...resolved,
+					captured: resolved.captured as CapturedPackageValues<Capture>,
 					coins,
 					publishReceipt: receipt,
 				};
 				return projected;
 			}),
 		errorContributions: packageErrorContributions,
-		capabilities: (resolved) => makeLocalCapabilities(name, opts, resolved),
+		capabilities: ({ value }) => makeLocalCapabilities(name, opts, value),
 	});
 };
 
-const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOptions) =>
-	defineNodePlugin({
-		provides: defineTag<PackageTagId<Name>, KnownPackageResolved>(
-			packageTagId(name),
-			packageTagId(name),
-		),
-		// `consumes: [SuiTag]` — knownPackage verifies against the
-		// live chain via ChainProbe. The probe lives on Sui's
-		// scope-local StrategyRegistry entry; Sui must acquire first.
-		consumes: [SuiTag] as const,
+const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOptions) => {
+	const packageRef = resource<PackageResourceId<Name>, KnownPackageResolved>(packageResourceId(name));
+	return definePlugin({
+		id: packageRef.id,
+		dependsOn: { sui: suiResource },
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, { sui }) =>
 			Effect.gen(function* () {
-				const sui = ctx.get(SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
-				const mode: PackageMode = {
+				const mode = {
 					mode: 'known',
 					packageName: name,
 					packageId: opts.packageId,
 					upgradeCapId: opts.upgradeCapId,
 					mvrOverride: opts.mvrPlaceholder,
-				};
+				} satisfies PackageMode;
 				const { resolved } = yield* bootPackageService(publisher, probe, registry, mode);
 				// Known mode never publishes — no receipt to walk, so
 				// the coin-discovery hook is skipped here. Users who
@@ -453,15 +410,16 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 				// fully-qualified type directly; the bare-type path
 				// hits the live RPC for metadata rather than the
 				// receipt-walker.
-				return resolved as KnownPackageResolved;
+				return resolved;
 			}),
 		errorContributions: packageErrorContributions,
-		capabilities: (resolved) => makeKnownCapabilities(name, opts, resolved),
+		capabilities: ({ value }) => makeKnownCapabilities(name, opts, value),
 	});
+};
 
 const makeLocalCapabilities = (
 	name: string,
-	opts: LocalPackageOptions<string, PackageCapture | undefined>,
+	opts: { readonly excludeFromCodegen?: boolean },
 	resolved: LocalPackageResolved,
 ) => {
 	// Snapshot + codegen lift their typed fields off the resolved
@@ -471,7 +429,7 @@ const makeLocalCapabilities = (
 		name,
 		resolved.publishReceipt?.packageId ?? resolved.packageId,
 	);
-	const codegen: CodegenableDecl<PackageBindings, 'package'> = makeLocalCodegenable(
+	const codegen: CodegenableDecl<'package'> = makeLocalCodegenable(
 		{
 			kind: 'local',
 			name,
@@ -502,7 +460,7 @@ const makeLocalCapabilities = (
 		},
 		autoMounted: true,
 	};
-	return capabilities(snap, codegen, registryContribution);
+	return [snap, codegen, registryContribution] as const;
 };
 
 const makeKnownCapabilities = (
@@ -511,7 +469,7 @@ const makeKnownCapabilities = (
 	resolved: KnownPackageResolved,
 ) => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
-	const codegen: CodegenableDecl<PackageBindings, 'package'> = makeKnownCodegenable({
+	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable({
 		kind: 'known',
 		name,
 		packageId: resolved.packageId,
@@ -534,7 +492,7 @@ const makeKnownCapabilities = (
 		},
 		autoMounted: true,
 	};
-	return capabilities(snap, codegen, registryContribution);
+	return [snap, codegen, registryContribution] as const;
 };
 
 // ---------------------------------------------------------------------------
@@ -547,16 +505,16 @@ const makeKnownCapabilities = (
  *
  *  Required `opts.publisher`: the account that signs the publish tx.
  *  Pass the same `account('alice')` reference used elsewhere in the
- *  stack — the package's `consumes:` includes `account/<publisher>`
+ *  stack — the package.s `dependsOn` includes `account/<publisher>`
  *  so the substrate orders the publisher's keypair + funding strictly
  *  before publish. */
 export const localPackage = <
 	Name extends string,
-	PublisherName extends string,
+	const Publisher extends PublisherAccountMember,
 	const Capture extends PackageCapture | undefined = undefined,
 >(
 	name: Name,
-	opts: LocalPackageOptions<PublisherName, Capture>,
+	opts: LocalPackageOptions<Publisher, Capture>,
 ) => buildLocalPlugin(name, opts);
 
 /** Verify-only against a fixed on-chain package id. The resolved
@@ -571,20 +529,20 @@ export const knownPackage = <Name extends string>(name: Name, opts: KnownPackage
  *  vocabulary matches the distilled doc's surface. */
 export function pkg<
 	Name extends string,
-	PublisherName extends string,
+	const Publisher extends PublisherAccountMember,
 	const Capture extends PackageCapture | undefined = undefined,
 >(
 	name: Name,
-	opts: LocalPackageOptions<PublisherName, Capture>,
-): ReturnType<typeof buildLocalPlugin<Name, PublisherName, Capture>>;
+	opts: LocalPackageOptions<Publisher, Capture>,
+): ReturnType<typeof buildLocalPlugin<Name, Publisher, Capture>>;
 export function pkg<Name extends string>(
 	name: Name,
 	opts: KnownPackageOptions,
 ): ReturnType<typeof buildKnownPlugin<Name>>;
 export function pkg<
 	Name extends string,
-	PublisherName extends string,
+	const Publisher extends PublisherAccountMember,
 	const Capture extends PackageCapture | undefined = undefined,
->(name: Name, opts: LocalPackageOptions<PublisherName, Capture> | KnownPackageOptions) {
+>(name: Name, opts: LocalPackageOptions<Publisher, Capture> | KnownPackageOptions) {
 	return 'packageId' in opts ? buildKnownPlugin(name, opts) : buildLocalPlugin(name, opts);
 }

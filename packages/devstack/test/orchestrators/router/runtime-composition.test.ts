@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { Context, Effect, Layer, Ref, Stream, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
+import { definePlugin } from '../../../src/api/define-plugin.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
 import {
 	buildProductionOrchestratorSinks,
@@ -39,7 +39,6 @@ import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import { supervise, type HarvestContext } from '../../../src/substrate/runtime/index.ts';
 import { makeProjectionRef, updateRef } from '../../../src/substrate/runtime/projection/index.ts';
-import { defineTag } from '../../../src/substrate/tag.ts';
 
 const bootReport: BootReport = {
 	decision: 'opt-out',
@@ -71,16 +70,10 @@ const identity: Identity = {
 	chain: chainId('test:local'),
 };
 
-const RoutableTag = defineTag<'test/routable', { readonly ready: true }>(
-	'test/routable',
-	'test',
-);
-
-const routablePlugin = defineNodePlugin({
-	provides: RoutableTag,
-	consumes: [] as const,
+const routablePlugin = definePlugin({
+	id: 'test/routable',
 	kind: 'leaf-long-running',
-	acquire: () => Effect.succeed({ ready: true } as const),
+	start: () => Effect.succeed({ ready: true } as const),
 	capabilities: [routable] as const,
 });
 

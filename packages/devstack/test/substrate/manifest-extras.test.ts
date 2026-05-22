@@ -2,16 +2,17 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 
 import { resolveManifestExtras } from '../../src/substrate/manifest.ts';
+import { resource } from '../../src/substrate/plugin.ts';
 
 describe('manifest extras', () => {
 	it.effect('resolves callback extras against direct member values', () =>
 		Effect.gen(function* () {
-			const openLobby = { provides: { id: 'action:arena.openLobby' } };
-			const seal = { provides: { id: 'seal:seal' } };
+			const openLobby = resource('action:arena.openLobby');
+			const seal = resource('seal:seal');
 			const extras = yield* resolveManifestExtras(
 				(ctx) => {
-					const lobby = ctx.use(openLobby) as { readonly objectId: string };
-					const keyServer = ctx.use(seal) as {
+					const lobby = ctx.value(openLobby) as { readonly objectId: string };
+					const keyServer = ctx.value(seal) as {
 						readonly objectId: string;
 						readonly keyServerUrl: string;
 					};
@@ -24,17 +25,14 @@ describe('manifest extras', () => {
 					};
 				},
 				{
-					get: (tag) => {
-						throw new Error(`unexpected get(${tag.id})`);
-					},
-					use: (member) => {
-						if (member.provides.id === 'action:arena.openLobby') {
+					value: (resource) => {
+						if (resource.id === 'action:arena.openLobby') {
 							return { objectId: '0xfeed' };
 						}
-						if (member.provides.id === 'seal:seal') {
+						if (resource.id === 'seal:seal') {
 							return { objectId: '0xseal', keyServerUrl: 'http://seal.localhost:5175' };
 						}
-						throw new Error(`unknown member ${member.provides.id}`);
+						throw new Error(`unknown resource ${resource.id}`);
 					},
 				},
 			);

@@ -13,6 +13,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5181;
 const ROUTER_DEV_ORIGIN = 'http://dev.fork-greeting.fork-greeting.localhost:5175' as const;
 
+const localnet = sui();
 const publisher = account('publisher');
 const alice = account('alice');
 const bob = account('bob');
@@ -27,6 +28,6 @@ const devWallet = wallet({
 	allowLocalhostVite: true,
 	allowedOrigins: [ROUTER_DEV_ORIGIN, `http://localhost:${DEV_PORT}`],
 });
-const stack = defineDevstack({ members: [sui(), publisher, alice, bob, greeting, devWallet], stackName: 'fork-greeting' });
+const stack = defineDevstack({ members: [localnet, greeting, devWallet], stackName: 'fork-greeting' });
 
 export default stack;

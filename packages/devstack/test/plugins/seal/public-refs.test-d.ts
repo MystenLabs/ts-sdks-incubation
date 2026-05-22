@@ -8,7 +8,7 @@ import {
 } from '../../../src/plugins/seal/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import type { NetworkConfig } from '../../../src/substrate/network.ts';
-import type { ResolvedOf } from '../../../src/substrate/tag.ts';
+import type { ResourceValueOf } from '../../../src/substrate/plugin.ts';
 
 const localNet: NetworkConfig<'local'> = { mode: 'local', chain: chainId('sui:localnet') };
 const forkNet: NetworkConfig<'fork'> = {
@@ -20,7 +20,7 @@ const forkNet: NetworkConfig<'fork'> = {
 const publisher = account('publisher');
 
 export const _localSeal = seal({ mode: 'local-keygen', signer: publisher });
-type LocalSealResolved = ResolvedOf<typeof _localSeal.provides>;
+type LocalSealResolved = ResourceValueOf<typeof _localSeal>;
 export const _resolvedShape: SealResolved = null as never as LocalSealResolved;
 export const _keyServerUrl: string = (null as never as LocalSealResolved).keyServerUrl;
 export const _manager: SealKeyManager | null = (null as never as LocalSealResolved).manager;

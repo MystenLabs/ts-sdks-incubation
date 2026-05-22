@@ -3,7 +3,7 @@
 // Distilled-doc reference (06-walrus.md §"Lifecycle: Startup —
 // local cluster"). Eight ordered phases:
 //
-//   0. Yield deps (Sui, Identity, ChainProbe, FaucetTag opt,
+//   0. Yield deps (Sui, Identity, ChainProbe, faucet strategy opt,
 //                  seed accounts).
 //   1. Image build — upstream cargo image (lifted sibling) +
 //                    wrapper image (inline; content-addressed on
@@ -50,11 +50,10 @@ import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/chain-probe.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
 import type { ChainId } from '../../../substrate/brand.ts';
-import type { Tag } from '../../../substrate/tag.ts';
-import type { StackMember } from '../../../substrate/plugin.ts';
+import type { ResourceRef } from '../../../api/define-plugin.ts';
 import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
-import type { AccountTagId } from '../../account/index.ts';
+import type { AccountResourceId } from '../../account/index.ts';
 import type { AccountValue } from '../../account/service.ts';
 import {
 	walrusConfigError,
@@ -87,30 +86,13 @@ import {
 } from '../seed-wal.ts';
 
 /** A user-supplied seed account ref. The user passes the result of
- *  `account('publisher')` (a `StackMember` providing the per-name
- *  account tag) — NOT a magic-string token. Generic over the literal
- *  account name so the walrus plugin's `consumes: [SuiTag,
- *  ...account/${Name}[]]` preserves each per-account tag id for the
- *  substrate's `MissingProviders` check (mirrors wallet's
- *  `WalletAccountMember` and seal's `SealSignerMember`). */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type WalrusAccountMember<Name extends string = string> = StackMember<
-	Tag<AccountTagId<Name>, AccountValue>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	ReadonlyArray<Tag<string, any>>,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	any
+ *  `account('publisher')` — NOT a magic-string token. Generic over the
+ *  literal account name so the walrus dependency tuple preserves each
+ *  per-account resource id. */
+export type WalrusAccountMember<Name extends string = string> = ResourceRef<
+	AccountResourceId<Name>,
+	AccountValue
 >;
-
-/** Tuple of per-account tags extracted from a tuple of seed-account
- *  `StackMember`s. Preserves each member's literal name so the
- *  walrus `consumes:` tuple and `MissingProviders` keep their narrow
- *  ids. Mirrors wallet's `WalletAccountTags`. */
-export type WalrusAccountTags<Members extends ReadonlyArray<WalrusAccountMember>> = {
-	readonly [K in keyof Members]: Members[K]['provides'];
-};
 
 /** Options for the local-cluster mode. Mirrors v3
  *  `WalrusLocalClusterOptions<Name>` (06-walrus.md §"Configuration"). */
@@ -145,9 +127,9 @@ export interface WalrusLocalClusterOptions<
 	/** If set, skips the lifted `gitFetch` of the walrus Move source
 	 *  and uses the on-disk path. */
 	readonly movePackagePath?: string;
-	/** Seed account members that should receive WAL. Each entry is the
-	 *  `StackMember` returned by `account('name')`. The substrate
-	 *  threads each member's tag through `consumes:` so the walrus
+	/** Seed account refs that should receive WAL. Each entry is the
+	 *  plugin/resource ref returned by `account('name')`. The ref is
+	 *  threaded through `dependsOn` so the walrus
 	 *  composite waits for each seed account's acquire (keypair mint +
 	 *  funding) before the WAL faucet strategy registers.
 	 *
@@ -263,10 +245,10 @@ export interface LocalClusterDeps {
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
 	/** Resolved seed account values — projected from
-	 *  `WalrusLocalClusterOptions.seedAccounts` by the barrel via
-	 *  `ctx.use(member)`. The first entry (when present) is the WAL
+	 *  `WalrusLocalClusterOptions.seedAccounts` by the barrel from
+	 *  resolved dependencies. The first entry (when present) is the WAL
 	 *  exchange admin signer. Empty array → no WAL faucet strategy
-	 *  registers + admin surface raises a typed seam error. */
+	 *  registers + admin surface raises a typed startup error. */
 	readonly seedAccounts: ReadonlyArray<AccountValue>;
 }
 

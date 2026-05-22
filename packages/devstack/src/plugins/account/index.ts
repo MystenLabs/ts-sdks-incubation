@@ -3,7 +3,7 @@
 // Architecture (12-account.md): Account is the named-identity layer
 // for devstack. It acquires a keypair (or impersonation slot), funds
 // it (default + cross-cutting), registers `{name, address}`, and
-// publishes a per-account resolved value via a uniquely-keyed Tag.
+// publishes a per-account resolved value via a unique resource id.
 //
 // User-facing factory shape:
 //
@@ -40,22 +40,20 @@
 
 import { Effect } from 'effect';
 
-import { capabilities } from '../../api/define-capabilities.ts';
-import { consumeMembers } from '../../api/consume-members.ts';
-import { defineNodePlugin } from '../../api/define-plugin.ts';
-import { pluginErrorContributions, readConsumedTag } from '../../api/plugin-authoring.ts';
-import { defineTag } from '../../api/tag.ts';
+import {
+	definePlugin,
+	resource,
+} from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { SuiTag } from '../sui/index.ts';
+import { suiResource } from '../sui/index.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS } from './errors.ts';
 import {
 	DEFAULT_EPHEMERAL_FUND_MIST,
-	type CoinMember,
 	type CrossCuttingFundingEntry,
-	type FundingCoinTags,
 	type ProjectedFundingEntry,
 } from './funding.ts';
 import {
@@ -70,26 +68,25 @@ import {
 	type AccountOptions,
 	type AccountValue,
 } from './service.ts';
-import type { CoinValue } from '../coin/index.ts';
 
 const accountErrorContributions = pluginErrorContributions(ACCOUNT_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
-// Tag construction
+// Resource construction
 // ---------------------------------------------------------------------------
 
-/** Per-account-instance tag. The substrate's tag id MUST be unique
+/** Per-account-instance resource. The substrate's resource id MUST be unique
  *  across the stack — we encode the account name as a literal-typed
  *  template literal so the compiler catches duplicate-name composes
  *  at the `defineDevstack` call site.
  *
- *  Distilled-doc invariant: tag id flows into the on-disk path, the
+ *  Distilled-doc invariant: resource id flows into the on-disk path, the
  *  manifest key, and container labels — the strict-charset name
  *  validation (in `service.ts`) protects all four call sites. */
-export type AccountTagId<Name extends string> = `account/${Name}`;
+export type AccountResourceId<Name extends string> = `account/${Name}`;
 
-const makeAccountTag = <Name extends string>(name: Name) =>
-	defineTag<AccountTagId<Name>, AccountValue>(`account/${name}` as AccountTagId<Name>, 'account');
+const accountResource = <Name extends string>(name: Name) =>
+	resource<AccountResourceId<Name>, AccountValue>(`account/${name}` as AccountResourceId<Name>);
 
 // ---------------------------------------------------------------------------
 // User-facing factory
@@ -106,15 +103,9 @@ const makeAccountTag = <Name extends string>(name: Name) =>
  *  Distilled-doc invariant: the name is validated at the FACTORY
  *  boundary (not just at acquire time) so a typo surfaces
  *  immediately, not at runtime. */
-/** Account `consumes:` shape — Sui (hard upstream for ordering) plus
- *  the per-coin-tag tuple projected from the user-supplied funding
- *  entries. Preserving each literal `coin:${Sym}` is load-bearing for
- *  the stack-composition `MissingProviders` check (mirrors wallet's
- *  account-tag projection — see `plugins/wallet/index.ts`). */
-type AccountConsumes<Funding extends ReadonlyArray<CrossCuttingFundingEntry>> = readonly [
-	typeof SuiTag,
-	...FundingCoinTags<Funding>,
-];
+type FundingCoinMembers<Funding extends ReadonlyArray<CrossCuttingFundingEntry>> = {
+	readonly [K in keyof Funding]: Funding[K]['coin'];
+};
 
 export const account = <
 	const N extends string,
@@ -129,56 +120,44 @@ export const account = <
 	// fully-discriminated value.
 	const resolved: AccountOptions = opts === undefined ? { kind: 'ephemeral', name } : opts;
 	// Defensive: if the user passed a different `name:` than the
-	// outer factory arg, prefer the OUTER one (it drives the tag id).
+	// outer factory arg, prefer the OUTER one (it drives the resource id).
 	const opts2: AccountOptions = { ...resolved, name } as AccountOptions;
 
-	const tag = makeAccountTag(name);
+	const accountRef = accountResource(name);
 
-	// Pull the funding member tuple out of opts (may be undefined for
-	// the bare form / variants without funding). `consumeMembers`
-	// projects each member's `.provides` tag (preserving literal
-	// `coin:${Sym}` ids for the stack-level `MissingProviders` check)
-	// and pre-builds the `projectInScope` closure used inside `acquire`.
+	// Pull the funding resource tuple out of opts (may be undefined for
+	// the bare form / variants without funding). The tuple preserves
+	// plugin-valued refs when the caller passed coin plugins, so
+	// recursive stack composition can include those publishers.
 	const fundingEntries =
 		(opts?.funding as ReadonlyArray<CrossCuttingFundingEntry> | undefined) ?? [];
-	const fundingMembers: ReadonlyArray<CoinMember> = fundingEntries.map((e) => e.coin);
-	const consumedFunding = consumeMembers(fundingMembers);
-	const consumes = [SuiTag, ...consumedFunding.consumesTags] as unknown as AccountConsumes<Funding>;
+	const fundingMembers = fundingEntries.map(
+		(e) => e.coin,
+	) as unknown as FundingCoinMembers<Funding>;
+	const dependencies = [suiResource, ...fundingMembers] as const;
 
-	return defineNodePlugin({
-		provides: tag,
-		// Strict upstream declaration — distilled-doc invariant.
-		// Sui is HARD; every funding `CoinMember` is also HARD (the
-		// substrate's topological scheduler ensures the coin's
-		// publish / registry-entry lands before account funding
-		// dispatches against `coinType:<fullCoinType>`). Faucet stays
-		// consumed via the StrategyRegistry (no direct dep edge, per
-		// 11-faucet.md "Faucet is a true leaf").
-		consumes,
+	return definePlugin({
+		id: accountRef.id,
+		dependsOn: dependencies,
 		// Account is a value-producer (no long-lived server / container);
 		// `leaf-one-shot` matches the lifecycle (acquire → ready → done
 		// at scope close).
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		acquire: (ctx) =>
+		start: (_ctx, deps) =>
 			Effect.gen(function* () {
-				// `ctx.get(tag)` widens when `Consumes` carries template-
-				// literal-generic tag ids. `readConsumedTag` centralizes
-				// the narrow cast for this substrate limitation.
-				const sui = readConsumedTag(ctx, SuiTag);
+				const [sui, ...resolvedCoinValues] = deps;
 				// Identity + on-disk runtime root come from the
 				// supervisor-provided substrate context.
 				const identity = yield* IdentityContext;
 				const paths = yield* StackPathsService;
 
-				// Project each funding entry's `CoinMember` to a
-				// `{fullCoinType, amount}` projection. The §14 cast
-				// lives inside `consumeMembers.projectInScope`; we map
-				// resolved values back onto entries by index.
-				const resolvedCoinValues = consumedFunding.projectInScope(ctx);
+				// Project each funding dependency value to a
+				// `{fullCoinType, amount}` projection. Dependency order
+				// mirrors `fundingEntries`, after the hard Sui upstream.
 				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = fundingEntries.map(
 					(entry, i) => ({
-						fullCoinType: (resolvedCoinValues[i] as CoinValue).fullCoinType,
+						fullCoinType: resolvedCoinValues[i]!.fullCoinType,
 						amount: entry.amount,
 					}),
 				);
@@ -212,7 +191,7 @@ export const account = <
 		// would force placeholder values for fields only known at
 		// acquire time.
 		errorContributions: accountErrorContributions,
-		capabilities: (resolved, acquireCtx2) => {
+		capabilities: ({ value: resolved, runtime: acquireCtx2 }) => {
 			const realEntry: AccountRegistryEntry = {
 				name,
 				address: resolved.address,
@@ -236,7 +215,7 @@ export const account = <
 			const registry = makeAccountRegistryContribution<N>(
 				realEntry as AccountRegistryEntry & { readonly name: N },
 			);
-			return capabilities(snapshot, codegen, registry);
+			return [snapshot, codegen, registry] as const;
 		},
 	});
 };
@@ -285,7 +264,6 @@ export { ACCOUNT_ERROR_TAGS } from './errors.ts';
 export type {
 	CoinMember,
 	CrossCuttingFundingEntry,
-	FundingCoinTags,
 	ProjectedFunding,
 	ProjectedFundingEntry,
 } from './funding.ts';

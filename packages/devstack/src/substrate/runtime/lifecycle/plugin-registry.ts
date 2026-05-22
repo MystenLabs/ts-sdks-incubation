@@ -4,7 +4,7 @@
 // holds:
 //   - the live `LifecycleStatus` (Ref, single-fiber linearizable),
 //   - the resolved value (set when status transitions to `ready`),
-//   - the scope owning the plugin's `acquire` finalizers,
+//   - the scope owning the plugin's `start` finalizers,
 //   - a `Deferred` that downstream consumers await for the ready gate.
 //
 // Composite roll-up: inner participants' status transitions still
@@ -23,9 +23,9 @@ import { assertTransition } from './state-machine.ts';
 
 /** Per-registry side channel: synchronously-readable resolved values.
  *  Keyed by plugin key. Populated by `markReady`; consulted by the
- *  synchronous `BuildContext.get(tag)`. We can't put the value on the
- *  `Deferred` itself in a publicly-supported way, and `BuildContext`'s
- *  signature is sync; this is the safe escape hatch.
+ *  synchronous dependency reader. We can't put the value on the
+ *  `Deferred` itself in a publicly-supported way, and plugin start
+ *  receives dependency values synchronously; this is the safe escape hatch.
  *
  *  Module-private; only `makeRegistry` writes into the map it
  *  allocates. */
@@ -37,10 +37,7 @@ type ResolvedMap = Map<PluginKey, ResolvedValue>;
 
 /** Erased resolved value held in the registry. The supervisor casts
  *  back to the concrete type at the boundary where it threads the
- *  value into a downstream plugin's `BuildContext.get(tag)`. The
- *  type-system guarantees the cast is sound because `BuildContext`'s
- *  generic constrains `tag` to a member of the consumes tuple, whose
- *  resolved type is the concrete shape stored here. */
+ *  value into a downstream plugin's resolved dependency object. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ResolvedValue = any;
 
@@ -56,11 +53,11 @@ export interface PluginEntry {
 	 *  await this in the ready-gate. Failure is propagated by interruption
 	 *  via `Deferred.fail` to keep the error chain in the cause walker. */
 	readonly readyGate: Deferred.Deferred<ResolvedValue, PluginAcquireFailed>;
-	/** Per-plugin Scope. Closing it runs the `acquire`'s finalizers. */
+	/** Per-plugin Scope. Closing it runs the `start` finalizers. */
 	readonly scope: Scope.Closeable;
 }
 
-/** Tagged failure: a plugin's `acquire` rejected. Carries the cause and
+/** Tagged failure: a plugin's `start` rejected. Carries the cause and
  *  the failing plugin's key so the cause walker / cascade formatter can
  *  attribute it. */
 export class PluginAcquireFailed extends Data.TaggedError('PluginAcquireFailed')<{
@@ -72,10 +69,10 @@ export class PluginAcquireFailed extends Data.TaggedError('PluginAcquireFailed')
  *  whose entry isn't registered or hasn't reached `ready`. Programmer-
  *  level error class — the dep-graph guarantees this can't happen on
  *  the supervisor's own scheduling path. Surfaced when a plugin author
- *  reaches outside their declared `consumes`. */
+ *  reaches outside their declared dependencies. */
 export class UnknownDependency extends Data.TaggedError('UnknownDependency')<{
 	readonly pluginKey: PluginKey;
-	readonly requestedTagId: string;
+	readonly requestedResourceId: string;
 }> {}
 
 // -----------------------------------------------------------------------------
@@ -137,7 +134,7 @@ export const makeRegistry = (
 	const getEntry = (key: PluginKey): Effect.Effect<PluginEntry, UnknownDependency> => {
 		const entry = entries.get(key);
 		if (entry === undefined) {
-			return Effect.fail(new UnknownDependency({ pluginKey: key, requestedTagId: '' }));
+			return Effect.fail(new UnknownDependency({ pluginKey: key, requestedResourceId: '' }));
 		}
 		return Effect.succeed(entry);
 	};
@@ -218,62 +215,42 @@ export const readResolvedSync = (
 };
 
 // -----------------------------------------------------------------------------
-// BuildContext over the registry
+// Dependency reader over the registry
 // -----------------------------------------------------------------------------
 
 /**
- * Build a `BuildContext` over the registry for plugin `key`. The
- * context exposes two equivalent accessors:
- *
- *  - `get(tag)` — caller passes the tag value directly.
- *  - `use(member)` — caller passes the upstream plugin member; the
- *    runtime delegates to the same tag-indexed lookup via
- *    `member.provides.id`.
- *
- * Both consult the registry: the upstream key must already be `ready`
- * (the supervisor ensures this by awaiting the upstream ready-gates
- * BEFORE running this plugin's acquire), and the registry returns the
- * stored resolved value.
- *
- * The returned context type leans on the `AnyTag` widening in the
- * plugin shape — the supervisor knows the structural invariant holds
- * because it's the only producer of `PluginEntry`.
+ * Build a synchronous dependency reader over the registry for one
+ * plugin. The upstream key must already be `ready`; the supervisor
+ * ensures this by awaiting upstream ready-gates before invoking start.
  */
-export const buildContextFor = (
+export const buildDependencyReaderFor = (
 	registry: PluginRegistry,
 	node: DepNode,
-): {
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	get: (tag: { readonly id: string }) => any;
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	use: (member: { readonly provides: { readonly id: string } }) => any;
-} => {
-	// Pre-build a tag-id → upstream-key index for this node so the
-	// lookups are O(1) instead of scanning consumes.
-	const tagIdToKey = new Map<string, PluginKey>();
-	node.member.consumes.forEach((tag, i) => {
+): ((resource: { readonly id: string }) => unknown) => {
+	// Pre-build a resource-id → upstream-key index for this node so the
+	// lookups are O(1) instead of scanning dependencies.
+	const resourceIdToKey = new Map<string, PluginKey>();
+	node.upstreamResources.forEach((resource, i) => {
 		const upstream = node.upstreamKeys[i];
-		if (upstream !== undefined) tagIdToKey.set(tag.id, upstream);
+		if (upstream !== undefined) resourceIdToKey.set(resource.id, upstream);
 	});
-	const lookupByTagId = (tagId: string): unknown => {
-		const key = tagIdToKey.get(tagId);
+	return (resource): unknown => {
+		const key = resourceIdToKey.get(resource.id);
 		if (key === undefined) {
 			// Programmer error: the plugin reached outside its declared
-			// consumes. The type system normally rules this out — defending
+			// dependencies. The type system normally rules this out — defending
 			// here keeps the runtime honest in the face of cast escapes.
-			throw new Error(`BuildContext: tag '${tagId}' not in this plugin's declared consumes`);
+			throw new Error(
+				`DependencyReader: resource '${resource.id}' not in this plugin's declared dependencies`,
+			);
 		}
 		const value = readResolvedSync(registry, key);
 		if (value === undefined) {
 			throw new Error(
-				`BuildContext: upstream '${key}' has no resolved value yet — ` +
+				`DependencyReader: upstream '${key}' has no resolved value yet — ` +
 					'supervisor must mark the entry ready before downstream acquire.',
 			);
 		}
 		return value;
-	};
-	return {
-		get: (tag) => lookupByTagId(tag.id),
-		use: (member) => lookupByTagId(member.provides.id),
 	};
 };

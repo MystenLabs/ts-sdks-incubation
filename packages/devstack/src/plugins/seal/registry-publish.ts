@@ -1,15 +1,15 @@
 // Seal plugin — public resolved value.
 //
-// Tag ids:
+// Resource ids:
 //
 //   - `seal:<name>` — read-side key-server fields plus the local-only
 //                     manager handle when the stack owns the master key.
 //
 // The `<name>` suffix lets multiple seal instances coexist in a stack
-// without colliding on the tag registry (distilled doc §Pain Points
+// without colliding on the resource registry (distilled doc §Pain Points
 // #7 — multi-instance currently untested but structurally supported).
 
-import { defineTag } from '../../api/tag.ts';
+import { resource } from '../../api/define-plugin.ts';
 import type { SealKeyManager } from './key-manager.ts';
 
 // ---------------------------------------------------------------------------
@@ -46,13 +46,14 @@ export interface SealResolved extends SealKeyServer {
 	readonly manager: SealKeyManager | null;
 }
 
-/** Tag id constructor for the read-side handle. */
-export type SealTagId<Name extends string> = `seal:${Name}`;
-export const sealTagId = <Name extends string>(name: Name): SealTagId<Name> => `seal:${name}`;
+/** Resource id constructor for the read-side handle. */
+export type SealResourceId<Name extends string> = `seal:${Name}`;
+export const sealResourceId = <Name extends string>(name: Name): SealResourceId<Name> =>
+	`seal:${name}`;
 
-/** Construct the read-side tag. */
-export const makeSealTag = <Name extends string>(name: Name) =>
-	defineTag<SealTagId<Name>, SealResolved>(sealTagId(name), 'seal');
+/** Construct the read-side resource. */
+export const makeSealResource = <Name extends string>(name: Name) =>
+	resource<SealResourceId<Name>, SealResolved>(sealResourceId(name));
 
 // ---------------------------------------------------------------------------
 // Projection helpers — narrow the composite's resolved value

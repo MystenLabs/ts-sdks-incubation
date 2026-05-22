@@ -35,9 +35,8 @@ export class CodegenEmitterCollision extends Schema.TaggedErrorClass<CodegenEmit
 	},
 ) {}
 
-/** A `Codegenable.emit()` returned a non-record value, or the
- *  record contained a value that the renderer cannot serialise
- *  (a function, a symbol, a circular reference, etc.). */
+/** A `Codegenable.emit()` wrote a value that the renderer cannot
+ *  serialise (a function, a symbol, a circular reference, etc.). */
 export class CodegenRenderError extends Schema.TaggedErrorClass<CodegenRenderError>()(
 	'CodegenRenderError',
 	{

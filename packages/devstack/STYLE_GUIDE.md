@@ -198,7 +198,7 @@ underscore prefix (`_ctx`, `_unused`) exempts ONLY function parameters, not top-
 unused local that must be retained for type-positional or design-comment reasons, use a trailing
 `void <name>;` line — matches the existing `void Scope;` pattern at substrate L0 entrypoints and the
 `void ctx;` design-doc pattern in `plugins/wallet/index.ts:142` (kept so the compose-time
-`consumes:` edge is documented even though the wallet body doesn't read the resolved value).
+dependency edge is documented even though the wallet body doesn't read the resolved value).
 
 ---
 
@@ -208,8 +208,8 @@ unused local that must be retained for type-positional or design-comment reasons
   `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`). v3's PascalCase is
   dropped.
 - Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`,
-  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `CompositePrimitive`, `NodePlugin`,
-  `Renderer`, `ContainerRuntime`).
+  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `CompositePrimitive`, `Renderer`,
+  `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
   `OnChainArtifactPublisherService`, `ContainerRuntimeService`, `PackageRegistryService`,
@@ -221,7 +221,7 @@ unused local that must be retained for type-positional or design-comment reasons
   `__UnsatisfiedWitnessesError<W>`, `__LifecycleTableShape`, `__ProjectionFieldsClosed`,
   `__TuiDisplayVocabClean`). Established convention — surfaces structural validation errors at the
   call-site argument.
-- Per-instance tag id literal templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
+- Per-instance resource id literal templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
   `action:<name>`, `deepbook/<name>`. Mixing `/` vs `:` separators is intentional per plugin
   convention; do not "normalize".
 - File names: kebab-case (`stage-and-swap.ts`, `cross-process-lock.ts`). Effect-Service module shape
@@ -230,10 +230,10 @@ unused local that must be retained for type-positional or design-comment reasons
   - **Composites** carry a declared `compositeKey: PluginKey` on their `CompositePrimitiveDecl`; the
     dep-graph reads it verbatim. Composite authors choose the key shape
     (`pluginKey(\`seal:${name}\`)`, `pluginKey(args.compositeKey)`) — kept stable across cycles.
-  - **Leaves** mint `${member.provides.id}#${ordinal}` where `ordinal` is the position in the
-    surrounding member tuple. The `#N` suffix disambiguates two members providing the same tag id in
+  - **Leaves** mint `${member.id}#${ordinal}` where `ordinal` is the position in the
+    surrounding member tuple. The `#N` suffix disambiguates two members providing the same resource id in
     one stack.
-  - **Inner composite participants** mint `${parentKey}/inner/${inner.provides.id}#${ordinal}` so
+  - **Inner composite participants** mint `${parentKey}/inner/${inner.id}#${ordinal}` so
     two composites embedding the same leaf shape stay distinct.
   - Plugin authors do NOT call `pluginKey(...)` to derive their own leaf key — the substrate mints
     it. Composites that need a stable key publish one via `CompositePrimitiveDecl.compositeKey`;
@@ -426,95 +426,25 @@ projection, but do NOT reimplement the underlying exec.
 
 ---
 
-## 14. Cross-plugin tag access
+## 14. Cross-plugin dependencies
 
-`ctx.get(tag)` for a `consumes` member whose tag id is generic (e.g. an `account('alice')`
-referenced from `wallet`) does NOT reduce in the `BuildContext<Consumes[number]>` type. The
-substrate addresses this via `ctx.use(member)`, which extracts the literal-typed `provides` generic
-directly from the member argument.
+Public plugin authors declare upstreams with `definePlugin({ dependsOn })`. Do not introduce new
+plugin code that reads dependency values through `ctx.get(tag)`, `ctx.use(member)`,
+`readConsumedTag`, or the removed `consumeMember(s)` helpers.
 
-- Prefer `ctx.use(member)` for cross-plugin refs whose upstream tag id flows through a generic
-  `Consumes`. The accessor returns `ResolvedOf<M['provides']>`; membership in `Consumes` is enforced
-  structurally — a member outside the acquiring plugin's `consumes` surfaces a branded
-  `__MemberNotConsumedError<Id>` at the call site.
-- `ctx.get(tag)` keeps working unchanged for the case where the consumes tuple is concrete at the
-  call site.
+Use the shape of `dependsOn` to make the `start` callback ergonomic:
 
-### Canonical helpers (use these first)
+- tuple dependencies produce tuple deps: `dependsOn: [suiResource, accountRef]`;
+- object dependencies produce object deps: `dependsOn: { sui: suiResource, signer }`;
+- a single dependency produces that dependency's resolved value directly.
 
-The §14 localized cast is wrapped in two API helpers — plugin authors reach for these BEFORE writing
-a cast:
+Built-in options should accept plugin/resource refs (`ResourceRef<id, value>`) rather than substrate
+`StackMember` aliases. Preserve the actual plugin value in the factory generic so recursive
+`defineDevstack` expansion can see plugin-valued dependencies. Do not add plugin-local casts such as
+`deps as ...` to compensate for weak typing; fix the public helper types instead.
 
-- **`consumeMembers(membersTuple)`** — for plugins that thread a TUPLE of user-supplied member refs
-  (wallet's `extras`, account's seed accounts, walrus's seed accounts). Returns
-  `{ consumesTags, projectInScope(ctx) }`. The `projectInScope` walk hides the
-  `ctx as { use: (m) => unknown }` cast. Call sites stop repeating it. (See
-  `src/api/consume-members.ts`.)
-- **`consumeMember(member)`** — scalar companion, for plugins that thread a SINGLE user-supplied
-  member ref (coin's `pkg`, package's `opts.publisher`, seal's `opts.signer`). Returns
-  `{ consumesTag, projectInScope(ctx) }`. Hides the same cast for the scalar case.
-
-Reference uses today:
-
-- `plugins/coin/index.ts:witness` — `consumeMember(pkg)` for the publishing package upstream.
-- `plugins/package/index.ts:localPackage` — `consumeMember(opts.publisher)` for the publisher
-  account upstream.
-- `plugins/seal/index.ts:buildLocalKeygenPlugin` — `consumeMember(opts.signer)` for the signer
-  account upstream.
-- `plugins/wallet/index.ts` + `plugins/account/index.ts` + `plugins/walrus/index.ts` —
-  `consumeMembers(...)` for their respective seed/extras tuples.
-
-When you reach for a localized `ctx as { readonly use: (m: typeof X) => Y }` cast in a new plugin,
-the answer is almost always to reach for one of the helpers above instead.
-
-### Known limitation: `BuildContext.use` for template-literal-generic tag ids
-
-The substrate's `__MemberNotConsumedError` is a conditional over the consumes tuple:
-`account/${P} extends "sui" | account/${P}` — TS does NOT reduce this while `P` is a free type
-variable, so the conditional stays deferred and the call-site sees the branded error type instead of
-the resolved value. The `consumeMembers` / `consumeMember` helpers hide ONE localized cast inside
-the helper (so the call site stays clean); the underlying limitation is tracked at Open slot O10
-(substrate's `use` signature gaining a distributive form that reduces under template-literal-generic
-tag ids).
-
-### Sites where `consumeMembers` / `consumeMember` does NOT apply (cast still localized)
-
-Three remaining sites carry a localized cast because no `StackMember` argument is in scope to feed
-the helper — the cast is unavoidable until the substrate's `BuildContext.get<T>` signature gains the
-same distributive treatment:
-
-- **Action (`plugins/action/index.ts`)** — three localized casts in the action build-context
-  projection:
-  - The `ctx.get(SuiTag)` cast (`ctx as { get: (t: typeof SuiTag) => SuiClient }`) surfaces the
-    resolved `SuiClient` for the body's SDK seam. `consumeMember` is NOT applicable — `SuiTag` is
-    hard-included by the factory's `consumesTuple = [SuiTag, ...upstreamTags]`, not passed as a
-    `StackMember` by the caller, so there's no member to thread.
-  - The `bodyCtx.get` forwarder projects `ctx as unknown as { get: (tag: T) => ResolvedOf<T> }` to
-    forward the typed `T extends ConsumesTagsOf<Consumes>[number]` to the underlying substrate ctx.
-    Same generic-reduction limitation; cast is localized to one method.
-  - The `bodyCtx.use` forwarder projects `ctx as unknown as { use: (m) => unknown }` to forward
-    member refs through the substrate `use` walker. Same generic-reduction limitation; cast is
-    localized to one method.
-- **Account (`plugins/account/index.ts`)** — the SuiTag read site uses
-  `ctx as { get: (t: typeof SuiTag) => SuiClient }` for the same reason as action's first cast
-  (SuiTag is hard-included by the factory, not threaded as a member).
-- **Walrus (`plugins/walrus/index.ts`)** — the SuiTag read site uses the same cast for the same
-  reason.
-
-In all three sites: keep cast narrow (one `get`/`use` projection per call site), NEVER widen to
-`ctx as any`. Drop the cast in favour of the helpers IF a future refactor makes the upstream
-available as a `StackMember`.
-
-### Resolved sites (history)
-
-- **Wallet (`plugins/wallet/index.ts:142`)** — the `ctx.get` cast was a no-op runtime cross-plugin
-  ordering enforcement (`Sui` was in `consumes` only to schedule the build edge). Replaced with
-  `void ctx;` + a design comment. DO NOT restore the cast.
-- **Coin (`plugins/coin/index.ts:witness`)** — migrated to `consumeMember(pkg)`.
-- **Package (`plugins/package/index.ts:localPackage`)** — migrated to
-  `consumeMember(opts.publisher)`.
-- **Seal (`plugins/seal/index.ts:buildLocalKeygenPlugin`)** — migrated to
-  `consumeMember(opts.signer)`.
+The substrate-level `defineNodePlugin` / `defineTag` / `ctx.use` model has been deleted. Production
+plugin barrels stay on `definePlugin`, and the engine consumes that resource-native shape directly.
 
 ---
 
@@ -679,9 +609,6 @@ Per `notes/api-comparison.md`, examples are 5-30% longer than v3 because sugar w
 Pending sugar additions (do not add new examples that work around these — instead, wait or fix the
 substrate):
 
-- Auto-mount `sui()` when missing (S1).
-- Auto-project `.provides` for cross-plugin tag references (S3) — `coin.witness(usdc, 'MOCK_USDC')`
-  not `coin.witness(usdc.provides, 'MOCK_USDC')`.
 - Infer `stackName` from cwd / package.json (S4).
 - Action body `ctx.signAndExecute(account, build)` substrate helper (S5).
 - `coin.fromPackage(pkg, 'WITNESS')` shape (S10).
@@ -723,10 +650,10 @@ each.
 | **O6**  | `CapabilitySinks` registry — invert supervisor's contract awareness (PR2-A in flight)                                                                                                                                                                                                                                                                                                                                           | substrate triage (PR2-A)      | `substrate/runtime/supervisor.ts:35-40,285-312`                                              |
 | **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                                    | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
 | **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                                  | substrate triage              | future container-owning plugins                                                              |
-| **O10** | `BuildContext<...>.use(member)` distributive-conditional reduction for template-literal-generic tag ids — substrate landed `use(member)`; the conditional doesn't reduce when the upstream member's tag id is a template-literal-generic (`account/${P}`). One cast site at `plugins/package/index.ts:225` localizes around the limitation. Pending substrate type-system amendment (distributive `P extends P ? ... : never`). | substrate type-system pass    | `plugins/package/index.ts:225`                                                               |
+| **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                              | closed                        | `src/substrate/plugin.ts`                                                                     |
 | **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                                  | observability cleanup         | older plugin/runtime span sites                                                              |
 | **O13** | Wire or delete: `Logger` service / `SpanAttr` helpers / `LifecycleFact` / `PluginErrorContribution` / `*_ERROR_TAGS` arrays (PR2-A in flight)                                                                                                                                                                                                                                                                                   | substrate triage (PR2-A)      | substrate/runtime/observability/, every plugin                                               |
-| **O15** | Cross-plugin reference mechanism (witness/`.provides` vs auto-projection)                                                                                                                                                                                                                                                                                                                                                       | API design pass               | every cross-plugin reference site                                                            |
+| **O15** | Closed by resource refs in `dependsOn`; plugin/resource values are the cross-plugin reference mechanism.                                                                                                                                                                                                                                                                                                                         | closed                        | every cross-plugin reference site                                                            |
 | **O16** | Root-barrel re-export policy                                                                                                                                                                                                                                                                                                                                                                                                    | API design pass               | `src/index.ts` (today no clear main entry)                                                   |
 
 **Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):

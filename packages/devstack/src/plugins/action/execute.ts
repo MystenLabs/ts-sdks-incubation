@@ -19,8 +19,9 @@
 //   - The user supplies a `build(tx)` callback that populates the
 //     `Transaction` synchronously (moveCalls, transferObjects, etc.).
 //   - The user supplies the signing `account` (an `AccountValue` from
-//     `ctx.use(alice)`); we sign with the locked transaction signer
-//     and drive the SDK's `executeTransaction` directly.
+//     the action's resolved dependency values); we sign with the
+//     locked transaction signer and drive the SDK's
+//     `executeTransaction` directly.
 //   - The helper returns an `ActionReceipt` projection: `{ digest,
 //     objectChanges }`. The `objectChanges` array is shaped uniformly so
 //     downstream consumers can pick by `objectType` substring.

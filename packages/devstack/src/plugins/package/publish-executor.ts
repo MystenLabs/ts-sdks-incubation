@@ -1,7 +1,7 @@
 // Concrete `PublishExecutor` — wires the Move build, publish-tx
 // builder, and post-publish ready-probe over (a) the resolved
-// `SuiClient` from `SuiTag` and (b) the publisher account's signer
-// from a per-package `AccountTag`.
+// `SuiClient` from the Sui dependency and (b) the publisher account's signer
+// from the account dependency.
 //
 // Architecture: the executor is a small adapter — `mode-local.ts`
 // owns the 5-phase produce body (scrub → build → publish-tx → wait-
@@ -44,7 +44,7 @@ import type { SuiSdkShim } from '../sui/chain-probe.ts';
 // ---------------------------------------------------------------------------
 
 export interface PublishExecutorInputs {
-	/** The resolved SDK shim from `SuiTag`. Carries `core.executeTransaction`,
+	/** The resolved SDK shim from the Sui dependency. Carries `core.executeTransaction`,
 	 *  `core.waitForTransaction`, plus the opaque `client` ref used by
 	 *  `Transaction.build({ client })`. */
 	readonly sdk: SuiSdkShim;

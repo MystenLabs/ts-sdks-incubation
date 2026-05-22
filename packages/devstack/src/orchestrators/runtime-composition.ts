@@ -191,24 +191,23 @@ export const buildProductionOrchestratorSinks = (
 	});
 
 const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
-	const tagIdToKey = new Map<string, PluginKey>();
+	const resourceIdToKey = new Map<string, PluginKey>();
 	for (const [key, node] of ctx.graph.nodes) {
-		tagIdToKey.set(node.member.provides.id, key);
+		resourceIdToKey.set(node.member.id, key);
 	}
-	const lookup = (tagId: string): unknown => {
-		const key = tagIdToKey.get(tagId);
+	const lookup = (resourceId: string): unknown => {
+		const key = resourceIdToKey.get(resourceId);
 		if (key === undefined) {
-			throw new Error(`manifest extras requested unknown tag '${tagId}'`);
+			throw new Error(`manifest extras requested unknown resource '${resourceId}'`);
 		}
 		const resolved = readResolvedSync(ctx.registry, key);
 		if (resolved === undefined) {
-			throw new Error(`manifest extras requested unresolved tag '${tagId}'`);
+			throw new Error(`manifest extras requested unresolved resource '${resourceId}'`);
 		}
 		return resolved;
 	};
 	return {
-		get: (tag: { readonly id: string }) => lookup(tag.id),
-		use: (member: { readonly provides: { readonly id: string } }) => lookup(member.provides.id),
+		value: (resource: { readonly id: string }) => lookup(resource.id),
 	};
 };
 

@@ -17,6 +17,7 @@ const DEV_PORT = 5173;
 const DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
 const ROUTER_DEV_ORIGIN = 'http://dev.token-studio.token-studio.localhost:5175' as const;
 
+const localnet = sui();
 const alice = account('alice');
 const bob = account('bob');
 const carol = account('carol');
@@ -41,6 +42,6 @@ const app = hostService({
 	needs: [managedCoin, studioCoin, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [sui(), alice, bob, carol, managedCoin, studioCoin, devWallet, app], stackName: 'token-studio' });
+const stack = defineDevstack({ members: [localnet, app], stackName: 'token-studio' });
 
 export default stack;

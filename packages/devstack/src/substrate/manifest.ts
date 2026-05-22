@@ -34,8 +34,7 @@ export interface ManifestEnvelope {
 export type ManifestExtras = Readonly<Record<string, unknown>>;
 
 export interface ManifestExtrasContext {
-	readonly get: (tag: { readonly id: string }) => unknown;
-	readonly use: (member: { readonly provides: { readonly id: string } }) => unknown;
+	readonly value: (resource: { readonly id: string }) => unknown;
 }
 
 export type ManifestExtrasInput =
