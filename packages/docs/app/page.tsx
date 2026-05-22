@@ -8,17 +8,6 @@ import { baseOptions } from '@/app/layout.config';
 
 const packages = [
 	{
-		title: 'Devstack',
-		href: '/devstack',
-		description:
-			'Compose local Sui networks, accounts, packages, services, generated files, tests, and wallet wiring from one TypeScript config.',
-		links: [
-			{ label: 'Quickstart', href: '/devstack/quickstart' },
-			{ label: 'Services', href: '/devstack/features/services' },
-			{ label: 'Testing', href: '/devstack/features/testing-vitest' },
-		],
-	},
-	{
 		title: 'Dev Wallet',
 		href: '/dev-wallet',
 		description:
@@ -27,6 +16,17 @@ const packages = [
 			{ label: 'Getting started', href: '/dev-wallet/getting-started' },
 			{ label: 'Adapters', href: '/dev-wallet/reference/adapters' },
 			{ label: 'E2E testing', href: '/dev-wallet/guides/e2e-testing' },
+		],
+	},
+	{
+		title: 'Devstack',
+		href: '/devstack',
+		description:
+			'Compose local Sui networks, accounts, packages, services, generated files, tests, and wallet wiring from one TypeScript config.',
+		links: [
+			{ label: 'Quickstart', href: '/devstack/quickstart' },
+			{ label: 'Services', href: '/devstack/features/services' },
+			{ label: 'Testing', href: '/devstack/features/testing-vitest' },
 		],
 	},
 ];
