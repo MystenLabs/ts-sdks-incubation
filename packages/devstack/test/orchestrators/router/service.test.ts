@@ -35,6 +35,7 @@ import {
 import { dispatchFileId } from '../../../src/orchestrators/router/hostname.ts';
 import type { RouterProfile } from '../../../src/orchestrators/router/profile.ts';
 import {
+	DEFAULT_ROUTE_READINESS_TIMEOUT_MS,
 	layerRouterConfigLiteral,
 	layerRouterService,
 	RouterService,
@@ -381,6 +382,10 @@ describe('RouterService.boot', () => {
 });
 
 describe('RouterService.contributeRoute', () => {
+	it('keeps the default route-readiness budget tolerant of shared-router contention', () => {
+		expect(DEFAULT_ROUTE_READINESS_TIMEOUT_MS).toBe(60_000);
+	});
+
 	it.effect('disabled router rejects container upstreams instead of fabricating direct ports', () =>
 		Effect.gen(function* () {
 			const dir = makeTmpDir();
