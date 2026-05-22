@@ -16,6 +16,7 @@ import {
 	WALRUS_ROUTER_PORT,
 	buildWalrusNetworkName,
 	computePublicHostname,
+	storageNodeConfigHash,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
 describe('computePublicHostname', () => {
@@ -107,5 +108,25 @@ describe('walrus storage-node constants', () => {
 
 	it('allows callers to override the storage-node ready timeout centrally', () => {
 		expect(resolveLocalClusterOptions({ readyTimeoutMs: 45_000 }).readyTimeoutMs).toBe(45_000);
+	});
+
+	it('folds bind-mount and network inputs into the recreate fingerprint', () => {
+		const base = {
+			deployConfigHash: 'deploy-a',
+			nodeIndex: 0,
+			deployParentHostPath: '/runtime-a/walrus',
+			deployMountTarget: '/opt/walrus/runtime',
+			containerApiPort: 9185,
+			walrusFaucetUrl: 'http://sui:9123',
+			walrusNetworkName: 'walrus-net',
+			suiNetworkName: 'sui-net',
+		};
+
+		expect(storageNodeConfigHash(base)).not.toBe(
+			storageNodeConfigHash({ ...base, deployParentHostPath: '/runtime-b/walrus' }),
+		);
+		expect(storageNodeConfigHash(base)).not.toBe(
+			storageNodeConfigHash({ ...base, walrusFaucetUrl: 'http://other:9123' }),
+		);
 	});
 });

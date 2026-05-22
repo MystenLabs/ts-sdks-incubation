@@ -235,6 +235,7 @@ interface BalanceReader {
 
 const accountKeys = ['account/publisher#3', 'account/alice#6', 'account/bob#7'] as const;
 const SUI_COIN_TYPE = '0x2::sui::SUI';
+const WARM_RESTART_BUDGET_MS = 90_000;
 
 const bigintBalance = (value: unknown): bigint => {
 	if (typeof value === 'bigint') return value;
@@ -543,11 +544,22 @@ describe('private-content boots end-to-end @e2e', () => {
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'private-content-warm-runtime-'));
 		const routerStateRoot = mkdtempSync(join(tmpdir(), 'private-content-warm-router-'));
 
+		const coldStartMs = performance.now();
 		const cold = await runPrivateContentBoot({ runtimeRoot, routerStateRoot });
+		const coldDurationMs = performance.now() - coldStartMs;
 		assertPrivateContentBoot(cold);
 
+		const warmStartMs = performance.now();
 		const warm = await runPrivateContentBoot({ runtimeRoot, routerStateRoot });
+		const warmDurationMs = performance.now() - warmStartMs;
 		assertPrivateContentBoot(warm);
+		expect(
+			warmDurationMs,
+			`warm restart took ${Math.round(warmDurationMs)}ms after cold boot took ${Math.round(coldDurationMs)}ms`,
+		).toBeLessThan(coldDurationMs);
+		expect(warmDurationMs, `warm restart took ${Math.round(warmDurationMs)}ms`).toBeLessThan(
+			WARM_RESTART_BUDGET_MS,
+		);
 
 		expect(warm.result.runtimeRoot).toBe(cold.result.runtimeRoot);
 		expect(warm.result.routerDispatchDir).toBe(cold.result.routerDispatchDir);
@@ -557,5 +569,7 @@ describe('private-content boots end-to-end @e2e', () => {
 				accountAddress(cold.result.resolvedValues, key),
 			);
 		}
+		expect(walrusValue(warm.result).walCoinType).toBe(walrusValue(cold.result).walCoinType);
+		expect(walrusValue(warm.result).packageConfig).toEqual(walrusValue(cold.result).packageConfig);
 	}, 600_000);
 });

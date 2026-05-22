@@ -110,6 +110,25 @@ export const computePublicHostname = (app: string, stack: string, nodeIndex: num
 	return stack === 'main' ? base : `walrus-node-${nodeIndex}.${stack}.${app}.localhost`;
 };
 
+export const storageNodeConfigHash = (parts: {
+	readonly deployConfigHash: string;
+	readonly nodeIndex: number;
+	readonly deployParentHostPath: string;
+	readonly deployMountTarget: string;
+	readonly containerApiPort: number;
+	readonly walrusFaucetUrl: string;
+	readonly walrusNetworkName: string;
+	readonly suiNetworkName: string;
+}): string =>
+	[
+		parts.deployConfigHash,
+		`node=${parts.nodeIndex}`,
+		`mount=${parts.deployParentHostPath}->${parts.deployMountTarget}`,
+		`api=${parts.containerApiPort}`,
+		`faucet=${parts.walrusFaucetUrl}`,
+		`net=${parts.walrusNetworkName},${parts.suiNetworkName}`,
+	].join('|');
+
 export const buildWalrusNetworkName = (app: string, stack: string, walrusName: string): string =>
 	`devstack-${app}-${stack}-walrus-${walrusName}-net`;
 
@@ -199,7 +218,16 @@ export const startStorageNodes = (
 							name: containerName,
 							image: spec.image,
 							recreate: 'on-config-change',
-							configHash: `${spec.deployConfigHash}|node=${i}`,
+							configHash: storageNodeConfigHash({
+								deployConfigHash: spec.deployConfigHash,
+								nodeIndex: i,
+								deployParentHostPath,
+								deployMountTarget,
+								containerApiPort: spec.containerApiPort,
+								walrusFaucetUrl: spec.walrusFaucetUrl,
+								walrusNetworkName: spec.walrusNetworkName,
+								suiNetworkName: spec.suiNetworkName,
+							}),
 							env: {
 								HOSTNAME: nodeHostname,
 								DEPLOY_OUTPUT_DIR: deployOutputDirInContainer,

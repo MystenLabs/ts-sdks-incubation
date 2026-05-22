@@ -120,10 +120,12 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect('MASTER_KEY' in ensureSpec.env!).toBe(false);
 		expect(CONTAINER_ENV.CONFIG_PATH).toBe(INSIDE_CONFIG_PATH);
 		expect(CONTAINER_ENV.MASTER_KEY_ENVFILE).toBe(INSIDE_MASTER_KEY_ENVFILE);
-		expect(ensureSpec.env?.CONFIG_PATH).toBe(
-			'/devstack/runtime/seal/seal/key-server-config.yaml',
-		);
+		expect(ensureSpec.env?.CONFIG_PATH).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
 		expect(ensureSpec.env?.MASTER_KEY_ENVFILE).toBe('/devstack/runtime/seal/seal/master-key.env');
+		expect(ensureSpec.configHash).toContain('runtime=/tmp/devstack/runtime');
+		expect(ensureSpec.configHash).toContain(
+			'config=/devstack/runtime/seal/seal/key-server-config.yaml',
+		);
 		// Sanity: master-key envfile path the spec uses for the bind-
 		// mount source is under the servicePath dir (so the host file
 		// the entrypoint shell sources is the rendered one).
@@ -164,12 +166,8 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(spec.configHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/key-server-config.yaml`);
 		expect(spec.masterKeyEnvFileHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/master-key.env`);
 		expect(spec.runtimeRootHostPath).toBe('/tmp/devstack/runtime');
-		expect(spec.configContainerPath).toBe(
-			'/devstack/runtime/seal/seal/key-server-config.yaml',
-		);
-		expect(spec.masterKeyEnvFileContainerPath).toBe(
-			'/devstack/runtime/seal/seal/master-key.env',
-		);
+		expect(spec.configContainerPath).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
+		expect(spec.masterKeyEnvFileContainerPath).toBe('/devstack/runtime/seal/seal/master-key.env');
 	});
 
 	it('mounts the stack root instead of fresh leaf files for Docker Desktop visibility', () => {

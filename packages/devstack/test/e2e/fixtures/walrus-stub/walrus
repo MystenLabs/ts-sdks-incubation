@@ -48,36 +48,41 @@ case "$mode" in
 
 		mkdir -p "$out_dir"
 
-		# Mint per-deploy ids. Three required by the parser; three
-		# optional we include for full-shape parity.
+		# Mint a per-deploy package id, but use an existing Sui system
+		# package object for the system/staking ids. The e2e stub does
+		# not publish real Walrus objects; using an existing object lets
+		# the ArtifactPublisher verify cache hits on warm restart while
+		# still exercising the on-chain probe path.
 		pkg_id="0x$(mint_object_id)"
-		sys_id="0x$(mint_object_id)"
-		staking_id="0x$(mint_object_id)"
+		sys_id="0x2"
+		staking_id="0x2"
 		upgrade_id="0x$(mint_object_id)"
 		treasury_id="0x$(mint_object_id)"
-		exchange_id="0x$(mint_object_id)"
 
 		# Emit per-node config files so the storage-node read-only
 		# bind-mount of /opt/walrus/outputs has something to find.
 		# (The real walrus deploy emits `dryrun-node-<i>.yaml` +
-		# `dryrun-node-<i>.keystore` per committee member.)
+		# `dryrun-node-<i>-sui.yaml` + `dryrun-node-<i>.keystore`
+		# per committee member.)
 		i=0
 		while [ "$i" -lt "$committee_size" ]; do
 			printf 'name: dryrun-node-%s\n' "$i" > "$out_dir/dryrun-node-$i.yaml"
+			printf 'sui: localnet\n' > "$out_dir/dryrun-node-$i-sui.yaml"
 			printf 'stub-keystore-%s\n' "$i" > "$out_dir/dryrun-node-$i.keystore"
 			i=$((i + 1))
 		done
 
-		# Emit the deploy summary on stdout in the exact format the
-		# plugin's parser expects (key: 0x<hex>, one per line).
-		cat <<EOF
+		# Emit the deploy summary both on stdout and in the cache file
+		# shape the real deploy writes.
+		cat > "$out_dir/deploy" <<EOF
 walrus_package_id: $pkg_id
 system_object: $sys_id
 staking_object: $staking_id
 upgrade_manager_object: $upgrade_id
 treasury_object: $treasury_id
-exchange_object: $exchange_id
+exchange_object: None
 EOF
+		cat "$out_dir/deploy"
 		exit 0
 		;;
 	*)

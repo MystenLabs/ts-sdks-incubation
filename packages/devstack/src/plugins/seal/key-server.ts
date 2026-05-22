@@ -240,6 +240,13 @@ export const buildKeyServerEnsureContainerSpec = (
 	image: spec.image,
 	labels: spec.labels,
 	recreate: 'on-config-change',
+	configHash: [
+		'seal-key-server',
+		`runtime=${spec.runtimeRootHostPath}`,
+		`config=${spec.configContainerPath}`,
+		`master=${spec.masterKeyEnvFileContainerPath}`,
+		`network=${spec.network}`,
+	].join('|'),
 	// Distilled-doc invariant #3 — MASTER_KEY is NOT here.
 	// The bind-mounted env-file is sourced by the entrypoint
 	// shell BEFORE the daemon exec. See file header on the
