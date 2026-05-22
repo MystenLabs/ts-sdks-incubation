@@ -209,7 +209,22 @@ const priceObjectClient = (
 		}>;
 	};
 
-const feedIdFromJson = (json: unknown): string | null => {
+const feedIdBytesFromJson = (bytes: unknown): Uint8Array | null => {
+	if (typeof bytes === 'string' && bytes.length > 0) {
+		try {
+			return fromBase64(bytes);
+		} catch {
+			return null;
+		}
+	}
+	if (!Array.isArray(bytes) || bytes.length === 0) return null;
+	if (!bytes.every((byte): byte is number => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+		return null;
+	}
+	return Uint8Array.from(bytes);
+};
+
+export const feedIdFromJson = (json: unknown): string | null => {
 	if (typeof json !== 'object' || json === null) return null;
 	const priceInfo = (json as { readonly price_info?: unknown }).price_info;
 	if (typeof priceInfo !== 'object' || priceInfo === null) return null;
@@ -218,8 +233,9 @@ const feedIdFromJson = (json: unknown): string | null => {
 	const priceIdentifier = (priceFeed as { readonly price_identifier?: unknown }).price_identifier;
 	if (typeof priceIdentifier !== 'object' || priceIdentifier === null) return null;
 	const bytes = (priceIdentifier as { readonly bytes?: unknown }).bytes;
-	if (typeof bytes !== 'string' || bytes.length === 0) return null;
-	return normalizeFeedId(toHex(fromBase64(bytes)));
+	const decoded = feedIdBytesFromJson(bytes);
+	if (decoded === null) return null;
+	return normalizeFeedId(toHex(decoded));
 };
 
 const mapCreatedPriceObjects = async (
@@ -282,7 +298,9 @@ export const initLocalPythFeeds = (
 							tx.setSender(signer.address);
 							tx.setGasBudget(PYTH_GAS_BUDGET);
 							const timestamp = 0n;
-							const priceInfos = feeds.map((feed) => addPriceInfo(tx, pkg.packageId, feed, timestamp));
+							const priceInfos = feeds.map((feed) =>
+								addPriceInfo(tx, pkg.packageId, feed, timestamp),
+							);
 							tx.moveCall({
 								target: `${pkg.packageId}::pyth::create_price_feeds`,
 								arguments: [
@@ -343,11 +361,12 @@ export const initLocalPythFeeds = (
 				register: () => Effect.void,
 			})
 			.pipe(
-				Effect.mapError((err): DeepbookPluginError =>
-					deepbookPluginError(
-						'pyth-feed',
-						err._tag === 'ArtifactPublishError' ? err.detail : String(err),
-					),
+				Effect.mapError(
+					(err): DeepbookPluginError =>
+						deepbookPluginError(
+							'pyth-feed',
+							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
+						),
 				),
 			);
 

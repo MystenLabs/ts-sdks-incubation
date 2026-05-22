@@ -28,7 +28,10 @@ const makeHarness = () => {
 		apply: { run: () => Effect.succeed({ exitCode: 0 }) },
 		status: { reader: { readState: () => Effect.succeed(null) } },
 		snapshot: {
-			reader: { list: () => Effect.succeed([]), resolve: () => Effect.succeed({ tag: 'not-found' }) },
+			reader: {
+				list: () => Effect.succeed([]),
+				resolve: () => Effect.succeed({ tag: 'not-found' }),
+			},
 			capture: () => Effect.succeed({ snapshotId: 'snap-test', name: 'manual-test' }),
 			restore: () => Effect.void,
 			delete: () => Effect.void,

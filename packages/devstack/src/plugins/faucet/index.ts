@@ -9,10 +9,7 @@
 // registry directly; there is no public `faucet()` stack member.
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import {
-	FAUCET_CAPABILITY_KEY_PREFIX,
-	faucetCapabilityKey,
-} from './dispatcher.ts';
+import { FAUCET_CAPABILITY_KEY_PREFIX, faucetCapabilityKey } from './dispatcher.ts';
 import type { FaucetStrategy } from './strategies/sui-local.ts';
 
 // ---------------------------------------------------------------------------

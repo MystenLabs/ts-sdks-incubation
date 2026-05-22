@@ -101,9 +101,7 @@ const pickNumber = (json: Record<string, unknown>, key: string): number | undefi
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 };
 
-const pickMetadata = (
-	change: CoinDiscoveryObjectChange,
-): Omit<DiscoveredMetadata, 'id'> | null => {
+const pickMetadata = (change: CoinDiscoveryObjectChange): Omit<DiscoveredMetadata, 'id'> | null => {
 	const json = change.json;
 	if (json === null || typeof json !== 'object' || Array.isArray(json)) return null;
 	const record = json as Record<string, unknown>;

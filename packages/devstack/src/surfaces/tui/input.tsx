@@ -124,7 +124,8 @@ export const inputActionForKey = (
 			const name = options.snapshotPromptValue.trim();
 			return {
 				tag: 'publish',
-				command: name.length === 0 ? { tag: 'snapshot.capture' } : { tag: 'snapshot.capture', name },
+				command:
+					name.length === 0 ? { tag: 'snapshot.capture' } : { tag: 'snapshot.capture', name },
 			};
 		}
 		if (key.backspace === true || key.delete === true) {
@@ -164,7 +165,10 @@ export const InputHandler = ({
 			switch (action?.tag) {
 				case 'publish': {
 					const { command } = action;
-					if (command.tag === 'shutdown.requested' || command.tag === 'shutdown.hardKillRequested') {
+					if (
+						command.tag === 'shutdown.requested' ||
+						command.tag === 'shutdown.hardKillRequested'
+					) {
 						onSnapshotPromptChange(null);
 						shutdownRequested.current = true;
 					}

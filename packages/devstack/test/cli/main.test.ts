@@ -453,9 +453,7 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 
 			expect(stderr.join('')).toBe('');
 			expect(process.exitCode).toBe(0);
-			expect(stdout.join('')).toContain(
-				'status: no state present for connect-four / connect-four',
-			);
+			expect(stdout.join('')).toContain('status: no state present for connect-four / connect-four');
 		} finally {
 			process.chdir(previousCwd);
 			process.exitCode = previousExitCode;

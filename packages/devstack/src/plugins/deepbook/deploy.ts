@@ -604,6 +604,53 @@ const coinListClient = (
 		};
 	};
 
+interface OwnedCoin {
+	readonly objectId: string;
+	readonly version: string | number;
+	readonly digest: string;
+	readonly balance: string | number | bigint;
+}
+
+export const selectOwnedCoinsForBalance = async (
+	sdk: SuiSdkShim,
+	signer: ResolvedSigner,
+	coinType: string,
+	amount: bigint,
+	purpose: string,
+): Promise<{
+	readonly selected: ReadonlyArray<OwnedCoin>;
+	readonly selectedBalance: bigint;
+}> => {
+	const selected: OwnedCoin[] = [];
+	let selectedBalance = 0n;
+	let cursor: string | null = null;
+	do {
+		const page = await coinListClient(sdk).core.listCoins({
+			owner: signer.address,
+			coinType,
+			cursor,
+			limit: 50,
+		});
+		for (const coin of page.objects) {
+			selected.push(coin);
+			selectedBalance += BigInt(coin.balance);
+			if (selectedBalance >= amount) break;
+		}
+		cursor = page.cursor;
+		if (selectedBalance >= amount) break;
+		if (!page.hasNextPage) break;
+	} while (cursor !== null);
+
+	if (selectedBalance < amount || selected.length === 0) {
+		throw new Error(
+			`publisher '${signer.name}' has insufficient ${coinType} for ${purpose}: ` +
+				`required ${amount}, available ${selectedBalance}.`,
+		);
+	}
+
+	return { selected, selectedBalance };
+};
+
 const ledgerObjectClient = (
 	sdk: SuiSdkShim,
 ): {
@@ -667,25 +714,34 @@ const currentLedgerObjectRef = async (
 	};
 };
 
-const setExplicitSeedGasPayment = async (
+export const setExplicitSeedGasPayment = async (
 	tx: Transaction,
 	sdk: SuiSdkShim,
 	signer: ResolvedSigner,
+	suiDepositAmount: bigint,
 ) => {
-	const page = await coinListClient(sdk).core.listCoins({
-		owner: signer.address,
-		coinType: SUI_TYPE,
-		limit: 1,
-	});
-	const gasCoin = page.objects[0];
-	if (gasCoin === undefined) {
-		throw new Error(`publisher '${signer.name}' has no SUI coin for DeepBook seed gas.`);
-	}
-	const gasRef = await currentLedgerObjectRef(sdk, gasCoin.objectId);
+	const requiredBalance = SEED_GAS_BUDGET + suiDepositAmount;
+	const { selected } = await selectOwnedCoinsForBalance(
+		sdk,
+		signer,
+		SUI_TYPE,
+		requiredBalance,
+		'DeepBook seed gas and SUI deposits',
+	);
+	const gasRefs = await Promise.all(
+		selected.map((coin) => currentLedgerObjectRef(sdk, coin.objectId)),
+	);
 	tx.setGasBudget(SEED_GAS_BUDGET);
 	tx.setGasPrice(LOCALNET_REFERENCE_GAS_PRICE);
-	tx.setGasPayment([gasRef]);
+	tx.setGasPayment(gasRefs);
 };
+
+const seedSuiDepositAmount = (
+	pool: Pick<DeepbookPool, 'baseCoinType' | 'quoteCoinType'>,
+	seed: DeepbookPoolSeedLiquidity,
+): bigint =>
+	(normalizeStructTag(pool.baseCoinType) === SUI_TYPE ? (seed.baseAmount ?? 0n) : 0n) +
+	(normalizeStructTag(pool.quoteCoinType) === SUI_TYPE ? (seed.quoteAmount ?? 0n) : 0n);
 
 const sharedObject = async (
 	tx: Transaction,
@@ -725,37 +781,13 @@ const splitOwnedCoinForBalance = async (
 		return coin;
 	}
 
-	const selected: Array<{
-		readonly objectId: string;
-		readonly version: string | number;
-		readonly digest: string;
-		readonly balance: string | number | bigint;
-	}> = [];
-	let selectedBalance = 0n;
-	let cursor: string | null = null;
-	do {
-		const page = await coinListClient(sdk).core.listCoins({
-			owner: signer.address,
-			coinType,
-			cursor,
-			limit: 50,
-		});
-		for (const coin of page.objects) {
-			selected.push(coin);
-			selectedBalance += BigInt(coin.balance);
-			if (selectedBalance >= amount) break;
-		}
-		cursor = page.cursor;
-		if (selectedBalance >= amount) break;
-		if (!page.hasNextPage) break;
-	} while (cursor !== null);
-
-	if (selectedBalance < amount || selected.length === 0) {
-		throw new Error(
-			`publisher '${signer.name}' has insufficient ${coinType} for DeepBook seed deposit: ` +
-				`required ${amount}, available ${selectedBalance}.`,
-		);
-	}
+	const { selected, selectedBalance } = await selectOwnedCoinsForBalance(
+		sdk,
+		signer,
+		coinType,
+		amount,
+		'DeepBook seed deposit',
+	);
 
 	const firstSelected = selected[0];
 	if (firstSelected === undefined) {
@@ -827,7 +859,7 @@ export const seedDeepbookPools = (
 							build: async () => {
 								const tx = new Transaction();
 								tx.setSender(signer.address);
-								await setExplicitSeedGasPayment(tx, sdk, signer);
+								await setExplicitSeedGasPayment(tx, sdk, signer, seedSuiDepositAmount(pool, seed));
 								const registry = await sharedObject(tx, sdk, pkg.registryId, true);
 								const poolObject = await sharedObject(tx, sdk, pool.poolId, true);
 								const balanceManager = tx.moveCall({

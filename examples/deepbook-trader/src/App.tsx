@@ -277,7 +277,11 @@ function DeepBookStatus() {
 			</div>
 			<div className="grid gap-3 md:grid-cols-3">
 				<StatusMetric label="Package" value={shortId(deepbookBindings.packageId, 8, 6)} />
-				<StatusMetric label="Pools" value={String(configuredPoolCount)} testId="deepbook-pool-count" />
+				<StatusMetric
+					label="Pools"
+					value={String(configuredPoolCount)}
+					testId="deepbook-pool-count"
+				/>
 				<StatusMetric label="Pyth" value={`${pythBindings?.feeds.length ?? 0} feeds`} />
 			</div>
 		</section>
@@ -393,15 +397,7 @@ function TradePanel({
 	);
 }
 
-function StatusMetric({
-	label,
-	value,
-	testId,
-}: {
-	label: string;
-	value: string;
-	testId?: string;
-}) {
+function StatusMetric({ label, value, testId }: { label: string; value: string; testId?: string }) {
 	return (
 		<div className="min-h-16 rounded-md border border-emerald-200 bg-white p-3 dark:border-emerald-900 dark:bg-emerald-900">
 			<div className="text-xs uppercase text-emerald-700 dark:text-emerald-200">{label}</div>

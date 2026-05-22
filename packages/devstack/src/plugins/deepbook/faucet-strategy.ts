@@ -13,10 +13,7 @@ import { DeepBookClient, type DeepBookCompatibleClient } from '@mysten/deepbook-
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type {
-	AccountFundingRequest,
-	AccountFundingStrategy,
-} from '../account/funding.ts';
+import type { AccountFundingRequest, AccountFundingStrategy } from '../account/funding.ts';
 import type { SuiSdkShim } from '../sui/chain-probe.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
@@ -136,9 +133,13 @@ export const makeDeepbookDeepFundingStrategy = (
 								return transaction;
 							},
 							catch: (cause): DeepbookPluginError =>
-								deepbookPluginError('fund-deep', 'DeepBook DEEP funding transaction build failed.', {
-									cause,
-								}),
+								deepbookPluginError(
+									'fund-deep',
+									'DeepBook DEEP funding transaction build failed.',
+									{
+										cause,
+									},
+								),
 						});
 
 						const txBytes = yield* Effect.tryPromise({
@@ -156,15 +157,18 @@ export const makeDeepbookDeepFundingStrategy = (
 								),
 						});
 
-						yield* lockedSigner.signAndExecute(txBytes).pipe(
-							Effect.mapError((cause): DeepbookPluginError =>
-								deepbookPluginError(
-									'fund-deep',
-									`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
-									{ cause },
+						yield* lockedSigner
+							.signAndExecute(txBytes)
+							.pipe(
+								Effect.mapError(
+									(cause): DeepbookPluginError =>
+										deepbookPluginError(
+											'fund-deep',
+											`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
+											{ cause },
+										),
 								),
-							),
-						);
+							);
 					}),
 				)
 				.pipe(Effect.asVoid);

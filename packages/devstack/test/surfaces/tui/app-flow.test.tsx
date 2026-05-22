@@ -68,89 +68,85 @@ const waitFor = async (assertion: () => void, timeoutMs = 1000): Promise<void> =
 };
 
 describe('App snapshot flow', () => {
-	it(
-		'drives named snapshot capture through real Ink input and renders paused progress',
-		async () => {
-			const stateRef = Effect.runSync(SubscriptionRef.make(state()));
-			const events = Effect.runSync(Queue.unbounded<EngineEvent>());
-			const published: EngineCommand[] = [];
-			const instance = render(
-				<App
-					stateRef={stateRef}
-					events={Stream.fromQueue(events)}
-					publish={(command) => {
-						published.push(command);
-					}}
-				/>,
+	it('drives named snapshot capture through real Ink input and renders paused progress', async () => {
+		const stateRef = Effect.runSync(SubscriptionRef.make(state()));
+		const events = Effect.runSync(Queue.unbounded<EngineEvent>());
+		const published: EngineCommand[] = [];
+		const instance = render(
+			<App
+				stateRef={stateRef}
+				events={Stream.fromQueue(events)}
+				publish={(command) => {
+					published.push(command);
+				}}
+			/>,
+		);
+
+		try {
+			await waitFor(() => {
+				expect(instance.lastFrame() ?? '').toContain('wallet/local');
+			});
+
+			instance.stdin.write('s');
+			await waitFor(() => {
+				const frame = instance.lastFrame() ?? '';
+				expect(frame).toContain('Snapshot name:');
+				expect(frame).toContain('<auto>');
+			});
+
+			instance.stdin.write('before-change');
+			await waitFor(() => {
+				expect(instance.lastFrame() ?? '').toContain('before-change');
+			}, 5_000);
+
+			instance.stdin.write('\r');
+			await waitFor(() => {
+				expect(published).toContainEqual({ tag: 'snapshot.capture', name: 'before-change' });
+			});
+			await waitFor(() => {
+				expect(instance.lastFrame() ?? '').not.toContain('Snapshot name:');
+			});
+
+			await Effect.runPromise(
+				Queue.offer(events, {
+					tag: 'snapshot.captureStarted',
+					name: 'before-change',
+					at: AT + 1,
+				}),
 			);
+			await waitFor(() => {
+				const frame = instance.lastFrame() ?? '';
+				expect(frame).toContain('Snapshot:');
+				expect(frame).toContain('before-change');
+				expect(frame).toContain('starting');
+			}, 5_000);
 
-			try {
-				await waitFor(() => {
-					expect(instance.lastFrame() ?? '').toContain('wallet/local');
-				});
+			await Effect.runPromise(
+				Queue.offer(events, {
+					tag: 'snapshot.captureProgress',
+					name: 'before-change',
+					phase: 'capturing-host-tree',
+					detail: 'archiving 1 host subtree',
+					pausedContainers: 2,
+					totalContainers: 2,
+					at: AT + 2,
+				}),
+			);
+			await waitFor(() => {
+				const frame = instance.lastFrame() ?? '';
+				expect(frame).toContain('capturing files');
+				expect(frame).toContain('stack paused');
+				expect(frame).toContain('2/2');
+				expect(frame).toContain('archiving 1 host subtree');
+			}, 5_000);
 
-				instance.stdin.write('s');
-				await waitFor(() => {
-					const frame = instance.lastFrame() ?? '';
-					expect(frame).toContain('Snapshot name:');
-					expect(frame).toContain('<auto>');
-				});
-
-				instance.stdin.write('before-change');
-				await waitFor(() => {
-					expect(instance.lastFrame() ?? '').toContain('before-change');
-				}, 5_000);
-
-				instance.stdin.write('\r');
-				await waitFor(() => {
-					expect(published).toContainEqual({ tag: 'snapshot.capture', name: 'before-change' });
-				});
-				await waitFor(() => {
-					expect(instance.lastFrame() ?? '').not.toContain('Snapshot name:');
-				});
-
-				await Effect.runPromise(
-					Queue.offer(events, {
-						tag: 'snapshot.captureStarted',
-						name: 'before-change',
-						at: AT + 1,
-					}),
-				);
-				await waitFor(() => {
-					const frame = instance.lastFrame() ?? '';
-					expect(frame).toContain('Snapshot:');
-					expect(frame).toContain('before-change');
-					expect(frame).toContain('starting');
-				}, 5_000);
-
-				await Effect.runPromise(
-					Queue.offer(events, {
-						tag: 'snapshot.captureProgress',
-						name: 'before-change',
-						phase: 'capturing-host-tree',
-						detail: 'archiving 1 host subtree',
-						pausedContainers: 2,
-						totalContainers: 2,
-						at: AT + 2,
-					}),
-				);
-				await waitFor(() => {
-					const frame = instance.lastFrame() ?? '';
-					expect(frame).toContain('capturing files');
-					expect(frame).toContain('stack paused');
-					expect(frame).toContain('2/2');
-					expect(frame).toContain('archiving 1 host subtree');
-				}, 5_000);
-
-				instance.stdin.write('q');
-				await waitFor(() => {
-					expect(published).toContainEqual({ tag: 'shutdown.requested' });
-				});
-			} finally {
-				instance.unmount();
-				instance.cleanup();
-			}
-		},
-		15_000,
-	);
+			instance.stdin.write('q');
+			await waitFor(() => {
+				expect(published).toContainEqual({ tag: 'shutdown.requested' });
+			});
+		} finally {
+			instance.unmount();
+			instance.cleanup();
+		}
+	}, 15_000);
 });

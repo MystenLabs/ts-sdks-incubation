@@ -215,7 +215,10 @@ const normalizeJsonOwner = (owner: unknown): unknown => {
 	const record = owner as {
 		readonly AddressOwner?: unknown;
 		readonly ObjectOwner?: unknown;
-		readonly Shared?: { readonly initial_shared_version?: unknown; readonly initialSharedVersion?: unknown };
+		readonly Shared?: {
+			readonly initial_shared_version?: unknown;
+			readonly initialSharedVersion?: unknown;
+		};
 		readonly ConsensusAddressOwner?: unknown;
 	};
 	if (typeof record.AddressOwner === 'string') {

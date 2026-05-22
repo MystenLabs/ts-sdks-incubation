@@ -109,9 +109,7 @@ h1 {
 	padding: 14px;
 	border: 1px solid #c9d6d1;
 	border-radius: 8px;
-	background:
-		linear-gradient(135deg, rgb(20 92 73 / 10%), transparent 58%),
-		#fbfff9;
+	background: linear-gradient(135deg, rgb(20 92 73 / 10%), transparent 58%), #fbfff9;
 }
 
 .flow-steps {

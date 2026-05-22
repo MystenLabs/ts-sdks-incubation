@@ -36,6 +36,8 @@ import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-con
 // directly to keep `@playwright/test` an optional peer)
 // -----------------------------------------------------------------------------
 
+type PlaywrightReporterShape = [string] | [string, Record<string, unknown>];
+
 /** Base subset of `PlaywrightTestConfig` this surface produces. The
  *  full type lives in `@playwright/test`; we keep this structural so
  *  the helpers compile without the peer. */
@@ -45,7 +47,7 @@ export interface PlaywrightBaseConfigShape {
 	readonly forbidOnly: boolean;
 	readonly retries: number;
 	readonly workers: number;
-	readonly reporter: ReadonlyArray<readonly [string, Record<string, unknown>?]> | string;
+	readonly reporter: PlaywrightReporterShape[] | string;
 	readonly globalSetup?: string;
 	readonly globalTeardown?: string;
 }
@@ -57,8 +59,8 @@ export type PlaywrightUseConfigShape = {
 } & Record<string, unknown>;
 
 export interface PlaywrightProjectShape {
-	readonly name: string;
-	readonly use: Record<string, unknown>;
+	name: string;
+	use: Record<string, unknown>;
 }
 
 export interface PlaywrightWebServerConfigShape {
@@ -187,7 +189,7 @@ export const devstackPlaywrightUse = (
 
 export const devstackPlaywrightProjects = (
 	options: DevstackPlaywrightProjectsOptions = {},
-): ReadonlyArray<PlaywrightProjectShape> => [
+): PlaywrightProjectShape[] => [
 	{
 		name: 'chromium',
 		use: { browserName: 'chromium' },

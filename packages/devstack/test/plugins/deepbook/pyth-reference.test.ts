@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
+import { fromHex, toBase64 } from '@mysten/sui/utils';
 
 import {
 	DEEP_PRICE_FEED_ID,
+	feedIdFromJson,
 	SUI_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from '../../../src/plugins/deepbook/pyth/index.ts';
+
+const pythJson = (bytes: unknown) => ({
+	price_info: {
+		price_feed: {
+			price_identifier: { bytes },
+		},
+	},
+});
 
 describe('deepbook local Pyth reference ids', () => {
 	it('matches the DeepBook sandbox oracle feed ids without the 0x prefix', () => {
@@ -17,5 +27,22 @@ describe('deepbook local Pyth reference ids', () => {
 		expect(USDC_PRICE_FEED_ID).toBe(
 			'eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a',
 		);
+	});
+
+	it('decodes sandbox feed ids from base64 JSON bytes', () => {
+		expect(feedIdFromJson(pythJson(toBase64(fromHex(SUI_PRICE_FEED_ID))))).toBe(SUI_PRICE_FEED_ID);
+	});
+
+	it('decodes gRPC feed ids from numeric JSON byte arrays', () => {
+		expect(feedIdFromJson(pythJson(Array.from(fromHex(DEEP_PRICE_FEED_ID))))).toBe(
+			DEEP_PRICE_FEED_ID,
+		);
+	});
+
+	it('ignores malformed feed id bytes', () => {
+		expect(feedIdFromJson(pythJson('not-base64'))).toBeNull();
+		expect(feedIdFromJson(pythJson([0, 256]))).toBeNull();
+		expect(feedIdFromJson(pythJson([]))).toBeNull();
+		expect(feedIdFromJson({})).toBeNull();
 	});
 });

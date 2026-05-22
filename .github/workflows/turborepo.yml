@@ -50,6 +50,6 @@ jobs:
       - name: Lint
         run: pnpm turbo lint
       - name: Build
-        run: pnpm turbo build
+        run: pnpm turbo build --concurrency=1
       - name: Test
-        run: pnpm turbo test
+        run: pnpm turbo test --concurrency=1

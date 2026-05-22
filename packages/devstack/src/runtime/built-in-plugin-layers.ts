@@ -40,9 +40,7 @@ const publishResultSink = (
 					moduleName: discovered.moduleName,
 					decimals: discovered.decimals ?? 0,
 					...(discovered.symbol === undefined ? {} : { symbol: discovered.symbol }),
-					...(discovered.displayName === undefined
-						? {}
-						: { displayName: discovered.displayName }),
+					...(discovered.displayName === undefined ? {} : { displayName: discovered.displayName }),
 					...(discovered.iconUrl === undefined ? {} : { iconUrl: discovered.iconUrl }),
 					...(!discovered.publisherOwnsCap || discovered.treasuryCapId === undefined
 						? {}
