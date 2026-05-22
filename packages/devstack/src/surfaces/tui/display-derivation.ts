@@ -596,9 +596,7 @@ export const packageCells = (pkg: PackageProjection): PackageCells => ({
  * Derive every visible display cell for a single row.
  *
  * Consumes ONLY `row.key`, `row.kind`, `row.status`, `row.phase`,
- * `row.lastError`. Does NOT touch `row.displayHint` (opaque blob; an
- * interpreter could be plugged in later but is out of scope for this
- * first cut), `row.endpoints` (rendered separately by
+ * `row.lastError`, `row.endpoints` (rendered separately by
  * `resource-table.tsx`), or `row.logTail` (kept in the projection
  * for renderer variants that need tails, but not used as primary
  * dashboard state because generic lifecycle log lines duplicate the

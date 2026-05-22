@@ -197,8 +197,8 @@ Currently ~17 Phase-4/5/6 markers across substrate per `notes/reviews/substrate.
 underscore prefix (`_ctx`, `_unused`) exempts ONLY function parameters, not top-level locals. For an
 unused local that must be retained for type-positional or design-comment reasons, use a trailing
 `void <name>;` line — matches the existing `void Scope;` pattern at substrate L0 entrypoints and the
-`void ctx;` design-doc pattern in `plugins/wallet/index.ts:142` (kept so the compose-time
-dependency edge is documented even though the wallet body doesn't read the resolved value).
+`void ctx;` design-doc pattern in `plugins/wallet/index.ts:142` (kept so the compose-time dependency
+edge is documented even though the wallet body doesn't read the resolved value).
 
 ---
 
@@ -208,7 +208,7 @@ dependency edge is documented even though the wallet body doesn't read the resol
   `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`). v3's PascalCase is
   dropped.
 - Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`,
-  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `CompositePrimitive`, `Renderer`,
+  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
   `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
@@ -217,27 +217,26 @@ dependency edge is documented even though the wallet body doesn't read the resol
 - Branded primitives: `AppName`, `StackName`, `ChainId`, `PluginKey`, `EndpointKey`, `ContentHash`,
   `LitHash`, `LiftedSiblingKey`, etc. — established in `substrate/brand.ts`.
 - Type-only generics with phantom witnesses: `__PrefixedWithDoubleUnderscore` (e.g.
-  `__MissingProvidersError<Missing>`, `__SiblingHashConflictError<G>`,
-  `__UnsatisfiedWitnessesError<W>`, `__LifecycleTableShape`, `__ProjectionFieldsClosed`,
-  `__TuiDisplayVocabClean`). Established convention — surfaces structural validation errors at the
-  call-site argument.
+  `__MissingProvidersError<Missing>`, `__SiblingHashConflictError<G>`, `__LifecycleTableShape`,
+  `__ProjectionFieldsClosed`, `__TuiDisplayVocabClean`). Established convention — surfaces
+  structural validation errors at the call-site argument.
 - Per-instance resource id literal templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
   `action:<name>`, `deepbook/<name>`. Mixing `/` vs `:` separators is intentional per plugin
   convention; do not "normalize".
 - File names: kebab-case (`stage-and-swap.ts`, `cross-process-lock.ts`). Effect-Service module shape
   commonly: `{ index, layer, service }.ts` when nontrivial.
 - **`PluginKey` derivation** (substrate `lifecycle/dep-graph.ts:mintKey`):
-  - **Composites** carry a declared `compositeKey: PluginKey` on their `CompositePrimitiveDecl`; the
-    dep-graph reads it verbatim. Composite authors choose the key shape
-    (`pluginKey(\`seal:${name}\`)`, `pluginKey(args.compositeKey)`) — kept stable across cycles.
-  - **Leaves** mint `${member.id}#${ordinal}` where `ordinal` is the position in the
-    surrounding member tuple. The `#N` suffix disambiguates two members providing the same resource id in
-    one stack.
-  - **Inner composite participants** mint `${parentKey}/inner/${inner.id}#${ordinal}` so
-    two composites embedding the same leaf shape stay distinct.
+  - **Composites** carry a declared `composite.key: PluginKey | string` in plugin metadata; the
+    dep-graph reads it verbatim. Composite authors choose the key shape (`seal:${name}`,
+    `args.compositeKey`) — kept stable across cycles.
+  - **Leaves** mint `${member.id}#${ordinal}` where `ordinal` is the position in the surrounding
+    member tuple. The `#N` suffix disambiguates two members providing the same resource id in one
+    stack.
+  - **Inner composite participants** mint `${parentKey}/inner/${inner.id}#${ordinal}` so two
+    composites embedding the same leaf shape stay distinct.
   - Plugin authors do NOT call `pluginKey(...)` to derive their own leaf key — the substrate mints
-    it. Composites that need a stable key publish one via `CompositePrimitiveDecl.compositeKey`;
-    everything else is derived.
+    it. Composites that need a stable key publish one via plugin metadata; everything else is
+    derived.
 
 ---
 
@@ -316,7 +315,8 @@ Existing dirs: `test/substrate/`, `test/plugins/`, `test/orchestrators/`, `test/
 For plugins with modes (sui local/external/live, walrus local-cluster/known, seal
 local-keygen/live/fork-known, deepbook local/live/fork):
 
-- Use `defineModeNamespace` + `forNetwork` (per `api/mode-narrowed-factory.ts`).
+- Use `defineModeNamespace` and call the returned namespace with `network` (per
+  `api/mode-narrowed-factory.ts`).
 - Composite refusal lives at the **TYPE LEVEL**. `walrus.localOf(sui)` is the only valid local
   Walrus call; `walrus()` on a fork-typed branch is a compile error.
 - Do NOT add runtime mode checks that the type system could have caught. Mode-narrowed factories use
@@ -429,8 +429,7 @@ projection, but do NOT reimplement the underlying exec.
 ## 14. Cross-plugin dependencies
 
 Public plugin authors declare upstreams with `definePlugin({ dependsOn })`. Do not introduce new
-plugin code that reads dependency values through `ctx.get(tag)`, `ctx.use(member)`,
-`readConsumedTag`, or the removed `consumeMember(s)` helpers.
+plugin code that reads dependency values through side-channel context APIs.
 
 Use the shape of `dependsOn` to make the `start` callback ergonomic:
 
@@ -443,8 +442,8 @@ Built-in options should accept plugin/resource refs (`ResourceRef<id, value>`) r
 `defineDevstack` expansion can see plugin-valued dependencies. Do not add plugin-local casts such as
 `deps as ...` to compensate for weak typing; fix the public helper types instead.
 
-The substrate-level `defineNodePlugin` / `defineTag` / `ctx.use` model has been deleted. Production
-plugin barrels stay on `definePlugin`, and the engine consumes that resource-native shape directly.
+Production plugin barrels stay on `definePlugin`, and the engine consumes that resource-native shape
+directly.
 
 ---
 
@@ -642,19 +641,19 @@ create the N+1th copy.
 The following slots are referenced inline above. They are decision-pending; specific agents own
 each.
 
-| ID      | What                                                                                                                                                                                                                                                                                                                                                                                                                            | Owner / pass                  | Where it shows up today                                                                      |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| **O2**  | Tagged-error class style unification (3 → 1)                                                                                                                                                                                                                                                                                                                                                                                    | cross-cutting audit           | every plugin + substrate + runtime                                                           |
-| **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                                        | substrate triage              | boundary readers and plugin config factories                                                 |
-| **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to. PR1.5 made the violation MORE visible by moving the contract into `plugins/package/coin-discovery.ts` — pending PR2-A harvest loop OR a future event-bus primitive.)             | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/package/index.ts` |
-| **O6**  | `CapabilitySinks` registry — invert supervisor's contract awareness (PR2-A in flight)                                                                                                                                                                                                                                                                                                                                           | substrate triage (PR2-A)      | `substrate/runtime/supervisor.ts:35-40,285-312`                                              |
-| **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                                    | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
-| **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                                  | substrate triage              | future container-owning plugins                                                              |
-| **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                              | closed                        | `src/substrate/plugin.ts`                                                                     |
-| **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                                  | observability cleanup         | older plugin/runtime span sites                                                              |
-| **O13** | Wire or delete: `Logger` service / `SpanAttr` helpers / `LifecycleFact` / `PluginErrorContribution` / `*_ERROR_TAGS` arrays (PR2-A in flight)                                                                                                                                                                                                                                                                                   | substrate triage (PR2-A)      | substrate/runtime/observability/, every plugin                                               |
-| **O15** | Closed by resource refs in `dependsOn`; plugin/resource values are the cross-plugin reference mechanism.                                                                                                                                                                                                                                                                                                                         | closed                        | every cross-plugin reference site                                                            |
-| **O16** | Root-barrel re-export policy                                                                                                                                                                                                                                                                                                                                                                                                    | API design pass               | `src/index.ts` (today no clear main entry)                                                   |
+| ID      | What                                                                                                                                                                                                                                                                                                                                                                                                                | Owner / pass                  | Where it shows up today                                                                      |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
+| **O2**  | Tagged-error class style unification (3 → 1)                                                                                                                                                                                                                                                                                                                                                                        | cross-cutting audit           | every plugin + substrate + runtime                                                           |
+| **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                            | substrate triage              | boundary readers and plugin config factories                                                 |
+| **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to. PR1.5 made the violation MORE visible by moving the contract into `plugins/package/coin-discovery.ts` — pending PR2-A harvest loop OR a future event-bus primitive.) | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/package/index.ts` |
+| **O6**  | `CapabilitySinks` registry — invert supervisor's contract awareness (PR2-A in flight)                                                                                                                                                                                                                                                                                                                               | substrate triage (PR2-A)      | `substrate/runtime/supervisor.ts:35-40,285-312`                                              |
+| **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                        | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
+| **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                      | substrate triage              | future container-owning plugins                                                              |
+| **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                                                                               | closed                        | `src/substrate/plugin.ts`                                                                    |
+| **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                      | observability cleanup         | older plugin/runtime span sites                                                              |
+| **O13** | Wire or delete: `Logger` service / `SpanAttr` helpers / `LifecycleFact` / `PluginErrorContribution` / `*_ERROR_TAGS` arrays (PR2-A in flight)                                                                                                                                                                                                                                                                       | substrate triage (PR2-A)      | substrate/runtime/observability/, every plugin                                               |
+| **O15** | Closed by resource refs in `dependsOn`; plugin/resource values are the cross-plugin reference mechanism.                                                                                                                                                                                                                                                                                                            | closed                        | every cross-plugin reference site                                                            |
+| **O16** | Root-barrel re-export policy                                                                                                                                                                                                                                                                                                                                                                                        | API design pass               | `src/index.ts` (today no clear main entry)                                                   |
 
 **Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):
 

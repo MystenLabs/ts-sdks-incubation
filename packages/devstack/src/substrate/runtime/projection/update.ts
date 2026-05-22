@@ -214,8 +214,7 @@ export const bumpCycle = (
 /**
  * Register (or replace) a row in the projection. Composite plugins
  * call this from their declaration site; the supervisor wires the
- * call in. The `displayHint` slot is opaque — renderers interpret;
- * the engine doesn't.
+ * call in.
  */
 export const declareRow = (state: SubscribableState, row: Row): SubscribableState => {
 	const idx = state.rows.findIndex((r) => r.key === row.key);

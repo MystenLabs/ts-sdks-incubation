@@ -1,7 +1,7 @@
 // Deepbook plugin — barrel + factories.
 //
-// Architecture: Deepbook is the THIRD composite primitive (after
-// walrus + seal). One supervisor row, many children:
+// Architecture: Deepbook is a composite plugin (after walrus + seal).
+// One supervisor row, many children:
 //
 //   - The Move-package publish (deepbook v3).
 //   - Existing local deployments identified by explicit environment
@@ -21,7 +21,7 @@
 // Capability decls emitted:
 //
 //   Local mode:
-//     1. composite-primitive — one row + lifted siblings + inner pts.
+//     1. composite metadata — one row + lifted siblings.
 //     2. snapshotable        — `deepbook/<name>` subtree.
 //     3. codegenable         — `deepbook-network` bindings.
 //
@@ -40,7 +40,7 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { suiResource } from '../sui/index.ts';
 
-import { makeDeepbookComposite } from './composite.ts';
+import { deepbookPluginKey } from './composite.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
@@ -60,7 +60,9 @@ import type { AccountMemberAlias, DeepbookPool, PythHandle } from './types.ts';
 export type DeepbookResourceId<Name extends string> = `deepbook/${Name}`;
 
 const makeDeepbookResource = <Name extends string>(name: Name) =>
-	resource<DeepbookResourceId<Name>, DeepbookResolved>(`deepbook/${name}` as DeepbookResourceId<Name>);
+	resource<DeepbookResourceId<Name>, DeepbookResolved>(
+		`deepbook/${name}` as DeepbookResourceId<Name>,
+	);
 
 /** The deepbook resolved value. Mode-asymmetric:
  *
@@ -215,18 +217,13 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 
 	const deepbookResource = makeDeepbookResource(name);
 
-	const composite = makeDeepbookComposite({
-		name,
-		liftedSiblings: [],
-		innerParticipants: [],
-	});
-
 	return definePlugin({
 		id: deepbookResource.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		kind: 'composite',
 		rebootCost: 'heavy',
-		start: (_ctx, deps) =>
+		composite: { key: deepbookPluginKey(name) },
+		start: (deps) =>
 			Effect.gen(function* () {
 				const { sui, publisher } = deps;
 
@@ -305,12 +302,10 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 				serverUrl: resolved.serverUrl,
 				indexerUrl: resolved.indexerUrl,
 			};
-			const codegen: CodegenableDecl<'deepbook-network'> =
-				makeDeepbookCodegenable(bindings);
-			return [composite, snap, codegen] as const;
+			const codegen: CodegenableDecl<'deepbook-network'> = makeDeepbookCodegenable(bindings);
+			return [snap, codegen] as const;
 		},
 		errorContributions: deepbookErrorContributions,
-		liftedSiblings: [],
 	});
 };
 
@@ -338,7 +333,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		dependsOn: [suiResource] as const,
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, deps) =>
+		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;
 				const resolved: DeepbookResolved = {

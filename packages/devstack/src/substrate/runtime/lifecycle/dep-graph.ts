@@ -20,8 +20,6 @@ import { Data, Effect } from 'effect';
 import type { PluginKey } from '../../brand.ts';
 import { pluginKey as makePluginKey } from '../../brand.ts';
 import { uniqueResourceRefs, type AnyPlugin, type AnyResourceRef } from '../../plugin.ts';
-import type { CapabilityDecl } from '../../../contracts/index.ts';
-import type { CompositePrimitiveDecl } from '../../../contracts/composite-primitive.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -86,37 +84,12 @@ interface NamedMember {
 	readonly compositeParent: PluginKey | null;
 }
 
-/**
- * Read the static `capabilities` array off a member if and only if it
- * is an array. The `capabilities` field can be either a static tuple
- * OR a dynamic factory `(resolved, acquireCtx) => Caps` (see
- * `Plugin.capabilities`); the dep-graph runs BEFORE start, so
- * a dynamic factory's output is not yet available here.
- *
- * Convention: `composite-primitive` decls MUST be static (the
- * dep-graph needs the topology before any acquire fires). Dynamic
- * factories are reserved for snapshot/codegen/routable/strategy
- * decls whose values depend on acquire-resolved data.
- */
-const readStaticCapabilities = (member: AnyPlugin): ReadonlyArray<CapabilityDecl> => {
-	const caps = member.capabilities;
-	if (caps === undefined) return [];
-	if (typeof caps === 'function') return [];
-	return caps;
-};
-
-const isCompositePrimitiveDecl = (decl: CapabilityDecl): decl is CompositePrimitiveDecl =>
-	decl.kind === 'composite-primitive' &&
-	'compositeKey' in decl &&
-	'innerParticipants' in decl;
-
 /** Mint a stable PluginKey for a plugin. Composites have a declared
- *  `compositeKey` on their `CompositePrimitiveDecl`; leaves derive
+ *  key on their plugin metadata; leaves derive
  *  from the resource id + an ordinal so duplicates don't collide. */
 const mintKey = (member: AnyPlugin, ordinal: number): PluginKey => {
-	const composite = readStaticCapabilities(member).find(isCompositePrimitiveDecl);
-	if (composite !== undefined) {
-		return composite.compositeKey;
+	if (member.composite !== undefined) {
+		return makePluginKey(String(member.composite.key));
 	}
 	return makePluginKey(`${member.id}#${ordinal}`);
 };
@@ -129,9 +102,9 @@ const expand = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<NamedMember> =
 	for (const member of members) {
 		const key = mintKey(member, ordinal++);
 		out.push({ key, member, compositeParent: null });
-		const composite = readStaticCapabilities(member).find(isCompositePrimitiveDecl);
+		const composite = member.composite;
 		if (composite !== undefined) {
-			for (const inner of composite.innerParticipants) {
+			for (const inner of composite.innerParticipants ?? []) {
 				out.push({
 					key: makePluginKey(`${key}/inner/${inner.id}#${ordinal++}`),
 					member: inner,

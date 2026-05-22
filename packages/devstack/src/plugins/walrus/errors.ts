@@ -63,9 +63,9 @@ export const walrusPluginError = (
  * partway through the image build before the nodes fail to dial
  * would be confusing — we refuse synchronously at factory time
  * with an actionable hint pointing at `walrus()` (auto-routes to
- * known-deployment) or `walrusFor.for(network).known({...})`.
+ * known-deployment) or `walrusFor(network).known({...})`.
  *
- * Primary refusal is TYPE-LEVEL via the `walrusFor.for(network).<mode>`
+ * Primary refusal is TYPE-LEVEL via the `walrusFor(network).<mode>`
  * mode-narrowed namespace — fork networks expose only `.known`, so
  * calling `.local` is a compile error. This runtime shape is
  * defense-in-depth for callers that sneak through (e.g. the
@@ -79,7 +79,7 @@ export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
 		hint:
 			`walrus local-cluster requires JSON-RPC, which sui-fork does not expose. ` +
 			`Use walrus() (auto-routes to known-deployment) or ` +
-			`walrusFor.for(network).known({...}) instead.`,
+			`walrusFor(network).known({...}) instead.`,
 	});
 
 /** Configuration error — synchronous factory-time guards

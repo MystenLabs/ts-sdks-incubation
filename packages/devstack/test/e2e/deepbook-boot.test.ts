@@ -39,7 +39,10 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
 
-		const stack = defineDevstack({ members: [suiPlugin, publisher, dex], stackName: 'deepbook-smoke', });
+		const stack = defineDevstack({
+			members: [suiPlugin, publisher, dex],
+			stackName: 'deepbook-smoke',
+		});
 		expect(stack._tag).toBe('Stack');
 		expect(readStackEngine(stack).members.length).toBe(3);
 		const ids = readStackEngine(stack).members.map((m) => m.id);
@@ -69,7 +72,7 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 			chain: 'sui:testnet',
 			name: 'live',
 		});
-		const stack = defineDevstack({ members: [suiPlugin, dex], stackName: 'deepbook-known-smoke', });
+		const stack = defineDevstack({ members: [suiPlugin, dex], stackName: 'deepbook-known-smoke' });
 		const ids = readStackEngine(stack).members.map((m) => m.id);
 		expect(ids).toEqual(expect.arrayContaining(['sui', 'deepbook/live']));
 	});
@@ -80,14 +83,9 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		expect(dex.id).toBe('deepbook/deepbook');
 	});
 
-	it('composite contributes the `composite-primitive` capability decl', () => {
+	it('composite declares a stable plugin metadata key', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
-		// `capabilities` here is a CapabilitiesFactory (function form) —
-		// the static composite decl is built inside that closure with
-		// the resolved value. We pin the function-form discipline; the
-		// resolved-side capability tuple is exercised in the substrate
-		// supervisor tests once the real publish path lands.
-		expect(typeof dex.capabilities).toBe('function');
+		expect(String(dex.composite?.key)).toBe('deepbook:main');
 	});
 });

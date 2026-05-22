@@ -2,8 +2,8 @@
 //
 // Architecture invariants under test:
 //   1. Built-in sinks (snapshotable/routable/codegenable/strategy-
-//      contributor/liveness-classifier/composite-primitive/error-
-//      contribution) all dispatch through the same `registerSink` /
+//      contributor/projection/liveness-classifier/error-contribution)
+//      all dispatch through the same `registerSink` /
 //      `dispatch` API.
 //   2. A plugin-author-supplied sink can extend the registry with a
 //      custom kind; built-in dispatch is unaffected.
@@ -26,6 +26,7 @@ import {
 } from '../../../../src/substrate/runtime/index.ts';
 import type { SnapshotableDecl } from '../../../../src/contracts/snapshotable.ts';
 import type { RoutableDecl } from '../../../../src/contracts/routable.ts';
+import type { StrategyContributorDecl } from '../../../../src/contracts/strategy-contributor.ts';
 import { appName, chainId, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
 import type { Identity } from '../../../../src/substrate/identity.ts';
 import type { PluginErrorContribution } from '../../../../src/substrate/plugin.ts';
@@ -40,6 +41,7 @@ const ctxFor = (key: string): HarvestContext => ({
 	pluginKey: pluginKey(key),
 	identity: fakeIdentity,
 	publish: () => Effect.void,
+	registerStrategy: () => Effect.void,
 });
 
 const snapDecl: SnapshotableDecl = {
@@ -95,6 +97,41 @@ describe('CapabilitySinksService', () => {
 			const got = yield* Ref.get(captured);
 			expect(got).toEqual([{ key: 'plug-b', role: 'app' }]);
 		}),
+	);
+
+	it.effect(
+		'strategy sink registers through the harvest context and publishes lifecycle events',
+		() =>
+			Effect.gen(function* () {
+				const registered = yield* Ref.make<ReadonlyArray<string>>([]);
+				const published = yield* Ref.make<ReadonlyArray<string>>([]);
+				const strategyDecl: StrategyContributorDecl<'demo-strategy', { readonly run: () => void }> =
+					{
+						kind: 'strategy-contributor',
+						capabilityKey: 'demo-strategy',
+						strategy: { run: () => undefined },
+						autoMounted: true,
+					};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const sinks = yield* CapabilitySinksService;
+						yield* sinks.dispatch(
+							{ source: 'capability', decl: strategyDecl },
+							{
+								...ctxFor('plug-strategy'),
+								publish: (event) => Ref.update(published, (tags) => [...tags, event.tag]),
+								registerStrategy: (decl) =>
+									Ref.update(registered, (keys) => [...keys, decl.capabilityKey]),
+							},
+						);
+						expect(yield* Ref.get(registered)).toEqual(['demo-strategy']);
+						expect(yield* Ref.get(published)).toEqual(['strategy.registered']);
+					}).pipe(Effect.provide(layerCapabilitySinksDefault({}))),
+				);
+
+				expect(yield* Ref.get(published)).toEqual(['strategy.registered', 'strategy.unregistered']);
+			}),
 	);
 
 	it.effect('unknown kind raises UnknownContributionKind (empty registry)', () =>

@@ -1,7 +1,7 @@
 // Seal plugin — barrel + factories.
 //
-// Architecture (07-seal.md): Seal is a SIBLING composite primitive
-// to walrus. Three operative modes:
+// Architecture (07-seal.md): Seal is a sibling composite plugin to
+// walrus. Three operative modes:
 //
 //   - `local-keygen`  — localnet, owns the master key. Heavy boot.
 //   - `live`          — testnet / mainnet, read-only handle to a
@@ -17,14 +17,14 @@
 // Public surface:
 //
 //   - `seal(opts?)`             — env-driven mode selection.
-//   - `sealFor.for(network).<mode>` — mode-narrowed factory namespace.
-//     Mode-narrowing makes `sealFor.for(forkNetwork).localKeygen(...)`
+//   - `sealFor(network).<mode>` — mode-narrowed factory namespace.
+//     Mode-narrowing makes `sealFor(forkNetwork).localKeygen(...)`
 //     a COMPILE-time refusal (architecture Tension 11 + type-prototype
 //     finding #4).
 //
 // Capability decls emitted:
 //
-//   1. CompositePrimitive  — inner participants + lifted siblings.
+//   1. Composite metadata — stable row key + lifted siblings.
 //   2. Snapshotable        — local-keygen contributes secret material
 //                            subtree; known modes contribute the
 //                            empty shape.
@@ -49,7 +49,7 @@ import type { AccountValue } from '../account/service.ts';
 import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';
-import { makeSealComposite } from './composite.ts';
+import { sealPluginKey } from './composite.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
 import {
 	forkIncompatibleError,
@@ -186,7 +186,7 @@ export type SealOptions<Signer extends SealSignerMember = SealSignerMember> =
 const DEFAULT_NAME = 'seal';
 
 /** Build the local-keygen-mode plugin. The composite contributes
- *  CompositePrimitive + Snapshotable (secret) + Codegenable +
+ *  composite metadata + Snapshotable (secret) + Codegenable +
  *  Routable.
  *
  *  Architecture mirror (walrus): `kind: 'composite'`, lifted siblings
@@ -216,21 +216,13 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 	const moveSourceKey = defaultSealSourceSiblingKey();
 	const siblingKeys = resolved.movePackagePath ? [cargoImageKey] : [cargoImageKey, moveSourceKey];
 
-	const composite = makeSealComposite({
-		name: resolved.name,
-		liftedSiblings: siblingKeys,
-		// `innerParticipants` is empty at factory time — the substrate's
-		// composite scheduler synthesises the keygen + publish + register
-		// + container child members from the composite's acquire return
-		// value.
-		innerParticipants: [],
-	});
 	return definePlugin({
 		id: sealResource.id,
 		dependsOn: { sui: suiResource, signer: opts.signer },
 		kind: 'composite',
 		rebootCost: 'heavy',
-		start: (_ctx, deps) =>
+		composite: { key: sealPluginKey(resolved.name) },
+		start: (deps) =>
 			Effect.gen(function* () {
 				const { sui, signer: signerAccount } = deps;
 				// Substrate-context primitives:
@@ -360,14 +352,14 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				name: resolved.name,
 				containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-seal-${resolved.name}-key-server`,
 			});
-			return [composite, snap, codegen, routable] as const;
+			return [snap, codegen, routable] as const;
 		},
 		errorContributions: sealErrorContributions,
 		liftedSiblings: siblingKeys,
 	});
 };
 
-/** Build the live-mode plugin. No CompositePrimitive (no inner
+/** Build the live-mode plugin. No composite metadata (no inner
  *  participants), no Routable (URL is remote). */
 const buildLivePlugin = (opts: SealLiveOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
@@ -461,7 +453,7 @@ const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keyg
 			throw sealConfigError({
 				field: 'signer',
 				message:
-					'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor.for(network).localKeygen({...}).',
+					'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor(network).localKeygen({...}).',
 			});
 		case 'live':
 			return { mode: 'live', network: parsed.network };
@@ -497,12 +489,12 @@ export const seal = <const Signer extends SealSignerMember = SealSignerMember>(
  *
  *  Usage:
  *      const local = { mode: 'local' } as const;
- *      sealFor.for(local).localKeygen({signer})    // OK
- *      sealFor.for(local).forkKnown(...)           // type error: not in 'local' branch
+ *      sealFor(local).localKeygen({signer})    // OK
+ *      sealFor(local).forkKnown(...)           // type error: not in 'local' branch
  *
  *      const fork = { mode: 'fork' } as const;
- *      sealFor.for(fork).forkKnown({upstream})     // OK
- *      sealFor.for(fork).localKeygen({signer})     // type error: not in 'fork' branch
+ *      sealFor(fork).forkKnown({upstream})     // OK
+ *      sealFor(fork).localKeygen({signer})     // type error: not in 'fork' branch
  *                                              // (distilled-doc invariant #8)
  *
  *  Distilled-doc invariant #8 (fork-localkeygen-refused): the
@@ -536,7 +528,7 @@ export const sealFor = defineModeNamespace({
 
 /** Direct local-keygen factory with explicit fork-network check.
  *
- *  The mode-narrowed namespace above makes `sealFor.for(forkNetwork)
+ *  The mode-narrowed namespace above makes `sealFor(forkNetwork)
  *  .localKeygen(...)` a TYPE-LEVEL refusal (the `fork` branch has
  *  no `localKeygen` key). Callers that bypass the type narrowing
  *  (e.g. by computing the network at runtime) can use this
@@ -553,7 +545,7 @@ export const sealLocalKeygenStrict = <const Signer extends SealSignerMember>(
 			variant: 'sealLocalKeygen',
 			network: network.chain,
 			message: `seal.localKeygen does not support fork networks. The seal key-server's chain client is JSON-RPC-bound; sui-fork only exposes gRPC for simulate_transaction.`,
-			hint: `Use sealFor.for({mode:'fork'}).forkKnown({upstream:'<mainnet|testnet|devnet>'}) — routes to the wrapped upstream's known-deployment key server.`,
+			hint: `Use sealFor({mode:'fork'}).forkKnown({upstream:'<mainnet|testnet|devnet>'}) — routes to the wrapped upstream's known-deployment key server.`,
 		});
 	}
 	return buildLocalKeygenPlugin(opts);

@@ -96,7 +96,6 @@ const RowSchema = Schema.Struct({
 	selectiveRestartHighlight: Schema.Boolean,
 	narrationByContributor: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
 	rebootCost: Schema.NullOr(RebootCostSchema),
-	displayHint: Schema.Unknown,
 });
 
 const BuildEntrySchema = Schema.Struct({

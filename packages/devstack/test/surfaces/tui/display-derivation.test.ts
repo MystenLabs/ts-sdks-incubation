@@ -60,7 +60,6 @@ const fakeRow = (overrides: Partial<Row> = {}): Row => ({
 	selectiveRestartHighlight: false,
 	narrationByContributor: null,
 	rebootCost: null,
-	displayHint: undefined,
 	...overrides,
 });
 

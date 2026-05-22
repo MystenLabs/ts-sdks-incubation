@@ -41,18 +41,18 @@ import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/dev
 
 const live = { mode: 'live', chain: chainId('sui:testnet') } as const;
 
-const wal = walrusFor.for(live).known({
+const wal = walrusFor(live).known({
 	systemObjectId: '0x...',
 	stakingPoolId: '0x...',
 	nodes: [],
 });
 
-const keyServer = sealFor.for(live).testnet({
+const keyServer = sealFor(live).testnet({
 	objectId: '0x...',
 	keyServerUrl: 'https://example.test/key',
 });
 
-const dex = deepbookFor.for(live).known({
+const dex = deepbookFor(live).known({
 	packageId: '0x...',
 	registryId: '0x...',
 });

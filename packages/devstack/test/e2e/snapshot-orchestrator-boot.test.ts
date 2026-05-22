@@ -5,7 +5,7 @@ import { Effect, Exit } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { definePlugin } from '../../src/api/define-plugin.ts';
-import type { LifenessClassifierDecl } from '../../src/contracts/liveness-classifier.ts';
+import type { LivenessClassifierDecl } from '../../src/contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
 import type {
 	SnapshotCatalogEntry,
@@ -21,7 +21,7 @@ const snapshotDecl: SnapshotableDecl = {
 	missingTolerance: 'fine',
 };
 
-const livenessDecl: LifenessClassifierDecl = {
+const livenessDecl: LivenessClassifierDecl = {
 	kind: 'liveness-classifier',
 	classify: () => Effect.succeed('alive'),
 };

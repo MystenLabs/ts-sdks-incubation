@@ -42,18 +42,16 @@ through the absence of any app-shaped entry point.
 
 ```
 src/
-  substrate/      lifecycle SM, NodePlugin shape, manifest, projection,
-                  state-store, cross-process protocol, typed events
+  substrate/      lifecycle SM, resource-native plugin shape, manifest,
+                  projection, state-store, cross-process protocol, typed events
   contracts/      the nine capability contracts
   primitives/     on-chain-artifact publisher, lifted-sibling, cache
-  api/            defineDevstack (both forms), defineNodePlugin,
-                  defineCapabilities (typed builder), tag/provide,
-                  defineWitness
+  api/            defineDevstack (both forms), definePlugin,
+                  define-capability helpers, mode-narrowed factories
   plugins/        L2 plugins (sui, walrus, seal, deepbook, postgres,
                   account, wallet, package, coin, faucet, action)
   orchestrators/  snapshot, router, codegen
   surfaces/       CLI + TUI
-  samples/        trivial leaf + composite (Walrus-shaped) plugins
 ```
 
 ## Effect v4
@@ -64,12 +62,12 @@ plugin-author and engine surfaces intentionally expose them.
 
 ### Packed consumer typechecking
 
-The package-level smoke audit uses the common application posture of `skipLibCheck: true`. Devstack's
-plugin-author and engine surfaces intentionally expose Effect v4 beta types, so strict library
-checking would typecheck Effect's beta declarations rather than just devstack's package boundary. The
-smoke audit packs the package, installs it in a clean temp consumer, checks the installed CLI, checks
-ESM imports for the root, `/vite`, and `/runtime` exports, boots a minimal stack, and verifies the
-consumer compiles with `skipLibCheck` enabled:
+The package-level smoke audit uses the common application posture of `skipLibCheck: true`.
+Devstack's plugin-author and engine surfaces intentionally expose Effect v4 beta types, so strict
+library checking would typecheck Effect's beta declarations rather than just devstack's package
+boundary. The smoke audit packs the package, installs it in a clean temp consumer, checks the
+installed CLI, checks ESM imports for the root, `/vite`, and `/runtime` exports, boots a minimal
+stack, and verifies the consumer compiles with `skipLibCheck` enabled:
 
 ```bash
 pnpm --filter @mysten-incubation/devstack build

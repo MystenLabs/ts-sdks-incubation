@@ -1,9 +1,9 @@
 // Walrus lifted sibling — git-fetched walrus source.
 //
-// Architecture (composite-primitive §"Lifted-sibling key
-// conventions"): siblings are declared at factory time so the topo
-// scheduler places them at level 0 (parallel with sui's boot). The
-// `(plugin, kind, scope, inputHash)` tuple drives:
+// Architecture ("Lifted-sibling key conventions"): siblings are
+// declared at factory time so the topo scheduler places them at level
+// 0 (parallel with sui's boot). The `(plugin, kind, scope, inputHash)`
+// tuple drives:
 //
 //   - First-wins dedup across composites with the same key (two
 //     `walrus()` instances pinned to the same version share ONE

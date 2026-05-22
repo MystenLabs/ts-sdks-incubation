@@ -1,6 +1,6 @@
 // Prune — label-scoped orphan sweep.
 //
-// Architecture § 4 / Decision §10: plugins emit `LifenessClassifier`
+// Architecture § 4 / Decision §10: plugins emit `LivenessClassifier`
 // decls; the L3 prune orchestrator dispatches to them with the
 // registry-persisted hints and reaps anything classified `abandoned`.
 //
@@ -16,9 +16,9 @@
 import { Effect, FileSystem, Schema } from 'effect';
 
 import type {
-	LifenessClassification,
-	LifenessClassifierDecl,
-	LifenessHints,
+	LivenessClassification,
+	LivenessClassifierDecl,
+	LivenessHints,
 } from '../../contracts/liveness-classifier.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { SnapshotMetadataSchema, type SnapshotMetadata } from './descriptor.ts';
@@ -61,7 +61,7 @@ const failPhase =
  *  | 'stale' | 'abandoned'`. */
 export interface ClassifierDispatch {
 	readonly plugin: string;
-	readonly decl: LifenessClassifierDecl;
+	readonly decl: LivenessClassifierDecl;
 }
 
 export interface PruneInputs {
@@ -80,7 +80,7 @@ export interface PruneResult {
 	readonly inspected: number;
 	readonly reaped: ReadonlyArray<{
 		readonly id: string;
-		readonly classification: LifenessClassification;
+		readonly classification: LivenessClassification;
 	}>;
 	readonly imagesSwept: number;
 }
@@ -113,7 +113,7 @@ const readMetaOpt = (
 /** Build the hints document a classifier consumes. Snapshot prune is
  *  age- + identity-based by default; plugin-specific hints flow
  *  through `pluginHints`. */
-const hintsFor = (meta: SnapshotMetadata): LifenessHints => ({
+const hintsFor = (meta: SnapshotMetadata): LivenessHints => ({
 	heartbeatAt: meta.createdAt,
 	claimPid: null,
 	claimStartTime: null,
@@ -156,7 +156,7 @@ export const runPrune = (
 			.readDirectory(catalogDir)
 			.pipe(Effect.catch(failPhase('enumerate-catalog', `readdir ${catalogDir} failed`)));
 
-		const reaped: Array<{ id: string; classification: LifenessClassification }> = [];
+		const reaped: Array<{ id: string; classification: LivenessClassification }> = [];
 		for (const id of ids) {
 			const dir = `${catalogDir}/${id}`;
 			const meta = yield* readMetaOpt(dir);
@@ -171,11 +171,11 @@ export const runPrune = (
 				continue;
 			}
 			const hints = hintsFor(meta);
-			let classification: LifenessClassification = 'alive';
+			let classification: LivenessClassification = 'alive';
 			for (const { decl } of inputs.classifiers) {
 				const c = yield* decl
 					.classify(hints)
-					.pipe(Effect.catch(() => Effect.succeed('alive' as LifenessClassification)));
+					.pipe(Effect.catch(() => Effect.succeed('alive' as LivenessClassification)));
 				if (c !== 'alive') {
 					classification = c;
 					break;

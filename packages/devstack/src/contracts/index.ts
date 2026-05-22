@@ -7,8 +7,7 @@
 //   4. NetworkResolver
 //   5. Codegenable
 //   6. StrategyContributor
-//   7. CompositePrimitive
-//   8. ChainProbe
+//   7. ChainProbe
 //
 // Renderer-specific contracts live inline here.
 
@@ -17,8 +16,8 @@ export * from './container-runtime.ts';
 export * from './snapshotable.ts';
 export * from './routable.ts';
 export * from './codegenable.ts';
+export * from './projection.ts';
 export * from './network-resolver.ts';
 export * from './chain-probe.ts';
 export * from './strategy-contributor.ts';
-export * from './composite-primitive.ts';
 export * from './renderer.ts';

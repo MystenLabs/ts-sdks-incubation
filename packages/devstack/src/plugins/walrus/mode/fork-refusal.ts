@@ -12,12 +12,12 @@
 //   - The error carries an actionable `hint` pointing at the
 //     correct fork-compatible factory (`walrus()` auto-routes to
 //     known-deployment with the wrapped upstream's `KnownNetwork`;
-//     or `walrusFor.for(network).known({...})` directly).
+//     or `walrusFor(network).known({...})` directly).
 //
-// Architecture (Tension 11 + composite-primitive §AsymmetricTagFanout):
-// the PRIMARY refusal lives at the TYPE level via the mode-narrowed
-// factory namespace (`walrusFor.for(network).<mode>` — the `.local`
-// property is absent on fork-mode networks). This file is
+// Architecture (Tension 11 + asymmetric fanout): the PRIMARY refusal
+// lives at the TYPE level via the mode-narrowed factory namespace
+// (`walrusFor(network).<mode>` — the `.local` property is absent on
+// fork-mode networks). This file is
 // defense-in-depth for callers that bypass the typed namespace
 // (e.g. the env-driven `walrus()` factory routing dynamically).
 //
@@ -33,7 +33,7 @@ import { ForkIncompatibleError, forkIncompatibleError } from '../errors.ts';
  *  `defineDevstack(...)` call site, not at runtime acquire.
  *
  *  Architecture: this is the *runtime* refusal. The *compile-time*
- *  refusal happens in `index.ts` — the `walrusFor.for(...)` namespace's
+ *  refusal happens in `index.ts` — the `walrusFor(...)` namespace's
  *  fork branch exposes only `.known`, so `.local` is a type-system
  *  error. */
 export const refuseLocalClusterOnFork = (network: string): never => {

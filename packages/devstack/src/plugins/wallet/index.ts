@@ -197,7 +197,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// allocator + an http listen + a token-file read. The on-disk
 		// token survives so the dev-wallet pairing isn't disturbed.
 		rebootCost: 'cheap',
-		start: (_ctx, deps) =>
+		start: (deps) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-
 				// broker from the supervisor-provided substrate context.

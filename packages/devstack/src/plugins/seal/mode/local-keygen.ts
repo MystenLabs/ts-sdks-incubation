@@ -97,7 +97,7 @@ const DEFAULT_KEY_SERVER_NAME = 'devstack-local';
 /** Synchronous factory-time defaults application. Pure — no
  *  validation throws because the localnet signer requirement is
  *  enforced one layer up in the barrel (the type-narrowed
- *  `sealFor.for(local).localKeygen({signer})` makes signer required). */
+ *  `sealFor(local).localKeygen({signer})` makes signer required). */
 export const resolveLocalKeygenOptions = (
 	opts: LocalKeygenOptions,
 	defaultVersion: string,

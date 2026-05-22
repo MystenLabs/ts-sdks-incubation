@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import * as SealPublic from '../../../src/plugins/seal/index.ts';
-import { seal, sealFor, sealResourceId, type SealResolved } from '../../../src/plugins/seal/index.ts';
+import {
+	seal,
+	sealFor,
+	sealResourceId,
+	type SealResolved,
+} from '../../../src/plugins/seal/index.ts';
 import { defaultSealCargoImageSiblingKey } from '../../../src/plugins/seal/lifted-siblings/cargo-image.ts';
 import { defaultSealSourceSiblingKey } from '../../../src/plugins/seal/lifted-siblings/source-fetch.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
@@ -18,12 +23,10 @@ describe('seal public refs', () => {
 
 	it('mode-narrowed localKeygen keeps the direct signer ref shape', () => {
 		const signer = account('operator');
-		const plugin = sealFor
-			.for({ mode: 'local', chain: chainId('sui:localnet') } as const)
-			.localKeygen({
-				name: 'private-content',
-				signer,
-			});
+		const plugin = sealFor({ mode: 'local', chain: chainId('sui:localnet') } as const).localKeygen({
+			name: 'private-content',
+			signer,
+		});
 
 		expect(plugin.id).toBe('seal:private-content');
 		expect(plugin.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/operator']);

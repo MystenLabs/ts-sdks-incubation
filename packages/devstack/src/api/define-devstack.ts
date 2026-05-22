@@ -8,7 +8,6 @@ import {
 	type AnyPlugin,
 	type MissingProviders,
 	pluginDependencyRefs,
-	type ResourceValueOf,
 } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
 import type {
@@ -18,7 +17,6 @@ import type {
 	SiblingScope,
 	__SiblingHashConflictError,
 } from '../substrate/lifted-sibling.ts';
-import type { WitnessRequiredBy, WitnessProvidedBy } from '../substrate/witness.ts';
 import {
 	WALLET_EXPAND_ACCOUNTS_ALL,
 	type WalletExpandAccountsAllExpander,
@@ -30,26 +28,27 @@ import { isPlugin, type AnyResourceRef } from './define-plugin.ts';
 
 const STACK_ENGINE = Symbol.for('@mysten-incubation/devstack.stack.engine');
 
-type PluginDependencyMembers<Member> =
-	Member extends { readonly dependsOn: ReadonlyArray<infer Dependency> }
-		? Dependency extends AnyPlugin
-			? Dependency
-			: never
-		: never;
+type PluginDependencyMembers<Member> = Member extends {
+	readonly dependsOn: ReadonlyArray<infer Dependency>;
+}
+	? Dependency extends AnyPlugin
+		? Dependency
+		: never
+	: never;
 
-type ReachableMember<Member, Seen extends string = never> =
-	Member extends { readonly id: infer Id extends string }
-		? Id extends Seen
-			? never
-			: Member | ReachableMember<PluginDependencyMembers<Member>, Seen | Id>
-		: never;
+type ReachableMember<Member, Seen extends string = never> = Member extends {
+	readonly id: infer Id extends string;
+}
+	? Id extends Seen
+		? never
+		: Member | ReachableMember<PluginDependencyMembers<Member>, Seen | Id>
+	: never;
 
 export type DependencyClosure<Members extends ReadonlyArray<AnyPlugin>> = ReadonlyArray<
 	Members[number] extends infer Member ? ReachableMember<Member> : never
 >;
 
-export type ComposedMembers<Members extends ReadonlyArray<AnyPlugin>> =
-	DependencyClosure<Members>;
+export type ComposedMembers<Members extends ReadonlyArray<AnyPlugin>> = DependencyClosure<Members>;
 
 /** Collect every sibling-key carried by a member tuple's
  *  `liftedSiblings` field, and the group-keys whose hashes conflict.
@@ -80,32 +79,6 @@ type ConflictingGroups<Members> =
 				: never
 			: never
 		: never;
-
-/** Collect witnesses required by any member's resolved value but not
- *  provided by any member in the same stack. */
-type WitnessesRequired<Members> =
-	Members extends ReadonlyArray<unknown>
-		? WitnessRequiredBy<
-				Members[number] extends AnyResourceRef ? ResourceValueOf<Members[number]> : never
-			>
-		: never;
-
-type WitnessesProvided<Members> =
-	Members extends ReadonlyArray<unknown>
-		? WitnessProvidedBy<
-				Members[number] extends AnyResourceRef ? ResourceValueOf<Members[number]> : never
-			>
-		: never;
-
-type UnsatisfiedWitnesses<Members> = Exclude<
-	WitnessesRequired<Members>,
-	WitnessesProvided<Members>
->;
-
-/** Branded structured error — Phase-3 finding #6. */
-export interface __UnsatisfiedWitnessesError<W extends string> {
-	readonly __unsatisfied_witnesses: W;
-}
 
 export interface DevstackConfig<Members extends ReadonlyArray<AnyPlugin>> extends DevstackOptions {
 	readonly members: Members;
@@ -152,7 +125,7 @@ export const readStackEngine = <Members extends ReadonlyArray<AnyPlugin>>(
 
 // --- Diagnostic gating --------------------------------------------------
 //
-// If `MissingProviders` or `ConflictingGroups` or `UnsatisfiedWitnesses`
+// If `MissingProviders` or `ConflictingGroups`
 // is non-empty, the call signature surfaces a branded structured error
 // so the IDE diagnostic names the missing piece (Phase-3 finding #6 /
 // architecture open question #11).
@@ -174,9 +147,7 @@ export type ValidateArgs<Members> =
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
 					? [ConflictingGroups<M>] extends [never]
-						? [UnsatisfiedWitnesses<M>] extends [never]
-							? unknown
-							: __UnsatisfiedWitnessesError<UnsatisfiedWitnesses<M>>
+						? unknown
 						: __SiblingHashConflictError<ConflictingGroups<M>>
 					: __MissingProvidersError<MissingProviders<M>>
 				: never
@@ -192,9 +163,7 @@ export type ValidateArgs<Members> =
  *   - missing-provider: every dependency id has a matching plugin id
  *     somewhere in the plugin set,
  *   - lifted-sibling dedup conflict: literal-hash siblings under the
- *     same `(plugin, kind, scope)` group must agree,
- *   - witness satisfaction: every `RequiresWitness<N>` is paired with
- *     a `ProvidesWitness<N>` on some member's resolved value.
+ *     same `(plugin, kind, scope)` group must agree.
  *
  * Validation surfaces at the PARAMETER (not the return type) — the
  * generic `Args` is constrained against a branded error type whose
@@ -276,8 +245,7 @@ export const expandPluginDependencies = (
 };
 
 const isExpandedWalletAlias = (a: AnyPlugin, b: AnyPlugin): boolean =>
-	a.id === b.id &&
-	(readExpandHook(a) !== undefined || readExpandHook(b) !== undefined);
+	a.id === b.id && (readExpandHook(a) !== undefined || readExpandHook(b) !== undefined);
 
 // --- wallet `accounts: 'all'` expansion (D6, api-surface-design.md §4) --
 //

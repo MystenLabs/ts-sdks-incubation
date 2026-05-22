@@ -45,20 +45,20 @@ const forkNet: NetworkConfig<'fork'> = {
 declare const publisher: never;
 
 // --- Positive: local mode allows .local + .known ------------------------
-export const _localLocal = deepbookFor.for(localNet).local({ publisher });
-export const _localKnown = deepbookFor.for(localNet).known({
+export const _localLocal = deepbookFor(localNet).local({ publisher });
+export const _localKnown = deepbookFor(localNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _localKnownByNetwork = deepbookFor.for(localNet).known({
+export const _localKnownByNetwork = deepbookFor(localNet).known({
 	network: 'testnet',
 });
 
 // --- Negative: local mode does not expose unsupported feature options ----
 // @ts-expect-error — local pools are not a public option until they acquire real behavior
-export const _localPoolsRefused = deepbookFor.for(localNet).local({ publisher, pools: [] });
+export const _localPoolsRefused = deepbookFor(localNet).local({ publisher, pools: [] });
 
-export const _localMarketMakerRefused = deepbookFor.for(localNet).local({
+export const _localMarketMakerRefused = deepbookFor(localNet).local({
 	publisher,
 	// @ts-expect-error — market-maker cannot be configured while it has no real acquire path
 	marketMaker: {
@@ -68,27 +68,27 @@ export const _localMarketMakerRefused = deepbookFor.for(localNet).local({
 });
 
 // --- Positive: live mode allows .known -----------------------------------
-export const _liveKnown = deepbookFor.for(liveNet).known({
+export const _liveKnown = deepbookFor(liveNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _liveKnownByNetwork = deepbookFor.for(liveNet).known({
+export const _liveKnownByNetwork = deepbookFor(liveNet).known({
 	network: 'mainnet',
 });
 
 // --- Negative: live mode has no .local -----------------------------------
 // @ts-expect-error — `.local` doesn't exist on the live branch
-export const _liveLocalRefused = deepbookFor.for(liveNet).local({ publisher });
+export const _liveLocalRefused = deepbookFor(liveNet).local({ publisher });
 
 // --- Positive: fork mode allows .known ----------------------------------
-export const _forkKnown = deepbookFor.for(forkNet).known({
+export const _forkKnown = deepbookFor(forkNet).known({
 	packageId: '0xpkg',
 	registryId: '0xreg',
 });
-export const _forkKnownByNetwork = deepbookFor.for(forkNet).known({
+export const _forkKnownByNetwork = deepbookFor(forkNet).known({
 	network: 'mainnet',
 });
 
 // --- Negative: fork mode has no .local ----------------------------------
 // @ts-expect-error — `.local` doesn't exist on the fork branch (composite refusal)
-export const _forkLocalRefused = deepbookFor.for(forkNet).local({ publisher });
+export const _forkLocalRefused = deepbookFor(forkNet).local({ publisher });

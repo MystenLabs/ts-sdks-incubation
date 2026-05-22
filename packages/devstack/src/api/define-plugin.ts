@@ -19,6 +19,7 @@ export {
 	type AnyResourceRef,
 	type CapabilitySource,
 	type CapabilitiesFactory,
+	type CompositePluginMetadata,
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,
@@ -30,6 +31,5 @@ export {
 	type ResolvedDependencies,
 	type ResolvedDependencyList,
 	type ResolvedDependencyObject,
-	type StartContext,
 	type WatchDecl,
 } from '../substrate/plugin.ts';

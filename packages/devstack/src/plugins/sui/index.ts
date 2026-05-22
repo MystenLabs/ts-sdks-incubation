@@ -46,13 +46,16 @@ import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
-import { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import { SEED_OBJECTS_CAPABILITY_KEY, type SeedObjectsAccumulator } from './seed-objects.ts';
+import {
+	makeSeedObjectsAccumulator,
+	SEED_OBJECTS_CAPABILITY_KEY,
+	type SeedObjectsAccumulator,
+} from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
-import { SUI_ERROR_TAGS } from './errors.ts';
+import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
 import { makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
 import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
@@ -74,6 +77,10 @@ import { parseDevstackNetwork } from '../../api/inference-network.ts';
 /** The Sui plugin's resource identity. The id is `'sui'` (singular). */
 export const suiResource = resource<'sui', SuiClient>('sui');
 const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
+
+type SuiResolved = SuiClient & {
+	readonly seedObjects: SeedObjectsAccumulator;
+};
 
 // ---------------------------------------------------------------------------
 // Default option resolution
@@ -115,41 +122,10 @@ const buildPlugin = (opts: SuiOptions) => {
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
 				const portBroker = yield* PortBrokerService;
-				const { resolved, client } = yield* bootSuiService(runtime, identity, portBroker, opts);
+				const { client } = yield* bootSuiService(runtime, identity, portBroker, opts);
 
-				const registry = yield* StrategyRegistryService;
-
-				// Architecture §9: the chain-probe is constructed by the
-				// owner of the chain (Sui, here). Register it on the
-				// strategy registry under `chain-probe:<chainId>` so
-				// downstream OnChainArtifactPublisher callers
-				// (Package, Coin, Walrus deploy, Seal deploy, Deepbook
-				// deploy) can pull a typed read surface for the live
-				// chain without taking a hard import on Sui. The
-				// registration is scope-bound — when sui's plugin scope
-				// closes (selective restart, stack shutdown), the entry
-				// is reaped.
-				yield* registry.register(chainProbeCapabilityKey(client.chain), client.chainProbe, {
-					autoMounted: true,
-					priority: 0,
-				});
-
-				// Sui auto-registers its own faucet strategy at acquire time
-				// (architecture: "Sui contributes its own faucet:request
-				// strategy"). The registration is keyed by the resolved
-				// chain id so the faucet dispatcher picks it up without
-				// any cross-plugin import edge. Skipped when the resolved
-				// mode is faucet-less (mainnet) or fork (handled by the
-				// fork admin path, not HTTP).
-				if (resolved.faucet !== undefined && resolved.mode !== 'fork') {
-					yield* registry.register(
-						faucetCapabilityKey(resolved.chain),
-						suiLocalStrategy({ faucetUrl: resolved.faucet }),
-						{ autoMounted: true, priority: 0 },
-					);
-				}
-
-				return client;
+				const seedObjects = yield* makeSeedObjectsAccumulator();
+				return { ...client, seedObjects };
 			}),
 		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
 		errorContributions: suiErrorContributions,
@@ -160,14 +136,12 @@ const buildPlugin = (opts: SuiOptions) => {
  *  `SuiClient` + acquire context so decls can stamp REAL chain ids /
  *  rpc URLs into their fields instead of factory-time placeholders.
  *
- *  The StrategyContributor decls here are shape markers — the live
- *  strategies are registered on the `StrategyRegistry` inside the
- *  `acquire` body above (chain-probe + faucet). The decls carry the
- *  resolved capability key so the supervisor's sink dispatch sees
- *  the REAL chain id on `chain-probe:<id>`. */
+ *  StrategyContributor declarations here carry real post-acquire
+ *  strategy values. The generic strategy sink registers them on the
+ *  scope-local `StrategyRegistry`. */
 const makePluginCapabilities = (
 	opts: SuiOptions,
-	resolved: SuiClient,
+	resolved: SuiResolved,
 	acquireCtx: AcquireContext,
 ) => {
 	const realChain = resolved.chain;
@@ -192,26 +166,19 @@ const makePluginCapabilities = (
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: chainProbeCapabilityKey(realChain),
-		// The real probe is registered with the StrategyRegistry inside
-		// `acquire`; this decl is a SHAPE marker carrying the resolved
-		// capability key for the supervisor's sink dispatch.
-		strategy: (resolved?.chainProbe ?? {
-			get: () => Effect.succeed(null as never).pipe(Effect.map(() => null)) as never,
-		}) as ChainProbe<SuiProbeKey>,
+		strategy: resolved.chainProbe,
 		autoMounted: true,
 	};
 
 	const fundsReadyContribution: StrategyContributorDecl<
 		typeof FUNDS_READY_GATE_KEY,
 		{
-			readonly waitFundsReady: Effect.Effect<void>;
+			readonly waitFundsReady: Effect.Effect<void, SuiPluginError>;
 		}
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: FUNDS_READY_GATE_KEY,
-		// Default: trivially-succeeding. The acquire body overrides
-		// this with the mode-aware gate at boot.
-		strategy: { waitFundsReady: Effect.void },
+		strategy: { waitFundsReady: resolved.waitForTransactionsReady.wait },
 		autoMounted: true,
 	};
 
@@ -221,14 +188,24 @@ const makePluginCapabilities = (
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: SEED_OBJECTS_CAPABILITY_KEY,
-		// Stub accumulator — replaced at acquire by a fresh one (the
-		// plugin-instance-scoped fix from `seed-objects.ts`).
-		strategy: {
-			contribute: () => Effect.void,
-			snapshot: Effect.succeed<ReadonlyArray<string>>([]),
-		},
+		strategy: resolved.seedObjects,
 		autoMounted: true,
 	};
+
+	const faucetContribution =
+		resolved.faucetUrl === null
+			? []
+			: [
+					{
+						kind: 'strategy-contributor',
+						capabilityKey: faucetCapabilityKey(realChain),
+						strategy: suiLocalStrategy({ faucetUrl: resolved.faucetUrl }),
+						autoMounted: true,
+					} satisfies StrategyContributorDecl<
+						`faucet:request:${string}`,
+						ReturnType<typeof suiLocalStrategy>
+					>,
+				];
 
 	const localRoutables =
 		opts.mode === 'local'
@@ -242,6 +219,7 @@ const makePluginCapabilities = (
 		snap,
 		codegen,
 		chainProbeContribution,
+		...faucetContribution,
 		fundsReadyContribution,
 		seedObjectsContribution,
 		...localRoutables,
@@ -260,8 +238,8 @@ export const sui = (opts?: SuiOptions) => buildPlugin(opts ?? resolveDefaultMode
  *
  *  Usage:
  *      const network = { mode: 'local', chain: 'sui:localnet' } as const;
- *      sui.for(network).local({...})    // OK
- *      sui.for(network).fork({...})     // type error: 'fork' not in 'local' branch
+ *      suiFor(network).local({...})    // OK
+ *      suiFor(network).fork({...})     // type error: 'fork' not in 'local' branch
  *
  *  The namespace MIRRORS the four mode option records: `local`,
  *  `external` (mapped onto the substrate `'local'` branch),

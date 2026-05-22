@@ -25,7 +25,7 @@ export const _resolvedShape: SealResolved = null as never as LocalSealResolved;
 export const _keyServerUrl: string = (null as never as LocalSealResolved).keyServerUrl;
 export const _manager: SealKeyManager | null = (null as never as LocalSealResolved).manager;
 
-export const _localNamespace = sealFor.for(localNet).localKeygen({ signer: publisher });
+export const _localNamespace = sealFor(localNet).localKeygen({ signer: publisher });
 
 export const _magicStringSignerRefused = seal({
 	mode: 'local-keygen',
@@ -34,7 +34,7 @@ export const _magicStringSignerRefused = seal({
 });
 
 // @ts-expect-error — local-keygen is absent on fork-mode namespaces
-export const _forkLocalKeygenRefused = sealFor.for(forkNet).localKeygen({ signer: publisher });
+export const _forkLocalKeygenRefused = sealFor(forkNet).localKeygen({ signer: publisher });
 
 type NoManagerTagConstructor = typeof SealPublic extends { makeSealManagerTag: unknown }
 	? never

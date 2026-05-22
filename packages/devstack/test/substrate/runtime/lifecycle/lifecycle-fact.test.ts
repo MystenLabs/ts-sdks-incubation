@@ -35,7 +35,6 @@ const sampleRow: Row = {
 	selectiveRestartHighlight: false,
 	narrationByContributor: null,
 	rebootCost: null,
-	displayHint: undefined,
 };
 
 const emptyState = (): SubscribableState => ({

@@ -52,8 +52,6 @@ export interface Row {
 	readonly selectiveRestartHighlight: boolean;
 	readonly narrationByContributor: Readonly<Record<string, string>> | null;
 	readonly rebootCost: RebootCost | null;
-	/** Opaque blob from the plugin's optional `displayHint`. */
-	readonly displayHint: unknown;
 }
 
 export interface LogTail {

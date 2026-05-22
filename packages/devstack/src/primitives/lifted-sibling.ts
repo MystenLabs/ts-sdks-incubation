@@ -1,10 +1,10 @@
 // Lifted-sibling substrate primitive.
 //
-// Architecture § CompositePrimitive lifted-sibling key conventions.
-// This file owns the substrate-side dedup protocol (first-wins on
-// identical keys; refuse on conflict). Type-level dedup for
-// literal-hash siblings lives in `substrate/lifted-sibling.ts`; the
-// runtime-computed regime is handled here.
+// Architecture § lifted-sibling key conventions. This file owns the
+// substrate-side dedup protocol (first-wins on identical keys; refuse
+// on conflict). Type-level dedup for literal-hash siblings lives in
+// `substrate/lifted-sibling.ts`; the runtime-computed regime is
+// handled here.
 
 import type { Effect, Scope } from 'effect';
 

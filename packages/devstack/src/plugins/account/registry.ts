@@ -17,6 +17,7 @@
 // capability-decl surface so the substrate orchestrates dedup-by-
 // name and last-write-wins without an engine import.
 
+import type { ProjectionDecl } from '../../contracts/projection.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 
 /** Capability key for the per-name account registry. The literal
@@ -63,3 +64,27 @@ export const makeAccountRegistryContribution = <Name extends string>(
 	strategy: entry,
 	autoMounted: true,
 });
+
+export const makeAccountProjectionContribution = <Name extends string>(
+	entry: AccountRegistryEntry & { readonly name: Name },
+): ProjectionDecl => {
+	const updatedAt = Date.now();
+	return {
+		kind: 'projection',
+		event: {
+			tag: 'account.updated',
+			account: {
+				key: `account/${entry.name}` as `account/${string}`,
+				rowKey: null,
+				name: entry.name,
+				address: entry.address,
+				scheme: entry.scheme,
+				source: entry.source,
+				funding: entry.funding,
+				walletVisible: false,
+				updatedAt,
+			},
+			at: updatedAt,
+		},
+	};
+};

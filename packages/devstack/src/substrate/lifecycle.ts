@@ -48,7 +48,7 @@ export type LifecycleTransition =
 	| { readonly from: 'stopped'; readonly to: 'pending' /* via hot-restart */ };
 
 /** A merge-not-replace lifecycle event the substrate accumulates per
- *  plugin row. Phase/lastError/displayHint are transient annotations
+ *  plugin row. Phase/lastError are transient annotations
  *  cleared on transition to ready/failed. */
 export interface LifecycleFact {
 	readonly status: LifecycleStatus;

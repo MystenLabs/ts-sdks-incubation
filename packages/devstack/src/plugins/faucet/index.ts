@@ -2,11 +2,9 @@
 //
 // Architecture (distilled doc §Outputs):
 //   - The plugin's resource's resolved value is the dispatcher.
-//   - The plugin emits ONE capability decl — a
-//     `StrategyContributor` for `faucet:dispatch`, marking this
-//     plugin as the dispatch facade. Other plugins' faucet-strategy
-//     contributions register against the same registry; they target
-//     `faucet:request:<chainId>` capability keys, NOT this one.
+//   - The plugin emits one `StrategyContributor` per caller-supplied
+//     faucet strategy. Built-in strategies are emitted by the plugin
+//     that owns the discovered endpoint, such as Sui local mode.
 //   - No Codegenable contribution: the dispatcher is dev-only
 //     plumbing; user app code reads dispatcher via the plugin resource.
 //     (Open question §Open questions #1 in the distilled doc — if a
@@ -45,56 +43,27 @@ const faucetResource = resource<'faucet', FaucetService>('faucet');
 const faucetErrorContributions = pluginErrorContributions(FAUCET_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
-// Capability-key constant — the dispatcher-marker key.
-// ---------------------------------------------------------------------------
-
-/** Plugin-level capability key marking this plugin as the dispatcher
- *  facade. NOT the same as the per-chain `faucet:request:<chainId>`
- *  keys strategies register under. */
-export const FAUCET_DISPATCH_KEY = 'faucet:dispatch' as const;
-
-// ---------------------------------------------------------------------------
 // Plugin factory
 // ---------------------------------------------------------------------------
 
 /**
- * Construct the faucet plugin. The Sui plugin registers its built-in
- * funding strategy directly; compose `faucet()` only when you need the
+ * Construct the faucet plugin. Compose `faucet()` when you need the
  * dispatcher facade or caller-supplied strategy contributions.
- *
- * Architecture: the Sui→Faucet built-in auto-registration runs on
- * the SUI side — Sui's acquire body yields the
- * `StrategyRegistryService` and registers its own
- * `faucet:request:<chainId>` strategy at acquire time, keyed by the
- * resolved chain id. The faucet plugin itself only knows about the
- * dispatcher facade + the caller-supplied contributions.
  */
 export const faucet = (opts: FaucetServiceOptions = {}) => {
-	// The capability decl is a single dispatcher-marker — useful for
-	// renderers that want to enumerate "this stack has a faucet
-	// dispatcher" without inspecting every per-chain key. The
-	// strategy value is the dispatcher itself, closed over the
-	// resolved service.
-	const dispatchContribution: StrategyContributorDecl<
-		typeof FAUCET_DISPATCH_KEY,
-		// Phantom: actual dispatcher comes from `acquire`'s resolved
-		// value; this decl is a marker only.
-		{ readonly _kind: 'dispatcher' }
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: FAUCET_DISPATCH_KEY,
-		strategy: { _kind: 'dispatcher' as const },
-		autoMounted: true,
-	};
+	const strategyContributions = (opts.strategies ?? []).map((contribution) =>
+		defineFaucetStrategy({
+			chainId: contribution.chainId,
+			strategy: contribution.strategy,
+			priority: contribution.priority ?? 1,
+		}),
+	);
 
 	return definePlugin({
 		id: faucetResource.id,
-		// Architecture: faucet is a LEAF — it declares NO upstream
-		// dep on Sui. Sui-strategy auto-registration runs OUT-OF-BAND
-		// (Sui contributes its own `faucet:request:<chainId>` strategy
-		// via the StrategyContributor capability mechanism when its
-		// mode has a faucet URL). The faucet plugin's body therefore
-		// just builds the dispatcher closure over the registry.
+		// Faucet is a leaf: it has no Sui dependency. Sui contributes
+		// its own `faucet:request:<chainId>` strategy when its resolved
+		// mode exposes a faucet URL.
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
 		start: () =>
@@ -102,7 +71,7 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
 				return yield* acquireFaucetService(opts);
 			}),
 		errorContributions: faucetErrorContributions,
-		capabilities: [dispatchContribution] as const,
+		capabilities: strategyContributions,
 	});
 };
 

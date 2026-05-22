@@ -4,30 +4,24 @@
 //   - Constructed: the strategy registry already exists at the
 //     scope (built by the substrate's `layerStrategyRegistry`). The
 //     faucet plugin doesn't OWN the registry — it CONSUMES it.
-//   - Built-in populated: when the plugin's own auto-mode (driven by
-//     the Sui mode it observes via tag context) maps to a faucet-
-//     bearing chain, the plugin registers a built-in strategy
-//     against the chain id. The Sui plugin DOES NOT register the
-//     faucet strategy itself — that lives here so the faucet plugin
-//     remains the single owner of "how to fund SUI on chain X".
-//   - User-populated: caller-supplied strategies from the factory's
-//     `strategies` option register after the built-in. Last write
-//     wins (priority + seq, in the substrate's registry).
+//   - Populated: strategy-contributor capabilities register
+//     per-chain faucet strategies in the substrate's generic
+//     strategy registry.
 //   - Dispatching: the resolved value carries the dispatcher; sibling
 //     plugins (Account, etc.) call `dispatcher.request(...)`.
 //   - Teardown: the substrate's registry has a per-entry finalizer;
-//     when this plugin's scope closes, the entries it registered are
-//     dropped. The plugin holds no other state.
+//     when a contributing plugin's scope closes, the entries it
+//     registered are dropped. The faucet plugin holds no other state.
 //
 // IMPORTANT — registry consumption:
 //   The substrate's `StrategyRegistryService` is provided as a
 //   service in the scope-local layer (`runtime/strategy-registry`).
-//   The plugin acquire yields the service to register + read.
+//   The plugin acquire yields the service to build the dispatcher.
 
-import { Effect, type Scope } from 'effect';
+import { Effect } from 'effect';
 
 import { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
-import { faucetCapabilityKey, makeDispatcher, type FaucetDispatcher } from './dispatcher.ts';
+import { makeDispatcher, type FaucetDispatcher } from './dispatcher.ts';
 import type { FaucetStrategy } from './strategies/sui-local.ts';
 
 /** A registered strategy contribution. The faucet plugin accepts
@@ -46,9 +40,9 @@ export interface FaucetStrategyContribution {
 
 /** Factory options. */
 export interface FaucetServiceOptions {
-	/** Caller-supplied strategies. Registered AFTER the built-in (if
-	 *  any), at priority `1` by default — overrides built-ins for
-	 *  overlapping chain ids. */
+	/** Caller-supplied strategies. The faucet factory converts these
+	 *  into strategy-contributor capabilities, at priority `1` by
+	 *  default so they override built-ins for overlapping chain ids. */
 	readonly strategies?: ReadonlyArray<FaucetStrategyContribution>;
 }
 
@@ -60,31 +54,13 @@ export interface FaucetService {
 
 /**
  * Plugin acquire body. Constructs the dispatcher closure over the
- * scope-local strategy registry and registers any caller-supplied
- * strategies.
- *
- * Architecture: the Sui→Faucet auto-registration runs on the SUI
- * side (Sui's acquire body yields the `StrategyRegistryService` and
- * registers its own `faucet:request:<chainId>` strategy once the
- * resolved faucet URL is known). The faucet plugin therefore makes
- * no assumptions about Sui — it just builds the dispatcher closure
- * over the registry.
+ * scope-local strategy registry.
  */
 export const acquireFaucetService = (
-	opts: FaucetServiceOptions,
-): Effect.Effect<FaucetService, never, StrategyRegistryService | Scope.Scope> =>
+	_opts: FaucetServiceOptions,
+): Effect.Effect<FaucetService, never, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		const registry = yield* StrategyRegistryService;
-
-		// Caller-supplied strategies. The Sui plugin's own auto-
-		// registration runs separately (out-of-band, last-write-wins
-		// on tie via the registry's seq counter).
-		for (const contribution of opts.strategies ?? []) {
-			yield* registry.register(faucetCapabilityKey(contribution.chainId), contribution.strategy, {
-				autoMounted: false,
-				priority: contribution.priority ?? 1,
-			});
-		}
 
 		return {
 			dispatcher: makeDispatcher(registry),

@@ -40,10 +40,7 @@
 
 import { Effect } from 'effect';
 
-import {
-	definePlugin,
-	resource,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -57,6 +54,7 @@ import {
 	type ProjectedFundingEntry,
 } from './funding.ts';
 import {
+	makeAccountProjectionContribution,
 	makeAccountRegistryContribution,
 	type AccountRegistryEntry,
 	type AccountRegistryFunding,
@@ -144,7 +142,7 @@ export const account = <
 		// at scope close).
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, deps) =>
+		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedCoinValues] = deps;
 				// Identity + on-disk runtime root come from the
@@ -215,7 +213,10 @@ export const account = <
 			const registry = makeAccountRegistryContribution<N>(
 				realEntry as AccountRegistryEntry & { readonly name: N },
 			);
-			return [snapshot, codegen, registry] as const;
+			const projection = makeAccountProjectionContribution<N>(
+				realEntry as AccountRegistryEntry & { readonly name: N },
+			);
+			return [snapshot, codegen, registry, projection] as const;
 		},
 	});
 };

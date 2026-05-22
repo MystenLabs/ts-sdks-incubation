@@ -20,7 +20,6 @@ const makeState = (): SubscribableState => ({
 			selectiveRestartHighlight: false,
 			narrationByContributor: null,
 			rebootCost: 'cheap',
-			displayHint: undefined,
 		},
 	],
 	endpoints: [

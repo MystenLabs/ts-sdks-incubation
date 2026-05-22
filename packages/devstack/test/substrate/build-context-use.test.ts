@@ -1,14 +1,19 @@
 // Registry dependency reader — synchronous access to resolved upstream values.
 //
 // Public plugin bodies now receive resolved dependencies through
-// `start(ctx, deps)`. The lifecycle registry still owns the runtime
+// `start(deps)`. The lifecycle registry still owns the runtime
 // guard: a plugin may only read resources listed in its normalized
 // `dependsOn` refs, and those refs map positionally to upstream keys.
 
 import { Effect, Scope } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { definePlugin, resource, type AnyPlugin, type AnyResourceRef } from '../../src/substrate/plugin.ts';
+import {
+	definePlugin,
+	resource,
+	type AnyPlugin,
+	type AnyResourceRef,
+} from '../../src/substrate/plugin.ts';
 import { pluginKey, type PluginKey } from '../../src/substrate/brand.ts';
 import {
 	buildDependencyReaderFor,

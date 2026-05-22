@@ -8,7 +8,7 @@
 import type { Effect } from 'effect';
 
 import type { CapabilityDecl } from '../contracts/capability-decl.ts';
-import type { ChainId } from './brand.ts';
+import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { LiftedSiblingKey } from './lifted-sibling.ts';
 import type { PluginKind, RebootCost } from './lifecycle.ts';
@@ -85,15 +85,16 @@ export type ResolvedDependencies<Input> = Input extends undefined
 				? ResolvedDependencyObject<Input>
 				: never;
 
-export interface StartContext {}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type AnyPluginStart = (...args: any[]) => Effect.Effect<unknown, unknown, unknown>;
 
-type PluginStart<Deps> = (
-	ctx: StartContext,
-	deps: Deps,
-) => Effect.Effect<unknown, unknown, unknown>;
+type PluginStart<Deps> = [Deps] extends [undefined]
+	? () => Effect.Effect<unknown, unknown, unknown>
+	: (deps: Deps) => Effect.Effect<unknown, unknown, unknown>;
 
 type StartValue<Start> = Start extends (
-	...args: never
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	...args: any[]
 ) => Effect.Effect<infer Value, unknown, unknown>
 	? Value
 	: never;
@@ -110,6 +111,11 @@ export interface PluginErrorContribution {
 export interface WatchDecl {
 	readonly paths: ReadonlyArray<string>;
 	readonly cascade?: boolean;
+}
+
+export interface CompositePluginMetadata {
+	readonly key: PluginKey | string;
+	readonly innerParticipants?: ReadonlyArray<AnyPlugin>;
 }
 
 export interface AcquireContext {
@@ -129,8 +135,7 @@ export type CapabilitySource<Value, Caps extends ReadonlyArray<CapabilityDecl>> 
 
 interface PluginSpecBase<
 	Id extends string,
-	Deps,
-	Start extends PluginStart<Deps>,
+	Start extends AnyPluginStart,
 	Caps extends ReadonlyArray<CapabilityDecl>,
 	Siblings extends ReadonlyArray<LiftedSiblingKey>,
 > {
@@ -140,19 +145,18 @@ interface PluginSpecBase<
 	readonly watch?: WatchDecl;
 	readonly start: Start;
 	readonly capabilities?: CapabilitySource<StartValue<Start>, Caps>;
+	readonly composite?: CompositePluginMetadata;
 	readonly liftedSiblings?: Siblings;
-	readonly displayHint?: unknown;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 }
 
 export type PluginSpec<
 	Id extends string,
 	DependsOn extends DependencyInput | undefined,
-	Deps,
-	Start extends PluginStart<Deps>,
+	Start extends AnyPluginStart,
 	Caps extends ReadonlyArray<CapabilityDecl>,
 	Siblings extends ReadonlyArray<LiftedSiblingKey>,
-> = PluginSpecBase<Id, Deps, Start, Caps, Siblings> & {
+> = PluginSpecBase<Id, Start, Caps, Siblings> & {
 	readonly dependsOn?: DependsOn;
 };
 
@@ -170,12 +174,11 @@ export interface Plugin<
 	readonly rebootCost?: RebootCost;
 	readonly watch?: WatchDecl;
 	readonly start: (
-		ctx: StartContext,
 		deps: ResolvedDependencies<DependencyInput | undefined>,
 	) => Effect.Effect<Value, unknown, unknown>;
 	readonly capabilities?: Caps | CapabilitiesFactory<Caps, Value>;
+	readonly composite?: CompositePluginMetadata;
 	readonly liftedSiblings?: Siblings;
-	readonly displayHint?: unknown;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 }
 
@@ -248,9 +251,8 @@ export const resolvePluginDependencies = (
 	plugin: AnyPlugin,
 	read: (resource: AnyResourceRef) => unknown,
 ): ResolvedDependencies<DependencyInput | undefined> =>
-	resolveDependencyValues(
-		plugin[dependencyInputBrand],
-		(resourceRef) => read(resourceRef as AnyResourceRef),
+	resolveDependencyValues(plugin[dependencyInputBrand], (resourceRef) =>
+		read(resourceRef as AnyResourceRef),
 	);
 
 export const pluginDependencyRefs = (plugin: AnyPlugin): readonly AnyResourceRef[] =>
@@ -265,7 +267,7 @@ export function definePlugin<
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
 >(
-	spec: PluginSpecBase<Id, ResolvedDependencyList<DependsOn>, Start, Caps, Siblings> & {
+	spec: PluginSpecBase<Id, Start, Caps, Siblings> & {
 		readonly dependsOn: DependsOn;
 	},
 ): Plugin<Id, StartValue<Start>, DependsOn, Caps, Siblings>;
@@ -278,7 +280,7 @@ export function definePlugin<
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
 >(
-	spec: PluginSpecBase<Id, ResolvedDependencyObject<DependsOn>, Start, Caps, Siblings> & {
+	spec: PluginSpecBase<Id, Start, Caps, Siblings> & {
 		readonly dependsOn: DependsOn;
 	},
 ): Plugin<Id, StartValue<Start>, DependencyList<DependsOn>, Caps, Siblings>;
@@ -291,7 +293,7 @@ export function definePlugin<
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
 >(
-	spec: PluginSpecBase<Id, ResourceValueOf<DependsOn>, Start, Caps, Siblings> & {
+	spec: PluginSpecBase<Id, Start, Caps, Siblings> & {
 		readonly dependsOn: DependsOn;
 	},
 ): Plugin<Id, StartValue<Start>, readonly [DependsOn], Caps, Siblings>;
@@ -301,15 +303,14 @@ export function definePlugin<
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 	const Siblings extends ReadonlyArray<LiftedSiblingKey> = readonly [],
 >(
-	spec: PluginSpecBase<Id, undefined, Start, Caps, Siblings> & {
+	spec: PluginSpecBase<Id, Start, Caps, Siblings> & {
 		readonly dependsOn?: undefined;
 	},
 ): Plugin<Id, StartValue<Start>, readonly [], Caps, Siblings>;
 export function definePlugin(
 	spec: PluginSpecBase<
 		string,
-		ResolvedDependencies<DependencyInput | undefined>,
-		PluginStart<ResolvedDependencies<DependencyInput | undefined>>,
+		AnyPluginStart,
 		ReadonlyArray<CapabilityDecl>,
 		ReadonlyArray<LiftedSiblingKey>
 	> & {
@@ -334,8 +335,8 @@ export function definePlugin(
 		...(spec.rebootCost === undefined ? {} : { rebootCost: spec.rebootCost }),
 		...(spec.watch === undefined ? {} : { watch: spec.watch }),
 		...(capabilities === undefined ? {} : { capabilities }),
+		...(spec.composite === undefined ? {} : { composite: spec.composite }),
 		...(spec.liftedSiblings === undefined ? {} : { liftedSiblings: spec.liftedSiblings }),
-		...(spec.displayHint === undefined ? {} : { displayHint: spec.displayHint }),
 		...(spec.errorContributions === undefined
 			? {}
 			: { errorContributions: spec.errorContributions }),

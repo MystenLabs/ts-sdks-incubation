@@ -33,6 +33,7 @@ import { Effect } from 'effect';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import type { ProjectionDecl } from '../../contracts/projection.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
@@ -199,6 +200,30 @@ interface PackageRegistryProjectionContribution {
 	readonly sourcePath: string | null;
 }
 
+const makePackageProjectionContribution = (
+	projection: PackageRegistryProjectionContribution,
+): ProjectionDecl => {
+	const updatedAt = Date.now();
+	return {
+		kind: 'projection',
+		event: {
+			tag: 'package.updated',
+			package: {
+				key: `package/${projection.name}` as `package/${string}`,
+				rowKey: null,
+				name: projection.name,
+				kind: projection.kind,
+				packageId: projection.packageId,
+				upgradeCapId: projection.upgradeCapId,
+				mvrPlaceholder: projection.mvrPlaceholder,
+				sourcePath: projection.sourcePath,
+				updatedAt,
+			},
+			at: updatedAt,
+		},
+	};
+};
+
 // ---------------------------------------------------------------------------
 // Internal builders
 // ---------------------------------------------------------------------------
@@ -253,7 +278,7 @@ const buildLocalPlugin = <
 			],
 			cascade: true,
 		},
-		start: (_ctx, { sui, publisher: publisherAccount }) =>
+		start: ({ sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
 				// Substrate-context primitives: OnChainArtifactPublisher
 				// is provided by the supervisor's pluginContext;
@@ -384,13 +409,15 @@ const buildLocalPlugin = <
 };
 
 const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOptions) => {
-	const packageRef = resource<PackageResourceId<Name>, KnownPackageResolved>(packageResourceId(name));
+	const packageRef = resource<PackageResourceId<Name>, KnownPackageResolved>(
+		packageResourceId(name),
+	);
 	return definePlugin({
 		id: packageRef.id,
 		dependsOn: { sui: suiResource },
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		start: (_ctx, { sui }) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* OnChainArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
@@ -444,23 +471,29 @@ const makeLocalCapabilities = (
 	// The plugin contributes to the package-registry strategy under a
 	// fixed key — the substrate orchestrator wires all packages'
 	// contributions into the same per-stack registry.
+	const projection: PackageRegistryProjectionContribution = {
+		kind: 'local',
+		name,
+		packageId: resolved.packageId,
+		upgradeCapId: resolved.upgradeCapId ?? null,
+		mvrPlaceholder: resolved.mvrPlaceholder,
+		sourcePath: resolved.sourcePath,
+	};
 	const registryContribution: StrategyContributorDecl<
 		typeof PACKAGE_REGISTRY_CAPABILITY_KEY,
 		PackageRegistryProjectionContribution
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: PACKAGE_REGISTRY_CAPABILITY_KEY,
-		strategy: {
-			kind: 'local',
-			name,
-			packageId: resolved.packageId,
-			upgradeCapId: resolved.upgradeCapId ?? null,
-			mvrPlaceholder: resolved.mvrPlaceholder,
-			sourcePath: resolved.sourcePath,
-		},
+		strategy: projection,
 		autoMounted: true,
 	};
-	return [snap, codegen, registryContribution] as const;
+	return [
+		snap,
+		codegen,
+		registryContribution,
+		makePackageProjectionContribution(projection),
+	] as const;
 };
 
 const makeKnownCapabilities = (
@@ -476,23 +509,29 @@ const makeKnownCapabilities = (
 		upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
 		mvrPlaceholder: resolved.mvrPlaceholder,
 	});
+	const projection: PackageRegistryProjectionContribution = {
+		kind: 'known',
+		name,
+		packageId: resolved.packageId,
+		upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId ?? null,
+		mvrPlaceholder: resolved.mvrPlaceholder,
+		sourcePath: null,
+	};
 	const registryContribution: StrategyContributorDecl<
 		typeof PACKAGE_REGISTRY_CAPABILITY_KEY,
 		PackageRegistryProjectionContribution
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: PACKAGE_REGISTRY_CAPABILITY_KEY,
-		strategy: {
-			kind: 'known',
-			name,
-			packageId: resolved.packageId,
-			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId ?? null,
-			mvrPlaceholder: resolved.mvrPlaceholder,
-			sourcePath: null,
-		},
+		strategy: projection,
 		autoMounted: true,
 	};
-	return [snap, codegen, registryContribution] as const;
+	return [
+		snap,
+		codegen,
+		registryContribution,
+		makePackageProjectionContribution(projection),
+	] as const;
 };
 
 // ---------------------------------------------------------------------------

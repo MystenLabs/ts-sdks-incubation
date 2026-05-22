@@ -7,7 +7,7 @@
 // discriminator structurally, and the compiler refuses illegal-mode
 // factory access at the call site.
 
-import { isPlugin, type AnyPlugin, type ResourceValueOf } from '../substrate/plugin.ts';
+import { isPlugin, type AnyPlugin } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
 import type { NetworkConfig, NetworkMode } from '../substrate/network.ts';
 import type { __MissingProvidersError, MissingProviders } from '../substrate/plugin.ts';
@@ -18,13 +18,7 @@ import type {
 	SiblingScope,
 	__SiblingHashConflictError,
 } from '../substrate/lifted-sibling.ts';
-import {
-	defineDevstack,
-	type ComposedMembers,
-	type Stack,
-	type __UnsatisfiedWitnessesError,
-} from './define-devstack.ts';
-import type { WitnessProvidedBy, WitnessRequiredBy } from '../substrate/witness.ts';
+import { defineDevstack, type ComposedMembers, type Stack } from './define-devstack.ts';
 
 // --- Callback context ---------------------------------------------------
 
@@ -67,25 +61,6 @@ type ConflictingGroups<Members> =
 			: never
 		: never;
 
-type WitnessesRequired<Members> =
-	Members extends ReadonlyArray<unknown>
-		? WitnessRequiredBy<
-				Members[number] extends AnyPlugin ? ResourceValueOf<Members[number]> : never
-			>
-		: never;
-
-type WitnessesProvided<Members> =
-	Members extends ReadonlyArray<unknown>
-		? WitnessProvidedBy<
-				Members[number] extends AnyPlugin ? ResourceValueOf<Members[number]> : never
-			>
-		: never;
-
-type UnsatisfiedWitnesses<Members> = Exclude<
-	WitnessesRequired<Members>,
-	WitnessesProvided<Members>
->;
-
 /** Validation gate. Mirrors the flat-form rule: resolves to the
  *  caller's `Members` tuple on a clean check, branded error
  *  otherwise.
@@ -100,9 +75,7 @@ type ValidateBuild<Members> =
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
 					? [ConflictingGroups<M>] extends [never]
-						? [UnsatisfiedWitnesses<M>] extends [never]
-							? Members
-							: __UnsatisfiedWitnessesError<UnsatisfiedWitnesses<M>>
+						? Members
 						: __SiblingHashConflictError<ConflictingGroups<M>>
 					: __MissingProvidersError<MissingProviders<M>>
 				: never

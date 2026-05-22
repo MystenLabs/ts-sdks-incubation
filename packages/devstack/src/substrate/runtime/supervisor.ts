@@ -46,6 +46,10 @@ import {
 } from 'effect';
 
 import type { CapabilityDecl } from '../../contracts/capability-decl.ts';
+import type {
+	StrategyContributorDecl,
+	StrategyRegistry,
+} from '../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../brand.ts';
 import type { EngineCommand, EngineEvent } from '../events.ts';
 import type { Identity } from '../identity.ts';
@@ -102,6 +106,7 @@ import {
 	type UnknownDependency,
 	type WatchEntry,
 } from './lifecycle/index.ts';
+import { StrategyRegistryService } from './strategy-registry/service.ts';
 
 // -----------------------------------------------------------------------------
 // Public Stack shape (mirror — `define-devstack.ts` exports)
@@ -197,6 +202,17 @@ export type SupervisorError =
 	| PluginAcquireFailed
 	| RestartTargetMissing
 	| UnknownDependency;
+
+const noopStrategyRegistry: StrategyRegistry = {
+	get: (key) =>
+		Effect.fail({
+			_tag: 'StrategyNotFoundError',
+			capabilityKey: key,
+			registeredKeys: [],
+		}),
+	list: () => Effect.succeed([]),
+	register: () => Effect.void,
+};
 
 export type SupervisorCommandHandler = (
 	cmd: EngineCommand,
@@ -381,16 +397,27 @@ const dispatchContributions = (
 	errorContributions: ReadonlyArray<PluginErrorContribution>,
 	pluginKind: PluginKind,
 	identity: Identity,
+	pluginContext: Context.Context<never>,
 	pluginScope: Scope.Scope,
 	sinks: CapabilitySinksShape,
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	hub: Queue.Enqueue<EngineEvent>,
 ): Effect.Effect<void, unknown, never> =>
 	Effect.gen(function* () {
+		const strategyRegistry = getOrDefault(
+			pluginContext,
+			StrategyRegistryService,
+			noopStrategyRegistry,
+		);
 		const harvestCtx: HarvestContext = {
 			pluginKey,
 			identity,
 			publish: (event) => publish(ref, hub, event),
+			registerStrategy: (decl: StrategyContributorDecl<string, unknown>) =>
+				strategyRegistry.register(decl.capabilityKey, decl.strategy, {
+					autoMounted: decl.autoMounted,
+					...(decl.priority === undefined ? {} : { priority: decl.priority }),
+				}),
 		};
 
 		const items: ReadonlyArray<AnyContribution> = [
@@ -511,7 +538,6 @@ const acquireNode = (
 		const deps = resolvePluginDependencies(entry.node.member, readDependency);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const start = entry.node.member.start as (
-			ctx: Record<string, never>,
 			deps: unknown,
 		) => Effect.Effect<unknown, unknown, any>;
 		const currentPluginContext = pluginContext.pipe(
@@ -526,7 +552,7 @@ const acquireNode = (
 					}),
 			}),
 		);
-		const providedAcquire = Effect.provide(start({}, deps), currentPluginContext) as Effect.Effect<
+		const providedAcquire = Effect.provide(start(deps), currentPluginContext) as Effect.Effect<
 			unknown,
 			unknown,
 			Scope.Scope
@@ -601,6 +627,7 @@ const acquireNode = (
 						errorContributions,
 						entry.node.member.kind,
 						identity,
+						pluginContext,
 						entry.scope,
 						sinks,
 						ref,
@@ -1295,7 +1322,6 @@ export const startSupervisor = (
 								selectiveRestartHighlight: false,
 								narrationByContributor: null,
 								rebootCost: node.member.rebootCost ?? null,
-								displayHint: node.member.displayHint,
 							},
 						],
 			}));

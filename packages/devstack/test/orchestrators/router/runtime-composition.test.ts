@@ -179,6 +179,7 @@ describe('buildProductionOrchestratorSinks', () => {
 					updateRef(state, event).pipe(
 						Effect.andThen(Ref.update(observed, (events) => [...events, event])),
 					),
+				registerStrategy: () => Effect.void,
 			};
 
 			expect(sinks.routable).toBeDefined();
@@ -223,12 +224,12 @@ describe('buildProductionOrchestratorSinks', () => {
 					);
 					const events = yield* Stream.fromQueue(handle.events).pipe(
 						Stream.filter(
-							(event): event is Extract<
+							(
+								event,
+							): event is Extract<
 								EngineEvent,
 								{ readonly tag: 'lifecycle.statusChanged' | 'endpoint.registered' }
-							> =>
-								event.tag === 'lifecycle.statusChanged' ||
-								event.tag === 'endpoint.registered',
+							> => event.tag === 'lifecycle.statusChanged' || event.tag === 'endpoint.registered',
 						),
 						Stream.take(3),
 						Stream.runCollect,

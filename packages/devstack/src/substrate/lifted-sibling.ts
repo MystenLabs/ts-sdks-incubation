@@ -1,7 +1,6 @@
 // Lifted-sibling key shape + dedup contract.
 //
-// Architecture § CompositePrimitive "Lifted-sibling key conventions".
-// Two regimes:
+// Architecture § lifted-sibling key conventions. Two regimes:
 //
 //   - Literal `inputHash`  → compile-time dedup conflict via
 //                            union-to-intersection collapse.

@@ -8,11 +8,7 @@
 
 // --- Composer surfaces --------------------------------------------------
 
-export {
-	defineDevstack,
-	type Stack,
-	type __UnsatisfiedWitnessesError,
-} from './api/define-devstack.ts';
+export { defineDevstack, type Stack } from './api/define-devstack.ts';
 export {
 	defineDevstackWith,
 	type BuildCtx,
@@ -33,6 +29,7 @@ export {
 	capabilitySink,
 	codegenable,
 	defineCapability,
+	projection,
 	routable,
 	snapshotable,
 	strategyContributor,
@@ -51,19 +48,9 @@ export {
 	type ResolvedDependencies,
 	type ResourceIdOf,
 	type ResourceValueOf,
-	type StartContext,
 } from './api/define-plugin.ts';
 export {
-	defineWitness,
-	providesWitness,
-	requiresWitness,
-	type ProvidesWitness,
-	type RequiresWitness,
-	type Witness,
-} from './api/witness.ts';
-export {
 	defineModeNamespace,
-	forNetwork,
 	type FactoriesByMode,
 	type FactoriesFor,
 	type ModeNamespace,
@@ -102,6 +89,7 @@ export type {
 	CodegenEmitContext,
 	CodegenEmitDone,
 } from './contracts/codegenable.ts';
+export type { ProjectionDecl, ProjectionEvent } from './contracts/projection.ts';
 export type {
 	ContainerHandle,
 	ContainerRuntime,
@@ -111,11 +99,10 @@ export type {
 	TaggedImageRef,
 } from './contracts/container-runtime.ts';
 export { ContainerRuntimeService } from './runtime/docker/service.ts';
-export type { CompositePrimitiveDecl } from './contracts/composite-primitive.ts';
 export type {
-	LifenessClassifierDecl,
-	LifenessClassification,
-	LifenessHints,
+	LivenessClassifierDecl,
+	LivenessClassification,
+	LivenessHints,
 } from './contracts/liveness-classifier.ts';
 export type {
 	DispatchId,
@@ -345,7 +332,6 @@ export {
 
 export {
 	faucet,
-	FAUCET_DISPATCH_KEY,
 	faucetCapabilityKey,
 	defineFaucetStrategy,
 	suiLocalStrategy,

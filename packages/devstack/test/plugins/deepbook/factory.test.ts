@@ -6,7 +6,11 @@ import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import { account } from '../../../src/plugins/account/index.ts';
-import { deepbook, deepbookFor, type DeepbookResolved } from '../../../src/plugins/deepbook/index.ts';
+import {
+	deepbook,
+	deepbookFor,
+	type DeepbookResolved,
+} from '../../../src/plugins/deepbook/index.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import * as publicRoot from '../../../src/index.ts';
 import { isPlugin } from '../../../src/substrate/plugin.ts';
@@ -62,63 +66,64 @@ describe('deepbook(opts) — primary factory', () => {
 	});
 
 	it('resolves built-in testnet known deployment ids', () => {
-			const member = deepbook({
-				mode: 'known',
-				network: 'testnet',
-			});
-			const resolved = Effect.runSync(
-				member.start({}, [{ chain: chainId('sui:local') } as never]) as Effect.Effect<
-					DeepbookResolved,
-					unknown,
-					never
-				>,
-			);
-
-			expect(resolved).toMatchObject({
-				mode: 'known',
-				chain: 'sui:testnet',
-				packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
-				registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
-				adminCapId: null,
-				pyth: TESTNET_PYTH,
-			});
+		const member = deepbook({
+			mode: 'known',
+			network: 'testnet',
 		});
+		const resolved = Effect.runSync(
+			member.start([{ chain: chainId('sui:local') } as never]) as Effect.Effect<
+				DeepbookResolved,
+				unknown,
+				never
+			>,
+		);
+
+		expect(resolved).toMatchObject({
+			mode: 'known',
+			chain: 'sui:testnet',
+			packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
+			registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
+			adminCapId: null,
+			pyth: TESTNET_PYTH,
+		});
+	});
 
 	it('emits known Pyth state ids through generated bindings', () => {
-			const member = deepbook({
-				mode: 'known',
-				network: 'testnet',
-			});
-			const resolved = Effect.runSync(
-				member.start({}, [{ chain: chainId('sui:local') } as never]) as Effect.Effect<
-					DeepbookResolved,
-					unknown,
-					never
-				>,
-			);
-			const caps =
-				typeof member.capabilities === 'function'
-					? member.capabilities(resolved, {} as never)
-					: member.capabilities;
-			expect(caps).toBeDefined();
-			const codegen = caps?.find(
-				(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook-network',
-			) as
-				| {
-						readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
-				  }
-				| undefined;
-			expect(codegen).toBeDefined();
+		const member = deepbook({
+			mode: 'known',
+			network: 'testnet',
+		});
+		const resolved = Effect.runSync(
+			member.start([{ chain: chainId('sui:local') } as never]) as Effect.Effect<
+				DeepbookResolved,
+				unknown,
+				never
+			>,
+		);
+		const caps =
+			typeof member.capabilities === 'function'
+				? member.capabilities(resolved, {} as never)
+				: member.capabilities;
+		expect(caps).toBeDefined();
+		const codegen = caps?.find(
+			(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook-network',
+		) as
+			| {
+					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
+			  }
+			| undefined;
+		expect(codegen).toBeDefined();
 
-			const emitted: {
-				deepbookBindings?: {
-					readonly pyth: {
-						readonly stateId: string;
-						readonly wormholeStateId: string;
-					} | null;
-				};
-			} = {};
-			Effect.runSync(codegen!.emit({
+		const emitted: {
+			deepbookBindings?: {
+				readonly pyth: {
+					readonly stateId: string;
+					readonly wormholeStateId: string;
+				} | null;
+			};
+		} = {};
+		Effect.runSync(
+			codegen!.emit({
 				exportConst: (name, value) => {
 					if (name === 'deepbookBindings') {
 						emitted.deepbookBindings = value as typeof emitted.deepbookBindings;
@@ -126,12 +131,13 @@ describe('deepbook(opts) — primary factory', () => {
 				},
 				importStatement: () => {},
 				done: () => ({ _tag: 'CodegenEmitDone' }),
-			}));
-			expect(emitted.deepbookBindings?.pyth).toEqual({
-				stateId: TESTNET_PYTH.stateId,
-				wormholeStateId: TESTNET_PYTH.wormholeStateId,
-			});
+			}),
+		);
+		expect(emitted.deepbookBindings?.pyth).toEqual({
+			stateId: TESTNET_PYTH.stateId,
+			wormholeStateId: TESTNET_PYTH.wormholeStateId,
 		});
+	});
 
 	it('folds the instance name into the resource id', () => {
 		const member = deepbook({
@@ -148,14 +154,14 @@ describe('deepbook(opts) — primary factory', () => {
 describe('deepbookFor(network) — mode-narrowed namespace', () => {
 	it('exposes `.local` on a local network', () => {
 		const network = { mode: 'local' as const, chain: chainId('sui:localnet') };
-		const factories = deepbookFor.for(network);
+		const factories = deepbookFor(network);
 		expect(typeof factories.local).toBe('function');
 		expect(typeof factories.known).toBe('function');
 	});
 
 	it('exposes `.known` (only) on a live network', () => {
 		const network = { mode: 'live' as const, chain: chainId('sui:testnet') };
-		const factories = deepbookFor.for(network);
+		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
 		// `factories.local` doesn't exist on this branch — accessing
 		// it would be a compile error. Runtime check: the property
@@ -169,7 +175,7 @@ describe('deepbookFor(network) — mode-narrowed namespace', () => {
 			chain: chainId('sui:mainnet-fork'),
 			upstream: 'mainnet' as const,
 		};
-		const factories = deepbookFor.for(network);
+		const factories = deepbookFor(network);
 		expect(typeof factories.known).toBe('function');
 		// Defense-in-depth runtime refusal — the type-level refusal
 		// is the primary mechanism (`.local` does not exist on the

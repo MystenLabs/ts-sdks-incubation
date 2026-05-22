@@ -5,8 +5,8 @@
 // kinds, while opaque custom declarations remain valid by structure.
 
 import type { CodegenableDecl } from './codegenable.ts';
-import type { CompositePrimitiveDecl } from './composite-primitive.ts';
-import type { LifenessClassifierDecl } from './liveness-classifier.ts';
+import type { LivenessClassifierDecl } from './liveness-classifier.ts';
+import type { ProjectionDecl } from './projection.ts';
 import type { RoutableDecl } from './routable.ts';
 import type { SnapshotableDecl } from './snapshotable.ts';
 import type { StrategyContributorDecl } from './strategy-contributor.ts';
@@ -24,12 +24,9 @@ export interface DevstackCapabilityRegistry {
 	readonly snapshotable: Omit<SnapshotableDecl, 'kind'>;
 	readonly routable: Omit<RoutableDecl, 'kind'>;
 	readonly codegenable: Omit<CodegenableDecl<string>, 'kind'>;
-	readonly 'strategy-contributor': Omit<
-		StrategyContributorDecl<string, unknown>,
-		'kind'
-	>;
-	readonly 'liveness-classifier': Omit<LifenessClassifierDecl, 'kind'>;
-	readonly 'composite-primitive': Omit<CompositePrimitiveDecl, 'kind'>;
+	readonly projection: Omit<ProjectionDecl, 'kind'>;
+	readonly 'strategy-contributor': Omit<StrategyContributorDecl<string, unknown>, 'kind'>;
+	readonly 'liveness-classifier': Omit<LivenessClassifierDecl, 'kind'>;
 }
 
 export type CapabilityKind = keyof DevstackCapabilityRegistry & string;
@@ -53,7 +50,9 @@ export type CapabilityPayloadFor<Kind extends string> = Kind extends CapabilityK
 	? DevstackCapabilityRegistry[Kind] & { readonly kind?: never }
 	: object & { readonly kind?: never };
 
-export type ExactCapabilityPayload<Kind extends string, Data extends object> =
-	Kind extends CapabilityKind
-		? Record<Exclude<keyof Data, keyof CapabilityPayloadFor<Kind>>, never>
-		: unknown;
+export type ExactCapabilityPayload<
+	Kind extends string,
+	Data extends object,
+> = Kind extends CapabilityKind
+	? Record<Exclude<keyof Data, keyof CapabilityPayloadFor<Kind>>, never>
+	: unknown;

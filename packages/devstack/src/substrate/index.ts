@@ -1,5 +1,5 @@
 // Public substrate vocabulary. Keep this barrel narrow: brands,
-// lifecycle/mode/witness helpers, and manifest envelope types. Engine
+// lifecycle/mode helpers, and manifest envelope types. Engine
 // protocol, runtime services, stack-member shapes, identity context,
 // projection state, cross-process state, and plugin error-contribution
 // internals stay on private module paths.
@@ -49,10 +49,3 @@ export type {
 	NetworkMode,
 } from './network.ts';
 export type { DevstackOptions } from './options.ts';
-export type {
-	ProvidesWitness,
-	RequiresWitness,
-	Witness,
-	WitnessProvidedBy,
-	WitnessRequiredBy,
-} from './witness.ts';

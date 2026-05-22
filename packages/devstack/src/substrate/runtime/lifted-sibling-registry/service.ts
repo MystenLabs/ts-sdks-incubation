@@ -1,9 +1,8 @@
 // Lifted-sibling registry implementation.
 //
-// In-memory, per-stack. Architecture § CompositePrimitive
-// lifted-sibling dedup: identical `(plugin, kind, scope, inputHash)`
-// is first-wins; same `(plugin, kind, scope)` with a different
-// `inputHash` is REFUSED.
+// In-memory, per-stack. Architecture § lifted-sibling dedup:
+// identical `(plugin, kind, scope, inputHash)` is first-wins; same
+// `(plugin, kind, scope)` with a different `inputHash` is REFUSED.
 //
 // Compile-time refusal for the literal-hash regime lives in
 // `substrate/lifted-sibling.ts`. The runtime refusal here is

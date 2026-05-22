@@ -17,6 +17,7 @@
 import { Context, Data, Effect, Layer, Ref, Scope } from 'effect';
 
 import type { CapabilityDecl } from '../../../contracts/capability-decl.ts';
+import type { StrategyContributorDecl } from '../../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
@@ -41,9 +42,9 @@ export type ContributionKind =
 	| 'snapshotable'
 	| 'routable'
 	| 'codegenable'
+	| 'projection'
 	| 'strategy-contributor'
 	| 'liveness-classifier'
-	| 'composite-primitive'
 	| 'error-contribution'
 	| (string & { readonly __extensionKind?: never });
 
@@ -63,6 +64,9 @@ export interface HarvestContext {
 	readonly pluginKey: PluginKey;
 	readonly identity: Identity;
 	readonly publish: (event: EngineEvent) => Effect.Effect<void, never, never>;
+	readonly registerStrategy: (
+		decl: StrategyContributorDecl<string, unknown>,
+	) => Effect.Effect<void, never, Scope.Scope>;
 }
 
 // -----------------------------------------------------------------------------

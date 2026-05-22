@@ -35,7 +35,6 @@ const state = (): SubscribableState => ({
 			selectiveRestartHighlight: false,
 			narrationByContributor: null,
 			rebootCost: null,
-			displayHint: undefined,
 		},
 		{
 			key: pluginKey('account/alice#1'),
@@ -49,7 +48,6 @@ const state = (): SubscribableState => ({
 			selectiveRestartHighlight: false,
 			narrationByContributor: null,
 			rebootCost: null,
-			displayHint: undefined,
 		},
 		{
 			key: pluginKey('package/connect-four#2'),
@@ -63,7 +61,6 @@ const state = (): SubscribableState => ({
 			selectiveRestartHighlight: false,
 			narrationByContributor: null,
 			rebootCost: null,
-			displayHint: undefined,
 		},
 	],
 	endpoints: [

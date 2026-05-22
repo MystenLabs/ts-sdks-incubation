@@ -16,7 +16,7 @@
 //
 // The mode body re-uses `acquireLive` since the boot pipeline is
 // identical. We expose a distinct factory only so the mode-narrowed
-// factory namespace (`sealFor.for(network).forkKnown(opts)`) can
+// factory namespace (`sealFor(network).forkKnown(opts)`) can
 // route by mode without leaking the live-mode internals.
 
 import { Effect } from 'effect';

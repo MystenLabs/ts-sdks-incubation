@@ -24,7 +24,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Context, Effect, FileSystem, Layer, Ref, Schema, Scope } from 'effect';
 
-import type { LifenessClassifierDecl } from '../../contracts/liveness-classifier.ts';
+import type { LivenessClassifierDecl } from '../../contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/index.ts';
@@ -120,11 +120,11 @@ export interface SnapshotOrchestrator {
 		},
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Register a plugin-emitted `LifenessClassifier`. The decl is
+	/** Register a plugin-emitted `LivenessClassifier`. The decl is
 	 *  consumed by `prune()`. Scope-bound. */
 	readonly registerClassifier: (
 		pluginKey: string,
-		decl: LifenessClassifierDecl,
+		decl: LivenessClassifierDecl,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
 	/** Capture a new snapshot. The id MAY be caller-supplied; if

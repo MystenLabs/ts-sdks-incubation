@@ -42,9 +42,7 @@ export type RoutableUpstreamKind = keyof DevstackRoutableUpstreamRegistry & stri
 
 /** Upstream target type. Built-ins are container-on-router-network and
  *  host-process-on-loopback. The router resolves URL. */
-export type RoutableUpstream<
-	Kind extends string = RoutableUpstreamKind,
-> = string extends Kind
+export type RoutableUpstream<Kind extends string = RoutableUpstreamKind> = string extends Kind
 	? {
 			readonly [K in RoutableUpstreamKind]: Readonly<
 				{ readonly type: K } & DevstackRoutableUpstreamRegistry[K]
@@ -62,10 +60,9 @@ interface RoutableBase {
 	readonly upstream: RoutableUpstream;
 }
 
-/** HTTP variant — Host-header dispatched, CORS-aware. `wireProtocol`
- *  omitted defaults to `'http'` for back-compat with pre-TCP callers. */
+/** HTTP variant — Host-header dispatched, CORS-aware. */
 export interface RoutableHttpDecl extends RoutableBase {
-	readonly wireProtocol?: 'http' | 'h2c';
+	readonly wireProtocol: 'http' | 'h2c';
 	readonly cors: boolean;
 }
 

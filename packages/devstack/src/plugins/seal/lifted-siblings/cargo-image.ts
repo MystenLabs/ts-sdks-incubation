@@ -10,7 +10,7 @@
 // shape is kept so the dedup namespace stays compatible with
 // walrus's matching sibling.
 //
-// Lifted-sibling key conventions (architecture §CompositePrimitive):
+// Lifted-sibling key conventions:
 //
 //   - `plugin`     — `'seal'`. The image is seal-specific: contains
 //                    the `seal-cli` + `key-server` binaries from the

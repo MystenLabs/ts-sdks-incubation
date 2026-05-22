@@ -42,7 +42,7 @@ import {
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
-import type { CompositePrimitiveDecl } from '../../../src/contracts/composite-primitive.ts';
+import type { ProjectionDecl } from '../../../src/contracts/projection.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
 import type { SnapshotableDecl } from '../../../src/contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../../src/contracts/strategy-contributor.ts';
@@ -62,7 +62,6 @@ interface Captured {
 	readonly routable: ReadonlyArray<{ readonly key: string; readonly endpoint: string }>;
 	readonly codegenable: ReadonlyArray<{ readonly key: string; readonly emitter: string }>;
 	readonly strategy: ReadonlyArray<{ readonly key: string; readonly capabilityKey: string }>;
-	readonly composite: ReadonlyArray<{ readonly key: string; readonly compositeKey: string }>;
 }
 
 const makeCapture = () =>
@@ -72,7 +71,6 @@ const makeCapture = () =>
 			routable: [],
 			codegenable: [],
 			strategy: [],
-			composite: [],
 		});
 		const sinks: OrchestratorSinks = {
 			snapshotable: (key, decl) =>
@@ -94,14 +92,6 @@ const makeCapture = () =>
 				Ref.update(ref, (c) => ({
 					...c,
 					strategy: [...c.strategy, { key: String(key), capabilityKey: decl.capabilityKey }],
-				})),
-			composite: (key, decl) =>
-				Ref.update(ref, (c) => ({
-					...c,
-					composite: [
-						...c.composite,
-						{ key: String(key), compositeKey: String(decl.compositeKey) },
-					],
 				})),
 		};
 		return { ref, sinks };
@@ -196,11 +186,42 @@ const packageStrategyDecl: StrategyContributorDecl<
 	autoMounted: true,
 };
 
-const compositeDecl: CompositePrimitiveDecl = {
-	kind: 'composite-primitive',
-	compositeKey: 'plug-composite' as never,
-	liftedSiblings: [],
-	innerParticipants: [],
+const accountProjectionDecl: ProjectionDecl = {
+	kind: 'projection',
+	event: {
+		tag: 'account.updated',
+		account: {
+			key: 'account/alice',
+			rowKey: null,
+			name: 'alice',
+			address: '0xabc',
+			scheme: 'ed25519',
+			source: 'real',
+			funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+			walletVisible: false,
+			updatedAt: 1,
+		},
+		at: 1,
+	},
+};
+
+const packageProjectionDecl: ProjectionDecl = {
+	kind: 'projection',
+	event: {
+		tag: 'package.updated',
+		package: {
+			key: 'package/vault',
+			rowKey: null,
+			name: 'vault',
+			kind: 'local',
+			packageId: '0x123',
+			upgradeCapId: null,
+			mvrPlaceholder: '@local/vault',
+			sourcePath: 'move/vault',
+			updatedAt: 1,
+		},
+		at: 1,
+	},
 };
 
 const errorContribAlpha: PluginErrorContribution = {
@@ -250,21 +271,21 @@ const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
 	kind: 'leaf-one-shot' as const,
 	start: () => Effect.succeed({ v: 'account' as const }),
-	capabilities: [accountStrategyDecl] as const,
+	capabilities: [accountStrategyDecl, accountProjectionDecl] as const,
 });
 
 const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
 	kind: 'leaf-long-running' as const,
 	start: () => Effect.succeed({ v: 'package' as const }),
-	capabilities: [packageStrategyDecl] as const,
+	capabilities: [packageStrategyDecl, packageProjectionDecl] as const,
 });
 
 const pluginComposite = definePlugin({
 	id: 'test:composite',
 	kind: 'composite' as const,
+	composite: { key: 'plug-composite' },
 	start: () => Effect.succeed({ v: 'composite' as const }),
-	capabilities: [compositeDecl] as const,
 	errorContributions: [errorContribAlpha],
 });
 
@@ -434,18 +455,16 @@ describe('supervisor harvest loop', () => {
 			);
 
 			const captured = yield* Ref.get(ref);
-			// Plugin keys are derived as `<tag.id>#<ordinal>` by the
+			// Plugin keys are derived as `<member.id>#<ordinal>` by the
 			// dep-graph resolver (see `lifecycle/dep-graph.ts:120`),
 			// where `<ordinal>` is the member's position in the stack
-			// tuple. Composite-primitive plugins use their `compositeKey`
-			// instead; non-composite plugins use the tag-derived form.
+			// tuple. Composite plugins use their declared metadata key.
 			expect(captured.snapshotable).toEqual([
 				{ key: 'test:snap#0', subtree: 'runtime/snap-subtree' },
 			]);
 			expect(captured.routable).toEqual([{ key: 'test:route#1', endpoint: 'demo-endpoint' }]);
 			expect(captured.codegenable).toEqual([{ key: 'test:codegen#2', emitter: 'demo-emitter' }]);
 			expect(captured.strategy).toEqual([{ key: 'test:strat#3', capabilityKey: 'demo-strategy' }]);
-			expect(captured.composite).toEqual([]);
 		}),
 	);
 
@@ -539,9 +558,8 @@ describe('supervisor harvest loop', () => {
 			}),
 	);
 
-	it.effect('dispatches composite-primitive decls separately from leaves', () =>
+	it.effect('uses plugin metadata for composite keys', () =>
 		Effect.gen(function* () {
-			const { ref, sinks } = yield* makeCapture();
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
 				members: [pluginSnap, pluginComposite],
@@ -551,22 +569,15 @@ describe('supervisor harvest loop', () => {
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					const handle = yield* supervise(stack, identity, state);
 					for (const [key] of handle.graph.nodes) {
 						yield* handle.registry.awaitReady(key);
 					}
 				}),
 			);
 
-			const captured = yield* Ref.get(ref);
-			expect(captured.snapshotable).toEqual([
-				{ key: 'test:snap#0', subtree: 'runtime/snap-subtree' },
-			]);
-			// Composite plugins get their key from `decl.compositeKey`,
-			// not the tag-derived `<id>#<n>` form.
-			expect(captured.composite).toEqual([
-				{ key: 'plug-composite', compositeKey: 'plug-composite' },
-			]);
+			const snapshot = yield* SubscriptionRef.get(state);
+			expect(snapshot.rows.map((row) => row.key)).toEqual(['test:snap#0', 'plug-composite']);
 		}),
 	);
 
@@ -603,7 +614,6 @@ describe('supervisor harvest loop', () => {
 			expect(captured.routable).toEqual([]);
 			expect(captured.codegenable).toEqual([]);
 			expect(captured.strategy).toEqual([]);
-			expect(captured.composite).toEqual([]);
 
 			// The projection now lists the error-only plugin among rows
 			// (the supervisor declares rows for non-inner top-level

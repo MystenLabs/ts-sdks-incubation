@@ -6,11 +6,52 @@
 //   3. two composites lifting siblings with conflicting `inputHash`
 //      under the same `(plugin, kind, scope)` group.
 
-import { chainId, defineDevstack, defineDevstackWith, definePlugin, sui } from '../src/index.ts';
+import {
+	chainId,
+	defineDevstack,
+	defineDevstackWith,
+	defineModeNamespace,
+	definePlugin,
+	litSiblingKey,
+	resource,
+	sui,
+} from '../src/index.ts';
 import { Effect } from 'effect';
-import { cluster, clusterImageSibling } from '../src/samples/composite-plugin.ts';
-import { keyval } from '../src/samples/trivial-leaf-plugin.ts';
 import type { NetworkConfig } from '../src/index.ts';
+
+const keyvalResource = resource<'keyval', { readonly url: string }>('keyval');
+
+const keyval = () =>
+	definePlugin({
+		id: keyvalResource.id,
+		kind: 'leaf-long-running',
+		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } as const),
+	});
+
+const clusterImageSibling = <const Hash extends string>(hash: Hash) =>
+	litSiblingKey('cluster', 'docker-image', 'per-app', hash);
+
+const cluster = defineModeNamespace({
+	local: {
+		localCluster: () =>
+			definePlugin({
+				id: 'cluster',
+				dependsOn: { leaf: keyvalResource },
+				kind: 'composite',
+				composite: { key: 'cluster' },
+				liftedSiblings: [clusterImageSibling('cluster-image-v1')] as const,
+				start: ({ leaf }) => Effect.succeed({ endpoint: leaf.url } as const),
+			}),
+	},
+	fork: {
+		forkedCluster: () =>
+			definePlugin({
+				id: 'cluster-fork',
+				kind: 'leaf-one-shot',
+				start: () => Effect.succeed({ endpoint: 'https://example.invalid' } as const),
+			}),
+	},
+});
 
 // --- Positive case ------------------------------------------------------
 //
@@ -21,13 +62,13 @@ const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: chainId('de
 
 export const localStack = defineDevstackWith(
 	{ network: localNetwork, stackName: 'complex-local' },
-	(ctx) => [keyval(), cluster.for(ctx.network).localCluster()] as const,
+	(ctx) => [keyval(), cluster(ctx.network).localCluster()] as const,
 );
 
 // --- Flat form, manual threading ---------------------------------------
 
 export const flatLocalStack = defineDevstack({
-	members: [keyval(), cluster.for(localNetwork).localCluster()],
+	members: [keyval(), cluster(localNetwork).localCluster()],
 	stackName: 'complex-flat',
 });
 
@@ -36,7 +77,7 @@ const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },
 	kind: 'leaf-long-running',
-	start: (_ctx, { sui }) => Effect.succeed({ chain: sui.chain } as const),
+	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 
 export const recursiveSuiDependencyStack = defineDevstack({
@@ -52,7 +93,7 @@ export const recursiveSuiDependencyStack = defineDevstack({
 
 // @ts-expect-error missing provider: keyval
 export const missingDep = defineDevstack({
-	members: [cluster.for(localNetwork).localCluster()],
+	members: [cluster(localNetwork).localCluster()],
 	stackName: 'missing-dep',
 });
 
@@ -71,10 +112,10 @@ const forkNetwork: NetworkConfig<'fork'> = {
 };
 
 // @ts-expect-error — localCluster does not exist on the fork branch
-export const _illegalModeFactory = cluster.for(forkNetwork).localCluster();
+export const _illegalModeFactory = cluster(forkNetwork).localCluster();
 
 // Positive: forkedCluster IS available on the fork branch.
-export const legalForkFactory = cluster.for(forkNetwork).forkedCluster();
+export const legalForkFactory = cluster(forkNetwork).forkedCluster();
 
 // --- Negative case 3: lifted-sibling hash conflict ---------------------
 //

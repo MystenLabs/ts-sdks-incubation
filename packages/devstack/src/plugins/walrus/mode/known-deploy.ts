@@ -9,7 +9,7 @@
 // Distilled-doc invariants honored:
 //   - 14: NO admin tag — known deployment cannot publish a signer.
 //         The composite's resolved shape omits `admin` here; the
-//         type-level admin omission flows through `walrusFor.for(net).known`
+//         type-level admin omission flows through `walrusFor(net).known`
 //         (no admin in the resolved shape).
 //   - 15: `WalrusProxyTag` only when ALL three URLs (proxy,
 //         aggregator, publisher) are present. Encoded as
@@ -82,7 +82,7 @@ const KNOWN_DEPLOYMENT_REGISTRY: Readonly<
 	testnet: {
 		chain: 'sui:testnet',
 		// Real ids must be supplied via the explicit options form
-		// (`walrusFor.for(testnet).known({ systemObjectId, stakingPoolId, ... })`).
+		// (`walrusFor(testnet).known({ systemObjectId, stakingPoolId, ... })`).
 		// The known-deployment lookup table only canonicalises the URLs;
 		// the on-chain ids are network-specific and live outside this
 		// package.
@@ -144,7 +144,7 @@ export const resolveKnownDeploymentOptions = (
 			`walrusKnownDeployment: explicit 'nodes' committee is required — ` +
 				`Walrus ${opts.network ?? 'custom'} has nodes fetched dynamically by the SDK`,
 			`pass an empty array if you accept the SDK-driven committee lookup, ` +
-				`or use walrus()/walrusFor.for(network).local({...}) for a self-hosted cluster`,
+				`or use walrus()/walrusFor(network).local({...}) for a self-hosted cluster`,
 		);
 	}
 

@@ -42,13 +42,13 @@ const customNeedsSui = definePlugin({
 	id: 'custom/needs-sui',
 	dependsOn: { sui: localnet },
 	kind: 'leaf-long-running',
-	start: (_ctx, { sui }) => Effect.succeed({ chain: sui.chain } as const),
+	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 const customNeedsBareSui = definePlugin({
 	id: 'custom/needs-bare-sui',
 	dependsOn: { sui: bareSuiResource },
 	kind: 'leaf-long-running',
-	start: (_ctx, { sui }) => Effect.succeed({ chain: sui.chain } as const),
+	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 
 // --- Explicit Sui provider ---------------------------------------------
@@ -147,7 +147,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			id: 'test/api',
 			dependsOn: { database },
 			kind: 'leaf-long-running',
-			start: (_ctx, { database }) => Effect.succeed({ upstream: database.url } as const),
+			start: ({ database }) => Effect.succeed({ upstream: database.url } as const),
 		});
 
 		const stack = defineDevstack({ members: [api] });
@@ -167,13 +167,11 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			id: 'test/repeated-consumer',
 			dependsOn: { first: upstream, second: upstream },
 			kind: 'leaf-long-running',
-			start: (_ctx, deps) => Effect.succeed(deps),
+			start: (deps) => Effect.succeed(deps),
 		});
 
 		expect(consumer.dependsOn).toHaveLength(1);
-		expect(consumer.dependsOn.map((resource) => resource.id)).toEqual([
-			'test/repeated-upstream',
-		]);
+		expect(consumer.dependsOn.map((resource) => resource.id)).toEqual(['test/repeated-upstream']);
 	});
 
 	it('throws on duplicate providers discovered through recursive dependencies', () => {
@@ -314,7 +312,7 @@ if (false) {
 		id: 'test/needs-bare-cache',
 		dependsOn: bareCache,
 		kind: 'leaf-long-running',
-		start: (_ctx, cache) => Effect.succeed(cache),
+		start: (cache) => Effect.succeed(cache),
 	});
 	// @ts-expect-error missing provider: test/bare-cache
 	defineDevstack({ members: [standalone, needsBareCache] });

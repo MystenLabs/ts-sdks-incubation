@@ -37,7 +37,6 @@ const makeState = (): SubscribableState => ({
 			selectiveRestartHighlight: false,
 			narrationByContributor: null,
 			rebootCost: null,
-			displayHint: null,
 		},
 	],
 	endpoints: [],

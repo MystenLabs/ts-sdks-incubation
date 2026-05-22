@@ -26,7 +26,7 @@ const app = definePlugin({
 	id: 'app',
 	dependsOn: { sui: localnet },
 	kind: 'leaf-long-running',
-	start: (_ctx, { sui }) => Effect.succeed({ rpc: sui.rpcUrl }),
+	start: ({ sui }) => Effect.succeed({ rpc: sui.rpcUrl }),
 });
 
 export default defineDevstack({ members: [localnet, app] });

@@ -157,7 +157,7 @@ export const local = <Sym extends string>(symbol: Sym) => {
 		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, { sui }) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -212,7 +212,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		dependsOn: { pkg, sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, { pkg: resolved, sui }) =>
+		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
 				const oca = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -248,13 +248,15 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 	// Derive a resource id from the type: keep it readable but unique. The
 	// substrate's compose-time dedup uses string equality on the id.
 	const id = fullCoinType.replace(/^0x/, '').replace(/::/g, '_').slice(0, 60);
-	const coinRef = resource<CoinResourceId<typeof id>, CoinValue>(coinResourceId(id) as CoinResourceId<typeof id>);
+	const coinRef = resource<CoinResourceId<typeof id>, CoinValue>(
+		coinResourceId(id) as CoinResourceId<typeof id>,
+	);
 	return definePlugin({
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, { sui }) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -286,7 +288,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		dependsOn: { sui: suiResource },
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, { sui }) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* OnChainArtifactPublisherService;
 				const registry = yield* CoinRegistryService;

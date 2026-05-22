@@ -1,6 +1,6 @@
 // Seal lifted sibling — git-fetched seal source tree.
 //
-// Lifted-sibling key conventions (architecture §CompositePrimitive):
+// Lifted-sibling key conventions:
 //
 //   - `plugin`     — neutral namespace `'mysten-source-fetch'`. Chosen
 //                    to allow walrus + seal + deepbook + sui-fork to

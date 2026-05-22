@@ -76,7 +76,8 @@ const actionErrorContributions = pluginErrorContributions(ACTION_ERROR_TAGS);
 /** Resource id constructor. The symbolic action name is part of the tag
  *  identity so two `action('foo', ...)` calls in one stack collide
  *  cleanly at compose time. */
-export const actionResourceId = <Name extends string>(name: Name): `action:${Name}` => `action:${name}`;
+export const actionResourceId = <Name extends string>(name: Name): `action:${Name}` =>
+	`action:${name}`;
 
 export type ActionResourceId<Name extends string> = `action:${Name}`;
 
@@ -135,10 +136,7 @@ export interface ActionOptions<DependsOn extends ActionDependencySpec> {
  *     the substrate's lifecycle wrap surfaces it as "done" after
  *     `start` resolves.
  */
-export const action = <
-	const Name extends string,
-	const DependsOn extends ActionDependencySpec,
->(
+export const action = <const Name extends string, const DependsOn extends ActionDependencySpec>(
 	name: Name,
 	opts: ActionOptions<DependsOn>,
 ) => {
@@ -164,7 +162,7 @@ export const action = <
 		// "done" after that.
 		kind: 'leaf-one-shot',
 		rebootCost: 'cheap',
-		start: (_ctx, deps) =>
+		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedUpstream] = deps;
 				const resolvedByResourceId = new Map<string, unknown>(
@@ -251,9 +249,9 @@ export const action = <
 						}),
 				};
 
-					const bodyDeps = resolveActionDependencies(opts.dependsOn, (member) =>
-						readDeclaredDependency(member.id),
-					);
+				const bodyDeps = resolveActionDependencies(opts.dependsOn, (member) =>
+					readDeclaredDependency(member.id),
+				);
 				const acquireInputs: ActionAcquireInputs = {
 					actionName: name,
 					chainId: sui.chain,
@@ -303,8 +301,7 @@ const resolveActionDependencies = <Input extends ActionDependencySpec>(
 	dependsOn: Input,
 	read: (member: ActionDependencyList<Input>[number]) => unknown,
 ): ResolvedActionDependencies<Input> => {
-	const readAny = (member: AnyResourceRef) =>
-		read(member as ActionDependencyList<Input>[number]);
+	const readAny = (member: AnyResourceRef) => read(member as ActionDependencyList<Input>[number]);
 	if (Array.isArray(dependsOn)) {
 		return dependsOn.map((member) => readAny(member)) as ResolvedActionDependencies<Input>;
 	}

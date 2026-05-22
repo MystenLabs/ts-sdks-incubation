@@ -542,6 +542,7 @@ describe('RouterService.contributeRoute', () => {
 						endpointName: 'wallet-app',
 						dispatchId: { compositeKey: 'k1', role: 'api' },
 						upstream: { type: 'host-loopback', port: 6173 },
+						wireProtocol: 'http',
 						cors: false,
 					});
 					// Identical (entrypoint, role) under the same identity →
@@ -554,6 +555,7 @@ describe('RouterService.contributeRoute', () => {
 							endpointName: 'wallet-app',
 							dispatchId: { compositeKey: 'k2', role: 'api' },
 							upstream: { type: 'host-loopback', port: 6174 },
+							wireProtocol: 'http',
 							cors: false,
 						})
 						.pipe(Effect.flip);
