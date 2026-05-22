@@ -33,8 +33,88 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect devstack E2E changes
+    runs-on: ubuntu-latest
+    outputs:
+      seed: ${{ steps.filter.outputs.seed }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        name: Classify changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Main pushes keep full coverage. PRs are filtered so expensive
+          # product jobs run only when their package/example surface changed.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            {
+              echo "seed=true"
+              echo "docker=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          if ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+            pull_ref="refs/remotes/pull/${{ github.event.pull_request.number }}/head"
+            git fetch --no-tags origin "pull/${{ github.event.pull_request.number }}/head:${pull_ref}"
+            head="$pull_ref"
+          fi
+          git diff --name-only "$base" "$head" > /tmp/devstack-e2e-files
+
+          matches_seed() {
+            case "$1" in
+              .github/workflows/devstack-e2e.yml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/scripts/*|packages/dev-wallet/*|examples/connect-four/*|examples/private-content/*|examples/deepbook-trader/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          matches_docker() {
+            case "$1" in
+              .github/workflows/devstack-e2e.yml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/test/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          seed=false
+          docker=false
+          while IFS= read -r file; do
+            if matches_seed "$file"; then
+              seed=true
+            fi
+            if matches_docker "$file"; then
+              docker=true
+            fi
+          done < /tmp/devstack-e2e-files
+
+          {
+            echo "seed=$seed"
+            echo "docker=$docker"
+          } >> "$GITHUB_OUTPUT"
+
   seed:
     name: Seed snapshot · ${{ matrix.example }}
+    needs: changes
+    if: needs.changes.outputs.seed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -122,7 +202,8 @@ jobs:
 
   restore:
     name: Restore snapshot · ${{ matrix.example }}
-    needs: seed
+    needs: [changes, seed]
+    if: needs.changes.outputs.seed == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -252,6 +333,8 @@ jobs:
   # still parallelize without requiring a larger-runner label.
   docker-integration:
     name: Docker integration · shard ${{ matrix.shard }}/4
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
