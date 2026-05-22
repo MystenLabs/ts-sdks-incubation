@@ -533,25 +533,35 @@ const portPublish = (containerPort: number, hostPort: number): ContainerPortPubl
 const allocatePort = (
 	portBroker: PortBroker,
 	kind: PortKind,
-	preferredPort: number,
+	preferredPort: number | undefined,
 	label: 'rpc' | 'faucet' | 'graphql',
-): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
-	portBroker
-		.allocate({
-			kind,
-			preferredPort,
-			probeHost: DOCKER_PUBLISH_HOST,
-		})
-		.pipe(
-			Effect.mapError((cause) =>
-				suiPluginError(
-					'port-allocate',
-					`sui local mode: failed to allocate ${label} host port ` +
-						`(preferred ${preferredPort}): ${cause.detail}`,
-					cause,
+): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> => {
+	const allocate = (
+		hint: number | undefined,
+	): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
+		portBroker
+			.allocate({
+				kind,
+				...(hint === undefined ? {} : { preferredPort: hint }),
+				probeHost: DOCKER_PUBLISH_HOST,
+			})
+			.pipe(
+				Effect.catchTag('PortBrokerError', (cause) =>
+					hint !== undefined && cause.reason === 'preferred-busy'
+						? portBroker.allocate({ kind, probeHost: DOCKER_PUBLISH_HOST })
+						: Effect.fail(cause),
 				),
-			),
-		);
+				Effect.mapError((cause) =>
+					suiPluginError(
+						'port-allocate',
+						`sui local mode: failed to allocate ${label} host port ` +
+							`(preferred ${hint ?? 'auto'}): ${cause.detail}`,
+						cause,
+					),
+				),
+			);
+	return allocate(preferredPort);
+};
 
 // ---------------------------------------------------------------------------
 // Ready-probe coordination

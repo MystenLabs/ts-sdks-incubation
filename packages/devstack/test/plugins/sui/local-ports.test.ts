@@ -136,6 +136,68 @@ describe('Sui local port mapping', () => {
 		),
 	);
 
+	it.effect('lets GraphQL scan when RPC fallback consumes the GraphQL default', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const calls: AllocateOptions[] = [];
+				const broker: PortBroker = {
+					allocate: (opts) => {
+						calls.push(opts);
+						if (opts.preferredPort === DEFAULT_HOST_RPC_PORT) {
+							return Effect.succeed({
+								port: DEFAULT_HOST_GRAPHQL_PORT,
+								kind: opts.kind,
+								release: Effect.void,
+							} satisfies AllocatedPort);
+						}
+						if (opts.preferredPort === DEFAULT_HOST_GRAPHQL_PORT) {
+							return Effect.fail(
+								new PortBrokerError({
+									reason: 'preferred-busy',
+									detail: `preferred port ${DEFAULT_HOST_GRAPHQL_PORT} (${opts.kind}) is already held by another allocation in this stack`,
+								}),
+							);
+						}
+						return Effect.succeed({
+							port: opts.preferredPort ?? (opts.kind === 'rpc' ? 51002 : DEFAULT_HOST_FAUCET_PORT),
+							kind: opts.kind,
+							release: Effect.void,
+						} satisfies AllocatedPort);
+					},
+				};
+
+				const ports = yield* resolvePortMapping(broker, undefined);
+
+				expect(calls).toEqual([
+					{
+						kind: 'rpc',
+						preferredPort: DEFAULT_HOST_RPC_PORT,
+						probeHost: '0.0.0.0',
+					},
+					{
+						kind: 'http',
+						preferredPort: DEFAULT_HOST_FAUCET_PORT,
+						probeHost: '0.0.0.0',
+					},
+					{
+						kind: 'rpc',
+						preferredPort: DEFAULT_HOST_GRAPHQL_PORT,
+						probeHost: '0.0.0.0',
+					},
+					{
+						kind: 'rpc',
+						probeHost: '0.0.0.0',
+					},
+				]);
+				expect(ports).toEqual([
+					{ containerPort: 9000, hostPort: DEFAULT_HOST_GRAPHQL_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: 51002, hostIp: '0.0.0.0' },
+				]);
+			}),
+		),
+	);
+
 	it('adopted same-stack container ports override brokered replacements', () => {
 		const requestedAfterBrokerCollision = [
 			{ containerPort: 9000, hostPort: 51000, hostIp: '0.0.0.0' },
