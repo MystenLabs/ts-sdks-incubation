@@ -65,8 +65,9 @@ export default defineDevstack({
 });
 ```
 
-Known mode requires explicit on-chain ids and an explicit node list. Network shortcuts only provide
-URL defaults where the package has them. See [Walrus](./walrus).
+Known mode requires explicit on-chain ids and an explicit node list. Fork stacks can use known
+Walrus deployments through `walrusFor(forkNetwork).known(...)`; local Walrus clusters remain a
+local-mode service. See [Walrus](./walrus).
 
 ## Seal
 
@@ -87,8 +88,9 @@ export default defineDevstack({
 });
 ```
 
-Live modes reference existing key servers and do not expose a local manager. Fork mode is coming
-soon. See [Seal](./seal).
+Live modes reference existing key servers and do not expose a local manager. Fork stacks can point
+at the upstream key server through `sealFor(forkNetwork).forkKnown(...)`; local keygen remains a
+local-mode service. See [Seal](./seal).
 
 ## DeepBook
 

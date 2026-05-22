@@ -79,13 +79,14 @@ export interface SuiForkOptions extends SuiCommonOptions {
 	readonly image?:
 		| { readonly pull: string }
 		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
-	/** Pinned commit SHA of `sui-fork`. */
+	/** Pinned Git revision of the Sui repository used to build `sui-fork`. */
 	readonly version?: string;
+	/** Optional direct host port mapping keyed by container port. */
+	readonly ports?: Readonly<Record<number, number>>;
 	readonly seed?: {
 		readonly addresses?: ReadonlyArray<string>;
 		readonly objects?: ReadonlyArray<string>;
 	};
-	readonly defaultGasBudget?: bigint;
 	/** Auto-tick clock cadence (or off). */
 	readonly autoTick?: boolean | { readonly intervalMs: number };
 }

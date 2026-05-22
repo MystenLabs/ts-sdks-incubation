@@ -44,7 +44,7 @@ import type { AcquireContext } from '../../substrate/plugin.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import { IdentityContext } from '../../substrate/runtime/paths.ts';
+import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
@@ -55,8 +55,8 @@ import {
 	type SeedObjectsAccumulator,
 } from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
-import { SUI_ERROR_TAGS, SuiForkComingSoonError, type SuiPluginError } from './errors.ts';
-import { makeSuiLocalRoutables } from './routable.ts';
+import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
+import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
 import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
 import type { SuiClient } from './mode/shared.ts';
@@ -86,9 +86,6 @@ const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 // ---------------------------------------------------------------------------
 
 const buildPlugin = (opts: SuiOptions) => {
-	if (opts.mode === 'fork') {
-		throw new SuiForkComingSoonError(opts.upstream);
-	}
 	return definePlugin({
 		id: suiResource.id,
 		role: 'service',
@@ -99,8 +96,9 @@ const buildPlugin = (opts: SuiOptions) => {
 				// these before this body runs.
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
+				const paths = yield* StackPathsService;
 				const portBroker = yield* PortBrokerService;
-				const { client } = yield* bootSuiService(runtime, identity, portBroker, opts);
+				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
 
 				const seedObjects = yield* makeSeedObjectsAccumulator();
 				return { ...client, mode: opts.mode, seedObjects };
@@ -192,6 +190,12 @@ const makePluginCapabilities = (
 					includeGraphql: true,
 				})
 			: [];
+	const forkRoutables =
+		opts.mode === 'fork'
+			? makeSuiForkRoutables({
+					containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-sui-fork`,
+				})
+			: [];
 
 	return [
 		snap,
@@ -201,6 +205,7 @@ const makePluginCapabilities = (
 		fundsReadyContribution,
 		seedObjectsContribution,
 		...localRoutables,
+		...forkRoutables,
 	] as const;
 };
 
@@ -274,7 +279,7 @@ export type {
 	SeedManifestMismatchError,
 	SuiFundsReadyError,
 } from './errors.ts';
-export { SUI_ERROR_TAGS, SuiForkComingSoonError } from './errors.ts';
+export { SUI_ERROR_TAGS } from './errors.ts';
 
 // Cross-plugin seams (consumed by Walrus/Seal/Deepbook fork variants
 // and by Account/Coin/Wallet/Package).

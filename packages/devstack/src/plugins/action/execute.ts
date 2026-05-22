@@ -35,8 +35,9 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue, TxResult } from '../account/service.ts';
 import type { SuiClient } from '../sui/index.ts';
+import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
@@ -103,6 +104,44 @@ interface RawExecuteEnvelope {
 	};
 }
 
+const projectAccountObjectChanges = (
+	changes: ReadonlyArray<unknown>,
+): ReadonlyArray<ActionObjectChange> =>
+	changes
+		.filter(
+			(
+				change,
+			): change is {
+				readonly type?: string;
+				readonly kind?: string;
+				readonly objectId: string;
+				readonly objectType?: string;
+				readonly outputState?: string;
+				readonly idOperation?: string;
+			} =>
+				typeof change === 'object' &&
+				change !== null &&
+				typeof (change as { readonly objectId?: unknown }).objectId === 'string',
+		)
+		.map((change) => {
+			const entry: {
+				-readonly [K in keyof ActionObjectChange]: ActionObjectChange[K];
+			} = {
+				kind: change.type === 'created' || change.kind === 'created' ? 'created' : 'mutated',
+				objectId: change.objectId,
+			};
+			if (typeof change.objectType === 'string') entry.objectType = change.objectType;
+			if (typeof change.outputState === 'string') entry.outputState = change.outputState;
+			if (typeof change.idOperation === 'string') entry.idOperation = change.idOperation;
+			return entry;
+		});
+
+const receiptFromAccountTx = (tx: TxResult): ActionReceipt => ({
+	digest: tx.digest,
+	objectChanges: projectAccountObjectChanges(tx.objectChanges),
+	balanceChanges: tx.balanceChanges,
+});
+
 // ---------------------------------------------------------------------------
 // `signAndExecute` helper
 // ---------------------------------------------------------------------------
@@ -153,25 +192,55 @@ export const signAndExecute = (params: {
 						}),
 				});
 
-				// --- 2. Serialise via the SDK client -------------------------
-				const txBytes = yield* Effect.tryPromise({
-					try: () =>
-						tx.build({
-							client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
-								| { client?: infer C }
-								| undefined
-								? C
-								: never,
-						}),
-					catch: (cause): ActionError =>
-						actionError('sign', {
-							actionName,
-							message: `Action '${actionName}': Transaction.build failed — ${
-								cause instanceof Error ? cause.message : String(cause)
-							}.`,
-							cause,
-						}),
-				});
+				// --- 2. Serialise via the mode-appropriate path --------------
+				const txBytes =
+					account.source === 'impersonate'
+						? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
+								Effect.mapError(
+									(cause): ActionError =>
+										actionError('sign', {
+											actionName,
+											message: `Action '${actionName}': fork impersonation Transaction.build failed — ${cause.message}.`,
+											cause,
+										}),
+								),
+							)
+						: yield* Effect.tryPromise({
+								try: () =>
+									tx.build({
+										client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
+											| { client?: infer C }
+											| undefined
+											? C
+											: never,
+									}),
+								catch: (cause): ActionError =>
+									actionError('sign', {
+										actionName,
+										message: `Action '${actionName}': Transaction.build failed — ${
+											cause instanceof Error ? cause.message : String(cause)
+										}.`,
+										cause,
+									}),
+							});
+
+				if (account.source === 'impersonate') {
+					const executed = yield* lockedSigner.signAndExecute(txBytes).pipe(
+						Effect.mapError(
+							(cause): ActionError =>
+								actionError('sign', {
+									actionName,
+									message:
+										`Action '${actionName}': account.signAndExecute failed for ` +
+										`'${account.name}' (address=${account.address}): ${
+											cause instanceof Error ? cause.message : String(cause)
+										}`,
+									cause,
+								}),
+						),
+					);
+					return receiptFromAccountTx(executed);
+				}
 
 				// --- 3. Sign with the account -------------------------------
 				const signed = yield* lockedSigner.signTransaction(txBytes).pipe(

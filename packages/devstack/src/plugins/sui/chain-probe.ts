@@ -112,6 +112,21 @@ export interface SuiSdkShim {
 			readonly owner: string;
 			readonly coinType?: string;
 		}) => Promise<unknown>;
+		readonly listCoins: (args: {
+			readonly owner: string;
+			readonly coinType?: string;
+			readonly limit?: number;
+			readonly cursor?: string | null;
+		}) => Promise<{
+			readonly objects: ReadonlyArray<{
+				readonly objectId: string;
+				readonly version: string;
+				readonly digest: string;
+				readonly balance: string;
+			}>;
+			readonly hasNextPage: boolean;
+			readonly cursor: string | null;
+		}>;
 		readonly executeTransaction: (args: {
 			readonly transaction: Uint8Array;
 			readonly signatures: ReadonlyArray<string>;
@@ -184,10 +199,22 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 });
 
 const projectProbePayload = (key: SuiProbeKey, raw: unknown): unknown | null => {
-	if (key.kind !== 'object') return raw;
+	if (key.kind === 'transaction') return projectTransactionPayload(raw);
 	if (typeof raw !== 'object' || raw === null || !('object' in raw)) return raw;
 
 	return (raw as { readonly object?: unknown }).object ?? null;
+};
+
+const projectTransactionPayload = (raw: unknown): unknown | null => {
+	if (typeof raw !== 'object' || raw === null) return raw;
+	const envelope = raw as {
+		readonly $kind?: 'Transaction' | 'FailedTransaction';
+		readonly Transaction?: unknown;
+		readonly FailedTransaction?: unknown;
+	};
+	if (envelope.$kind === 'Transaction') return envelope.Transaction ?? null;
+	if (envelope.$kind === 'FailedTransaction') return envelope.FailedTransaction ?? null;
+	return raw;
 };
 
 /** Heuristic: SDK errors carrying "not found" / "Not exist" in

@@ -255,6 +255,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 						mode: sui.mode,
 						chain: sui.chain,
 						sdk: sui.sdk,
+						fork: sui.fork,
 					},
 					runtimeRoot: paths.stackRoot,
 					app: identity.app,

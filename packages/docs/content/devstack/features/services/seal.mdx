@@ -18,8 +18,9 @@ const keyServer = seal({
 export default defineDevstack({ members: [localnet, keyServer] });
 ```
 
-Live modes reference existing key servers and do not expose a local manager. Fork mode is not
-available yet.
+Live modes reference existing key servers and do not expose a local manager. Fork stacks can point
+at the upstream key server through `sealFor(forkNetwork).forkKnown(...)`; local keygen is not
+available on fork networks.
 
 `seal(...)` returns a service member. Put it in `members`, and order any app server or package
 action that needs the key server after that member.

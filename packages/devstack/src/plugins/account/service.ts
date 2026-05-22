@@ -68,6 +68,7 @@ import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
+import type { ForkAdminSurface } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
 
 // -----------------------------------------------------------------------------
@@ -222,6 +223,7 @@ export interface AccountSuiShim {
 	/** SDK shim — exposes `executeTransaction` + `waitForTransaction`
 	 *  for the signAndExecute pipeline. */
 	readonly sdk: SuiSdkShim;
+	readonly fork?: ForkAdminSurface | null;
 }
 
 /** Per-acquire context — supplied by the barrel from resolved plugin
@@ -506,9 +508,8 @@ const buildClosures = (
 
 	// Impersonation accounts MUST NOT sign — the synthetic signer's
 	// signTransaction throws synchronously (architecture invariant).
-	// The signAndExecute path lands separately when the fork admin
-	// surface is wired in; for now we emit a typed refusal so callers
-	// branch on `phase` rather than `source`.
+	// signAndExecute routes through sui-fork's empty-signature
+	// execution path while still holding the per-address lease.
 	if (source === 'impersonate') {
 		const refuse = <A>(): Effect.Effect<A, AccountSignError> =>
 			Effect.fail(
@@ -519,29 +520,72 @@ const buildClosures = (
 					message: `Account '${accountName}' is an impersonation account — sign/execute must route through Sui's fork admin surface.`,
 				}),
 			);
-		return {
-			signAndExecute: () =>
-				Effect.fail(
-					accountSignError({
-						phase: 'submit',
-						accountName,
-						address: resolved.address,
-						message: `Account '${accountName}': impersonation signAndExecute is not yet routed to the fork admin surface.`,
-					}),
-				),
-			withTransactionSigner: (body) =>
-				body({
-					signAndExecute: () =>
-						Effect.fail(
+		const unlockedSignAndExecute: AccountTransactionSigner['signAndExecute'] = (tx) =>
+			Effect.gen(function* () {
+				const fork = sui.fork ?? null;
+				if (fork === null) {
+					return yield* Effect.fail(
+						accountSignError({
+							phase: 'submit',
+							accountName,
+							address: resolved.address,
+							message: `Account '${accountName}': impersonation requires a fork-mode Sui client.`,
+						}),
+					);
+				}
+				const submitted = yield* fork.impersonate(resolved.address, tx).pipe(
+					Effect.mapError(
+						(cause): AccountSignError =>
 							accountSignError({
 								phase: 'submit',
 								accountName,
 								address: resolved.address,
-								message: `Account '${accountName}': impersonation signAndExecute is not yet routed to the fork admin surface.`,
+								message: `Account '${accountName}': fork impersonation submit failed.`,
+								cause,
 							}),
-						),
-					signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
+					),
+				);
+				yield* Effect.tryPromise({
+					try: () =>
+						sui.sdk.core.waitForTransaction({
+							digest: submitted.digest,
+						}),
+					catch: (cause): AccountSignError =>
+						accountSignError({
+							phase: 'await-finality',
+							accountName,
+							address: resolved.address,
+							message: `Account '${accountName}': waitForTransaction(${submitted.digest}) failed.`,
+							cause,
+						}),
+				});
+				return yield* projectTxResult(submitted.raw, accountName, resolved.address);
+			});
+		const transactionSigner: AccountTransactionSigner = {
+			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
+			signAndExecute: unlockedSignAndExecute,
+		};
+		const withTransactionSigner: AccountValue['withTransactionSigner'] = (body) =>
+			withAddressLease(
+				broker,
+				accountName,
+				resolved.address,
+				Effect.gen(function* () {
+					return yield* body(transactionSigner);
 				}),
+			).pipe(
+				Effect.withSpan('devstack.plugin.account.transactionSigner', {
+					attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				}),
+			);
+		return {
+			signAndExecute: (tx) =>
+				withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
+					Effect.withSpan('devstack.plugin.account.signAndExecute', {
+						attributes: { 'account.name': accountName, 'account.address': resolved.address },
+					}),
+				),
+			withTransactionSigner,
 			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
 			signPersonalMessage: refuse<{ readonly bytes: string; readonly signature: string }>,
 		};

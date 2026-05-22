@@ -52,10 +52,10 @@ export type ForkGuardedSdk<Sdk extends { readonly core: object }> = Omit<Sdk, 'c
 	readonly core: Sdk['core'];
 };
 
-export const wrapWithForkGuard = <Sdk extends { readonly core: Record<string, unknown> }>(
+export const wrapWithForkGuard = <Sdk extends { readonly core: object }>(
 	sdk: Sdk,
 ): ForkGuardedSdk<Sdk> => {
-	const guardedCore = new Proxy(sdk.core, {
+	const guardedCore = new Proxy(sdk.core as Record<string, unknown>, {
 		get(target, prop, receiver) {
 			if (typeof prop === 'string' && FORK_UNSUPPORTED_SURFACES.includes(prop)) {
 				const err: ForkUnsupportedError = forkUnsupportedError(

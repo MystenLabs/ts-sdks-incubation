@@ -34,6 +34,8 @@
 //     but tagged separately so action consumers `catchTag('ActionError')`
 //     without clashing with package's tagged error).
 
+import { createHash } from 'node:crypto';
+
 import { Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
@@ -176,7 +178,7 @@ export const bootActionService = (
 
 		// --- Compose content-hash inputs
 		const material = composeDiscriminatorMaterial(inputs.staticDiscriminator, resolvedDynamic);
-		const inputsHash = brandContentHash(material);
+		const inputsHash = brandContentHash(createHash('sha256').update(material).digest('hex'));
 
 		// --- Submit the spec to the publisher.
 		//

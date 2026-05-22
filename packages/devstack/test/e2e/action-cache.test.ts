@@ -28,7 +28,7 @@
 // form's "re-runs on every acquire" semantics live in unit tests; here
 // we exercise the produce + cache + verify + register path.
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -175,5 +175,13 @@ describe('action plugin artifact publisher cache discipline', () => {
 		// + verify-ok path), and the digest still matches.
 		expect(result.warm.bodyRuns, 'warm boot: body should NOT re-run').toBe(0);
 		expect(result.warm.digest).toBe('digest-cold-warm-roundtrip');
+
+		const actionCacheDir = join(RUNTIME_ROOT, 'stacks', 'main', 'cache', 'action', CHAIN);
+		const actionCacheFiles = readdirSync(actionCacheDir);
+		expect(actionCacheFiles).toHaveLength(1);
+		const actionCacheFile = actionCacheFiles[0];
+		if (actionCacheFile === undefined) throw new Error('expected one action cache file');
+		expect(actionCacheFile).toMatch(/^[a-f0-9]{64}\.json$/);
+		expect(statSync(join(actionCacheDir, actionCacheFile)).isFile()).toBe(true);
 	}, 60_000);
 });

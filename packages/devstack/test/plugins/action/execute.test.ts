@@ -20,6 +20,7 @@
 
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
+import { TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
@@ -111,6 +112,19 @@ const makeFakeSui = (opts: FakeSdkClientOpts): SuiClient => {
 				executeTransaction: client.executeTransaction,
 				waitForTransaction: client.waitForTransaction,
 				getObject: (_: unknown) => Promise.resolve({}),
+				listCoins: () =>
+					Promise.resolve({
+						objects: [
+							{
+								objectId: '0x3333333333333333333333333333333333333333333333333333333333333333',
+								version: '1',
+								digest: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
+								balance: '1000000000',
+							},
+						],
+						hasNextPage: false,
+						cursor: null,
+					}),
 			},
 		} as unknown as SuiClient['sdk'],
 		rpcUrl: 'http://127.0.0.1:9000',
@@ -208,6 +222,120 @@ describe('action signAndExecute helper', () => {
 		expect(created.length).toBe(1);
 		expect(mutated.length).toBe(1);
 		expect(created[0]?.objectType).toBe('0xpkg::game::Lobby');
+	});
+
+	it('impersonation account: routes through account.signAndExecute without direct signing', async () => {
+		const events: string[] = [];
+		const base = fakeAccount(events);
+		const signTransaction: AccountValue['signTransaction'] = () =>
+			Effect.die('impersonation should not sign directly');
+		const accountSignAndExecute: AccountValue['signAndExecute'] = () =>
+			Effect.sync(() => {
+				events.push('impersonate');
+				return {
+					digest: 'IMPERSONATED_DIGEST',
+					effects: {},
+					objectChanges: [
+						{
+							type: 'created',
+							objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
+							objectType: '0xpkg::game::Lobby',
+						},
+					],
+					balanceChanges: [{ owner: base.address }],
+				};
+			});
+		const account: AccountValue = {
+			...base,
+			source: 'impersonate',
+			signTransaction,
+			signAndExecute: accountSignAndExecute,
+			withTransactionSigner: (body) =>
+				Effect.gen(function* () {
+					events.push('scope:enter');
+					return yield* body({ signTransaction, signAndExecute: accountSignAndExecute });
+				}).pipe(Effect.ensuring(Effect.sync(() => events.push('scope:exit')))),
+		};
+		const sui = makeFakeSui({
+			executeImpl: () => Promise.reject(new Error('executeTransaction should not be called')),
+		});
+
+		const exit = await Effect.runPromiseExit(
+			Effect.scoped(
+				signAndExecute({
+					actionName: 'unit.impersonate',
+					sui,
+					account,
+					build: seedTx,
+				}),
+			),
+		);
+
+		expect(Exit.isSuccess(exit)).toBe(true);
+		if (!Exit.isSuccess(exit)) return;
+		expect(exit.value).toEqual({
+			digest: 'IMPERSONATED_DIGEST',
+			objectChanges: [
+				{
+					kind: 'created',
+					objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
+					objectType: '0xpkg::game::Lobby',
+				},
+			],
+			balanceChanges: [{ owner: base.address }],
+		});
+		expect(events).toEqual(['scope:enter', 'impersonate', 'scope:exit']);
+	});
+
+	it('impersonation account: builds offline with explicit fork gas defaults', async () => {
+		const events: string[] = [];
+		const base = fakeAccount(events);
+		const signTransaction: AccountValue['signTransaction'] = () =>
+			Effect.die('impersonation should not sign directly');
+		const accountSignAndExecute: AccountValue['signAndExecute'] = (txBytes) =>
+			Effect.sync(() => {
+				const data = TransactionDataBuilder.fromBytes(txBytes).snapshot();
+				events.push(
+					`impersonate:${data.sender}:${data.gasData.payment?.[0]?.objectId ?? '<none>'}`,
+				);
+				return {
+					digest: 'IMPERSONATED_DIGEST',
+					effects: {},
+					objectChanges: [],
+					balanceChanges: [],
+				};
+			});
+		const account: AccountValue = {
+			...base,
+			source: 'impersonate',
+			signTransaction,
+			signAndExecute: accountSignAndExecute,
+			withTransactionSigner: (body) =>
+				body({ signTransaction, signAndExecute: accountSignAndExecute }),
+		};
+		const sui = makeFakeSui({
+			executeImpl: () => Promise.reject(new Error('executeTransaction should not be called')),
+		});
+
+		const exit = await Effect.runPromiseExit(
+			Effect.scoped(
+				signAndExecute({
+					actionName: 'unit.impersonateOfflineBuild',
+					sui,
+					account,
+					build: (tx) => {
+						tx.moveCall({
+							target: '0x0000000000000000000000000000000000000000000000000000000000000999::m::f',
+						});
+					},
+				}),
+			),
+		);
+
+		expect(Exit.isSuccess(exit)).toBe(true);
+		expect(events).toEqual([
+			`impersonate:${base.address}:0x3333333333333333333333333333333333333333333333333333333333333333`,
+		]);
 	});
 
 	it('failed-tx: surfaces ActionError(phase=sign) with SDK error preserved', async () => {

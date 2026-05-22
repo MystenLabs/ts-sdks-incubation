@@ -9,12 +9,18 @@ import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { DEEPBOOK_TESTNET_DEEP_COIN_TYPE, deepbook } from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
-import type { AccountValue } from '../../../src/plugins/account/service.ts';
+import {
+	acquireAccount,
+	type AccountAcquireContext,
+	type AccountValue,
+} from '../../../src/plugins/account/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
+import { layerLeaseBroker } from '../../../src/substrate/runtime/lease-broker/index.ts';
+import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
 
 const fakeResolvedAccount = {
 	name: 'alice',
@@ -172,6 +178,88 @@ describe('account env and private-key variant surface', () => {
 		});
 
 		expect(member.dependsOn.map((dependency) => dependency.id)).toEqual(['sui', deep.id, dex.id]);
+	});
+});
+
+describe('account impersonation variant', () => {
+	it('executes through the fork impersonation surface and still refuses direct signing', async () => {
+		const calls: string[] = [];
+		const address = '0xaaaa';
+		const raw = {
+			$kind: 'Transaction',
+			Transaction: {
+				digest: 'fork-digest',
+				effects: {
+					changedObjects: [
+						{
+							objectId: '0xcreated',
+							outputState: 'ObjectWrite',
+							idOperation: 'Created',
+						},
+					],
+				},
+				objectTypes: {
+					'0xcreated': '0xpkg::demo::Created',
+				},
+			},
+		};
+		const ctx: AccountAcquireContext = {
+			sui: {
+				mode: 'fork',
+				chain: chainId('sui:mainnet-fork'),
+				sdk: {
+					core: {
+						getObject: () => Promise.reject(new Error('unused')),
+						getTransaction: () => Promise.reject(new Error('unused')),
+						getBalance: () => Promise.reject(new Error('unused')),
+						listCoins: () => Promise.reject(new Error('unused')),
+						executeTransaction: () => Promise.reject(new Error('unused')),
+						waitForTransaction: async ({ digest }) => {
+							calls.push(`wait:${digest}`);
+							return {};
+						},
+					},
+					client: null,
+				},
+				fork: {
+					status: Effect.succeed({ checkpoint: '1', clock: 1 }),
+					advanceClock: () => Effect.void,
+					advanceCheckpoint: Effect.void,
+					impersonate: (sender, tx) =>
+						Effect.sync(() => {
+							calls.push(`impersonate:${sender}:${(tx as Uint8Array)[0]}`);
+							return { digest: 'fork-digest', success: true, raw };
+						}),
+				},
+			},
+			runtimeRoot: '/tmp/devstack-account-impersonate-test',
+			app: 'test-app',
+			stack: 'test-stack',
+			emitAutoPromotionEvent: () => Effect.void,
+			projectedFunding: [],
+		};
+
+		const accountValue = await Effect.runPromise(
+			acquireAccount({ kind: 'impersonate', name: 'whale', address, funding: [] }, ctx).pipe(
+				Effect.provide(layerStrategyRegistry),
+				Effect.provide(layerLeaseBroker),
+			),
+		);
+		const result = await Effect.runPromise(accountValue.signAndExecute(new Uint8Array([7])));
+		const signExit = await Effect.runPromiseExit(accountValue.signTransaction(new Uint8Array([7])));
+
+		expect(result.digest).toBe('fork-digest');
+		expect(result.objectChanges).toEqual([
+			{
+				type: 'created',
+				objectId: '0xcreated',
+				objectType: '0xpkg::demo::Created',
+				outputState: 'ObjectWrite',
+				idOperation: 'Created',
+			},
+		]);
+		expect(calls).toEqual([`impersonate:${address}:7`, 'wait:fork-digest']);
+		expect(Exit.isFailure(signExit)).toBe(true);
 	});
 });
 

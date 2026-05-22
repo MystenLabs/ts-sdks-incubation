@@ -101,6 +101,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 		getObject: () => Promise.reject(new Error('stub getObject')),
 		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
 		getBalance: () => Promise.reject(new Error('stub getBalance')),
+		listCoins: () => Promise.reject(new Error('stub listCoins')),
 		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 	},
@@ -297,6 +298,7 @@ describe('account plugin — LeaseBrokerService integration', () => {
 							getObject: () => Promise.reject(new Error('stub getObject')),
 							getTransaction: () => Promise.reject(new Error('stub getTransaction')),
 							getBalance: () => Promise.reject(new Error('stub getBalance')),
+							listCoins: () => Promise.reject(new Error('stub listCoins')),
 							executeTransaction: () =>
 								Promise.resolve({
 									$kind: 'FailedTransaction',

@@ -32,6 +32,7 @@ import { bootLiveMode } from './mode/live.ts';
 import { bootLocalMode } from './mode/local.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
+import type { StackPaths } from '../../substrate/runtime/paths.ts';
 import type { PortBroker } from '../../substrate/runtime/port-broker/index.ts';
 
 /** Bundled result of one acquire — resolved metadata + the user-facing
@@ -54,6 +55,7 @@ export const bootSuiService = (
 	runtime: ContainerRuntime,
 	identity: Identity,
 	portBroker: PortBroker,
+	paths: StackPaths,
 	opts: SuiOptions,
 ): Effect.Effect<SuiBootResult, SuiPluginError | SeedManifestMismatchError, Scope.Scope> => {
 	switch (opts.mode) {
@@ -68,7 +70,7 @@ export const bootSuiService = (
 		case 'live':
 			return bootLiveMode(opts).pipe(Effect.map(({ resolved, client }) => ({ resolved, client })));
 		case 'fork':
-			return bootForkMode(runtime, opts).pipe(
+			return bootForkMode(runtime, identity, portBroker, paths, opts).pipe(
 				Effect.map(({ resolved, client }) => ({ resolved, client })),
 			);
 	}

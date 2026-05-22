@@ -30,9 +30,10 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue, TxResult } from '../account/service.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
+import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
@@ -96,6 +97,53 @@ const hydrateCreatedObjects = (
 	Effect.forEach(changes, (change) => hydrateCreatedObject(sdk, change), {
 		concurrency: 'unbounded',
 	});
+
+const rawEnvelopeFromAccountTx = (tx: TxResult): unknown => {
+	const objectTypes: Record<string, string> = {};
+	const changedObjects: Array<{
+		readonly objectId: string;
+		readonly outputState?: string;
+		readonly idOperation?: string;
+	}> = [];
+	for (const change of tx.objectChanges) {
+		if (typeof change !== 'object' || change === null) continue;
+		const objectId = (change as { readonly objectId?: unknown }).objectId;
+		if (typeof objectId !== 'string') continue;
+		const objectType = (change as { readonly objectType?: unknown }).objectType;
+		if (typeof objectType === 'string') objectTypes[objectId] = objectType;
+		const type = (change as { readonly type?: unknown }).type;
+		const outputState = (change as { readonly outputState?: unknown }).outputState;
+		const idOperation = (change as { readonly idOperation?: unknown }).idOperation;
+		const entry: {
+			objectId: string;
+			outputState?: string;
+			idOperation?: string;
+		} = { objectId };
+		if (typeof outputState === 'string') {
+			entry.outputState = outputState;
+		} else if (type === 'published') {
+			entry.outputState = 'PackageWrite';
+		} else if (type === 'created' || type === 'mutated') {
+			entry.outputState = 'ObjectWrite';
+		}
+		if (typeof idOperation === 'string') {
+			entry.idOperation = idOperation;
+		} else if (type === 'created' || type === 'published') {
+			entry.idOperation = 'Created';
+		} else if (type === 'mutated') {
+			entry.idOperation = 'None';
+		}
+		changedObjects.push(entry);
+	}
+	return {
+		$kind: 'Transaction',
+		Transaction: {
+			digest: tx.digest,
+			effects: { changedObjects },
+			objectTypes,
+		},
+	};
+};
 
 // ---------------------------------------------------------------------------
 // Per-acquire inputs threaded by the barrel
@@ -200,28 +248,66 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 
 			const rawResult = yield* inputs.account.withTransactionSigner((lockedSigner) =>
 				Effect.gen(function* () {
-					// Serialise while the account lease is held. `Transaction.build({ client })`
-					// resolves gas budget + object versions through the SDK, so this must
-					// serialize with signing and execution for same-address publishers.
-					const txBytes = yield* Effect.tryPromise({
-						try: () =>
-							tx.build({
-								client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
-									| { client?: infer C }
-									| undefined
-									? C
-									: never,
-							}),
-						catch: (cause): PublishError =>
-							publishError('publish-tx', {
-								sourcePath,
-								packageName,
-								message:
-									`Transaction.build failed for package '${packageName}': ` +
-									(cause instanceof Error ? cause.message : String(cause)),
-								cause,
-							}),
-					});
+					// Serialise while the account lease is held. Real signers use the SDK resolver;
+					// fork impersonation must build offline with explicit gas fields because the
+					// fork binary does not support the normal gas-selection simulation path.
+					const txBytes =
+						inputs.account.source === 'impersonate'
+							? yield* buildForkImpersonationTransactionBytes(
+									tx,
+									inputs.account.address,
+									inputs.sdk.core,
+								).pipe(
+									Effect.mapError(
+										(cause): PublishError =>
+											publishError('publish-tx', {
+												sourcePath,
+												packageName,
+												message:
+													`Fork impersonation Transaction.build failed for package '${packageName}': ` +
+													cause.message,
+												cause,
+											}),
+									),
+								)
+							: yield* Effect.tryPromise({
+									try: () =>
+										tx.build({
+											client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
+												| { client?: infer C }
+												| undefined
+												? C
+												: never,
+										}),
+									catch: (cause): PublishError =>
+										publishError('publish-tx', {
+											sourcePath,
+											packageName,
+											message:
+												`Transaction.build failed for package '${packageName}': ` +
+												(cause instanceof Error ? cause.message : String(cause)),
+											cause,
+										}),
+								});
+
+					if (inputs.account.source === 'impersonate') {
+						const result = yield* lockedSigner.signAndExecute(txBytes).pipe(
+							Effect.mapError(
+								(cause): PublishError =>
+									publishError('publish-tx', {
+										sourcePath,
+										packageName,
+										message:
+											`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
+											`(address=${inputs.account.address}): ${
+												cause instanceof Error ? cause.message : String(cause)
+											}`,
+										cause,
+									}),
+							),
+						);
+						return rawEnvelopeFromAccountTx(result);
+					}
 
 					const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
 						Effect.mapError(

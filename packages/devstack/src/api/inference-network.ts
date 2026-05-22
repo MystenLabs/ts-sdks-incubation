@@ -92,6 +92,11 @@ export type ParsedDevstackNetwork =
 			readonly mode: 'live';
 			readonly name: LiveDevstackNetworkName;
 			readonly network: LiveDevstackNetworkName;
+	  }
+	| {
+			readonly mode: 'fork';
+			readonly name: ForkDevstackNetworkName;
+			readonly upstream: LiveDevstackNetworkName;
 	  };
 
 const NETWORK_ALIASES: Readonly<Record<string, DevstackNetworkName>> = {
@@ -117,41 +122,18 @@ export class DevstackNetworkParseError extends Error {
 	readonly _tag = 'DevstackNetworkParseError';
 	readonly value: string;
 	readonly source: string;
-	readonly supported: ReadonlyArray<ActiveDevstackNetworkName>;
+	readonly supported: ReadonlyArray<DevstackNetworkName>;
 
 	constructor(args: { readonly value: string; readonly source: string }) {
 		super(
-			`${args.source} must be one of: ${ACTIVE_DEVSTACK_NETWORK_NAMES.join(', ')} (got ${JSON.stringify(args.value)})`,
+			`${args.source} must be one of: ${DEVSTACK_NETWORK_NAMES.join(', ')} (got ${JSON.stringify(args.value)})`,
 		);
 		this.name = 'DevstackNetworkParseError';
 		this.value = args.value;
 		this.source = args.source;
-		this.supported = ACTIVE_DEVSTACK_NETWORK_NAMES;
+		this.supported = DEVSTACK_NETWORK_NAMES;
 	}
 }
-
-export class DevstackNetworkComingSoonError extends Error {
-	readonly _tag = 'DevstackNetworkComingSoonError';
-	readonly value: string;
-	readonly source: string;
-	readonly feature = 'fork' as const;
-	readonly supported: ReadonlyArray<ActiveDevstackNetworkName>;
-	readonly comingSoon: ReadonlyArray<ForkDevstackNetworkName>;
-
-	constructor(args: { readonly value: string; readonly source: string }) {
-		super(
-			`${args.source} fork networks are coming soon; use one of ${ACTIVE_DEVSTACK_NETWORK_NAMES.join(', ')} for now (got ${JSON.stringify(args.value)})`,
-		);
-		this.name = 'DevstackNetworkComingSoonError';
-		this.value = args.value;
-		this.source = args.source;
-		this.supported = ACTIVE_DEVSTACK_NETWORK_NAMES;
-		this.comingSoon = FORK_DEVSTACK_NETWORK_NAMES;
-	}
-}
-
-const isForkNetworkName = (name: DevstackNetworkName): name is ForkDevstackNetworkName =>
-	(FORK_DEVSTACK_NETWORK_NAMES as ReadonlyArray<string>).includes(name);
 
 export const parseDevstackNetwork = (
 	value: string | undefined,
@@ -162,9 +144,6 @@ export const parseDevstackNetwork = (
 	if (name === undefined) {
 		throw new DevstackNetworkParseError({ value: raw ?? '', source });
 	}
-	if (isForkNetworkName(name)) {
-		throw new DevstackNetworkComingSoonError({ value: raw ?? name, source });
-	}
 	switch (name) {
 		case 'localnet':
 			return { mode: 'local', name };
@@ -172,10 +151,18 @@ export const parseDevstackNetwork = (
 		case 'mainnet':
 		case 'devnet':
 			return { mode: 'live', name, network: name };
+		case 'testnet-fork':
+		case 'mainnet-fork':
+		case 'devnet-fork':
+			return {
+				mode: 'fork',
+				name,
+				upstream: name.replace(/-fork$/, '') as LiveDevstackNetworkName,
+			};
 	}
 };
 
 export const parseDevstackNetworkName = (
 	value: string | undefined,
 	source = 'DEVSTACK_NETWORK',
-): ActiveDevstackNetworkName => parseDevstackNetwork(value, source).name;
+): DevstackNetworkName => parseDevstackNetwork(value, source).name;

@@ -23,6 +23,9 @@ const sdkWithCore = (core: Partial<SuiSdkShim['core']>): SuiSdkShim => ({
 		getBalance: async () => {
 			throw new Error('getBalance not stubbed');
 		},
+		listCoins: async () => {
+			throw new Error('listCoins not stubbed');
+		},
 		executeTransaction: async () => ({}),
 		waitForTransaction: async () => ({}),
 		...core,
@@ -79,6 +82,29 @@ describe('makeSuiChainProbe', () => {
 		Effect.gen(function* () {
 			const sdk = sdkWithCore({
 				getTransaction: async ({ digest }) => ({ digest }),
+			});
+			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
+
+			const result = yield* probe.get(
+				{ kind: 'transaction', digest: 'abc123' },
+				ProbeTransactionShape,
+				'lenient',
+			);
+
+			expect(result).toEqual({ digest: 'abc123' });
+		}),
+	);
+
+	it.effect('decodes transaction probes from the Sui SDK transaction envelope', () =>
+		Effect.gen(function* () {
+			const sdk = sdkWithCore({
+				getTransaction: async ({ digest }) => ({
+					$kind: 'Transaction',
+					Transaction: {
+						digest,
+						status: { success: true },
+					},
+				}),
 			});
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
 

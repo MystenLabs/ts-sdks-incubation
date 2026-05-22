@@ -29,7 +29,8 @@ export default defineDevstack({ members: [localnet, localWalrus, alice] });
 ```
 
 Known mode references an existing deployment and requires explicit on-chain ids plus an explicit
-node list. Network shortcuts only provide URL defaults where devstack has them.
+node list. Fork stacks can use `walrusFor(forkNetwork).known(...)` for upstream deployments; local
+Walrus clusters are only available on local networks.
 
 `walCoin(walrusMember)` returns the WAL funding coin for the resolved Walrus member. Account funding
 can use it like any other coin ref when the Walrus service contributes the matching funding

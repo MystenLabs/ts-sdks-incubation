@@ -65,8 +65,10 @@ export interface ForkAdminSurface {
 	readonly impersonate: (
 		sender: string,
 		tx: unknown,
-		opts?: { readonly gasBudget?: bigint },
-	) => Effect.Effect<{ readonly digest: string; readonly success: boolean }, SuiPluginError>;
+	) => Effect.Effect<
+		{ readonly digest: string; readonly success: boolean; readonly raw: unknown },
+		SuiPluginError
+	>;
 }
 
 /** The resolved value Sui publishes via its resource id. */

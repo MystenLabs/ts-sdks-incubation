@@ -7,6 +7,7 @@ import { layerLeaseBroker } from '../../../src/substrate/runtime/lease-broker/in
 import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
 import {
 	acquireAccount,
+	type AccountValue,
 	type AccountAcquireContext,
 	type ResolvedAccountOptions,
 } from '../../../src/plugins/account/service.ts';
@@ -20,8 +21,54 @@ const txHarness = vi.hoisted(() => ({
 vi.mock('@mysten/sui/transactions', () => ({
 	Transaction: class {
 		#label = 0;
+		#data = {
+			version: 2 as const,
+			sender: null as string | null,
+			gasData: {
+				budget: null as string | null,
+				price: null as string | null,
+				owner: null as string | null,
+				payment: null as ReadonlyArray<unknown> | null,
+			},
+			expiration: null as unknown,
+			inputs: [] as [],
+			commands: [] as [],
+		};
 
-		setSender(_address: string): void {}
+		setSender(address: string): void {
+			this.#data.sender = address;
+		}
+		setGasBudget(value: bigint): void {
+			this.#data.gasData.budget = String(value);
+		}
+		setGasPrice(value: bigint): void {
+			this.#data.gasData.price = String(value);
+		}
+		setGasOwner(value: string): void {
+			this.#data.gasData.owner = value;
+		}
+		setGasPayment(value: ReadonlyArray<unknown>): void {
+			this.#data.gasData.payment = value;
+		}
+		setExpiration(value: unknown): void {
+			this.#data.expiration = value;
+		}
+		getData(): {
+			readonly version: 2;
+			readonly sender: string | null;
+			readonly mockLabel: number;
+			readonly gasData: {
+				readonly budget: string | null;
+				readonly price: string | null;
+				readonly owner: string | null;
+				readonly payment: ReadonlyArray<unknown> | null;
+			};
+			readonly expiration: unknown;
+			readonly inputs: [];
+			readonly commands: [];
+		} {
+			return { ...this.#data, mockLabel: this.#label };
+		}
 
 		publish(inputs: { readonly modules: ReadonlyArray<ReadonlyArray<number>> }): unknown {
 			this.#label = inputs.modules[0]?.[0] ?? 0;
@@ -30,10 +77,23 @@ vi.mock('@mysten/sui/transactions', () => ({
 
 		transferObjects(_objects: ReadonlyArray<unknown>, _address: string): void {}
 
+		async prepareForSerialization(): Promise<void> {}
+
 		async build(): Promise<Uint8Array> {
 			txHarness.events.push(`${this.#label}:build`);
 			return new Uint8Array([this.#label]);
 		}
+	},
+	TransactionDataBuilder: {
+		restore(data: { readonly mockLabel?: number }) {
+			return {
+				build(): Uint8Array {
+					const label = data.mockLabel ?? 0;
+					txHarness.events.push(`${label}:build`);
+					return new Uint8Array([label]);
+				},
+			};
+		},
 	},
 }));
 
@@ -55,6 +115,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 		getObject: () => Promise.reject(new Error('stub getObject')),
 		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
 		getBalance: () => Promise.reject(new Error('stub getBalance')),
+		listCoins: () => Promise.reject(new Error('stub listCoins')),
 		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 	},
@@ -133,6 +194,19 @@ const makePublishSdk = (
 			getObject: () => Promise.reject(new Error('stub getObject')),
 			getTransaction: () => Promise.reject(new Error('stub getTransaction')),
 			getBalance: () => Promise.reject(new Error('stub getBalance')),
+			listCoins: () =>
+				Promise.resolve({
+					objects: [
+						{
+							objectId: '0xgas',
+							version: '1',
+							digest: 'gas-digest',
+							balance: '1000000000',
+						},
+					],
+					hasNextPage: false,
+					cursor: null,
+				}),
 			executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 			waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 		},
@@ -268,5 +342,63 @@ describe('package publish executor', () => {
 			const secondReceipt = yield* Fiber.join(second);
 			expect(secondReceipt.packageId).toBe('0xpkg2');
 		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('publishes with an impersonation account through account.signAndExecute', () =>
+		Effect.gen(function* () {
+			txHarness.events.length = 0;
+			const signTransaction: AccountValue['signTransaction'] = () =>
+				Effect.die('impersonation should not sign directly');
+			const accountSignAndExecute: AccountValue['signAndExecute'] = (tx) =>
+				Effect.sync(() => {
+					const label = tx[0] ?? 0;
+					txHarness.events.push(`${label}:impersonate`);
+					return {
+						digest: `digest-${label}`,
+						effects: {},
+						objectChanges: [
+							{
+								type: 'published',
+								objectId: `0xpkg${label}`,
+								objectType: `0xpkg${label}::published::Package`,
+							},
+							{
+								type: 'created',
+								objectId: `0xcap${label}`,
+								objectType: '0x2::package::UpgradeCap',
+							},
+						],
+						balanceChanges: [],
+					};
+				});
+			const account: AccountValue = {
+				name: 'publisher',
+				address: '0xabc',
+				scheme: 'ed25519',
+				publicKey: new Uint8Array(32),
+				source: 'impersonate',
+				funding: { requested: [], applied: [] },
+				signTransaction,
+				signAndExecute: accountSignAndExecute,
+				signPersonalMessage: () => Effect.die('unused'),
+				withTransactionSigner: (body) =>
+					body({ signTransaction, signAndExecute: accountSignAndExecute }),
+			};
+			const executor = makePublishExecutor({
+				sdk: makePublishSdk(new Map()),
+				account,
+			});
+
+			const receipt = yield* executor.publishTx({
+				modules: [new Uint8Array([7])],
+				dependencies: [],
+				sourcePath: '/tmp/pkg-impersonate',
+				packageName: 'pkg_impersonate',
+			});
+
+			expect(receipt.packageId).toBe('0xpkg7');
+			expect(receipt.upgradeCapId).toBe('0xcap7');
+			expect(txHarness.events).toEqual(['7:build', '7:impersonate']);
+		}),
 	);
 });

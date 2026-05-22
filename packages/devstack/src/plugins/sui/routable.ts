@@ -68,3 +68,23 @@ export const makeSuiLocalRoutables = (parts: {
 			]
 		: []),
 ];
+
+export const makeSuiForkRoutables = (parts: {
+	readonly containerName: string;
+}): ReadonlyArray<RoutableDecl> => [
+	{
+		kind: 'routable',
+		endpointName: SUI_RPC_ENDPOINT_NAME,
+		dispatchId: {
+			serviceKey: 'sui.fork',
+			role: SUI_RPC_ENDPOINT_NAME,
+		},
+		upstream: {
+			type: 'container',
+			containerName: parts.containerName,
+			containerPort: SUI_RPC_ENTRYPOINT_PORT,
+		},
+		cors: true,
+		wireProtocol: 'http',
+	},
+];

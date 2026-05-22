@@ -292,6 +292,7 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient, rpcUrl: string): SuiSdkShi
 		getObject: (args) => getObjectViaJsonRpc(rpcUrl, args),
 		getTransaction: (args) => sdkClient.core.getTransaction(args),
 		getBalance: (args) => sdkClient.core.getBalance(args),
+		listCoins: (args) => sdkClient.core.listCoins(args),
 		// Extended surfaces — used by the account plugin's sign + execute
 		// closure. Local mode keeps the `sdkClient.executeTransaction` /
 		// `sdkClient.waitForTransaction` instance methods reachable on
@@ -382,6 +383,8 @@ export const makeResolvedNetwork = (parts: {
 	readonly faucet?: string;
 	readonly graphql?: string;
 	readonly source: ResolvedSuiNetwork['source'];
+	readonly checkpoint?: string;
+	readonly forkUpstream?: ResolvedSuiNetwork['forkUpstream'];
 }): ResolvedSuiNetwork => ({
 	mode: parts.mode,
 	chain: brandChainId(parts.chain),
@@ -389,6 +392,8 @@ export const makeResolvedNetwork = (parts: {
 	source: parts.source,
 	...(parts.faucet !== undefined ? { faucet: parts.faucet } : {}),
 	...(parts.graphql !== undefined ? { graphql: parts.graphql } : {}),
+	...(parts.checkpoint !== undefined ? { checkpoint: parts.checkpoint } : {}),
+	...(parts.forkUpstream !== undefined ? { forkUpstream: parts.forkUpstream } : {}),
 });
 
 // ---------------------------------------------------------------------------

@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
-	DevstackNetworkComingSoonError,
 	DevstackNetworkParseError,
 	parseDevstackNetwork,
 	resolveStackName,
@@ -39,16 +38,16 @@ describe('api inference/network', () => {
 			name: 'testnet',
 			network: 'testnet',
 		});
-		expect(() => parseDevstackNetwork('mainnet-fork')).toThrow(DevstackNetworkComingSoonError);
-		try {
-			parseDevstackNetwork('sui:testnet-fork', '--network');
-			expect.fail('should have thrown');
-		} catch (err) {
-			expect(err).toBeInstanceOf(DevstackNetworkComingSoonError);
-			expect((err as DevstackNetworkComingSoonError)._tag).toBe('DevstackNetworkComingSoonError');
-			expect((err as DevstackNetworkComingSoonError).feature).toBe('fork');
-			expect((err as DevstackNetworkComingSoonError).message).toContain('coming soon');
-		}
+		expect(parseDevstackNetwork('mainnet-fork')).toEqual({
+			mode: 'fork',
+			name: 'mainnet-fork',
+			upstream: 'mainnet',
+		});
+		expect(parseDevstackNetwork('sui:testnet-fork', '--network')).toEqual({
+			mode: 'fork',
+			name: 'testnet-fork',
+			upstream: 'testnet',
+		});
 
 		expect(() => parseDevstackNetwork('bogus')).toThrow(DevstackNetworkParseError);
 		try {

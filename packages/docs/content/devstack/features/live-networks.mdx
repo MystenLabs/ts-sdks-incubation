@@ -50,23 +50,79 @@ The CLI can also select the surface network for mode-narrowed configs:
 ```bash
 devstack up --network testnet
 devstack up --network mainnet
+devstack up --network testnet-fork
 ```
 
-Forked-network mode is coming soon. Local-only services may refuse live modes. Use the mode-specific
-factories when you want the type system to narrow available branches:
+Fork mode runs a local `sui-fork` container against an upstream public network. It exposes the same
+devstack Sui RPC route as other modes, but it does not expose a faucet or GraphQL endpoint. First
+boot builds the bundled `sui-fork` image from a pinned Sui revision, so expect the cold path to take
+longer than localnet.
+
+```ts
+import { defineDevstack, sui, account, localPackage } from '@mysten-incubation/devstack';
+
+const publisherAddress = process.env.PUBLISHER_ADDRESS!;
+const aliceAddress = process.env.ALICE_ADDRESS!;
+
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	seed: { addresses: [publisherAddress, aliceAddress] },
+});
+const publisher = account('publisher', {
+	kind: 'impersonate',
+	address: publisherAddress,
+});
+const alice = account('alice', {
+	kind: 'impersonate',
+	address: aliceAddress,
+});
+
+const pkg = localPackage('demo', {
+	sourcePath: './move/demo',
+	publisher,
+});
+
+export default defineDevstack({
+	members: [forkedTestnet, pkg],
+	stackName: 'fork-demo',
+});
+```
+
+Use funded upstream addresses with fork mode. `kind: 'impersonate'` accounts submit empty-signature
+transactions through the fork admin surface, which is useful for deterministic local replay, but no
+private key exists and direct signing APIs intentionally fail.
+
+Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `testnet`, `mainnet`,
+`devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork`; the same names are accepted with a
+`sui:` prefix. The `local` alias maps to `localnet`.
+
+Local-only services may refuse live or fork modes. Use the mode-specific factories when you want the
+type system to narrow available branches:
 
 ```ts
 import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
 
 const live = { mode: 'live', chain: chainId('sui:testnet') } as const;
+const fork = { mode: 'fork', chain: chainId('sui:testnet-fork') } as const;
 
 const wal = walrusFor(live).known({
 	systemObjectId: '0x...',
 	stakingPoolId: '0x...',
 	nodes: [],
 });
+const forkWal = walrusFor(fork).known({
+	systemObjectId: '0x...',
+	stakingPoolId: '0x...',
+	nodes: [],
+});
 
 const keyServer = sealFor(live).testnet({
+	objectId: '0x...',
+	keyServerUrl: 'https://example.test/key',
+});
+const forkKeyServer = sealFor(fork).forkKnown({
+	upstream: 'testnet',
 	objectId: '0x...',
 	keyServerUrl: 'https://example.test/key',
 });
@@ -77,5 +133,6 @@ const dex = deepbookFor(live).known({
 });
 ```
 
-Live accounts should use `env`, `keystore`, `inline`, `signer`, or `impersonate` as appropriate. The
-default ephemeral form is designed for local development, not custody of real assets.
+Live accounts should use `env`, `keystore`, `inline`, or `signer` as appropriate. Fork replay
+accounts can use `impersonate`. The default ephemeral form is designed for local development, not
+custody of real assets.
