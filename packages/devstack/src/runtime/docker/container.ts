@@ -19,9 +19,8 @@
 //       after attach and before we declare ready.
 //   §9  RecreatePolicy enum routed in — `never` refuses to recreate;
 //       `on-failure` recreates on unclean shutdown + image mismatch;
-//       `on-config-change` recreates ONLY on image mismatch (the
-//       Move-build-container case — "this is fine to leave failed,
-//       just don't auto-recreate; recreate when the config changes").
+//       `on-config-change` recreates on image mismatch, port mismatch,
+//       or caller-supplied config hash mismatch.
 
 import { Deferred, Effect, Ref, Scope, Schema } from 'effect';
 
@@ -34,6 +33,7 @@ import type {
 } from '../../contracts/container-runtime.ts';
 import { addClaim, removeClaim } from '../../substrate/runtime/cross-process/roster.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
+import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
@@ -47,6 +47,7 @@ import {
 } from './errors.ts';
 import {
 	expectedContainerOwnershipLabels,
+	LabelKey,
 	ownershipMismatchDetail,
 	renderContainerLabels,
 } from './labels.ts';
@@ -123,6 +124,7 @@ export const decideRunAction = (
 	policy: RecreatePolicy,
 	desiredPortBindings: ReadonlyArray<string> = [],
 	portBindingReconciliation: PortBindingReconciliation = 'exact',
+	desiredConfigHash?: string,
 ): RunAction => {
 	if (facts === null) return { kind: 'fresh' };
 	const imageMatches = facts.image === desiredImage;
@@ -131,11 +133,13 @@ export const decideRunAction = (
 		portsMatch ||
 		(portBindingReconciliation === 'adopt-existing' &&
 			sameBindingContainerPorts(facts.portBindings ?? [], desiredPortBindings));
+	const configMatches =
+		desiredConfigHash === undefined || facts.labels?.[LabelKey.configHash] === desiredConfigHash;
 	if (facts.lifecycle.kind === 'unknown') {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'unknown-state' }, policy);
 	}
 	if (facts.lifecycle.kind === 'paused') {
-		return imageMatches && portsCompatible
+		return imageMatches && portsCompatible && configMatches
 			? { kind: 'unpause-adopt', id: facts.id }
 			: routeRecreate(
 					{
@@ -147,7 +151,7 @@ export const decideRunAction = (
 				);
 	}
 	if (facts.lifecycle.kind === 'running') {
-		return imageMatches && portsCompatible
+		return imageMatches && portsCompatible && configMatches
 			? { kind: 'adopt', id: facts.id }
 			: routeRecreate(
 					{
@@ -163,6 +167,9 @@ export const decideRunAction = (
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'image-mismatch' }, policy);
 	}
 	if (!portsCompatible) {
+		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'config-mismatch' }, policy);
+	}
+	if (!configMatches) {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'config-mismatch' }, policy);
 	}
 	if (facts.lifecycle.exitCode === 137) {
@@ -352,17 +359,20 @@ export const inspectContainer = (
 			);
 		}
 		try {
-			const arr = JSON.parse(res.stdout) as unknown;
-			if (!Array.isArray(arr) || arr.length === 0) {
-				return yield* Effect.fail(
+			const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
+				source: `docker container inspect ${name}`,
+				missingMessage: 'inspect returned an empty result',
+				mkError: (issue) =>
 					new DockerInspectDecodeFailed({
 						resource: 'container',
 						name,
-						detail: 'inspect returned an empty result',
+						detail:
+							issue.message === 'inspect returned an empty result'
+								? issue.message
+								: 'inspect returned malformed container JSON',
+						cause: issue.cause,
 					}),
-				);
-			}
-			const decoded = Schema.decodeUnknownSync(InspectSchema)(arr[0]);
+			});
 			const lifecycle = readLifecycleState(decoded.State);
 			const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
 			const ports =
@@ -393,14 +403,7 @@ export const inspectContainer = (
 				networks,
 			};
 		} catch (cause) {
-			return yield* Effect.fail(
-				new DockerInspectDecodeFailed({
-					resource: 'container',
-					name,
-					detail: 'inspect returned malformed container JSON',
-					cause,
-				}),
-			);
+			return yield* Effect.fail(cause as DockerRuntimeError);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
@@ -414,7 +417,9 @@ const createArgv = (
 	imageRef: string,
 ): ReadonlyArray<string> => {
 	const args: Array<string> = ['-d', '--name', spec.name];
-	for (const label of renderContainerLabels(spec.labels, cycle)) {
+	const configLabels: Readonly<Record<string, string>> | undefined =
+		spec.configHash === undefined ? undefined : { [LabelKey.configHash]: spec.configHash };
+	for (const label of renderContainerLabels(spec.labels, cycle, configLabels)) {
 		args.push('--label', label);
 	}
 	if (spec.env) {
@@ -867,6 +872,7 @@ export const ensureContainer = (
 						spec.recreate,
 						canonicalPortBindings(spec.ports),
 						spec.portBindingReconciliation ?? 'exact',
+						spec.configHash,
 					);
 					const id = yield* applyAction(action, spec, deps);
 					return yield* ensureEffectivePublishedPorts(id, spec, deps);

@@ -36,8 +36,6 @@ export type VerbRunner<Deps> = (
 
 // --- Re-exports ---------------------------------------------------------
 
-export { runApply, type ApplyDeps } from './apply.ts';
-export { runCodegen, type CodegenDeps } from './codegen.ts';
 export { runConfig, type ConfigDeps } from './config.ts';
 export {
 	runDoctor,
@@ -46,34 +44,35 @@ export {
 	type ProbeOutcome,
 	type ProbeReport,
 } from './doctor.ts';
-export { runDown, type DownDeps } from './down.ts';
-export { runExec, runNodeChildProcess, type ExecDeps } from './exec.ts';
-export { runFork, type ForkDeps } from './fork.ts';
-export { runLogs, type LogsDeps } from './logs.ts';
-export { runPrune, type PruneDeps } from './prune.ts';
+export {
+	DEFAULT_PRUNE_RESOURCES,
+	defaultPruneSelection,
+	groupResourceCountForResources,
+	hasPruneResources,
+	runPrune,
+	summarizePruneGroups,
+	summarizePruneGroupsForResources,
+	type PruneDeps,
+	type PruneGroup,
+	type PruneInventory,
+	type PruneOutcome,
+	type PruneResourceScope,
+	type PruneRunOptions,
+	type PruneSelection,
+	type PruneSummary,
+	type PruneTargetSelection,
+	type PruneTotals,
+} from './prune.ts';
 export {
 	runSnapshot,
 	type SnapshotDeps,
 	type SnapshotEntry,
 	type SnapshotReader,
 } from './snapshot.ts';
-export { runStack, type StackDeps, type StackEntry } from './stack.ts';
 export { buildStatusPayload, runStatus, type StatusDeps, type StatusReader } from './status.ts';
-export {
-	runUp,
-	type UpDeps,
-	type ConfigLoader,
-	type LoadedConfig,
-	type ShutdownLatch,
-} from './up.ts';
+export { type ConfigLoader, type LoadedConfig } from './config-loader.ts';
 export { runWipe, type WipeDeps } from './wipe.ts';
-export { type CommandPublisher, type EventSubscriber } from './command-channel.ts';
 export { probeSupervisorPresence, type SupervisorPresence } from './supervisor-presence.ts';
-export {
-	makeChannelPublisher,
-	makeChannelSubscriber,
-	type ChannelDepsContext,
-} from './channel-deps.ts';
 export {
 	defaultProbes,
 	routerProfileProbe,

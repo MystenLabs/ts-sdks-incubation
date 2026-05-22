@@ -26,10 +26,12 @@ import type { Renderer } from '../../contracts/renderer.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
 import {
+	accountLine,
 	endpointLine,
 	kindLabel,
 	labelForRow,
 	narrationFor,
+	packageLine,
 	statusLabel,
 } from './display-derivation.ts';
 import { mountFailed } from './errors.ts';
@@ -153,8 +155,31 @@ const payloadFor = (event: EngineEvent): string => {
 			return kv({
 				key: event.endpoint.endpointKey,
 				name: event.endpoint.name,
-				url: event.endpoint.displayUrl ?? event.endpoint.url,
+				displayUrl: event.endpoint.displayUrl ?? event.endpoint.url,
+				url: event.endpoint.url,
 				wire: event.endpoint.wireProtocol,
+			});
+		case 'account.updated':
+			return kv({
+				key: event.account.key,
+				row: event.account.rowKey ?? '',
+				name: event.account.name,
+				address: event.account.address ?? '',
+				scheme: event.account.scheme ?? '',
+				source: event.account.source ?? '',
+				funding: event.account.funding.status,
+				requestedMist: event.account.funding.requestedMist ?? '',
+				balanceMist: event.account.funding.balanceMist ?? '',
+			});
+		case 'package.updated':
+			return kv({
+				key: event.package.key,
+				row: event.package.rowKey ?? '',
+				name: event.package.name,
+				kind: event.package.kind,
+				packageId: event.package.packageId,
+				upgradeCapId: event.package.upgradeCapId ?? '',
+				mvr: event.package.mvrPlaceholder,
 			});
 		case 'endpoint.released':
 			return kv({ key: event.endpointKey });
@@ -190,6 +215,7 @@ const payloadFor = (event: EngineEvent): string => {
 			});
 		case 'shutdown.escalated':
 			return kv({
+				mode: 'hard-kill',
 				signal: event.signal,
 				exitCode: event.exitCode,
 			});
@@ -230,12 +256,27 @@ const emitInitialSweep = (state: SubscribableState): Effect.Effect<void> =>
 		);
 		for (const row of state.rows) {
 			yield* writeStderrLine(
-				`${isoTimestamp(Date.now())} INFO row.declared key=${labelForRow(row.key, row.kind)} kind=${kindLabel(row.kind)} status=${statusLabel(row.status)}`,
+				`${isoTimestamp(Date.now())} INFO row.declared ${kv({
+					key: row.key,
+					label: labelForRow(row.key, row.kind),
+					kind: kindLabel(row.kind),
+					status: statusLabel(row.status),
+				})}`,
 			);
 		}
 		for (const endpoint of state.endpoints) {
 			yield* writeStderrLine(
 				`${isoTimestamp(endpoint.registeredAt)} INFO endpoint.registered ${endpointLine(endpoint)}`,
+			);
+		}
+		for (const account of state.accounts) {
+			yield* writeStderrLine(
+				`${isoTimestamp(account.updatedAt)} INFO account.updated ${accountLine(account)}`,
+			);
+		}
+		for (const pkg of state.packages) {
+			yield* writeStderrLine(
+				`${isoTimestamp(pkg.updatedAt)} INFO package.updated ${packageLine(pkg)}`,
 			);
 		}
 	});

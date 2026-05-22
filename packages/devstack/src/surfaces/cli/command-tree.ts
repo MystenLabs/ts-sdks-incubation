@@ -1,6 +1,8 @@
 import { ENV_VARS } from './flags.ts';
 import { exitCodeTable } from './sysexits.ts';
 
+export type CommandLifecycle = 'attached' | 'one-shot' | 'offline';
+
 export interface CommandOption {
 	readonly name: string;
 	readonly value?: string;
@@ -11,167 +13,176 @@ export interface CommandNode {
 	readonly name: string;
 	readonly summary: string;
 	readonly usage: string;
+	readonly lifecycle: CommandLifecycle;
+	readonly sideEffects: 'none' | 'read' | 'write' | 'destructive';
+	readonly requiresDocker: boolean;
 	readonly description?: string;
 	readonly arguments?: ReadonlyArray<string>;
 	readonly options?: ReadonlyArray<CommandOption>;
 	readonly subcommands?: ReadonlyArray<CommandNode>;
 }
 
-const globalOptions = [
+const identityOptions = [
 	{ name: 'json', description: 'Emit JSON envelope output.' },
 	{ name: 'app', value: 'name', description: 'Override app name.' },
 	{ name: 'stack', value: 'name', description: 'Override stack name.' },
 	{ name: 'state-dir', value: 'path', description: 'Override state directory.' },
-	{ name: 'config', value: 'path', description: 'Override devstack.config.ts path.' },
-	{
-		name: 'network',
-		value: 'name',
-		description: 'Override network before config import.',
-	},
-	{
-		name: 'renderer',
-		value: 'tui|plain|silent',
-		description: 'Select the `up` renderer.',
-	},
-	{ name: 'dry-run', description: 'Skip mutating effects.' },
-	{ name: 'yes', description: 'Assume yes on prompts.' },
-	{ name: 'no-input', description: 'Forbid prompts.' },
 	{ name: 'verbose', description: 'Enable more verbose logging.' },
-	{ name: 'schema', description: 'Emit the CLI schema and exit.' },
-	{ name: 'version', description: 'Print version and exit.' },
-	{ name: 'help', description: 'Print command help and exit.' },
+] as const satisfies ReadonlyArray<CommandOption>;
+
+const configOptions = [
+	...identityOptions,
+	{ name: 'config', value: 'path', description: 'Override devstack.config.ts path.' },
+	{ name: 'network', value: 'name', description: 'Override network before config import.' },
 ] as const satisfies ReadonlyArray<CommandOption>;
 
 const commands = [
 	{
 		name: 'up',
 		summary: 'Boot a stack and stay attached until interrupted.',
-		usage: 'devstack up [--global-flags]',
-		description: 'Loads devstack.config.ts, starts the supervisor, and remains attached.',
+		usage: 'devstack up [options]',
+		lifecycle: 'attached',
+		sideEffects: 'write',
+		requiresDocker: true,
+		description: 'Starts the supervisor and renders the attached operator surface.',
+		options: [
+			...configOptions,
+			{
+				name: 'renderer',
+				value: 'tui|plain|silent',
+				description: 'Select the attached renderer.',
+			},
+		],
 	},
 	{
-		name: 'down',
-		summary: 'Request graceful shutdown of the active stack.',
-		usage: 'devstack down [--global-flags]',
+		name: 'apply',
+		summary: 'Boot, reconcile, emit generated files, and exit.',
+		usage: 'devstack apply [options]',
+		lifecycle: 'one-shot',
+		sideEffects: 'write',
+		requiresDocker: true,
+		options: configOptions,
 	},
 	{
 		name: 'status',
-		summary: 'Show the current stack projection.',
-		usage: 'devstack status [--global-flags]',
+		summary: 'Show the persisted stack projection.',
+		usage: 'devstack status [options]',
+		lifecycle: 'offline',
+		sideEffects: 'read',
+		requiresDocker: false,
+		options: identityOptions,
+	},
+	{
+		name: 'doctor',
+		summary: 'Run host and stack preflight checks.',
+		usage: 'devstack doctor [options]',
+		lifecycle: 'offline',
+		sideEffects: 'read',
+		requiresDocker: true,
+		options: identityOptions,
+	},
+	{
+		name: 'config',
+		summary: 'Print resolved config inputs.',
+		usage: 'devstack config [options]',
+		lifecycle: 'offline',
+		sideEffects: 'read',
+		requiresDocker: false,
+		options: configOptions,
+	},
+	{
+		name: 'schema',
+		summary: 'Emit the CLI schema.',
+		usage: 'devstack schema --json',
+		lifecycle: 'offline',
+		sideEffects: 'none',
+		requiresDocker: false,
+		options: [{ name: 'json', description: 'Emit JSON schema output.' }],
 	},
 	{
 		name: 'snapshot',
 		summary: 'Capture, restore, list, or delete stack snapshots.',
-		usage: 'devstack snapshot <command> [args...]',
+		usage: 'devstack snapshot <command> [options]',
+		lifecycle: 'offline',
+		sideEffects: 'write',
+		requiresDocker: true,
 		subcommands: [
 			{
 				name: 'save',
-				summary: 'Capture a snapshot of the active stack.',
-				usage: 'devstack snapshot save [id] [--label <label>]',
+				summary: 'Capture a snapshot through a one-shot stack boot.',
+				usage: 'devstack snapshot save [id] [--label <label>] [options]',
+				lifecycle: 'one-shot',
+				sideEffects: 'write',
+				requiresDocker: true,
 				arguments: ['id'],
-				options: [{ name: 'label', value: 'label', description: 'Human-readable snapshot label.' }],
+				options: [
+					...configOptions,
+					{ name: 'label', value: 'label', description: 'Human-readable snapshot label.' },
+				],
 			},
 			{
 				name: 'restore',
 				summary: 'Restore a snapshot by id or label.',
-				usage: 'devstack snapshot restore <id-or-label>',
+				usage: 'devstack snapshot restore <id-or-label> [options]',
+				lifecycle: 'offline',
+				sideEffects: 'destructive',
+				requiresDocker: true,
 				arguments: ['id-or-label'],
+				options: identityOptions,
 			},
 			{
 				name: 'list',
-				summary: 'List snapshots for the active stack.',
-				usage: 'devstack snapshot list',
+				summary: 'List snapshots for the selected stack.',
+				usage: 'devstack snapshot list [options]',
+				lifecycle: 'offline',
+				sideEffects: 'read',
+				requiresDocker: false,
+				options: identityOptions,
 			},
 			{
 				name: 'delete',
 				summary: 'Delete a snapshot by id or label.',
-				usage: 'devstack snapshot delete <id-or-label>',
+				usage: 'devstack snapshot delete <id-or-label> [options]',
+				lifecycle: 'offline',
+				sideEffects: 'destructive',
+				requiresDocker: false,
 				arguments: ['id-or-label'],
+				options: identityOptions,
 			},
 		],
 	},
 	{
 		name: 'prune',
-		summary: 'Run cross-stack orphan cleanup.',
-		usage: 'devstack prune [--dry-run] [--yes]',
-	},
-	{
-		name: 'logs',
-		summary: "Tail a plugin's log stream.",
-		usage: 'devstack logs <plugin> [--level <level>]',
-		arguments: ['plugin'],
-		options: [{ name: 'level', value: 'level', description: 'Filter by log level.' }],
-	},
-	{
-		name: 'exec',
-		summary: 'Run a child command and mirror its exit code.',
-		usage: 'devstack exec -- <command> [args...]',
-		arguments: ['command', 'args'],
-	},
-	{
-		name: 'doctor',
-		summary: 'Run health-check probes.',
-		usage: 'devstack doctor [--global-flags]',
-	},
-	{
-		name: 'codegen',
-		summary: 'Force codegen re-emit on a live supervisor.',
-		usage: 'devstack codegen [--global-flags]',
-	},
-	{
-		name: 'config',
-		summary: 'Print resolved config.',
-		usage: 'devstack config [--global-flags]',
-	},
-	{
-		name: 'apply',
-		summary: 'Boot, reconcile, emit generated files, and exit cleanly.',
-		usage: 'devstack apply [--global-flags]',
-	},
-	{
-		name: 'wipe',
-		summary: 'Destroy all state for the active stack.',
-		usage: 'devstack wipe [--yes]',
-	},
-	{
-		name: 'stack',
-		summary: 'Manage named stack roots.',
-		usage: 'devstack stack <command> [args...]',
-		subcommands: [
-			{ name: 'list', summary: 'List stack roots.', usage: 'devstack stack list' },
-			{ name: 'new', summary: 'Create a stack root.', usage: 'devstack stack new <name>' },
-			{ name: 'use', summary: 'Set the active stack.', usage: 'devstack stack use <name>' },
-			{ name: 'drop', summary: 'Remove a stack root.', usage: 'devstack stack drop <name>' },
-			{
-				name: 'drop-fork',
-				summary: 'Remove a fork stack root.',
-				usage: 'devstack stack drop-fork <name>',
-			},
+		summary: 'Inventory and prune devstack-labelled Docker resources.',
+		usage: 'devstack prune [--list | --dry-run | --all --yes] [options]',
+		lifecycle: 'offline',
+		sideEffects: 'destructive',
+		requiresDocker: true,
+		options: [
+			...identityOptions,
+			{ name: 'list', description: 'List resource groups without pruning.' },
+			{ name: 'all', description: 'Prune every idle non-shared resource group.' },
+			{ name: 'no-containers', description: 'Do not remove containers.' },
+			{ name: 'no-networks', description: 'Do not remove networks.' },
+			{ name: 'no-volumes', description: 'Do not remove volumes.' },
+			{ name: 'include-images', description: 'Also remove devstack-labelled images.' },
+			{ name: 'dry-run', description: 'Skip mutating effects.' },
+			{ name: 'yes', description: 'Assume yes on prompts.' },
+			{ name: 'no-input', description: 'Forbid prompts.' },
 		],
 	},
 	{
-		name: 'fork',
-		summary: 'Inspect or control fork-mode stacks.',
-		usage: 'devstack fork <command> [args...]',
-		subcommands: [
-			{ name: 'status', summary: 'Show fork status.', usage: 'devstack fork status' },
-			{
-				name: 'advance',
-				summary: 'Advance fork clock time.',
-				usage: 'devstack fork advance --ms <milliseconds>',
-				options: [{ name: 'ms', value: 'milliseconds', description: 'Milliseconds to advance.' }],
-			},
-			{ name: 'seed', summary: 'Inspect fork seed state.', usage: 'devstack fork seed [args...]' },
-			{
-				name: 'replay',
-				summary: 'Replay fork state.',
-				usage: 'devstack fork replay [args...]',
-			},
-			{
-				name: 'cache',
-				summary: 'Inspect fork cache state.',
-				usage: 'devstack fork cache [args...]',
-			},
+		name: 'wipe',
+		summary: 'Destroy all state for the selected stack.',
+		usage: 'devstack wipe [--dry-run] [--yes] [options]',
+		lifecycle: 'offline',
+		sideEffects: 'destructive',
+		requiresDocker: true,
+		options: [
+			...identityOptions,
+			{ name: 'dry-run', description: 'Skip mutating effects.' },
+			{ name: 'yes', description: 'Assume yes on prompts.' },
+			{ name: 'no-input', description: 'Forbid prompts.' },
 		],
 	},
 ] as const satisfies ReadonlyArray<CommandNode>;
@@ -179,9 +190,11 @@ const commands = [
 export const COMMAND_TREE: CommandNode = {
 	name: 'devstack',
 	summary: 'Sui development stack CLI.',
-	usage: 'devstack [--global-flags] <command> [args...]',
+	usage: 'devstack <command> [options]',
+	lifecycle: 'offline',
+	sideEffects: 'none',
+	requiresDocker: false,
 	description: 'Boot, inspect, snapshot, and manage local Sui development stacks.',
-	options: globalOptions,
 	subcommands: commands,
 };
 
@@ -203,19 +216,6 @@ export const findCommandNode = (path: ReadonlyArray<string>): CommandNode | null
 		current = next;
 	}
 	return current;
-};
-
-const commandPathFromRest = (rest: ReadonlyArray<string>): ReadonlyArray<string> => {
-	const path: Array<string> = [];
-	let current: CommandNode = COMMAND_TREE;
-	for (const token of rest) {
-		if (token.startsWith('-')) continue;
-		const next = findSubcommand(current, token);
-		if (next === undefined) break;
-		path.push(next.name);
-		current = next;
-	}
-	return path;
 };
 
 const formatOption = (option: CommandOption): string =>
@@ -252,8 +252,7 @@ const pushOptionRows = (
 	}
 };
 
-export const formatCommandHelp = (rest: ReadonlyArray<string>): string => {
-	const path = commandPathFromRest(rest);
+export const formatCommandHelp = (path: ReadonlyArray<string>): string => {
 	const node = findCommandNode(path) ?? COMMAND_TREE;
 	const lines: Array<string> = [
 		path.length === 0
@@ -262,19 +261,12 @@ export const formatCommandHelp = (rest: ReadonlyArray<string>): string => {
 		'',
 		`Usage: ${node.usage}`,
 	];
-	if (node.description !== undefined) {
-		lines.push('', node.description);
-	}
+	if (node.description !== undefined) lines.push('', node.description);
 	if (node.arguments !== undefined && node.arguments.length > 0) {
 		lines.push('', `Arguments: ${node.arguments.join(', ')}`);
 	}
 	pushCommandRows(lines, path.length === 0 ? 'Commands' : 'Subcommands', node.subcommands ?? []);
 	pushOptionRows(lines, 'Options', node.options ?? []);
-	if (path.length === 0) {
-		pushOptionRows(lines, 'Global Flags', globalOptions);
-	} else {
-		lines.push('', 'Run `devstack --help` for global flags.');
-	}
 	return lines.join('\n');
 };
 

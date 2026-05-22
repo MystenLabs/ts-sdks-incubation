@@ -27,6 +27,7 @@ import { Effect } from 'effect';
 
 import { capabilities } from '../../api/define-capabilities.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import {
@@ -44,6 +45,7 @@ import type { FaucetStrategy } from './strategies/sui-local.ts';
 
 /** The faucet plugin's identity tag. */
 export const FaucetTag = defineTag<'faucet', FaucetService>('faucet', 'faucet');
+const faucetErrorContributions = pluginErrorContributions(FAUCET_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Capability-key constant — the dispatcher-marker key.
@@ -103,7 +105,7 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
 			Effect.gen(function* () {
 				return yield* acquireFaucetService(opts);
 			}),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: FAUCET_ERROR_TAGS }],
+		errorContributions: faucetErrorContributions,
 		capabilities: capabilities(dispatchContribution),
 	});
 };
@@ -166,6 +168,7 @@ export type {
 	FaucetExhausted,
 	FaucetBodyError,
 	FaucetStrategyMissing,
+	FaucetConfigError,
 } from './errors.ts';
 export { FAUCET_ERROR_TAGS } from './errors.ts';
 export type { FaucetStrategy, SuiLocalStrategyOptions } from './strategies/sui-local.ts';

@@ -60,7 +60,7 @@ export const ExitCode = {
 export type ExitCode = (typeof ExitCode)[keyof typeof ExitCode];
 
 /** Human-readable identifier for an exit code. Used by the
- *  `--schema --json` action and by the envelope `error.code` field. */
+ *  `schema --json` command and by the envelope `error.code` field. */
 export const exitCodeName = (code: ExitCode): string => {
 	switch (code) {
 		case ExitCode.OK:
@@ -95,7 +95,7 @@ export const exitCodeName = (code: ExitCode): string => {
 };
 
 /** Schema-emit entry: full table of `(code, name, description)`. The
- *  programmable `--schema --json` action serializes this verbatim. */
+ *  programmable `schema --json` command serializes this verbatim. */
 export interface ExitCodeEntry {
 	readonly code: ExitCode;
 	readonly name: string;

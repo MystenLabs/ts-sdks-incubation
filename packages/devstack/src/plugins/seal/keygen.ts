@@ -14,6 +14,7 @@
 import { Duration, Effect, type Scope } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
+import { redactText, type RedactionRule } from '../../substrate/runtime/observability/index.ts';
 import { sealError, type SealError } from './errors.ts';
 
 // ---------------------------------------------------------------------------
@@ -59,17 +60,16 @@ export interface PersistedBlsKeypair {
  *  mention. Mirrors v3's `MASTER_KEY_LINE_RE` (`seal/internal.ts:1343`). */
 const MASTER_KEY_LINE_RE = /^.*master[_\- ]?key.*$/gim;
 
+const MASTER_KEY_REDACTION_RULE: RedactionRule = {
+	kind: 'pattern',
+	pattern: MASTER_KEY_LINE_RE,
+	replacement: '[REDACTED master key]',
+};
+
 /** Replace any line containing `master_key` / `master-key` / `masterkey`
  *  (case-insensitive) with the literal `[REDACTED master key]`. Used at
- *  every site that may surface stdout/stderr from `seal-cli`.
- *
- *  Distilled-doc opportunity #16: this redactor is a candidate for
- *  generalization into a shared `redactSecrets(stdout, patterns)`
- *  substrate primitive. v2 plans should fold it into the
- *  observability layer once a second consumer (walrus, postgres)
- *  needs analogous redaction. */
-export const redactMasterKey = (s: string): string =>
-	s.replace(MASTER_KEY_LINE_RE, '[REDACTED master key]');
+ *  every site that may surface stdout/stderr from `seal-cli`. */
+export const redactMasterKey = (s: string): string => redactText(s, [MASTER_KEY_REDACTION_RULE]);
 
 // ---------------------------------------------------------------------------
 // Output parser — distilled-doc §"Helpers"

@@ -43,6 +43,8 @@ const emptyState = (): SubscribableState => ({
 	cycle: { id: 0, startedAt: 0, phase: 'booting' },
 	rows: [sampleRow],
 	endpoints: [],
+	accounts: [],
+	packages: [],
 	errors: [],
 	lastEvent: { seq: 0, at: 0 },
 	stackBuild: [],

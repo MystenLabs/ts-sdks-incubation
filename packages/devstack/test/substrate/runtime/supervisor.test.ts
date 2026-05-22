@@ -25,7 +25,7 @@ import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } 
 import { describe, expect, it } from '@effect/vitest';
 
 import { defineNodePlugin } from '../../../src/api/define-plugin.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import { defineTag } from '../../../src/substrate/tag.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
@@ -33,6 +33,7 @@ import {
 	Logger,
 	layerCapabilitySinksDefault,
 	layerLogger,
+	layerRedactor,
 	makeProjectionRef,
 	startSupervisor,
 	supervise,
@@ -40,6 +41,7 @@ import {
 	type OrchestratorSinks,
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
+import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import type { PluginErrorContribution } from '../../../src/substrate/plugin.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { CompositePrimitiveDecl } from '../../../src/contracts/composite-primitive.ts';
@@ -119,6 +121,14 @@ const tagCodegen = defineTag<'test:codegen', { readonly v: 'codegen' }>(
 	'plug-codegen',
 );
 const tagStrat = defineTag<'test:strat', { readonly v: 'strat' }>('test:strat', 'plug-strat');
+const tagAccountProjection = defineTag<'account/alice', { readonly v: 'account' }>(
+	'account/alice',
+	'account',
+);
+const tagPackageProjection = defineTag<'package:vault', { readonly v: 'package' }>(
+	'package:vault',
+	'package',
+);
 const tagComposite = defineTag<'test:composite', { readonly v: 'composite' }>(
 	'test:composite',
 	'plug-composite',
@@ -155,6 +165,56 @@ const strategyDecl: StrategyContributorDecl<'demo-strategy', { readonly run: 'ok
 	capabilityKey: 'demo-strategy',
 	strategy: { run: 'ok' },
 	autoMounted: false,
+};
+
+const accountStrategyDecl: StrategyContributorDecl<
+	'account:alice',
+	{
+		readonly name: 'alice';
+		readonly address: '0xabc';
+		readonly scheme: 'ed25519';
+		readonly source: 'real';
+		readonly funding: {
+			readonly status: 'funded';
+			readonly balanceMist: null;
+			readonly requestedMist: '1000000000';
+		};
+	}
+> = {
+	kind: 'strategy-contributor',
+	capabilityKey: 'account:alice',
+	strategy: {
+		name: 'alice',
+		address: '0xabc',
+		scheme: 'ed25519',
+		source: 'real',
+		funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+	},
+	autoMounted: true,
+};
+
+const packageStrategyDecl: StrategyContributorDecl<
+	'package-registry',
+	{
+		readonly kind: 'local';
+		readonly name: 'vault';
+		readonly packageId: '0x123';
+		readonly upgradeCapId: null;
+		readonly mvrPlaceholder: '@local/vault';
+		readonly sourcePath: 'move/vault';
+	}
+> = {
+	kind: 'strategy-contributor',
+	capabilityKey: 'package-registry',
+	strategy: {
+		kind: 'local',
+		name: 'vault',
+		packageId: '0x123',
+		upgradeCapId: null,
+		mvrPlaceholder: '@local/vault',
+		sourcePath: 'move/vault',
+	},
+	autoMounted: true,
 };
 
 const compositeDecl: CompositePrimitiveDecl = {
@@ -209,6 +269,22 @@ const pluginStrat = defineNodePlugin({
 	kind: 'leaf-long-running' as const,
 	acquire: () => Effect.succeed({ v: 'strat' as const }),
 	capabilities: [strategyDecl] as const,
+});
+
+const pluginAccountProjection = defineNodePlugin({
+	provides: tagAccountProjection,
+	consumes: [] as const,
+	kind: 'leaf-one-shot' as const,
+	acquire: () => Effect.succeed({ v: 'account' as const }),
+	capabilities: [accountStrategyDecl] as const,
+});
+
+const pluginPackageProjection = defineNodePlugin({
+	provides: tagPackageProjection,
+	consumes: [] as const,
+	kind: 'leaf-long-running' as const,
+	acquire: () => Effect.succeed({ v: 'package' as const }),
+	capabilities: [packageStrategyDecl] as const,
 });
 
 const pluginComposite = defineNodePlugin({
@@ -342,6 +418,38 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('graceful shutdown tears down ready rows before awaitShutdown resolves', () =>
+		Effect.gen(function* () {
+			const tagShutdown = defineTag<'test:shutdown', { readonly v: 'shutdown' }>(
+				'test:shutdown',
+				'plug-shutdown',
+			);
+			const pluginShutdown = defineNodePlugin({
+				provides: tagShutdown,
+				consumes: [] as const,
+				kind: 'leaf-long-running' as const,
+				acquire: () => Effect.succeed({ v: 'shutdown' as const }),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginShutdown], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					yield* startup.runInitialAcquire;
+					yield* startup.handle.registry.awaitReady(pluginKey('test:shutdown#0'));
+
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					yield* startup.handle.awaitShutdown;
+
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.cycle.phase).toBe('shutting-down');
+					expect(snap.rows.find((r) => r.key === 'test:shutdown#0')?.status).toBe('stopped');
+				}),
+			);
+		}),
+	);
+
 	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
 		Effect.gen(function* () {
 			const { ref, sinks } = yield* makeCapture();
@@ -375,6 +483,96 @@ describe('supervisor harvest loop', () => {
 			expect(captured.strategy).toEqual([{ key: 'test:strat#3', capabilityKey: 'demo-strategy' }]);
 			expect(captured.composite).toEqual([]);
 		}),
+	);
+
+	it.effect(
+		'projects harvested account registry contributions into SubscribableState.accounts',
+		() =>
+			Effect.gen(function* () {
+				const state = yield* makeProjectionRef();
+				const stack: SupervisedStack = {
+					_tag: 'Stack',
+					members: [pluginAccountProjection],
+					options: {},
+				};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const startup = yield* startSupervisor(stack, identity, state);
+						const pending = yield* SubscriptionRef.get(state);
+						expect(pending.accounts).toEqual([
+							{
+								key: 'account/alice',
+								rowKey: 'account/alice#0',
+								name: 'alice',
+								address: null,
+								scheme: null,
+								source: null,
+								funding: { status: 'pending', balanceMist: null, requestedMist: null },
+								walletVisible: false,
+								updatedAt: expect.any(Number),
+							},
+						]);
+
+						yield* startup.runInitialAcquire;
+						const ready = yield* SubscriptionRef.get(state);
+						expect(ready.accounts).toEqual([
+							{
+								key: 'account/alice',
+								rowKey: 'account/alice#0',
+								name: 'alice',
+								address: '0xabc',
+								scheme: 'ed25519',
+								source: 'real',
+								funding: {
+									status: 'funded',
+									balanceMist: null,
+									requestedMist: '1000000000',
+								},
+								walletVisible: false,
+								updatedAt: expect.any(Number),
+							},
+						]);
+					}),
+				);
+			}),
+	);
+
+	it.effect(
+		'projects harvested package registry contributions into SubscribableState.packages',
+		() =>
+			Effect.gen(function* () {
+				const state = yield* makeProjectionRef();
+				const stack: SupervisedStack = {
+					_tag: 'Stack',
+					members: [pluginPackageProjection],
+					options: {},
+				};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const startup = yield* startSupervisor(stack, identity, state);
+						const pending = yield* SubscriptionRef.get(state);
+						expect(pending.packages).toEqual([]);
+
+						yield* startup.runInitialAcquire;
+						const ready = yield* SubscriptionRef.get(state);
+						expect(ready.packages).toEqual([
+							{
+								key: 'package/vault',
+								rowKey: 'package:vault#0',
+								name: 'vault',
+								kind: 'local',
+								packageId: '0x123',
+								upgradeCapId: null,
+								mvrPlaceholder: '@local/vault',
+								sourcePath: 'move/vault',
+								updatedAt: expect.any(Number),
+							},
+						]);
+					}),
+				);
+			}),
 	);
 
 	it.effect('dispatches composite-primitive decls separately from leaves', () =>
@@ -613,21 +811,30 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('publishes logger lines as log.appended events and row log tails', () =>
+	it.effect('publishes operator-level plugin logs as log.appended events and row log tails', () =>
 		Effect.gen(function* () {
 			const tagLog = defineTag<'test:log', { readonly v: 'log' }>('test:log', 'plug-log');
 			const pluginLog = defineNodePlugin({
 				provides: tagLog,
 				consumes: [] as const,
 				kind: 'leaf-long-running' as const,
-				acquire: () => Effect.succeed({ v: 'log' as const }),
+				acquire: () =>
+					Effect.gen(function* () {
+						const logger = yield* Logger;
+						const current = yield* CurrentPluginKey;
+						yield* logger.log(`plugin/${current.key}`, current.key, {
+							level: 'warn',
+							message: 'plugin emitted warning',
+						});
+						return { v: 'log' as const };
+					}),
 			});
 			const state = yield* makeProjectionRef();
 			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginLog], options: {} };
 
 			const event = yield* Effect.scoped(
 				Effect.gen(function* () {
-					const loggerContext = yield* Layer.build(layerLogger);
+					const loggerContext = yield* Layer.build(layerLogger.pipe(Layer.provide(layerRedactor)));
 					const logger = Context.get(loggerContext, Logger);
 					const pluginContext = Context.empty().pipe(
 						Context.add(Logger, logger),
@@ -640,7 +847,7 @@ describe('supervisor harvest loop', () => {
 								if (
 									next.tag === 'log.appended' &&
 									next.pluginKey === 'test:log#0' &&
-									next.line === 'plugin acquire start'
+									next.line === 'plugin emitted warning'
 								) {
 									return next;
 								}
@@ -652,10 +859,11 @@ describe('supervisor harvest loop', () => {
 				}),
 			);
 
-			expect(event.level).toBe('info');
+			expect(event.level).toBe('warn');
 			const snap = yield* SubscriptionRef.get(state);
 			const row = snap.rows.find((r) => r.key === 'test:log#0');
-			expect(row?.logTail.lines).toContain('plugin acquire start');
+			expect(row?.logTail.lines).toContain('plugin emitted warning');
+			expect(row?.logTail.lines).not.toContain('plugin acquire start');
 		}),
 	);
 
@@ -714,6 +922,30 @@ describe('supervisor harvest loop', () => {
 			expect(row?.lastError?.tag).toBe('CapabilityFactoryFailed');
 			expect(row?.lastError?.pluginKey).toBe('test:caps#0');
 			expect(row?.lastError?.chain.join('\n')).toContain('capability boom');
+			expect(snap.cycle.phase).toBe('running');
+		}),
+	);
+
+	it.effect('capability sink failure reports a structured error instead of crashing', () =>
+		Effect.gen(function* () {
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRoute], options: {} };
+			const sinks: OrchestratorSinks = {
+				routable: () => Effect.fail(new Error('route dispatch boom')),
+			};
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* supervise(stack, identity, state, Context.empty(), sinks);
+				}),
+			);
+
+			const snap = yield* SubscriptionRef.get(state);
+			const row = snap.rows.find((r) => r.key === 'test:route#0');
+			expect(row?.status).toBe('failed');
+			expect(row?.lastError?.pluginKey).toBe('test:route#0');
+			expect(row?.lastError?.chain.join('\n')).toContain('route dispatch boom');
+			expect(snap.errors.at(-1)?.pluginKey).toBe('test:route#0');
 			expect(snap.cycle.phase).toBe('running');
 		}),
 	);

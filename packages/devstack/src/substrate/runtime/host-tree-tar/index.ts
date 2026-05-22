@@ -30,6 +30,13 @@ import { spawn } from 'node:child_process';
 
 import { Effect, Schema, Scope, Stream } from 'effect';
 
+import {
+	awaitProcessExit,
+	describeProcessExitStatus,
+	type ManagedProcessChild,
+	type ManagedProcessExitStatus,
+} from '../process-supervisor.ts';
+
 // ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
@@ -89,6 +96,19 @@ const collectStderrTail = (chunks: Array<Uint8Array>): string => {
 	return bytes.subarray(Math.max(0, bytes.length - TAR_STDERR_TAIL_BYTES)).toString('utf8');
 };
 
+const tarExitError = (
+	operation: 'tar' | 'untar',
+	status: ManagedProcessExitStatus,
+	stderrChunks: Array<Uint8Array>,
+): HostTreeTarError =>
+	new HostTreeTarError({
+		stage: 'exit-code',
+		operation,
+		exitCode: status.code ?? -1,
+		detail: `'tar' exited with ${describeProcessExitStatus(status)}`,
+		stderrTail: collectStderrTail(stderrChunks),
+	});
+
 const TAR_BLOCK_SIZE = 512;
 const MAX_TAR_EXTENDED_PATH_BYTES = 1024 * 1024;
 
@@ -128,8 +148,12 @@ const tarPathFromHeader = (header: Uint8Array): string => {
 const tarLinkPathFromHeader = (header: Uint8Array): string =>
 	bytesToString(header.subarray(157, 257));
 
-const trimExtendedPath = (bytes: Uint8Array): string =>
-	Buffer.from(bytes).toString('utf8').replace(/\0+$/g, '').replace(/\n$/g, '');
+const trimExtendedPath = (bytes: Uint8Array): string => {
+	const value = Buffer.from(bytes).toString('utf8').replace(/\n$/g, '');
+	let end = value.length;
+	while (end > 0 && value.charCodeAt(end - 1) === 0) end -= 1;
+	return value.slice(0, end);
+};
 
 const isSafeArchivePath = (entryPath: string): boolean => {
 	if (
@@ -438,32 +462,13 @@ export const tarHostTree = (
 			// the consumer's `Stream.run` sees the exit-code failure
 			// uniformly with stream-read failures.
 			const exitGate: Stream.Stream<Uint8Array, HostTreeTarError, never> = Stream.fromEffect(
-				Effect.callback<Uint8Array, HostTreeTarError, never>((resume) => {
-					const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-						if (code === 0 && signal === null) {
-							resume(Effect.succeed(new Uint8Array(0)));
-						} else {
-							resume(
-								Effect.fail(
-									new HostTreeTarError({
-										stage: 'exit-code',
-										operation: 'tar',
-										exitCode: code ?? -1,
-										detail:
-											`'tar' exited with ` +
-											(code !== null ? `code ${code}` : `signal ${signal ?? '<unknown>'}`),
-										stderrTail: collectStderrTail(stderrChunks),
-									}),
-								),
-							);
-						}
-					};
-					if (child.exitCode !== null || child.signalCode !== null) {
-						onExit(child.exitCode, child.signalCode);
-					} else {
-						child.once('exit', onExit);
-					}
-				}),
+				Effect.promise(() => awaitProcessExit(child as ManagedProcessChild)).pipe(
+					Effect.flatMap((status) =>
+						status.code === 0 && status.signal === null
+							? Effect.succeed(new Uint8Array(0))
+							: Effect.fail(tarExitError('tar', status, stderrChunks)),
+					),
+				),
 			).pipe(Stream.filter((bytes) => bytes.length > 0));
 
 			return Stream.concat(dataStream, exitGate);
@@ -611,30 +616,8 @@ export const untarHostTree = <R>(
 		yield* Effect.sync(() => stdin.end());
 
 		// Await exit; non-zero surfaces with stderr tail.
-		yield* Effect.callback<void, HostTreeTarError>((resume) => {
-			const onExit = (code: number | null, signal: NodeJS.Signals | null): void => {
-				if (code === 0 && signal === null) {
-					resume(Effect.void);
-				} else {
-					resume(
-						Effect.fail(
-							new HostTreeTarError({
-								stage: 'exit-code',
-								operation: 'untar',
-								exitCode: code ?? -1,
-								detail:
-									`'tar' exited with ` +
-									(code !== null ? `code ${code}` : `signal ${signal ?? '<unknown>'}`),
-								stderrTail: collectStderrTail(stderrChunks),
-							}),
-						),
-					);
-				}
-			};
-			if (child.exitCode !== null || child.signalCode !== null) {
-				onExit(child.exitCode, child.signalCode);
-			} else {
-				child.once('exit', onExit);
-			}
-		});
+		const status = yield* Effect.promise(() => awaitProcessExit(child as ManagedProcessChild));
+		if (status.code !== 0 || status.signal !== null) {
+			return yield* Effect.fail(tarExitError('untar', status, stderrChunks));
+		}
 	}).pipe(Effect.withSpan('substrate.host-tree-tar.untar'));

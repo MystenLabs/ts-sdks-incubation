@@ -58,7 +58,58 @@ describe('plain-renderer formatters', () => {
 		const line = formatEventLine(event);
 		expect(line).toContain('endpoint.registered');
 		expect(line).toContain('name=aggregator');
-		expect(line).toContain('url=https://devstack.local/agg');
+		expect(line).toContain('displayUrl=https://devstack.local/agg');
+		expect(line).toContain('url=http://localhost:9000');
+	});
+
+	it('formats account.updated with copyable account facts', () => {
+		const line = formatEventLine({
+			tag: 'account.updated',
+			account: {
+				key: 'account/alice',
+				rowKey: pluginKey('account/alice#1'),
+				name: 'alice',
+				address: '0xabc',
+				scheme: 'ed25519',
+				source: 'real',
+				funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+				walletVisible: false,
+				updatedAt: STATIC_AT,
+			},
+			at: STATIC_AT,
+		});
+		expect(line).toContain('account.updated');
+		expect(line).toContain('key=account/alice');
+		expect(line).toContain('row=account/alice#1');
+		expect(line).toContain('address=0xabc');
+		expect(line).toContain('scheme=ed25519');
+		expect(line).toContain('source=real');
+		expect(line).toContain('funding=funded');
+		expect(line).toContain('requestedMist=1000000000');
+	});
+
+	it('formats package.updated with copyable package facts', () => {
+		const line = formatEventLine({
+			tag: 'package.updated',
+			package: {
+				key: 'package/vault',
+				rowKey: pluginKey('package/vault#1'),
+				name: 'vault',
+				kind: 'local',
+				packageId: '0x123',
+				upgradeCapId: null,
+				mvrPlaceholder: '@local/vault',
+				sourcePath: 'move/vault',
+				updatedAt: STATIC_AT,
+			},
+			at: STATIC_AT,
+		});
+		expect(line).toContain('package.updated');
+		expect(line).toContain('key=package/vault');
+		expect(line).toContain('row=package/vault#1');
+		expect(line).toContain('kind=local');
+		expect(line).toContain('packageId=0x123');
+		expect(line).toContain('mvr=@local/vault');
 	});
 
 	it('formats error.reported as ERROR level', () => {
@@ -105,6 +156,7 @@ describe('plain-renderer formatters', () => {
 			at: STATIC_AT,
 		});
 		expect(line).toContain('shutdown.escalated');
+		expect(line).toContain('mode=hard-kill');
 		expect(line).toContain('signal=SIGTERM');
 		expect(line).toContain('exitCode=143');
 	});

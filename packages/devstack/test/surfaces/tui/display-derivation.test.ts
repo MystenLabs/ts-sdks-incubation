@@ -15,13 +15,23 @@ import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
 import type { LifecycleStatus, PluginKind } from '../../../src/substrate/lifecycle.ts';
-import type { Row, StructuredError } from '../../../src/substrate/projection.ts';
+import type {
+	AccountProjection,
+	Endpoint,
+	PackageProjection,
+	Row,
+	StructuredError,
+} from '../../../src/substrate/projection.ts';
 import {
+	accountLine,
+	accountCells,
+	dashboardSummaryLine,
 	deriveDisplayCells,
+	deriveDashboardSummary,
 	endpointsForRow,
+	endpointsSummaryForRow,
 	endpointLine,
 	errorSummaryFor,
-	groupEndpoints,
 	groupRows,
 	kindGlyph,
 	kindLabel,
@@ -29,11 +39,13 @@ import {
 	labelForRow,
 	narrationFor,
 	ownerForRow,
+	packageCells,
+	packageLine,
 	sectionForRow,
-	selectRowKey,
 	statusColor,
 	statusGlyph,
 	statusLabel,
+	visibleEndpointsForRow,
 } from '../../../src/surfaces/tui/display-derivation.ts';
 
 const fakeRow = (overrides: Partial<Row> = {}): Row => ({
@@ -71,7 +83,7 @@ describe('display-derivation', () => {
 		});
 		it('returns a color token for every status', () => {
 			for (const s of allStatuses) {
-				expect(statusColor(s)).not.toBe('white');
+				expect(statusColor(s).length).toBeGreaterThan(0);
 			}
 		});
 		it('statusLabel mirrors the status', () => {
@@ -118,7 +130,7 @@ describe('display-derivation', () => {
 			expect(ownerForRow('account/alice#0')).toBe('Account');
 			expect(ownerForRow('sui.localnet')).toBe('Sui');
 		});
-		it('groups long-running and endpoint rows as services', () => {
+		it('groups long-running and endpoint rows as services unless the key names a package', () => {
 			expect(sectionForRow(fakeRow({ kind: 'leaf-long-running' }))).toBe('service');
 			expect(
 				sectionForRow(
@@ -126,6 +138,15 @@ describe('display-derivation', () => {
 						key: pluginKey('package/connect-four#0'),
 						kind: 'leaf-one-shot',
 						endpoints: [endpointKey('package/connect-four#0:docs')],
+					}),
+				),
+			).toBe('package');
+			expect(
+				sectionForRow(
+					fakeRow({
+						key: pluginKey('app/frontend#0'),
+						kind: 'leaf-one-shot',
+						endpoints: [endpointKey('app/frontend#0:http')],
 					}),
 				),
 			).toBe('service');
@@ -199,7 +220,7 @@ describe('display-derivation', () => {
 					wireProtocol: 'http',
 					registeredAt: 0,
 				}),
-			).toBe('gql: https://devstack.local/gql');
+			).toBe('gql: https://devstack.local/gql -> http://localhost:9000');
 		});
 		it('falls back to url when displayUrl is null', () => {
 			expect(
@@ -212,6 +233,98 @@ describe('display-derivation', () => {
 					registeredAt: 0,
 				}),
 			).toBe('rpc: http://localhost:9001');
+		});
+		it('marks non-http wire protocols without hiding the service URL', () => {
+			expect(
+				endpointLine({
+					endpointKey: endpointKey('e3'),
+					name: 'grpc',
+					url: 'http://127.0.0.1:9184',
+					displayUrl: 'http://sui-rpc.wallet.localhost:9184',
+					wireProtocol: 'h2c',
+					registeredAt: 0,
+				}),
+			).toBe('grpc: http://sui-rpc.wallet.localhost:9184 -> http://127.0.0.1:9184 [h2c]');
+		});
+	});
+
+	describe('accountLine', () => {
+		it('renders account facts from the top-level account projection', () => {
+			const account: AccountProjection = {
+				key: 'account/alice',
+				rowKey: pluginKey('account/alice#1'),
+				name: 'alice',
+				address: '0xabc',
+				scheme: 'ed25519',
+				source: 'real',
+				funding: { status: 'unknown', balanceMist: null, requestedMist: null },
+				walletVisible: false,
+				updatedAt: 0,
+			};
+			expect(accountLine(account)).toBe('Alice  0xabc  ed25519  real  funding unknown');
+			expect(accountCells(account)).toEqual({
+				name: 'Alice',
+				address: '0xabc',
+				scheme: 'ed25519',
+				source: 'real',
+				funding: 'funding unknown',
+			});
+		});
+
+		it('renders funded account requested mist when balance is not sampled', () => {
+			expect(
+				accountLine({
+					key: 'account/alice',
+					rowKey: pluginKey('account/alice#1'),
+					name: 'alice',
+					address: '0xabc',
+					scheme: 'ed25519',
+					source: 'real',
+					funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+					walletVisible: false,
+					updatedAt: 0,
+				}),
+			).toBe('Alice  0xabc  ed25519  real  funded 1000000000');
+		});
+
+		it('keeps pending accounts visible before address resolution', () => {
+			expect(
+				accountLine({
+					key: 'account/bob',
+					rowKey: pluginKey('account/bob#2'),
+					name: 'bob',
+					address: null,
+					scheme: null,
+					source: null,
+					funding: { status: 'pending', balanceMist: null, requestedMist: null },
+					walletVisible: false,
+					updatedAt: 0,
+				}),
+			).toBe('Bob  <pending>  scheme pending  source pending  funding pending');
+		});
+	});
+
+	describe('packageLine', () => {
+		it('renders package facts from the top-level package projection', () => {
+			const pkg: PackageProjection = {
+				key: 'package/vault',
+				rowKey: pluginKey('package/vault#1'),
+				name: 'vault',
+				kind: 'local',
+				packageId: '0x123',
+				upgradeCapId: '0xcap',
+				mvrPlaceholder: '@local/vault',
+				sourcePath: 'move/vault',
+				updatedAt: 0,
+			};
+			expect(packageLine(pkg)).toBe('Vault  0x123  @local/vault  local  upgrade 0xcap');
+			expect(packageCells(pkg)).toEqual({
+				name: 'Vault',
+				packageId: '0x123',
+				mvr: '@local/vault',
+				kind: 'local',
+				detail: 'local; upgrade 0xcap',
+			});
 		});
 	});
 
@@ -230,7 +343,7 @@ describe('display-derivation', () => {
 			expect(endpointsForRow(row, [endpoint])).toEqual([endpoint]);
 		});
 
-		it('groups endpoint panel entries by owning row', () => {
+		it('summarizes row endpoints inline for table rendering', () => {
 			const walletEndpoint = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
 				name: 'wallet-app',
@@ -239,22 +352,34 @@ describe('display-derivation', () => {
 				wireProtocol: 'http',
 				registeredAt: 0,
 			};
-			const orphanEndpoint = {
-				endpointKey: endpointKey('external:metrics'),
-				name: 'metrics',
-				url: 'http://127.0.0.1:9100',
+			const row = fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' });
+			expect(endpointsSummaryForRow(row, [walletEndpoint])).toBe(
+				'wallet-app: http://wallet.demo.localhost:5175',
+			);
+		});
+
+		it('prefers routed endpoints over raw operational loopback fallbacks', () => {
+			const row = fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' });
+			const operational = {
+				endpointKey: endpointKey('wallet#0:url'),
+				name: 'http',
+				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
 				wireProtocol: 'http',
 				registeredAt: 0,
 			};
-			const groups = groupEndpoints(
-				[fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' })],
-				[walletEndpoint, orphanEndpoint],
+			const routed = {
+				endpointKey: endpointKey('wallet#0:wallet-app'),
+				name: 'wallet-app',
+				url: 'http://api.wallet.arena.localhost:6173',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+			expect(visibleEndpointsForRow(row, [operational, routed])).toEqual([routed]);
+			expect(endpointsSummaryForRow(row, [operational, routed])).toBe(
+				'wallet-app: http://api.wallet.arena.localhost:6173',
 			);
-
-			expect(groups.map((group) => group.label)).toEqual(['Wallet', 'Unassigned']);
-			expect(groups[0]?.endpoints).toEqual([walletEndpoint]);
-			expect(groups[1]?.endpoints).toEqual([orphanEndpoint]);
 		});
 
 		it('groups rows in operator scan order', () => {
@@ -267,17 +392,60 @@ describe('display-derivation', () => {
 		});
 	});
 
-	describe('selection', () => {
-		const rows = [
-			fakeRow({ key: pluginKey('sui') }),
-			fakeRow({ key: pluginKey('account/alice#0') }),
-			fakeRow({ key: pluginKey('action/mint#0') }),
-		];
-
-		it('moves focus cyclically', () => {
-			expect(selectRowKey(rows, null, 1)).toBe('sui');
-			expect(selectRowKey(rows, 'sui', 1)).toBe('account/alice#0');
-			expect(selectRowKey(rows, 'sui', -1)).toBe('action/mint#0');
+	describe('dashboard summary', () => {
+		it('summarizes central projection slices for the header panel', () => {
+			const rawEndpoint: Endpoint = {
+				endpointKey: endpointKey('wallet#0:url'),
+				name: 'http',
+				url: 'http://127.0.0.1:39200',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+			const routedEndpoint: Endpoint = {
+				endpointKey: endpointKey('wallet#0:wallet-app'),
+				name: 'wallet-app',
+				url: 'http://api.arena.arena.localhost:6173',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+			const account: AccountProjection = {
+				key: 'account/alice',
+				rowKey: pluginKey('account/alice#1'),
+				name: 'alice',
+				address: '0xabc',
+				scheme: 'ed25519',
+				source: 'real',
+				funding: { status: 'funded', balanceMist: null, requestedMist: '1000000000' },
+				walletVisible: true,
+				updatedAt: 0,
+			};
+			const state = {
+				rows: [
+					fakeRow({ key: pluginKey('sui'), status: 'ready' }),
+					fakeRow({ key: pluginKey('wallet#0'), status: 'acquiring' }),
+					fakeRow({ key: pluginKey('action/open#0'), status: 'pending' }),
+				],
+				endpoints: [rawEndpoint, routedEndpoint],
+				accounts: [account],
+				packages: [],
+				errors: [],
+			};
+			const summary = deriveDashboardSummary(state);
+			expect(summary).toMatchObject({
+				totalRows: 3,
+				readyRows: 1,
+				activeRows: 1,
+				waitingRows: 1,
+				endpointCount: 1,
+				accountCount: 1,
+				packageCount: 0,
+				health: 'active',
+			});
+			expect(dashboardSummaryLine(summary)).toBe(
+				'1/3 ready  1 active  1 waiting  1 urls  1 accounts  no errors',
+			);
 		});
 	});
 

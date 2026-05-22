@@ -41,6 +41,7 @@ import { WalletHttpPath } from './protocol.ts';
 
 import type { Tag } from '../../substrate/tag.ts';
 import type { StackMember } from '../../substrate/plugin.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import type { AccountTagId } from '../account/index.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
@@ -279,11 +280,13 @@ export const acquireWallet = (
 			'wallet.localPort': port,
 		});
 
-		// Defensive: NEVER log `pairUrl` directly. The Effect.logInfo
-		// here intentionally references the redacted form (the
-		// `redactToken` helper is in pairing.ts; we could pipe it here
-		// but the simpler safety is "just don't log the full URL").
-		yield* Effect.logInfo(`wallet ready at ${walletUrl} (token in fragment, redacted)`);
+		// Defensive: NEVER log `pairUrl` directly. It carries the token.
+		yield* Effect.logInfo('wallet ready').pipe(
+			Effect.annotateLogs({
+				[SpanAttr.walletUrl]: walletUrl,
+				[SpanAttr.walletToken]: 'redacted-fragment',
+			}),
+		);
 
 		return {
 			url: walletUrl,

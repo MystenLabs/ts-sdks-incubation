@@ -6,4 +6,4 @@
 import { defineDevstack } from '../src/index.ts';
 import { keyval } from '../src/samples/trivial-leaf-plugin.ts';
 
-export const stack = defineDevstack(keyval(), { stackName: 'minimal-keyval' });
+export const stack = defineDevstack({ members: [keyval()], stackName: 'minimal-keyval' });

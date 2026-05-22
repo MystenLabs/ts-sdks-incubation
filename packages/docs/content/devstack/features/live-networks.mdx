@@ -17,13 +17,10 @@ const registry = knownPackage('registry', {
 	packageId: '0x...',
 });
 
-export default defineDevstack(
-	sui({ mode: 'live', network: 'testnet' }),
-	alice,
-	registry,
-	wallet({ accounts: [alice] }),
-	{ stackName: 'testnet' },
-);
+export default defineDevstack({
+	members: [sui({ mode: 'live', network: 'testnet' }), alice, registry, wallet({ accounts: [alice] })],
+	stackName: 'testnet',
+});
 ```
 
 The CLI can also set the network before config import:

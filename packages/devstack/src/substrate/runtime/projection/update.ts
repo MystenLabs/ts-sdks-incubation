@@ -24,8 +24,10 @@ import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type {
+	AccountProjection,
 	BuildEntry,
 	Endpoint,
+	PackageProjection,
 	Row,
 	StructuredError,
 	SubscribableState,
@@ -98,14 +100,22 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 				rows: attachEndpoint(state.rows, event.endpoint),
 			});
 
-		case 'endpoint.released':
+		case 'account.updated':
 			return withTouched({
-				endpoints: state.endpoints.filter((e) => e.endpointKey !== event.endpointKey),
-				rows: state.rows.map((row) => ({
-					...row,
-					endpoints: row.endpoints.filter((k) => k !== event.endpointKey),
-				})),
+				accounts: upsertAccount(state.accounts, event.account),
 			});
+
+		case 'package.updated':
+			return withTouched({
+				packages: upsertPackage(state.packages, event.package),
+			});
+
+		case 'endpoint.released':
+			// Renderer projection keeps endpoint history as last-known
+			// operator affordance. A released service may no longer be
+			// reachable, but hiding the URL during shutdown/restart makes
+			// the TUI lose the most useful debugging handle.
+			return withTouched({});
 
 		case 'strategy.registered':
 		case 'strategy.unregistered':
@@ -224,6 +234,22 @@ export const dropRow = (state: SubscribableState, key: PluginKey): SubscribableS
 	rows: state.rows.filter((r) => r.key !== key),
 });
 
+export const declareAccount = (
+	state: SubscribableState,
+	account: AccountProjection,
+): SubscribableState => ({
+	...state,
+	accounts: upsertAccount(state.accounts, account),
+});
+
+export const declarePackage = (
+	state: SubscribableState,
+	pkg: PackageProjection,
+): SubscribableState => ({
+	...state,
+	packages: upsertPackage(state.packages, pkg),
+});
+
 // -----------------------------------------------------------------------------
 // SubscriptionRef-driven updaters
 // -----------------------------------------------------------------------------
@@ -317,6 +343,38 @@ const upsertEndpoint = (
 	return next;
 };
 
+const upsertAccount = (
+	accounts: ReadonlyArray<AccountProjection>,
+	account: AccountProjection,
+): ReadonlyArray<AccountProjection> => {
+	const idx = accounts.findIndex((entry) => entry.key === account.key);
+	if (idx === -1) return [...accounts, account];
+	const next = accounts.slice();
+	next[idx] = {
+		...accounts[idx]!,
+		...account,
+		funding: {
+			...accounts[idx]!.funding,
+			...account.funding,
+		},
+	};
+	return next;
+};
+
+const upsertPackage = (
+	packages: ReadonlyArray<PackageProjection>,
+	pkg: PackageProjection,
+): ReadonlyArray<PackageProjection> => {
+	const idx = packages.findIndex((entry) => entry.key === pkg.key);
+	if (idx === -1) return [...packages, pkg];
+	const next = packages.slice();
+	next[idx] = {
+		...packages[idx]!,
+		...pkg,
+	};
+	return next;
+};
+
 const attachEndpoint = (rows: ReadonlyArray<Row>, endpoint: Endpoint): ReadonlyArray<Row> => {
 	// Endpoint -> Row link is `endpointKey` derived from `pluginKey` + dispatchId.
 	// The plugin that owns the endpoint must have a row; we look it up by
@@ -348,4 +406,12 @@ export const __capacities = {
 // Re-export referenced sub-types for downstream consumers (tests,
 // renderer-side wrappers) so they don't reach into substrate/
 // directly.
-export type { BuildEntry, Endpoint, LifecycleStatus, Row, StructuredError };
+export type {
+	AccountProjection,
+	BuildEntry,
+	Endpoint,
+	LifecycleStatus,
+	PackageProjection,
+	Row,
+	StructuredError,
+};

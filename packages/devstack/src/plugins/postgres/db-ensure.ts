@@ -28,7 +28,7 @@
 // observes them and the typed timeout error carries the captured
 // streams.
 
-import { Duration, Effect, Schedule } from 'effect';
+import { Effect } from 'effect';
 
 import {
 	databaseCreateFailed,
@@ -36,6 +36,11 @@ import {
 	type DatabaseCreateFailed,
 	type PostgresConnectionTimeout,
 } from './errors.ts';
+import {
+	ProbeTimeoutError,
+	exitCodeProbeResult,
+	waitForProbe,
+} from '../../substrate/runtime/probes.ts';
 
 /** One captured exec invocation. Mirrors the shape returned by
  *  `docker exec` (stdout + stderr + exit code), without naming docker
@@ -54,11 +59,7 @@ export interface ContainerExec {
 	readonly run: (argv: ReadonlyArray<string>) => Effect.Effect<ExecResult>;
 }
 
-/** `pg_isready` ready-probe schedule: exponential backoff capped at
- *  2s, matching the established sui-indexer-db pattern. */
-const readyRetrySchedule = Schedule.exponential('100 millis', 1.5).pipe(
-	Schedule.either(Schedule.spaced('2 seconds')),
-);
+const READY_PROBE_INTERVAL_MS = 500;
 
 /** Wait until `pg_isready -U <user> -d <db>` exits zero or the
  *  overall deadline elapses.
@@ -73,57 +74,31 @@ export const awaitReady = (
 	timeoutMs: number,
 ): Effect.Effect<void, PostgresConnectionTimeout> =>
 	Effect.gen(function* () {
-		// Track attempt-count + last capture for the typed-error payload
-		// the cause walker will render.
 		let attempts = 0;
 		let lastResult: ExecResult | undefined;
 		const startedAt = Date.now();
 
-		const probe = Effect.gen(function* () {
-			attempts += 1;
-			const result = yield* exec.run(['pg_isready', '-U', user, '-d', database]);
-			lastResult = result;
-			if (result.exitCode !== 0) {
-				// Effect.retry restarts on a fail, not a succeed-with-bad-code.
-				return yield* Effect.fail('pg_isready-non-zero' as const);
-			}
-		});
-
-		return yield* probe.pipe(
-			Effect.retry(readyRetrySchedule),
-			// Effect v4 uses `timeoutOrElse`; the `orElse` branch is the
-			// fallback Effect run when the inner times out OR exhausts
-			// its retry schedule with a residual error. Both paths
-			// collapse to the typed `PostgresConnectionTimeout`.
-			Effect.timeoutOrElse({
-				duration: Duration.millis(timeoutMs),
-				orElse: () =>
-					Effect.fail(
-						postgresConnectionTimeout({
-							database,
-							attempts,
-							elapsedMs: Date.now() - startedAt,
-							lastExitCode: lastResult?.exitCode,
-							lastStdout: lastResult?.stdout,
-							lastStderr: lastResult?.stderr,
-						}),
-					),
-			}),
-			// Catch any residual non-timeout failure from the retry loop
-			// (e.g. exec primitive defects) and project onto the typed
-			// timeout shape — the cause walker reads `lastStderr` to
-			// distinguish the two paths.
-			Effect.catch(() =>
-				Effect.fail(
-					postgresConnectionTimeout({
-						database,
-						attempts,
-						elapsedMs: Date.now() - startedAt,
-						lastExitCode: lastResult?.exitCode,
-						lastStdout: lastResult?.stdout,
-						lastStderr: lastResult?.stderr,
-					}),
-				),
+		return yield* waitForProbe({
+			label: `postgres:${database}`,
+			timeoutMs,
+			intervalMs: READY_PROBE_INTERVAL_MS,
+			probe: () =>
+				Effect.gen(function* () {
+					attempts += 1;
+					const result = yield* exec.run(['pg_isready', '-U', user, '-d', database]);
+					lastResult = result;
+					return exitCodeProbeResult(result);
+				}),
+		}).pipe(
+			Effect.mapError((cause) =>
+				postgresConnectionTimeout({
+					database,
+					attempts: cause instanceof ProbeTimeoutError ? cause.attempts : attempts,
+					elapsedMs: Date.now() - startedAt,
+					lastExitCode: lastResult?.exitCode,
+					lastStdout: lastResult?.stdout,
+					lastStderr: lastResult?.stderr,
+				}),
 			),
 			Effect.withSpan('postgres.awaitReady', {
 				attributes: { 'postgres.database': database, 'postgres.timeoutMs': timeoutMs },

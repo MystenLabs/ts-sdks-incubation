@@ -13,8 +13,11 @@
 // means new packageIds, which means the cache misses naturally —
 // persistence across restart is unnecessary.
 
-import { Effect, Ref, Schedule, Schema } from 'effect';
+import { Effect, Ref, Schema } from 'effect';
 
+import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { makeSpacedRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
 import { coinError, type CoinError } from './errors.ts';
 
 /** Per-attempt timeout (5 seconds) — distilled-doc invariant. */
@@ -22,9 +25,7 @@ export const METADATA_FETCH_TIMEOUT_MS = 5_000;
 
 /** Retry schedule — ONE retry at 250ms backoff. Matches the v3
  *  `RETRY_SCHEDULE` (250ms spaced, bounded to one retry). */
-export const METADATA_RETRY_SCHEDULE = Schedule.spaced('250 millis').pipe(
-	Schedule.both(Schedule.recurs(1)),
-);
+export const METADATA_RETRY_SCHEDULE = makeSpacedRetrySchedule(250, 1);
 
 /** On-chain CoinMetadata projection — narrowed to the columns the
  *  registry needs. The SDK's full shape carries more (description,
@@ -106,22 +107,30 @@ export const fetchCoinMetadataOnce = (
 			}),
 			Effect.retry(METADATA_RETRY_SCHEDULE),
 			Effect.catch((err): Effect.Effect<unknown> => {
-				return Effect.logWarning(
-					`coin.metadata.fetch: getCoinMetadata(${fullCoinType}) failed after retries — soft-degrading to null. cause=${stringifyCause(err.cause)}`,
-				).pipe(Effect.as(null));
+				return Effect.logWarning('coin metadata fetch failed; soft-degrading to null').pipe(
+					Effect.annotateLogs({
+						[SpanAttr.coinType]: fullCoinType,
+						[SpanAttr.errorCause]: stringifyCause(err.cause),
+					}),
+					Effect.as(null),
+				);
 			}),
 		);
 		if (raw === null || raw === undefined) return null;
-		// Schema decode — chain-probe schema constraint applies: the
-		// schema has no service deps, so `decodeUnknownEffect` returns
-		// `Effect.Effect<T, ParseError>`. We coerce decode failure to
-		// `null` per the soft-degradation invariant; the consumer
-		// shouldn't see a hard error from a transient RPC shape blip.
-		return yield* Schema.decodeUnknownEffect(OnchainCoinMetadataShape)(raw).pipe(
-			Effect.catch((cause) =>
+		return yield* decodeUnknown(OnchainCoinMetadataShape, raw, {
+			source: 'coin metadata RPC response',
+			mkError: (issue) => issue,
+		}).pipe(
+			Effect.catch((issue) =>
 				Effect.logWarning(
-					`coin.metadata.decode: getCoinMetadata(${fullCoinType}) returned non-conforming shape — degrading to null. cause=${stringifyCause(cause)}`,
-				).pipe(Effect.as(null as OnchainCoinMetadata | null)),
+					'coin metadata response had non-conforming shape; degrading to null',
+				).pipe(
+					Effect.annotateLogs({
+						[SpanAttr.coinType]: fullCoinType,
+						[SpanAttr.errorCause]: stringifyCause(issue.cause ?? issue),
+					}),
+					Effect.as(null as OnchainCoinMetadata | null),
+				),
 			),
 		);
 	}).pipe(Effect.withSpan('coin.metadata.fetch', { attributes: { fullCoinType } }));

@@ -20,9 +20,10 @@
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
-import { Data, Effect, Schema, Scope } from 'effect';
+import { Data, Effect, Scope } from 'effect';
 
 import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
+import { decodeJsonTextSync } from '../runtime-decode.ts';
 import { checkHolderLiveness } from './liveness.ts';
 
 // -----------------------------------------------------------------------------
@@ -47,8 +48,10 @@ export type SnapshotReservationError = SnapshotReservationHeldError | SnapshotRe
 
 const parseReservation = (raw: string): SnapshotReservation | null => {
 	try {
-		const parsed = JSON.parse(raw) as unknown;
-		return Schema.decodeUnknownSync(SnapshotReservationSchema)(parsed);
+		return decodeJsonTextSync(SnapshotReservationSchema, raw, {
+			source: 'snapshot.reservation',
+			mkError: (issue) => issue,
+		});
 	} catch {
 		return null;
 	}

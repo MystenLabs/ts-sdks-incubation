@@ -39,15 +39,15 @@ describe('coldStartUrl', () => {
 		expect(url).toBe('http://sui-rpc.demo.localhost:5174');
 	});
 
-	it('prefixes <stack>. for non-main stack', () => {
+	it('keeps <service> first for non-main stack', () => {
 		const url = coldStartUrl('sui-rpc', { routes, stack: 'feature-x', app: 'demo' });
-		expect(url).toBe('http://feature-x.sui-rpc.demo.localhost:5174');
+		expect(url).toBe('http://sui-rpc.feature-x.demo.localhost:5174');
 	});
 
 	it('honors DEVSTACK_STACK env when stack is not passed', () => {
 		process.env.DEVSTACK_STACK = 'feat';
 		const url = coldStartUrl('sui-rpc', { routes, app: 'demo' });
-		expect(url).toBe('http://feat.sui-rpc.demo.localhost:5174');
+		expect(url).toBe('http://sui-rpc.feat.demo.localhost:5174');
 	});
 
 	it('uses package metadata for app identity but keeps the default stack at main', () => {

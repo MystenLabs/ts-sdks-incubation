@@ -43,6 +43,13 @@ export interface AccountRegistryEntry {
 	readonly address: string;
 	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
 	readonly source: 'real' | 'impersonate';
+	readonly funding: AccountRegistryFunding;
+}
+
+export interface AccountRegistryFunding {
+	readonly status: 'funded' | 'skipped' | 'unknown';
+	readonly balanceMist: string | null;
+	readonly requestedMist: string | null;
 }
 
 /** Construct the strategy-contributor decl Account emits for one

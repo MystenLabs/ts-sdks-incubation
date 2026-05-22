@@ -27,6 +27,8 @@ import type { RoutableDecl } from '../../contracts/routable.ts';
  *
  *  Stable across rewrite + legacy so existing consumers don't break. */
 export const WALLET_ENDPOINT_NAME = 'wallet-app' as const;
+export const WALLET_ROUTE_ROLE = 'api' as const;
+export const WALLET_ENTRYPOINT_PORT = 6173;
 
 // ----------------------------------------------------------------------
 // Decl
@@ -47,7 +49,7 @@ export const makeWalletRoutable = (parts: {
 		// listings readable; the router still hashes the full
 		// `(app, stack, compositeKey, role)` tuple for uniqueness.
 		compositeKey: `wallet.${parts.app}.${parts.stack}`,
-		role: 'api',
+		role: WALLET_ROUTE_ROLE,
 	},
 	upstream: { type: 'host-loopback', port: parts.port },
 	cors: true,

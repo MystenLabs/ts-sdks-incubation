@@ -18,6 +18,8 @@
 // plugin contributes are surfaced via `FAUCET_ERROR_TAGS` for the
 // substrate cause walker.
 
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
+
 /**
  * Transport-level reachability failure. Raised when `fetch` itself
  * rejects (ECONNREFUSED, DNS failure, TLS failure, AbortSignal
@@ -119,12 +121,19 @@ export const faucetStrategyMissing = (
 	...parts,
 });
 
+export interface FaucetConfigError extends ConfigIssue {
+	readonly _tag: 'FaucetConfigError';
+}
+
+export const faucetConfigError = defineConfigError('FaucetConfigError');
+
 /** Union of every error a faucet caller may encounter. */
 export type FaucetError =
 	| FaucetUnreachable
 	| FaucetExhausted
 	| FaucetBodyError
-	| FaucetStrategyMissing;
+	| FaucetStrategyMissing
+	| FaucetConfigError;
 
 /** Error tags this plugin contributes — surfaced to the substrate's
  *  cause walker via `PluginErrorContribution`. */
@@ -133,4 +142,5 @@ export const FAUCET_ERROR_TAGS: ReadonlyArray<FaucetError['_tag']> = [
 	'FaucetExhausted',
 	'FaucetBodyError',
 	'FaucetStrategyMissing',
+	'FaucetConfigError',
 ] as const;

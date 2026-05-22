@@ -85,6 +85,7 @@
 		"@effect/platform-node": "catalog:",
 		"@mysten/codegen": "catalog:",
 		"@mysten/sui": "catalog:",
+		"@stricli/core": "catalog:",
 		"effect": "catalog:",
 		"ink": "^7.0.0",
 		"react": "catalog:"

@@ -17,14 +17,14 @@ import {
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
 describe('computePublicHostname', () => {
-	it('main stack omits the stack prefix', () => {
+	it('main stack omits the stack segment', () => {
 		expect(computePublicHostname('app', 'main', 0)).toBe('walrus-node-0.app.localhost');
 		expect(computePublicHostname('app', 'main', 7)).toBe('walrus-node-7.app.localhost');
 	});
 
-	it('non-main stack prepends the stack prefix', () => {
+	it('non-main stack keeps the service label first', () => {
 		expect(computePublicHostname('app', 'feature-x', 0)).toBe(
-			'feature-x.walrus-node-0.app.localhost',
+			'walrus-node-0.feature-x.app.localhost',
 		);
 	});
 

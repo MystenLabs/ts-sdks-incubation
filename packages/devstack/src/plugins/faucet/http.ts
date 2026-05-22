@@ -41,8 +41,9 @@
 // HttpClient layer here would not change behaviour at any of the
 // invariants above.
 
-import { Effect, Ref, Schedule } from 'effect';
+import { Effect, Ref } from 'effect';
 
+import { makeExponentialRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
 import {
 	faucetBodyError,
 	faucetExhausted,
@@ -80,16 +81,6 @@ export const BACKOFF_FACTOR = 1.5;
  *  chain catches up the next attempt lands in <1s. Successful
  *  warm-faucet calls return well under 1s, so 5s is a safe ceiling. */
 export const DEFAULT_FETCH_DEADLINE_MS = 5_000;
-
-/** Build the retry schedule. Jitter spreads parallel account retries
- *  across the wall-clock so they don't thundering-herd the faucet
- *  on the same tick. Effect's `Schedule.jittered` multiplies each
- *  delay by a random factor in `[0.8, 1.2)` by default. */
-const makeRetrySchedule = (initialDelayMs: number, maxAttempts: number) =>
-	Schedule.exponential(`${initialDelayMs} millis`, BACKOFF_FACTOR).pipe(
-		Schedule.jittered,
-		Schedule.both(Schedule.recurs(maxAttempts)),
-	);
 
 // ---------------------------------------------------------------------------
 // Single-shot POST + body parser
@@ -276,7 +267,13 @@ export const requestFundsWithRetry = (
 		);
 
 		yield* wrapped.pipe(
-			Effect.retry(makeRetrySchedule(initialDelayMs, maxAttempts)),
+			Effect.retry(
+				makeExponentialRetrySchedule({
+					initialDelayMs,
+					maxRetries: maxAttempts,
+					factor: BACKOFF_FACTOR,
+				}),
+			),
 			Effect.timeoutOrElse({
 				duration: `${timeoutMs} millis`,
 				orElse: () =>

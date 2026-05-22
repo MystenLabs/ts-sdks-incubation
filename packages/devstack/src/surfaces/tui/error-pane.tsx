@@ -52,7 +52,7 @@ export const formatStructuredError = (error: StructuredError): string => {
 
 export const ErrorPane = ({ errors, limit = 5 }: ErrorPaneProps): React.JSX.Element => {
 	if (errors.length === 0) {
-		return <Text color="gray">no errors</Text>;
+		return <Text>no errors</Text>;
 	}
 	const shown = errors.slice(-limit).reverse();
 	return (

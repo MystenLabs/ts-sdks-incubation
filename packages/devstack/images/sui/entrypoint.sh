@@ -4,7 +4,7 @@
 # `sui start --force-regenesis` is ephemeral (in-memory genesis). To
 # preserve chain state across `docker stop` + `docker start`, we
 # bootstrap once with `sui genesis -f --with-faucet` (writes a
-# persistent config dir under /root/.sui/sui_config) and then run
+# persistent config dir under /home/devstack-sui/.sui/sui_config) and then run
 # `sui start` (no --force-regenesis), which resumes from the on-disk
 # state. Chain state lives in the container's writable layer — `docker
 # stop`/`start` preserves it; `docker rm` destroys it.
@@ -31,14 +31,21 @@
 # (observable as walrus storage-node "checkpoint X is below
 # lowest-available" errors after restart cycles).
 #
-# Workaround until the upstream fix lands: strip `--with-faucet` from
-# sui's args and run the standalone `sui-faucet` binary as a sibling.
-# Sui without `--with-faucet` reaches its ctrl_c-aware loop and exits
-# cleanly on SIGINT. The shell becomes PID 1 instead of `exec sui` so
-# it can trap docker's SIGTERM and forward SIGINT to both children;
-# sui-faucet has no signal handler of its own but as a non-PID-1 child
-# the kernel applies SIGINT's default-action terminate, and the faucet
-# is stateless (re-derives everything from `~/.sui` on next start).
+# Workaround until the upstream fix lands: strip only `--with-faucet`
+# from sui's args and run the standalone `sui-faucet` binary as a
+# sibling. Other `sui start` flags, including `--with-graphql`, stay on
+# the validator process. Sui without `--with-faucet` reaches its
+# ctrl_c-aware loop and exits cleanly on SIGINT. The shell becomes PID
+# 1 instead of `exec sui` so it can trap docker's SIGTERM and forward
+# SIGINT to both children; sui-faucet has no signal handler of its own
+# but as a non-PID-1 child the kernel applies SIGINT's default-action
+# terminate, and the faucet is stateless (re-derives everything from
+# `~/.sui` on next start).
+#
+# GraphQL's embedded PostgreSQL indexer refuses to initialize as root,
+# so the entrypoint performs setup as PID 1/root and then starts Sui
+# plus sui-faucet as the unprivileged `devstack-sui` user. Build helper
+# containers override this entrypoint and still run as root.
 #
 # The trap + wait-loop lives in `/usr/local/lib/devstack/signal-forward.sh`,
 # vendored from `images/_shared/signal-forward.sh` at build time —
@@ -49,10 +56,20 @@ set -eu
 # shellcheck disable=SC1091
 . /usr/local/lib/devstack/signal-forward.sh
 
-mkdir -p /root/.sui
+SUI_USER="${DEVSTACK_SUI_USER:-devstack-sui}"
+SUI_HOME="${DEVSTACK_SUI_HOME:-/home/devstack-sui}"
+SUI_UID="$(id -u "$SUI_USER")"
+SUI_GID="$(id -g "$SUI_USER")"
 
-if [ ! -d /root/.sui/sui_config ]; then
-	sui genesis -f --with-faucet
+mkdir -p "$SUI_HOME/.sui"
+chown -R "$SUI_UID:$SUI_GID" "$SUI_HOME"
+
+run_as_sui() {
+	setpriv --reuid "$SUI_UID" --regid "$SUI_GID" --init-groups env HOME="$SUI_HOME" "$@"
+}
+
+if [ ! -d "$SUI_HOME/.sui/sui_config" ]; then
+	run_as_sui sui genesis -f --with-faucet
 fi
 
 RETAIN_RAW="${DEVSTACK_SUI_EPOCHS_TO_RETAIN:-2}"
@@ -61,16 +78,35 @@ if [ "$RETAIN_RAW" = "MAX" ]; then
 else
 	RETAIN="$RETAIN_RAW"
 fi
-FULLNODE_YAML=/root/.sui/sui_config/fullnode.yaml
-if [ -f "$FULLNODE_YAML" ]; then
-	# Idempotent rewrite — covers volumes that pre-date this fix.
-	sed -i "s/^  num-epochs-to-retain: .*\$/  num-epochs-to-retain: ${RETAIN}/" "$FULLNODE_YAML"
-	if grep -q '^  num-epochs-to-retain-for-checkpoints:' "$FULLNODE_YAML"; then
-		sed -i "s/^  num-epochs-to-retain-for-checkpoints: .*\$/  num-epochs-to-retain-for-checkpoints: ${RETAIN}/" "$FULLNODE_YAML"
+patch_pruning_config() {
+	config_file="$1"
+	[ -f "$config_file" ] || return 0
+	grep -q 'authority-store-pruning-config:' "$config_file" || return 0
+
+	# Idempotent rewrite — covers volumes that pre-date this fix. `sui
+	# start` reads network.yaml / per-validator YAMLs, while fullnode.yaml
+	# is not the only live config file on localnet.
+	sed -i -E "s/^([[:space:]]*)num-epochs-to-retain: .*\$/\\1num-epochs-to-retain: ${RETAIN}/" "$config_file"
+	if grep -q '^[[:space:]]*num-epochs-to-retain-for-checkpoints:' "$config_file"; then
+		sed -i -E "s/^([[:space:]]*)num-epochs-to-retain-for-checkpoints: .*\$/\\1num-epochs-to-retain-for-checkpoints: ${RETAIN}/" "$config_file"
 	else
-		sed -i "/^  num-epochs-to-retain: ${RETAIN}\$/a\\  num-epochs-to-retain-for-checkpoints: ${RETAIN}" "$FULLNODE_YAML"
+		awk -v retain="$RETAIN" '
+			/^[[:space:]]*num-epochs-to-retain: / {
+				print
+				match($0, /^[[:space:]]*/)
+				indent = substr($0, RSTART, RLENGTH)
+				print indent "num-epochs-to-retain-for-checkpoints: " retain
+				next
+			}
+			{ print }
+		' "$config_file" > "${config_file}.tmp"
+		mv "${config_file}.tmp" "$config_file"
 	fi
-fi
+}
+
+for config_file in "$SUI_HOME"/.sui/sui_config/*.yaml; do
+	patch_pruning_config "$config_file"
+done
 
 # Strip `--with-faucet[=<addr>]` from sui's args and remember the bind
 # address. POSIX-sh argument shuffling: rebuild "$@" by collecting
@@ -116,7 +152,7 @@ IFS=$SAVED_IFS
 # docker's SIGTERM and forward; sui becomes a child whose SIGINT
 # handler the kernel actually delivers (PID 1 ignores undelivered
 # signals; non-PID-1 children get them by default).
-sui "$@" &
+run_as_sui sui "$@" &
 SUI_PID=$!
 register_signal_forward "$SUI_PID"
 
@@ -153,7 +189,7 @@ if [ -n "$FAUCET_BIND" ]; then
 		fi
 		sleep 1
 	done
-	sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT" &
+	run_as_sui sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT" &
 	FAUCET_PID=$!
 	register_signal_forward "$FAUCET_PID"
 fi

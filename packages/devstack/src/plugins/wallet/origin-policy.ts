@@ -12,7 +12,7 @@
 //   - Stack-scoped allowlist. The vite-port-derived origin is added to
 //     this stack's allowlist ONLY when the substrate's port broker
 //     records THIS stack as the owner of that vite port.
-//   - The stack-scoped host (e.g. `http://dev.<app>.localhost:<port>`)
+//   - The stack-scoped host (e.g. `http://dev.<stack>.<app>.localhost:<port>`)
 //     is the canonical browser entry — always allowlisted.
 //   - The raw `http://localhost:<port>` form is OFF by default; opt-in
 //     via `WalletOptions.allowLocalhostVite: true` for callers who
@@ -28,6 +28,7 @@
 
 import { Effect } from 'effect';
 
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import type { WalletBootError } from './errors.ts';
 
 // ----------------------------------------------------------------------
@@ -43,8 +44,8 @@ export interface OriginPolicy {
 	 *  form. Carried for renderer / log hygiene — surfaces in the
 	 *  manifest as a flag so the TUI can warn. */
 	readonly localhostViteEnabled: boolean;
-	/** Bare host (e.g. `dev.<app>.localhost`) the stack-scoped origin
-	 *  resolves under. Captured for log lines. */
+	/** Bare host (e.g. `dev.<stack>.<app>.localhost`) the stack-scoped
+	 *  origin resolves under. Captured for log lines. */
 	readonly stackScopedHost: string;
 }
 
@@ -67,7 +68,7 @@ export interface OriginPolicyInputs {
  * Resolve the per-stack origin allowlist.
  *
  *  - Always allowlisted: the stack-scoped router host
- *    `http://dev.<app>.localhost:<vite-port>`, IF the broker recorded
+ *    `http://dev.<stack>.<app>.localhost:<vite-port>`, IF the broker recorded
  *    a vite port for this stack.
  *  - Conditionally allowlisted: the bare `http://localhost:<vite-port>`
  *    form. Off by default; on iff `allowLocalhostVite` is true.
@@ -91,7 +92,10 @@ export const resolveOriginPolicy = (
 ): Effect.Effect<OriginPolicy, WalletBootError> =>
 	Effect.gen(function* () {
 		const allowed = new Set<string>();
-		const stackScopedHost = `dev.${inputs.app}.localhost`;
+		const stackScopedHost =
+			inputs.stack === 'main'
+				? `dev.${inputs.app}.localhost`
+				: `dev.${inputs.stack}.${inputs.app}.localhost`;
 
 		if (inputs.vitePortForThisStack !== null) {
 			allowed.add(`http://${stackScopedHost}:${inputs.vitePortForThisStack}`);
@@ -105,8 +109,12 @@ export const resolveOriginPolicy = (
 		}
 
 		if (allowed.size === 0) {
-			yield* Effect.logWarning(
-				`wallet[${inputs.app}/${inputs.stack}]: origin allowlist is empty — no vite plugin in this stack and no \`allowedOrigins\` supplied. The wallet will refuse every cross-origin request. Pass \`allowedOrigins: [...]\` to \`wallet({...})\` if you intend a client UI to pair.`,
+			yield* Effect.logWarning('wallet origin allowlist is empty').pipe(
+				Effect.annotateLogs({
+					[SpanAttr.app]: inputs.app,
+					[SpanAttr.stack]: inputs.stack,
+					[SpanAttr.walletLocalhostViteEnabled]: inputs.allowLocalhostVite,
+				}),
 			);
 		}
 

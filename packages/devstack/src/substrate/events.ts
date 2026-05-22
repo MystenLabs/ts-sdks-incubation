@@ -7,7 +7,13 @@
 
 import type { EndpointKey, PluginKey } from './brand.ts';
 import type { LifecycleStatus, PhaseNarration } from './lifecycle.ts';
-import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
+import type {
+	AccountProjection,
+	BuildEntry,
+	Endpoint,
+	PackageProjection,
+	StructuredError,
+} from './projection.ts';
 
 export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -36,6 +42,16 @@ export type EngineEvent =
 	| {
 			readonly tag: 'endpoint.registered';
 			readonly endpoint: Endpoint;
+	  }
+	| {
+			readonly tag: 'account.updated';
+			readonly account: AccountProjection;
+			readonly at: number;
+	  }
+	| {
+			readonly tag: 'package.updated';
+			readonly package: PackageProjection;
+			readonly at: number;
 	  }
 	| {
 			readonly tag: 'endpoint.released';

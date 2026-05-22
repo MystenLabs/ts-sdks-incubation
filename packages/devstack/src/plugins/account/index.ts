@@ -43,19 +43,26 @@ import { Effect } from 'effect';
 import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMembers } from '../../api/consume-members.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions, readConsumedTag } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { SuiTag, type SuiClient } from '../sui/index.ts';
+import { SuiTag } from '../sui/index.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS } from './errors.ts';
-import type {
-	CoinMember,
-	CrossCuttingFundingEntry,
-	FundingCoinTags,
-	ProjectedFundingEntry,
+import {
+	DEFAULT_EPHEMERAL_FUND_MIST,
+	type CoinMember,
+	type CrossCuttingFundingEntry,
+	type FundingCoinTags,
+	type ProjectedFundingEntry,
 } from './funding.ts';
-import { makeAccountRegistryContribution, type AccountRegistryEntry } from './registry.ts';
+import {
+	makeAccountRegistryContribution,
+	type AccountRegistryEntry,
+	type AccountRegistryFunding,
+} from './registry.ts';
 import { makeAccountSnapshotable } from './snapshot.ts';
 import {
 	acquireAccount,
@@ -64,6 +71,8 @@ import {
 	type AccountValue,
 } from './service.ts';
 import type { CoinValue } from '../coin/index.ts';
+
+const accountErrorContributions = pluginErrorContributions(ACCOUNT_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Tag construction
@@ -153,14 +162,10 @@ export const account = <
 		rebootCost: 'cheap',
 		acquire: (ctx) =>
 			Effect.gen(function* () {
-				// `ctx.get(tag)` widens when `Consumes` carries a template-
-				// literal-generic tag id (each `coin:${Sym}`) — TS cannot
-				// narrow `T extends Provided` and the SuiTag read returns
-				// `never`. Localize a typed-cast for the one SuiTag read
-				// (mirrors the same `__MemberNotConsumedError` reduction
-				// limitation noted below for the funding-member walk —
-				// STYLE_GUIDE §14 + Open slot O10).
-				const sui = (ctx as { readonly get: (t: typeof SuiTag) => SuiClient }).get(SuiTag);
+				// `ctx.get(tag)` widens when `Consumes` carries template-
+				// literal-generic tag ids. `readConsumedTag` centralizes
+				// the narrow cast for this substrate limitation.
+				const sui = readConsumedTag(ctx, SuiTag);
 				// Identity + on-disk runtime root come from the
 				// supervisor-provided substrate context.
 				const identity = yield* IdentityContext;
@@ -188,12 +193,13 @@ export const account = <
 					app: identity.app,
 					stack: identity.stack,
 					emitAutoPromotionEvent: () =>
-						// Stub: emit `log.appended` (warn) with the
-						// auto-promotion message. The event channel still
-						// reaches plugins via the renderer context, which
-						// isn't part of this wiring pass.
-						Effect.logWarning(
-							`Account '${name}': fork-mode detected — default funding auto-promoted from faucet POST to pay-from-seed-via-impersonate. (No silent surprises: this message fires once per account.)`,
+						Effect.logWarning('account funding auto-promoted for fork mode').pipe(
+							Effect.annotateLogs({
+								[SpanAttr.accountName]: name,
+								[SpanAttr.accountFundingFrom]: 'faucet',
+								[SpanAttr.accountFundingTo]: 'pay-from-seed-via-impersonate',
+								[SpanAttr.suiMode]: 'fork',
+							}),
 						),
 					projectedFunding,
 				};
@@ -205,13 +211,14 @@ export const account = <
 		// REAL address (and identity app/stack) — the static form
 		// would force placeholder values for fields only known at
 		// acquire time.
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: ACCOUNT_ERROR_TAGS }],
+		errorContributions: accountErrorContributions,
 		capabilities: (resolved, acquireCtx2) => {
 			const realEntry: AccountRegistryEntry = {
 				name,
 				address: resolved.address,
 				scheme: resolved.scheme,
 				source: resolved.source,
+				funding: fundingProjectionForOptions(opts2, fundingEntries),
 			};
 			const bindings: AccountBindings = {
 				name,
@@ -232,6 +239,33 @@ export const account = <
 			return capabilities(snapshot, codegen, registry);
 		},
 	});
+};
+
+const fundingProjectionForOptions = (
+	opts: AccountOptions,
+	fundingEntries: ReadonlyArray<CrossCuttingFundingEntry>,
+): AccountRegistryFunding => {
+	if (opts.kind === 'ephemeral') {
+		const requestedMist = opts.fund ?? DEFAULT_EPHEMERAL_FUND_MIST;
+		if (requestedMist > 0n) {
+			return {
+				status: 'funded',
+				balanceMist: null,
+				requestedMist: requestedMist.toString(),
+			};
+		}
+		if (fundingEntries.length === 0) {
+			return {
+				status: 'skipped',
+				balanceMist: null,
+				requestedMist: requestedMist.toString(),
+			};
+		}
+	}
+	if (fundingEntries.length === 0) {
+		return { status: 'skipped', balanceMist: null, requestedMist: null };
+	}
+	return { status: 'unknown', balanceMist: null, requestedMist: null };
 };
 
 // ---------------------------------------------------------------------------
@@ -257,7 +291,11 @@ export type {
 } from './funding.ts';
 export { DEFAULT_EPHEMERAL_FUND_MIST, SUI_FULL_COIN_TYPE } from './funding.ts';
 export type { AccountBindings } from './codegen.ts';
-export type { AccountRegistryEntry, AccountRegistryKey } from './registry.ts';
+export type {
+	AccountRegistryEntry,
+	AccountRegistryFunding,
+	AccountRegistryKey,
+} from './registry.ts';
 export { accountRegistryKey } from './registry.ts';
 export type { SyntheticImpersonationSigner } from './variants/impersonate.ts';
 export type { SignatureScheme, ResolvedKeypair } from './keypair.ts';

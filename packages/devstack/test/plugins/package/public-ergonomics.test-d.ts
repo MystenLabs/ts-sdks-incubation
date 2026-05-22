@@ -32,15 +32,13 @@ const mUSDC = coin.fromPackage(usdc, 'MOCK_USDC');
 const mWETH = coin.fromPackage(weth, 'MOCK_WETH');
 
 const seedTokens = action('wallet.seedTokens', {
-	consumes: [usdc, weth, publisher, alice, bob],
-	body: (ctx) =>
-		ctx.signAndExecute(ctx.use(publisher), (tx) => {
-			const usdcPkg = ctx.use(usdc);
-			const wethPkg = ctx.use(weth);
-			const recipients = [ctx.use(alice).address, ctx.use(bob).address];
+	dependsOn: { usdc, weth, publisher, alice, bob },
+	body: (ctx, { usdc, weth, publisher, alice, bob }) =>
+		ctx.signAndExecute(publisher, (tx) => {
+			const recipients = [alice.address, bob.address];
 			const specs = [
-				{ pkg: usdcPkg, coin: usdcPkg.coins.mock_usdc, module: 'mock_usdc' },
-				{ pkg: wethPkg, coin: wethPkg.coins.mock_weth, module: 'mock_weth' },
+				{ pkg: usdc, coin: usdc.coins.mock_usdc, module: 'mock_usdc' },
+				{ pkg: weth, coin: weth.coins.mock_weth, module: 'mock_weth' },
 			] as const;
 
 			for (const spec of specs) {
@@ -59,17 +57,7 @@ const seedTokens = action('wallet.seedTokens', {
 		}),
 });
 
-export const _stack = defineDevstack(
-	publisher,
-	alice,
-	bob,
-	greeting,
-	usdc,
-	weth,
-	mUSDC,
-	mWETH,
-	seedTokens,
-);
+export const _stack = defineDevstack({ members: [publisher, alice, bob, greeting, usdc, weth, mUSDC, mWETH, seedTokens] });
 
 type NoWitnessNamespace = typeof coin extends { readonly witness: unknown } ? never : true;
 export const _coinWitnessRemoved: NoWitnessNamespace = true;

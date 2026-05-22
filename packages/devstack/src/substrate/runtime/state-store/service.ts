@@ -23,7 +23,7 @@
 //     tombstones are field-grain, namespace-grain wipe is route-
 //     grain.
 
-import { Context, Effect, FileSystem, Layer, Ref, Schema } from 'effect';
+import { Context, Effect, FileSystem, Layer, Ref } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { StateKey, StateStore } from '../../state-store.ts';
@@ -31,6 +31,7 @@ import { atomicWriteJson } from '../atomic-write.ts';
 import { CrossProcessLock } from '../cross-process-lock.ts';
 import { StateStoreError } from '../errors.ts';
 import { StackPathsService } from '../paths.ts';
+import { decodeJsonText } from '../runtime-decode.ts';
 import { emptyDocument, StateDocument, type StateEntry } from './schema.ts';
 
 /**
@@ -90,26 +91,18 @@ const readDocument: Effect.Effect<
 			),
 		),
 	);
-	const raw: unknown = yield* Effect.try({
-		try: () => JSON.parse(text),
-		catch: (cause) =>
+	return yield* decodeJsonText(StateDocument, text, {
+		source: paths.stateFile,
+		mkError: (issue) =>
 			new StateStoreError({
 				reason: 'corruption',
-				detail: `state file is not valid JSON: ${paths.stateFile}`,
-				cause,
+				detail:
+					issue.message === 'failed to parse JSON'
+						? `state file is not valid JSON: ${paths.stateFile}`
+						: `state file failed schema decode: ${paths.stateFile}`,
+				cause: issue.cause,
 			}),
 	});
-	return yield* Schema.decodeUnknownEffect(StateDocument)(raw).pipe(
-		Effect.catch((cause) =>
-			Effect.fail(
-				new StateStoreError({
-					reason: 'corruption',
-					detail: `state file failed schema decode: ${paths.stateFile}`,
-					cause,
-				}),
-			),
-		),
-	);
 }).pipe(Effect.withSpan('substrate.stateStore.read'));
 
 /** Write+encode the document atomically. */

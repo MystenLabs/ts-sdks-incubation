@@ -17,18 +17,11 @@ export const hello = localPackage('hello', {
 	publisher,
 });
 
-export default defineDevstack(
-	sui(),
-	publisher,
-	alice,
-	bob,
-	hello,
-	wallet({ accounts: [publisher, alice, bob] }),
-	{
-		stackName: 'quickstart',
-		codegen: { outputDir: 'src/generated' },
-	},
-);
+export default defineDevstack({
+	members: [sui(), publisher, alice, bob, hello, wallet({ accounts: [publisher, alice, bob] })],
+	stackName: 'quickstart',
+	codegen: { outputDir: 'src/generated' },
+});
 ```
 
 Add a Vite config that uses the current build integration:
@@ -91,7 +84,7 @@ pnpm devstack up
 For one-shot setup in CI or before typechecking:
 
 ```bash
-pnpm devstack apply --renderer plain
+pnpm devstack apply
 ```
 
 Use the generated files from `src/generated`, and treat `.devstack/` as runtime state only.

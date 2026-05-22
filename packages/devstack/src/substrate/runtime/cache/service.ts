@@ -24,12 +24,13 @@
 // is meaningless for a content-addressed best-effort store —
 // re-producing the artifact has the same effect either way.
 
-import { Context, Effect, FileSystem, Layer, Schema } from 'effect';
+import { Context, Effect, FileSystem, Layer } from 'effect';
 
 import type { Cache, CacheEntry, CacheKey } from '../../../primitives/cache.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { CacheError } from '../errors.ts';
 import { StackPathsService } from '../paths.ts';
+import { decodeJsonText } from '../runtime-decode.ts';
 import { CacheEntryDoc } from './schema.ts';
 
 const base64Encode = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64');
@@ -92,11 +93,10 @@ export const layerCache: Layer.Layer<
 				const annotateCorruption = Effect.annotateCurrentSpan({
 					'cache.corruption': true,
 				});
-				const doc = yield* Effect.try({
-					try: () => JSON.parse(text) as unknown,
-					catch: () => 'parse-fail' as const,
+				const doc = yield* decodeJsonText(CacheEntryDoc, text, {
+					source: file,
+					mkError: (issue) => issue,
 				}).pipe(
-					Effect.flatMap((raw) => Schema.decodeUnknownEffect(CacheEntryDoc)(raw)),
 					Effect.catch(() => annotateCorruption.pipe(Effect.as(null as CacheEntryDoc | null))),
 				);
 				if (doc === null) return null;

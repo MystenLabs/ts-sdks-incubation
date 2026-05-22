@@ -31,6 +31,7 @@ import type {
 	EnsureContainerSpec,
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
+import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { containerInnerScript } from './cli-driver.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
 
@@ -131,7 +132,13 @@ export const acquireChainBuildContainer = (
 				{ source: spec.moveHome, target: '/root/.move' },
 			],
 		};
-		const handle = yield* runtime.ensureContainer(ensureSpec);
+		const { labels, ...containerSpec } = ensureSpec;
+		const handle = yield* ensureManagedContainer({
+			runtime,
+			labels,
+			spec: containerSpec,
+			mapError: (cause) => cause,
+		});
 
 		const toContainerPath = (hostPath: string): string | null => {
 			// The runtime adapter bind-mounts `spec.appDir` at

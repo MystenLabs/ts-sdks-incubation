@@ -32,26 +32,17 @@ const writeMoveBindingsConfig = (appRoot: string, movePackagePath: string): stri
 		`
 import { Effect } from 'effect';
 import {
-\tcapabilities,
+\tcodegenable,
 \tdefineDevstack,
-\tdefineNodePlugin,
-\tdefineTag,
-\ttype CodegenableDecl,
+\tdefinePlugin,
 } from '@mysten-incubation/devstack';
 
-const MoveBindingsProofTag = defineTag<'test/move-bindings-proof', { readonly packageName: string }>(
-\t'test/move-bindings-proof',
-\t'test',
-);
-
-const moveBindingsProofPlugin = defineNodePlugin({
-\tprovides: MoveBindingsProofTag,
-\tconsumes: [] as const,
+const moveBindingsProofPlugin = definePlugin({
+\tid: 'test/move-bindings-proof',
 \tkind: 'leaf-long-running',
-\tacquire: () => Effect.succeed({ packageName: 'hello' } as const),
-\tcapabilities: () =>
-\t\tcapabilities({
-\t\t\tkind: 'codegenable',
+\tstart: () => Effect.succeed({ packageName: 'hello' } as const),
+\tcapabilities: () => [
+\t\tcodegenable({
 \t\t\temitterName: 'package',
 \t\t\toutputPath: 'package/@local/hello.ts',
 \t\t\tsensitive: false,
@@ -65,21 +56,11 @@ const moveBindingsProofPlugin = defineNodePlugin({
 \t\t\t\t\t\texcluded: false,
 \t\t\t\t\t},
 \t\t\t\t}),
-\t\t} satisfies CodegenableDecl<
-\t\t\t{
-\t\t\t\treadonly packageBindings: {
-\t\t\t\t\treadonly name: string;
-\t\t\t\t\treadonly packageId: string;
-\t\t\t\t\treadonly mvrPlaceholder: string;
-\t\t\t\t\treadonly sourcePath: string;
-\t\t\t\t\treadonly excluded: false;
-\t\t\t\t};
-\t\t\t},
-\t\t\t'package'
-\t\t>),
+\t\t}),
+\t],
 });
 
-export default defineDevstack(moveBindingsProofPlugin, { stackName: 'main' });
+export default defineDevstack({ members: [moveBindingsProofPlugin], stackName: 'main' });
 `.trimStart(),
 	);
 	return configPath;
@@ -125,6 +106,7 @@ describe('cli apply Move bindings codegen', () => {
 				expect(existsSync(generatedBindingPath)).toBe(false);
 
 				await runCli([
+					'apply',
 					'--config',
 					configPath,
 					'--state-dir',
@@ -135,7 +117,6 @@ describe('cli apply Move bindings codegen', () => {
 					'main',
 					'--network',
 					'localnet',
-					'apply',
 				]);
 
 				expect(process.exitCode).toBe(0);

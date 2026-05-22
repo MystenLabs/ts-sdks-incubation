@@ -52,6 +52,8 @@ import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
 import type { ChainId } from '../../../substrate/brand.ts';
 import type { Tag } from '../../../substrate/tag.ts';
 import type { StackMember } from '../../../substrate/plugin.ts';
+import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
+import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import type { AccountTagId } from '../../account/index.ts';
 import type { AccountValue } from '../../account/service.ts';
 import {
@@ -69,11 +71,7 @@ import {
 	startStorageNodes,
 } from '../storage-nodes.ts';
 import { deployWalrusContracts, type CachedDeployState } from '../deploy.ts';
-import {
-	DEFAULT_RUST_TOOLCHAIN,
-	DEFAULT_SUI_VERSION,
-	resolveCargoImage,
-} from '../lifted-siblings/cargo-image.ts';
+import { DEFAULT_SUI_VERSION, resolveCargoImage } from '../lifted-siblings/cargo-image.ts';
 import {
 	DEFAULT_WALRUS_MOVE_SUBDIR,
 	DEFAULT_WALRUS_REF,
@@ -81,7 +79,12 @@ import {
 	resolveWalrusSource,
 } from '../lifted-siblings/source-fetch.ts';
 import { makeWalFaucetStrategy, type WalFaucetStrategy } from '../faucet-strategy.ts';
-import { resolveWalExchange, type WalExchangeHandle, type WalSwapSdk } from '../seed-wal.ts';
+import {
+	resolveWalExchange,
+	seedWalAccounts,
+	type WalExchangeHandle,
+	type WalSwapSdk,
+} from '../seed-wal.ts';
 
 /** A user-supplied seed account ref. The user passes the result of
  *  `account('publisher')` (a `StackMember` providing the per-name
@@ -124,7 +127,7 @@ export interface WalrusLocalClusterOptions<
 	 *  `>= nodeCount`. Default `100` (distilled-doc default block). */
 	readonly shards?: number;
 	/** Pinned walrus release — drives the lifted source-fetch +
-	 *  cargo-image siblings. Default `'devnet-v1.49.0'`. */
+	 *  cargo-image siblings. Default `'testnet-v1.49.1'`. */
 	readonly version?: string;
 	/** Sui release whose binary the wrapper image bakes (distilled-
 	 *  doc invariant 24). Default `'devnet-v1.71.0'`. */
@@ -201,15 +204,26 @@ export interface ResolvedLocalClusterOptions {
 export const resolveLocalClusterOptions = (
 	opts: WalrusLocalClusterOptions,
 ): ResolvedLocalClusterOptions => {
-	const nodeCount = opts.nodeCount ?? 1;
-	const shards = opts.shards ?? 100;
-	if (nodeCount < 1) {
-		throw walrusConfigError(
-			'nodeCount',
-			`walrusLocalCluster: nodeCount must be >= 1 (got ${nodeCount})`,
-			'set nodeCount to a positive integer (default 1)',
-		);
-	}
+	const nodeCount = expectPositiveInteger(opts.nodeCount ?? 1, {
+		field: 'nodeCount',
+		mkError: ({ field, message, hint }) =>
+			walrusConfigError(
+				field,
+				`walrusLocalCluster: nodeCount must be >= 1 (got ${String(opts.nodeCount ?? 1)})`,
+				hint ?? message,
+			),
+		hint: 'set nodeCount to a positive integer (default 1)',
+	});
+	const shards = expectPositiveInteger(opts.shards ?? 100, {
+		field: 'shards',
+		mkError: ({ field, message, hint }) =>
+			walrusConfigError(
+				field,
+				`walrusLocalCluster: shards must be a positive integer (got ${String(opts.shards ?? 100)})`,
+				hint ?? message,
+			),
+		hint: 'set shards to a positive integer (default 100)',
+	});
 	if (shards < nodeCount) {
 		throw walrusConfigError(
 			'shards',
@@ -293,11 +307,11 @@ export const bootLocalCluster = (
 		// ---- cargo image (lifted sibling) -----------------------
 		// The cargo image is content-addressed; the sibling's resolver
 		// owns the cache check + the registry-tag override fast path.
+		yield* setCurrentPluginPhase(`resolving Walrus image ${opts.version}`);
 		const walrusImage = yield* resolveCargoImage(deps.runtime, {
 			walrusRepo: DEFAULT_WALRUS_REPO,
 			walrusRef: opts.version,
 			suiVersion: opts.suiVersion,
-			rustToolchain: DEFAULT_RUST_TOOLCHAIN,
 		});
 
 		// ---- move source (lifted sibling, conditional) ----------
@@ -307,6 +321,7 @@ export const bootLocalCluster = (
 		// participates in the dedup dance — two `walrus()` instances
 		// pinned to the same ref share one source-fetch.
 		if (!opts.movePackagePath) {
+			yield* setCurrentPluginPhase(`resolving Walrus Move source ${opts.version}`);
 			yield* resolveWalrusSource({
 				repo: DEFAULT_WALRUS_REPO,
 				ref: opts.version,
@@ -326,6 +341,7 @@ export const bootLocalCluster = (
 		}
 
 		// ---- docker network ensure ------------------------------
+		yield* setCurrentPluginPhase(`ensuring Walrus network ${deps.walrusNetworkName}`);
 		yield* deps.runtime
 			.ensureNetwork({
 				name: deps.walrusNetworkName,
@@ -360,6 +376,9 @@ export const bootLocalCluster = (
 			(_, i) => `${deps.subnetPrefix}.${WALRUS_NODE_IP_BASE + i}`,
 		).join(',');
 
+		yield* setCurrentPluginPhase(
+			`deploying Walrus contracts (${opts.nodeCount} node${opts.nodeCount === 1 ? '' : 's'}, ${opts.shards} shards)`,
+		);
 		const { state } = yield* deployWalrusContracts(deps.publisher, deps.probe, deps.runtime, {
 			walrusName: opts.name,
 			chainId: deps.suiChainId,
@@ -377,8 +396,18 @@ export const bootLocalCluster = (
 			walrusImage,
 			suiNetworkName: deps.suiNetworkName,
 		});
+		const deployConfigHash = [
+			'walrus-deploy',
+			state.walrusPackageId,
+			state.systemObject,
+			state.stakingObject,
+			state.exchangeObject ?? 'no-exchange',
+		].join('|');
 
 		// ---- storage nodes — parallel boot ----------------------
+		yield* setCurrentPluginPhase(
+			`starting ${opts.nodeCount} Walrus storage node${opts.nodeCount === 1 ? '' : 's'}`,
+		);
 		const { nodes } = yield* startStorageNodes(deps.runtime, {
 			app: deps.app,
 			stack: deps.stack,
@@ -391,6 +420,7 @@ export const bootLocalCluster = (
 			suiNetworkName: deps.suiNetworkName,
 			walrusFaucetUrl: deps.walrusFaucetUrlInNetwork,
 			deployHostMountPath: deps.deployHostMountPath,
+			deployConfigHash,
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});
 
@@ -404,16 +434,26 @@ export const bootLocalCluster = (
 		}
 		const proxyUrl = nodes[0]!.rpcUrl;
 
-		// ---- exchange resolution + WAL faucet strategy ----------
-		// Register a `coinType:WAL` strategy that swaps SUI → WAL on
-		// demand iff BOTH:
+		// ---- exchange resolution + WAL seed/faucet strategy ------
+		// Seed each configured account with WAL and register a
+		// `coinType:WAL` strategy that swaps SUI → WAL on demand iff BOTH:
 		//   - the deploy produced a WAL exchange object, AND
 		//   - at least one seed account was wired through opts.
 		// The first seed account doubles as the admin signer
 		// (distilled-doc §"Configuration"). The dispatch site (faucet
 		// plugin) sees a context-free `(req) => Effect.Effect<...>`.
+		yield* setCurrentPluginPhase('resolving WAL exchange');
 		const exchange = yield* resolveWalExchange(deps.probe, state.exchangeObject);
 		const adminSigner = deps.seedAccounts[0];
+		if (exchange && deps.seedAccounts.length > 0) {
+			yield* setCurrentPluginPhase(`seeding WAL for ${deps.seedAccounts.length} account(s)`);
+			yield* seedWalAccounts({
+				exchange,
+				sdk: deps.suiSdk,
+				signers: deps.seedAccounts,
+				paymentMist: opts.seedPaymentMist,
+			});
+		}
 		const walFaucetStrategy: WalFaucetStrategy | null =
 			exchange && adminSigner
 				? makeWalFaucetStrategy({

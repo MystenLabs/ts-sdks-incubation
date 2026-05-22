@@ -36,10 +36,10 @@ describe('routerHostname', () => {
 		}),
 	);
 
-	it.effect('non-default stack prepends the stack segment', () =>
+	it.effect('non-default stack keeps the service segment first', () =>
 		Effect.gen(function* () {
 			const host = yield* routerHostname(identity('feature-x'), 'api');
-			expect(host).toBe('feature-x.api.my-app.localhost');
+			expect(host).toBe('api.feature-x.my-app.localhost');
 		}),
 	);
 

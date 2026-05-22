@@ -31,6 +31,7 @@ export const LabelKey = {
 	plugin: 'devstack.plugin',
 	role: 'devstack.role',
 	cycle: 'devstack.cycle',
+	configHash: 'devstack.config-hash',
 	managed: 'devstack.managed',
 	// Resource-kind markers — coarse "what is this?" classification
 	// for inventory walks.
@@ -152,12 +153,14 @@ export const ownershipMismatchDetail = (
 export const renderContainerLabels = (
 	tuple: ContainerLabelTuple,
 	cycle: number,
+	extra: Readonly<Record<string, string>> = {},
 ): ReadonlyArray<string> => {
 	const ownership = [
 		...Object.entries(expectedContainerOwnershipLabels(tuple)).map(
 			([key, value]) => `${key}=${value}`,
 		),
 		`${LabelKey.cycle}=${cycle}`,
+		...Object.entries(extra).map(([key, value]) => `${key}=${value}`),
 	];
 	return [...ownership, ...renderComposeContainerLabels(tuple)];
 };

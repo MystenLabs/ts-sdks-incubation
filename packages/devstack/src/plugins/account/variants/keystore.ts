@@ -19,6 +19,7 @@
 import { Effect, Schema } from 'effect';
 import { promises as fs } from 'node:fs';
 
+import { decodeJsonText } from '../../../substrate/runtime/runtime-decode.ts';
 import { accountAcquireError, type AccountAcquireError } from '../errors.ts';
 import { decodeBech32Secret, type ResolvedKeypair } from '../keypair.ts';
 import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
@@ -64,29 +65,20 @@ export const resolveKeystoreVariant = (
 					cause,
 				}),
 		});
-		const parsed: unknown = yield* Effect.try({
-			try: () => JSON.parse(raw),
-			catch: (cause): AccountAcquireError =>
+		const rows = yield* decodeJsonText(KeystoreShape, raw, {
+			source: args.path,
+			mkError: (issue): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
 					accountName: args.name,
 					variant: 'keystore',
-					message: `Account '${args.name}': keystore at '${args.path}' is not valid JSON.`,
-					cause,
+					message:
+						issue.message === 'failed to parse JSON'
+							? `Account '${args.name}': keystore at '${args.path}' is not valid JSON.`
+							: `Account '${args.name}': keystore at '${args.path}' did not match the expected schema (array of bech32 strings).`,
+					cause: issue.cause,
 				}),
 		});
-		const rows = yield* Schema.decodeUnknownEffect(KeystoreShape)(parsed).pipe(
-			Effect.mapError(
-				(cause): AccountAcquireError =>
-					accountAcquireError({
-						phase: 'load-keystore',
-						accountName: args.name,
-						variant: 'keystore',
-						message: `Account '${args.name}': keystore at '${args.path}' did not match the expected schema (array of bech32 strings).`,
-						cause,
-					}),
-			),
-		);
 
 		// --- alias path -------------------------------------------------
 		// Best-effort: missing aliases file is not fatal — fall through
@@ -138,29 +130,20 @@ const resolveAliasIndex = (
 					cause,
 				}),
 		});
-		const parsed: unknown = yield* Effect.try({
-			try: () => JSON.parse(raw),
-			catch: (cause): AccountAcquireError =>
+		const aliases = yield* decodeJsonText(AliasesShape, raw, {
+			source: aliasesPath,
+			mkError: (issue): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
 					accountName: '<keystore>',
 					variant: 'keystore',
-					message: `aliases file '${aliasesPath}' is not valid JSON`,
-					cause,
+					message:
+						issue.message === 'failed to parse JSON'
+							? `aliases file '${aliasesPath}' is not valid JSON`
+							: `aliases file '${aliasesPath}' did not match the expected schema`,
+					cause: issue.cause,
 				}),
 		});
-		const aliases = yield* Schema.decodeUnknownEffect(AliasesShape)(parsed).pipe(
-			Effect.mapError(
-				(cause): AccountAcquireError =>
-					accountAcquireError({
-						phase: 'load-keystore',
-						accountName: '<keystore>',
-						variant: 'keystore',
-						message: `aliases file '${aliasesPath}' did not match the expected schema`,
-						cause,
-					}),
-			),
-		);
 		return aliases.findIndex((row) => row.alias === want);
 	});
 

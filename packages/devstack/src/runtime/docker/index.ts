@@ -80,6 +80,10 @@ export {
 export {
 	type ContainerSummary,
 	type ImageSummary,
+	listDevstackContainers,
+	listDevstackImages,
+	listDevstackNetworks,
+	listDevstackVolumes,
 	listContainers,
 	listImages,
 	listNetworks,
@@ -102,11 +106,17 @@ export {
 } from './network.ts';
 
 export {
+	removeDevstackContainers,
+	removeDevstackImages,
+	removeDevstackNetworks,
+	removeDevstackNetworksBestEffort,
+	removeDevstackVolumes,
 	removeManagedContainers,
 	removeManagedImages,
 	removeManagedNetworks,
 	removeManagedVolumes,
 	sweepOrphans,
+	type DevstackNetworkRemovalSummary,
 } from './sweep.ts';
 
 export { ensureVolume, removeVolume } from './volume.ts';

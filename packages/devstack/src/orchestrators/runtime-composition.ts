@@ -49,6 +49,7 @@ import {
 import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
 import { resolveManifestExtras, type ManifestExtrasInput } from '../substrate/manifest.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
+import { PostAcquireTasksService } from '../substrate/runtime/post-acquire-tasks.ts';
 import type { OrchestratorSinks } from '../substrate/runtime/capability-sinks/index.ts';
 import type {
 	SupervisorPostAcquireContext,
@@ -177,7 +178,6 @@ export const buildProductionOrchestratorSinks = (
 							),
 						);
 					}),
-					Effect.orDie,
 				),
 			codegenable: (pluginKey, decl) =>
 				codegen
@@ -223,6 +223,7 @@ export const buildProductionPostAcquireHook = (
 	| MoveCodegenService
 	| FileSystem.FileSystem
 	| StackPathsService
+	| PostAcquireTasksService
 > =>
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
@@ -231,6 +232,7 @@ export const buildProductionPostAcquireHook = (
 		const moveCodegen = yield* MoveCodegenService;
 		const fs = yield* FileSystem.FileSystem;
 		const stackPaths = yield* StackPathsService;
+		const postAcquireTasks = yield* PostAcquireTasksService;
 		return (ctx) =>
 			Effect.gen(function* () {
 				const extras = yield* resolveManifestExtras(options.extras, makeManifestExtrasContext(ctx));
@@ -255,6 +257,7 @@ export const buildProductionPostAcquireHook = (
 						Effect.provideService(MoveCodegenService, moveCodegen),
 						Effect.provideService(FileSystem.FileSystem, fs),
 					);
+				yield* postAcquireTasks.runAll;
 				return [
 					{
 						tag: 'manifest.flushed' as const,

@@ -11,7 +11,7 @@
 // Pattern (mirrors v3 conventional routes):
 //
 //   main stack:        dev.<app>.localhost:<routerPort>
-//   non-main stack:    <stack>.dev.<app>.localhost:<routerPort>
+//   non-main stack:    dev.<stack>.<app>.localhost:<routerPort>
 //
 // The router (L3 orchestrator) owns the wildcard `.localhost` host
 // space; the vite integration MUST keep its allowlist in sync (set
@@ -35,7 +35,7 @@ import {
 export const DEFAULT_ROUTER_PUBLIC_PORT = 5175;
 
 /** Hostname infix that distinguishes the dev-server entrypoint from
- *  service endpoints (`<stack>.<service>.<app>.localhost`). The
+ *  service endpoints (`<service>.<stack>.<app>.localhost`). The
  *  router emits routes for both shapes; this constant pins the
  *  dev-server one. */
 export const DEV_HOST_INFIX = 'dev';

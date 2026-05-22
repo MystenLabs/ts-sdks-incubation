@@ -29,6 +29,8 @@ import { readFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
+import { redactText, type RedactionRule } from '../../substrate/runtime/observability/index.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
 import {
 	WALLET_BEARER_PREFIX,
@@ -107,8 +109,10 @@ export const acquirePairingToken = (
 				return asToken(trimmed);
 			}
 			// Malformed — fall through to mint + overwrite.
-			yield* Effect.logWarning(
-				'wallet: existing token file is malformed; re-minting (existing browser pairings will break)',
+			yield* Effect.logWarning('wallet token file is malformed; re-minting').pipe(
+				Effect.annotateLogs({
+					[SpanAttr.walletTokenFile]: path,
+				}),
 			);
 		}
 
@@ -216,6 +220,12 @@ export const safeBearerEquals = (a: string, b: PairingToken | string): boolean =
 // Logging hygiene
 // ----------------------------------------------------------------------
 
+const TOKEN_REDACTION_RULE: RedactionRule = {
+	kind: 'pattern',
+	pattern: /([#?&]token=)[A-Za-z0-9]+/g,
+	replacement: '$1<redacted>',
+};
+
 /**
  * Redact the token fragment from any URL-shaped string for logging /
  * TUI rendering. Defense-in-depth — the engine's log sink should never
@@ -227,5 +237,4 @@ export const safeBearerEquals = (a: string, b: PairingToken | string): boolean =
  * hypothetical query form so a future config change doesn't silently
  * leak.
  */
-export const redactToken = (s: string): string =>
-	s.replace(/([#?&]token=)[A-Za-z0-9]+/g, '$1<redacted>');
+export const redactToken = (s: string): string => redactText(s, [TOKEN_REDACTION_RULE]);

@@ -74,7 +74,7 @@ jobs:
       # the bin-symlink lookup entirely.
       - name: Apply stack (boot + write state + tear down)
         working-directory: examples/${{ matrix.example }}
-        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} apply
+        run: node ../../packages/devstack/dist/cli/main.mjs apply --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
 
       # `apply` boots service containers that bind-mount host paths under
       # `.devstack/stacks/<stack>/runtime/` (walrus deploy outputs,
@@ -101,7 +101,7 @@ jobs:
         # containers stopped with their writable layer intact. The
         # snapshot CLI captures stopped containers into the snapshot
         # bundle so the restore job can restore the same state.
-        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot save baseline
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot save baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
 
       - name: Show snapshot contents (debug)
         working-directory: examples/${{ matrix.example }}
@@ -161,7 +161,7 @@ jobs:
         # loads every committed container image into Docker. Direct-node
         # invocation: see the seed job's apply step for the bin-symlink
         # rationale.
-        run: node ../../packages/devstack/dist/cli/main.mjs --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot restore baseline
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
 
       - name: Validate restored snapshot state
         working-directory: examples/${{ matrix.example }}
@@ -170,8 +170,8 @@ jobs:
         # reads projection.v1.json, which is a live-surface cache; offline
         # restore currently materializes snapshot state, not a new projection.
         run: |
-          snapshot_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} snapshot list)"
-          status_json="$(node ../../packages/devstack/dist/cli/main.mjs --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} status)"
+          snapshot_json="$(node ../../packages/devstack/dist/cli/main.mjs snapshot list --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }})"
+          status_json="$(node ../../packages/devstack/dist/cli/main.mjs status --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }})"
           node -e '
             const { execFileSync } = require("node:child_process");
             const { existsSync, readFileSync } = require("node:fs");

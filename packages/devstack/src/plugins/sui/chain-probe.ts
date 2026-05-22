@@ -23,6 +23,7 @@ import type {
 	ChainProbeMode,
 	ChainProbeSchema,
 } from '../../contracts/chain-probe.ts';
+import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 
 /**
  * Sui's chain-key shape — discriminated so the probe can dispatch
@@ -157,16 +158,15 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 			// Decode against the caller-supplied Schema. A decode failure
 			// is structured (NOT silent undefined) — this is the
 			// load-bearing learning from deepbook.
-			const decoded = yield* Schema.decodeUnknownEffect(schema)(raw).pipe(
-				Effect.mapError(
-					(cause): ChainProbeError => ({
-						_tag: 'ChainProbeError',
-						reason: 'decode-failed',
-						chain,
-						detail: stringifyCause(cause),
-					}),
-				),
-			);
+			const decoded = yield* decodeUnknown(schema, raw, {
+				source: `chain probe ${chain}`,
+				mkError: (issue): ChainProbeError => ({
+					_tag: 'ChainProbeError',
+					reason: 'decode-failed',
+					chain,
+					detail: stringifyCause(issue.cause ?? issue),
+				}),
+			});
 			return decoded;
 		}),
 });

@@ -7,10 +7,12 @@
 // compiles, validates (no `__MissingProvidersError`), and the resulting
 // Stack handle exposes a `deepbook/<name>` provided tag id.
 //
-// Unsupported local sub-features such as pools, Pyth, margin, server,
-// indexer, and market-maker are intentionally absent from the public
-// local options until they have real acquire behavior. The type-level
-// refusals live in `test/plugins/deepbook/type-refusal.test-d.ts`.
+// Unsupported local sub-features such as pools, local Pyth publishing,
+// margin, server, indexer, and market-maker are intentionally absent
+// from the public local options until they have real acquire behavior.
+// Known deployments do surface the matching Pyth state handles; the
+// exact binding shape is pinned in `test/plugins/deepbook/factory.test.ts`.
+// The type-level refusals live in `test/plugins/deepbook/type-refusal.test-d.ts`.
 //
 // This is NOT a docker-driven boot — that lives in the (future)
 // `deepbook-real-boot.test.ts` once the Move-publish substrate path
@@ -26,7 +28,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { defineDevstack } from '../../src/api/define-devstack.ts';
+import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
 import { account } from '../../src/plugins/account/index.ts';
 import { deepbook } from '../../src/plugins/deepbook/index.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
@@ -37,12 +39,10 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
 
-		const stack = defineDevstack(suiPlugin, publisher, dex, {
-			stackName: 'deepbook-smoke',
-		});
+		const stack = defineDevstack({ members: [suiPlugin, publisher, dex], stackName: 'deepbook-smoke', });
 		expect(stack._tag).toBe('Stack');
-		expect(stack.members.length).toBe(3);
-		const ids = stack.members.map((m) => m.provides.id);
+		expect(readStackEngine(stack).members.length).toBe(3);
+		const ids = readStackEngine(stack).members.map((m) => m.provides.id);
 		expect(ids).toContain('sui');
 		expect(ids).toContain('account/publisher');
 		expect(ids).toContain('deepbook/main');
@@ -69,10 +69,8 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 			chain: 'sui:testnet',
 			name: 'live',
 		});
-		const stack = defineDevstack(suiPlugin, dex, {
-			stackName: 'deepbook-known-smoke',
-		});
-		const ids = stack.members.map((m) => m.provides.id);
+		const stack = defineDevstack({ members: [suiPlugin, dex], stackName: 'deepbook-known-smoke', });
+		const ids = readStackEngine(stack).members.map((m) => m.provides.id);
 		expect(ids).toEqual(expect.arrayContaining(['sui', 'deepbook/live']));
 	});
 

@@ -499,6 +499,35 @@ describe('container lifecycle decisions', () => {
 			reason: 'unknown-state',
 		});
 	});
+
+	it('treats a caller-supplied config hash mismatch as config drift', () => {
+		const facts = {
+			id: 'running-id',
+			lifecycle: { kind: 'running', exitCode: 0 },
+			running: true,
+			paused: false,
+			exitCode: 0,
+			image: 'img:desired',
+			portBindings: [],
+			labels: { ...ownedDockerLabels, 'devstack.config-hash': 'old' },
+		} as const;
+
+		expect(decideRunAction(facts, 'img:desired', 'on-config-change', [], 'exact', 'new')).toEqual({
+			kind: 'recreate',
+			id: 'running-id',
+			reason: 'config-mismatch',
+		});
+		expect(
+			decideRunAction(
+				{ ...facts, labels: { ...ownedDockerLabels, 'devstack.config-hash': 'new' } },
+				'img:desired',
+				'on-config-change',
+				[],
+				'exact',
+				'new',
+			),
+		).toEqual({ kind: 'adopt', id: 'running-id' });
+	});
 });
 
 describe('same-name Docker resource ownership', () => {

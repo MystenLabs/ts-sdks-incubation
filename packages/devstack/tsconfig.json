@@ -7,8 +7,9 @@
 		"noEmit": true,
 		"allowImportingTsExtensions": true,
 		"rootDir": ".",
-		"baseUrl": ".",
-		"paths": {}
+		"paths": {
+			"*": ["./*"]
+		}
 	},
 	"include": ["src/**/*", "examples-test/**/*", "test/**/*"],
 	"exclude": ["node_modules"]

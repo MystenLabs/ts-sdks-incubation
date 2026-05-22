@@ -1,9 +1,8 @@
 # @mysten-incubation/devstack
 
 > **Current-state warning (2026-05-21):** this package is not release-ready. For current handoff,
-> blocker status, and orchestration instructions, start with `notes/README.md`,
-> `notes/CURRENT-HANDOFF.md`, and `notes/UNRESOLVED-BLOCKERS.md`. Historical notes/reviews were
-> migrated into those compact files and deleted.
+> blocker status, and orchestration instructions, start with `notes/UNRESOLVED-BLOCKERS.md`.
+> Historical notes/reviews were deleted; use git history for archaeology.
 
 The next-generation devstack substrate: type-system, user-facing API surface, runtime,
 orchestrators, and plugins.
@@ -28,10 +27,9 @@ This package contains:
 - Internal/sample plugins used for development experiments. These are not release surface unless the
   blocker ledger explicitly clears them.
 
-For agents/orchestrators picking up this work, start with `notes/README.md`; the rolling blocker
-ledger lives at `notes/UNRESOLVED-BLOCKERS.md`. The compact first-read set there is enough to begin
-a clean orchestration session. Optional reference notes are `notes/api-surface-design.md`,
-`notes/phase-f-manual-scenarios.md`, and `notes/pr7-cutover-plan.md`.
+For agents/orchestrators picking up this work, start with the rolling blocker ledger at
+`notes/UNRESOLVED-BLOCKERS.md`. That compact first-read file is enough to begin a clean
+orchestration session.
 
 ## Boundary
 

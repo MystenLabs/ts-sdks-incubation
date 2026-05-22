@@ -13,6 +13,9 @@
 
 import { Effect, Schedule, type Fiber, type Scope } from 'effect';
 
+import { expectPositiveFiniteNumber } from '../../substrate/runtime/config-validation.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { suiConfigError } from './errors.ts';
 import type { SuiPluginError } from './errors.ts';
 
 /** Public knob shape mirroring the user-facing API. */
@@ -28,13 +31,13 @@ export const DEFAULT_AUTO_TICK_INTERVAL_MS = 1000;
 export const resolveAutoTickIntervalMs = (option?: AutoTickOption): number | undefined => {
 	if (option === undefined || option === false) return undefined;
 	if (option === true) return DEFAULT_AUTO_TICK_INTERVAL_MS;
-	const ms = option.intervalMs;
-	if (!Number.isFinite(ms) || ms <= 0) {
-		throw new Error(
-			`sui: autoTick.intervalMs must be a positive finite number (got ${String(ms)})`,
-		);
-	}
-	return ms;
+	return expectPositiveFiniteNumber(option.intervalMs, {
+		field: 'autoTick.intervalMs',
+		message: `sui: autoTick.intervalMs must be a positive finite number (got ${String(
+			option.intervalMs,
+		)})`,
+		mkError: suiConfigError,
+	});
 };
 
 /** Plugin-internal shim — the minimal admin surface the auto-tick
@@ -61,16 +64,17 @@ export const runAutoTickClock = (
 	intervalMs: number,
 ): Effect.Effect<Fiber.Fiber<void>, never, Scope.Scope> =>
 	Effect.gen(function* () {
-		const tick = advancer
-			.advanceClock(intervalMs)
-			.pipe(
-				Effect.catch((err) =>
-					Effect.logWarning(
-						`sui.autoTick: advance-clock failed (phase=${err.phase}, ` +
-							`message=${err.message}); continuing — next tick will retry`,
-					),
+		const tick = advancer.advanceClock(intervalMs).pipe(
+			Effect.catch((err) =>
+				Effect.logWarning('sui auto-tick advance failed; next tick will retry').pipe(
+					Effect.annotateLogs({
+						[SpanAttr.suiAutoTickIntervalMs]: intervalMs,
+						[SpanAttr.phase]: err.phase,
+						[SpanAttr.errorMessage]: err.message,
+					}),
 				),
-			);
+			),
+		);
 		const fiber = yield* tick.pipe(
 			Effect.repeat(Schedule.spaced(`${intervalMs} millis`)),
 			Effect.forkScoped,

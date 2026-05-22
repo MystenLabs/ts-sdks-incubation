@@ -28,7 +28,16 @@ import {
 	NetworkOperationFailed,
 	type DockerRuntimeError,
 } from './errors.ts';
-import { listContainers, listImages, listNetworks, listVolumes } from './inventory.ts';
+import {
+	listContainers,
+	listDevstackContainers,
+	listDevstackImages,
+	listDevstackNetworks,
+	listDevstackVolumes,
+	listImages,
+	listNetworks,
+	listVolumes,
+} from './inventory.ts';
 import { LabelKey } from './labels.ts';
 import { removeVolume } from './volume.ts';
 import { isNoSuchContainerStderr, wrapGeneric } from './wrap.ts';
@@ -129,6 +138,25 @@ export const removeManagedContainers = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedContainers'));
 
+const labelsMatchAppStack = (
+	labels: Readonly<Record<string, string>>,
+	match: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+): boolean => labels[LabelKey.app] === match.app && labels[LabelKey.stack] === match.stack;
+
+export const removeDevstackContainers = (
+	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const containers = yield* listDevstackContainers();
+		let removed = 0;
+		for (const c of containers) {
+			if (!labelsMatchAppStack(c.labels, labelMatch)) continue;
+			const didRemove = yield* removeManagedContainer(c.name);
+			if (didRemove) removed += 1;
+		}
+		return removed;
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainers'));
+
 const isMissingImageStderr = (stderr: string): boolean =>
 	/no such image|not found|reference does not exist/i.test(stderr);
 
@@ -167,6 +195,25 @@ export const removeManagedImages = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedImages'));
 
+export const removeDevstackImages = (
+	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const images = yield* listDevstackImages();
+		let removed = 0;
+		const seen = new Set<string>();
+		for (const image of images) {
+			if (!labelsMatchAppStack(image.labels, labelMatch)) continue;
+			const ref = image.tag;
+			if (ref.endsWith(':<none>')) continue;
+			if (seen.has(ref)) continue;
+			seen.add(ref);
+			const didRemove = yield* removeManagedImage(ref);
+			if (didRemove) removed += 1;
+		}
+		return removed;
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackImages'));
+
 const isMissingNetworkStderr = (stderr: string): boolean =>
 	/no such network|network .* not found|not found/i.test(stderr);
 
@@ -198,6 +245,86 @@ export const removeManagedNetworks = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedNetworks'));
 
+const isNetworkInUseStderr = (stderr: string): boolean =>
+	/active endpoints|has active endpoint|network .* is in use/i.test(stderr);
+
+type NetworkRemoveOutcome = 'removed' | 'missing' | 'in-use';
+
+export interface DevstackNetworkRemovalSummary {
+	readonly removed: number;
+	readonly skippedInUse: number;
+}
+
+interface DevstackNetworkRemovalOptions {
+	readonly retryAttempts?: number;
+	readonly retryDelayMillis?: number;
+}
+
+const removeManagedNetworkOnce = (
+	name: string,
+): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', ['rm', name]).pipe(
+			Effect.mapError(wrapGeneric('docker.network.rm')),
+		);
+		if (res.exitCode === 0) return 'removed' as const;
+		if (isMissingNetworkStderr(res.stderr)) return 'missing' as const;
+		if (isNetworkInUseStderr(res.stderr)) return 'in-use' as const;
+		return yield* Effect.fail(
+			new NetworkOperationFailed({ op: 'remove', network: name, stderr: res.stderr }),
+		);
+	});
+
+const removeManagedNetworkBestEffort = (
+	name: string,
+	options: Required<DevstackNetworkRemovalOptions>,
+): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		for (let attempt = 0; attempt < options.retryAttempts; attempt += 1) {
+			const outcome = yield* removeManagedNetworkOnce(name);
+			if (outcome !== 'in-use') return outcome;
+			if (attempt < options.retryAttempts - 1) {
+				yield* Effect.sleep(`${options.retryDelayMillis} millis`);
+			}
+		}
+		return 'in-use' as const;
+	});
+
+export const removeDevstackNetworks = (
+	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const networks = yield* listDevstackNetworks();
+		let removed = 0;
+		for (const network of networks) {
+			if (!labelsMatchAppStack(network.labels, labelMatch)) continue;
+			const didRemove = yield* removeManagedNetwork(network.name);
+			if (didRemove) removed += 1;
+		}
+		return removed;
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworks'));
+
+export const removeDevstackNetworksBestEffort = (
+	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+	options: DevstackNetworkRemovalOptions = {},
+): Effect.Effect<DevstackNetworkRemovalSummary, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const networks = yield* listDevstackNetworks();
+		const retryOptions = {
+			retryAttempts: options.retryAttempts ?? 6,
+			retryDelayMillis: options.retryDelayMillis ?? 250,
+		};
+		let removed = 0;
+		let skippedInUse = 0;
+		for (const network of networks) {
+			if (!labelsMatchAppStack(network.labels, labelMatch)) continue;
+			const outcome = yield* removeManagedNetworkBestEffort(network.name, retryOptions);
+			if (outcome === 'removed') removed += 1;
+			if (outcome === 'in-use') skippedInUse += 1;
+		}
+		return { removed, skippedInUse };
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworksBestEffort'));
+
 export const removeManagedVolumes = (
 	labelMatch: Partial<ContainerLabelTuple>,
 ): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -211,3 +338,17 @@ export const removeManagedVolumes = (
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedVolumes'));
+
+export const removeDevstackVolumes = (
+	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
+): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const volumes = yield* listDevstackVolumes();
+		let removed = 0;
+		for (const volume of volumes) {
+			if (!labelsMatchAppStack(volume.labels, labelMatch)) continue;
+			yield* removeVolume(volume.name);
+			removed += 1;
+		}
+		return removed;
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackVolumes'));

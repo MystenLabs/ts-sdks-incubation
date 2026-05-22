@@ -6,7 +6,6 @@ description: Current faucet dispatcher and strategy helpers.
 The root exports include:
 
 - `faucet`
-- `FaucetTag`
 - `defineFaucetStrategy`
 - `faucetCapabilityKey`
 - `suiLocalStrategy`
@@ -28,13 +27,13 @@ const customFaucet = faucet({
 	],
 });
 
-export default defineDevstack(customFaucet);
+export default defineDevstack({ members: [customFaucet] });
 ```
 
 Plugin authors can contribute a strategy through capabilities:
 
 ```ts
-import { capabilities, defineFaucetStrategy } from '@mysten-incubation/devstack';
+import { defineFaucetStrategy } from '@mysten-incubation/devstack';
 
 const strategyDecl = defineFaucetStrategy({
 	chainId: 'sui:custom',
@@ -43,7 +42,7 @@ const strategyDecl = defineFaucetStrategy({
 	},
 });
 
-const caps = capabilities(strategyDecl);
+const caps = [strategyDecl];
 ```
 
 Accounts use funding entries with direct coin members:

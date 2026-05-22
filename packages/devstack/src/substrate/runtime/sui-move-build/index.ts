@@ -20,6 +20,7 @@ import type {
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../brand.ts';
+import { decodeJsonTextSync } from '../runtime-decode.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
 
@@ -325,10 +326,10 @@ export const scrubLocksHost = (
 			}),
 	});
 
-interface SuiBuildJson {
-	readonly modules: ReadonlyArray<string>;
-	readonly dependencies: ReadonlyArray<string>;
-}
+const SuiBuildJsonSchema = Schema.Struct({
+	modules: Schema.Array(Schema.String),
+	dependencies: Schema.Array(Schema.String),
+});
 
 const decodeBase64Module = (s: string): Uint8Array =>
 	Uint8Array.from(globalThis.Buffer.from(s, 'base64'));
@@ -341,24 +342,13 @@ export const parseBuildOutput = (
 	Effect.try({
 		try: (): BuildOutput => {
 			const trimmed = extractTrailingJson(stdout);
-			const parsed = JSON.parse(trimmed) as Partial<SuiBuildJson>;
-			if (!parsed || !Array.isArray(parsed.modules) || !Array.isArray(parsed.dependencies)) {
-				throw new Error(
-					`unexpected sui move build JSON shape: keys=${Object.keys(parsed ?? {}).join(',')}`,
-				);
-			}
-			const modules = parsed.modules.map((m, i) => {
-				if (typeof m !== 'string') {
-					throw new Error(`module[${i}] is not a base64 string: typeof=${typeof m}`);
-				}
-				return decodeBase64Module(m);
+			const parsed = decodeJsonTextSync(SuiBuildJsonSchema, trimmed, {
+				source: 'sui move build stdout',
+				message: 'unexpected sui move build JSON shape',
+				mkError: (issue) => new Error(issue.message, { cause: issue.cause }),
 			});
-			const dependencies = parsed.dependencies.map((d, i) => {
-				if (typeof d !== 'string') {
-					throw new Error(`dependencies[${i}] is not a string: typeof=${typeof d}`);
-				}
-				return d;
-			});
+			const modules = parsed.modules.map((m) => decodeBase64Module(m));
+			const dependencies = parsed.dependencies;
 			return { modules, dependencies };
 		},
 		catch: (cause): MoveBuildError =>

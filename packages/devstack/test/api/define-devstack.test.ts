@@ -21,8 +21,8 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
 
-import { defineDevstack } from '../../src/api/define-devstack.ts';
-import { defineNodePlugin } from '../../src/api/define-plugin.ts';
+import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
+import { defineNodePlugin, definePlugin, resource } from '../../src/api/define-plugin.ts';
 import { defineTag } from '../../src/substrate/tag.ts';
 import { account } from '../../src/plugins/account/index.ts';
 import { sui, SuiTag } from '../../src/plugins/sui/index.ts';
@@ -58,31 +58,31 @@ const standalone = defineNodePlugin({
 describe('defineDevstack — D1 auto-mount sui()', () => {
 	it('prepends sui() when a built-in member consumes sui and no provider is supplied', () => {
 		const alice = account('alice');
-		const stack = defineDevstack(alice);
+		const stack = defineDevstack({ members: [alice] });
 
-		expect(stack.members).toHaveLength(2);
-		expect(stack.members[0]!.provides.id).toBe('sui');
-		expect(stack.members[1]!.provides.id).toBe('account/alice');
+		expect(readStackEngine(stack).members).toHaveLength(2);
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('sui');
+		expect(readStackEngine(stack).members[1]!.provides.id).toBe('account/alice');
 	});
 
 	it('prepends sui() when a USER-AUTHORED plugin consumes SuiTag (plugin-author symmetry)', () => {
-		const stack = defineDevstack(customNeedsSui);
+		const stack = defineDevstack({ members: [customNeedsSui] });
 
-		expect(stack.members).toHaveLength(2);
-		expect(stack.members[0]!.provides.id).toBe('sui');
-		expect(stack.members[1]!.provides.id).toBe('custom/needs-sui');
+		expect(readStackEngine(stack).members).toHaveLength(2);
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('sui');
+		expect(readStackEngine(stack).members[1]!.provides.id).toBe('custom/needs-sui');
 	});
 
 	it('does NOT double-mount when the user supplies explicit sui()', () => {
 		const explicit = sui();
 		const alice = account('alice');
-		const stack = defineDevstack(explicit, alice);
+		const stack = defineDevstack({ members: [explicit, alice] });
 
-		expect(stack.members).toHaveLength(2);
+		expect(readStackEngine(stack).members).toHaveLength(2);
 		// The user's explicit sui is preserved — same reference, not a
 		// fresh `sui()` injected by the composer.
-		expect(stack.members[0]).toBe(explicit);
-		expect(stack.members[1]).toBe(alice);
+		expect(readStackEngine(stack).members[0]).toBe(explicit);
+		expect(readStackEngine(stack).members[1]).toBe(alice);
 	});
 
 	it('does NOT double-mount when the user supplies a non-default sui mode', () => {
@@ -92,39 +92,143 @@ describe('defineDevstack — D1 auto-mount sui()', () => {
 		// composer checks the tag id, not the call shape.
 		const explicit = sui({ mode: 'live', network: 'testnet' });
 		const alice = account('alice');
-		const stack = defineDevstack(explicit, alice);
+		const stack = defineDevstack({ members: [explicit, alice] });
 
-		expect(stack.members).toHaveLength(2);
-		expect(stack.members[0]).toBe(explicit);
+		expect(readStackEngine(stack).members).toHaveLength(2);
+		expect(readStackEngine(stack).members[0]).toBe(explicit);
 	});
 
 	it('does NOT auto-mount when no member consumes sui (predicate is "needed AND missing")', () => {
-		const stack = defineDevstack(standalone);
+		const stack = defineDevstack({ members: [standalone] });
 
-		expect(stack.members).toHaveLength(1);
-		expect(stack.members[0]!.provides.id).toBe('leaf/standalone');
+		expect(readStackEngine(stack).members).toHaveLength(1);
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('leaf/standalone');
 	});
 
 	it('survives a trailing options bag with auto-mount in front', () => {
 		const alice = account('alice');
-		const stack = defineDevstack(alice, { stackName: 'd1-options-trail' });
+		const stack = defineDevstack({ members: [alice], stackName: 'd1-options-trail' });
 
-		expect(stack.members).toHaveLength(2);
-		expect(stack.members[0]!.provides.id).toBe('sui');
+		expect(readStackEngine(stack).members).toHaveLength(2);
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('sui');
 		expect(stack.options.stackName).toBe('d1-options-trail');
 	});
 
 	it('places the auto-mounted sui at index 0 so dep-graph topological order is stable', () => {
 		const alice = account('alice');
 		const bob = account('bob');
-		const stack = defineDevstack(alice, bob);
+		const stack = defineDevstack({ members: [alice, bob] });
 
-		expect(stack.members[0]!.provides.id).toBe('sui');
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('sui');
 		// User's relative order is preserved after the prepend.
-		expect(stack.members[1]!.provides.id).toBe('account/alice');
-		expect(stack.members[2]!.provides.id).toBe('account/bob');
+		expect(readStackEngine(stack).members[1]!.provides.id).toBe('account/alice');
+		expect(readStackEngine(stack).members[2]!.provides.id).toBe('account/bob');
 	});
 });
+
+describe('defineDevstack — plugin entrypoint expansion', () => {
+	it('recursively includes plugin-valued dependencies before validation and runtime boot', () => {
+		const database = definePlugin({
+			id: 'test/database',
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ url: 'postgres://devstack' } as const),
+		});
+		const api = definePlugin({
+			id: 'test/api',
+			dependsOn: { database },
+			kind: 'leaf-long-running',
+			start: (_ctx, { database }) => Effect.succeed({ upstream: database.url } as const),
+		});
+
+		const stack = defineDevstack({ members: [api] });
+		expect(readStackEngine(stack).members.map((member) => member.provides.id)).toEqual([
+			'test/database',
+			'test/api',
+		]);
+	});
+
+	it('dedupes repeated dependency refs in consumes without changing callback dependency shape', () => {
+		const upstream = definePlugin({
+			id: 'test/repeated-upstream',
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ ok: true } as const),
+		});
+		const consumer = definePlugin({
+			id: 'test/repeated-consumer',
+			dependsOn: { first: upstream, second: upstream },
+			kind: 'leaf-long-running',
+			start: (_ctx, deps) => Effect.succeed(deps),
+		});
+
+		expect(consumer.dependsOn).toHaveLength(2);
+		expect(consumer.consumes.map((tag) => tag.id)).toEqual(['test/repeated-upstream']);
+	});
+
+	it('throws on duplicate providers discovered through recursive dependencies', () => {
+		const first = definePlugin({
+			id: 'test/duplicate-provider',
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ from: 'first' } as const),
+		});
+		const second = definePlugin({
+			id: 'test/duplicate-provider',
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ from: 'second' } as const),
+		});
+		const consumer = definePlugin({
+			id: 'test/duplicate-consumer',
+			dependsOn: [first, second],
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ ok: true } as const),
+		});
+
+		expect(() => defineDevstack({ members: [consumer] })).toThrow(
+			/Duplicate devstack provider for test\/duplicate-provider/,
+		);
+	});
+
+	it('throws on circular plugin-valued dependency expansion', () => {
+		const depsForA = [] as ReturnType<typeof resource>[];
+		const a = definePlugin({
+			id: 'test/cycle-a',
+			dependsOn: depsForA,
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ ok: 'a' } as const),
+		});
+		const b = definePlugin({
+			id: 'test/cycle-b',
+			dependsOn: [a],
+			kind: 'leaf-long-running',
+			start: () => Effect.succeed({ ok: 'b' } as const),
+		});
+		depsForA.push(b);
+
+		expect(() => defineDevstack({ members: [a as never] })).toThrow(
+			/Circular devstack dependency through test\/cycle-a/,
+		);
+	});
+
+	it('does not expose current-engine members on the public stack handle', () => {
+		const stack = defineDevstack({ members: [standalone] });
+
+		expect(Object.hasOwn(stack, 'members')).toBe(false);
+		// @ts-expect-error public Stack handles do not expose the engine member tuple
+		void stack.members;
+		expect(readStackEngine(stack).members).toHaveLength(1);
+	});
+});
+
+if (false) {
+	const bareCache = resource<'test/bare-cache', { readonly url: string }>('test/bare-cache');
+	const needsBareCache = definePlugin({
+		id: 'test/needs-bare-cache',
+		dependsOn: bareCache,
+		kind: 'leaf-long-running',
+		start: (_ctx, cache) => Effect.succeed(cache),
+	});
+	// @ts-expect-error missing provider: test/bare-cache
+	defineDevstack({ members: [needsBareCache] });
+}
 
 // --- Type-level pins ----------------------------------------------------
 //
@@ -137,7 +241,7 @@ describe('defineDevstack — D1 type-level pins', () => {
 		// auto-mount did not project the sui member into the
 		// validation tuple.
 		const alice = account('alice');
-		const stack = defineDevstack(alice);
+		const stack = defineDevstack({ members: [alice] });
 		// The phantom `_providedIds` should witness 'sui' in the union.
 		// We can't read the phantom at runtime, but the type narrowing
 		// is verified by tsc; this test exists to anchor the
@@ -146,7 +250,8 @@ describe('defineDevstack — D1 type-level pins', () => {
 	});
 
 	it('compiles `defineDevstack(sui(), account("alice"))` (explicit sui, no double-mount)', () => {
-		const stack = defineDevstack(sui(), account('alice'));
-		expect(stack.members).toHaveLength(2);
+		const alice = account('alice');
+		const stack = defineDevstack({ members: [sui(), alice] });
+		expect(readStackEngine(stack).members).toHaveLength(2);
 	});
 });

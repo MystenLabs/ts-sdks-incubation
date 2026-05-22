@@ -37,6 +37,7 @@ import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMember } from '../../api/consume-members.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -135,6 +136,7 @@ export type DeepbookOptions<Publisher extends AccountMemberAlias = AccountMember
 // ---------------------------------------------------------------------------
 
 const DEFAULT_NAME = 'deepbook';
+const deepbookErrorContributions = pluginErrorContributions(DEEPBOOK_ERROR_TAGS);
 
 const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 	DeepbookKnownNetwork,
@@ -142,17 +144,28 @@ const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 		readonly chain: string;
 		readonly packageId: string;
 		readonly registryId: string;
+		readonly pyth: PythHandle;
 	}
 > = {
 	testnet: {
 		chain: 'sui:testnet',
 		packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 		registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
+		pyth: {
+			stateId: '0x243759059f4c3111179da5878c12f68d612c21a8d54d85edc86164bb18be1c7c',
+			wormholeStateId: '0x31358d198147da50db32eda2562951d53973a0c0ad5ed738e9b17d88b213d790',
+			feeds: [],
+		},
 	},
 	mainnet: {
 		chain: 'sui:mainnet',
 		packageId: '0xf48222c4e057fa468baf136bff8e12504209d43850c5778f76159292a96f621e',
 		registryId: '0xaf16199a2dff736e9f07a845f23c5da6df6f756eddb631aed9d24a93efc4549d',
+		pyth: {
+			stateId: '0x1f9310238ee9298fb703c3419030b35b22bb1cc37113e3bb5007c99aec79e5b8',
+			wormholeStateId: '0xaeab97f96cf9877fee2883315d459552b2b921edc16d7ceac6eab944dd88919c',
+			feeds: [],
+		},
 	},
 };
 
@@ -306,7 +319,7 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 				makeDeepbookCodegenable(bindings);
 			return capabilities(composite, snap, codegen);
 		},
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: DEEPBOOK_ERROR_TAGS }],
+		errorContributions: deepbookErrorContributions,
 		liftedSiblings: [],
 	});
 };
@@ -345,7 +358,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 					registryId,
 					adminCapId: null,
 					pools: [],
-					pyth: null,
+					pyth: known?.pyth ?? null,
 					margin: null,
 					serverUrl: null,
 					indexerUrl: null,
@@ -361,14 +374,19 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				registryId: resolved.registryId,
 				adminCapId: null,
 				pools: [],
-				pyth: null,
+				pyth: resolved.pyth
+					? {
+							stateId: resolved.pyth.stateId,
+							wormholeStateId: resolved.pyth.wormholeStateId,
+						}
+					: null,
 				margin: null,
 				serverUrl: null,
 				indexerUrl: null,
 			};
 			return capabilities(snap, makeDeepbookCodegenable(bindings));
 		},
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: DEEPBOOK_ERROR_TAGS }],
+		errorContributions: deepbookErrorContributions,
 	});
 };
 

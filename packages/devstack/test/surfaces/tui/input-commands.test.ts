@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 
 import { pluginKey } from '../../../src/substrate/brand.ts';
 import type { EngineCommand } from '../../../src/substrate/events.ts';
-import { commandForKey, selectionDeltaForKey } from '../../../src/surfaces/tui/input.tsx';
+import { commandForKey } from '../../../src/surfaces/tui/input.tsx';
 
 describe('input → EngineCommand mapping', () => {
 	it('q publishes shutdown.requested', () => {
@@ -40,13 +40,6 @@ describe('input → EngineCommand mapping', () => {
 	it('unmapped keys publish nothing', () => {
 		expect(commandForKey('a', false)).toBeNull();
 		expect(commandForKey('1', false)).toBeNull();
-	});
-	it('focus keys move local row selection', () => {
-		expect(selectionDeltaForKey('j', {})).toBe(1);
-		expect(selectionDeltaForKey('k', {})).toBe(-1);
-		expect(selectionDeltaForKey('', { downArrow: true })).toBe(1);
-		expect(selectionDeltaForKey('', { upArrow: true })).toBe(-1);
-		expect(selectionDeltaForKey('x', {})).toBeNull();
 	});
 	it('selective-restart command shape is well-typed', () => {
 		// Compile-time check: the union accepts selective-restart with a

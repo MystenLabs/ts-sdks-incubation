@@ -18,14 +18,10 @@ const hello = localPackage('hello', {
 	publisher,
 });
 
-export default defineDevstack(
-	sui(),
-	publisher,
-	alice,
-	hello,
-	wallet({ accounts: [publisher, alice] }),
-	{ stackName: 'hello' },
-);
+export default defineDevstack({
+	members: [sui(), publisher, alice, hello, wallet({ accounts: [publisher, alice] })],
+	stackName: 'hello',
+});
 ```
 
 The public package surface is:

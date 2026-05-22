@@ -1,97 +1,61 @@
 // CLI surface — top-level entry point.
 //
-// Architecture (distilled/20-cli.md § Surface-equality principle): the
-// CLI is a peer of TUI / programmable API / codegen / build-integrations.
-// This file owns argv → command dispatch ONLY. Everything else
-// (engine boot, supervisor wiring, renderer mount) is the
-// dispatcher's job — the CLI hands typed commands to the command
-// channel and projects typed events back out.
-//
-// Per-invocation shape (architecture § Lifecycle / invocation
-// patterns):
-//
-//     parse → maybe-override-env → maybe-load-config → dispatch
-//             → render → teardown → exit
-//
-// This module implements the first and last steps; the middle steps
-// are delegated to per-verb `run*` functions.
-//
-// ARCHITECTURE INVARIANTS ENFORCED HERE:
-//   - `up` MUST run as the outer Node fiber (no nested runtime),
-//     otherwise SIGINT cannot reach finalizers. Callers run the
-//     returned Effect with `Effect.runFork` at the bin entry.
-//   - Network override applies BEFORE config import. The dispatcher
-//     writes `process.env.DEVSTACK_NETWORK` before `loader.load` runs.
-//   - Top-level error rendering MUST skip already-reported failures
-//     (`CliAlreadyReportedError` sentinel).
-//   - Exactly one envelope per JSON-mode invocation on stdout.
+// The public CLI is intentionally small: `up` is the attached operator
+// surface, `apply` is the one-shot CI path, and every other command is
+// offline/direct. There is no public peer-command model for talking to
+// an already-running `up` process.
 
+import {
+	buildApplication,
+	buildChoiceParser,
+	buildCommand,
+	buildRouteMap,
+	run as runStricli,
+	text_en,
+	type CommandContext as StricliCommandContext,
+	type StricliProcess,
+} from '@stricli/core';
 import { Effect } from 'effect';
 
-import { commandSchema, formatCommandHelp, isVerb, VERBS, type Verb } from './command-tree.ts';
-import { type CliError, CliInternalError, CliUsageError } from './errors.ts';
-import { ENV_VARS, type GlobalFlags, parseGlobalFlags } from './flags.ts';
+import { commandSchema } from './command-tree.ts';
+import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
+import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
+import { parseDevstackNetworkName } from '../../api/inference-network.ts';
 import { type CliIO, emitFailure, nodeProcessIO } from './output.ts';
 import {
-	type ApplyDeps,
-	type CodegenDeps,
-	type CommandContext,
 	type CommandResult,
 	type ConfigDeps,
 	type DoctorDeps,
-	type DownDeps,
-	type ExecDeps,
-	type ForkDeps,
-	type LogsDeps,
 	type PruneDeps,
-	type StackDeps,
-	type WipeDeps,
-	runApply,
-	runCodegen,
-	runConfig,
-	runDoctor,
-	runDown,
-	runExec,
-	runFork,
-	runLogs,
-	runPrune,
-	runSnapshot,
-	runStack,
-	runStatus,
-	runUp,
-	runWipe,
+	type PruneResourceScope,
 	type SnapshotDeps,
 	type StatusDeps,
-	type UpDeps,
+	type WipeDeps,
+	runConfig,
+	runDoctor,
+	runPrune,
+	runSnapshot,
+	runStatus,
+	runWipe,
 } from './commands/index.ts';
 
 // -----------------------------------------------------------------------------
-// Verb deps bundle
+// Deps bundle
 // -----------------------------------------------------------------------------
 
-/**
- * The dispatcher's deps bundle. Each verb's deps are independently
- * pluggable, so tests can inject only the seams the verb under test
- * needs (the others go undefined and that verb fails fast).
- *
- * In production the bin entry composes a single deps bundle from the
- * substrate layer + the L1/L3 orchestrator layers and passes it here.
- */
+export interface LifecycleCommandDeps {
+	readonly run: (flags: GlobalFlags) => Effect.Effect<CommandResult, CliError>;
+}
+
 export interface CliDeps {
-	readonly up: UpDeps;
-	readonly down: DownDeps;
+	readonly up: LifecycleCommandDeps;
+	readonly apply: LifecycleCommandDeps;
 	readonly status: StatusDeps;
 	readonly snapshot: SnapshotDeps;
 	readonly prune: PruneDeps;
-	readonly logs: LogsDeps;
-	readonly exec: ExecDeps;
 	readonly doctor: DoctorDeps;
-	readonly codegen: CodegenDeps;
 	readonly config: ConfigDeps;
-	readonly apply: ApplyDeps;
 	readonly wipe: WipeDeps;
-	readonly stack: StackDeps;
-	readonly fork: ForkDeps;
 }
 
 export interface DispatchEnv {
@@ -101,164 +65,598 @@ export interface DispatchEnv {
 	readonly io?: CliIO;
 }
 
-/**
- * Top-level dispatcher. Returns an Effect that resolves once the verb
- * has finished. Sets `process.exitCode` via the IO seam; does NOT call
- * `process.exit` — that is the bin entry's responsibility, after the
- * Effect's surrounding scope has closed.
- */
-export const dispatch = (deps: CliDeps, dispatchEnv: DispatchEnv): Effect.Effect<void> =>
-	Effect.gen(function* () {
-		const io = dispatchEnv.io ?? nodeProcessIO;
-		let flags: GlobalFlags;
+// -----------------------------------------------------------------------------
+// Stricli context + buffered process
+// -----------------------------------------------------------------------------
+
+interface BufferedProcess extends StricliProcess {
+	readonly stdoutBuffer: Array<string>;
+	readonly stderrBuffer: Array<string>;
+	exitCode?: number | string | null;
+}
+
+interface TrackedIO extends CliIO {
+	readonly touched: () => boolean;
+	readonly lastExitCode: () => number | null;
+}
+
+interface DevstackCliContext extends StricliCommandContext {
+	readonly deps: CliDeps;
+	readonly env: Readonly<Record<string, string | undefined>>;
+	readonly stdinIsTty: boolean;
+	readonly io: TrackedIO;
+	readonly process: BufferedProcess;
+}
+
+const makeBufferedProcess = (
+	env: Readonly<Record<string, string | undefined>>,
+): BufferedProcess => {
+	const stdoutBuffer: Array<string> = [];
+	const stderrBuffer: Array<string> = [];
+	return {
+		stdoutBuffer,
+		stderrBuffer,
+		env,
+		stdout: {
+			write: (str) => {
+				stdoutBuffer.push(str);
+			},
+		},
+		stderr: {
+			write: (str) => {
+				stderrBuffer.push(str);
+			},
+		},
+	};
+};
+
+const trackIO = (io: CliIO): TrackedIO => {
+	let touched = false;
+	let lastExitCode: number | null = null;
+	return {
+		touched: () => touched,
+		lastExitCode: () => lastExitCode,
+		writeStdout: (line) =>
+			io.writeStdout(line).pipe(
+				Effect.tap(() =>
+					Effect.sync(() => {
+						touched = true;
+					}),
+				),
+			),
+		writeStderr: (line) =>
+			io.writeStderr(line).pipe(
+				Effect.tap(() =>
+					Effect.sync(() => {
+						touched = true;
+					}),
+				),
+			),
+		setExitCode: (code) =>
+			io.setExitCode(code).pipe(
+				Effect.tap(() =>
+					Effect.sync(() => {
+						touched = true;
+						lastExitCode = code;
+					}),
+				),
+			),
+	};
+};
+
+// -----------------------------------------------------------------------------
+// Flag models
+// -----------------------------------------------------------------------------
+
+interface IdentityFlags {
+	readonly json?: boolean;
+	readonly app?: string;
+	readonly stack?: string;
+	readonly stateDir?: string;
+	readonly verbose?: boolean;
+}
+
+interface ConfigFlags extends IdentityFlags {
+	readonly config?: string;
+	readonly network?: string;
+}
+
+interface UpFlags extends ConfigFlags {
+	readonly renderer?: CliRendererMode;
+}
+
+interface DestructiveFlags extends IdentityFlags {
+	readonly dryRun?: boolean;
+	readonly yes?: boolean;
+	readonly noInput?: boolean;
+}
+
+interface PruneFlags extends DestructiveFlags {
+	readonly list?: boolean;
+	readonly all?: boolean;
+	readonly noContainers?: boolean;
+	readonly noNetworks?: boolean;
+	readonly noVolumes?: boolean;
+	readonly includeImages?: boolean;
+}
+
+interface SnapshotSaveFlags extends ConfigFlags {
+	readonly label?: string;
+}
+
+const textParser = (input: string): string => input;
+
+const stringFlag = (brief: string, placeholder: string) =>
+	({
+		kind: 'parsed',
+		parse: textParser,
+		optional: true,
+		placeholder,
+		brief,
+	}) as const;
+
+const boolFlag = (brief: string) =>
+	({
+		kind: 'boolean',
+		optional: true,
+		brief,
+	}) as const;
+
+const identityFlagParams = {
+	json: boolFlag('Emit JSON envelope output'),
+	app: stringFlag('Override app name', 'name'),
+	stack: stringFlag('Override stack name', 'name'),
+	stateDir: stringFlag('Override state directory', 'path'),
+	verbose: boolFlag('Enable more verbose logging'),
+} as const;
+
+const configFlagParams = {
+	...identityFlagParams,
+	config: stringFlag('Override devstack.config.ts path', 'path'),
+	network: stringFlag('Override network before config import', 'name'),
+} as const;
+
+const destructiveFlagParams = {
+	...identityFlagParams,
+	dryRun: boolFlag('Skip mutating effects'),
+	yes: boolFlag('Assume yes on prompts'),
+	noInput: boolFlag('Forbid prompts'),
+} as const;
+
+const pruneFlagParams = {
+	...destructiveFlagParams,
+	list: boolFlag('List devstack-labelled Docker resources without pruning'),
+	all: boolFlag('Prune every idle non-shared resource group'),
+	noContainers: boolFlag('Do not remove containers'),
+	noNetworks: boolFlag('Do not remove networks'),
+	noVolumes: boolFlag('Do not remove volumes'),
+	includeImages: boolFlag('Also remove devstack-labelled images for selected groups'),
+} as const;
+
+const rendererParser = buildChoiceParser(['tui', 'plain', 'silent'] as const);
+
+const outputModeFrom = (
+	flags: Pick<IdentityFlags, 'json'>,
+	env: Readonly<Record<string, string | undefined>>,
+): OutputMode => (flags.json === true || env[ENV_VARS.JSON] === '1' ? 'json' : 'human');
+
+const pruneResourcesFromFlags = (flags: PruneFlags): PruneResourceScope => ({
+	containers: flags.noContainers !== true,
+	networks: flags.noNetworks !== true,
+	volumes: flags.noVolumes !== true,
+	images: flags.includeImages === true,
+});
+
+const optionalEnv = (
+	value: string | undefined,
+	env: Readonly<Record<string, string | undefined>>,
+	key: string,
+): string | undefined => value ?? env[key];
+
+const makeGlobalFlags = (
+	ctx: DevstackCliContext,
+	flags: IdentityFlags & Partial<ConfigFlags & UpFlags & DestructiveFlags>,
+	rest: ReadonlyArray<string>,
+): GlobalFlags => {
+	const networkRaw = optionalEnv(flags.network, ctx.env, ENV_VARS.NETWORK);
+	let network: string | undefined;
+	if (networkRaw !== undefined) {
 		try {
-			flags = parseGlobalFlags(dispatchEnv.argv, {
-				env: dispatchEnv.env,
-				stdinIsTty: dispatchEnv.stdinIsTty,
-			});
+			network = parseDevstackNetworkName(
+				networkRaw,
+				flags.network === undefined ? ENV_VARS.NETWORK : '--network',
+			);
 		} catch (cause) {
-			if (cause instanceof CliUsageError) {
-				yield* emitFailure(io, 'human', {
-					command: '(parse)',
-					elapsedMs: 0,
-					error: cause,
-				});
-				return;
-			}
-			throw cause;
+			throw cause instanceof Error
+				? new CliUsageError({ message: cause.message })
+				: new CliInternalError({ message: 'failed to parse network flag', cause });
 		}
+	}
+	return {
+		outputMode: outputModeFrom(flags, ctx.env),
+		app: optionalEnv(flags.app, ctx.env, ENV_VARS.APP),
+		stack: optionalEnv(flags.stack, ctx.env, ENV_VARS.STACK),
+		stateDir: optionalEnv(flags.stateDir, ctx.env, ENV_VARS.STATE_DIR),
+		configPath: optionalEnv(flags.config, ctx.env, ENV_VARS.CONFIG_PATH),
+		network,
+		renderer: flags.renderer,
+		dryRun: flags.dryRun === true,
+		confirm: {
+			assumeYes: flags.yes === true,
+			forbidPrompt: flags.noInput === true || ctx.env[ENV_VARS.NO_INPUT] === '1',
+			stdinIsTty: ctx.stdinIsTty,
+		},
+		schemaEmit: false,
+		verbose: flags.verbose === true,
+		help: false,
+		version: false,
+		rest,
+	};
+};
 
-		// `--schema --json` short-circuits before any IO or config load.
-		if (flags.schemaEmit) {
-			yield* emitSchema(io, flags);
-			yield* io.setExitCode(0);
-			return;
-		}
-
-		// `--version` and `--help` are also short-circuits.
-		if (flags.version) {
-			yield* io.writeStdout('devstack 0.0.0');
-			yield* io.setExitCode(0);
-			return;
-		}
-		if (flags.help) {
-			yield* io.writeStdout(formatCommandHelp(flags.rest));
-			yield* io.setExitCode(0);
-			return;
-		}
-
-		// Apply `--network` to `process.env` BEFORE config import. The
-		// loader reads env at top level, so this MUST happen now.
-		if (flags.network !== undefined) {
-			yield* Effect.sync(() => {
+const setNetworkEnv = (flags: GlobalFlags): Effect.Effect<void> =>
+	flags.network === undefined
+		? Effect.void
+		: Effect.sync(() => {
 				process.env[ENV_VARS.NETWORK] = flags.network;
 			});
-		}
 
-		const [verb, ...rest] = flags.rest;
-		if (verb === undefined) {
-			yield* emitFailure(io, flags.outputMode, {
-				command: '(no verb)',
+// -----------------------------------------------------------------------------
+// Command execution helpers
+// -----------------------------------------------------------------------------
+
+const runCommandEffect = async (
+	ctx: DevstackCliContext,
+	command: string,
+	flags: GlobalFlags,
+	effect: Effect.Effect<CommandResult, CliError>,
+): Promise<void> => {
+	const program = setNetworkEnv(flags).pipe(
+		Effect.andThen(effect),
+		Effect.catch((error: CliError) =>
+			emitFailure(ctx.io, flags.outputMode, {
+				command,
+				elapsedMs: 0,
+				error,
+			}).pipe(Effect.as({ exitCode: exitCodeFor(error) })),
+		),
+		Effect.catchCause((cause) =>
+			emitFailure(ctx.io, flags.outputMode, {
+				command,
+				elapsedMs: 0,
+				error: new CliInternalError({ message: 'unexpected internal failure' }),
+				cause,
+			}).pipe(Effect.as({ exitCode: 70 })),
+		),
+	);
+	const result = await Effect.runPromise(program);
+	if (ctx.io.lastExitCode() === null) {
+		await Effect.runPromise(ctx.io.setExitCode(result.exitCode));
+	}
+};
+
+const runWithFlags = async (
+	ctx: DevstackCliContext,
+	command: string,
+	rawFlags: IdentityFlags & Partial<ConfigFlags & UpFlags & DestructiveFlags>,
+	rest: ReadonlyArray<string>,
+	effect: (flags: GlobalFlags) => Effect.Effect<CommandResult, CliError>,
+): Promise<void> => {
+	let flags: GlobalFlags;
+	try {
+		flags = makeGlobalFlags(ctx, rawFlags, rest);
+	} catch (cause) {
+		const error =
+			cause instanceof CliUsageError
+				? cause
+				: new CliInternalError({ message: 'failed to resolve CLI flags', cause });
+		const mode = outputModeFrom(rawFlags, ctx.env);
+		await Effect.runPromise(
+			emitFailure(ctx.io, mode, {
+				command,
+				elapsedMs: 0,
+				error,
+			}),
+		);
+		return;
+	}
+	await runCommandEffect(ctx, command, flags, effect(flags));
+};
+
+const requiredPositional = (placeholder: string, brief: string) =>
+	({
+		parse: textParser,
+		placeholder,
+		brief,
+	}) as const;
+
+const optionalPositional = (placeholder: string, brief: string) =>
+	({
+		parse: textParser,
+		placeholder,
+		brief,
+		optional: true as const,
+	}) as const;
+
+// -----------------------------------------------------------------------------
+// Commands
+// -----------------------------------------------------------------------------
+
+const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
+	parameters: {
+		flags: {
+			...configFlagParams,
+			renderer: {
+				kind: 'parsed',
+				parse: rendererParser,
+				optional: true,
+				placeholder: 'tui|plain|silent',
+				brief: 'Select the attached renderer',
+			},
+		},
+	},
+	docs: {
+		brief: 'Boot a stack and stay attached until interrupted',
+	},
+	func: function (flags) {
+		return runWithFlags(this, 'up', flags, [], (global) => this.deps.up.run(global));
+	},
+});
+
+const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
+	parameters: { flags: configFlagParams },
+	docs: {
+		brief: 'Boot, reconcile, emit generated files, and exit',
+	},
+	func: function (flags) {
+		return runWithFlags(this, 'apply', flags, [], (global) => this.deps.apply.run(global));
+	},
+});
+
+const statusCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
+	parameters: { flags: identityFlagParams },
+	docs: { brief: 'Show the persisted stack projection' },
+	func: function (flags) {
+		return runWithFlags(this, 'status', flags, [], (global) =>
+			runStatus(this.deps.status, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const doctorCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
+	parameters: { flags: identityFlagParams },
+	docs: { brief: 'Run host and stack preflight checks' },
+	func: function (flags) {
+		return runWithFlags(this, 'doctor', flags, [], (global) =>
+			runDoctor(this.deps.doctor, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const configCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
+	parameters: { flags: configFlagParams },
+	docs: { brief: 'Print resolved config inputs' },
+	func: function (flags) {
+		return runWithFlags(this, 'config', flags, [], (global) =>
+			runConfig(this.deps.config, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const schemaCommand = buildCommand<Pick<IdentityFlags, 'json'>, [], DevstackCliContext>({
+	parameters: { flags: { json: identityFlagParams.json } },
+	docs: { brief: 'Emit the CLI schema' },
+	func: function (flags) {
+		const mode = outputModeFrom(flags, this.env);
+		return Effect.runPromise(
+			this.io
+				.writeStdout(JSON.stringify({ ...commandSchema(), outputMode: mode }))
+				.pipe(Effect.andThen(this.io.setExitCode(0))),
+		);
+	},
+});
+
+const snapshotSaveCommand = buildCommand<
+	SnapshotSaveFlags,
+	[string | undefined],
+	DevstackCliContext
+>({
+	parameters: {
+		flags: {
+			...configFlagParams,
+			label: stringFlag('Human-readable snapshot label', 'label'),
+		},
+		positional: { kind: 'tuple', parameters: [optionalPositional('id', 'snapshot id')] },
+	},
+	docs: { brief: 'Capture a snapshot' },
+	func: function (flags, snapshotId) {
+		const rest = [
+			'save',
+			...(snapshotId === undefined ? [] : [snapshotId]),
+			...(flags.label === undefined ? [] : ['--label', flags.label]),
+		];
+		return runWithFlags(this, 'snapshot save', flags, rest, (global) =>
+			runSnapshot(this.deps.snapshot, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const snapshotRestoreCommand = buildCommand<IdentityFlags, [string], DevstackCliContext>({
+	parameters: {
+		flags: identityFlagParams,
+		positional: {
+			kind: 'tuple',
+			parameters: [requiredPositional('id-or-label', 'snapshot id or label')],
+		},
+	},
+	docs: { brief: 'Restore a snapshot' },
+	func: function (flags, snapshotRef) {
+		return runWithFlags(this, 'snapshot restore', flags, ['restore', snapshotRef], (global) =>
+			runSnapshot(this.deps.snapshot, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const snapshotListCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
+	parameters: { flags: identityFlagParams },
+	docs: { brief: 'List snapshots' },
+	func: function (flags) {
+		return runWithFlags(this, 'snapshot list', flags, ['list'], (global) =>
+			runSnapshot(this.deps.snapshot, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const snapshotDeleteCommand = buildCommand<IdentityFlags, [string], DevstackCliContext>({
+	parameters: {
+		flags: identityFlagParams,
+		positional: {
+			kind: 'tuple',
+			parameters: [requiredPositional('id-or-label', 'snapshot id or label')],
+		},
+	},
+	docs: { brief: 'Delete a snapshot' },
+	func: function (flags, snapshotRef) {
+		return runWithFlags(this, 'snapshot delete', flags, ['delete', snapshotRef], (global) =>
+			runSnapshot(this.deps.snapshot, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const snapshotCommands = buildRouteMap({
+	routes: {
+		save: snapshotSaveCommand,
+		restore: snapshotRestoreCommand,
+		list: snapshotListCommand,
+		delete: snapshotDeleteCommand,
+	},
+	docs: { brief: 'Capture, restore, list, or delete stack snapshots' },
+});
+
+const pruneCommand = buildCommand<PruneFlags, [], DevstackCliContext>({
+	parameters: { flags: pruneFlagParams },
+	docs: { brief: 'Inventory and prune devstack-labelled Docker resources' },
+	func: function (flags) {
+		return runWithFlags(this, 'prune', flags, [], (global) =>
+			runPrune(
+				this.deps.prune,
+				{ flags: global, io: this.io },
+				{
+					mode: flags.list === true ? 'list' : flags.all === true ? 'all' : 'auto',
+					resources: pruneResourcesFromFlags(flags),
+				},
+			),
+		);
+	},
+});
+
+const wipeCommand = buildCommand<DestructiveFlags, [], DevstackCliContext>({
+	parameters: { flags: destructiveFlagParams },
+	docs: { brief: 'Destroy all state for the selected stack' },
+	func: function (flags) {
+		return runWithFlags(this, 'wipe', flags, [], (global) =>
+			runWipe(this.deps.wipe, { flags: global, io: this.io }),
+		);
+	},
+});
+
+const root = buildRouteMap({
+	routes: {
+		up: upCommand,
+		apply: applyCommand,
+		status: statusCommand,
+		doctor: doctorCommand,
+		config: configCommand,
+		schema: schemaCommand,
+		snapshot: snapshotCommands,
+		prune: pruneCommand,
+		wipe: wipeCommand,
+	},
+	docs: {
+		brief: 'Sui development stack CLI',
+	},
+});
+
+const app = buildApplication(root, {
+	name: 'devstack',
+	versionInfo: { currentVersion: '0.0.0' },
+	scanner: { caseStyle: 'allow-kebab-for-camel' },
+	documentation: {
+		caseStyle: 'convert-camel-to-kebab',
+		disableAnsiColor: true,
+		onlyRequiredInUsageLine: true,
+	},
+	localization: {
+		loadText: () => ({
+			...text_en,
+			exceptionWhileParsingArguments: (error) =>
+				error instanceof Error ? error.message : String(error),
+		}),
+	},
+});
+
+const jsonRequested = (
+	argv: ReadonlyArray<string>,
+	env: Readonly<Record<string, string | undefined>>,
+): boolean => env[ENV_VARS.JSON] === '1' || argv.includes('--json');
+
+const normalizeStricliExitCode = (code: number | string | null | undefined): number => {
+	if (typeof code === 'number' && code !== 0) return 64;
+	return 0;
+};
+
+const flushBufferedProcess = (
+	process: BufferedProcess,
+	io: CliIO,
+	argv: ReadonlyArray<string>,
+	env: Readonly<Record<string, string | undefined>>,
+): Effect.Effect<void> =>
+	Effect.gen(function* () {
+		const exitCode = normalizeStricliExitCode(process.exitCode);
+		const stdout = process.stdoutBuffer.join('');
+		const stderr = process.stderrBuffer.join('').trim();
+		if (exitCode !== 0 && jsonRequested(argv, env)) {
+			yield* emitFailure(io, 'json', {
+				command: '(parse)',
 				elapsedMs: 0,
 				error: new CliUsageError({
-					message: 'no command specified',
-					hint: 'try one of: up, down, status, snapshot, prune, logs, exec, doctor, codegen, config, apply, wipe, stack, fork',
+					message: stderr.length > 0 ? stderr : 'invalid command line',
 				}),
 			});
 			return;
 		}
-		if (!isVerb(verb)) {
-			yield* emitFailure(io, flags.outputMode, {
-				command: '(unknown verb)',
-				elapsedMs: 0,
-				error: new CliUsageError({
-					message: `unknown command: ${verb}`,
-					hint: `available: ${VERBS.join(', ')}`,
-				}),
-			});
-			return;
-		}
+		if (stdout.length > 0)
+			yield* io.writeStdout(stdout.endsWith('\n') ? stdout.slice(0, -1) : stdout);
+		if (stderr.length > 0) yield* io.writeStderr(stderr);
+		yield* io.setExitCode(exitCode);
+	});
 
-		// The verb's own argv lives in `flags.rest` minus the verb head.
-		const verbCtx: CommandContext = {
-			flags: { ...flags, rest },
+export const dispatch = (deps: CliDeps, dispatchEnv: DispatchEnv): Effect.Effect<void> =>
+	Effect.gen(function* () {
+		const io = trackIO(dispatchEnv.io ?? nodeProcessIO);
+		const process = makeBufferedProcess(dispatchEnv.env);
+		const ctx: DevstackCliContext = {
+			process,
+			deps,
+			env: dispatchEnv.env,
+			stdinIsTty: dispatchEnv.stdinIsTty,
 			io,
 		};
-
-		const verbEffect = runVerb(verb, deps, verbCtx);
-		yield* verbEffect.pipe(
+		yield* Effect.tryPromise({
+			try: () => runStricli(app, dispatchEnv.argv, ctx),
+			catch: (cause) => new CliInternalError({ message: 'CLI dispatcher failed', cause }),
+		}).pipe(
 			Effect.catch((error: CliError) =>
-				emitFailure(io, flags.outputMode, {
-					command: verb,
+				emitFailure(io, jsonRequested(dispatchEnv.argv, dispatchEnv.env) ? 'json' : 'human', {
+					command: '(dispatch)',
 					elapsedMs: 0,
 					error,
 				}),
 			),
-			Effect.catchCause((cause) =>
-				// Defects escape the typed-error channel; render them with
-				// the cascade formatter so the user gets the same shape.
-				emitFailure(io, flags.outputMode, {
-					command: verb,
-					elapsedMs: 0,
-					error: new CliInternalError({ message: 'unexpected internal failure' }),
-					cause,
-				}),
-			),
 		);
-	});
-
-// -----------------------------------------------------------------------------
-// Verb router
-// -----------------------------------------------------------------------------
-
-const runVerb = (
-	verb: Verb,
-	deps: CliDeps,
-	ctx: CommandContext,
-): Effect.Effect<CommandResult, CliError> => {
-	switch (verb) {
-		case 'up':
-			return runUp(deps.up, ctx);
-		case 'down':
-			return runDown(deps.down, ctx);
-		case 'status':
-			return runStatus(deps.status, ctx);
-		case 'snapshot':
-			return runSnapshot(deps.snapshot, ctx);
-		case 'prune':
-			return runPrune(deps.prune, ctx);
-		case 'logs':
-			return runLogs(deps.logs, ctx);
-		case 'exec':
-			return runExec(deps.exec, ctx);
-		case 'doctor':
-			return runDoctor(deps.doctor, ctx);
-		case 'codegen':
-			return runCodegen(deps.codegen, ctx);
-		case 'config':
-			return runConfig(deps.config, ctx);
-		case 'apply':
-			return runApply(deps.apply, ctx);
-		case 'wipe':
-			return runWipe(deps.wipe, ctx);
-		case 'stack':
-			return runStack(deps.stack, ctx);
-		case 'fork':
-			return runFork(deps.fork, ctx);
-	}
-};
-
-// -----------------------------------------------------------------------------
-// `--schema --json` action
-// -----------------------------------------------------------------------------
-
-const emitSchema = (io: CliIO, flags: GlobalFlags): Effect.Effect<void> =>
-	Effect.gen(function* () {
-		const schema = {
-			...commandSchema(),
-			outputMode: flags.outputMode,
-		};
-		yield* io.writeStdout(JSON.stringify(schema));
+		if (!io.touched()) {
+			yield* flushBufferedProcess(process, io, dispatchEnv.argv, dispatchEnv.env);
+		}
 	});
 
 // -----------------------------------------------------------------------------
@@ -290,7 +688,6 @@ export {
 	CliConfigNotFoundError,
 	CliConfirmRequiredError,
 	CliInternalError,
-	CliNoSupervisorError,
 	CliSnapshotNotFoundError,
 	CliSupervisorLiveError,
 	CliUnavailableError,

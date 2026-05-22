@@ -5,15 +5,17 @@ import {
 	account,
 	coin,
 	defineDevstack,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
 	localPackage,
 	sui,
-	type AnyMember,
-	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEV_ORIGIN = 'http://127.0.0.1:5173';
+const DEV_PORT = 5173;
+const DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
+const ROUTER_DEV_ORIGIN = 'http://dev.token-studio.token-studio.localhost:5175' as const;
 
 const alice = account('alice');
 const bob = account('bob');
@@ -24,16 +26,21 @@ const managedCoin = localPackage('managed_coin', {
 	publisher: alice,
 });
 const studioCoin = coin.fromPackage(managedCoin, 'MANAGED_COIN');
+const devWallet = wallet({
+	accounts: [alice, bob, carol],
+	enableRouter: true,
+	allowedOrigins: [DEV_ORIGIN, ROUTER_DEV_ORIGIN],
+});
+const app = hostService({
+	name: 'app',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	needs: [managedCoin, studioCoin, devWallet] as const,
+});
 
-const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
-	sui(),
-	alice,
-	bob,
-	carol,
-	managedCoin,
-	studioCoin,
-	wallet({ accounts: [alice, bob, carol], allowedOrigins: [DEV_ORIGIN] }),
-	{ stackName: 'token-studio' },
-);
+const stack = defineDevstack({ members: [sui(), alice, bob, carol, managedCoin, studioCoin, devWallet, app], stackName: 'token-studio' });
 
 export default stack;

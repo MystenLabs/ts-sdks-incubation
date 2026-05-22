@@ -34,6 +34,8 @@ import type { Scope } from 'effect';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import type { AccountValue } from '../account/service.ts';
 import {
 	walletBootError,
@@ -165,8 +167,11 @@ export const startHttpServer = (
 		// — a hung handler shouldn't block teardown.
 		yield* Effect.addFinalizer(() => gracefulClose(server).pipe(Effect.uninterruptible));
 
-		yield* Effect.logInfo(
-			`wallet HTTP server listening on http://${config.bindAddress}:${config.port}`,
+		yield* Effect.logInfo('wallet HTTP server listening').pipe(
+			Effect.annotateLogs({
+				[SpanAttr.host]: config.bindAddress,
+				[SpanAttr.port]: config.port,
+			}),
 		);
 
 		const url = `http://${config.bindAddress}:${config.port}`;
@@ -410,12 +415,23 @@ export const dispatch = (
 		const originResult = checkOrigin(config.policy, req.headers['origin']);
 		if (originResult === 'missing') {
 			// Log the BEARER-VALIDITY only, never the token itself.
-			yield* Effect.logWarning(`wallet[${requestId}] origin missing on ${req.method} ${path}`);
+			yield* Effect.logWarning('wallet origin missing').pipe(
+				Effect.annotateLogs({
+					[SpanAttr.requestId]: requestId,
+					[SpanAttr.httpMethod]: req.method,
+					[SpanAttr.httpPath]: path,
+				}),
+			);
 			return text(403, 'Origin header required');
 		}
 		if (originResult === 'forbidden') {
-			yield* Effect.logWarning(
-				`wallet[${requestId}] forbidden origin '${req.headers['origin']}' on ${req.method} ${path}`,
+			yield* Effect.logWarning('wallet origin forbidden').pipe(
+				Effect.annotateLogs({
+					[SpanAttr.requestId]: requestId,
+					[SpanAttr.walletOrigin]: req.headers.origin ?? '(missing)',
+					[SpanAttr.httpMethod]: req.method,
+					[SpanAttr.httpPath]: path,
+				}),
 			);
 			return text(403, 'forbidden origin');
 		}
@@ -425,10 +441,15 @@ export const dispatch = (
 		//    boolean validity.
 		const bearer = parseBearerHeader(req.headers[WALLET_AUTH_HEADER]);
 		const bearerValid = bearer !== null && safeBearerEquals(bearer, config.token);
-		yield* Effect.annotateCurrentSpan({ 'wallet.auth.bearerValid': bearerValid });
+		yield* Effect.annotateCurrentSpan({ [SpanAttr.walletBearerValid]: bearerValid });
 		if (!bearerValid) {
-			yield* Effect.logWarning(
-				`wallet[${requestId}] unauthorized (bearer compare failed) on ${req.method} ${path}`,
+			yield* Effect.logWarning('wallet bearer check failed').pipe(
+				Effect.annotateLogs({
+					[SpanAttr.requestId]: requestId,
+					[SpanAttr.walletBearerValid]: bearerValid,
+					[SpanAttr.httpMethod]: req.method,
+					[SpanAttr.httpPath]: path,
+				}),
 			);
 			return errorEnvelope(
 				walletRequestError({
@@ -522,26 +543,19 @@ const decodeJsonBody = <A>(
 				}),
 			);
 		}
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(body) as unknown,
-			catch: (cause) =>
+		return yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
+			source: 'wallet request body',
+			mkError: (issue) =>
 				walletRequestError({
 					phase: 'body-invalid',
 					httpStatus: 400,
-					message: 'invalid JSON body',
-					cause,
+					message:
+						issue.message === 'failed to parse JSON'
+							? 'invalid JSON body'
+							: 'request body did not match schema',
+					cause: issue.cause,
 				}),
-		});
-		return yield* Schema.decodeUnknownEffect(schema)(parsed).pipe(
-			Effect.mapError((cause) =>
-				walletRequestError({
-					phase: 'body-invalid',
-					httpStatus: 400,
-					message: 'request body did not match schema',
-					cause,
-				}),
-			),
-		) as Effect.Effect<A, WalletRequestError>;
+		}) as Effect.Effect<A, WalletRequestError>;
 	});
 
 const handleSign = (

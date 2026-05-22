@@ -40,12 +40,9 @@ import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/browser.ts';
 // optional peer.
 // -----------------------------------------------------------------------------
 
-/** Subset of `Page` we use. `evaluate` is the only API we call. */
+/** Subset of `Page` we use. */
 export interface PlaywrightPageLike {
 	readonly evaluate: <T>(fn: (arg: unknown) => T, arg?: unknown) => Promise<T>;
-	readonly getByLabel: (label: string) => {
-		readonly click: () => Promise<void>;
-	};
 }
 
 // -----------------------------------------------------------------------------
@@ -227,21 +224,15 @@ export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletA
 export const DAPP_KIT_SLOT = DAPP_KIT_SLOT_KEY;
 
 /**
- * Drive the dev-wallet's connect flow in the browser context. Steps:
- *   1. Click the wallet's connect button via the literal label.
- *   2. Wait for the dev-wallet entry (matched by literal label
- *      `"Dev Wallet"`).
- *   3. Switch the active account in the dapp-kit slot to
- *      `accountName`.
+ * Connect/switch the app's active dev-wallet account through the dapp-kit
+ * slot the app populates at boot.
  *
- * The literal labels here are the dev-wallet's UI contract;
- * architecture § Invariants ("dev-wallet is matched by literal
- * label").
+ * This intentionally avoids driving the wallet UI. The app-side slot
+ * implementation still goes through dapp-kit + wallet-standard, so pairing,
+ * origin, and account discovery failures surface as real browser failures.
  */
 export const connectAs = async (page: PlaywrightPageLike, accountName: string): Promise<void> => {
 	try {
-		await page.getByLabel('Connect Wallet').click();
-		await page.getByLabel('Dev Wallet').click();
 		await selectAccount(page, accountName);
 	} catch (cause) {
 		throw new PlaywrightWalletAdapterError({
@@ -266,13 +257,13 @@ export const selectAccount = async (
 	// in-browser closure can't import it, but the global-augmentation
 	// `globalThis.__devstackDAppKit__` is the typed contract both sides
 	// rely on.
-	const result = await page.evaluate((name): { ok: boolean; reason?: string } => {
+	const result = await page.evaluate(async (name): Promise<{ ok: boolean; reason?: string }> => {
 		const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
 		if (slot === undefined || slot.selectAccount === undefined) {
 			return { ok: false, reason: 'slot-not-populated' };
 		}
 		try {
-			slot.selectAccount(name as string);
+			await slot.selectAccount(name as string);
 			return { ok: true };
 		} catch (err) {
 			return {

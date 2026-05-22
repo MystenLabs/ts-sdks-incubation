@@ -21,7 +21,8 @@
 
 import { Effect } from 'effect';
 
-import { sealError, type SealError } from '../errors.ts';
+import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
+import { sealConfigError, sealError, type SealAnyError } from '../errors.ts';
 import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
@@ -76,14 +77,21 @@ export const validateLiveInputs = (
 		inputs.network && KNOWN_DEPLOYMENTS[inputs.network] ? KNOWN_DEPLOYMENTS[inputs.network] : null;
 	const objectId = inputs.objectId ?? fromNetwork?.keyServerObjectId;
 	const keyServerUrl = inputs.keyServerUrl ?? fromNetwork?.keyServerUrl;
-	if (!objectId || !keyServerUrl) {
-		throw new Error(
-			`seal.live: missing required fields. Pass network ('testnet') or set objectId + keyServerUrl explicitly (got network=${String(
-				inputs.network,
-			)}, objectId=${String(inputs.objectId)}, keyServerUrl=${String(inputs.keyServerUrl)}).`,
-		);
-	}
-	return { objectId, keyServerUrl };
+	const message = `seal.live: missing required fields. Pass network ('testnet') or set objectId + keyServerUrl explicitly (got network=${String(
+		inputs.network,
+	)}, objectId=${String(inputs.objectId)}, keyServerUrl=${String(inputs.keyServerUrl)}).`;
+	return {
+		objectId: expectNonEmptyString(objectId, {
+			field: 'objectId',
+			message,
+			mkError: sealConfigError,
+		}),
+		keyServerUrl: expectNonEmptyString(keyServerUrl, {
+			field: 'keyServerUrl',
+			message,
+			mkError: sealConfigError,
+		}),
+	};
 };
 
 // ---------------------------------------------------------------------------
@@ -92,7 +100,9 @@ export const validateLiveInputs = (
 
 /** Acquire body for the live mode. Returns the read-side handle
  *  ONLY (no manager tag — distilled-doc invariant #15). */
-export const acquireLive = (inputs: LiveModeInputs): Effect.Effect<SealKnownResolved, SealError> =>
+export const acquireLive = (
+	inputs: LiveModeInputs,
+): Effect.Effect<SealKnownResolved, SealAnyError> =>
 	Effect.gen(function* () {
 		// Validation runs at the factory layer; here we trust the
 		// validated fields. The substrate's registry publishes happen
@@ -103,6 +113,14 @@ export const acquireLive = (inputs: LiveModeInputs): Effect.Effect<SealKnownReso
 		try {
 			resolved = validateLiveInputs(inputs);
 		} catch (err) {
+			if (
+				typeof err === 'object' &&
+				err !== null &&
+				'_tag' in err &&
+				err._tag === 'SealConfigError'
+			) {
+				return yield* Effect.fail(err as SealAnyError);
+			}
 			return yield* Effect.fail(
 				sealError('seal', {
 					name: inputs.name,

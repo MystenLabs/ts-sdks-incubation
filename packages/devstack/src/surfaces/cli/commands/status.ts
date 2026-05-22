@@ -26,6 +26,8 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 			cycle: null,
 			rowCount: 0,
 			endpointCount: 0,
+			accountCount: 0,
+			packageCount: 0,
 			errorCount: 0,
 		};
 	}
@@ -35,6 +37,8 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 		cycle: { ...state.cycle },
 		rowCount: state.rows.length,
 		endpointCount: state.endpoints.length,
+		accountCount: state.accounts.length,
+		packageCount: state.packages.length,
 		errorCount: state.errors.length,
 		rows: state.rows.map((r) => ({
 			key: r.key as string,
@@ -47,6 +51,26 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 			endpointKey: e.endpointKey as string,
 			name: e.name,
 			url: e.displayUrl ?? e.url,
+		})),
+		accounts: state.accounts.map((account) => ({
+			key: account.key,
+			rowKey: account.rowKey,
+			name: account.name,
+			address: account.address,
+			scheme: account.scheme,
+			source: account.source,
+			funding: { ...account.funding },
+			walletVisible: account.walletVisible,
+		})),
+		packages: state.packages.map((pkg) => ({
+			key: pkg.key,
+			rowKey: pkg.rowKey,
+			name: pkg.name,
+			kind: pkg.kind,
+			packageId: pkg.packageId,
+			upgradeCapId: pkg.upgradeCapId,
+			mvrPlaceholder: pkg.mvrPlaceholder,
+			sourcePath: pkg.sourcePath,
 		})),
 	};
 };
@@ -100,6 +124,8 @@ export const runStatus = (
 			humanLines.push(`cycle:   #${data.cycle!.id} ${data.cycle!.phase}`);
 			humanLines.push(`rows:    ${data.rowCount}`);
 			humanLines.push(`endpoints: ${data.endpointCount}`);
+			humanLines.push(`accounts: ${data.accountCount}`);
+			humanLines.push(`packages: ${data.packageCount}`);
 			humanLines.push(`errors:  ${data.errorCount}`);
 		}
 

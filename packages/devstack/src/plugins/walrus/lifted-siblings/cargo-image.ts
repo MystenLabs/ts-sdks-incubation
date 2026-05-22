@@ -5,21 +5,12 @@
 // First-wins dedup across composites with the same key; conflict-refusal
 // when two composites pin different versions.
 //
-// CONTRACT (the rewrite's pivot from the v3 cargo-build flow):
+// CONTRACT:
 //
-// The v3 codebase cargo-built walrus from source (~10 minute first
-// build). The rewrite downloads the binary release tarball instead —
-// walrus ships pre-built `walrus`, `walrus-deploy`, and `walrus-node`
-// binaries on each tagged release (verified for `devnet-v1.49.0` and
-// later). This collapses the lifted-sibling cost to ~30s (curl + tar)
-// from ~10min (full rust build).
-//
-// The "cargo-image" name is preserved in the substrate key so existing
-// composite plugins don't need to change their sibling-key wiring; the
-// resolver below uses the vendored `images/walrus/Dockerfile` which
-// downloads the release tarball at build-args-driven version. The name
-// is a slight misnomer post-pivot but renaming the kind would break the
-// type-level conflict refusal already in production.
+// The vendored Dockerfile packages the upstream Walrus release tarball
+// selected by Docker's TARGETARCH. It never builds Walrus from source:
+// upstream release binaries are the contract, and the Dockerfile verifies
+// the selected asset before the image is accepted.
 //
 // Two staged paths:
 //
@@ -30,8 +21,8 @@
 //
 //   (b) Vendored Dockerfile build via `runtime.ensureImage()`. The
 //        substrate's content-addressed build cache short-circuits when
-//        the (context + dockerfile + buildArgs) hash matches a prior
-//        result; cold-cache wall-time is the tarball download (~30s).
+//        the (context + dockerfile + buildArgs) hash matches a prior result;
+//        cold-cache wall-time is the upstream release download.
 //
 // Distilled-doc invariants honored:
 //   - 24: `DEFAULT_SUI_VERSION` (the wrapper-baked sui binary) MUST
@@ -46,62 +37,18 @@ import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
 import { DEFAULT_WALRUS_REF, DEFAULT_WALRUS_REPO } from './source-fetch.ts';
 
 const WALRUS_CARGO_IMAGE_OVERRIDE_ENV = 'WALRUS_CARGO_IMAGE_OVERRIDE' as const;
-const DOCKER_DEFAULT_PLATFORM_ENV = 'DOCKER_DEFAULT_PLATFORM' as const;
-
-interface WalrusCargoImageHostProcess {
-	readonly arch?: string;
-	readonly env?: Record<string, string | undefined>;
-}
-
-const currentHostProcess = (): WalrusCargoImageHostProcess | undefined =>
-	(globalThis as { process?: WalrusCargoImageHostProcess }).process;
-
-const explicitDockerDefaultPlatform = (
-	env: Record<string, string | undefined> | undefined,
-): string | null => {
-	const platform = env?.[DOCKER_DEFAULT_PLATFORM_ENV]?.trim();
-	return platform && platform.length > 0 ? platform : null;
-};
-
-const isLinuxArm64WalrusImageTarget = (proc: WalrusCargoImageHostProcess | undefined): boolean => {
-	const explicitPlatform = explicitDockerDefaultPlatform(proc?.env);
-	if (explicitPlatform !== null) {
-		return explicitPlatform === 'linux/arm64' || explicitPlatform === 'linux/arm64/v8';
-	}
-	// Docker injects TARGETARCH from the target platform. With no explicit
-	// Docker platform, the vendored Ubuntu image follows the native host arch.
-	return proc?.arch === 'arm64';
-};
-
-const unsupportedLinuxArm64WalrusImageError = (): WalrusPluginError =>
-	walrusPluginError(
-		'image-build',
-		`native linux/arm64 Walrus local-cluster images are unsupported: upstream ubuntu-aarch64 devnet assets currently appear to contain x86-64 binaries. Set ${WALRUS_CARGO_IMAGE_OVERRIDE_ENV}=<image> to use a compatible prebuilt/source-built image, or use linux/amd64 until upstream assets are fixed or a source-build fallback is implemented.`,
-	);
 
 /** Distilled-doc invariant 24: the wrapper-baked sui binary must
  *  match the localnet image's sui release. Pinned here in lockstep
  *  with the walrus ref bump. */
 export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0' as const;
 
-/** Pinned rust toolchain — kept for input-hash compatibility with the
- *  v3 cargo flow even though the rewrite uses the release tarball. The
- *  toolchain doesn't influence the released binary, but bumping this
- *  invalidates the image cache when a release is rebuilt against a
- *  newer toolchain. */
-export const DEFAULT_RUST_TOOLCHAIN = '1.93' as const;
-
 /** Inputs to the walrus-image sibling — all knowable at factory
  *  time, hence type-level dedup is possible. */
-export interface WalrusCargoImageInputs<
-	Ref extends string = string,
-	SuiV extends string = string,
-	RustV extends string = string,
-> {
+export interface WalrusCargoImageInputs<Ref extends string = string, SuiV extends string = string> {
 	readonly walrusRepo: typeof DEFAULT_WALRUS_REPO;
 	readonly walrusRef: Ref;
 	readonly suiVersion: SuiV;
-	readonly rustToolchain: RustV;
 }
 
 /** Resolved value — the content-addressed image ref. */
@@ -111,26 +58,15 @@ export interface WalrusCargoImageResolved {
 }
 
 /** Compute the literal-typed sibling key. */
-export const walrusCargoImageSiblingKey = <
-	Ref extends string,
-	SuiV extends string,
-	RustV extends string,
->(
+export const walrusCargoImageSiblingKey = <Ref extends string, SuiV extends string>(
 	walrusRef: Ref,
 	suiVersion: SuiV,
-	rustToolchain: RustV,
-): LitSiblingKey<'walrus', 'cargo-image', 'per-process', `${Ref}|${SuiV}|${RustV}`> =>
-	litSiblingKey(
-		'walrus',
-		'cargo-image',
-		'per-process',
-		`${walrusRef}|${suiVersion}|${rustToolchain}` as const,
-	);
+): LitSiblingKey<'walrus', 'cargo-image', 'per-process', `${Ref}|${SuiV}`> =>
+	litSiblingKey('walrus', 'cargo-image', 'per-process', `${walrusRef}|${suiVersion}` as const);
 
-/** Construct the sibling key for the default `(walrusRef, suiVersion,
- *  rustToolchain)`. */
+/** Construct the sibling key for the default `(walrusRef, suiVersion)`. */
 export const defaultWalrusCargoImageSiblingKey = () =>
-	walrusCargoImageSiblingKey(DEFAULT_WALRUS_REF, DEFAULT_SUI_VERSION, DEFAULT_RUST_TOOLCHAIN);
+	walrusCargoImageSiblingKey(DEFAULT_WALRUS_REF, DEFAULT_SUI_VERSION);
 
 // ---------------------------------------------------------------------------
 // Runtime resolver
@@ -147,17 +83,13 @@ export const resolveCargoImage = (
 	inputs: WalrusCargoImageInputs,
 ): Effect.Effect<WalrusCargoImageResolved, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const hostProcess = currentHostProcess();
-		const override = hostProcess?.env?.[WALRUS_CARGO_IMAGE_OVERRIDE_ENV];
+		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+			.process?.env?.[WALRUS_CARGO_IMAGE_OVERRIDE_ENV];
 		if (override && override.length > 0) {
 			// Trust-the-tag path. The digest is opaque (substrate's
 			// content-addressed cache will re-resolve via `docker inspect`
 			// when it materializes the image).
 			return { digest: override, tag: override };
-		}
-
-		if (isLinuxArm64WalrusImageTarget(hostProcess)) {
-			return yield* Effect.fail(unsupportedLinuxArm64WalrusImageError());
 		}
 
 		// Real build via the vendored Dockerfile.
@@ -187,7 +119,6 @@ export const resolveCargoImage = (
 			attributes: {
 				'walrus.ref': inputs.walrusRef,
 				'walrus.suiVersion': inputs.suiVersion,
-				'walrus.rustToolchain': inputs.rustToolchain,
 			},
 		}),
 	);
@@ -200,5 +131,4 @@ export const resolveDefaultCargoImage = (
 		walrusRepo: DEFAULT_WALRUS_REPO,
 		walrusRef: DEFAULT_WALRUS_REF,
 		suiVersion: DEFAULT_SUI_VERSION,
-		rustToolchain: DEFAULT_RUST_TOOLCHAIN,
 	});

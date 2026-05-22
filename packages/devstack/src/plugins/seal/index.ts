@@ -40,6 +40,7 @@ import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMember } from '../../api/consume-members.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import type { NetworkConfig } from '../../substrate/network.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -54,13 +55,23 @@ import { SuiTag } from '../sui/index.ts';
 import type { SealObjectProbeKey } from './deploy.ts';
 import { makeSealComposite } from './composite.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
-import { forkIncompatibleError, SEAL_ERROR_TAGS, type SealError } from './errors.ts';
+import {
+	forkIncompatibleError,
+	sealConfigError,
+	SEAL_ERROR_TAGS,
+	type SealError,
+} from './errors.ts';
 import { defaultSealCargoImageSiblingKey } from './lifted-siblings/cargo-image.ts';
 import { defaultSealSourceSiblingKey } from './lifted-siblings/source-fetch.ts';
 import type { ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
-import { buildSealNetworkName, DEFAULT_KEY_SERVER_PORT } from './key-server.ts';
+import {
+	buildSealNetworkName,
+	DEFAULT_KEY_SERVER_PORT,
+	deriveSealSubnetPrefix,
+	sealNetworkCreateSpec,
+} from './key-server.ts';
 import {
 	bootLocalKeygen,
 	resolveLocalKeygenOptions,
@@ -77,6 +88,8 @@ import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.t
 import { bootSealService, type SealMode } from './service.ts';
 import { parseDevstackNetwork } from '../../api/inference-network.ts';
 
+const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
+
 // ---------------------------------------------------------------------------
 // Tag exports — distilled-doc §"TypeScript exports consumed elsewhere"
 // ---------------------------------------------------------------------------
@@ -92,7 +105,12 @@ export {
 	type SealTagId,
 } from './registry-publish.ts';
 export type { SealKeyManager } from './key-manager.ts';
-export { type SealError, type SealAnyError, SEAL_ERROR_TAGS } from './errors.ts';
+export {
+	type SealError,
+	type SealAnyError,
+	type SealConfigError,
+	SEAL_ERROR_TAGS,
+} from './errors.ts';
 export type { SealBindings } from './codegen.ts';
 export {
 	sealCargoImageKey,
@@ -298,11 +316,21 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 				// because the substrate's `acquire` is the only seam that
 				// holds both the runtime + the identity needed for the
 				// per-stack label tuple.
-				yield* runtime.ensureNetwork({
-					name: sealNetworkName,
+				const sealSubnetPrefix = deriveSealSubnetPrefix({
 					app: identity.app,
 					stack: identity.stack,
+					sealName: resolved.name,
 				});
+				yield* runtime.ensureNetwork(
+					sealNetworkCreateSpec(
+						{
+							name: sealNetworkName,
+							app: identity.app,
+							stack: identity.stack,
+						},
+						sealSubnetPrefix,
+					),
+				);
 
 				const deps: LocalKeygenDeps = {
 					runtime,
@@ -359,7 +387,7 @@ const buildLocalKeygenPlugin = <SignerName extends string>(
 			});
 			return capabilities(composite, snap, codegen, routable);
 		},
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: SEAL_ERROR_TAGS }],
+		errorContributions: sealErrorContributions,
 		liftedSiblings: siblingKeys,
 	});
 };
@@ -399,7 +427,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 				} satisfies SealResolved;
 			}),
 		capabilities: capabilities(snap, codegen),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: SEAL_ERROR_TAGS }],
+		errorContributions: sealErrorContributions,
 	});
 };
 
@@ -438,7 +466,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 			};
 			return capabilities(snap, makeSealCodegenable(bindings));
 		},
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: SEAL_ERROR_TAGS }],
+		errorContributions: sealErrorContributions,
 	});
 };
 
@@ -457,9 +485,11 @@ const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keyg
 		case 'local':
 			// Local-keygen requires a signer; the env-default path
 			// cannot satisfy that. Callers MUST pass opts on localnet.
-			throw new Error(
-				'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor.for(network).localKeygen({...}).',
-			);
+			throw sealConfigError({
+				field: 'signer',
+				message:
+					'seal: localnet mode requires opts.signer — pass { mode: "local-keygen", signer } or use sealFor.for(network).localKeygen({...}).',
+			});
 		case 'live':
 			return { mode: 'live', network: parsed.network };
 		case 'fork':

@@ -26,6 +26,7 @@ import { dirname } from 'node:path';
 
 import { Data, Effect, Scope, Stream } from 'effect';
 
+import { parseJsonText } from '../../runtime-decode.ts';
 import { acquireStackLock } from '../stack-lock.ts';
 import { runtimeControlLockPathForChannelFile } from './runtime-control-lock.ts';
 
@@ -100,11 +101,27 @@ export const appendRecord = (
 		}),
 	);
 
-/** A line decoder. Implementations typically `Schema.decodeUnknownSync`
- *  a concrete schema; the channel I/O layer stays schema-agnostic so
- *  the substrate generic doesn't carry a `Schema.Decoder<unknown>`
- *  constraint that fights the rest of the substrate's signatures. */
+/** A line decoder. The channel I/O layer stays schema-agnostic so
+ *  callers can pick their own wire schema without this generic
+ *  carrying a `Schema.Decoder<unknown>` constraint. */
 export type LineDecoder<A> = (raw: unknown) => A;
+
+const decodeLine = <A>(
+	path: string,
+	line: string,
+	decode: LineDecoder<A>,
+): Effect.Effect<A, CommandChannelDecodeError> =>
+	parseJsonText(line, {
+		source: path,
+		mkError: (issue) => new CommandChannelDecodeError({ path, line, cause: issue.cause ?? issue }),
+	}).pipe(
+		Effect.flatMap((parsed) =>
+			Effect.try({
+				try: () => decode(parsed),
+				catch: (cause) => new CommandChannelDecodeError({ path, line, cause }),
+			}),
+		),
+	);
 
 /** Read the entire current contents into structured records. Useful at
  *  startup to backfill state, and as a test seam. */
@@ -131,15 +148,7 @@ export const readAllRecords = <A>(
 		const lines = raw.split('\n').filter((l) => l.length > 0);
 		const out: A[] = [];
 		for (const line of lines) {
-			const parsed = yield* Effect.try({
-				try: () => JSON.parse(line) as unknown,
-				catch: (cause) => new CommandChannelDecodeError({ path, line, cause }),
-			});
-			const decoded = yield* Effect.try({
-				try: () => decode(parsed),
-				catch: (cause) => new CommandChannelDecodeError({ path, line, cause }),
-			});
-			out.push(decoded);
+			out.push(yield* decodeLine(path, line, decode));
 		}
 		return out;
 	});
@@ -226,15 +235,7 @@ export const tailRecords = <A>(
 					}
 					const decoded: A[] = [];
 					for (const line of lines) {
-						const parsed = yield* Effect.try({
-							try: () => JSON.parse(line) as unknown,
-							catch: (cause) => new CommandChannelDecodeError({ path, line, cause }),
-						});
-						const value = yield* Effect.try({
-							try: () => decode(parsed),
-							catch: (cause) => new CommandChannelDecodeError({ path, line, cause }),
-						});
-						decoded.push(value);
+						decoded.push(yield* decodeLine(path, line, decode));
 					}
 					return decoded as ReadonlyArray<A>;
 				},

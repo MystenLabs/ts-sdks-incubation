@@ -331,6 +331,8 @@ describe('detectCollisions', () => {
 		const collision = detectCollisions([base, { ...base, dispatchFileId: 'b' }]);
 		expect(collision).not.toBeNull();
 		expect(collision?._tag).toBe('RouteCollision');
+		expect(collision?.message).toContain("entrypoint 'wallet-app'");
+		expect(collision?.message).toContain("hostname 'api.my-app.localhost'");
 		expect(collision?.dispatchIds.length).toBe(2);
 	});
 
@@ -348,6 +350,7 @@ describe('detectCollisions', () => {
 		const collision = detectCollisions([tcpA, tcpB]);
 		expect(collision).not.toBeNull();
 		expect(collision?._tag).toBe('RouteCollision');
+		expect(collision?.message).toContain("TCP route collision on entrypoint 'postgres-tcp'");
 	});
 
 	it('detects two TCP routes on different entrypoint names backed by the same host port', () => {

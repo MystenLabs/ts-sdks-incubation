@@ -28,6 +28,8 @@
  *                          persisted (ENOSPC, EROFS).
  *  - `bind-account`      : a consumed account tag failed to resolve at
  *                          acquire time (re-thrown with a wallet phase).
+ *  - `route-url`         : failed to construct the router-fronted URL
+ *                          for the generated dapp-kit config.
  *  - `no-accounts`       : account inference resolved to an empty set.
  */
 export type WalletBootPhase =
@@ -36,6 +38,7 @@ export type WalletBootPhase =
 	| 'read-token'
 	| 'write-token'
 	| 'bind-account'
+	| 'route-url'
 	| 'no-accounts';
 
 /** Boot-time wallet error — raised by the plugin's acquire body. */

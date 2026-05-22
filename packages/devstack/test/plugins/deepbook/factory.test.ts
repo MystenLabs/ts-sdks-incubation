@@ -12,6 +12,12 @@ import { chainId } from '../../../src/substrate/brand.ts';
 import * as publicRoot from '../../../src/index.ts';
 import { MEMBER_BRAND } from '../../../src/substrate/plugin.ts';
 
+const TESTNET_PYTH = {
+	stateId: '0x243759059f4c3111179da5878c12f68d612c21a8d54d85edc86164bb18be1c7c',
+	wormholeStateId: '0x31358d198147da50db32eda2562951d53973a0c0ad5ed738e9b17d88b213d790',
+	feeds: [],
+};
+
 describe('deepbook(opts) — primary factory', () => {
 	it('refuses local mode without a publisher (sync DeepbookConfigError)', () => {
 		expect(() => deepbook({ mode: 'local' } as never)).toThrow(/publisher/);
@@ -79,6 +85,53 @@ describe('deepbook(opts) — primary factory', () => {
 				packageId: '0x22be4cade64bf2d02412c7e8d0e8beea2f78828b948118d46735315409371a3c',
 				registryId: '0x7c256edbda983a2cd6f946655f4bf3f00a41043993781f8674a7046e8c0e11d1',
 				adminCapId: null,
+				pyth: TESTNET_PYTH,
+			});
+		}),
+	);
+
+	it.effect('emits known Pyth state ids through generated bindings', () =>
+		Effect.gen(function* () {
+			const member = deepbook({
+				mode: 'known',
+				network: 'testnet',
+			});
+			const ctx = {
+				get: (tag: typeof SuiTag) => {
+					expect(tag).toBe(SuiTag);
+					return { chain: chainId('sui:local') } as never;
+				},
+				use: () => {
+					throw new Error('unexpected ctx.use');
+				},
+			} as Parameters<typeof member.acquire>[0];
+
+			const resolved = yield* member.acquire(ctx);
+			const caps =
+				typeof member.capabilities === 'function'
+					? member.capabilities(resolved, {} as never)
+					: member.capabilities;
+			expect(caps).toBeDefined();
+			const codegen = caps?.find(
+				(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook-network',
+			) as
+				| {
+						readonly emit: () => Effect.Effect<{
+							readonly deepbookBindings: {
+								readonly pyth: {
+									readonly stateId: string;
+									readonly wormholeStateId: string;
+								} | null;
+							};
+						}>;
+				  }
+				| undefined;
+			expect(codegen).toBeDefined();
+
+			const emitted = yield* codegen!.emit();
+			expect(emitted.deepbookBindings.pyth).toEqual({
+				stateId: TESTNET_PYTH.stateId,
+				wormholeStateId: TESTNET_PYTH.wormholeStateId,
 			});
 		}),
 	);

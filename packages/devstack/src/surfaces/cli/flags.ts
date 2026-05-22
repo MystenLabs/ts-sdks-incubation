@@ -1,28 +1,11 @@
-// CLI surface — shared flag parsing.
+// CLI surface — shared flag types and subcommand helpers.
 //
-// Architecture (distilled/20-cli.md § Opportunities noticed): "One
-// shared `--json` / `--dry-run` / `--yes` / `--stack` / `--app` flag
-// definition consumed by every verb instead of duplicated
-// declarations." This module is the single source of truth.
-//
-// Design: hand-rolled, not commander/yargs. Reasons:
-//   - The verb set is small and fixed (architecture-enumerated).
-//   - We need exact control over the envelope output mode, which
-//     requires inspecting argv BEFORE dispatching (so failure
-//     envelopes also obey `--json`).
-//   - Avoid `effect/unstable/cli` for now — `unstable` semantics
-//     don't suit the public CLI contract we ship.
-//
-// The parser is intentionally simple: GNU-style long flags
-// (`--name=value` or `--name value`), boolean flags (`--name` /
-// `--no-name`), short aliases declared per-flag, positional
-// arguments collected in order. No clustering of short flags.
+// Stricli owns argv parsing in `surfaces/cli/index.ts`. This file
+// keeps the resolved flag shape and the tiny helpers used by nested
+// command implementations that still receive a typed `rest` tail
+// (currently snapshot subcommands).
 
 import { CliUsageError } from './errors.ts';
-import {
-	DevstackNetworkParseError,
-	parseDevstackNetworkName,
-} from '../../api/inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Global flag definitions (shared across every verb)
@@ -44,13 +27,8 @@ export interface ConfirmPolicy {
 	readonly stdinIsTty: boolean;
 }
 
-/** Bundle of flags every verb knows how to consume. Resolution
- *  precedence — applied in `parseGlobalFlags`:
- *
- *    explicit flag > env var > built-in default
- *
- *  Stack-name inference is shared with the API surface and happens
- *  after parsing because it needs cwd/package metadata. */
+/** Bundle of command-scoped flags after Stricli parsing plus env
+ *  fallback resolution. */
 export interface GlobalFlags {
 	readonly outputMode: OutputMode;
 	readonly app: string | undefined;
@@ -61,7 +39,8 @@ export interface GlobalFlags {
 	readonly renderer: CliRendererMode | undefined;
 	readonly dryRun: boolean;
 	readonly confirm: ConfirmPolicy;
-	/** `--schema --json` — emit the command tree as JSON and exit. */
+	/** Legacy field kept in the internal shape; schema is now the
+	 *  explicit `devstack schema --json` command. */
 	readonly schemaEmit: boolean;
 	/** Verbosity bump; primarily affects logger filter. */
 	readonly verbose: boolean;
@@ -75,7 +54,7 @@ export interface GlobalFlags {
 }
 
 /** Environment-variable names the CLI consults. Centralized so the
- *  `--schema --json` action can enumerate them. */
+ *  `schema --json` command can enumerate them. */
 export const ENV_VARS = {
 	JSON: 'DEVSTACK_JSON',
 	NO_INPUT: 'DEVSTACK_NO_INPUT',
@@ -89,177 +68,6 @@ export const ENV_VARS = {
 } as const;
 
 export type EnvVarName = (typeof ENV_VARS)[keyof typeof ENV_VARS];
-
-// -----------------------------------------------------------------------------
-// Parser
-// -----------------------------------------------------------------------------
-
-interface ParseEnv {
-	readonly env: Readonly<Record<string, string | undefined>>;
-	readonly stdinIsTty: boolean;
-}
-
-const parseRendererMode = (value: string, source: string): CliRendererMode => {
-	switch (value) {
-		case 'tui':
-		case 'plain':
-		case 'silent':
-			return value;
-		default:
-			throw new CliUsageError({
-				message: `${source} must be one of: tui, plain, silent`,
-			});
-	}
-};
-
-const parseNetworkName = (value: string, source: string): string => {
-	try {
-		return parseDevstackNetworkName(value, source);
-	} catch (err) {
-		if (err instanceof DevstackNetworkParseError) {
-			throw new CliUsageError({ message: err.message });
-		}
-		throw err;
-	}
-};
-
-/** Parse argv into a `GlobalFlags` bundle and a rest tail. Throws
- *  `CliUsageError` on malformed input. Does not consult IO beyond
- *  `env` + `stdinIsTty` (both injected so tests can drive it). */
-export const parseGlobalFlags = (argv: ReadonlyArray<string>, parseEnv: ParseEnv): GlobalFlags => {
-	const { env, stdinIsTty } = parseEnv;
-
-	let outputMode: OutputMode = env[ENV_VARS.JSON] === '1' ? 'json' : 'human';
-	let app: string | undefined = env[ENV_VARS.APP];
-	let stack: string | undefined = env[ENV_VARS.STACK];
-	let stateDir: string | undefined = env[ENV_VARS.STATE_DIR];
-	let configPath: string | undefined = env[ENV_VARS.CONFIG_PATH];
-	let networkRaw: string | undefined = env[ENV_VARS.NETWORK];
-	let networkSource: string = ENV_VARS.NETWORK;
-	const envRenderer = env[ENV_VARS.RENDERER];
-	let renderer =
-		envRenderer === undefined ? undefined : parseRendererMode(envRenderer, ENV_VARS.RENDERER);
-	let dryRun = false;
-	let assumeYes = false;
-	let forbidPrompt = env[ENV_VARS.NO_INPUT] === '1';
-	let schemaEmit = false;
-	let verbose = false;
-	let help = false;
-	let version = false;
-	const rest: Array<string> = [];
-
-	// Walk argv. We only consume long-flag global tokens; everything
-	// else flows through to `rest` for the subcommand parser. A `--`
-	// terminator ends global parsing and forwards everything verbatim.
-	let i = 0;
-	while (i < argv.length) {
-		const tok = argv[i]!;
-		if (tok === '--') {
-			for (let j = i + 1; j < argv.length; j++) rest.push(argv[j]!);
-			break;
-		}
-		if (!tok.startsWith('-')) {
-			rest.push(tok);
-			i += 1;
-			continue;
-		}
-
-		// Long flag: `--foo` or `--foo=bar` or `--no-foo`.
-		const eqIdx = tok.indexOf('=');
-		const name = eqIdx >= 0 ? tok.slice(2, eqIdx) : tok.slice(2);
-		const inlineValue = eqIdx >= 0 ? tok.slice(eqIdx + 1) : undefined;
-
-		// Helper to pop the next argv token as a value, or read the
-		// inline value. Throws if absent.
-		const popValue = (flagName: string): string => {
-			if (inlineValue !== undefined) return inlineValue;
-			const nxt = argv[i + 1];
-			if (nxt === undefined || nxt.startsWith('-')) {
-				throw new CliUsageError({
-					message: `flag --${flagName} requires a value`,
-				});
-			}
-			i += 1;
-			return nxt;
-		};
-
-		switch (name) {
-			case 'json':
-				outputMode = 'json';
-				break;
-			case 'app':
-				app = popValue('app');
-				break;
-			case 'stack':
-				stack = popValue('stack');
-				break;
-			case 'state-dir':
-				stateDir = popValue('state-dir');
-				break;
-			case 'config':
-				configPath = popValue('config');
-				break;
-			case 'network':
-				networkRaw = popValue('network');
-				networkSource = '--network';
-				break;
-			case 'renderer':
-				renderer = parseRendererMode(popValue('renderer'), '--renderer');
-				break;
-			case 'dry-run':
-				dryRun = true;
-				break;
-			case 'yes':
-				assumeYes = true;
-				break;
-			case 'no-input':
-				forbidPrompt = true;
-				break;
-			case 'schema':
-				schemaEmit = true;
-				break;
-			case 'verbose':
-				verbose = true;
-				break;
-			case 'help':
-				help = true;
-				break;
-			case 'version':
-				version = true;
-				break;
-			default:
-				// Unknown global flag — leave for the subcommand parser
-				// (it may know what to do with `--include-images` etc.).
-				rest.push(tok);
-				break;
-		}
-		i += 1;
-	}
-
-	// Mutually-exclusive flag check: `--yes` + `--no-input` with a
-	// prompt-needing verb is the documented usage error in the
-	// architecture; the dispatcher decides per-verb whether to enforce.
-	// We surface the raw state here.
-	const network =
-		networkRaw === undefined ? undefined : parseNetworkName(networkRaw, networkSource);
-
-	return {
-		outputMode,
-		app,
-		stack,
-		stateDir,
-		configPath,
-		network,
-		renderer,
-		dryRun,
-		confirm: { assumeYes, forbidPrompt, stdinIsTty },
-		schemaEmit,
-		verbose,
-		help,
-		version,
-		rest,
-	};
-};
 
 // -----------------------------------------------------------------------------
 // Subcommand-flag helpers

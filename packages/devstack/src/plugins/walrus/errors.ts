@@ -13,6 +13,7 @@
 // surrounding subsystem style). `Effect.catchTag` matches on `_tag`.
 
 import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 export { ForkIncompatibleError };
 
@@ -86,18 +87,18 @@ export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
  *  fields on `.known(...)`). Surfaces as a thrown `Error` shaped
  *  like this in the factory, mirroring the distilled-doc behavior
  *  of synchronous configuration faults. */
-export interface WalrusConfigError {
+export interface WalrusConfigError extends ConfigIssue {
 	readonly _tag: 'WalrusConfigError';
-	readonly field: string;
-	readonly message: string;
-	readonly hint?: string;
 }
+
+const makeWalrusConfigError = defineConfigError('WalrusConfigError');
 
 export const walrusConfigError = (
 	field: string,
 	message: string,
 	hint?: string,
-): WalrusConfigError => ({ _tag: 'WalrusConfigError', field, message, hint });
+	cause?: unknown,
+): WalrusConfigError => makeWalrusConfigError({ field, message, hint, cause });
 
 /** Union of every error a Walrus-plugin caller may encounter. */
 export type WalrusError = WalrusPluginError | ForkIncompatibleError | WalrusConfigError;

@@ -26,6 +26,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
+import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import type {
 	OnChainArtifactError,
 	OnChainArtifactPublisher,
@@ -162,9 +163,10 @@ const buildVerifyProbe = (
 		// treated as "object exists but shape changed unexpectedly" —
 		// still null so the substrate re-mints rather than carry stale
 		// data forward.
-		return yield* Schema.decodeUnknownEffect(MintedCoinVerifyShape)(raw).pipe(
-			Effect.catch(() => Effect.succeed(null as typeof MintedCoinVerifyShape.Type | null)),
-		);
+		return yield* decodeUnknown(MintedCoinVerifyShape, raw, {
+			source: 'minted coin verify response',
+			mkError: (issue) => issue,
+		}).pipe(Effect.catch(() => Effect.succeed(null as typeof MintedCoinVerifyShape.Type | null)));
 	});
 
 /** Object-change shape narrowed for `pickCreatedCoin`. The gRPC

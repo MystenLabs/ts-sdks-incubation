@@ -30,6 +30,8 @@
 
 import type { Cause } from 'effect';
 
+import { redactText, redactValue, type RedactionRule } from './redaction.ts';
+
 // `Cause` is a namespace in effect v4; the actual cause type is
 // `Cause.Cause<E>`. We re-alias here so call sites read naturally.
 type CauseT<E> = Cause.Cause<E>;
@@ -79,6 +81,8 @@ export interface FormatOptions {
 	 *  visit-set; this guards against pathological cause chains.
 	 *  Default 12. */
 	readonly maxDepth?: number;
+	/** Optional redaction rules applied before rendering string fields. */
+	readonly redactions?: ReadonlyArray<RedactionRule>;
 }
 
 // -----------------------------------------------------------------------------
@@ -147,6 +151,7 @@ export const formatCause = <E>(cause: CauseT<E>, options?: FormatOptions): strin
 		formatters: options?.formatters ?? emptyFormatterRegistry,
 		fieldTruncate: options?.fieldTruncate ?? DEFAULT_FIELD_TRUNCATE,
 		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+		redactions: options?.redactions ?? [],
 	};
 	const visited = new WeakSet<object>();
 	const reasons = (cause as unknown as CauseLike).reasons;
@@ -168,6 +173,7 @@ export const formatValue = (value: unknown, options?: FormatOptions): string => 
 		formatters: options?.formatters ?? emptyFormatterRegistry,
 		fieldTruncate: options?.fieldTruncate ?? DEFAULT_FIELD_TRUNCATE,
 		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
+		redactions: options?.redactions ?? [],
 	};
 	return formatAny(value, opts, new WeakSet(), 0);
 };
@@ -176,8 +182,10 @@ export const formatValue = (value: unknown, options?: FormatOptions): string => 
 // Internals
 // -----------------------------------------------------------------------------
 
-const truncate = (s: string, limit: number): string =>
-	s.length > limit ? `${s.slice(0, limit)}…[truncated]` : s;
+const truncate = (s: string, limit: number, redactions: ReadonlyArray<RedactionRule>): string => {
+	const redacted = redactText(s, redactions);
+	return redacted.length > limit ? `${redacted.slice(0, limit)}…[truncated]` : redacted;
+};
 
 const indent = (s: string, prefix: string): string =>
 	s
@@ -228,9 +236,9 @@ const formatAny = (
 		if (value.stack && value.stack !== header) return value.stack;
 		return header;
 	}
-	if (typeof value === 'string') return value;
+	if (typeof value === 'string') return redactText(value, opts.redactions);
 	try {
-		return JSON.stringify(value);
+		return JSON.stringify(redactValue(value, opts.redactions));
 	} catch {
 		return String(value);
 	}
@@ -254,19 +262,20 @@ const formatTagged = (
 			: typeof value.op === 'string'
 				? `(${value.op})`
 				: '';
-	const message = typeof value.message === 'string' ? value.message : '';
+	const message =
+		typeof value.message === 'string' ? redactText(value.message, opts.redactions) : '';
 	const header = qualifier ? `${value._tag} ${qualifier}: ${message}` : `${value._tag}: ${message}`;
 
 	const lines: Array<string> = [header];
 	if (typeof value.exitCode === 'number') lines.push(`  exitCode: ${value.exitCode}`);
 	if (typeof value.stderr === 'string' && value.stderr.trim().length > 0) {
-		lines.push(`  stderr: ${truncate(value.stderr.trim(), opts.fieldTruncate)}`);
+		lines.push(`  stderr: ${truncate(value.stderr.trim(), opts.fieldTruncate, opts.redactions)}`);
 	}
 	if (typeof value.stdout === 'string' && value.stdout.trim().length > 0) {
-		lines.push(`  stdout: ${truncate(value.stdout.trim(), opts.fieldTruncate)}`);
+		lines.push(`  stdout: ${truncate(value.stdout.trim(), opts.fieldTruncate, opts.redactions)}`);
 	}
 	if (typeof value.detail === 'string' && value.detail.trim().length > 0) {
-		lines.push(`  detail: ${truncate(value.detail.trim(), opts.fieldTruncate)}`);
+		lines.push(`  detail: ${truncate(value.detail.trim(), opts.fieldTruncate, opts.redactions)}`);
 	}
 
 	// Surface any extra plain-data fields the tagged error carries.
@@ -290,10 +299,10 @@ const formatTagged = (
 		if (v === undefined || v === null) continue;
 		const rendered =
 			typeof v === 'string'
-				? truncate(v, opts.fieldTruncate)
+				? truncate(v, opts.fieldTruncate, opts.redactions)
 				: typeof v === 'number' || typeof v === 'boolean'
 					? String(v)
-					: safeJson(v, opts.fieldTruncate);
+					: safeJson(v, opts.fieldTruncate, opts.redactions);
 		lines.push(`  ${key}: ${rendered}`);
 	}
 
@@ -307,9 +316,13 @@ const formatTagged = (
 	return lines.join('\n');
 };
 
-const safeJson = (value: unknown, limit: number): string => {
+const safeJson = (
+	value: unknown,
+	limit: number,
+	redactions: ReadonlyArray<RedactionRule>,
+): string => {
 	try {
-		return truncate(JSON.stringify(value), limit);
+		return truncate(JSON.stringify(redactValue(value, redactions)), limit, redactions);
 	} catch {
 		return '[unserializable]';
 	}

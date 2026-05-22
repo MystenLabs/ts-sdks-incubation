@@ -14,9 +14,10 @@
 import { Effect, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
+import { decodeJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
 import type { DockerRuntimeError } from './errors.ts';
-import { renderFilterArgs } from './labels.ts';
+import { LabelKey, renderFilterArgs } from './labels.ts';
 import { wrapGeneric } from './wrap.ts';
 
 // -----------------------------------------------------------------------------
@@ -101,17 +102,20 @@ const parseLabelString = (s: string | undefined): Record<string, string> => {
 	return out;
 };
 
-const parseJsonLines = <A>(
-	schema: Schema.Codec<A, unknown, never, never>,
+const parseJsonLines = <S extends Schema.Decoder<unknown>>(
+	schema: S,
 	stdout: string,
-): ReadonlyArray<A> => {
+): ReadonlyArray<S['Type']> => {
 	const lines = stdout.split('\n').filter((l) => l.trim().length > 0);
-	const out: Array<A> = [];
-	for (const line of lines) {
+	const out: Array<S['Type']> = [];
+	for (const [index, line] of lines.entries()) {
 		try {
-			const parsed = JSON.parse(line) as unknown;
-			const decoded = Schema.decodeUnknownSync(schema)(parsed) as A;
-			out.push(decoded);
+			out.push(
+				decodeJsonTextSync(schema, line, {
+					source: `docker inventory:${index + 1}`,
+					mkError: (issue) => issue,
+				}),
+			);
 		} catch {
 			// Malformed line — skip. Inventory is best-effort; a single
 			// torn line shouldn't poison the whole sweep.
@@ -124,6 +128,57 @@ const parseJsonLines = <A>(
 // Listers
 // -----------------------------------------------------------------------------
 
+const toContainerSummaries = (stdout: string): ReadonlyArray<ContainerSummary> => {
+	const lines = parseJsonLines(PsLine, stdout);
+	return lines.map(
+		(l): ContainerSummary => ({
+			id: l.ID,
+			name: l.Names.split(',')[0] ?? l.Names,
+			image: l.Image,
+			status: l.Status,
+			state: l.State,
+			labels: parseLabelString(l.Labels),
+		}),
+	);
+};
+
+const toImageSummaries = (stdout: string): ReadonlyArray<ImageSummary> => {
+	const lines = parseJsonLines(ImagesLine, stdout);
+	return lines.map(
+		(l): ImageSummary => ({
+			id: l.ID,
+			tag: `${l.Repository}:${l.Tag}`,
+			labels: parseLabelString(l.Labels),
+		}),
+	);
+};
+
+const toNetworkSummaries = (stdout: string): ReadonlyArray<NetworkSummary> => {
+	const lines = parseJsonLines(NetworksLine, stdout);
+	return lines.map(
+		(l): NetworkSummary => ({
+			id: l.ID,
+			name: l.Name,
+			driver: l.Driver,
+			labels: parseLabelString(l.Labels),
+		}),
+	);
+};
+
+const toVolumeSummaries = (stdout: string): ReadonlyArray<VolumeSummary> => {
+	const lines = parseJsonLines(VolumesLine, stdout);
+	return lines.map(
+		(l): VolumeSummary => ({
+			name: l.Name,
+			driver: l.Driver,
+			mountpoint: l.Mountpoint,
+			labels: parseLabelString(l.Labels),
+		}),
+	);
+};
+
+const devstackAppFilterArgs: ReadonlyArray<string> = ['--filter', `label=${LabelKey.app}`];
+
 export const listContainers = (
 	match: Partial<ContainerLabelTuple>,
 ): Effect.Effect<ReadonlyArray<ContainerSummary>, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -132,18 +187,23 @@ export const listContainers = (
 		const res = yield* dockerRunOk('ps', ['-a', '--format', '{{json .}}', ...filters]).pipe(
 			Effect.mapError(wrapGeneric('docker.ps')),
 		);
-		const lines = parseJsonLines(PsLine, res.stdout);
-		return lines.map(
-			(l): ContainerSummary => ({
-				id: l.ID,
-				name: l.Names.split(',')[0] ?? l.Names,
-				image: l.Image,
-				status: l.Status,
-				state: l.State,
-				labels: parseLabelString(l.Labels),
-			}),
-		);
+		return toContainerSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.containers'));
+
+export const listDevstackContainers = (): Effect.Effect<
+	ReadonlyArray<ContainerSummary>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('ps', [
+			'-a',
+			'--format',
+			'{{json .}}',
+			...devstackAppFilterArgs,
+		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
+		return toContainerSummaries(res.stdout);
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainers'));
 
 export const listImages = (
 	match: Partial<ContainerLabelTuple>,
@@ -153,15 +213,22 @@ export const listImages = (
 		const res = yield* dockerRunOk('images', ['--format', '{{json .}}', ...filters]).pipe(
 			Effect.mapError(wrapGeneric('docker.images')),
 		);
-		const lines = parseJsonLines(ImagesLine, res.stdout);
-		return lines.map(
-			(l): ImageSummary => ({
-				id: l.ID,
-				tag: `${l.Repository}:${l.Tag}`,
-				labels: parseLabelString(l.Labels),
-			}),
-		);
+		return toImageSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.images'));
+
+export const listDevstackImages = (): Effect.Effect<
+	ReadonlyArray<ImageSummary>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('images', [
+			'--format',
+			'{{json .}}',
+			...devstackAppFilterArgs,
+		]).pipe(Effect.mapError(wrapGeneric('docker.images')));
+		return toImageSummaries(res.stdout);
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackImages'));
 
 export const listNetworks = (
 	match: Partial<ContainerLabelTuple>,
@@ -171,16 +238,23 @@ export const listNetworks = (
 		const res = yield* dockerRunOk('network', ['ls', '--format', '{{json .}}', ...filters]).pipe(
 			Effect.mapError(wrapGeneric('docker.network.ls')),
 		);
-		const lines = parseJsonLines(NetworksLine, res.stdout);
-		return lines.map(
-			(l): NetworkSummary => ({
-				id: l.ID,
-				name: l.Name,
-				driver: l.Driver,
-				labels: parseLabelString(l.Labels),
-			}),
-		);
+		return toNetworkSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.networks'));
+
+export const listDevstackNetworks = (): Effect.Effect<
+	ReadonlyArray<NetworkSummary>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', [
+			'ls',
+			'--format',
+			'{{json .}}',
+			...devstackAppFilterArgs,
+		]).pipe(Effect.mapError(wrapGeneric('docker.network.ls')));
+		return toNetworkSummaries(res.stdout);
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackNetworks'));
 
 export const listVolumes = (
 	match: Partial<ContainerLabelTuple>,
@@ -190,13 +264,20 @@ export const listVolumes = (
 		const res = yield* dockerRunOk('volume', ['ls', '--format', '{{json .}}', ...filters]).pipe(
 			Effect.mapError(wrapGeneric('docker.volume.ls')),
 		);
-		const lines = parseJsonLines(VolumesLine, res.stdout);
-		return lines.map(
-			(l): VolumeSummary => ({
-				name: l.Name,
-				driver: l.Driver,
-				mountpoint: l.Mountpoint,
-				labels: parseLabelString(l.Labels),
-			}),
-		);
+		return toVolumeSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.volumes'));
+
+export const listDevstackVolumes = (): Effect.Effect<
+	ReadonlyArray<VolumeSummary>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('volume', [
+			'ls',
+			'--format',
+			'{{json .}}',
+			...devstackAppFilterArgs,
+		]).pipe(Effect.mapError(wrapGeneric('docker.volume.ls')));
+		return toVolumeSummaries(res.stdout);
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackVolumes'));

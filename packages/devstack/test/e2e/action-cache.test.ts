@@ -15,7 +15,7 @@
 // on-disk cache shape, key derivation, schema-decode, and lenient
 // verify paths are exercised end-to-end.
 //
-// Why not boot the full `arena-rewrite` stack? The arena stack composes
+// Why not boot the full `arena` stack? The arena stack composes
 // `sui()`, which spawns a docker validator. The action's caching
 // discipline is INDEPENDENT of the chain (the OCA substrate consults
 // `state.json` + the chain-probe; the chain-probe itself is the

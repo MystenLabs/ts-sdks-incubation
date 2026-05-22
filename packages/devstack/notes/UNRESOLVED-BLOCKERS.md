@@ -1,674 +1,179 @@
-# Unresolved blockers
+# Devstack live blockers
 
 Last updated: 2026-05-21.
 
-This is the live blocker ledger. Do not remove an item until the fix is landed, the verification
-evidence is recorded, and any stale review/backlog entry is either updated or deleted. Historical
-notes were deleted after migration; this ledger is the current checklist.
-
-## Verified checkpoint: HEAD 2107c689 on integrate-devstack
-
-- 2026-05-21 HEAD `2107c68914e6a56d1cc9db83ae4ace62c404de09` on branch `integrate-devstack`; the
-  worktree was clean before this notes edit.
-- Regular Turborepo CI run `26240767950` passed: `pnpm audit`, lint, build, and test all succeeded.
-- Devstack E2E run `26240767660` passed end to end: Docker integration shards 1/4, 2/4, 3/4, and 4/4
-  succeeded; seed snapshot jobs for `arena`, `private-content`, and `deepbook-full` succeeded;
-  restore snapshot jobs for `arena`, `private-content`, and `deepbook-full` succeeded, including
-  `Validate restored snapshot state`.
-- Continuous Releases / `pkg.pr.new` run `26240767753` succeeded for `2107c689`.
-- Clean temp consumer smoke passed for the `pkg.pr.new` preview package at `2107c689` after
-  installing optional peers `vite@6.4.2`, `vitest@4.1.6`, and `typescript@5.9.3`: CLI help,
-  root/contracts/substrate/runtime/browser/playwright imports, browser import without mutating
-  `globalThis.__devstackDAppKit__`, and Vite/Vitest imports all passed.
-- Recent commits referenced by this checkpoint: `50aa2b90` validate snapshot image bundles on
-  capture, `ea94a0c3` allow slower release surface import, `3a22959a` scan late snapshot image
-  metadata, `d268d401` validate restored snapshots without browser harness, `da9d91a8` validate
-  restored snapshot artifacts, and `2107c689` use hosted Ubuntu for Docker shards.
-
-## P0: CLI/TUI operator surface is not old-devstack quality
-
-- Re-evaluate the CLI library/design. Help now has a command tree, but subcommand help, standard CLI
-  behavior, and `up` integration still need a product-level acceptance pass against the live
-  product.
-- `up` intentionally remains split in the bin entry for outer-runtime/signal ownership; the split
-  must stay verified.
-- Required verb parity includes `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`, `logs`,
-  `snapshot save`, `snapshot restore`, `snapshot list`, `snapshot delete`, and shutdown/down flows.
-
-Acceptance evidence:
-
-- Manual live-operator proof covers startup pending/acquiring work, failure state/cause visibility,
-  log stream placement, endpoint/extras grouping, row focus, and shutdown progress in the real TUI.
-- Hard kill is available and tested.
-- `devstack up --help`, subcommand help, `apply`, `wipe`, `stack`, `fork`, `doctor`, `status`,
-  `logs`, `snapshot`, `exec`, and shutdown commands are production-real.
-
-Evidence landed 2026-05-21:
-
-- TUI renderer consumes the `EngineEvent` stream in Ink mode and renders bounded operator scrollback
-  above the dashboard/status region. Targeted test: `test/surfaces/tui/event-log.test.ts`.
-- TUI rows are grouped into service/package/account/action/app sections with friendly labels, owner
-  chips, inline endpoint/value details, and selected-row detail/log panes. Targeted test:
-  `test/surfaces/tui/display-derivation.test.ts`.
-- TUI input maps `q`/Ctrl-C to `shutdown.requested` even before the first projection frame, and
-  up/down/j/k move local row focus. Targeted test: `test/surfaces/tui/input-commands.test.ts`.
-- CLI `exec` is exposed as a release verb, runs a child command through a surface-local runner, and
-  mirrors the child exit code through both dispatcher and bin-entry wiring. Targeted tests:
-  `test/surfaces/cli/dispatch.test.ts` / "exec mirrors the child exit code" and
-  `test/cli/main.test.ts` / "exec through runCli mirrors the child exit code".
-- Required CLI verb/subcommand help is generated from the command tree for `apply`, `wipe`, `stack`,
-  `fork`, `doctor`, `status`, `logs`, `snapshot save|restore|list|delete`, `exec`, and `down`.
-  Targeted test: `test/surfaces/cli/dispatch.test.ts` / "required release verbs and nested
-  subcommands have command-tree help".
-- The bin-entry `up` live path keeps its intentional dispatcher split covered: `up --help`
-  short-circuits through the shared parser without loading config or starting the live path.
-  Targeted tests: `test/surfaces/cli/dispatch.test.ts` and `test/cli/main.test.ts`.
-- Plain renderer and TUI error-pane formatting keep startup failure cause/stderr chains visible.
-  Targeted tests: `test/surfaces/tui/plain-renderer.test.ts` and
-  `test/surfaces/tui/error-pane.test.ts`.
-- Operator/API/extras wave targeted tests passed for CLI/TUI dispatch/rendering, including exec,
-  help, command split, TUI event log, display derivation, input commands, plain rendering, and error
-  panes.
-- 2026-05-21 Worker Hard Kill: `EngineCommand` now includes `shutdown.hardKillRequested`; the L0
-  signal handler publishes it on the second handled SIGINT/SIGTERM before scheduling process exit;
-  the supervisor consumes it, flips shutdown state, and emits `shutdown.escalated` for
-  renderers/plain logs; the command-channel publisher and ack path round-trip the hard-kill tag.
-  Targeted tests passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/substrate/runtime/lifecycle/signals.test.ts test/substrate/runtime/supervisor.test.ts test/substrate/runtime/cross-process/command-channel.test.ts test/surfaces/tui/input-commands.test.ts test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/event-log.test.ts`.
-
-## P0: Engine state, errors, and logs are wired as a reliable product (closed at HEAD 2107c689)
-
-No unresolved blocker remains in this section for HEAD `2107c689`.
-
-Acceptance evidence:
-
-- Production logger publishes events consumed by projection, TUI, and `devstack logs`.
-- Acquire and capability failures produce structured errors with plugin identity.
-- Failed startup becomes an observable failed state.
-- Production `status` reads persisted/replayed real state or is removed until real.
-- Error tags are unique and catchable through the chosen public error style.
-
-Evidence landed 2026-05-21:
-
-- `layerLogger` is now part of the production substrate context; the supervisor wraps it so
-  plugin-attributed logger calls publish `log.appended` events to the projection and event hub.
-  Targeted test: `test/substrate/runtime/supervisor.test.ts` / "publishes logger lines as
-  log.appended events and row log tails".
-- Acquire failures now publish `error.reported` with the plugin key, set the row `failed`, attach
-  `lastError`, and settle the cycle out of `booting`. Targeted test:
-  `test/substrate/runtime/supervisor.test.ts` / "acquire failure publishes structured error and
-  leaves a failed row".
-- Dynamic capability factory throws now fail the plugin with `CapabilityFactoryFailed` instead of
-  silently returning empty capabilities and marking ready. Targeted test:
-  `test/substrate/runtime/supervisor.test.ts` / "capability factory failure reports a structured
-  error instead of marking ready".
-- Production `devstack up` persists the live projection to `projection.v1.json`; channel-backed
-  `devstack status` reads that snapshot instead of a hard-coded null reader. Targeted test:
-  `test/substrate/runtime/projection/persisted.test.ts`.
-- Channel-backed `devstack logs` no longer uses a completed shutdown effect; the existing logs
-  command NDJSON/envelope behavior remains covered by `test/surfaces/cli/commands/logs.test.ts`.
-- Tagged-error style now has a final subsystem rule in `STYLE_GUIDE.md` §2. `ARCHITECTURE.md`
-  narrows plain `Error` discipline to `build-integrations/runtime` synchronous readers, and the
-  orphan WAL swap public export was removed so Walrus exports stay aligned with `WalrusError` and
-  `WALRUS_ERROR_TAGS`.
-- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed
-  audit/lint/build/test, and Devstack E2E run `26240767660` passed all Docker shards plus the
-  `arena`, `private-content`, and `deepbook-full` seed/restore lanes. This closes the section
-  because the targeted logger/projection/error/status/log evidence above remained green after the
-  package cutover and full CI/E2E exercised the integrated runtime state path.
-
-## P0: Docker ownership and lifecycle safety
-
-- Docker Desktop grouping labels were added, but manual visual verification remains open.
-- Native `linux/arm64` Walrus local-cluster image support remains unresolved: upstream Walrus
-  `ubuntu-aarch64` devnet assets appear to contain x86-64 binaries. The CI `linux/amd64` path is
-  covered by the deploy-capable release pin and binary preflight, but Apple Silicon/native arm64
-  local Walrus needs an explicit platform policy, upstream fixed asset, or source-build fallback.
-- Long-lived Docker hosts can still block local private-content apply before deploy when stale
-  devstack networks exhaust Docker's predefined bridge address pools. Local repro after plugin
-  network scoping failed with `all predefined address pools have been fully subnetted`; this needs a
-  prune/wipe path or explicit network-subnet policy before relying on repeated local seed runs.
-
-Acceptance evidence:
-
-- Foreign-label containers/networks/volumes are refused or handled only under an explicit
-  destructive policy.
-- Resume failure and malformed inspect output have tests.
-- Docker Desktop shows stack grouping equivalent to the old implementation, with router singleton
-  behavior intentionally handled.
-- `pnpm pack --dry-run` includes Dockerfile/image contexts needed by Sui/Postgres/Walrus/Seal.
-- Walrus local-cluster image behavior is verified on `linux/amd64` and native `linux/arm64`, or the
-  unsupported platform path fails early with a typed, actionable error.
-
-Closed evidence:
-
-- 2026-05-21 Worker Seal Key-Server Config: CI Devstack E2E commit `bd8320dd`, job
-  `Seed snapshot · private-content`, reached Seal acquire and failed after the key-server readiness
-  deadline because the daemon never bound `/health` (`/tmp/devstack-private-content-bd8320dd.log`,
-  lines 1205-1212). The rendered `key-server-config.yaml` used the wrong upstream YAML shape:
-  `seal_package` and `key_server_object_id` were top-level fields, but the pinned `seal-v0.6.6`
-  key-server parses `network: !Devnet` with nested `seal_package` and `server_mode: !Open` with
-  nested `key_server_object_id`. The renderer now emits the nested shape, and the readiness timeout
-  names both the direct in-container `/health` probe URL and the routed public URL so future
-  failures distinguish daemon boot from router dispatch. Targeted validation:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/config-render.test.ts test/plugins/seal/key-server-spec.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
-  `oxlint`, and `git diff --check`.
-- 2026-05-21 Worker Seal Source Fetch: CI Devstack E2E commit `6a624879`, job
-  `Seed snapshot · private-content`, reached Seal acquire and failed because
-  `plugins/seal/lifted-siblings/source-fetch.ts` still raised the documented
-  `git fetch not implemented` seam (`/tmp/devstack-private-content-6a624879.log`, around lines
-  1218-1224). Seal source resolution now preserves the existing `movePackagePath` and
-  `SEAL_MOVE_SOURCE_OVERRIDE` fast paths, then fills a per-host cache with a staged
-  `ContainerRuntime.runOneShot` `alpine/git` clone and returns the cached `move/seal` host path. A
-  follow-up review found the clone one-shot could leave root-owned cache files on Linux and cold
-  concurrent processes could race the final cache publish; the one-shot contract now carries a
-  narrow `user` option, Seal passes host `uid:gid` when Node exposes it, and the cache publish uses
-  a deterministic lock path beside the cache target. Targeted validation:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/source-fetch.test.ts test/plugins/seal/public-refs.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/one-shot.test.ts test/runtime/docker/contract-shape.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
-  `oxlint`, and `git diff --check`. Full private-content seed rerun remains for the orchestrator.
-- 2026-05-21 Worker Docker Inspect Config: CI Devstack E2E commit `e3afcd74`, job
-  `Seed snapshot · private-content`, failed router boot while decoding inspect JSON for
-  `devstack-router-c3ec4a78102c` because the object returned by ambiguous `docker inspect <name>`
-  had no top-level `Config` (`/tmp/devstack-private-content-e3afcd74.log`, lines 1202-1230). Because
-  router profiles use the same stable name for the singleton container and its shared network, the
-  container probe now calls `docker container inspect <name>` so a same-name network is not decoded
-  as container lifecycle evidence. The container schema still requires top-level `Config` with
-  `Config.Image` and `NetworkSettings` for actual container inspect output; optional labels and
-  command are read only when present, so missing `Config` remains a typed decode failure instead of
-  proving image, ownership, or command facts. Targeted validation:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts test/orchestrators/router/traefik-container.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
-  `oxlint`, and `git diff --check`.
-- 2026-05-21 CI Sui Local Warm Resume: commit `e3afcd74`, job `Lint, Build, and Test`, failed during
-  `pnpm turbo test` while `examples/wallet` re-ran its build task after the earlier
-  `pnpm turbo build` had already applied the same wallet stack successfully. Evidence from
-  `/tmp/devstack-turborepo-e3afcd74.log`: the first wallet apply reached `sui#0` ready
-  (`[12:00:23.010]` → `[12:01:31.611]`) and completed package/coin/action seeding; the later
-  test-phase wallet build started `sui#0` acquire at `[12:02:05.010]` and timed out at
-  `[12:03:07.460]` with `Last-seen probes=[]`. The root cause was Sui local mode preserving the
-  validator writable layer with `recreate: on-config-change` while the Docker runtime gave the
-  validator only the generic 10s stop grace. If Docker escalated the prior stop to SIGKILL/137, the
-  next warm resume could block before RPC/faucet ever accepted probes. Sui local validators now
-  request 30s stop grace and use `recreate: on-failure`, preserving clean exit 0/130 state while
-  recreating unclean exit 137 state. Targeted validation:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/sui/local-ports.test.ts test/runtime/docker/ownership-lifecycle.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack typecheck`, changed-file `prettier -c`, changed-file
-  `oxlint`, and `git diff --check`.
-- 2026-05-21 Worker Docker Inspect State: CI Devstack E2E commit `e47bc5e4`, job
-  `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
-  `devstack-router-c3ec4a78102c` because Docker omitted the top-level `State` field. Container
-  inspect now accepts absent `State` as explicit unknown lifecycle evidence; the container lifecycle
-  state machine routes unknown state through `unknown-state` recreate/refuse policy instead of
-  adopt/resume, and router bootstrap recreates unknown-state singletons only when no protected route
-  leases are present. Targeted validation passed:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/traefik-container.test.ts`,
-  changed-file `prettier -c`, changed-file `oxlint`, and `git diff --check`.
-- 2026-05-21 Worker Russell: CI Devstack E2E commit `e4250a8e`, job
-  `Seed snapshot · private-content`, failed router boot while decoding container inspect JSON for
-  `devstack-router-e744de605339` because Docker omitted the top-level `HostConfig` field. Container
-  inspect now accepts absent top-level `HostConfig` and falls back to `NetworkSettings.Ports` for
-  published-port facts while still requiring `Config.Image` and `NetworkSettings`. Targeted
-  validation:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/ownership-lifecycle.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/orchestrators/router/traefik-container.test.ts`,
-  and `pnpm --filter @mysten-incubation/devstack typecheck`.
-- 2026-05-21 Worker M: CI Devstack E2E run 26222137331 / job 77159570006 failed router boot while
-  decoding container inspect JSON that omitted Docker's unused top-level `Image` field. The
-  container inspect schema now accepts that field as optional but still requires `Config.Image`,
-  which lifecycle/router image matching actually consumes. Targeted tests:
-  `test/runtime/docker/ownership-lifecycle.test.ts` and
-  `test/orchestrators/router/traefik-container.test.ts`.
-- 2026-05-21 Worker F: container `inspect` now returns `null` only for not-found; daemon exits
-  remain `DaemonUnreachable`, other non-notfound exits fail as `DockerInspectFailed`, and
-  malformed/empty JSON fails as `DockerInspectDecodeFailed`. Targeted test:
-  `test/runtime/docker/ownership-lifecycle.test.ts`.
-- 2026-05-21 Worker F: same-name containers, networks, and volumes must match exact expected
-  `devstack.*` ownership labels before reuse or mutation; handle-based
-  exec/pause/commit/unpause/stop re-inspect the current container id and labels before acting.
-  Targeted test: `test/runtime/docker/ownership-lifecycle.test.ts`.
-- 2026-05-21 Worker F: secondary network attach uses the runtime connect classifier, so Docker's
-  already-attached stderr is idempotent success while other connect failures remain typed. Targeted
-  test: `test/runtime/docker/ownership-lifecycle.test.ts`.
-- 2026-05-21 Worker F: stopped-container resume failures route through recreate policy; `never`
-  refuses with `resume-failed` instead of rethrowing the raw start failure. Targeted test:
-  `test/runtime/docker/ownership-lifecycle.test.ts`.
-- 2026-05-21 Worker E: package `files` now includes `images` and excludes samples from packed
-  source/dist; `npm pack --dry-run --json` showed all Sui/Postgres/Walrus/Seal image context files
-  and `samples: []`.
-- 2026-05-21 Walrus CI path: default Walrus release was bumped to `devnet-v1.49.0`; the Dockerfile
-  and deploy script preflight required `walrus`, `walrus-node`, `walrus-deploy`, and `sui` binaries;
-  deploy failures include stdout/stderr excerpts. Orchestrator validation built the Walrus image on
-  `linux/amd64`, covering the previous missing-`walrus-deploy` exit-127 failure.
-- 2026-05-21 HEAD `2107c689` Docker CI closure: commit `2107c689` moved Docker shards to hosted
-  Ubuntu, and Devstack E2E run `26240767660` passed Docker integration shards 1/4, 2/4, 3/4, and
-  4/4. Together with the existing ownership/inspect/pack evidence above, this closes the CI
-  runner/shard and required runtime-asset portions for the `linux/amd64` lane. Docker Desktop visual
-  grouping, native `linux/arm64` Walrus policy/support, and stale long-lived Docker network
-  exhaustion policy remain open.
-
-## P0: Package/export/build-integration release surface needs installed boot evidence
-
-- Clean installed-consumer minimal stack boot from the preview/tarball remains an explicit P0
-  blocker. The HEAD `2107c689` smoke closes the install/help/import/browser/Vite/Vitest portion, but
-  it did not record a minimal stack boot from that clean temp consumer.
-- Docs and example truth gaps remain tracked under P1 product/docs sections; no docs rewrite
-  evidence is claimed here.
-
-Acceptance evidence:
-
-- `pnpm pack --dry-run` includes required runtime assets and excludes generated junk.
-- Install-from-tarball smoke imports every exported subpath and boots a minimal stack.
-- Browser-facing subpaths are node-free by static import audit.
-- Root exports match the intended app/plugin-author vocabulary only.
-- Vite, Vitest, Playwright, and browser integrations all read the same manifest/version contract.
-
-Closed evidence:
-
-- 2026-05-21 Package-directory cutover: generated/runtime outputs were removed before the move
-  (`packages/devstack/{dist,node_modules,.turbo,.devstack}` and
-  `packages/devstack-rewrite/{dist,node_modules,.turbo,.devstack,src/generated}` where present); old
-  `notes/redesign`, `notes/v2-requirements`, `AGENTS.md`, and the snapshot smoke runbook were
-  preserved under `packages/devstack/notes/`; the old package directory was deleted; the replacement
-  implementation was moved to `packages/devstack`; `package.json` is now named
-  `@mysten-incubation/devstack` with no `private` field.
-- 2026-05-21 Preview Publish Audit: `pkg-pr-new.yml` already builds and publishes `./packages/*`; no
-  workflow change is needed if cutover replaces old `packages/devstack` in place and leaves the
-  replacement implementation as the sole non-private `@mysten-incubation/devstack` package.
-- 2026-05-21 Worker E: `./samples` was removed from package exports and tsdown entries, and `files`
-  excludes `src/samples`/`dist/samples`; `npm pack --dry-run --json` returned `samples: []`.
-- 2026-05-21 Worker E: Vitest/browser setup injection now uses flat public subpaths
-  `@mysten-incubation/devstack/vitest/setup` and `@mysten-incubation/devstack/browser/setup`;
-  package exports include `./vitest/setup` and `./browser/setup`.
-- 2026-05-21 Worker E: browser setup and browser barrel import the slot-only
-  `build-integrations/runtime/browser.ts` barrel, avoiding the node-backed runtime barrel for
-  browser-facing slot access.
-- 2026-05-21 Worker E: `vitest` is now an optional peer dependency for the public Vitest/browser
-  config subpaths.
-- 2026-05-21 Worker E: targeted checks passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/browser/config.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/playwright/stack-context.test.ts test/build-integrations/runtime/cold-start-url.test.ts test/build-integrations/vite/cold-start-url.test.ts`
-  and targeted `prettier -c`/`oxlint` on touched files.
-- 2026-05-21 Worker Release Surface: root barrel and `./substrate` now exclude runtime service tags,
-  identity context internals, plugin error-contribution machinery, plugin error-tag arrays, coin
-  registry/cache/mint helpers, wallet HTTP/server helpers, and private engine protocol/state
-  modules. Targeted test: `test/build-integrations/release-surface.test.ts` / "keeps root and
-  substrate barrels on public vocabulary only".
-- 2026-05-21 Worker Release Surface: build-integration manifest version parity is pinned against the
-  substrate writer's `CURRENT_MANIFEST_VERSION`, and the runtime reader continues decoding through
-  the shared `ManifestEnvelopeSchema`. Targeted test:
-  `test/build-integrations/release-surface.test.ts` / "pins build-integration manifest version to
-  the writer version".
-- 2026-05-21 Worker Ledger Cleanup: build integrations now resolve the manifest stack as explicit
-  stack option, then `DEVSTACK_STACK`, then `main`; package metadata remains app identity only.
-  Manifest parity and adjacent discovery tests pass.
-- 2026-05-21 Worker Ledger Cleanup: browser-facing static node-import audit passed with no matches
-  in `src/build-integrations/browser` or `src/build-integrations/runtime/browser.ts`.
-- 2026-05-21 Worker Ledger Cleanup: old nested build-integration/sample specifier audit passed with
-  no matches.
-- 2026-05-21 Worker Ledger Cleanup: after build, pack audit passed with required image/setup files
-  present, `samples: 0`, `dist/node_modules: 0`, and `entries: 978`.
-- 2026-05-21 Worker Ledger Finalize: package build and checkpoint pack/browser/static audits pass:
-  pack includes required image/setup files and excludes samples/dist-node_modules; browser-facing
-  static node-import audit has no matches; old nested specifier audit has no matches.
-- 2026-05-21 Worker Release Surface: package metadata/exports were re-audited while this branch
-  still carried the `@mysten-incubation/devstack-rewrite` package identity and matching example
-  imports; the later package-directory cutover and HEAD `2107c689` closure below supersede that
-  deferred final-rename state.
-- 2026-05-21 Worker Release Surface: targeted checks passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`,
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts test/build-integrations/manifest-path-parity.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/vitest/config.test.ts test/build-integrations/browser/config.test.ts`,
-  `npm pack --dry-run --json`, and targeted `prettier` on touched release-surface files.
-- 2026-05-21 Worker Preview Manifest Discovery: `StackPathsService` now resolves stack roots as
-  `<runtimeRoot>/stacks/<stack>`, so production `runStack` writes the manifest at the same
-  stack-scoped location the public runtime resolver walks from an installed app root. The no-Docker
-  `runStack` smoke boots a leaf stack with `runtimeRoot = <appRoot>/.devstack`, then proves both
-  `discoverManifestPath({ cwd: appRoot, env: {}, stack: 'main' })` and `readStackContext(...)` find
-  and read `<appRoot>/.devstack/stacks/main/manifest.json`. Targeted check passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/api/run-stack.test.ts test/build-integrations/runtime/discover.test.ts test/build-integrations/runtime/read-stack-context.test.ts test/build-integrations/manifest-path-parity.test.ts`.
-- 2026-05-21 Worker Preview Install Metadata: `tsdown` now emits release declarations, package
-  `types` / `exports.*.types` point at `dist/**/*.d.mts`, and `files` excludes `src/generated` while
-  preserving `src`, `dist`, and Docker image contexts. `release-surface.test.ts` now pins every
-  exported subpath to matching built JS + declaration entries, verifies the CLI shebang stays out of
-  declarations, and runs `npm pack --dry-run --json` to prove image contexts are included while
-  `src/generated`, samples, and `dist/node_modules` are excluded. Focused checks passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite build`,
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/build-integrations/release-surface.test.ts`,
-  and a temporary NodeNext consumer type-smoke importing every exported subpath through package
-  exports with `skipLibCheck: true`. Caveat: strict consumer `tsc` without `skipLibCheck` still
-  fails inside third-party Effect/fast-check declarations before reporting package export errors;
-  the later package-directory cutover and HEAD `2107c689` closure below supersede the package
-  name/private and install/import portions, while clean installed minimal stack boot remains open
-  above.
-- 2026-05-21 Strict Consumer Closure: clean tarball install, `npx devstack --help`, and ESM runtime
-  imports passed, but strict consumer `tsc` without `skipLibCheck` fails solely in
-  `effect@4.0.0-beta.65` at `dist/internal/schema/schema.d.ts(3,15)` because `SchemaErrorTypeId` is
-  referenced without a declaration. Published Effect v4 betas through `4.0.0-beta.70` still carry
-  the same declaration bug, and importing even `effect/Effect` or `effect/Cause` reaches it through
-  Effect's own declaration graph, so there is no safe dependency/catalog correction in this repo.
-  Until Effect publishes a fixed v4 beta, strict packed consumers need `skipLibCheck: true`. Focused
-  audit: `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer`, which packs to a temp
-  directory, installs in a clean consumer, checks `npx devstack --help`, checks runtime ESM imports
-  for the root, `/vite`, and `/runtime` exports, and fails on any unexpected consumer type error.
-- 2026-05-21 Worker Browser Barrel: the public `./browser` barrel now re-exports
-  `setupDevstackBrowserGlobals` from side-effect-free `setup-globals.ts`; the top-level await that
-  loads generated dapp-kit config remains isolated to `./browser/setup`. Release-surface regression
-  imports `@mysten-incubation/devstack/browser` without setting `globalThis.__devstackDAppKit__`.
-- 2026-05-21 Worker E2E Workflow: the Devstack E2E workflow carries explicit `example` and `stack`
-  matrix fields, keeping working directories/artifact names on the example package while using the
-  resolved stack name for `.devstack/stacks/<stack>/snapshots`. YAML parse and `git diff --check`
-  passed; the HEAD `2107c689` closure below records the full GitHub seed/e2e rerun.
-- 2026-05-21 HEAD `2107c689` release-surface CI/preview/install-import closure: regular Turborepo CI
-  run `26240767950` passed `pnpm audit`, lint, build, and test; Devstack E2E run `26240767660`
-  passed all Docker shards and the three seed/restore snapshot lanes; Continuous Releases /
-  `pkg.pr.new` run `26240767753` succeeded; and a clean temp consumer installed the preview package
-  with optional peers `vite@6.4.2`, `vitest@4.1.6`, and `typescript@5.9.3` and passed CLI help,
-  root/contracts/substrate/runtime/browser/playwright imports, browser import without mutating
-  `globalThis.__devstackDAppKit__`, and Vite/Vitest imports. This closes the stale full-CI, E2E,
-  preview publish, and install/import portions after the package-directory cutover while leaving the
-  installed minimal stack boot bullet above open.
-
-## P0: Public API ergonomics and unsupported options are release-quality (closed at HEAD 2107c689)
-
-No unresolved blocker remains in this section for HEAD `2107c689`.
-
-Acceptance evidence:
-
-- Unsupported options are deleted from public types or implemented.
-- Unknown network input fails with a typed error.
-- DeepBook public options only represent real behavior.
-- The key examples compile without `as never`, placeholder strings, magic identity strings, or
-  handwritten SDK boilerplate that belongs in the substrate/API.
-- Cross-plugin references use direct values unless a remaining exact exception is documented here.
-
-Closed evidence:
-
-- 2026-05-21 Worker Public API: `defineDevstack(account('alice'))` auto-mounts `sui()` for built-in
-  and plugin-author members that consume `SuiTag`, preserves explicit Sui members, and keeps the
-  auto-mounted member in the returned type/runtime tuple. Targeted test:
-  `test/api/define-devstack.test.ts`.
-- 2026-05-21 Worker Public API: stack names resolve by explicit option, `DEVSTACK_STACK`, nearest
-  package metadata, then `main`; unknown `DEVSTACK_NETWORK` values now throw
-  `DevstackNetworkParseError` instead of silently falling back. Targeted tests:
-  `test/api/inference-network.test.ts` and `test/plugins/network-defaults.test.ts`.
-- 2026-05-21 Worker Public API: wallet `accounts: 'all'` and bare `wallet()` expand against inferred
-  account members, respect auto-mounted Sui, and empty resolved accounts fail with a typed
-  `WalletBootError`. Targeted test: `test/plugins/wallet/accounts-all.test.ts`.
-- 2026-05-21 Worker Public API: account env and inline private-key variants use the final public
-  `key` / `privateKey` option names, and `examples/effect-app-rewrite/devstack.config.ts` now uses
-  `{ kind: 'env', key: 'ALICE_PRIVATE_KEY' }`.
-- 2026-05-21 Worker Public API: Sui local `image.pull` routes through the runtime pull path instead
-  of the unwired local branch. Targeted test: `test/plugins/sui/local-image.test.ts`.
-- 2026-05-21 Worker Public API: Walrus `local.seedAccounts` accepts direct account member refs and
-  threads each account tag through `consumes`; the private-content example boot shape uses
-  `walrus({ local: { seedAccounts: [publisher, alice, bob] } })`.
-- 2026-05-21 Worker Public API: Seal local-keygen signer is a direct account member ref, the
-  resolved value exposes key-server fields plus a manager slot through `SealResolved`, and
-  unsupported manager tag constructors stay out of the public/root barrels. Targeted tests:
-  `test/plugins/seal/public-refs.test.ts`, `test/plugins/seal/public-refs.test-d.ts`, and
-  `test/build-integrations/release-surface.test.ts`.
-- 2026-05-21 Worker Public API: DeepBook local mode exposes only real release behavior; unsupported
-  local pools and market-maker options are refused at the type boundary, margin/Pyth/pool-spec and
-  market-maker helper exports that cannot acquire real behavior are absent from the root release
-  barrel, and the e2e smoke no longer pretends pools prove boot. Actual local pool creation, Pyth,
-  margin, and market-maker helpers are deferred as non-P0 until they have real acquire behavior.
-  Targeted tests: `test/plugins/deepbook/type-refusal.test-d.ts`,
-  `test/plugins/deepbook/factory.test.ts`, and `test/e2e/deepbook-boot.test.ts`.
-- 2026-05-21 Worker Package/Coin/Action Ergonomics: `localPackage` now supports declarative
-  `capture: { key: '::module::Type' }`, packages expose discovered publish-receipt coins through
-  `pkg.coins[...]`, the shared `pickCreatedByType` helper works for package publish changes and
-  action receipts, and the package-scoped coin factory is the final `coin.fromPackage(pkg, witness)`
-  name. `examples/fork-greeting-rewrite/devstack.config.ts`,
-  `examples/token-studio-rewrite/devstack.config.ts`, and
-  `examples/wallet-rewrite/devstack.config.ts` use the direct surfaces.
-- 2026-05-21 Worker Package/Coin/Action Ergonomics: focused compile/runtime evidence passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/plugins/package/capture.test.ts test/plugins/action/execute.test.ts test/plugins/coin/discovery.test.ts`,
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck test/plugins/package/public-ergonomics.test-d.ts`,
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false --target ES2022 --module NodeNext --moduleResolution NodeNext --lib ES2022,DOM --types node --jsx react-jsx --strict --allowImportingTsExtensions --skipLibCheck ../../examples/wallet-rewrite/devstack.config.ts ../../examples/token-studio-rewrite/devstack.config.ts ../../examples/fork-greeting-rewrite/devstack.config.ts`,
-  and targeted `oxlint` on touched package/coin/action/example files.
-- 2026-05-21 CI Package Publish Race: commit `e47bc5e4` failed `Lint, Build, and Test` during
-  `pnpm turbo test` while `examples/wallet` applied `mock_usdc` and `mock_weth` in the same acquire
-  level with the same publisher. The publish path now holds the publisher account critical section
-  across `Transaction.build({ client })`, sign, `executeTransaction`, and `waitForTransaction`; the
-  wait covers any execute envelope that carries a digest, including `$kind: 'FailedTransaction'`.
-  The same account-owned transaction scope is used by the shared Sui executor plus action/coin
-  transaction helpers. Follow-up review evidence:
-  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/account/lease-broker-integration.test.ts test/plugins/package/publish-executor.test.ts test/plugins/action/execute.test.ts test/substrate/runtime/sui-execute/sui-execute.test.ts`
-  and `pnpm --filter @mysten-incubation/devstack typecheck`.
-- 2026-05-21 Worker Extras/Manifest Seam: stack-level `extras` now resolve after acquire through a
-  direct member-value context, write through the manifest envelope's `extras` slot, and emit
-  sensitive `extras.ts` through the normal codegen renderer. Targeted tests:
-  `test/substrate/manifest-extras.test.ts`,
-  `test/build-integrations/runtime/read-stack-context.test.ts`, and
-  `test/orchestrators/codegen/service.test.ts`; targeted typecheck:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec tsc --noEmit --pretty false`.
-- 2026-05-21 Worker Ledger Finalize: direct cross-plugin references are closed for the known API
-  wave surfaces: package/coin/action, Seal, Walrus, DeepBook, and stack extras now use direct public
-  values or refuse unsupported options at the public boundary.
-- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras tests passed across package, coin,
-  action, DeepBook, manifest extras, build-integration runtime read context, and codegen service
-  coverage.
-- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed
-  audit/lint/build/test, Devstack E2E run `26240767660` passed end to end, and the `pkg.pr.new`
-  clean temp consumer smoke imported the public root/contracts/substrate/runtime/ browser/playwright
-  surfaces plus Vite/Vitest integration surfaces. This closes the section because the prior targeted
-  API evidence stayed green through the final package identity/cutover and the installed preview
-  exposed the intended public subpaths without browser global side effects.
-
-## P0: Codegen contracts are consistent (closed at HEAD 2107c689)
-
-No unresolved blocker remains in this section for HEAD `2107c689`.
-
-Acceptance evidence:
-
-- Codegen emit is single-evaluation and per-file atomic/idempotent; the false cycle-level staged
-  promotion claim is removed.
-- Bigint output is valid for the documented consumer API.
-- Generated code is imported/typechecked in an always-on test path.
-- Apps consume manifest/codegen/env/bridge only; app code does not import devstack engine modules.
-
-Closed evidence:
-
-- 2026-05-21 Worker Codegen: package emitters are evaluated once per cycle and the same emitted
-  record feeds package pointer rendering, aggregate package output, and Move binding collection.
-  Targeted test: `test/orchestrators/codegen/service.test.ts` / "evaluates each package emitter once
-  while collecting bindings".
-- 2026-05-21 Worker Codegen: Move bindings now write through the shared per-file atomic/idempotent
-  emitter, and unchanged binding files are reported as no-write on a second cycle. Targeted test:
-  `test/orchestrators/codegen/service.test.ts` / "imports generated package pointer, aggregate, and
-  Move binding modules without sui".
-- 2026-05-21 Worker Codegen: bigint rendering emits quoted decimal strings without an `n` suffix, so
-  `BigInt(<string>)` is valid. Targeted test: `test/orchestrators/codegen/format.test.ts`.
-- 2026-05-21 Worker Codegen: generated package pointer, aggregate package file, and generated Move
-  binding modules are imported in an always-on stubbed codegen test path that does not depend on a
-  host `sui` binary. Targeted test: `test/orchestrators/codegen/service.test.ts`.
-- 2026-05-21 Worker Codegen: generated-file rendering rejects imports from devstack package exports
-  or relative `src/` paths, keeping generated browser-consumed files from pulling devstack source
-  into app bundles. Targeted test: `test/orchestrators/codegen/format.test.ts`.
-- 2026-05-21 Worker Codegen: targeted checks passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/orchestrators/codegen/service.test.ts test/orchestrators/codegen/format.test.ts test/orchestrators/codegen/gitignore.test.ts test/orchestrators/codegen/permissions.test.ts`
-  and targeted `prettier -c` on touched codegen files.
-- 2026-05-21 Worker Docker Summary: production Move summary codegen runs through the vendored Sui
-  CLI Docker image instead of host `sui`, and the one-shot command re-owns/chmods the mounted
-  summary scratch directory on container exit so CI can clean root-written package summary files.
-  Targeted test passed: `test/orchestrators/codegen/bindings.test.ts`; orchestrator validation
-  passed `pnpm turbo build --filter=@mysten-incubation/_template`, covering the previous
-  `EACCES: permission denied, unlink .../package_summaries/address_mapping.json` failure.
-- 2026-05-21 Worker Move Cache Scrub: host `scrubLocksHost` still fails on unreadable/unwritable
-  package-owned `Move.lock` files, but cached `~/.move/git/**/Move.lock` files are best-effort so
-  root-owned Docker cache entries do not break Docker-backed production builds before the container
-  scrub runs. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`.
-- 2026-05-21 Worker Snapshot Scrub: Docker-backed package publish now declares when the build path
-  scrubs inside the container, allowing host `scrubLocksHost` to treat package-owned `Move.lock`
-  rewrite failures as best-effort only for that container-backed path while keeping host-only builds
-  strict. Targeted test passed: `test/substrate/runtime/sui-move-build/sui-move-build.test.ts`; an
-  isolated arena proof ran `apply`, made `move/connect_four/Move.lock` read-only, then
-  `snapshot save baseline` successfully captured.
-- 2026-05-21 HEAD `2107c689` closure: regular Turborepo CI run `26240767950` passed build and test,
-  and Devstack E2E run `26240767660` passed the Docker shards plus `arena`, `private-content`, and
-  `deepbook-full` seed/restore snapshot lanes. This closes the section because the targeted
-  single-evaluation, atomic emit, bigint rendering, generated import, and Docker-backed Move/codegen
-  evidence above remained green in the full branch validation.
-
-## P1: Product evidence is too stub-heavy
-
-- Several e2e tests prove harness wiring or stub outputs rather than real product behavior.
-- Shared boot harness uses stub Traefik and stub Move codegen in places where product tests need the
-  real orchestrators.
-- Private-content must prove encrypt -> Walrus store -> Walrus fetch -> decrypt as a remaining
-  behavior gap beyond the `2107c689` snapshot seed/restore validation.
-- Redis routable behavior is described but not proven through the routed path or collision path.
-- Docker-dependent tests can soft-skip with warnings, which weakens release evidence.
-- Wallet needs coin balance and endpoint reachability evidence.
-- Postgres needs DB existence, route, and snapshot evidence.
-- Effect-app needs dev/prod branch evidence.
-- Fork-greeting needs either fork-mode evidence or an explicit cutover deferral.
-- Walrus/Seal snapshot restore is covered for `private-content` at `2107c689`; behavior/codegen
-  proof beyond restored snapshot validation remains open.
-- Manual verification must cover parallel stacks per service: Sui, faucet, wallet, Walrus, Seal,
-  DeepBook, Postgres, and plugin-author Redis.
-
-Acceptance evidence:
-
-- Tests are classified as unit/harness/product e2e.
-- Docker/Sui skips are explicit release-gate failures in CI or a clearly separate optional lane.
-- Public examples have Playwright/product tests for their advertised behavior.
-- Manual scenario signoff is recorded only after P0 blockers are closed.
-
-Closed evidence:
-
-- 2026-05-21 HEAD `2107c689` product-gate evidence: Devstack E2E run `26240767660` passed Docker
-  integration shards 1/4, 2/4, 3/4, and 4/4, then passed seed and restore snapshot jobs for `arena`,
-  `private-content`, and `deepbook-full`, including `Validate restored snapshot state`. This closes
-  the stale "not Docker-driven" boot/snapshot evidence gap for those three stacks only. It does not
-  close private-content behavior beyond snapshot restoration, wallet, Postgres, effect-app,
-  fork-greeting, Redis routed/collision proof, Docker soft-skip policy, or manual parallel-stack
-  signoff.
-
-## P1: Snapshot identity and restore behavior
-
-- Snapshot capture can merge conflicting identity keys by last-write-wins before restore-time
-  conflict detection runs.
-- Wallet/Seal/Walrus snapshot coverage still needs behavior roundtrips beyond restored
-  artifact/state validation, including wallet balance and encrypt/store/fetch/decrypt proof.
-- Snapshot start-time/PID identity must not use stub or zero values.
-
-Acceptance evidence:
-
-- Capture rejects conflicting identity contributions before artifact creation.
-- Product snapshot tests prove non-empty capture and restore for representative plugins.
-- Restore preserves plugin identity and state without cross-stack identity drift.
-
-Closed evidence:
-
-- 2026-05-21 Snapshot image/restore gate closure: commits `50aa2b90` and `3a22959a` added snapshot
-  image-bundle validation on capture and late image-metadata scanning; commits `d268d401` and
-  `da9d91a8` added restored snapshot state/artifact validation. At HEAD `2107c689`, Devstack E2E run
-  `26240767660` passed seed snapshot jobs for `arena`, `private-content`, and `deepbook-full`, and
-  restore snapshot jobs for all three stacks, including `Validate restored snapshot state`. This
-  closes image-bundle validation and command-routed non-empty seed/restore evidence for those
-  representative stacks. Identity conflict rejection and start-time/PID identity remain open above.
-
-## P1: Architecture and layering cleanup
-
-- L0 substrate composition must not import L2 plugin registries or concrete Docker layers in runtime
-  composition paths. Move composition upward and keep substrate name-blind.
-- Router default entrypoints still encode plugin names centrally. Plugin routable contributions
-  should own entrypoint declarations where practical.
-- Router entrypoint ownership and TOCTOU collision checks need acceptance evidence.
-- The Coin/Package `PublishReceipt` relationship needs a substrate-raised event or another explicit
-  seam; do not add more direct plugin cross-imports.
-- `Endpoint.pluginKey`/row attribution must remain available for projection, manifest, and operator
-  surfaces.
-- Runtime/build-integration duplication and stale self-references must be reconciled before cutover.
-- Phase markers, scaffold text, compatibility/shim language, and broad `as never` / `as unknown as`
-  casts still need a release sweep.
-- Post-acquire capability behavior must not allow ready plugins with silently empty capabilities.
-
-Acceptance evidence:
-
-- Grep checks for phase markers, scaffold language, samples, sentinel strings, and forbidden casts
-  are clean or each remaining hit has a documented owner and reason.
-- Layering audits show substrate remains name-blind except documented allowed primitives.
-- Router, endpoint, and PublishReceipt seams have tests or documented accepted tradeoffs.
-
-## P1: Docs and examples do not match release truth
-
-- Public docs still show old PascalCase API imports and old codegen/snapshot behavior.
-- Snapshot docs claim cross-stack restore is allowed while runtime identity guard rejects stack
-  mismatches.
-- Examples mix public runnable apps, smoke/config examples, incomplete private-content,
-  typecheck-only DeepBook, and stale deferred Playwright text.
-- Example comments that explain "differences from v3" or future phase work must be removed or
-  replaced by working API.
-
-Acceptance evidence:
-
-- Release docs are rewritten against the current API or removed until accurate.
-- Public examples are either product-runnable and tested, or explicitly internal/experimental.
-
-## Worktree and checkpoint blockers (closed at HEAD 2107c689)
-
-No unresolved worktree/checkpoint blocker remains for the code state verified at HEAD `2107c689`
-before this notes edit.
-
-Closed evidence:
-
-- 2026-05-21 HEAD `2107c689` closure: the orchestrator verified the worktree was clean before this
-  notes edit; regular Turborepo CI run `26240767950` passed `pnpm audit`, lint, build, and test;
-  Devstack E2E run `26240767660` passed end to end; and Continuous Releases / `pkg.pr.new` run
-  `26240767753` succeeded. This closes stale generated-artifact, lockfile/importer,
-  unrelated-dirty-file, and checkpoint-sequencing blockers for the current branch state; this change
-  is documentation-only.
-
-- 2026-05-21 Worker Ledger Cleanup: after typecheck cleanup, these commands pass:
-  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
-  `pnpm --filter @mysten-incubation/example-effect-app-rewrite typecheck`, and
-  `pnpm --filter @mysten-incubation/example-deepbook-full-rewrite typecheck`.
-- 2026-05-21 Worker Ledger Finalize: package typecheck passes:
-  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`.
-- 2026-05-21 Worker Ledger Finalize: changed-file formatting passes using Prettier on changed files,
-  and changed-file oxlint passes with 0 warnings / 0 errors.
-- 2026-05-21 Worker Ledger Finalize: targeted operator/API/extras wave tests pass across 17 files /
-  95 tests covering CLI/TUI dispatch/rendering, package/coin/action, DeepBook, manifest extras,
-  build-integration runtime read context, and codegen service.
-- 2026-05-21 Worker Ledger Finalize: example typechecks pass for
-  `@mysten-incubation/example-wallet-rewrite`, `@mysten-incubation/example-token-studio-rewrite`,
-  `@mysten-incubation/example-fork-greeting-rewrite`, and
-  `@mysten-incubation/example-deepbook-full-rewrite`. Wallet and token-studio typecheck scripts run
-  `devstack apply` and logged non-fatal `sui#0` acquire failures, so this is typecheck/config
-  evidence only, not product boot evidence.
-- 2026-05-21 Worker Ledger Cleanup: combined targeted test wave passes across 35 files / 217 tests
-  covering API inference/runStack, CLI flags, release surface/build integrations, codegen,
-  wallet/account/Sui, Seal/Walrus, DeepBook, and adjusted e2e smoke.
-- 2026-05-21 Worker Ledger Cleanup: package build passes:
-  `pnpm --filter @mysten-incubation/devstack-rewrite build`.
-- 2026-05-21 Worker Ledger Finalize: package build passes:
-  `pnpm --filter @mysten-incubation/devstack-rewrite build`.
-- 2026-05-21 Orchestrator Runtime/Error Checkpoint: package typecheck, package build, and full
-  package tests passed after the hard-kill/error-style wave:
-  `pnpm --filter @mysten-incubation/devstack-rewrite typecheck`,
-  `pnpm --filter @mysten-incubation/devstack-rewrite build`, and
-  `pnpm --filter @mysten-incubation/devstack-rewrite test` (126 files / 829 tests). Focused
-  hard-kill/stage-and-swap tests also passed across 7 files / 43 tests; changed-file Prettier,
-  changed-file oxlint, and `git diff --check` passed.
-- 2026-05-21 Worker Full-Suite Timeout: the two isolation-green tests that exceeded Vitest's 5s
-  in-process default under full-suite load now carry explicit 10s test timeouts while keeping their
-  existing assertions and internal waits intact. Focused check passed:
-  `pnpm --filter @mysten-incubation/devstack-rewrite exec vitest run test/orchestrators/snapshot/restore.test.ts test/runtime/docker/ensure-container-paused.test.ts --bail=1`.
-
-## Partially completed items that still need verification
-
-- Command-tree/help work landed, but standard CLI behavior and subcommand UX still need acceptance.
-- TUI renderer selection, log stream, grouping, endpoints, cause rendering, `q` routing, and
-  hard-kill/second-signal behavior have targeted tests, but manual live operator proof remains open.
-- Startup pending display had partial early-handle work; verify against real startup and failure in
-  manual product evidence.
-- Docker Desktop grouping labels were implemented, but visual verification remains open.
-- Router/profile/traffic work has strong tests, but manual parallel-stack and bad-state checks
-  remain open.
-- Snapshot ID/integrity/transaction staging/image-restore gate work has green E2E evidence for
-  `arena`, `private-content`, and `deepbook-full`; identity conflict rejection, start-time/PID
-  identity, and behavior roundtrips beyond restored artifact/state validation remain open.
+This file is intentionally short. Resolved worker logs and migration history were removed so future
+sessions start from the current product truth instead of old cleanup noise. Use git history for
+archaeology.
+
+## Current decisions
+
+- The example set is curated. Deleted mini/examples stay deleted: `effect-app`, `hello-world`,
+  `plugin-author-redis`, `postgres-mini`, `seal-mini`, and `walrus-mini`.
+- Walrus local-cluster images use upstream release tarballs only. Do not reintroduce Rust/Cargo
+  source builds.
+- Walrus release images are pinned to upstream `testnet-v1.49.1` tarballs. The image build verifies
+  `walrus`, `walrus-node`, and `walrus-deploy` exist and match Docker's target architecture. If a
+  future upstream release regresses, fail during image build instead of adding a source-build path.
+- The public CLI surface is intentionally attached/direct only: `up`, `apply`, `status`, `doctor`,
+  `config`, `schema --json`, `snapshot`, `prune`, and `wipe`. Do not reintroduce detached peer
+  commands like `down`, `logs`, `exec`, `codegen`, `stack`, or `fork`.
+- This repo is still prototype-only. Break wrong APIs directly; do not add shims, deprecated
+  exports, or parallel v2 surfaces.
+
+## Open P0 blockers
+
+### Private-content browser proof
+
+Private-content now has real app code and a Playwright spec for:
+
+`encrypt -> Walrus store -> Walrus fetch -> Seal decrypt`
+
+Current boot evidence verifies the stack shape and resolved Walrus/Seal values, but the real browser
+roundtrip has not been rerun since the latest Walrus/Sui readiness fix.
+
+Resolved 2026-05-21: the previous local Walrus readiness failure was not a Walrus release-binary
+problem. The root cause was Sui localnet pruning. `packages/devstack/images/sui/entrypoint.sh`
+patched only `fullnode.yaml`, while `sui start` localnet also reads `network.yaml` and per-validator
+YAML files that still had aggressive pruning (`num-epochs-to-retain: 0`). Walrus then bootstrapped
+from a package-publish checkpoint that Sui had already pruned, producing
+`Checkpoint 20194 not found` and shutting the storage node down.
+
+Current status:
+
+- Sui entrypoint now patches every generated YAML containing `authority-store-pruning-config`,
+  including `num-epochs-to-retain-for-checkpoints`.
+- Docker image content hashes now include files under the build context, so entrypoint/script edits
+  invalidate managed image tags instead of reusing stale images.
+- `pnpm --filter @mysten-incubation/private-content typecheck` passed on 2026-05-21 after
+  `devstack apply` booted Sui, accounts, the vault package, Seal, wallet, and Walrus. The old
+  `storage-node-3 never became ready` / `Checkpoint ... not found` failure did not recur.
+
+Still open:
+
+- Run `pnpm --filter @mysten-incubation/private-content test:e2e` to prove the browser roundtrip.
+- The latest apply still warned that the wallet origin allowlist is empty because this stack has no
+  Vite plugin and no `allowedOrigins`. If browser proof fails at wallet connection/pairing, fix the
+  private-content wallet/Vite origin path before reopening Walrus readiness.
+
+### Live TUI/operator proof
+
+The TUI/CLI surface has targeted tests, but still needs a manual live proof against a real stack
+lifecycle:
+
+- boot/progress display
+- log stream placement
+- endpoint/extras grouping
+- failure cause rendering
+- shutdown
+- hard-kill/second-signal behavior
+
+### Installed-consumer boot
+
+The preview/tarball smoke already covered install/import/browser/Vite/Vitest paths at the last clean
+checkpoint, but a clean temp consumer still needs to boot a minimal stack from the installed
+package.
+
+### Docker/manual lifecycle proof
+
+Current status:
+
+- Docker Desktop grouping labels are implemented and unit-pinned for containers, networks, and
+  volumes, but the actual Docker Desktop visual grouping has not been manually verified.
+- `wipe` has a stack-scoped managed-resource path that removes containers, networks, and volumes by
+  ownership labels. The runtime also classifies Docker bridge-pool exhaustion as
+  `network-address-pool-exhausted` with a wipe/prune/subnet hint.
+- The broader long-lived-host story is still not closed: `prune` currently sweeps snapshot catalog
+  entries and managed images, not stale managed networks, and unlabelled/foreign networks remain
+  outside devstack's destructive scope by design.
+
+Still open:
+
+- Docker Desktop visual grouping.
+- Broader stale-network prune/wipe story for long-lived Docker hosts.
+
+## Open P1 blockers
+
+- Release docs still need a current API sweep.
+- Snapshot identity conflict rejection and start-time/PID identity need final evidence.
+- Wallet/token-studio/fork-greeting need current product evidence appropriate to their advertised
+  behavior.
+- Docker-dependent tests that soft-skip are classified as follows: Docker absence is an environment
+  gap for release-gate lanes, not a passing result; fake-Docker runtime tests remain the normal
+  package regression lane; real-Docker e2e files belong in a separate Docker lane. The prior
+  `test/e2e/router-real-traffic.test.ts` fixture label mismatch is resolved; keep future failures
+  classified by current evidence rather than the stale `ForeignDockerResource` defect.
+
+## Current evidence
+
+- `examples/README.md` now lists only `_template`, `deepbook-full`, `private-content`,
+  `token-studio`, and `wallet` as runnable apps. `arena` and `fork-greeting` are listed as
+  stack/config targets.
+- Stale e2e boot tests for deleted examples were removed. Remaining boot tests point at final
+  directory names instead of `*-rewrite`.
+- `private-content-boot.test.ts` uses the test-owned
+  `packages/devstack/test/e2e/fixtures/walrus-stub` fixture instead of the deleted
+  `examples/walrus-mini` path.
+- Private-content now builds workspace dependencies before `devstack apply` in its build/typecheck
+  scripts so a clean checkout has `@mysten-incubation/devstack` and `@mysten-incubation/dev-wallet`
+  `dist/` outputs before Vite/TypeScript load package exports.
+- Sui pruning patch syntax check passed: `sh -n packages/devstack/images/sui/entrypoint.sh`.
+- Docker build-cache regression check passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker/build-content-hash.test.ts`
+  (1 file / 5 tests).
+- Package build passed after the Docker build-context hash change:
+  `pnpm --filter @mysten-incubation/devstack build`.
+- Private-content typecheck passed after the Walrus/Sui readiness and dependency-build fixes:
+  `pnpm --filter @mysten-incubation/private-content typecheck`.
+- Private-content boot passed after building devstack from the working tree:
+  `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack exec vitest run test/e2e/private-content-boot.test.ts test/e2e/deepbook-boot.test.ts`
+  (2 files / 6 tests).
+- `deepbook-full` is now a real Vite/React browser app. It consumes generated `deepbook/deepbook`
+  bindings, renders the known testnet DeepBook package/registry/Pyth handles, and offers a market
+  console that queries DeepBook pool id, registration, mid price, vault balances, trade/book params,
+  order book ticks, and Pyth price-object age through `@mysten/deepbook-v3`.
+- DeepBook app checks passed: `pnpm --filter @mysten-incubation/deepbook-full typecheck`,
+  `pnpm --filter @mysten-incubation/deepbook-full build`,
+  `pnpm --filter @mysten-incubation/deepbook-full exec vitest run` (no test files by design; the
+  current repo resolves Vitest 2 against Vite 7 for examples), and
+  `pnpm --filter @mysten-incubation/deepbook-full test:e2e` (1 Chromium smoke).
+- Devstack focused boot/plugin checks passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts`
+  (1 file / 14 tests) and
+  `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/deepbook-boot.test.ts test/e2e/private-content-boot.test.ts`
+  (2 files / 6 tests).
+- Local Pyth publishing remains unwired and intentionally absent from the public local DeepBook
+  options until it has real acquire behavior; the shipped `deepbook-full` demo is explicitly a
+  known-deployment/testnet market console.
+- Seal now derives a deterministic per-stack Docker subnet and passes it to `ensureNetwork`,
+  avoiding the local `network-address-pool-exhausted` failure seen at `seal:seal#6`.
+- DeepBook known deployments include Pyth state IDs for testnet/mainnet, and `deepbook-network`
+  generated bindings emit those IDs.
+- Focused tests passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/deepbook/factory.test.ts test/plugins/seal/key-server-spec.test.ts test/plugins/walrus/storage-nodes.test.ts`
+  (3 files / 35 tests).
+- Package typecheck passed: `pnpm --filter @mysten-incubation/devstack typecheck`.
+- CLI surface was rebuilt around Stricli command-scoped parsing. Focused CLI/TUI tests passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/surfaces/cli test/cli test/surfaces/tui/input-commands.test.ts test/surfaces/tui/plain-renderer.test.ts test/surfaces/tui/error-pane.test.ts`
+  (13 files / 76 tests).
+- CLI prune is now direct/offline, `wipe` and `snapshot restore` refuse to mutate while an attached
+  `devstack up` session is live, and removed peer commands fail as unknown routes.
+- Built CLI smoke passed for `schema --json`, `prune --dry-run --json`, invalid
+  `apply --renderer plain`, invalid `snapshot restore --config`, and removed `down --json`.
+- Package build passed after the CLI rewrite: `pnpm --filter @mysten-incubation/devstack build`.
+- Earlier working-tree checks also passed: `pnpm --filter @mysten-incubation/devstack build`,
+  `pnpm --filter @mysten-incubation/example-deepbook-full typecheck`, and
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/plugins/seal/key-server-spec.test.ts test/plugins/walrus/storage-nodes.test.ts`.
+- Docker host was reachable locally on 2026-05-21: `docker info --format '{{.ServerVersion}}'`
+  returned `29.4.0`.
+- Docker runtime regression suite passed:
+  `pnpm --filter @mysten-incubation/devstack exec vitest run test/runtime/docker` (12 files / 97
+  tests).
+- Focused Docker lifecycle/image roundtrip passed:
+  `pnpm --filter @mysten-incubation/devstack exec env DEVSTACK_RUN_E2E=1 vitest run test/e2e/snapshot-container-image-roundtrip.test.ts`
+  (1 file / 1 test).
+- Focused real-Docker router traffic passed after the fixture pre-created the router network with
+  router-managed labels (`app=devstack-router`, `stack=<profile.networkName>`, `composeUi: false`)
+  instead of `router-real-traffic/e2e` labels:
+  `DEVSTACK_RUN_E2E=1 pnpm --filter @mysten-incubation/devstack exec vitest run test/e2e/router-real-traffic.test.ts`
+  (1 file / 1 test).

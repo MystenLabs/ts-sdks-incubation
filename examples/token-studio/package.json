@@ -4,14 +4,12 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"devstack:build": "pnpm --filter @mysten-incubation/devstack build",
-		"devstack:apply": "pnpm run devstack:build && pnpm run devstack:apply:built",
-		"devstack:apply:built": "DEVSTACK_APP=token-studio node ../../packages/devstack/dist/cli/main.mjs apply",
+		"devstack:apply": "DEVSTACK_APP=token-studio devstack apply",
 		"apply": "pnpm run devstack:apply",
-		"dev": "pnpm run devstack:apply && DEVSTACK_APP=token-studio vite --host 127.0.0.1",
-		"build": "pnpm run devstack:apply:built && DEVSTACK_APP=token-studio tsc -b && DEVSTACK_APP=token-studio vite build",
+		"dev": "DEVSTACK_APP=token-studio devstack up",
+		"build": "pnpm run devstack:apply && DEVSTACK_APP=token-studio tsc -b && DEVSTACK_APP=token-studio vite build",
 		"preview": "vite preview",
-		"typecheck": "pnpm run devstack:apply:built && tsc -b --noEmit",
+		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",
 		"test": "pnpm run typecheck && vitest run",
 		"test:e2e": "DEVSTACK_APP=token-studio playwright test",
 		"clean": "rm -rf dist .turbo node_modules/.tmp"

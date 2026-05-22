@@ -41,8 +41,9 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 	/** Optional direct host port mapping keyed by container port. When
 	 *  supplied, the mapping is exact: Sui does not reassign missing
 	 *  or busy host ports through the PortBroker. Omit this field to
-	 *  use brokered defaults that prefer 9000/9123 and reassign on
-	 *  collision. */
+	 *  use brokered private host-port defaults for RPC/faucet/GraphQL
+	 *  and reassign on collision. Router entrypoints own the public
+	 *  9000/9123/9125 ports. */
 	readonly ports?: Readonly<Record<number, number>>;
 }
 

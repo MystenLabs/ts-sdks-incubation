@@ -4,12 +4,20 @@
 // upstream output format surfaces here.
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, Stream } from 'effect';
+import { Effect, Exit, Option, Stream, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
+import type {
+	OnChainArtifactError,
+	OnChainArtifactPublisher,
+	OnChainArtifactSpec,
+} from '../../../src/primitives/on-chain-artifact.ts';
+import { makeSuiChainProbe, type SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
 import {
+	deployWalrusContracts,
 	parseDeployOutput,
 	runDeployOneShot,
+	type CachedDeployState,
 	type DeployInputs,
 } from '../../../src/plugins/walrus/deploy.ts';
 import { chainId, contentHash } from '../../../src/substrate/brand.ts';
@@ -53,6 +61,13 @@ const deployInputs = (): DeployInputs => ({
 	listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
 	walrusImage: { digest: 'walrus:test' },
 	suiNetworkName: 'devstack-test-sui',
+});
+
+const cachedWalrusDeployState = (): CachedDeployState => ({
+	walrusPackageId: '0xwalruspackage',
+	systemObject: '0xsystem',
+	stakingObject: '0xstaking',
+	exchangeObject: '0xexchange',
 });
 
 const hostBindMountOwnerForTest = (): string | undefined => {
@@ -193,6 +208,49 @@ describe('parseDeployOutput', () => {
 				expect(error.value.message).toContain('exit 127 usually means');
 				expect(error.value.message).toContain('walrus-deploy binary is missing');
 			}
+		}),
+	);
+
+	it.effect('verifies cached system and staking objects without re-running walrus-deploy', () =>
+		Effect.gen(function* () {
+			const cached = cachedWalrusDeployState();
+			const requestedObjects: string[] = [];
+			const sdk: SuiSdkShim = {
+				core: {
+					getObject: async ({ objectId }) => {
+						requestedObjects.push(objectId);
+						if (objectId !== cached.systemObject && objectId !== cached.stakingObject) {
+							throw new Error(`object not found: ${objectId}`);
+						}
+						return { object: { objectId } };
+					},
+					getTransaction: async () => ({}),
+					executeTransaction: async () => ({}),
+					waitForTransaction: async () => ({}),
+				},
+				client: {},
+			};
+			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
+			const publisher: OnChainArtifactPublisher = {
+				publish: <Produced, Verified>(
+					spec: OnChainArtifactSpec<Produced, Verified>,
+				): Effect.Effect<Produced | Verified, OnChainArtifactError, Scope.Scope> =>
+					Effect.gen(function* () {
+						const verified = yield* spec.verify(cached as unknown as Produced);
+						if (verified !== null) return cached as unknown as Produced;
+						return yield* spec.produce;
+					}),
+			};
+			const runtime = oneShotRuntime(() =>
+				Effect.die('walrus-deploy should not run on a verified cache hit'),
+			);
+
+			const result = yield* Effect.scoped(
+				deployWalrusContracts(publisher, probe, runtime, deployInputs()),
+			);
+
+			expect(result.state).toEqual(cached);
+			expect(requestedObjects).toEqual([cached.systemObject, cached.stakingObject]);
 		}),
 	);
 });

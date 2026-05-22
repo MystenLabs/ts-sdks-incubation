@@ -30,6 +30,7 @@ import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import { Effect, FileSystem, Schema } from 'effect';
 
 import { acquireStackLock } from '../cross-process/stack-lock.ts';
+import { SpanAttr } from '../observability/spans.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -228,8 +229,12 @@ export const stageAndSwap = <A, E>(args: {
 							// exception. Log loudly; copy then rm. The atomicity
 							// guarantee is LOST in this branch.
 							return Effect.gen(function* () {
-								yield* Effect.logWarning(
-									`stage-and-swap: cross-filesystem fallback for ${targetPath} (EXDEV).`,
+								yield* Effect.logWarning('stage-and-swap cross-filesystem fallback').pipe(
+									Effect.annotateLogs({
+										[SpanAttr.stageAndSwapTargetPath]: targetPath,
+										[SpanAttr.stageAndSwapStagingPath]: stagingPath,
+										[SpanAttr.errorCode]: 'EXDEV',
+									}),
 								);
 								yield* fs
 									.copy(stagingPath, targetPath, { overwrite: false })

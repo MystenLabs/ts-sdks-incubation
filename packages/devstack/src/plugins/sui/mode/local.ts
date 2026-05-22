@@ -9,18 +9,20 @@
 //   1. Resolve image — vendored Dockerfile build via the
 //      ContainerRuntime contract (caller `image` override honoured for
 //      `{build}`; `{pull}` is deferred — see stub list in the README).
-//   2. Allocate + ensure container — `sui start --with-faucet=0.0.0.0:9123`
-//      with host port-publishing for RPC (preferred 9000) and faucet
-//      (preferred 9123). Defaults go through the PortBroker so
-//      parallel stacks reassign instead of colliding.
+//   2. Allocate + ensure container — `sui start --with-faucet=0.0.0.0:9123
+//      --with-graphql=0.0.0.0:9125` with direct host port-publishing
+//      for internal boot probes. User-facing URLs are router-fronted
+//      named hosts; the direct host ports intentionally live in the
+//      high private windows so they do not collide with router
+//      entrypoints.
 //      RecreatePolicy is `on-failure` so the writable layer (chain
 //      state at `/root/.sui`) survives clean stop/start cycles, but an
 //      unclean SIGKILL/137 exit recreates instead of resuming a suspect
 //      RocksDB/checkpoint state. The image's entrypoint forwards SIGINT
 //      to a non-PID-1 sui child so clean shutdown (RocksDB checkpoint
 //      drain → exit 0/130) is the normal case.
-//   3. Three-budget ready probe — RPC `getChainIdentifier` + faucet
-//      `GET /` socket liveness. Per-fetch deadline + outer deadline.
+//   3. Ready probe — RPC `getChainIdentifier`, faucet `GET /`, and
+//      GraphQL HTTP liveness. Per-fetch deadline + outer deadline.
 //   4. Fetch chain id from the now-responsive client (bounded timeout).
 //   5. Build `waitForTransactionsReady` — `Effect.cached` against a
 //      real faucet funding tx; first failure caches for the scope.
@@ -34,17 +36,14 @@
 // pre-fund window.
 //
 // What this body deliberately defers:
-//   - Postgres indexer sidecar + GraphQL endpoint — out of scope for
-//     this iteration. The plugin doc treats them as load-bearing for
-//     downstream consumers (codegen, KnownPackage); we don't.
-//   - Traefik routing via the per-stack router — we use direct host
-//     port publishing instead. The router lands when the routable
-//     contract is wired.
+//   - Postgres indexer sidecar — GraphQL is enabled by `sui start` and
+//     routed as a first-class endpoint, but no separate postgres
+//     lifecycle is supervised here.
 //   - Snapshot capture — the framework exists in the plugin's
 //     snapshot.ts; this body produces the running container that the
 //     orchestrator captures.
 
-import { Duration, Effect, Ref, Schedule, type Scope } from 'effect';
+import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
@@ -63,6 +62,11 @@ import type {
 	PortBroker,
 	PortKind,
 } from '../../../substrate/runtime/port-broker/index.ts';
+import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
+import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
+import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
+import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
+import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
 import {
 	DEFAULT_SUI_CLI_VERSION,
 	suiCliImageBuildContext,
@@ -70,7 +74,16 @@ import {
 import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import {
+	SUI_FAUCET_ENDPOINT_NAME,
+	SUI_FAUCET_ENTRYPOINT_PORT,
+	SUI_GRAPHQL_ENDPOINT_NAME,
+	SUI_GRAPHQL_ENTRYPOINT_PORT,
+	SUI_RPC_ENDPOINT_NAME,
+	SUI_RPC_ENTRYPOINT_PORT,
+} from '../routable.ts';
 import type { SuiClient } from './shared.ts';
+import { toDockerHostGatewayUrl } from './shared.ts';
 import {
 	assembleSuiClient,
 	buildWaitForTransactionsReady,
@@ -90,15 +103,18 @@ export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(60);
  *  Walrus / Seal versions (else the Move package ABIs drift). */
 export const DEFAULT_SUI_VERSION = DEFAULT_SUI_CLI_VERSION;
 
-// In-container ports the sui binary binds on. The contract publishes
-// host ports directly, no router indirection.
-const CONTAINER_RPC_PORT = 9000;
-const CONTAINER_FAUCET_PORT = 9123;
+// In-container ports the sui binary binds on. These match the router
+// entrypoint ports; direct host publishes below use different high
+// ports so Traefik owns the public listener ports.
+const CONTAINER_RPC_PORT = SUI_RPC_ENTRYPOINT_PORT;
+const CONTAINER_FAUCET_PORT = SUI_FAUCET_ENTRYPOINT_PORT;
+const CONTAINER_GRAPHQL_PORT = SUI_GRAPHQL_ENTRYPOINT_PORT;
 
 // Default host ports. Without `opts.ports`, these are preferences
 // brokered against the kernel before Docker publishes them.
-export const DEFAULT_HOST_RPC_PORT = 9000;
-export const DEFAULT_HOST_FAUCET_PORT = 9123;
+export const DEFAULT_HOST_RPC_PORT = 51000;
+export const DEFAULT_HOST_FAUCET_PORT = 50000;
+export const DEFAULT_HOST_GRAPHQL_PORT = 51001;
 const DOCKER_PUBLISH_HOST = '0.0.0.0' as const;
 export const MAX_DOCKER_PUBLISH_PORT_RETRIES = 3;
 export const LOCAL_VALIDATOR_STOP_GRACE_SECONDS = 30;
@@ -133,9 +149,11 @@ export const bootLocalMode = (
 ): Effect.Effect<LocalModeBootResult, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
+		yield* setCurrentPluginPhase('resolving Sui local image');
 		const image = yield* resolveImage(runtime, opts);
 
 		// ----- 2. Allocate ports + ensure container --------------------------
+		yield* setCurrentPluginPhase('creating Sui validator container');
 		const labels: ContainerLabelTuple = {
 			app: identity.app,
 			stack: identity.stack,
@@ -154,19 +172,33 @@ export const bootLocalMode = (
 
 		// ----- 3. Ready probes ----------------------------------------------
 		const publishedPorts = resolvePublishedPortMapping(ports, handle.ports);
-		const rpcUrl = `http://127.0.0.1:${publishedPorts[0]!.hostPort}`;
-		const faucetUrl = `http://127.0.0.1:${publishedPorts[1]!.hostPort}`;
+		const directRpcUrl = `http://127.0.0.1:${publishedPorts[0]!.hostPort}`;
+		const directFaucetUrl = `http://127.0.0.1:${publishedPorts[1]!.hostPort}`;
+		const directGraphqlUrl = `http://127.0.0.1:${publishedPorts[2]!.hostPort}`;
+		const rpcUrl = yield* routedSuiUrl(identity, SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT);
+		const faucetUrl = yield* routedSuiUrl(
+			identity,
+			SUI_FAUCET_ENDPOINT_NAME,
+			SUI_FAUCET_ENTRYPOINT_PORT,
+		);
+		const graphqlUrl = yield* routedSuiUrl(
+			identity,
+			SUI_GRAPHQL_ENDPOINT_NAME,
+			SUI_GRAPHQL_ENTRYPOINT_PORT,
+		);
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_LOCAL_READY_TIMEOUT;
 
 		// Construct the SDK client up-front; the RPC probe reuses it for
 		// `getChainIdentifier` so the same transport gates downstream calls.
-		const sdkClient = new SuiGrpcClient({ baseUrl: rpcUrl, network: 'localnet' });
+		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
 
-		yield* waitForReady(faucetUrl, sdkClient, readyTimeout).pipe(
+		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
+		yield* waitForReady(directFaucetUrl, directGraphqlUrl, sdkClient, readyTimeout).pipe(
 			Effect.annotateLogs({ 'sui.container': handle.name }),
 		);
 
 		// ----- 4. Resolve chain id ------------------------------------------
+		yield* setCurrentPluginPhase('fetching Sui chain id');
 		const chain =
 			opts.chainOverride ??
 			(yield* sharedFetchChainId(sdkClient, {
@@ -174,7 +206,8 @@ export const bootLocalMode = (
 			}));
 
 		// ----- 5. waitForTransactionsReady (memoised) -----------------------
-		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(faucetUrl);
+		yield* setCurrentPluginPhase('preparing Sui funds-ready gate');
+		const waitForTransactionsReady = yield* buildWaitForTransactionsReady(directFaucetUrl);
 
 		// ----- 6. Assemble resolved SuiClient -------------------------------
 		// Surface `buildImage` so package's path-(b) `docker run --rm`
@@ -187,14 +220,21 @@ export const bootLocalMode = (
 			chain,
 			rpcUrl,
 			faucetUrl,
+			graphqlUrl,
 			waitForTransactionsReady,
 			buildImage: image,
+			hostGateway: {
+				rpcUrl: toDockerHostGatewayUrl(directRpcUrl),
+				faucetUrl: toDockerHostGatewayUrl(directFaucetUrl),
+				graphqlUrl: toDockerHostGatewayUrl(directGraphqlUrl),
+			},
 		});
 		const resolved = makeResolvedNetwork({
 			mode: 'local',
 			chain,
 			rpc: rpcUrl,
 			faucet: faucetUrl,
+			graphql: graphqlUrl,
 			source: 'default',
 		});
 		return {
@@ -339,11 +379,12 @@ const ensureLocalValidatorContainerAttempt = (
 		readonly reconciliation: PortBindingReconciliation;
 	},
 ): Effect.Effect<LocalValidatorContainerResult, SuiPluginError, Scope.Scope> =>
-	params.runtime
-		.ensureContainer({
+	ensureManagedContainer({
+		runtime: params.runtime,
+		labels: params.labels,
+		spec: {
 			name: params.containerName,
 			image: params.image,
-			labels: params.labels,
 			// Keep the writable layer only after clean exits. If Docker
 			// escalates a previous stop to SIGKILL (137), resume can hang
 			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
@@ -354,34 +395,35 @@ const ensureLocalValidatorContainerAttempt = (
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
-		})
-		.pipe(
-			Effect.map((handle) => ({ handle, ports: params.ports })),
-			Effect.catch((cause: ContainerRuntimeError) => {
-				if (
-					params.opts.ports === undefined &&
-					cause.reason === 'publish-port-conflict' &&
-					params.attempt < MAX_DOCKER_PUBLISH_PORT_RETRIES
-				) {
-					return (params.releasePorts ?? Effect.void).pipe(
-						Effect.andThen(
-							ensureLocalValidatorContainerWithFreshPorts({
-								...params,
-								attempt: params.attempt + 1,
-								reconciliation: 'exact',
-							}),
-						),
-					);
-				}
-				return Effect.fail(
-					suiPluginError(
-						'container-start',
-						`sui-validator container failed: ${cause.reason}: ${cause.detail}`,
-						cause,
+		},
+		mapError: (cause) => cause,
+	}).pipe(
+		Effect.map((handle) => ({ handle, ports: params.ports })),
+		Effect.catch((cause: ContainerRuntimeError) => {
+			if (
+				params.opts.ports === undefined &&
+				cause.reason === 'publish-port-conflict' &&
+				params.attempt < MAX_DOCKER_PUBLISH_PORT_RETRIES
+			) {
+				return (params.releasePorts ?? Effect.void).pipe(
+					Effect.andThen(
+						ensureLocalValidatorContainerWithFreshPorts({
+							...params,
+							attempt: params.attempt + 1,
+							reconciliation: 'exact',
+						}),
 					),
 				);
-			}),
-		);
+			}
+			return Effect.fail(
+				suiPluginError(
+					'container-start',
+					`sui-validator container failed: ${cause.reason}: ${cause.detail}`,
+					cause,
+				),
+			);
+		}),
+	);
 
 // ---------------------------------------------------------------------------
 // Port mapping — host:container pairs
@@ -407,6 +449,10 @@ const resolvePortMappingWithRelease = (
 			ports: [
 				portPublish(CONTAINER_RPC_PORT, pick(CONTAINER_RPC_PORT, DEFAULT_HOST_RPC_PORT)),
 				portPublish(CONTAINER_FAUCET_PORT, pick(CONTAINER_FAUCET_PORT, DEFAULT_HOST_FAUCET_PORT)),
+				portPublish(
+					CONTAINER_GRAPHQL_PORT,
+					pick(CONTAINER_GRAPHQL_PORT, DEFAULT_HOST_GRAPHQL_PORT),
+				),
 			],
 			release: Effect.void,
 		});
@@ -414,12 +460,14 @@ const resolvePortMappingWithRelease = (
 	return Effect.gen(function* () {
 		const rpc = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
 		const faucet = yield* allocatePort(portBroker, 'http', DEFAULT_HOST_FAUCET_PORT, 'faucet');
+		const graphql = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_GRAPHQL_PORT, 'graphql');
 		return {
 			ports: [
 				portPublish(CONTAINER_RPC_PORT, rpc.port),
 				portPublish(CONTAINER_FAUCET_PORT, faucet.port),
+				portPublish(CONTAINER_GRAPHQL_PORT, graphql.port),
 			],
-			release: Effect.all([rpc.release, faucet.release], { discard: true }),
+			release: Effect.all([rpc.release, faucet.release, graphql.release], { discard: true }),
 		};
 	});
 };
@@ -430,6 +478,7 @@ export const resolvePublishedPortMapping = (
 ): ReadonlyArray<ContainerPortPublish> => [
 	pickPublishedPort(requested, actual, CONTAINER_RPC_PORT, DEFAULT_HOST_RPC_PORT),
 	pickPublishedPort(requested, actual, CONTAINER_FAUCET_PORT, DEFAULT_HOST_FAUCET_PORT),
+	pickPublishedPort(requested, actual, CONTAINER_GRAPHQL_PORT, DEFAULT_HOST_GRAPHQL_PORT),
 ];
 
 const pickPublishedPort = (
@@ -472,7 +521,8 @@ const hasSuiPortMapping = (
 ): ports is ReadonlyArray<ContainerPortPublish> =>
 	ports !== undefined &&
 	ports.some((port) => port.containerPort === CONTAINER_RPC_PORT) &&
-	ports.some((port) => port.containerPort === CONTAINER_FAUCET_PORT);
+	ports.some((port) => port.containerPort === CONTAINER_FAUCET_PORT) &&
+	ports.some((port) => port.containerPort === CONTAINER_GRAPHQL_PORT);
 
 const portPublish = (containerPort: number, hostPort: number): ContainerPortPublish => ({
 	containerPort,
@@ -484,7 +534,7 @@ const allocatePort = (
 	portBroker: PortBroker,
 	kind: PortKind,
 	preferredPort: number,
-	label: 'rpc' | 'faucet',
+	label: 'rpc' | 'faucet' | 'graphql',
 ): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
 	portBroker
 		.allocate({
@@ -512,100 +562,86 @@ const allocatePort = (
  *  wedged endpoint surfaces by name. */
 const waitForReady = (
 	faucetUrl: string,
+	graphqlUrl: string,
 	sdkClient: SuiGrpcClient,
 	readyTimeout: Duration.Duration,
 ): Effect.Effect<void, SuiPluginError> =>
 	Effect.gen(function* () {
-		const seen = yield* Ref.make<ReadonlySet<'rpc' | 'faucet'>>(new Set());
-		const markSeen = (k: 'rpc' | 'faucet') => Ref.update(seen, (s) => new Set([...s, k]));
-
-		const rpcProbe: Effect.Effect<void, Error> = Effect.tryPromise({
-			try: () => sdkClient.core.getChainIdentifier(),
-			catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
+		const readyTimeoutMs = Duration.toMillis(readyTimeout);
+		const rpcProbe: Effect.Effect<void, SuiPluginError> = waitForProbe({
+			label: 'sui.local.rpc',
+			timeoutMs: readyTimeoutMs,
+			intervalMs: 1_000,
+			attemptTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			probe: () =>
+				Effect.tryPromise({
+					try: () => sdkClient.core.getChainIdentifier(),
+					catch: (cause) => new Error(`rpc: ${stringifyCause(cause)}`),
+				}).pipe(Effect.as(true)),
 		}).pipe(
-			Effect.timeoutOrElse({
-				duration: Duration.millis(PROBE_FETCH_TIMEOUT_MS),
-				orElse: () => Effect.fail(new Error('rpc: probe fetch timed out')),
-			}),
-			Effect.asVoid,
-			Effect.tap(() => markSeen('rpc')),
+			Effect.mapError(
+				(cause): SuiPluginError =>
+					cause instanceof ProbeTimeoutError
+						? suiPluginError(
+								'rpc-probe',
+								`sui local mode: RPC did not become ready within ${readyTimeoutMs}ms. ` +
+									`Check that the validator container is healthy (\`docker logs\`).`,
+								cause.lastError ?? cause.lastNotReady ?? cause,
+							)
+						: suiPluginError(
+								'rpc-probe',
+								`sui local mode: RPC ready probe failed: ${stringifyCause(cause)}`,
+								cause,
+							),
+			),
 			Effect.withSpan('devstack.plugin.sui.local.probe.rpc'),
 		);
 
 		// Faucet socket-level liveness — `GET /` returns "OK" as soon as
 		// the HTTP server is bound. We do NOT POST `/v2/gas` here; that's
 		// the funds-ready probe, which is paid for lazily on first call.
-		const faucetProbe: Effect.Effect<void, Error> = probeFetch(faucetUrl, { method: 'GET' }).pipe(
-			Effect.flatMap(
-				(res): Effect.Effect<void, Error> =>
-					res.status >= 500 ? Effect.fail(new Error(`faucet: ${res.status}`)) : Effect.void,
+		const faucetProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
+			endpoint: faucetUrl,
+			timeoutMs: readyTimeoutMs,
+			intervalMs: 1_000,
+			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			validate: (response) => response.status < 500,
+		}).pipe(
+			Effect.mapError(
+				(cause): SuiPluginError =>
+					suiPluginError(
+						'faucet-probe',
+						`sui local mode: faucet endpoint ${faucetUrl} did not become ready within ` +
+							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+						cause,
+					),
 			),
-			Effect.tap(() => markSeen('faucet')),
 			Effect.withSpan('devstack.plugin.sui.local.probe.faucet'),
 		);
 
-		const combined = Effect.all([rpcProbe, faucetProbe], { concurrency: 'unbounded' }).pipe(
-			Effect.asVoid,
-			Effect.retry(Schedule.spaced(Duration.seconds(1))),
-		);
-		yield* combined.pipe(
-			Effect.timeoutOrElse({
-				duration: readyTimeout,
-				orElse: () =>
-					Effect.gen(function* () {
-						const seenSet = yield* Ref.get(seen);
-						const phase = !seenSet.has('rpc')
-							? 'rpc-probe'
-							: !seenSet.has('faucet')
-								? 'faucet-probe'
-								: 'rpc-probe';
-						return yield* Effect.fail(
-							suiPluginError(
-								phase,
-								`sui local mode: ready probes did not succeed within ${Duration.toMillis(readyTimeout)}ms. ` +
-									`Last-seen probes=${JSON.stringify([...seenSet])}. ` +
-									`Check that the validator container is healthy (\`docker logs\`).`,
-							),
-						);
-					}),
-			}),
+		const graphqlProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
+			endpoint: graphqlUrl,
+			timeoutMs: readyTimeoutMs,
+			intervalMs: 1_000,
+			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			validate: (response) => response.status < 500,
+		}).pipe(
 			Effect.mapError(
 				(cause): SuiPluginError =>
-					cause && typeof cause === 'object' && '_tag' in cause && cause._tag === 'SuiPluginError'
-						? (cause as SuiPluginError)
-						: suiPluginError(
-								'rpc-probe',
-								`sui local mode: ready probe iteration failed: ${stringifyCause(cause)}`,
-								cause,
-							),
+					suiPluginError(
+						'graphql-probe',
+						`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
+							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+						cause,
+					),
 			),
+			Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
+		);
+
+		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], { concurrency: 'unbounded' }).pipe(
+			Effect.asVoid,
 		);
 	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));
-
-/** Bounded `fetch` with `AbortSignal.timeout`. We avoid the global
- *  `signal` argument shape because Effect's `tryPromise` already
- *  injects its own. */
-const probeFetch = (url: string, init: RequestInit): Effect.Effect<Response, Error> =>
-	Effect.tryPromise({
-		try: (signal) => {
-			const combined = anySignal([signal, AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS)]);
-			return fetch(url, { ...init, signal: combined });
-		},
-		catch: (cause) => new Error(`fetch: ${stringifyCause(cause)}`),
-	});
-
-const anySignal = (signals: ReadonlyArray<AbortSignal>): AbortSignal => {
-	const ctrl = new AbortController();
-	const onAbort = (s: AbortSignal) => () => ctrl.abort(s.reason);
-	for (const s of signals) {
-		if (s.aborted) {
-			ctrl.abort(s.reason);
-			return ctrl.signal;
-		}
-		s.addEventListener('abort', onAbort(s), { once: true });
-	}
-	return ctrl.signal;
-};
 
 // Chain-id fetch + waitForTransactionsReady builders live in
 // `shared-boot.ts` — see imports at the top of this file.
@@ -613,6 +649,22 @@ const anySignal = (signals: ReadonlyArray<AbortSignal>): AbortSignal => {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const routedSuiUrl = (
+	identity: Identity,
+	endpointName: string,
+	port: number,
+): Effect.Effect<string, SuiPluginError> =>
+	routerHostname(identity, endpointName).pipe(
+		Effect.map((hostname) => renderUrl({ protocol: 'http', hostname, port })),
+		Effect.mapError((cause) =>
+			suiPluginError(
+				'container-start',
+				`sui local mode: failed to construct router URL for ${endpointName}: ${cause.detail}`,
+				cause,
+			),
+		),
+	);
 
 const stringifyCause = (cause: unknown): string => {
 	if (cause instanceof Error) return cause.message;

@@ -14,7 +14,12 @@
 import { Effect } from 'effect';
 
 import { requestFundsWithRetry, type RetryOptions } from '../http.ts';
-import type { FaucetBodyError, FaucetExhausted, FaucetUnreachable } from '../errors.ts';
+import {
+	faucetConfigError,
+	type FaucetBodyError,
+	type FaucetExhausted,
+	type FaucetUnreachable,
+} from '../errors.ts';
 import type { FaucetStrategy } from './sui-local.ts';
 
 /** Known live network → default faucet URL mapping. Mainnet is
@@ -45,10 +50,12 @@ export interface SuiLiveStrategyOptions {
 const resolveLiveFaucetUrl = (opts: SuiLiveStrategyOptions): string => {
 	if (opts.faucetUrl !== undefined) return opts.faucetUrl;
 	if (opts.network !== undefined) return LIVE_FAUCET_URLS[opts.network];
-	throw new Error(
-		'suiLiveStrategy: pass either `network` or `faucetUrl` ' +
+	throw faucetConfigError({
+		field: 'network',
+		message:
+			'suiLiveStrategy: pass either `network` or `faucetUrl` ' +
 			'(mainnet has no faucet — do not construct this strategy for mainnet).',
-	);
+	});
 };
 
 /** Build a SUI live-faucet HTTP strategy. */

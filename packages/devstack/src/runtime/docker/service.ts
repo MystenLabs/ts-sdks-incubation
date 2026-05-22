@@ -7,9 +7,11 @@
 // via the underlying subsystems but the public surface projects to
 // the contract's narrow `ContainerRuntimeError`.
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
-import { Context, Duration, Effect, Hash, Layer, Ref, Stream } from 'effect';
+import { Context, Duration, Effect, Layer, Ref, Stream } from 'effect';
 
 import type {
 	ContainerBuildContext,
@@ -104,21 +106,88 @@ const snapshotTempTag = (containerName: string): string => {
 	return `devstack-snapshot:${safeName}-${suffix}`;
 };
 
+const stableRelativePath = (root: string, path: string): string => {
+	const rel = relative(root, path);
+	return rel.length === 0 ? '.' : rel.split(sep).join('/');
+};
+
+const updateContextEntryHash = (
+	hash: ReturnType<typeof createHash>,
+	root: string,
+	path: string,
+): void => {
+	const stat = lstatSync(path);
+	const rel = stableRelativePath(root, path);
+
+	if (stat.isDirectory()) {
+		hash.update('dir\0');
+		hash.update(rel);
+		hash.update('\0');
+		for (const child of readdirSync(path).sort((a, b) => a.localeCompare(b))) {
+			updateContextEntryHash(hash, root, join(path, child));
+		}
+		return;
+	}
+
+	if (stat.isFile()) {
+		hash.update('file\0');
+		hash.update(rel);
+		hash.update('\0');
+		hash.update(String(stat.mode));
+		hash.update('\0');
+		hash.update(readFileSync(path));
+		hash.update('\0');
+		return;
+	}
+
+	if (stat.isSymbolicLink()) {
+		hash.update('symlink\0');
+		hash.update(rel);
+		hash.update('\0');
+		hash.update(readlinkSync(path));
+		hash.update('\0');
+		return;
+	}
+
+	hash.update('other\0');
+	hash.update(rel);
+	hash.update('\0');
+	hash.update(String(stat.mode));
+	hash.update('\0');
+};
+
+const buildContextFingerprint = (contextPath: string): string => {
+	const hash = createHash('sha256');
+	try {
+		updateContextEntryHash(hash, contextPath, contextPath);
+	} catch (err) {
+		hash.update('unreadable\0');
+		hash.update(String(err));
+		hash.update('\0');
+	}
+	return hash.digest('hex');
+};
+
 /** Stable content hash for the build context. Sorts build args so two
  *  equivalent specs whose key insertion order differs produce the same
- *  hash. `Hash.string` is good enough for a cache-key projection — the
- *  cache treats hash collisions as misses + re-builds anyway.
- *
- *  `Hash.string` returns a signed 32-bit int that can be negative; the
- *  derived docker tag (`devstack-build:<hex>`) must NOT carry a leading
- *  `-` or docker rejects it as an invalid reference. The `>>> 0` coerces
- *  to unsigned 32-bit before the hex projection. */
+ *  hash. The Docker build context's files are part of the key: changing
+ *  a vendored entrypoint script must force a new managed image tag. */
 export const buildContentHash = (ctx: ContainerBuildContext): string => {
 	const dockerfile = ctx.dockerfile ?? 'Dockerfile';
 	const sortedArgs = Object.entries(ctx.buildArgs ?? {}).sort(([a], [b]) => a.localeCompare(b));
 	const argsKey = sortedArgs.map(([k, v]) => `${k}=${v}`).join('\x00');
-	const seed = `${ctx.contextPath}\x01${dockerfile}\x01${argsKey}`;
-	return (Hash.string(seed) >>> 0).toString(16);
+	const platform = ctx.platform ?? '';
+	return createHash('sha256')
+		.update(ctx.contextPath)
+		.update('\x00')
+		.update(dockerfile)
+		.update('\x00')
+		.update(platform)
+		.update('\x00')
+		.update(argsKey)
+		.update('\x00')
+		.update(buildContextFingerprint(ctx.contextPath))
+		.digest('hex');
 };
 
 export const layerContainerRuntimeDocker: Layer.Layer<
@@ -171,6 +240,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				{
 					contextPath: ctx.contextPath,
 					dockerfile: ctx.dockerfile,
+					platform: ctx.platform,
 					buildArgs: ctx.buildArgs,
 					tag,
 				},

@@ -74,7 +74,7 @@ export interface HarvestContext {
  *  reap on plugin teardown. */
 export interface CapabilitySink<K extends ContributionKind, TDecl> {
 	readonly kind: K;
-	readonly accept: (decl: TDecl, ctx: HarvestContext) => Effect.Effect<void, never, Scope.Scope>;
+	readonly accept: (decl: TDecl, ctx: HarvestContext) => Effect.Effect<void, unknown, Scope.Scope>;
 }
 
 // -----------------------------------------------------------------------------
@@ -88,6 +88,16 @@ export interface CapabilitySink<K extends ContributionKind, TDecl> {
 export class UnknownContributionKind extends Data.TaggedError('UnknownContributionKind')<{
 	readonly kind: string;
 	readonly known: ReadonlyArray<string>;
+}> {}
+
+/** Surfaced when a registered sink rejects while handling a known
+ *  contribution kind. The original failure stays attached as `cause`
+ *  so the supervisor's structured error renderer shows the domain
+ *  error, such as `RouteCollision`, underneath the dispatch wrapper. */
+export class ContributionSinkFailed extends Data.TaggedError('ContributionSinkFailed')<{
+	readonly kind: string;
+	readonly message: string;
+	readonly cause: unknown;
 }> {}
 
 // -----------------------------------------------------------------------------
@@ -109,7 +119,7 @@ export interface CapabilitySinksShape {
 	readonly dispatch: (
 		contribution: AnyContribution,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, UnknownContributionKind, Scope.Scope>;
+	) => Effect.Effect<void, UnknownContributionKind | ContributionSinkFailed, Scope.Scope>;
 	/** Snapshot the kinds the registry currently knows. Diagnostic. */
 	readonly knownKinds: Effect.Effect<ReadonlyArray<string>>;
 }
@@ -138,7 +148,7 @@ export const kindOf = (contribution: AnyContribution): ContributionKind => {
 // Layer
 // -----------------------------------------------------------------------------
 
-type SinkAccept = (decl: unknown, ctx: HarvestContext) => Effect.Effect<void, never, Scope.Scope>;
+type SinkAccept = (decl: unknown, ctx: HarvestContext) => Effect.Effect<void, unknown, Scope.Scope>;
 
 /** Layer constructing an empty registry. Built-in sinks ship via the
  *  composed `layerCapabilitySinksDefault` (see `layer.ts`); plugin-
@@ -180,7 +190,7 @@ export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.e
 		const dispatch = (
 			contribution: AnyContribution,
 			ctx: HarvestContext,
-		): Effect.Effect<void, UnknownContributionKind, Scope.Scope> =>
+		): Effect.Effect<void, UnknownContributionKind | ContributionSinkFailed, Scope.Scope> =>
 			Effect.gen(function* () {
 				const kind = kindOf(contribution);
 				const sinks = yield* Ref.get(sinksRef);
@@ -193,7 +203,16 @@ export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.e
 				}
 				const payload: unknown =
 					contribution.source === 'error' ? contribution.contribution : contribution.decl;
-				yield* accept(payload, ctx);
+				yield* accept(payload, ctx).pipe(
+					Effect.mapError(
+						(cause) =>
+							new ContributionSinkFailed({
+								kind,
+								message: `capability sink '${kind}' failed`,
+								cause,
+							}),
+					),
+				);
 				yield* Effect.annotateCurrentSpan({
 					'capability-sinks.kind': kind,
 					'devstack.plugin': ctx.pluginKey,

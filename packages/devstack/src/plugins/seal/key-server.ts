@@ -36,15 +36,22 @@
 //      requirements #21. The image declares the right entrypoint;
 //      this file does NOT re-declare it.
 
-import { Duration, Effect, Schedule, type Scope } from 'effect';
+import { Effect, type Scope } from 'effect';
 
 import type {
 	ContainerHandle,
 	ContainerRuntime,
 	EnsureContainerSpec,
+	EnsureNetworkSpec,
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
+import {
+	ProbeTimeoutError,
+	exitCodeProbeResult,
+	waitForProbe,
+} from '../../substrate/runtime/probes.ts';
+import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
@@ -84,6 +91,36 @@ export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
 
 export const buildSealNetworkName = (app: string, stack: string, sealName: string): string =>
 	`devstack-${app}-${stack}-seal-${sealName}-net`;
+
+export interface SealNetworkIdentity {
+	readonly app: string;
+	readonly stack: string;
+	readonly sealName: string;
+}
+
+/** Seal's key-server network gets a deterministic /24 so repeated
+ *  local runs do not consume Docker's default bridge address pools. */
+export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string => {
+	const key = `${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`;
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < key.length; i += 1) {
+		hash ^= key.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193) >>> 0;
+	}
+	const bucket = hash % (64 * 256);
+	const secondOctet = 128 + Math.floor(bucket / 256);
+	const thirdOctet = bucket % 256;
+	return `10.${secondOctet}.${thirdOctet}`;
+};
+
+export const sealNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
+	spec: Spec,
+	subnetPrefix: string,
+): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
+	...spec,
+	subnet: `${subnetPrefix}.0/24`,
+	gateway: `${subnetPrefix}.1`,
+});
 
 /** Per-probe interval inside the bounded retry. */
 const READY_PROBE_INTERVAL_MS = 500;
@@ -244,19 +281,19 @@ export const startKeyServer = (
 	name: string,
 ): Effect.Effect<{ readonly containerName: string }, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const handle: ContainerHandle = yield* runtime
-			.ensureContainer(buildKeyServerEnsureContainerSpec(spec))
-			.pipe(
-				Effect.catch((cause) =>
-					Effect.fail(
-						sealError('container', {
-							name,
-							message: `seal key-server (name=${spec.containerName}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
-							cause,
-						}),
-					),
-				),
-			);
+		const ensureSpec = buildKeyServerEnsureContainerSpec(spec);
+		const { labels, ...containerSpec } = ensureSpec;
+		const handle: ContainerHandle = yield* ensureManagedContainer({
+			runtime,
+			labels,
+			spec: containerSpec,
+			mapError: (cause) =>
+				sealError('container', {
+					name,
+					message: `seal key-server (name=${spec.containerName}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
+					cause,
+				}),
+		});
 
 		// Exec-based ready probe — distilled-doc §"Container start +
 		// ready". The vendored debian:bookworm-slim base ships
@@ -270,57 +307,40 @@ export const startKeyServer = (
 		// `/health` returns `{name, version, status: "up"}` once the
 		// binary finishes config + master-key load. Pre-boot we
 		// expect connection-refused → curl returns non-zero, retry.
-		const readyTimeout = Duration.millis(spec.readyTimeoutMs);
 		const directProbeUrl = `http://127.0.0.1:${spec.containerPort}/health`;
-		yield* runtime
-			.exec(handle, [
-				'sh',
-				'-c',
-				`(command -v curl >/dev/null 2>&1 && ` +
-					`curl -fsS -m 2 ${directProbeUrl} >/dev/null) ` +
-					`|| nc -z 127.0.0.1 ${spec.containerPort} ` +
-					`|| exit 1`,
-			])
-			.pipe(
-				Effect.flatMap((res) =>
-					res.exitCode === 0
-						? Effect.void
-						: Effect.fail(
-								sealError('ready', {
-									name,
-									message: `seal key-server not yet listening on :${spec.containerPort}`,
-									exitCode: res.exitCode,
-									stderr: res.stderr,
-								}),
-							),
-				),
-				Effect.catch((err) =>
-					err._tag === 'SealError'
-						? Effect.fail(err)
-						: Effect.fail(
-								sealError('ready', {
-									name,
-									message: `seal key-server ready-probe exec failed: ${err.reason}: ${err.detail}`,
-									cause: err,
-								}),
-							),
-				),
-				Effect.retry({
-					schedule: Schedule.spaced(Duration.millis(READY_PROBE_INTERVAL_MS)),
-				}),
-				Effect.timeoutOrElse({
-					duration: readyTimeout,
-					orElse: () =>
-						Effect.fail(
-							sealError('ready', {
-								name,
-								message:
-									`seal key-server never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
-									`(directProbeUrl=${directProbeUrl}, routedUrl=${spec.routedUrl})`,
-							}),
-						),
-				}),
-			);
+		yield* waitForProbe({
+			label: `seal.key-server.${name}`,
+			timeoutMs: spec.readyTimeoutMs,
+			intervalMs: READY_PROBE_INTERVAL_MS,
+			probe: () =>
+				runtime
+					.exec(handle, [
+						'sh',
+						'-c',
+						`(command -v curl >/dev/null 2>&1 && ` +
+							`curl -fsS -m 2 ${directProbeUrl} >/dev/null) ` +
+							`|| nc -z 127.0.0.1 ${spec.containerPort} ` +
+							`|| exit 1`,
+					])
+					.pipe(Effect.map(exitCodeProbeResult)),
+		}).pipe(
+			Effect.mapError((cause) => {
+				if (cause instanceof ProbeTimeoutError) {
+					return sealError('ready', {
+						name,
+						message:
+							`seal key-server never became ready within ${spec.readyTimeoutMs}ms ` +
+							`(directProbeUrl=${directProbeUrl}, routedUrl=${spec.routedUrl})`,
+						cause: cause.lastError ?? cause.lastNotReady ?? cause,
+					});
+				}
+				return sealError('ready', {
+					name,
+					message: `seal key-server ready-probe exec failed: ${cause.reason}: ${cause.detail}`,
+					cause,
+				});
+			}),
+		);
 
 		return { containerName: spec.containerName };
 	}).pipe(

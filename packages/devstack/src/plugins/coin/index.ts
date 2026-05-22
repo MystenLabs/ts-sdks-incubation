@@ -42,6 +42,7 @@ import { Effect } from 'effect';
 import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMember } from '../../api/consume-members.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -62,11 +63,7 @@ import { BUILTIN_COINS } from './address-resolution.ts';
 import type { MetadataSdkShim } from './metadata.ts';
 import type { MintSdkShim } from './mint.ts';
 
-const coinErrorContribution = {
-	_tag: 'PluginErrorContribution' as const,
-	errorTags: COIN_ERROR_TAGS as ReadonlyArray<string>,
-};
-const coinErrorContributions = [coinErrorContribution] as const;
+const coinErrorContributions = pluginErrorContributions(COIN_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Tag — one per declared coin instance, keyed by symbol/witness/etc.

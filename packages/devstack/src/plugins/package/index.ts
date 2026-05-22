@@ -33,6 +33,7 @@ import { Effect } from 'effect';
 import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMember } from '../../api/consume-members.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -74,15 +75,7 @@ import { makeSnapshotable } from './snapshot.ts';
 import { pickCreatedByType, type PublishReceipt } from './publish-receipt.ts';
 import { PACKAGE_ERROR_TAGS, type PublishError } from './errors.ts';
 
-// Plugin-error contribution — surfaced to the supervisor's harvest loop,
-// which folds the `_tag` set into the substrate `FormatterRegistry` so
-// the cascade formatter renders package-tagged failures with the right
-// taxonomy header (STYLE_GUIDE §2, ARCHITECTURE.md "PluginErrorContribution").
-const packageErrorContribution = {
-	_tag: 'PluginErrorContribution' as const,
-	errorTags: PACKAGE_ERROR_TAGS as ReadonlyArray<string>,
-};
-const packageErrorContributions = [packageErrorContribution] as const;
+const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Publisher account ref — explicit upstream
@@ -208,6 +201,15 @@ export interface KnownPackageOptions {
 	readonly packageId: string;
 	readonly upgradeCapId?: string;
 	readonly mvrPlaceholder?: string;
+}
+
+interface PackageRegistryProjectionContribution {
+	readonly kind: 'local' | 'known';
+	readonly name: string;
+	readonly packageId: string;
+	readonly upgradeCapId: string | null;
+	readonly mvrPlaceholder: string;
+	readonly sourcePath: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -486,11 +488,18 @@ const makeLocalCapabilities = (
 	// contributions into the same per-stack registry.
 	const registryContribution: StrategyContributorDecl<
 		typeof PACKAGE_REGISTRY_CAPABILITY_KEY,
-		{ readonly noteName: string }
+		PackageRegistryProjectionContribution
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: PACKAGE_REGISTRY_CAPABILITY_KEY,
-		strategy: { noteName: name },
+		strategy: {
+			kind: 'local',
+			name,
+			packageId: resolved.packageId,
+			upgradeCapId: resolved.upgradeCapId ?? null,
+			mvrPlaceholder: resolved.mvrPlaceholder,
+			sourcePath: resolved.sourcePath,
+		},
 		autoMounted: true,
 	};
 	return capabilities(snap, codegen, registryContribution);
@@ -511,11 +520,18 @@ const makeKnownCapabilities = (
 	});
 	const registryContribution: StrategyContributorDecl<
 		typeof PACKAGE_REGISTRY_CAPABILITY_KEY,
-		{ readonly noteName: string }
+		PackageRegistryProjectionContribution
 	> = {
 		kind: 'strategy-contributor',
 		capabilityKey: PACKAGE_REGISTRY_CAPABILITY_KEY,
-		strategy: { noteName: name },
+		strategy: {
+			kind: 'known',
+			name,
+			packageId: resolved.packageId,
+			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId ?? null,
+			mvrPlaceholder: resolved.mvrPlaceholder,
+			sourcePath: null,
+		},
 		autoMounted: true,
 	};
 	return capabilities(snap, codegen, registryContribution);

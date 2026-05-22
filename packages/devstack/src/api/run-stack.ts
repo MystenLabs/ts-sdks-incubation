@@ -49,7 +49,7 @@ import {
 	layerProductionOrchestrators,
 	type ProductionCodegenOptions,
 } from '../orchestrators/runtime-composition.ts';
-import type { Stack } from './define-devstack.ts';
+import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyMember } from '../substrate/plugin.ts';
 import { resolveStackName } from './inference-network.ts';
 
@@ -75,7 +75,7 @@ export interface RunStackOptions {
 	/** Codegen output overrides for embedded tests or custom app layout. */
 	readonly codegen?: Omit<ProductionCodegenOptions, 'appRoot'>;
 	/** Filesystem root under which the substrate stores per-stack
-	 *  artifacts (cache, snapshots, manifest, events.ndjson, etc.).
+	 *  artifacts (cache, snapshots, manifest, projection, etc.).
 	 *  Defaults to `$DEVSTACK_STATE_DIR` then `<cwd>/.devstack`. */
 	readonly runtimeRoot?: string;
 	/** Extra Layer composition. Reserved for plugin-author overlays
@@ -91,9 +91,9 @@ export interface BootError {
 	readonly cause: Cause.Cause<unknown>;
 }
 
-/** Programmatic handle. Symmetric with the CLI surface — `events` /
- *  `state` / `awaitShutdown` are the same primitives the CLI's
- *  cross-process channel mirrors onto `events.ndjson`. */
+/** Programmatic handle. Symmetric with the attached CLI surface:
+ *  `events`, `state`, and `awaitShutdown` are the same primitives the
+ *  TUI consumes in-process. */
 export interface RunHandle {
 	/** Boot the supervisor and resolve when every plugin reaches
 	 *  `ready`. Fails with `BootError` if any plugin's acquire path
@@ -174,15 +174,16 @@ export const runStack = (
 	stack: Stack<ReadonlyArray<AnyMember>>,
 	opts: RunStackOptions = {},
 ): RunHandle => {
+	const engineStack = readStackEngine(stack);
 	const runtimeRoot = resolveRuntimeRoot(opts.runtimeRoot);
 	const appRoot = opts.appRoot ?? process.cwd();
 	const identity = resolveIdentity(stack, opts.identity, appRoot);
-	const codegen = opts.codegen ?? stack.options.codegen;
+	const codegen = opts.codegen ?? engineStack.options.codegen;
 
 	const supervisedStack = {
 		_tag: 'Stack' as const,
-		members: stack.members,
-		options: stack.options,
+		members: engineStack.members,
+		options: engineStack.options,
 	};
 
 	// State + handle slots are created at `runStack(...)` time so the

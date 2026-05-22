@@ -21,6 +21,7 @@ import type { PluginKey } from '../../brand.ts';
 import { pluginKey as makePluginKey } from '../../brand.ts';
 import type { AnyMember } from '../../plugin.ts';
 import type { CapabilityDecl } from '../../../contracts/index.ts';
+import type { CompositePrimitiveDecl } from '../../../contracts/composite-primitive.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -103,14 +104,17 @@ const readStaticCapabilities = (member: AnyMember): ReadonlyArray<CapabilityDecl
 	return caps;
 };
 
+const isCompositePrimitiveDecl = (decl: CapabilityDecl): decl is CompositePrimitiveDecl =>
+	decl.kind === 'composite-primitive' &&
+	'compositeKey' in decl &&
+	'innerParticipants' in decl;
+
 /** Mint a stable PluginKey for a member. Composites have a declared
  *  `compositeKey` on their `CompositePrimitiveDecl`; leaves derive
  *  from the provided tag id + an ordinal so duplicates don't collide. */
 const mintKey = (member: AnyMember, ordinal: number): PluginKey => {
-	const composite = readStaticCapabilities(member).find(
-		(c: CapabilityDecl) => c.kind === 'composite-primitive',
-	);
-	if (composite !== undefined && composite.kind === 'composite-primitive') {
+	const composite = readStaticCapabilities(member).find(isCompositePrimitiveDecl);
+	if (composite !== undefined) {
 		return composite.compositeKey;
 	}
 	return makePluginKey(`${member.provides.id}#${ordinal}`);
@@ -124,10 +128,8 @@ const expand = (members: ReadonlyArray<AnyMember>): ReadonlyArray<NamedMember> =
 	for (const member of members) {
 		const key = mintKey(member, ordinal++);
 		out.push({ key, member, compositeParent: null });
-		const composite = readStaticCapabilities(member).find(
-			(c: CapabilityDecl) => c.kind === 'composite-primitive',
-		);
-		if (composite !== undefined && composite.kind === 'composite-primitive') {
+		const composite = readStaticCapabilities(member).find(isCompositePrimitiveDecl);
+		if (composite !== undefined) {
 			for (const inner of composite.innerParticipants) {
 				out.push({
 					key: makePluginKey(`${key}/inner/${inner.provides.id}#${ordinal++}`),

@@ -25,7 +25,7 @@
 // validates the envelope shape, not the per-plugin contents (which
 // are `Schema.Unknown`).
 
-import { Effect, Schema } from 'effect';
+import { Effect } from 'effect';
 import { Data } from 'effect';
 import { FileSystem } from 'effect';
 
@@ -37,6 +37,7 @@ import {
 	ManifestEnvelopeSchema,
 } from '../../manifest.ts';
 import { atomicWriteFile } from '../atomic-write.ts';
+import { decodeJsonText } from '../runtime-decode.ts';
 
 // -----------------------------------------------------------------------------
 // Pinned schema version
@@ -236,13 +237,11 @@ export const readManifest = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.mapError((cause) => new ManifestError({ reason: 'read-failed', path, cause })));
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: (cause) => new ManifestError({ reason: 'decode-failed', path, cause }),
+		const decoded = yield* decodeJsonText(ManifestEnvelopeSchema, text, {
+			source: path,
+			mkError: (issue) =>
+				new ManifestError({ reason: 'decode-failed', path, cause: issue.cause ?? issue }),
 		});
-		const decoded = yield* Schema.decodeUnknownEffect(ManifestEnvelopeSchema)(parsed).pipe(
-			Effect.mapError((cause) => new ManifestError({ reason: 'decode-failed', path, cause })),
-		);
 		if (decoded.manifestVersion !== CURRENT_MANIFEST_VERSION) {
 			return yield* Effect.fail(
 				new ManifestError({

@@ -22,6 +22,8 @@ import {
 	type RosterSweepPolicy,
 } from '../../cross-process.ts';
 import { atomicWriteJsonSync } from '../atomic-write.ts';
+import { SpanAttr } from '../observability/spans.ts';
+import { decodeJsonText } from '../runtime-decode.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
 
@@ -59,13 +61,9 @@ export const readRoster = (path: string): Effect.Effect<RosterDocument, RosterEr
 			try: () => readFileSync(path, 'utf8'),
 			catch: (cause) => new RosterIoError({ path, cause }),
 		});
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(raw) as unknown,
-			catch: (cause) => new RosterCorruptError({ path, raw, cause }),
-		});
-		const decoded = yield* Effect.try({
-			try: () => Schema.decodeUnknownSync(RosterDocumentSchema)(parsed),
-			catch: (cause) => new RosterCorruptError({ path, raw, cause }),
+		const decoded = yield* decodeJsonText(RosterDocumentSchema, raw, {
+			source: path,
+			mkError: (issue) => new RosterCorruptError({ path, raw, cause: issue.cause ?? issue }),
 		});
 		return decoded;
 	}).pipe(Effect.withSpan('cross-process.roster.read'));
@@ -308,7 +306,10 @@ export const heartbeatFiber = (
 				// logger; do not propagate.
 				Effect.catch((err) =>
 					Effect.logWarning('roster heartbeat failed').pipe(
-						Effect.annotateLogs({ 'roster.heartbeat.error': String(err) }),
+						Effect.annotateLogs({
+							[SpanAttr.rosterHeartbeatIntervalMs]: intervalMillis,
+							[SpanAttr.errorCause]: String(err),
+						}),
 					),
 				),
 			);
@@ -368,13 +369,9 @@ export const readClaims = (
 			try: () => readFileSync(path, 'utf8'),
 			catch: (cause) => new RosterIoError({ path, cause }),
 		});
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(raw) as unknown,
-			catch: (cause) => new RosterCorruptError({ path, raw, cause }),
-		});
-		return yield* Effect.try({
-			try: () => Schema.decodeUnknownSync(ContainerClaimDocumentSchema)(parsed),
-			catch: (cause) => new RosterCorruptError({ path, raw, cause }),
+		return yield* decodeJsonText(ContainerClaimDocumentSchema, raw, {
+			source: path,
+			mkError: (issue) => new RosterCorruptError({ path, raw, cause: issue.cause ?? issue }),
 		});
 	}).pipe(Effect.withSpan('cross-process.roster.readClaims'));
 

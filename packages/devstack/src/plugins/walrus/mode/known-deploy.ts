@@ -23,6 +23,7 @@
 
 import { Effect, type Scope } from 'effect';
 
+import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
 import { walrusConfigError, type WalrusConfigError } from '../errors.ts';
 import type { WalrusStorageNode } from '../storage-nodes.ts';
 
@@ -115,21 +116,23 @@ export const resolveKnownDeploymentOptions = (
 ): KnownDeploymentBootResult => {
 	const reg = opts.network ? KNOWN_DEPLOYMENT_REGISTRY[opts.network] : undefined;
 
-	const systemObjectId = opts.systemObjectId ?? reg?.systemObjectId;
-	if (!systemObjectId) {
-		throw walrusConfigError(
-			'systemObjectId',
-			`walrusKnownDeployment: 'systemObjectId' is required (pass it explicitly, or pass network with a registered entry)`,
-		);
-	}
+	const systemObjectId = expectNonEmptyString(opts.systemObjectId ?? reg?.systemObjectId, {
+		field: 'systemObjectId',
+		mkError: ({ field }) =>
+			walrusConfigError(
+				field,
+				`walrusKnownDeployment: 'systemObjectId' is required (pass it explicitly, or pass network with a registered entry)`,
+			),
+	});
 
-	const stakingPoolId = opts.stakingPoolId ?? reg?.stakingPoolId;
-	if (!stakingPoolId) {
-		throw walrusConfigError(
-			'stakingPoolId',
-			`walrusKnownDeployment: 'stakingPoolId' is required (pass it explicitly, or pass network with a registered entry)`,
-		);
-	}
+	const stakingPoolId = expectNonEmptyString(opts.stakingPoolId ?? reg?.stakingPoolId, {
+		field: 'stakingPoolId',
+		mkError: ({ field }) =>
+			walrusConfigError(
+				field,
+				`walrusKnownDeployment: 'stakingPoolId' is required (pass it explicitly, or pass network with a registered entry)`,
+			),
+	});
 
 	const nodes = opts.nodes;
 	if (!nodes) {

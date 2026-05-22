@@ -21,6 +21,7 @@ import type { RoutableDecl } from '../../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../../brand.ts';
+import type { AccountProjection, PackageProjection } from '../../projection.ts';
 import type { PluginErrorContribution } from '../../plugin.ts';
 import {
 	FormatterRegistryService,
@@ -52,32 +53,32 @@ export interface OrchestratorSinks {
 		pluginKey: PluginKey,
 		decl: SnapshotableDecl,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly routable?: (
 		pluginKey: PluginKey,
 		decl: RoutableDecl,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly codegenable?: (
 		pluginKey: PluginKey,
 		decl: CodegenableDecl<unknown, string>,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly strategy?: (
 		pluginKey: PluginKey,
 		decl: StrategyContributorDecl<string, unknown>,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly liveness?: (
 		pluginKey: PluginKey,
 		decl: LifenessClassifierDecl,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 	readonly composite?: (
 		pluginKey: PluginKey,
 		decl: CompositePrimitiveDecl,
 		ctx: HarvestContext,
-	) => Effect.Effect<void, never, Scope.Scope>;
+	) => Effect.Effect<void, unknown, Scope.Scope>;
 }
 
 // -----------------------------------------------------------------------------
@@ -120,7 +121,27 @@ const buildDefaultSinks = (
 	push<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
 		kind: 'strategy-contributor',
 		accept: (decl, ctx) =>
-			orchestrator.strategy ? orchestrator.strategy(ctx.pluginKey, decl, ctx) : Effect.void,
+			Effect.gen(function* () {
+				const account = accountProjectionFromStrategy(decl, ctx.pluginKey);
+				if (account !== null) {
+					yield* ctx.publish({
+						tag: 'account.updated',
+						account,
+						at: account.updatedAt,
+					});
+				}
+				const pkg = packageProjectionFromStrategy(decl, ctx.pluginKey);
+				if (pkg !== null) {
+					yield* ctx.publish({
+						tag: 'package.updated',
+						package: pkg,
+						at: pkg.updatedAt,
+					});
+				}
+				if (orchestrator.strategy) {
+					yield* orchestrator.strategy(ctx.pluginKey, decl, ctx);
+				}
+			}),
 	});
 
 	push<'liveness-classifier', LifenessClassifierDecl>({
@@ -145,6 +166,85 @@ const buildDefaultSinks = (
 	});
 
 	return sinks;
+};
+
+const accountProjectionFromStrategy = (
+	decl: StrategyContributorDecl<string, unknown>,
+	rowKey: PluginKey,
+): AccountProjection | null => {
+	if (!decl.capabilityKey.startsWith('account:')) return null;
+	const name = decl.capabilityKey.slice('account:'.length);
+	if (name.length === 0) return null;
+	const strategy = decl.strategy as Partial<AccountProjection>;
+	if (
+		typeof strategy.address !== 'string' ||
+		(strategy.scheme !== 'ed25519' &&
+			strategy.scheme !== 'secp256k1' &&
+			strategy.scheme !== 'secp256r1') ||
+		(strategy.source !== 'real' && strategy.source !== 'impersonate')
+	) {
+		return null;
+	}
+	const funding = isAccountProjectionFunding(strategy.funding)
+		? strategy.funding
+		: { status: 'unknown' as const, balanceMist: null, requestedMist: null };
+	return {
+		key: `account/${name}` as `account/${string}`,
+		rowKey,
+		name,
+		address: strategy.address,
+		scheme: strategy.scheme,
+		source: strategy.source,
+		funding,
+		walletVisible: false,
+		updatedAt: Date.now(),
+	};
+};
+
+const packageProjectionFromStrategy = (
+	decl: StrategyContributorDecl<string, unknown>,
+	rowKey: PluginKey,
+): PackageProjection | null => {
+	if (decl.capabilityKey !== 'package-registry') return null;
+	const strategy = decl.strategy as Partial<PackageProjection>;
+	if (
+		(strategy.kind !== 'local' && strategy.kind !== 'known') ||
+		typeof strategy.name !== 'string' ||
+		typeof strategy.packageId !== 'string' ||
+		typeof strategy.mvrPlaceholder !== 'string'
+	) {
+		return null;
+	}
+	const upgradeCapId =
+		typeof strategy.upgradeCapId === 'string' ? strategy.upgradeCapId : null;
+	const sourcePath = typeof strategy.sourcePath === 'string' ? strategy.sourcePath : null;
+	return {
+		key: `package/${strategy.name}` as `package/${string}`,
+		rowKey,
+		name: strategy.name,
+		kind: strategy.kind,
+		packageId: strategy.packageId,
+		upgradeCapId,
+		mvrPlaceholder: strategy.mvrPlaceholder,
+		sourcePath,
+		updatedAt: Date.now(),
+	};
+};
+
+const isAccountProjectionFunding = (value: unknown): value is AccountProjection['funding'] => {
+	if (typeof value !== 'object' || value === null) return false;
+	const funding = value as Partial<AccountProjection['funding']>;
+	const statusOk =
+		funding.status === 'pending' ||
+		funding.status === 'funded' ||
+		funding.status === 'skipped' ||
+		funding.status === 'failed' ||
+		funding.status === 'unknown';
+	return (
+		statusOk &&
+		(funding.balanceMist === null || typeof funding.balanceMist === 'string') &&
+		(funding.requestedMist === null || typeof funding.requestedMist === 'string')
+	);
 };
 
 // -----------------------------------------------------------------------------

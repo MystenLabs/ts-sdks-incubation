@@ -17,9 +17,10 @@
 import { hostname as nodeHostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
-import { Effect, Option, Ref, Schema, Stream, Scope } from 'effect';
+import { Effect, Option, Ref, Stream, Scope } from 'effect';
 
 import type { EngineCommand } from '../../../events.ts';
+import { decodeUnknownSync } from '../../runtime-decode.ts';
 import { type CommandChannelError, appendRecord, ensureFile, tailRecords } from './file-channel.ts';
 import {
 	COMMAND_CHANNEL_PROTOCOL_VERSION,
@@ -117,7 +118,11 @@ export const makeCommandChannelPublisher = (
 				return { id };
 			});
 
-		const decodeEvent = Schema.decodeUnknownSync(EventRecordSchema);
+		const decodeEvent = (raw: unknown): EventRecord =>
+			decodeUnknownSync(EventRecordSchema, raw, {
+				source: 'command-channel event',
+				mkError: (issue) => issue,
+			});
 
 		const events: Stream.Stream<EventRecord, CommandChannelError, Scope.Scope> = tailRecords(
 			paths.eventsFile,
@@ -224,7 +229,11 @@ export const makeCommandChannelSubscriber = (
 		yield* ensureFile(paths.eventsFile);
 		const state: SubscriberState = { seq: yield* Ref.make(0) };
 
-		const decodeCommand = Schema.decodeUnknownSync(CommandRecordSchema);
+		const decodeCommand = (raw: unknown): CommandRecord =>
+			decodeUnknownSync(CommandRecordSchema, raw, {
+				source: 'command-channel command',
+				mkError: (issue) => issue,
+			});
 
 		const commands: Stream.Stream<CommandRecord, CommandChannelError, Scope.Scope> = tailRecords(
 			paths.commandsFile,

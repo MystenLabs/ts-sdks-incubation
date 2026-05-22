@@ -9,10 +9,9 @@
 // User-facing factory shape (recommended high-level form):
 //
 //   const openLobby = action('arena.openLobby', {
-//     consumes: [alice, connectFour] as const,
-//     body: (ctx) =>
-//       ctx.signAndExecute(ctx.use(alice), (tx) => {
-//         const pkg = ctx.use(connectFour);
+//     dependsOn: { signer: alice, pkg: connectFour },
+//     body: (ctx, { signer, pkg }) =>
+//       ctx.signAndExecute(signer, (tx) => {
 //         tx.moveCall({ target: `${pkg.packageId}::game::create_lobby` });
 //       }),
 //   });
@@ -43,12 +42,13 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import { capabilities } from '../../api/define-capabilities.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions, readConsumedTag } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { StackMember } from '../../substrate/plugin.ts';
 import type { AnyTag, ResolvedOf } from '../../substrate/tag.ts';
-import { SuiTag, type SuiClient } from '../sui/index.ts';
+import { SuiTag } from '../sui/index.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 
 import type { ActionBuildContext } from './build-context.ts';
@@ -61,6 +61,8 @@ import {
 	type ActionAcquireInputs,
 	type ActionReceipt,
 } from './service.ts';
+
+const actionErrorContributions = pluginErrorContributions(ACTION_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Tag — one per declared action, keyed by symbolic name
@@ -92,27 +94,61 @@ export type ActionUpstreamMember = StackMember<
 >;
 
 /** Options for `action(name, opts)`. */
-export interface ActionOptions<Consumes extends ReadonlyArray<ActionUpstreamMember>> {
-	/** Upstream refs the action depends on. Each entry's `.provides`
-	 *  tag becomes an edge in the plugin's `consumes:` tuple — the
-	 *  substrate orders this action strictly after all entries. */
-	readonly consumes: Consumes;
+type ActionDependencySpec =
+	| ActionUpstreamMember
+	| readonly ActionUpstreamMember[]
+	| Readonly<Record<string, ActionUpstreamMember>>;
+
+type ActionDependencyList<Input> = Input extends readonly ActionUpstreamMember[]
+	? Input
+	: Input extends ActionUpstreamMember
+		? readonly [Input]
+		: Input extends Readonly<Record<string, ActionUpstreamMember>>
+			? ReadonlyArray<Input[keyof Input]>
+			: readonly [];
+
+type ResolvedActionDependencyList<Dependencies extends readonly ActionUpstreamMember[]> = {
+	readonly [K in keyof Dependencies]: Dependencies[K] extends ActionUpstreamMember
+		? ResolvedOf<Dependencies[K]['provides']>
+		: never;
+};
+
+type ResolvedActionDependencyObject<
+	Dependencies extends Readonly<Record<string, ActionUpstreamMember>>,
+> = {
+	readonly [K in keyof Dependencies]: Dependencies[K] extends ActionUpstreamMember
+		? ResolvedOf<Dependencies[K]['provides']>
+		: never;
+};
+
+type ResolvedActionDependencies<Input> = [Input] extends [readonly ActionUpstreamMember[]]
+	? ResolvedActionDependencyList<Input>
+	: [Input] extends [ActionUpstreamMember]
+		? ResolvedOf<Input['provides']>
+		: [Input] extends [Readonly<Record<string, ActionUpstreamMember>>]
+			? ResolvedActionDependencyObject<Input>
+			: never;
+
+export interface ActionOptions<DependsOn extends ActionDependencySpec> {
+	/** Upstream refs the action depends on. The shape determines the
+	 *  second argument passed to `body`. */
+	readonly dependsOn: DependsOn;
 	/** Optional caller-supplied discriminator material. Two shapes:
 	 *  a literal `string`, or a callback `(ctx) => Effect<string>`
 	 *  that receives the same `ActionBuildContext` the body sees, so
 	 *  the discriminator can derive its value from upstream resolved
 	 *  refs (e.g. fold in a freshly-published package id). See
 	 *  `discriminator.ts`. */
-	readonly discriminator?: DynamicDiscriminator<ConsumesTagsOf<Consumes>>;
-	/** The user's body. Receives the typed `BuildContext` and returns
-	 *  an Effect that performs the on-chain effect (build tx, sign,
-	 *  execute) and projects the receipt.
+	readonly discriminator?: DynamicDiscriminator<ConsumesTagsOfInput<DependsOn>>;
+	/** The user's body. Receives action helpers plus resolved deps
+	 *  shaped like `dependsOn`, then returns the on-chain effect.
 	 *
 	 *  Errors raised here surface as `ActionError({phase:'sign'})`
 	 *  unless the body raises an `ActionError` itself (in which case
 	 *  it propagates verbatim). */
 	readonly body: (
-		ctx: ActionBuildContext<ConsumesTagsOf<Consumes>>,
+		ctx: ActionBuildContext<ConsumesTagsOfInput<DependsOn>>,
+		deps: ResolvedActionDependencies<DependsOn>,
 	) => Effect.Effect<ActionReceipt, ActionError, Scope.Scope>;
 }
 
@@ -126,6 +162,12 @@ export interface ActionOptions<Consumes extends ReadonlyArray<ActionUpstreamMemb
 type ConsumesTagsOf<C extends ReadonlyArray<ActionUpstreamMember>> = {
 	readonly [K in keyof C]: C[K] extends { readonly provides: infer T extends AnyTag } ? T : AnyTag;
 };
+
+type ConsumesTagsOfInput<Input extends ActionDependencySpec> = ConsumesTagsOf<
+	ActionDependencyList<Input> extends readonly ActionUpstreamMember[]
+		? ActionDependencyList<Input>
+		: readonly []
+>;
 
 /** Full `consumes:` tuple for an action plugin instance: SuiTag (hard
  *  upstream) followed by the user-projected upstream tag tuple. The
@@ -154,17 +196,18 @@ type ActionConsumes<C extends ReadonlyArray<ActionUpstreamMember>> = readonly [
  */
 export const action = <
 	const Name extends string,
-	const Consumes extends ReadonlyArray<ActionUpstreamMember>,
+	const DependsOn extends ActionDependencySpec,
 >(
 	name: Name,
-	opts: ActionOptions<Consumes>,
+	opts: ActionOptions<DependsOn>,
 ) => {
 	const tag = defineTag<ActionTagId<Name>, ActionReceipt>(actionTagId(name), actionTagId(name));
 
 	// Project the user-supplied upstream members into a typed tag
 	// tuple. The substrate uses these for ordering AND for the
 	// per-acquire BuildContext walker.
-	const upstreamTags = opts.consumes.map((m) => m.provides) as unknown as ConsumesTagsOf<Consumes>;
+	const upstreamMembers = actionDependencyList(opts.dependsOn);
+	const upstreamTags = upstreamMembers.map((m) => m.provides) as unknown as ConsumesTagsOfInput<DependsOn>;
 
 	// `consumes: [SuiTag, ...userTags]` — SuiTag is the hard upstream
 	// the action body NEVER reads directly, but the substrate uses for
@@ -178,7 +221,11 @@ export const action = <
 	// — without it the tuple widens to `Tag<string, any>[]` and the
 	// substrate flags every action's `consumes:` as missing even when
 	// the upstream member is present.
-	const consumesTuple = [SuiTag, ...upstreamTags] as unknown as ActionConsumes<Consumes>;
+	const consumesTuple = [SuiTag, ...upstreamTags] as unknown as ActionConsumes<
+		ActionDependencyList<DependsOn> extends readonly ActionUpstreamMember[]
+			? ActionDependencyList<DependsOn>
+			: readonly []
+	>;
 
 	// Static discriminator pieces — known at factory construction
 	// time. The tag-ids preserve the literal `id` so two actions with
@@ -198,16 +245,9 @@ export const action = <
 		rebootCost: 'cheap',
 		acquire: (ctx) =>
 			Effect.gen(function* () {
-				// `ctx.get(SuiTag)` — read chainId + chainProbe lookup
-				// edge. SuiTag is hard-included in `consumesTuple` so
-				// the runtime invariant holds; the local cast is the
-				// localized escape hatch per STYLE_GUIDE §14: when the
-				// outer plugin's `Consumes` is a free generic, TS can't
-				// reduce `T extends ActionConsumes<Consumes>[number]`
-				// for the literal `typeof SuiTag` arg. `ctx.use(member)`
-				// is not applicable — SuiTag has no upstream member to
-				// thread (it's added by the factory, not the caller).
-				const sui = (ctx as { get: (t: typeof SuiTag) => SuiClient }).get(SuiTag);
+				// SuiTag is hard-included in `consumesTuple`; the helper
+				// centralizes the generic-context cast for the lookup.
+				const sui = readConsumedTag(ctx, SuiTag);
 
 				// Substrate-context primitives. OCA + strategy registry
 				// are both provided by the supervisor's pluginContext.
@@ -231,14 +271,12 @@ export const action = <
 				//     is what most action bodies want — it folds the
 				//     SDK-boundary cast + `include: {effects, objectTypes}`
 				//     execute + finality wait + envelope projection.
-				const bodyCtx: ActionBuildContext<ConsumesTagsOf<Consumes>> = {
+				const bodyCtx: ActionBuildContext<ConsumesTagsOfInput<DependsOn>> = {
 					// Forwards typed `get(t)` from the wrapped substrate
 					// ctx. Same generic-reduction limitation as the
-					// SuiTag cast above (STYLE_GUIDE §14): the substrate
-					// ctx's `T extends Provided` constraint doesn't
-					// reduce while the action plugin's `Consumes` is a
-					// free generic. Cast is localized to one method.
-					get: <T extends ConsumesTagsOf<Consumes>[number]>(t: T) =>
+					// SuiTag lookup above: `Consumes` is still a free
+					// generic here, so the cast stays localized.
+					get: <T extends ConsumesTagsOfInput<DependsOn>[number]>(t: T) =>
 						(
 							ctx as unknown as {
 								get: (tag: T) => ResolvedOf<T>;
@@ -256,7 +294,7 @@ export const action = <
 							ctx as unknown as {
 								use: (m: typeof member) => unknown;
 							}
-						).use(member)) as ActionBuildContext<ConsumesTagsOf<Consumes>>['use'],
+						).use(member)) as ActionBuildContext<ConsumesTagsOfInput<DependsOn>>['use'],
 					sui,
 					signAndExecute: (account, build) =>
 						signAndExecuteImpl({
@@ -310,6 +348,9 @@ export const action = <
 						}),
 				};
 
+				const bodyDeps = resolveActionDependencies(opts.dependsOn, (member) =>
+					bodyCtx.use(member),
+				);
 				const acquireInputs: ActionAcquireInputs = {
 					actionName: name,
 					chainId: sui.chain,
@@ -318,7 +359,7 @@ export const action = <
 						consumedTagIds,
 					},
 					dynamicMaterial: resolveDiscriminator(name, opts.discriminator, bodyCtx),
-					body: opts.body(bodyCtx),
+					body: opts.body(bodyCtx, bodyDeps),
 				};
 
 				const receipt = yield* bootActionService(publisher, probe, acquireInputs).pipe(
@@ -351,9 +392,45 @@ export const action = <
 		// folds this into the substrate's FormatterRegistry; the
 		// cascade formatter then renders `ActionError`-tagged failures
 		// with the action's phase/message header.
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: ACTION_ERROR_TAGS }],
+		errorContributions: actionErrorContributions,
 	});
 };
+
+const resolveActionDependencies = <Input extends ActionDependencySpec>(
+	dependsOn: Input,
+	read: (member: ActionDependencyList<Input>[number]) => unknown,
+): ResolvedActionDependencies<Input> => {
+	const readAny = (member: ActionUpstreamMember) =>
+		read(member as ActionDependencyList<Input>[number]);
+	if (Array.isArray(dependsOn)) {
+		return dependsOn.map((member) => readAny(member)) as ResolvedActionDependencies<Input>;
+	}
+	if (isActionUpstreamMember(dependsOn)) {
+		return readAny(dependsOn) as ResolvedActionDependencies<Input>;
+	}
+	return Object.fromEntries(
+		Object.entries(dependsOn).map(([key, member]) => [key, readAny(member)]),
+	) as ResolvedActionDependencies<Input>;
+};
+
+const actionDependencyList = <Input extends ActionDependencySpec>(
+	dependsOn: Input,
+): ActionDependencyList<Input> => {
+	if (Array.isArray(dependsOn)) {
+		return dependsOn as unknown as ActionDependencyList<Input>;
+	}
+	if (isActionUpstreamMember(dependsOn)) {
+		return [dependsOn] as unknown as ActionDependencyList<Input>;
+	}
+	return Object.values(dependsOn) as unknown as ActionDependencyList<Input>;
+};
+
+const isActionUpstreamMember = (value: unknown): value is ActionUpstreamMember =>
+	typeof value === 'object' &&
+	value !== null &&
+	'provides' in value &&
+	'consumes' in value &&
+	'acquire' in value;
 
 // ---------------------------------------------------------------------------
 // Re-exports

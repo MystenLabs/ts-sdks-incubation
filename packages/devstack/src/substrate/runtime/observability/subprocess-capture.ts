@@ -32,6 +32,8 @@ import { Data } from 'effect';
 import type { ChildProcess } from 'effect/unstable/process';
 import { ChildProcessSpawner } from 'effect/unstable/process';
 
+import { splitUtf8Lines } from './process-lines.ts';
+
 // -----------------------------------------------------------------------------
 // Single error class
 // -----------------------------------------------------------------------------
@@ -137,9 +139,7 @@ const drainObserved = <E>(
 	if (!observer) {
 		return Stream.mkString(Stream.decodeText(stream));
 	}
-	const lines = stream.pipe(
-		Stream.decodeText(),
-		Stream.splitLines,
+	const lines = splitUtf8Lines(stream).pipe(
 		Stream.tap((line) => observer(line).pipe(Effect.ignore)),
 	);
 	// Re-fold lines into the full stdout/stderr string. We don't append

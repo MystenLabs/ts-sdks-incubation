@@ -15,6 +15,8 @@
 // `Effect.catchTag` / `catchTags` match on the `_tag` literal — we do
 // NOT subclass an Effect base class. See architecture § Effect.
 
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
+
 /** Phases for `PostgresPluginError`. Closed sum — additions land in
  *  the distilled-doc catalog first. */
 export type PostgresPhase =
@@ -40,6 +42,12 @@ export const postgresPluginError = (
 	message: string,
 	cause?: unknown,
 ): PostgresPluginError => ({ _tag: 'PostgresPluginError', phase, message, cause });
+
+export interface PostgresConfigError extends ConfigIssue {
+	readonly _tag: 'PostgresConfigError';
+}
+
+export const postgresConfigError = defineConfigError('PostgresConfigError');
 
 /** `pg_isready` returned non-zero past the deadline. Carries the
  *  database name + last exit code + captured streams so the cause
@@ -84,12 +92,17 @@ export const databaseCreateFailed = (
 ): DatabaseCreateFailed => ({ _tag: 'DatabaseCreateFailed', ...parts });
 
 /** Union of every error a Postgres-plugin caller may encounter. */
-export type PostgresError = PostgresPluginError | PostgresConnectionTimeout | DatabaseCreateFailed;
+export type PostgresError =
+	| PostgresPluginError
+	| PostgresConfigError
+	| PostgresConnectionTimeout
+	| DatabaseCreateFailed;
 
 /** Error tags this plugin contributes — surfaced to the cause walker
  *  via `PluginErrorContribution`. */
 export const POSTGRES_ERROR_TAGS: ReadonlyArray<PostgresError['_tag']> = [
 	'PostgresPluginError',
+	'PostgresConfigError',
 	'PostgresConnectionTimeout',
 	'DatabaseCreateFailed',
 ] as const;

@@ -14,7 +14,11 @@ import {
 	STACK_CONTEXT_SLOT,
 	type PlaywrightStackFixture,
 } from '../../../src/build-integrations/playwright/global-setup.ts';
-import { createWalletAdapter } from '../../../src/build-integrations/playwright/wallet-context.ts';
+import {
+	DAPP_KIT_SLOT,
+	connectAs,
+	createWalletAdapter,
+} from '../../../src/build-integrations/playwright/wallet-context.ts';
 
 const setFixture = (fixture: PlaywrightStackFixture | null) => {
 	const slot = globalThis as unknown as Record<string, unknown>;
@@ -22,9 +26,18 @@ const setFixture = (fixture: PlaywrightStackFixture | null) => {
 	else slot[STACK_CONTEXT_SLOT] = fixture;
 };
 
+const setDappKitSlot = (slotValue: unknown) => {
+	const slot = globalThis as unknown as Record<string, unknown>;
+	if (slotValue === null) delete slot[DAPP_KIT_SLOT];
+	else slot[DAPP_KIT_SLOT] = slotValue;
+};
+
 describe('createWalletAdapter', () => {
 	beforeEach(() => setFixture(null));
-	afterEach(() => setFixture(null));
+	afterEach(() => {
+		setFixture(null);
+		setDappKitSlot(null);
+	});
 
 	it('uses an explicit walletUrl when provided', () => {
 		const adapter = createWalletAdapter({
@@ -94,5 +107,41 @@ describe('createWalletAdapter', () => {
 				txBytesBase64: 'AA',
 			}),
 		).rejects.toBeInstanceOf(PlaywrightWalletAdapterError);
+	});
+});
+
+describe('connectAs', () => {
+	beforeEach(() => setDappKitSlot(null));
+	afterEach(() => setDappKitSlot(null));
+
+	it('switches accounts through the dapp-kit slot', async () => {
+		const calls: string[] = [];
+		setDappKitSlot({
+			selectAccount: (name: string) => calls.push(`select:${name}`),
+		});
+		const page = {
+			evaluate: async <T>(fn: (arg: unknown) => T, arg?: unknown): Promise<T> => fn(arg),
+		};
+
+		await connectAs(page, 'alice');
+
+		expect(calls).toEqual(['select:alice']);
+	});
+
+	it('awaits async account switching from the dapp-kit slot', async () => {
+		const calls: string[] = [];
+		setDappKitSlot({
+			selectAccount: async (name: string) => {
+				await Promise.resolve();
+				calls.push(`select:${name}`);
+			},
+		});
+		const page = {
+			evaluate: async <T>(fn: (arg: unknown) => T, arg?: unknown): Promise<T> => fn(arg),
+		};
+
+		await connectAs(page, 'bob');
+
+		expect(calls).toEqual(['select:bob']);
 	});
 });

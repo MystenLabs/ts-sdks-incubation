@@ -134,14 +134,16 @@ Rules that apply across all four styles:
   in `runtime/docker/*.ts` is the only sanctioned escape and is currently flagged for removal. New
   code uses `Schema.decodeUnknown` (Effect-returning).
 
-Recommended helper (not yet present): `decodeOrFail(schema, mkError)` — see Open slot O4.
+Boundary decodes use `substrate/runtime/runtime-decode.ts` (`decodeUnknown`, `decodeJsonText`, and
+sync variants) unless the boundary is specifically plugin config, in which case use
+`substrate/runtime/config-validation.ts`.
 
 ---
 
 ## 3. Tests
 
-- Vitest tests live in `packages/devstack/test/` mirroring the `src/` directory structure.
-  **Never** as `*.test.ts` siblings inside `src/`. User-mandated 2026-05-19.
+- Vitest tests live in `packages/devstack/test/` mirroring the `src/` directory structure. **Never**
+  as `*.test.ts` siblings inside `src/`. User-mandated 2026-05-19.
 - Effect-bearing tests use `it.effect` from `@effect/vitest`.
 - Browser/DOM tests opt into `@vitest/browser` per the repo's pattern (see `running-vitest` skill).
 - **Subprocess-runner pattern is FORBIDDEN by default.** A `*-runner.cjs` + `*-impl.ts` pair that
@@ -395,14 +397,15 @@ All on-chain artifacts MUST go through `OnChainArtifactPublisher` (substrate pri
 
 ## 12. Container ensure boilerplate
 
-Sui, postgres, walrus, seal, deepbook all hand-roll the same shape:
-`{labels: {app, stack, plugin, role}}` + `Effect.catch → typed plugin error wrapper`. Reduces to a
-substrate helper:
+Use `substrate/runtime/managed-container.ts` for long-running managed containers:
 
-- **TBD — pending Open slot O8:**
-  `runtime.ensureManagedContainer({ pluginKey, role, identity, spec, mapError })`.
-- Until it lands, new plugins MUST follow the existing shape (see `plugins/sui/mode/local.ts:115+`
-  or `plugins/postgres/service.ts:301+`) — do not invent a new pattern.
+- `managedContainerLabels({ identity, plugin, role })` builds the canonical
+  `{ app, stack, plugin, role }` ownership tuple.
+- `ensureManagedContainer({ runtime, identity | labels, plugin, role, spec, mapError })` injects
+  labels, adds the managed-container span attributes, and projects `ContainerRuntimeError` once.
+
+Plugins own their domain error message through `mapError`; they do not hand-roll label tuples plus
+`runtime.ensureContainer(...).pipe(Effect.catch(...))` at each callsite.
 
 ---
 
@@ -536,6 +539,21 @@ Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
 
 ---
 
+## 15a. Endpoints
+
+- `RoutableDecl` is the canonical declaration for public in-stack endpoints. The router mints the
+  hostname and emits the `endpoint.registered` event; plugins do not separately publish their own
+  guessed public URL for the same service.
+- Resolved-value URL projection is fallback-only. The supervisor suppresses inferred `url`,
+  `rpcUrl`, `faucetUrl`, and `graphqlUrl` endpoints when the plugin contributes any routable
+  capability. This keeps direct loopback/probe URLs from competing with router-fronted URLs.
+- Direct URLs used for boot probes, sibling containers, or host-gateway access must be named as such
+  (`direct*`, `probe*`, `hostGateway`) and should not be treated as public endpoint declarations.
+- For live/external modes with no router contribution, resolved-value URL fields may still surface
+  as operational endpoints.
+
+---
+
 ## 16. Observability
 
 - `Effect.withSpan(...)` + `Effect.annotateCurrentSpan(...)` are the only span-instrumentation entry
@@ -545,8 +563,23 @@ Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
   see Open slot O12.
 - Log-level discipline: `logDebug` per-fetch / per-tick loops; `logInfo` lifecycle transitions;
   `logWarning` retryable failures; `logError` surfacing typed errors. Avoid raw `console.*`.
-- The structured `Logger` service (`substrate/runtime/observability/logger.ts`) is declared but has
-  zero call sites. **TBD — Open slot O13:** wire or delete (substrate triage decision pending).
+- Log messages are stable event text; dynamic values go in fields / log annotations. Do not format
+  endpoint URLs, request ids, origins, exit codes, or retry causes into the message unless the value
+  is the user-facing domain error itself. Renderers and log sinks own presentation.
+- The structured `Logger` service (`substrate/runtime/observability/logger.ts`) is the plugin-facing
+  buffered log sink. Long-running child processes should route stdout/stderr through
+  `ProcessLines.observeProcessLines(...)` from the root plugin-authoring barrel; one-shot command
+  capture should use `subprocess-capture.ts`; raw `Stream.decodeText() + Stream.splitLines` belongs
+  only inside those substrate helpers.
+- Host processes use `substrate/runtime/process-supervisor.ts` for spawn typing, exit/error races,
+  exit-status description, and SIGTERM-to-SIGKILL teardown. Plugins should not reimplement
+  `once('exit')` / `once('error')` races or shutdown escalation.
+- HTTP readiness checks should use `HttpProbes.waitForHttpEndpoint(...)` from the root
+  plugin-authoring barrel: callers provide the endpoint, total timeout, retry interval, optional
+  per-request timeout, and an optional validator that may parse the response body and return whether
+  the endpoint is actually ready.
+- Request retry schedules use `substrate/runtime/retry-policy.ts`; do not build local
+  `Schedule.exponential(...).pipe(Schedule.jittered, Schedule.both(...))` chains in plugins.
 - The `Effect.annotateCurrentSpan` outside `Effect.withSpan` pattern silently drops annotations
   (caught by `runtime-docker.md` review at `container.ts:233`). Wrap in a span first.
 
@@ -607,15 +640,19 @@ substrate primitive; codegen also needs it (per-cycle outer swap is missing —
 
 Three patterns exist; ONE is canonical:
 
-- **Canonical:** `Schema.decodeUnknown(schema)(raw).pipe(Effect.mapError(mkError))` —
-  Effect-returning, typed error projection.
+- **Canonical:** `decodeUnknown(schema, raw, { source, mkError })` and
+  `decodeJsonText(schema, text, { source, mkError })` from `substrate/runtime/runtime-decode.ts` —
+  Effect-returning, typed error projection with one parse / decode issue shape.
+- **Plugin config:** use `substrate/runtime/config-validation.ts` at factory and boundary sites.
+  `defineConfigError(tag)` keeps plugin-owned error tags, scalar `expect*` helpers cover common
+  authoring guards, and `decodeConfig(...)` / `decodeConfigSync(...)` wrap Effect Schema failures in
+  the same `ConfigIssue` shape. Custom plugin authors import the same helpers from the root
+  `ConfigValidation` namespace.
 - **Acceptable** (when surrounding context is sync, e.g. cross-process readers):
-  `Schema.decodeUnknownSync(schema)(parsed)` inside a `try/catch` that wraps to a typed error.
+  `decodeUnknownSync(...)` / `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption to
+  a miss or typed error.
 - **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely. Known
-  offenders in `runtime/docker/inventory.ts:93-102`, `network.ts:171,208`, `container.ts:151` —
-  flagged for cleanup.
-
-Recommended helper (substrate, pending): `decodeOrFail(schema, mkError)`. See Open slot O4.
+  offenders must be migrated on touch.
 
 ---
 
@@ -681,13 +718,13 @@ each.
 | ID      | What                                                                                                                                                                                                                                                                                                                                                                                                                            | Owner / pass                  | Where it shows up today                                                                      |
 | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
 | **O2**  | Tagged-error class style unification (3 → 1)                                                                                                                                                                                                                                                                                                                                                                                    | cross-cutting audit           | every plugin + substrate + runtime                                                           |
-| **O4**  | `decodeOrFail(schema, mkError)` substrate helper                                                                                                                                                                                                                                                                                                                                                                                | substrate triage              | `runtime/docker/*`, cross-process readers                                                    |
+| **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                                        | substrate triage              | boundary readers and plugin config factories                                                 |
 | **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to. PR1.5 made the violation MORE visible by moving the contract into `plugins/package/coin-discovery.ts` — pending PR2-A harvest loop OR a future event-bus primitive.)             | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/package/index.ts` |
 | **O6**  | `CapabilitySinks` registry — invert supervisor's contract awareness (PR2-A in flight)                                                                                                                                                                                                                                                                                                                                           | substrate triage (PR2-A)      | `substrate/runtime/supervisor.ts:35-40,285-312`                                              |
 | **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                                    | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
-| **O8**  | `runtime.ensureManagedContainer` substrate helper                                                                                                                                                                                                                                                                                                                                                                               | substrate triage              | `plugins/sui/`, `plugins/postgres/`, future walrus/seal/deepbook                             |
+| **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                                  | substrate triage              | future container-owning plugins                                                              |
 | **O10** | `BuildContext<...>.use(member)` distributive-conditional reduction for template-literal-generic tag ids — substrate landed `use(member)`; the conditional doesn't reduce when the upstream member's tag id is a template-literal-generic (`account/${P}`). One cast site at `plugins/package/index.ts:225` localizes around the limitation. Pending substrate type-system amendment (distributive `P extends P ? ... : never`). | substrate type-system pass    | `plugins/package/index.ts:225`                                                               |
-| **O12** | `SpanAttr` mandatory at type level + retire free-form keys (PR2-A wiring)                                                                                                                                                                                                                                                                                                                                                       | observability cleanup         | every plugin span site                                                                       |
+| **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                                  | observability cleanup         | older plugin/runtime span sites                                                              |
 | **O13** | Wire or delete: `Logger` service / `SpanAttr` helpers / `LifecycleFact` / `PluginErrorContribution` / `*_ERROR_TAGS` arrays (PR2-A in flight)                                                                                                                                                                                                                                                                                   | substrate triage (PR2-A)      | substrate/runtime/observability/, every plugin                                               |
 | **O15** | Cross-plugin reference mechanism (witness/`.provides` vs auto-projection)                                                                                                                                                                                                                                                                                                                                                       | API design pass               | every cross-plugin reference site                                                            |
 | **O16** | Root-barrel re-export policy                                                                                                                                                                                                                                                                                                                                                                                                    | API design pass               | `src/index.ts` (today no clear main entry)                                                   |

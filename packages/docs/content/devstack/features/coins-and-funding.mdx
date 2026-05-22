@@ -25,7 +25,7 @@ const alice = account('alice', {
 	],
 });
 
-export default defineDevstack(publisher, managed, suiCoin, managedCoin, alice);
+export default defineDevstack({ members: [publisher, managed, suiCoin, managedCoin, alice] });
 ```
 
 Available forms:

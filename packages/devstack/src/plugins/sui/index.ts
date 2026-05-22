@@ -35,6 +35,7 @@ import { Effect } from 'effect';
 import { capabilities } from '../../api/define-capabilities.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -54,9 +55,11 @@ import { makeSnapshotable } from './snapshot.ts';
 import { SEED_OBJECTS_CAPABILITY_KEY, type SeedObjectsAccumulator } from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
 import { SUI_ERROR_TAGS } from './errors.ts';
+import { makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
 import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
 import type { SuiClient } from './mode/shared.ts';
+import { resolveAutoTickIntervalMs } from './auto-tick.ts';
 import type {
 	SuiExternalOptions,
 	SuiForkOptions,
@@ -77,6 +80,7 @@ import { parseDevstackNetwork } from '../../api/inference-network.ts';
  *  Tag id: `'sui'` (singular). The plugin's substrate-level plugin
  *  key is the same string. */
 export const SuiTag = defineTag<'sui', SuiClient>('sui', 'sui');
+const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Default option resolution
@@ -104,8 +108,9 @@ const resolveDefaultMode = (): SuiOptions => {
 // Plugin construction (internal — used by sui() + suiFor())
 // ---------------------------------------------------------------------------
 
-const buildPlugin = (opts: SuiOptions) =>
-	defineNodePlugin({
+const buildPlugin = (opts: SuiOptions) => {
+	if (opts.mode === 'fork') resolveAutoTickIntervalMs(opts.autoTick);
+	return defineNodePlugin({
 		provides: SuiTag,
 		consumes: [] as const,
 		kind: 'leaf-long-running',
@@ -155,8 +160,9 @@ const buildPlugin = (opts: SuiOptions) =>
 				return client;
 			}),
 		capabilities: (resolved, acquireCtx) => makePluginCapabilities(opts, resolved, acquireCtx),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: SUI_ERROR_TAGS }],
+		errorContributions: suiErrorContributions,
 	});
+};
 
 /** Construct the capability tuple POST-acquire. Receives the resolved
  *  `SuiClient` + acquire context so decls can stamp REAL chain ids /
@@ -232,12 +238,21 @@ const makePluginCapabilities = (
 		autoMounted: true,
 	};
 
+	const localRoutables =
+		opts.mode === 'local'
+			? makeSuiLocalRoutables({
+					containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-sui-validator`,
+					includeGraphql: true,
+				})
+			: [];
+
 	return capabilities(
 		snap,
 		codegen,
 		chainProbeContribution,
 		fundsReadyContribution,
 		seedObjectsContribution,
+		...localRoutables,
 	);
 };
 
@@ -305,6 +320,7 @@ export type {
 	SuiError,
 	SuiPluginError,
 	SuiCliError,
+	SuiConfigError,
 	ForkUnsupportedError,
 	SeedManifestMismatchError,
 	SuiFundsReadyError,

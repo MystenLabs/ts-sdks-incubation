@@ -8,10 +8,22 @@ import type {
 	ChainProbeSchema,
 } from '../../../src/contracts/chain-probe.ts';
 import {
+	buildWalSeedRequests,
 	buildWalSwapTransaction,
 	resolveWalExchange,
+	type WalSwapSigner,
 	type WalExchangeProbeKey,
 } from '../../../src/plugins/walrus/seed-wal.ts';
+
+const makeSigner = (name: string, address: string): WalSwapSigner => ({
+	name,
+	address,
+	signTransaction: () => Effect.succeed({ bytes: 'bytes', signature: 'signature' }),
+	withTransactionSigner: (body) =>
+		body({
+			signTransaction: () => Effect.succeed({ bytes: 'bytes', signature: 'signature' }),
+		}),
+});
 
 describe('walrus seed WAL swap', () => {
 	it('resolves the exchange package id from the on-chain object type', async () => {
@@ -76,5 +88,37 @@ describe('walrus seed WAL swap', () => {
 			},
 		});
 		expect(data.commands[2]?.$kind).toBe('TransferObjects');
+	});
+
+	it('builds one self-funded WAL seed request per seed account in order', () => {
+		const sdk = { client: {} };
+		const exchange = {
+			objectId: '0xdef',
+			packageId: '0xabc',
+		};
+		const signers = [makeSigner('alice', '0xa'), makeSigner('bob', '0xb')];
+
+		const requests = buildWalSeedRequests({
+			signers,
+			sdk,
+			exchange,
+			paymentMist: 123n,
+		});
+
+		expect(requests).toHaveLength(2);
+		expect(requests[0]?.signer).toBe(signers[0]);
+		expect(requests[0]).toMatchObject({
+			sdk,
+			exchange,
+			recipientAddress: '0xa',
+			paymentMist: 123n,
+		});
+		expect(requests[1]?.signer).toBe(signers[1]);
+		expect(requests[1]).toMatchObject({
+			sdk,
+			exchange,
+			recipientAddress: '0xb',
+			paymentMist: 123n,
+		});
 	});
 });

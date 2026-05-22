@@ -15,7 +15,7 @@
 //      `info`/`warn`/`error`/`fatal`) are exercised without diverting
 //      the buffer write.
 
-import { Effect } from 'effect';
+import { Effect, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -25,7 +25,13 @@ import {
 	layerLogger,
 	type LogLevel,
 } from '../../../../src/substrate/runtime/observability/logger.ts';
+import {
+	Redactor,
+	layerRedactor,
+} from '../../../../src/substrate/runtime/observability/redaction.ts';
 import { pluginKey } from '../../../../src/substrate/brand.ts';
+
+const testLoggerLayer = layerLogger.pipe(Layer.provideMerge(layerRedactor));
 
 describe('Logger', () => {
 	it.effect('records a single line under the requested tag with the payload level', () =>
@@ -44,7 +50,7 @@ describe('Logger', () => {
 			expect(buf.lines[0]!.message).toBe('hello');
 			expect(buf.lines[0]!.fields).toEqual({ who: 'world' });
 			expect(buf.truncated).toBe(false);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('readTag for an unknown tag returns the empty snapshot', () =>
@@ -53,7 +59,7 @@ describe('Logger', () => {
 			const buf = yield* logger.readTag('never-written');
 			expect(buf.lines).toEqual([]);
 			expect(buf.truncated).toBe(false);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('ring buffer drops the oldest line past DEFAULT_MAX_LINES_PER_TAG', () =>
@@ -74,7 +80,7 @@ describe('Logger', () => {
 			// `overflow` lines were dropped.
 			expect(buf.lines[0]!.message).toBe(`line-${overflow}`);
 			expect(buf.lines[buf.lines.length - 1]!.message).toBe(`line-${total - 1}`);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('truncated flag stays sticky across subsequent in-bound writes', () =>
@@ -93,7 +99,7 @@ describe('Logger', () => {
 			expect(afterClear.truncated).toBe(false);
 			expect(afterClear.lines.length).toBe(1);
 			expect(afterClear.lines[0]!.message).toBe('fresh');
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('messages over MAX_LINE_BYTES are truncated with the suffix', () =>
@@ -107,7 +113,7 @@ describe('Logger', () => {
 			expect(recorded.length).toBe(MAX_LINE_BYTES + '…[truncated]'.length);
 			expect(recorded.endsWith('…[truncated]')).toBe(true);
 			expect(recorded.slice(0, 16)).toBe('x'.repeat(16));
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('messages at exactly MAX_LINE_BYTES are not truncated', () =>
@@ -118,7 +124,7 @@ describe('Logger', () => {
 			const buf = yield* logger.readTag('edge');
 			expect(buf.lines[0]!.message.length).toBe(MAX_LINE_BYTES);
 			expect(buf.lines[0]!.message.endsWith('…[truncated]')).toBe(false);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('readAll exposes every recorded tag', () =>
@@ -132,7 +138,7 @@ describe('Logger', () => {
 			expect(all.get('a')!.lines[0]!.message).toBe('1');
 			expect(all.get('b')!.lines[0]!.level).toBe('warn');
 			expect(all.get('c')!.lines[0]!.level).toBe('error');
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('clearTag drops the tag entry from readAll', () =>
@@ -147,7 +153,7 @@ describe('Logger', () => {
 			// Re-asking the buffer directly returns the empty snapshot.
 			const dropped = yield* logger.readTag('drop');
 			expect(dropped.lines).toEqual([]);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('clearTag on an unknown tag is a no-op', () =>
@@ -158,7 +164,7 @@ describe('Logger', () => {
 			const all = yield* logger.readAll;
 			expect(all.has('present')).toBe(true);
 			expect(all.has('absent')).toBe(false);
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('every closed level is recorded verbatim in the buffer entry', () =>
@@ -182,7 +188,7 @@ describe('Logger', () => {
 				expect(buf.lines[0]!.level).toBe(level);
 				expect(buf.lines[0]!.message).toBe(`at ${level}`);
 			}
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('absent fields default to the empty record on the buffered line', () =>
@@ -191,7 +197,23 @@ describe('Logger', () => {
 			yield* logger.log('no-fields', null, { level: 'info', message: 'plain' });
 			const buf = yield* logger.readTag('no-fields');
 			expect(buf.lines[0]!.fields).toEqual({});
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
+	);
+
+	it.effect('applies registered redaction rules to buffered messages and fields', () =>
+		Effect.gen(function* () {
+			const redactor = yield* Redactor;
+			const logger = yield* Logger;
+			yield* redactor.register({ kind: 'literal', value: 'secret-token' });
+			yield* logger.log('secret', null, {
+				level: 'info',
+				message: 'ready secret-token',
+				fields: { token: 'secret-token' },
+			});
+			const buf = yield* logger.readTag('secret');
+			expect(buf.lines[0]!.message).toBe('ready <redacted>');
+			expect(buf.lines[0]!.fields).toEqual({ token: '<redacted>' });
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 
 	it.effect('null pluginKey is preserved on the buffered line', () =>
@@ -206,6 +228,6 @@ describe('Logger', () => {
 			const b = yield* logger.readTag('with-key');
 			expect(a.lines[0]!.pluginKey).toBe(null);
 			expect(b.lines[0]!.pluginKey).toBe(pluginKey('plug-x'));
-		}).pipe(Effect.provide(layerLogger)),
+		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 });

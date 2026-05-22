@@ -22,6 +22,8 @@
 import { Effect, Schema } from 'effect';
 
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
+import { ProbeTimeoutError, waitForProbe } from '../../substrate/runtime/probes.ts';
+import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import {
 	DockerInspectDecodeFailed,
 	DockerInspectFailed,
@@ -101,27 +103,23 @@ const inspectNetwork = (
 			);
 		}
 		try {
-			const arr = JSON.parse(res.stdout) as unknown;
-			if (!Array.isArray(arr) || arr.length === 0) {
-				return yield* Effect.fail(
+			const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
+				source: `docker network inspect ${name}`,
+				missingMessage: 'inspect returned an empty result',
+				mkError: (issue) =>
 					new DockerInspectDecodeFailed({
 						resource: 'network',
 						name,
-						detail: 'inspect returned an empty result',
+						detail:
+							issue.message === 'inspect returned an empty result'
+								? issue.message
+								: 'inspect returned malformed network JSON',
+						cause: issue.cause,
 					}),
-				);
-			}
-			const decoded = Schema.decodeUnknownSync(NetworkInspectSchema)(arr[0]);
+			});
 			return { id: decoded.Id, labels: readLabels(decoded.Labels) };
 		} catch (cause) {
-			return yield* Effect.fail(
-				new DockerInspectDecodeFailed({
-					resource: 'network',
-					name,
-					detail: 'inspect returned malformed network JSON',
-					cause,
-				}),
-			);
+			return yield* Effect.fail(cause as DockerRuntimeError);
 		}
 	});
 
@@ -262,38 +260,50 @@ export const waitForIp = (
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> => {
 	const budget = opts.budgetMillis ?? DEFAULT_IP_POLL_BUDGET_MILLIS;
 	const interval = opts.intervalMillis ?? DEFAULT_IP_POLL_INTERVAL_MILLIS;
-	return Effect.gen(function* () {
-		const start = Date.now();
-		while (true) {
-			const res = yield* dockerRunOk('inspect', [containerNameOrId]).pipe(
-				Effect.mapError(wrapNetworkError('inspect', network)),
-			);
-			if (res.exitCode === 0) {
-				try {
-					const arr = JSON.parse(res.stdout) as unknown;
-					if (Array.isArray(arr) && arr.length > 0) {
-						const decoded = Schema.decodeUnknownSync(InspectNetworkSettings)(arr[0]);
+	const start = Date.now();
+	let foundIp: string | undefined;
+	return waitForProbe({
+		label: `docker.network.ip:${containerNameOrId}:${network}`,
+		timeoutMs: budget,
+		intervalMs: interval,
+		isRetryableError: () => false,
+		probe: () =>
+			Effect.gen(function* () {
+				const res = yield* dockerRunOk('inspect', [containerNameOrId]).pipe(
+					Effect.mapError(wrapNetworkError('inspect', network)),
+				);
+				if (res.exitCode === 0) {
+					try {
+						const decoded = decodeJsonArrayElementSync(InspectNetworkSettings, res.stdout, {
+							source: `docker inspect ${containerNameOrId}`,
+							mkError: (issue) => issue,
+						});
 						const slot = decoded.NetworkSettings.Networks[network];
 						const ip = slot?.IPAddress;
-						if (ip && ip.length > 0) return ip;
+						if (ip && ip.length > 0) {
+							foundIp = ip;
+							return true;
+						}
+					} catch {
+						// Malformed — fall through to retry.
 					}
-				} catch {
-					// Malformed — fall through to retry.
 				}
+				return false;
+			}),
+	}).pipe(
+		Effect.map(() => foundIp ?? ''),
+		Effect.mapError((cause) => {
+			if (cause instanceof ProbeTimeoutError) {
+				return new NetworkIpReadbackTimeout({
+					container: containerNameOrId,
+					network,
+					waitedMillis: Date.now() - start,
+				});
 			}
-			const elapsed = Date.now() - start;
-			if (elapsed >= budget) {
-				return yield* Effect.fail(
-					new NetworkIpReadbackTimeout({
-						container: containerNameOrId,
-						network,
-						waitedMillis: elapsed,
-					}),
-				);
-			}
-			yield* Effect.sleep(`${interval} millis`);
-		}
-	}).pipe(Effect.withSpan('runtime.docker.network.waitForIp'));
+			return cause;
+		}),
+		Effect.withSpan('runtime.docker.network.waitForIp'),
+	);
 };
 
 /** Read out ALL networks + IPs for a container. Used by the contract's
@@ -307,9 +317,10 @@ export const readIps = (
 		);
 		if (res.exitCode !== 0) return [];
 		try {
-			const arr = JSON.parse(res.stdout) as unknown;
-			if (!Array.isArray(arr) || arr.length === 0) return [];
-			const decoded = Schema.decodeUnknownSync(InspectNetworkSettings)(arr[0]);
+			const decoded = decodeJsonArrayElementSync(InspectNetworkSettings, res.stdout, {
+				source: `docker inspect ${containerNameOrId}`,
+				mkError: (issue) => issue,
+			});
 			const ips: Array<string> = [];
 			for (const slot of Object.values(decoded.NetworkSettings.Networks)) {
 				if (slot.IPAddress && slot.IPAddress.length > 0) ips.push(slot.IPAddress);

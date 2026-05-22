@@ -54,7 +54,8 @@ import {
 } from '../../runtime/docker/index.ts';
 import { awaitAll } from './lifecycle/index.ts';
 import { makeProjectionRef } from './projection/index.ts';
-import { Logger, layerLogger } from './observability/index.ts';
+import { Logger, Redactor, layerLogger, layerRedactor } from './observability/index.ts';
+import { PostAcquireTasksService, layerPostAcquireTasks } from './post-acquire-tasks.ts';
 import {
 	startSupervisor,
 	type OrchestratorSinks,
@@ -104,7 +105,9 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 	const withContainerRuntime = layerContainerRuntimeDocker.pipe(
 		Layer.provideMerge(withSpawnerAdapter),
 	);
-	return layerLogger.pipe(Layer.provideMerge(withContainerRuntime));
+	const withPostAcquireTasks = layerPostAcquireTasks.pipe(Layer.provideMerge(withContainerRuntime));
+	const withRedactor = layerRedactor.pipe(Layer.provideMerge(withPostAcquireTasks));
+	return layerLogger.pipe(Layer.provideMerge(withRedactor));
 };
 
 /** Build the opaque `Context.Context<never>` the supervisor hands to
@@ -126,7 +129,9 @@ const buildPluginContext = (): Effect.Effect<
 	| CoinRegistryService
 	| PortBrokerService
 	| LeaseBrokerService
+	| PostAcquireTasksService
 	| Logger
+	| Redactor
 > =>
 	Effect.gen(function* () {
 		const identityCtx = yield* IdentityContext;
@@ -140,7 +145,9 @@ const buildPluginContext = (): Effect.Effect<
 		const coinRegistry = yield* CoinRegistryService;
 		const portBroker = yield* PortBrokerService;
 		const leaseBroker = yield* LeaseBrokerService;
+		const postAcquireTasks = yield* PostAcquireTasksService;
 		const logger = yield* Logger;
+		const redactor = yield* Redactor;
 
 		return Context.empty().pipe(
 			Context.add(IdentityContext, identityCtx),
@@ -154,7 +161,9 @@ const buildPluginContext = (): Effect.Effect<
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PortBrokerService, portBroker),
 			Context.add(LeaseBrokerService, leaseBroker),
+			Context.add(PostAcquireTasksService, postAcquireTasks),
 			Context.add(Logger, logger),
+			Context.add(Redactor, redactor),
 		) as Context.Context<never>;
 	});
 

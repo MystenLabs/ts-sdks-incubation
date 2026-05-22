@@ -14,6 +14,8 @@
 // — we don't subclass an Effect base class; `Effect.catchTag` /
 // `catchTags` match on `_tag` literal. See architecture § Effect.
 
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
+
 /** Phases for `SuiError`. Closed sum — keeps the cause-walker's
  *  display table small. Add a phase only after editing the
  *  catalog in the plugin doc. */
@@ -49,6 +51,12 @@ export const suiPluginError = (
 	message: string,
 	cause?: unknown,
 ): SuiPluginError => ({ _tag: 'SuiPluginError', phase, message, cause });
+
+export interface SuiConfigError extends ConfigIssue {
+	readonly _tag: 'SuiConfigError';
+}
+
+export const suiConfigError = defineConfigError('SuiConfigError');
 
 /** Move-build / sui-cli error. Carries the sub-process capture
  *  envelope (exit + stderr + stdout). The plugin doc lists 11
@@ -120,6 +128,7 @@ export interface SuiFundsReadyError {
 export type SuiError =
 	| SuiPluginError
 	| SuiCliError
+	| SuiConfigError
 	| ForkUnsupportedError
 	| SeedManifestMismatchError
 	| SuiFundsReadyError;
@@ -129,6 +138,7 @@ export type SuiError =
 export const SUI_ERROR_TAGS: ReadonlyArray<SuiError['_tag']> = [
 	'SuiPluginError',
 	'SuiCliError',
+	'SuiConfigError',
 	'ForkUnsupportedError',
 	'SeedManifestMismatchError',
 	'SuiFundsReadyError',

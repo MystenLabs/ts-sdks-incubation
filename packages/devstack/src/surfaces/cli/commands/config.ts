@@ -10,11 +10,10 @@
 
 import { Effect } from 'effect';
 
-import type { LoadedConfig } from './up.ts';
+import type { ConfigLoader, LoadedConfig } from './config-loader.ts';
 import type { CliError } from '../errors.ts';
 import { emitSuccess } from '../output.ts';
 import type { CommandContext, CommandResult } from './index.ts';
-import type { ConfigLoader } from './up.ts';
 
 export interface ConfigDeps {
 	readonly loader: ConfigLoader;

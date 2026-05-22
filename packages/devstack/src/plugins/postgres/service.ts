@@ -41,6 +41,8 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
+import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.ts';
+import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import {
 	credentialedUrl,
 	plainUrl,
@@ -50,7 +52,9 @@ import {
 import { awaitReady, ensureDatabases, type ContainerExec } from './db-ensure.ts';
 import {
 	postgresPluginError,
+	postgresConfigError,
 	type DatabaseCreateFailed,
+	type PostgresConfigError,
 	type PostgresConnectionTimeout,
 	type PostgresPluginError,
 } from './errors.ts';
@@ -138,10 +142,11 @@ export const resolveOptions = (
 	opts: PostgresServiceOptions,
 ): ResolvedPostgresOptions => {
 	const name = opts.name ?? 'postgres';
-	const databases = opts.databases ?? DEFAULT_DATABASES;
-	if (databases.length === 0) {
-		throw new TypeError('postgres(): `databases` must be non-empty');
-	}
+	const databases = expectNonEmptyArray(opts.databases ?? DEFAULT_DATABASES, {
+		field: 'databases',
+		message: 'postgres(): `databases` must be non-empty',
+		mkError: postgresConfigError,
+	});
 	return {
 		name,
 		version: opts.version ?? DEFAULT_VERSION,
@@ -220,11 +225,14 @@ export const bootPostgresService = (
 	opts: PostgresServiceOptions,
 ): Effect.Effect<
 	PostgresBootResult,
-	PostgresPluginError | PostgresConnectionTimeout | DatabaseCreateFailed,
+	PostgresPluginError | PostgresConfigError | PostgresConnectionTimeout | DatabaseCreateFailed,
 	Scope.Scope
 > =>
 	Effect.gen(function* () {
-		const resolved = resolveOptions(identity, opts);
+		const resolved = yield* Effect.try({
+			try: () => resolveOptions(identity, opts),
+			catch: (cause) => cause as PostgresConfigError,
+		});
 
 		// Identity-derived strings. The naming pattern must match what
 		// snapshot label-discovery uses — both call sites converge on
@@ -286,16 +294,14 @@ export const bootPostgresService = (
 		//    which docker also publishes under the network. The
 		//    architecture revision to add `networkAlias` to
 		//    EnsureContainerSpec is flagged in `index.ts`.
-		const containerHandle = yield* runtime
-			.ensureContainer({
+		const containerHandle = yield* ensureManagedContainer({
+			runtime,
+			identity,
+			plugin: 'postgres',
+			role: resolved.name,
+			spec: {
 				name: `${identity.app}-${identity.stack}-${resolved.name}`,
 				image: imageRef,
-				labels: {
-					app: identity.app,
-					stack: identity.stack,
-					plugin: 'postgres',
-					role: resolved.name,
-				},
 				recreate: 'on-config-change',
 				env: {
 					POSTGRES_USER: resolved.user,
@@ -307,18 +313,14 @@ export const bootPostgresService = (
 						? [{ containerPort: POSTGRES_PORT, hostPort: resolved.hostPort }]
 						: undefined,
 				networkAttach: [containerNetwork, ...resolved.extraNetworks],
-			})
-			.pipe(
-				Effect.catch((cause) =>
-					Effect.fail(
-						postgresPluginError(
-							'container-start',
-							`failed to start postgres container '${resolved.name}'`,
-							cause,
-						),
-					),
+			},
+			mapError: (cause) =>
+				postgresPluginError(
+					'container-start',
+					`failed to start postgres container '${resolved.name}'`,
+					cause,
 				),
-			);
+		});
 
 		// 4. Probe readiness via `pg_isready` against the bootstrap
 		//    database. Server-aware probe — distilled doc § Postgres-

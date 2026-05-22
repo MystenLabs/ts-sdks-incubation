@@ -15,17 +15,19 @@ import { defineDevstack, account, sui, walrus } from '@mysten-incubation/devstac
 
 const admin = account('admin');
 
-export default defineDevstack(
-	sui(),
-	admin,
-	walrus({
+export default defineDevstack({
+	members: [
+		sui(),
+		admin,
+		walrus({
 		local: {
 			nodeCount: 1,
 			shards: 4,
 			seedAccounts: [admin],
 		},
 	}),
-);
+	],
+});
 ```
 
 Known mode requires explicit on-chain ids and an explicit node list. Network shortcuts only provide
@@ -40,13 +42,15 @@ import { defineDevstack, account, seal } from '@mysten-incubation/devstack';
 
 const publisher = account('publisher');
 
-export default defineDevstack(
-	publisher,
-	seal({
+export default defineDevstack({
+	members: [
+		publisher,
+		seal({
 		mode: 'local-keygen',
 		signer: publisher,
 	}),
-);
+	],
+});
 ```
 
 Live and fork-known modes reference existing key servers and do not expose a local manager.
@@ -61,14 +65,16 @@ import { defineDevstack, account, deepbook } from '@mysten-incubation/devstack';
 
 const publisher = account('publisher');
 
-export default defineDevstack(
-	publisher,
-	deepbook({
+export default defineDevstack({
+	members: [
+		publisher,
+		deepbook({
 		mode: 'known',
 		packageId: '0x...',
 		registryId: '0x...',
 	}),
-);
+	],
+});
 ```
 
 The current DeepBook surface does not claim local pool creation, Pyth, margin, or market-maker
@@ -86,5 +92,5 @@ const registry = knownPackage('registry', {
 	mvrPlaceholder: '@demo/registry',
 });
 
-export default defineDevstack(registry);
+export default defineDevstack({ members: [registry] });
 ```

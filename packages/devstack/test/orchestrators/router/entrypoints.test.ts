@@ -136,6 +136,10 @@ describe('makeEntrypointRegistry', () => {
 		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
 		// Every in-tree plugin's Routable.endpointName must be registered.
 		for (const name of [
+			'rpc',
+			'faucet',
+			'graphql',
+			'dev',
 			'wallet-app',
 			'walrus-node-0',
 			'walrus-node-1',
@@ -149,6 +153,17 @@ describe('makeEntrypointRegistry', () => {
 			expect(Effect.runSync(reg.byName(name))).toBeDefined();
 		}
 		expect(reg.all().filter((entrypoint) => entrypoint.port === 9185)).toHaveLength(1);
+	});
+
+	it('DEFAULT_ENTRYPOINTS includes the app dev entrypoint without conflicting names or ports', () => {
+		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
+		const dev = Effect.runSync(reg.byName('dev'));
+		expect(dev).toEqual({ name: 'dev', port: 5175, protocol: 'http' });
+		expect(reg.all().filter((entrypoint) => entrypoint.port === 5175)).toEqual([dev]);
+		expect(DEFAULT_ENTRYPOINTS.map((entrypoint) => entrypoint.name)).not.toContain(
+			'frontend.dev-server',
+		);
+		expect(DEFAULT_ENTRYPOINTS.some((entrypoint) => entrypoint.name.includes('.'))).toBe(false);
 	});
 
 	it('DEFAULT_ENTRYPOINTS carries TCP entries for postgres and redis', () => {

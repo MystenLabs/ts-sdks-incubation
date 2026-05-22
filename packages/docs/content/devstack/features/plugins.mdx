@@ -10,34 +10,27 @@ imports.
 ```ts
 import { Effect } from 'effect';
 import {
-	capabilities,
-	defineNodePlugin,
-	defineTag,
-	type CodegenableDecl,
+	codegenable,
+	definePlugin,
 } from '@mysten-incubation/devstack';
 
 interface KeyValueResolved {
 	readonly url: string;
 }
 
-const keyValueTag = defineTag<'kv', KeyValueResolved>('kv', 'kv');
-
 export const keyValue = () =>
-	defineNodePlugin({
-		provides: keyValueTag,
-		consumes: [] as const,
+	definePlugin({
+		id: 'kv',
 		kind: 'leaf-long-running',
 		rebootCost: 'cheap',
-		acquire: () => Effect.succeed({ url: 'http://127.0.0.1:6379' }),
-		capabilities: (resolved) => {
-			const codegen: CodegenableDecl<KeyValueResolved, 'kv'> = {
-				kind: 'codegenable',
+		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } satisfies KeyValueResolved),
+		capabilities: ({ value }) => [
+			codegenable({
 				emitterName: 'kv',
 				outputPath: 'kv.ts',
-				emit: () => Effect.succeed({ kv: resolved }),
-			};
-			return capabilities(codegen);
-		},
+				emit: () => Effect.succeed({ kv: value }),
+			}),
+		],
 	});
 ```
 
@@ -47,9 +40,9 @@ Compose the plugin like any built-in factory:
 import { defineDevstack } from '@mysten-incubation/devstack';
 import { keyValue } from './devstack/key-value.js';
 
-export default defineDevstack(keyValue());
+export default defineDevstack({ members: [keyValue()] });
 ```
 
 Use direct member references for cross-plugin dependencies. For example, if a plugin needs an
-account, accept the `account('name')` member and project its provided tag into the plugin's
-`consumes` tuple.
+account, accept the `account('name')` plugin and put it in `dependsOn`; the resolved account value
+is passed to `start` as the second argument.

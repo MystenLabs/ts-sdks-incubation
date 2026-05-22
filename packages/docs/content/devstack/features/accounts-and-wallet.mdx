@@ -39,7 +39,7 @@ import { defineDevstack, account, wallet } from '@mysten-incubation/devstack';
 const alice = account('alice');
 const bob = account('bob');
 
-export default defineDevstack(alice, bob, wallet({ accounts: [alice, bob] }));
+export default defineDevstack({ members: [alice, bob, wallet({ accounts: [alice, bob] })] });
 ```
 
 `wallet({ accounts: 'all' })` expands to every account member in the final `defineDevstack(...)`

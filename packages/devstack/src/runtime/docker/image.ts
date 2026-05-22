@@ -24,10 +24,11 @@
 //   - `tag(src, dst)`    — `docker tag`
 //   - `inspectDigest`    — read the on-host digest of a tag
 
-import { Effect, Fiber, Stream } from 'effect';
+import { Effect, Fiber, Schema, Stream } from 'effect';
 
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
+import { decodeJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
 import type { ImageRef, LoadedImageBundle } from '../../contracts/container-runtime.ts';
 import { DockerHost, DockerSpawner, dockerCommand, dockerRun, dockerRunOk } from './client.ts';
 import type { DockerRuntimeError } from './errors.ts';
@@ -71,10 +72,14 @@ export interface TagImageOptions {
 const encodeDigest = (digest: string): Uint8Array =>
 	new TextEncoder().encode(JSON.stringify({ digest } satisfies { digest: string }));
 
+const DigestDoc = Schema.Struct({ digest: Schema.String });
+
 const decodeDigest = (bytes: Uint8Array): string | null => {
 	try {
-		const parsed = JSON.parse(new TextDecoder().decode(bytes)) as { digest?: unknown };
-		return typeof parsed.digest === 'string' ? parsed.digest : null;
+		return decodeJsonTextSync(DigestDoc, new TextDecoder().decode(bytes), {
+			source: 'docker image digest cache',
+			mkError: (issue) => issue,
+		}).digest;
 	} catch {
 		return null;
 	}
@@ -135,6 +140,7 @@ export const pull = (
 export interface BuildOptions {
 	readonly contextPath: string;
 	readonly dockerfile?: string;
+	readonly platform?: string;
 	readonly buildArgs?: Readonly<Record<string, string>>;
 	readonly tag: string;
 	readonly onLine?: (line: string) => Effect.Effect<void>;
@@ -151,6 +157,9 @@ export const build = (
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		const args: Array<string> = ['-t', opts.tag];
+		if (opts.platform !== undefined) {
+			args.push('--platform', opts.platform);
+		}
 		// `-f` is resolved relative to the docker CLI's CWD, NOT the
 		// context directory. Skip `-f` entirely when the dockerfile is
 		// the canonical default name (`Dockerfile`) and the context is a

@@ -9,8 +9,6 @@ Runtime state is stack-scoped:
 .devstack/stacks/<stack>/
   manifest.json
   projection.v1.json
-  events.ndjson
-  commands.ndjson
   runtime/
   snapshots/
 ```
@@ -38,11 +36,12 @@ integrity.json
 
 Supported behavior:
 
-- Save requests are sent to the live supervisor through the command channel.
-- Restore resolves an id or label, then asks the live supervisor to restore that artifact.
+- Save performs a one-shot stack boot and captures a snapshot of the selected stack.
+- Restore resolves an id or label, refuses to run while `devstack up` is live, then restores that
+  artifact directly.
 - List reads snapshot metadata from the active stack root and tolerates corrupt entries by showing a
   fallback row.
-- Delete asks the supervisor to remove the resolved artifact.
+- Delete removes the resolved artifact from the selected stack root.
 
 Important caveats:
 
@@ -54,5 +53,4 @@ Important caveats:
 - Snapshot docs should point at `orchestrators/snapshot` and `cli/snapshot-reader` source when
   inspecting behavior. Old engine and snapshot-smoke paths are not current.
 
-Use `devstack wipe --yes` to remove active stack state. Use `devstack stack drop <name>` when you
-only want to delete a named stack root.
+Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack.

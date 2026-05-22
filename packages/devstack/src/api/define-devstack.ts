@@ -1,20 +1,14 @@
-// `defineDevstack` — flat-variadic form.
+// `defineDevstack` — object-form stack composer.
 //
-// Architecture § Programmable API + Tension 11. Accepts a variadic
-// list of plugin members and an optional trailing options bag. The
-// trailing bag is structurally distinguished from a member by the
-// absence of the `MEMBER_BRAND` (runtime) / `MemberBrand` field (type
-// level). Mode-narrowing on this form is OPT-IN: authors thread
-// `network` per factory (e.g. `cluster.for(network).localCluster()`)
-// or use `defineDevstackWith` for automatic threading.
+// Listed members are entrypoints. Plugin-valued dependencies are
+// expanded recursively before the current engine sees the member list.
 
 import {
 	type __MissingProvidersError,
 	type AnyMember,
-	MEMBER_BRAND,
 	type MissingProviders,
 } from '../substrate/plugin.ts';
-import type { DevstackOptions, OptionsLike } from '../substrate/options.ts';
+import type { DevstackOptions } from '../substrate/options.ts';
 import type { Tag, TagIdOf } from '../substrate/tag.ts';
 import type {
 	GroupKey,
@@ -30,28 +24,11 @@ import {
 	type WalletExpandAccountsAllExpander,
 } from '../plugins/wallet/index.ts';
 import type { WalletAccountMember } from '../plugins/wallet/index.ts';
+import { isPlugin, type AnyResourceRef } from './define-plugin.ts';
 
 // --- Type-level helpers -------------------------------------------------
 
-/** Distinguish a member from an options bag at the type level. A
- *  member carries the `MemberBrand` (a unique-symbol field); an
- *  options bag does not. */
-type IsMember<T> = T extends { readonly [MEMBER_BRAND]: true } ? true : false;
-
-/** Members in the args tuple — every element minus a trailing options
- *  bag (if any). The peel preserves narrow tuple types. */
-export type MembersOf<Args extends ReadonlyArray<unknown>> = Args extends readonly [
-	...infer Init,
-	infer Last,
-]
-	? IsMember<Last> extends true
-		? Args extends ReadonlyArray<AnyMember>
-			? Args
-			: never
-		: Init extends ReadonlyArray<AnyMember>
-			? Init
-			: never
-	: readonly [];
+const STACK_ENGINE = Symbol.for('@mysten-incubation/devstack.stack.engine');
 
 // --- Auto-mount sui() (D1, api-surface-design.md §4) --------------------
 //
@@ -92,6 +69,24 @@ type ConsumesSuiTag<Members> =
 			: false
 		: false;
 
+type PluginDependencyMembers<Member> =
+	Member extends { readonly dependsOn: ReadonlyArray<infer Dependency> }
+		? Dependency extends AnyMember
+			? Dependency
+			: never
+		: never;
+
+type ReachableMember<Member, Seen extends string = never> =
+	Member extends { readonly provides: Tag<infer Id, unknown> }
+		? Id extends Seen
+			? never
+			: Member | ReachableMember<PluginDependencyMembers<Member>, Seen | Id>
+		: never;
+
+export type DependencyClosure<Members extends ReadonlyArray<AnyMember>> = ReadonlyArray<
+	Members[number] extends infer Member ? ReachableMember<Member> : never
+>;
+
 /** Conditionally prepend `DefaultSuiMember` to a member tuple. The
  *  user-passed Members shape is preserved verbatim when sui is already
  *  provided OR not needed; otherwise the auto-mounted sui member is
@@ -103,6 +98,10 @@ export type WithAutoSui<Members extends ReadonlyArray<AnyMember>> =
 		: ConsumesSuiTag<Members> extends true
 			? readonly [DefaultSuiMember, ...Members]
 			: Members;
+
+export type ComposedMembers<Members extends ReadonlyArray<AnyMember>> = WithAutoSui<
+	DependencyClosure<Members>
+>;
 
 /** Collect every sibling-key carried by a member tuple's
  *  `liftedSiblings` field, and the group-keys whose hashes conflict.
@@ -160,6 +159,10 @@ export interface __UnsatisfiedWitnessesError<W extends string> {
 	readonly __unsatisfied_witnesses: W;
 }
 
+export interface DevstackConfig<Members extends ReadonlyArray<AnyMember>> extends DevstackOptions {
+	readonly members: Members;
+}
+
 // --- Stack handle -------------------------------------------------------
 
 /**
@@ -173,7 +176,6 @@ export interface __UnsatisfiedWitnessesError<W extends string> {
  */
 export interface Stack<Members extends ReadonlyArray<AnyMember>> {
 	readonly _tag: 'Stack';
-	readonly members: Members;
 	readonly options: DevstackOptions;
 	/** Phantom — preserves the union of provided ids for downstream
 	 *  introspection. Covariant per the phantom-variance rule. */
@@ -181,6 +183,24 @@ export interface Stack<Members extends ReadonlyArray<AnyMember>> {
 		[K in keyof Members]: TagIdOf<Members[K]['provides']>;
 	}[number];
 }
+
+export interface StackEngine<Members extends ReadonlyArray<AnyMember> = ReadonlyArray<AnyMember>> {
+	readonly _tag: 'Stack';
+	readonly members: Members;
+	readonly options: DevstackOptions;
+}
+
+export const readStackEngine = <Members extends ReadonlyArray<AnyMember>>(
+	stack: Stack<Members>,
+): StackEngine<Members> => {
+	const engine = (stack as unknown as Readonly<Record<symbol, StackEngine<Members> | undefined>>)[
+		STACK_ENGINE
+	];
+	if (engine === undefined) {
+		throw new Error('Invalid devstack Stack handle: missing internal engine stack');
+	}
+	return engine;
+};
 
 // --- Diagnostic gating --------------------------------------------------
 //
@@ -203,7 +223,7 @@ export interface Stack<Members extends ReadonlyArray<AnyMember>> {
  *  reason consumes-of-sui-only-but-no-explicit-sui compiles. */
 export type ValidateArgs<Members> =
 	Members extends ReadonlyArray<AnyMember>
-		? WithAutoSui<Members> extends infer M
+		? ComposedMembers<Members> extends infer M
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
 					? [ConflictingGroups<M>] extends [never]
@@ -219,8 +239,7 @@ export type ValidateArgs<Members> =
 // --- Public surface -----------------------------------------------------
 
 /**
- * Variadic devstack composer. The trailing options bag is detected
- * structurally — it has no `MEMBER_BRAND` field.
+ * Object-form devstack composer.
  *
  * Compile-time checks performed:
  *   - missing-provider: every `consumes` tag has a matching `provides`
@@ -234,31 +253,78 @@ export type ValidateArgs<Members> =
  * generic `Args` is constrained against a branded error type whose
  * field name names the missing piece (type-prototype finding #6,
  * architecture open question #11). Failed validation makes the
- * args type un-assignable, surfacing as the standard
+ * config type un-assignable, surfacing as the standard
  * "not assignable to parameter of type" diagnostic with the branded
  * error field visible in the IDE.
  */
-export function defineDevstack<Args extends ReadonlyArray<AnyMember | OptionsLike>>(
-	...args: Args & ValidateArgs<MembersOf<Args>>
-): Stack<WithAutoSui<MembersOf<Args>>> {
-	const last = args[args.length - 1];
-	const hasOptionsTail =
-		last !== undefined && typeof last === 'object' && last !== null && !(MEMBER_BRAND in last);
+export function defineDevstack<const Members extends ReadonlyArray<AnyMember>>(
+	config: DevstackConfig<Members> & ValidateArgs<Members>,
+): Stack<ComposedMembers<Members>> {
+	const roots = expandPluginDependencies(config.members);
+	const autoMounted = autoMountSui(roots);
+	const expandedWallet = expandWalletAccountsAll(autoMounted);
+	const members = expandPluginDependencies(expandedWallet);
+	const { members: _members, ...options } = config;
+	void _members;
 
-	const rawMembers = (hasOptionsTail ? args.slice(0, -1) : args) as ReadonlyArray<AnyMember>;
-	const options = (hasOptionsTail ? (last as DevstackOptions) : {}) as DevstackOptions;
-
-	const autoMounted = autoMountSui(rawMembers);
-	const members = expandWalletAccountsAll(autoMounted);
-
-	const stack: Stack<ReadonlyArray<AnyMember>> = {
+	const engine: StackEngine<ReadonlyArray<AnyMember>> = {
 		_tag: 'Stack',
 		members,
 		options,
 	};
+	const stack: Stack<ReadonlyArray<AnyMember>> = {
+		_tag: 'Stack',
+		options,
+	};
+	Object.defineProperty(stack, STACK_ENGINE, {
+		value: engine,
+		enumerable: false,
+		configurable: false,
+		writable: false,
+	});
 
-	return stack as unknown as Stack<WithAutoSui<MembersOf<Args>>>;
+	return stack as unknown as Stack<ComposedMembers<Members>>;
 }
+
+export const expandPluginDependencies = (
+	members: ReadonlyArray<AnyMember>,
+): ReadonlyArray<AnyMember> => {
+	const expanded: AnyMember[] = [];
+	const seen = new Map<string, AnyMember>();
+	const visiting = new Set<string>();
+
+	const visit = (member: AnyMember) => {
+		const id = member.provides.id;
+		const previous = seen.get(id);
+		if (previous === member) {
+			return;
+		}
+		if (previous !== undefined) {
+			throw new Error(`Duplicate devstack provider for ${id}`);
+		}
+		if (visiting.has(id)) {
+			throw new Error(`Circular devstack dependency through ${id}`);
+		}
+
+		visiting.add(id);
+		if (isPlugin(member)) {
+			for (const dependency of member.dependsOn as readonly AnyResourceRef[]) {
+				if (isPlugin(dependency)) {
+					visit(dependency);
+				}
+			}
+		}
+		visiting.delete(id);
+		seen.set(id, member);
+		expanded.push(member);
+	};
+
+	for (const member of members) {
+		visit(member);
+	}
+
+	return expanded;
+};
 
 // --- Runtime auto-mount helper ------------------------------------------
 

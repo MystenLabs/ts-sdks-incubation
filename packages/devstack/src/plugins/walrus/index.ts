@@ -47,6 +47,7 @@ import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMembers } from '../../api/consume-members.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions, readConsumedTag } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
@@ -60,7 +61,6 @@ import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountValue } from '../account/service.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import { SuiTag } from '../sui/index.ts';
-import type { SuiClient } from '../sui/index.ts';
 
 import {
 	StrategyRegistryService,
@@ -133,6 +133,7 @@ export interface WalrusResolved {
 
 /** Walrus plugin tag. */
 export const WalrusTag = defineTag<'walrus', WalrusResolved>('walrus', 'walrus');
+const walrusErrorContributions = pluginErrorContributions(WALRUS_ERROR_TAGS);
 
 export interface WalrusNetworkIdentity {
 	readonly app: string;
@@ -235,8 +236,8 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 
 	// Lifted siblings — declared at factory time so the topo scheduler
 	// places them at level 0 (parallel with sui's boot). Two siblings:
-	//   1. cargo-image  — upstream cargo build (key includes walrus
-	//                      ref + sui version + rust toolchain).
+	//   1. cargo-image  — upstream release image (key includes walrus
+	//                      ref + sui version).
 	//   2. move-source  — git checkout of the walrus Move package
 	//                      subdirectory (key includes repo@ref/subdir).
 	const cargoImageKey = defaultWalrusCargoImageSiblingKey();
@@ -302,7 +303,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				// the one SuiTag read (mirrors account / package — same
 				// `__MemberNotConsumedError` reduction limitation,
 				// STYLE_GUIDE §14 + Open slot O10).
-				const sui = (ctx as { readonly get: (t: typeof SuiTag) => SuiClient }).get(SuiTag);
+				const sui = readConsumedTag(ctx, SuiTag);
 				const publisher = yield* OnChainArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
@@ -438,7 +439,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				resolved: resolvedValue,
 				acquireCtx,
 			}),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: WALRUS_ERROR_TAGS }],
+		errorContributions: walrusErrorContributions,
 		liftedSiblings: siblingKeys,
 	});
 };
@@ -476,7 +477,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				resolved: resolvedValue,
 				acquireCtx,
 			}),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: WALRUS_ERROR_TAGS }],
+		errorContributions: walrusErrorContributions,
 	});
 };
 

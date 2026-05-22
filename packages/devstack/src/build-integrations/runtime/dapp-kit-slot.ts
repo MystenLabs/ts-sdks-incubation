@@ -55,7 +55,7 @@ export interface DAppKitSlot {
 	 * for apps that don't wire the dev-wallet; future contract versions
 	 * may promote it to required.
 	 */
-	readonly selectAccount?: (accountName: string) => void;
+	readonly selectAccount?: (accountName: string) => void | Promise<void>;
 }
 
 declare global {

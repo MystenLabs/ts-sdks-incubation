@@ -30,6 +30,19 @@ export interface WalSwapRequest {
 	readonly paymentMist: bigint;
 }
 
+export interface WalSeedAccountsRequest {
+	readonly signers: ReadonlyArray<WalSwapSigner>;
+	readonly sdk: WalSwapSdk;
+	readonly exchange: WalExchangeHandle;
+	readonly paymentMist: bigint;
+}
+
+export interface WalSeedAccountReceipt {
+	readonly signerName: string;
+	readonly recipientAddress: string;
+	readonly digest: string;
+}
+
 const WalExchangeObjectShape = Schema.Struct({
 	object: Schema.Struct({
 		objectId: Schema.String,
@@ -127,6 +140,38 @@ export const swapSuiForWal = (
 			attributes: {
 				'walrus.seed.signer': args.signer.name,
 				'walrus.seed.address': args.recipientAddress,
+				'walrus.seed.exchange': args.exchange.objectId,
+			},
+		}),
+	);
+
+export const buildWalSeedRequests = (args: WalSeedAccountsRequest): ReadonlyArray<WalSwapRequest> =>
+	args.signers.map((signer) => ({
+		signer,
+		sdk: args.sdk,
+		exchange: args.exchange,
+		recipientAddress: signer.address,
+		paymentMist: args.paymentMist,
+	}));
+
+export const seedWalAccounts = (
+	args: WalSeedAccountsRequest,
+): Effect.Effect<ReadonlyArray<WalSeedAccountReceipt>, WalrusPluginError, Scope.Scope> =>
+	Effect.forEach(
+		buildWalSeedRequests(args),
+		(request) =>
+			swapSuiForWal(request).pipe(
+				Effect.map((receipt) => ({
+					signerName: request.signer.name,
+					recipientAddress: request.recipientAddress,
+					digest: receipt.digest,
+				})),
+			),
+		{ concurrency: 1 },
+	).pipe(
+		Effect.withSpan('devstack.plugin.walrus.seedAccounts', {
+			attributes: {
+				'walrus.seed.account.count': args.signers.length,
 				'walrus.seed.exchange': args.exchange.objectId,
 			},
 		}),

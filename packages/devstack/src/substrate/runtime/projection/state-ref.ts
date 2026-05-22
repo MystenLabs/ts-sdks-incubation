@@ -17,7 +17,9 @@ import { Effect, SubscriptionRef } from 'effect';
 
 import type {
 	BuildEntry,
+	AccountProjection,
 	Endpoint,
+	PackageProjection,
 	Row,
 	StructuredError,
 	SubscribableState,
@@ -39,6 +41,8 @@ export const emptyProjection = (): SubscribableState => ({
 	cycle: { id: 0, startedAt: 0, phase: 'booting' },
 	rows: [],
 	endpoints: [],
+	accounts: [],
+	packages: [],
 	errors: [],
 	lastEvent: { seq: 0, at: 0 },
 	stackBuild: [],
@@ -87,4 +91,12 @@ export type __NoDisplayVocab = _NoDisplayVocabAtTop & _NoDisplayVocabInRow exten
 // Re-export the sub-types renderers reach for so they don't import
 // across the substrate boundary directly — `state-ref.ts` is the
 // renderer-facing entry point.
-export type { BuildEntry, Endpoint, Row, StructuredError, SubscribableState };
+export type {
+	AccountProjection,
+	BuildEntry,
+	Endpoint,
+	PackageProjection,
+	Row,
+	StructuredError,
+	SubscribableState,
+};

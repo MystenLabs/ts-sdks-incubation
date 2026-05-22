@@ -10,6 +10,7 @@
 
 import { Effect, Stream } from 'effect';
 
+import { splitUtf8Lines } from '../../substrate/runtime/observability/process-lines.ts';
 import { DockerHost, DockerSpawner } from './client.ts';
 import { DaemonUnreachable, type DockerRuntimeError } from './errors.ts';
 import { dockerCommand } from './client.ts';
@@ -44,9 +45,7 @@ export const followLogs = (
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnError));
 			// Merge stdout + stderr so caller sees the unified follow stream;
 			// docker prefixes each line with its source via --timestamps.
-			const lineStream = Stream.merge(handle.stdout, handle.stderr).pipe(
-				Stream.decodeText(),
-				Stream.splitLines,
+			const lineStream = splitUtf8Lines(Stream.merge(handle.stdout, handle.stderr)).pipe(
 				Stream.mapError(mapSpawnError),
 			);
 			return lineStream;

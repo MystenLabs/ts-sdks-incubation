@@ -12,7 +12,7 @@ import type {
 	OnChainArtifactError,
 	OnChainArtifactPublisher,
 } from '../../primitives/on-chain-artifact.ts';
-import type { SealError } from './errors.ts';
+import type { SealAnyError } from './errors.ts';
 import { acquireForkKnown, type ForkKnownInputs } from './mode/fork-known.ts';
 import { acquireLive, type LiveModeInputs } from './mode/live.ts';
 import type { SealKnownResolved } from './registry-publish.ts';
@@ -30,7 +30,7 @@ export type SealKnownBootResult = SealKnownResolved;
 export const bootSealService = (
 	_publisher: OnChainArtifactPublisher,
 	opts: SealMode,
-): Effect.Effect<SealKnownBootResult, SealError | OnChainArtifactError, Scope.Scope> => {
+): Effect.Effect<SealKnownBootResult, SealAnyError | OnChainArtifactError, Scope.Scope> => {
 	switch (opts.mode) {
 		case 'live':
 			return acquireLive(opts);

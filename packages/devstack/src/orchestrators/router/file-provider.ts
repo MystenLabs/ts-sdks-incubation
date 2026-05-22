@@ -551,12 +551,24 @@ export const detectCollisions = (
 			const first = colliding[0];
 			if (key.startsWith('tcp@')) {
 				return new RouteCollision({
+					message: routeCollisionMessage({
+						hostname: '',
+						entrypoint: first?.entrypointName ?? '',
+						dispatchIds: ids,
+						wireProtocol: 'tcp',
+					}),
 					hostname: '',
 					entrypoint: first?.entrypointName ?? '',
 					dispatchIds: ids,
 				});
 			}
 			return new RouteCollision({
+				message: routeCollisionMessage({
+					hostname: first?.hostname ?? '',
+					entrypoint: first?.entrypointName ?? '',
+					dispatchIds: ids,
+					wireProtocol: 'http',
+				}),
 				hostname: first?.hostname ?? '',
 				entrypoint: first?.entrypointName ?? '',
 				dispatchIds: ids,
@@ -564,6 +576,22 @@ export const detectCollisions = (
 		}
 	}
 	return null;
+};
+
+const routeCollisionMessage = (collision: {
+	readonly hostname: string;
+	readonly entrypoint: string;
+	readonly dispatchIds: ReadonlyArray<string>;
+	readonly wireProtocol: ResolvedWireProtocol;
+}): string => {
+	const ids = collision.dispatchIds.join(', ');
+	if (collision.wireProtocol === 'tcp') {
+		return `router TCP route collision on entrypoint '${collision.entrypoint}' for dispatch ids: ${ids}`;
+	}
+	return (
+		`router route collision on entrypoint '${collision.entrypoint}' ` +
+		`and hostname '${collision.hostname}' for dispatch ids: ${ids}`
+	);
 };
 
 // ---------------------------------------------------------------------------

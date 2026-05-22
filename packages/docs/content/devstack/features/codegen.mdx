@@ -4,7 +4,7 @@ description: Current generated-file behavior.
 ---
 
 There is no root factory for generated output. The supervisor collects each member's codegenable
-capability and emits files during `devstack up`, `devstack apply`, or `devstack codegen`.
+capability and emits files during `devstack up` or `devstack apply`.
 
 Default root:
 
@@ -26,14 +26,15 @@ deepbook/<name>.ts
 extras.ts
 ```
 
-Configure the root in the trailing options bag:
+Configure the root in the stack options:
 
 ```ts
 import { defineDevstack, account } from '@mysten-incubation/devstack';
 
 const alice = account('alice');
 
-export default defineDevstack(alice, {
+export default defineDevstack({
+	members: [alice],
 	codegen: {
 		outputDir: 'src/generated',
 		stackSubdir: null,
@@ -52,8 +53,8 @@ import { suiNetwork } from './generated/sui/network.js';
 import { dappKitConfig } from './generated/dapp-kit/config.js';
 ```
 
-To force a re-emit against a running supervisor:
+To force a re-emit, run the one-shot apply flow:
 
 ```bash
-devstack codegen
+devstack apply
 ```

@@ -10,7 +10,7 @@
 //     stringly matching.
 //   - The cascade formatter (substrate/runtime/observability/
 //     cascade-formatter.ts) renders these natively via their `_tag`.
-//   - The `--schema --json` action enumerates the tag table.
+//   - The `schema --json` command enumerates the tag table.
 
 import { Data } from 'effect';
 

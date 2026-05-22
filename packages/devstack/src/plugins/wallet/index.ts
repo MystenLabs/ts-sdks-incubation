@@ -31,15 +31,21 @@ import { Effect } from 'effect';
 import { capabilities } from '../../api/define-capabilities.ts';
 import { consumeMembers } from '../../api/consume-members.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
+import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
 import { SuiTag } from '../sui/index.ts';
 import type { AccountValue } from '../account/service.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
 import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
-import { makeWalletRoutable } from './routable.ts';
+import {
+	makeWalletRoutable,
+	WALLET_ENTRYPOINT_PORT,
+	WALLET_ROUTE_ROLE,
+} from './routable.ts';
 import { makeWalletSnapshotable } from './snapshot.ts';
 import {
 	acquireWallet,
@@ -99,6 +105,7 @@ export type WalletExpandAccountsAllExpander = (
 /** The wallet plugin's identity tag. ONE per stack (15-wallet.md
  *  "singleton per stack"). The id is `'wallet'` (singular). */
 export const WalletTag = defineTag<'wallet', WalletValue>('wallet', 'wallet');
+const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
 
 // ----------------------------------------------------------------------
 // User-facing factory
@@ -239,6 +246,25 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// lives inside `consumeMembers` — call site reads the
 				// resolved tuple directly.
 				const resolvedAccounts: ReadonlyArray<AccountValue> = consumedAccounts.projectInScope(ctx);
+				const routerFrontedUrl =
+					opts.enableRouter === true
+						? yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
+								Effect.map((hostname) =>
+									renderUrl({
+										protocol: 'http',
+										hostname,
+										port: WALLET_ENTRYPOINT_PORT,
+									}),
+								),
+								Effect.mapError((err) =>
+									walletBootError({
+										phase: 'route-url',
+										message: `wallet router URL construction failed: ${err.detail}`,
+										cause: err,
+									}),
+								),
+							)
+						: null;
 
 				const acquireCtx: WalletAcquireContext = {
 					app: identity.app,
@@ -269,18 +295,13 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 								),
 							),
 					resolveAccounts: () => Effect.succeed(resolvedAccounts),
-					routerFrontedUrl: null,
+					routerFrontedUrl,
 					supervisorCtx: undefined,
 				};
 
 				return yield* acquireWallet(resolvedOpts, acquireCtx);
 			}),
-		errorContributions: [
-			{
-				_tag: 'PluginErrorContribution',
-				errorTags: WALLET_ERROR_TAGS,
-			},
-		],
+		errorContributions: walletErrorContributions,
 		// Dynamic capability factory — receives the resolved
 		// `WalletValue` + acquire context. Stamps the real dapp-kit
 		// bindings (walletUrl, pairUrl, chain id, paths) into the

@@ -1,12 +1,8 @@
-// CapabilityDecl — the discriminated union of all capability
-// declarations a plugin can emit from `NodePlugin.acquire`.
+// CapabilityDecl — structurally extensible capability declarations.
 //
-// Architecture § Plugin instance data model. The capability set is
-// structurally available to substrate type computation — codegen
-// emit shapes survive as literal-typed exports, snapshot descriptors
-// retain their per-plugin typed metadata, routable triples stay
-// typed in `(plugin-key, dispatch-id)` shape. See Phase-3
-// type-prototype finding #1.
+// Built-ins register payload shapes through `DevstackCapabilityRegistry`.
+// Plugin authors can module-augment that interface for custom capability
+// kinds, while opaque custom declarations remain valid by structure.
 
 import type { CodegenableDecl } from './codegenable.ts';
 import type { CompositePrimitiveDecl } from './composite-primitive.ts';
@@ -16,17 +12,48 @@ import type { SnapshotableDecl } from './snapshotable.ts';
 import type { StrategyContributorDecl } from './strategy-contributor.ts';
 
 /**
- * The discriminated union. Each variant carries a literal `kind`
- * discriminator the orchestrators dispatch on.
+ * Capability kind registry. Module augmentation extends this interface:
  *
- * `unknown`/`string` on the codegen shape parameters here is the
- * union-of-variants form — individual decls keep their narrow types
- * via the `Caps` generic on `StackMember`.
+ * declare module '@mysten-incubation/devstack' {
+ *   interface DevstackCapabilityRegistry {
+ *     readonly 'health-check': { readonly url: string };
+ *   }
+ * }
  */
-export type CapabilityDecl =
-	| SnapshotableDecl
-	| RoutableDecl
-	| CodegenableDecl<unknown, string>
-	| StrategyContributorDecl<string, unknown>
-	| LifenessClassifierDecl
-	| CompositePrimitiveDecl;
+export interface DevstackCapabilityRegistry {
+	readonly snapshotable: Omit<SnapshotableDecl, 'kind'>;
+	readonly routable: Omit<RoutableDecl, 'kind'>;
+	readonly codegenable: Omit<CodegenableDecl<unknown, string>, 'kind'>;
+	readonly 'strategy-contributor': Omit<
+		StrategyContributorDecl<string, unknown>,
+		'kind'
+	>;
+	readonly 'liveness-classifier': Omit<LifenessClassifierDecl, 'kind'>;
+	readonly 'composite-primitive': Omit<CompositePrimitiveDecl, 'kind'>;
+}
+
+export type CapabilityKind = keyof DevstackCapabilityRegistry & string;
+
+type RegisteredCapabilityDecl<Kind extends CapabilityKind = CapabilityKind> = {
+	readonly [K in Kind]: Readonly<{ readonly kind: K } & DevstackCapabilityRegistry[K]>;
+}[Kind];
+
+type ExtensionCapabilityDecl<
+	Kind extends string = string,
+	Payload extends object = object,
+> = Readonly<{ readonly kind: Kind } & Payload>;
+
+export type CapabilityDecl<Kind extends string = string> = string extends Kind
+	? RegisteredCapabilityDecl | ExtensionCapabilityDecl
+	: Kind extends CapabilityKind
+		? RegisteredCapabilityDecl<Kind>
+		: ExtensionCapabilityDecl<Kind>;
+
+export type CapabilityPayloadFor<Kind extends string> = Kind extends CapabilityKind
+	? DevstackCapabilityRegistry[Kind] & { readonly kind?: never }
+	: object & { readonly kind?: never };
+
+export type ExactCapabilityPayload<Kind extends string, Data extends object> =
+	Kind extends CapabilityKind
+		? Record<Exclude<keyof Data, keyof CapabilityPayloadFor<Kind>>, never>
+		: unknown;

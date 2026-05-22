@@ -95,6 +95,12 @@ describe('Docker Desktop grouping labels', () => {
 		]);
 	});
 
+	it('renders optional container config hash labels', () => {
+		expect(renderContainerLabels(tuple, 42, { [LabelKey.configHash]: 'abc123' })).toContain(
+			`${LabelKey.configHash}=abc123`,
+		);
+	});
+
 	it('renders Compose-style labels for managed networks and volumes', () => {
 		expect(renderNetworkLabels('devstack-token-studio-main', tuple.app, tuple.stack)).toEqual([
 			`${LabelKey.managed}=true`,

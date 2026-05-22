@@ -108,7 +108,7 @@ const expectSome = <A>(option: Option.Option<A>): A => {
 
 describe('api/run-stack', () => {
 	it('start resolves once every plugin reaches ready, then stop tears down', async () => {
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			identity: { app: 'run-stack-test', stack: 'main', network: 'test:local' },
 			runtimeRoot: makeRuntimeRoot(),
@@ -134,7 +134,7 @@ describe('api/run-stack', () => {
 		const priorStack = process.env.DEVSTACK_STACK;
 		try {
 			delete process.env.DEVSTACK_STACK;
-			const stack = defineDevstack(leaf);
+			const stack = defineDevstack({ members: [leaf] });
 			const handle = runStack(stack, {
 				appRoot,
 				identity: { app: 'run-stack-infer', network: 'test:local' },
@@ -159,7 +159,7 @@ describe('api/run-stack', () => {
 	}, 30_000);
 
 	it('awaitShutdown without start is a no-op', async () => {
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			identity: { app: 'run-stack-noop', stack: 'main', network: 'test:local' },
 			runtimeRoot: makeRuntimeRoot(),
@@ -168,7 +168,7 @@ describe('api/run-stack', () => {
 	}, 10_000);
 
 	it('awaitShutdown resolves after stop and is idempotent', async () => {
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			identity: { app: 'run-stack-idempotent', stack: 'main', network: 'test:local' },
 			runtimeRoot: makeRuntimeRoot(),
@@ -193,7 +193,7 @@ describe('api/run-stack', () => {
 	// `api.run-stack-forkchild-interruption-on-start-resolve` in the
 	// opportunities backlog.
 	it('post-start snapshot retains ready rows (no auto-interrupt on start resolve)', async () => {
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			identity: { app: 'run-stack-no-auto-interrupt', stack: 'main', network: 'test:local' },
 			runtimeRoot: makeRuntimeRoot(),
@@ -213,7 +213,7 @@ describe('api/run-stack', () => {
 	}, 30_000);
 
 	it('state is available synchronously before start (caller can subscribe)', () => {
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			identity: { app: 'run-stack-sync', stack: 'main', network: 'test:local' },
 			runtimeRoot: makeRuntimeRoot(),
@@ -229,7 +229,7 @@ describe('api/run-stack', () => {
 	it('start runs codegen through the production post-acquire hook', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-app-'));
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-state-'));
-		const stack = defineDevstack(runtimeCodegenPlugin, { stackName: 'main' });
+		const stack = defineDevstack({ members: [runtimeCodegenPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
 			identity: { app: 'run-stack-codegen', stack: 'main', network: 'test:local' },
@@ -269,7 +269,7 @@ describe('api/run-stack', () => {
 	it('writes the manifest at the public runtime discovery path', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-preview-app-'));
 		const runtimeRoot = join(appRoot, '.devstack');
-		const stack = defineDevstack(leaf, { stackName: 'main' });
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
 			identity: { app: 'preview-install', stack: 'main', network: 'test:local' },
@@ -303,7 +303,7 @@ describe('api/run-stack', () => {
 	it('start wraps production codegen hook failures and records error.reported', async () => {
 		const appRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-fail-app-'));
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'run-stack-codegen-fail-state-'));
-		const stack = defineDevstack(failingRuntimeCodegenPlugin, { stackName: 'main' });
+		const stack = defineDevstack({ members: [failingRuntimeCodegenPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
 			identity: { app: 'run-stack-codegen-fail', stack: 'main', network: 'test:local' },

@@ -36,6 +36,7 @@ import type {
 	OnChainArtifactSpec,
 } from '../../../primitives/on-chain-artifact.ts';
 import { CacheService } from '../cache/index.ts';
+import { parseJsonTextSync } from '../runtime-decode.ts';
 
 // Re-export the ChainOperation typed seam — plugin authors compose
 // produce bodies via `compileChainOperation({...})` rather than
@@ -80,7 +81,10 @@ const encode = (value: unknown): Uint8Array => new TextEncoder().encode(JSON.str
 
 const decode = <Produced>(bytes: Uint8Array): Produced | null => {
 	try {
-		return JSON.parse(new TextDecoder().decode(bytes)) as Produced;
+		return parseJsonTextSync(new TextDecoder().decode(bytes), {
+			source: 'on-chain-artifact cache payload',
+			mkError: (issue) => issue,
+		}) as Produced;
 	} catch {
 		return null;
 	}

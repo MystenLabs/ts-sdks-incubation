@@ -1,9 +1,9 @@
-// End-to-end boot of `examples/token-studio-rewrite/` against the
+// End-to-end boot of `examples/token-studio/` against the
 // real docker runtime. Verifies the publisher-account pattern (alice
 // doubles as the `managed_coin` package's publisher) and the wallet
 // composition with three accounts.
 //
-// Stack shape (per `examples/token-studio-rewrite/devstack.config.ts`):
+// Stack shape (per `examples/token-studio/devstack.config.ts`):
 //   - sui()
 //   - account('alice')   — also the package publisher
 //   - account('bob')
@@ -45,7 +45,7 @@ const CONFIG_PATH = resolve(
 	'..',
 	'..',
 	'examples',
-	'token-studio-rewrite',
+	'token-studio',
 	'devstack.config.ts',
 );
 
@@ -63,7 +63,7 @@ const dockerReachable = (): { ok: boolean; detail: string } => {
 const TREASURY_CAP_RE = /::coin::TreasuryCap<.+>$/;
 const COIN_METADATA_RE = /::coin::CoinMetadata<.+>$/;
 
-describe('token-studio-rewrite boots end-to-end', () => {
+describe('token-studio boots end-to-end', () => {
 	it('every plugin reaches `ready` and managed_coin publish receipt carries TreasuryCap + CoinMetadata', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {

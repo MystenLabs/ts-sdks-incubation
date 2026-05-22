@@ -23,7 +23,7 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
-import { defineDevstack } from '../../../src/api/define-devstack.ts';
+import { defineDevstack, readStackEngine } from '../../../src/api/define-devstack.ts';
 import { account } from '../../../src/plugins/account/index.ts';
 import { sui } from '../../../src/plugins/sui/index.ts';
 import {
@@ -36,9 +36,9 @@ import { acquireWallet, type WalletAcquireContext } from '../../../src/plugins/w
 describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	it('wallet() is shorthand for inferred nonempty accounts', () => {
 		const alice = account('alice');
-		const stack = defineDevstack(alice, wallet());
+		const stack = defineDevstack({ members: [alice, wallet()] });
 
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet')!;
 		const consumesIds = walletMember.consumes.map((c) => c.id);
 		expect(consumesIds).toEqual(['sui', 'account/alice']);
 	});
@@ -71,10 +71,10 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		const bob = account('bob');
 		const carol = account('carol');
 
-		const stack = defineDevstack(alice, bob, carol, wallet({ accounts: WALLET_ACCOUNTS_ALL }));
+		const stack = defineDevstack({ members: [alice, bob, carol, wallet({ accounts: WALLET_ACCOUNTS_ALL })] });
 
 		// Locate the wallet member in the post-composer member tuple.
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet');
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet');
 		expect(walletMember).toBeDefined();
 
 		// The expanded consumes is [SuiTag, account/alice, account/bob, account/carol].
@@ -88,9 +88,9 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 
 	it('composer-expanded wallet member no longer carries the expander hook', () => {
 		const alice = account('alice');
-		const stack = defineDevstack(alice, wallet({ accounts: WALLET_ACCOUNTS_ALL }));
+		const stack = defineDevstack({ members: [alice, wallet({ accounts: WALLET_ACCOUNTS_ALL })] });
 
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet');
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet');
 		expect(walletMember).toBeDefined();
 		// The expander hook lives on the placeholder, NOT the rewritten
 		// member. The composer's replacement is a fresh member via
@@ -105,10 +105,10 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		// No explicit sui — D1 prepends `sui()`, then D6 expands wallet.
 		// Wallet's consumes must reference the auto-mounted sui too.
 		const alice = account('alice');
-		const stack = defineDevstack(alice, wallet({ accounts: WALLET_ACCOUNTS_ALL }));
+		const stack = defineDevstack({ members: [alice, wallet({ accounts: WALLET_ACCOUNTS_ALL })] });
 
-		expect(stack.members[0]!.provides.id).toBe('sui');
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
+		expect(readStackEngine(stack).members[0]!.provides.id).toBe('sui');
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet')!;
 		const consumesIds = walletMember.consumes.map((c) => c.id);
 		expect(consumesIds).toContain('sui');
 		expect(consumesIds).toContain('account/alice');
@@ -116,9 +116,9 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 
 	it('empty all still composes to the placeholder dependency shape', () => {
 		const explicitSui = sui();
-		const stack = defineDevstack(explicitSui, wallet({ accounts: WALLET_ACCOUNTS_ALL }));
+		const stack = defineDevstack({ members: [explicitSui, wallet({ accounts: WALLET_ACCOUNTS_ALL })] });
 
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet')!;
 		expect(walletMember.consumes).toHaveLength(1);
 		expect(walletMember.consumes[0]!.id).toBe('sui');
 	});
@@ -174,10 +174,10 @@ describe('wallet({ accounts: [...] }) — explicit-array form (regression)', () 
 		const bob = account('bob');
 		const w = wallet({ accounts: [alice, bob] });
 
-		const stack = defineDevstack(alice, bob, w);
+		const stack = defineDevstack({ members: [alice, bob, w] });
 
 		// The composer returns the same member reference (no rewrite).
-		const walletMember = stack.members.find((m) => m.provides.id === 'wallet')!;
+		const walletMember = readStackEngine(stack).members.find((m) => m.provides.id === 'wallet')!;
 		expect(walletMember).toBe(w);
 	});
 });
@@ -187,11 +187,11 @@ describe('composer expansion — no-op without a placeholder', () => {
 		const alice = account('alice');
 		const bob = account('bob');
 
-		const stack = defineDevstack(alice, bob);
+		const stack = defineDevstack({ members: [alice, bob] });
 
 		// Each input member is preserved by identity (auto-mounted sui
 		// is prepended; the user-supplied members keep their refs).
-		expect(stack.members[1]).toBe(alice);
-		expect(stack.members[2]).toBe(bob);
+		expect(readStackEngine(stack).members[1]).toBe(alice);
+		expect(readStackEngine(stack).members[2]).toBe(bob);
 	});
 });

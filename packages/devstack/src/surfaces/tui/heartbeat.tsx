@@ -23,13 +23,13 @@ const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '
 export interface HeartbeatProps {
 	/** Tick interval in ms. Default 120ms. */
 	readonly intervalMs?: number;
-	/** Color token. Default 'gray'. */
+	/** Color token. Default terminal foreground. */
 	readonly color?: ColorToken;
 }
 
 export const Heartbeat = ({
 	intervalMs = 120,
-	color = 'gray',
+	color = 'white',
 }: HeartbeatProps): React.JSX.Element => {
 	const [frame, setFrame] = useState(0);
 	useEffect(() => {

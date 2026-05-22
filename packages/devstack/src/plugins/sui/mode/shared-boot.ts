@@ -21,12 +21,13 @@
 // import path along; the helpers below are wire-only and have NO
 // substrate-context dependencies.
 
-import { Duration, Effect, Ref, Schedule, type Scope } from 'effect';
+import { Duration, Effect, Ref, type Scope } from 'effect';
 
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import { chainId as brandChainId } from '../../../substrate/brand.ts';
+import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -111,29 +112,38 @@ export const buildWaitForTransactionsReady = (
 		const ref = yield* Ref.make<Effect.Effect<void, SuiPluginError> | null>(null);
 
 		const makeProbe = (): Effect.Effect<void, SuiPluginError> =>
-			faucetReadyProbe(faucetUrl).pipe(
-				Effect.retry(Schedule.spaced(retrySpacing)),
-				Effect.timeoutOrElse({
-					duration: timeout,
-					orElse: (): Effect.Effect<void, SuiPluginError> =>
-						Effect.fail(
-							suiPluginError(
-								'wait-funds-ready',
-								`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
-									`${Duration.toMillis(timeout)}ms (still returning body-level Failure ` +
-									`or 5xx). Recovery: wipe stack state and re-up.`,
-							),
-						),
-				}),
+			waitForHttpEndpoint({
+				endpoint: `${faucetUrl}/v2/gas`,
+				timeoutMs: Duration.toMillis(timeout),
+				intervalMs: Duration.toMillis(retrySpacing),
+				requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+				requestInit: {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({
+						FixedAmountRequest: { recipient: FAUCET_PROBE_RECIPIENT },
+					}),
+				},
+				validate: async (response) => {
+					if (!response.ok) throw new Error(`faucet HTTP ${response.status}`);
+					const body = (await response.json()) as { status?: unknown };
+					const status = body.status;
+					if (typeof status === 'object' && status !== null && 'Failure' in status) {
+						const failure = (status as { Failure: unknown }).Failure;
+						throw new Error(`faucet body: Failure ${JSON.stringify(failure)}`);
+					}
+					return true;
+				},
+			}).pipe(
 				Effect.mapError(
 					(cause): SuiPluginError =>
-						cause && typeof cause === 'object' && '_tag' in cause && cause._tag === 'SuiPluginError'
-							? (cause as SuiPluginError)
-							: suiPluginError(
-									'wait-funds-ready',
-									`sui faucet probe failed: ${stringifyCause(cause)}`,
-									cause,
-								),
+						suiPluginError(
+							'wait-funds-ready',
+							`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
+								`${Duration.toMillis(timeout)}ms (still returning body-level Failure or 5xx): ` +
+								stringifyCause(cause),
+							cause,
+						),
 				),
 			);
 
@@ -157,34 +167,6 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
 	wait: Effect.void,
 	invalidate: Effect.void,
 };
-
-/**
- * Probe the faucet's actual tx pipeline. A real `/v2/gas` POST that
- * returns 200 OK with `status.Failure` indicates the HTTP server is
- * bound but the validator isn't yet accepting funding txs — we retry
- * until the body returns clean.
- */
-const faucetReadyProbe = (faucetUrl: string): Effect.Effect<void, Error> =>
-	Effect.tryPromise({
-		try: async () => {
-			const response = await fetch(`${faucetUrl}/v2/gas`, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					FixedAmountRequest: { recipient: FAUCET_PROBE_RECIPIENT },
-				}),
-				signal: AbortSignal.timeout(PROBE_FETCH_TIMEOUT_MS),
-			});
-			if (!response.ok) throw new Error(`faucet HTTP ${response.status}`);
-			const body = (await response.json()) as { status?: unknown };
-			const status = body.status;
-			if (typeof status === 'object' && status !== null && 'Failure' in status) {
-				const failure = (status as { Failure: unknown }).Failure;
-				throw new Error(`faucet body: Failure ${JSON.stringify(failure)}`);
-			}
-		},
-		catch: (cause) => new Error(`faucet probe: ${stringifyCause(cause)}`),
-	});
 
 // ---------------------------------------------------------------------------
 // SuiClient assembly — collapses the per-mode boilerplate
@@ -243,6 +225,10 @@ export const assembleSuiClient = (parts: {
 	 *  build path. `null` for modes that have no in-stack image
 	 *  (external + live). */
 	readonly buildImage?: import('../../../contracts/container-runtime.ts').ImageRef | null;
+	/** Container-reachable mirrors. Local mode resolves public URLs
+	 *  through the router but sibling containers still need direct
+	 *  host-gateway URLs during boot. */
+	readonly hostGateway?: SuiClient['hostGateway'];
 }): {
 	readonly client: SuiClient;
 	readonly sdkShim: SuiSdkShim;
@@ -255,7 +241,7 @@ export const assembleSuiClient = (parts: {
 		rpcUrl: parts.rpcUrl,
 		faucetUrl: parts.faucetUrl ?? null,
 		graphqlUrl: parts.graphqlUrl ?? null,
-		hostGateway: {
+		hostGateway: parts.hostGateway ?? {
 			rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
 			faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
 			graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),

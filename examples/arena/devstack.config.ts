@@ -5,14 +5,18 @@ import {
 	account,
 	action,
 	defineDevstack,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
 	localPackage,
 	sui,
-	type AnyMember,
-	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5176;
+const LOCALHOST_DEV_ORIGIN = `http://localhost:${DEV_PORT}` as const;
+const LOOPBACK_DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
+const ROUTER_DEV_ORIGIN = 'http://dev.arena.arena.localhost:5175' as const;
 
 const publisher = account('publisher');
 const alice = account('alice');
@@ -24,27 +28,27 @@ const connectFour = localPackage('connect_four', {
 });
 
 const openLobby = action('arena.openLobby', {
-	consumes: [alice, connectFour] as const,
-	body: (ctx) =>
-		ctx.signAndExecute(ctx.use(alice), (tx) => {
-			const pkg = ctx.use(connectFour);
+	dependsOn: { signer: alice, pkg: connectFour },
+	body: (ctx, { signer, pkg }) =>
+		ctx.signAndExecute(signer, (tx) => {
 			tx.moveCall({ target: `${pkg.packageId}::game::create_lobby` });
 		}),
 });
-
-const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
-	sui(),
-	publisher,
-	alice,
-	bob,
-	connectFour,
-	openLobby,
-	wallet({
-		accounts: [alice, bob, publisher],
-		allowLocalhostVite: true,
-		allowedOrigins: ['http://dev.arena.localhost:5176', 'http://localhost:5176'],
-	}),
-	{ stackName: 'arena' },
-);
+const devWallet = wallet({
+	accounts: [alice, bob, publisher],
+	enableRouter: true,
+	allowLocalhostVite: true,
+	allowedOrigins: [ROUTER_DEV_ORIGIN, LOCALHOST_DEV_ORIGIN, LOOPBACK_DEV_ORIGIN],
+});
+const app = hostService({
+	name: 'app',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	needs: [openLobby, devWallet] as const,
+});
+const stack = defineDevstack({ members: [sui(), publisher, alice, bob, connectFour, openLobby, devWallet, app], stackName: 'arena' });
 
 export default stack;

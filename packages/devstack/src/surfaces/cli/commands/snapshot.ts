@@ -11,7 +11,6 @@
 
 import { Effect } from 'effect';
 
-import type { CommandPublisher } from './command-channel.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -39,8 +38,14 @@ export interface SnapshotEntry {
 }
 
 export interface SnapshotDeps {
-	readonly publisher: CommandPublisher;
 	readonly reader: SnapshotReader;
+	readonly capture: (args: {
+		readonly snapshotId?: string;
+		readonly label?: string;
+		readonly configPath?: string;
+	}) => Effect.Effect<void, unknown>;
+	readonly restore: (snapshotId: string) => Effect.Effect<void, unknown>;
+	readonly delete: (snapshotId: string) => Effect.Effect<void, unknown>;
 }
 
 /** Snapshot subcommand dispatcher. `ctx.flags.rest` holds the
@@ -59,7 +64,6 @@ export const runSnapshot = (
 			case 'list':
 				return yield* runSnapshotList(deps, ctx);
 			case 'delete':
-			case 'wipe':
 				return yield* runSnapshotDelete(deps, ctx, rest);
 			default:
 				return yield* Effect.fail(
@@ -89,18 +93,18 @@ const runSnapshotSave = (
 				}),
 			);
 		}
-		yield* deps.publisher
-			.publish({
-				tag: 'snapshot.capture',
+		yield* deps
+			.capture({
 				...(snapshotId === undefined ? {} : { snapshotId }),
 				...(label === undefined ? {} : { label }),
+				...(ctx.flags.configPath === undefined ? {} : { configPath: ctx.flags.configPath }),
 			})
 			.pipe(
 				Effect.catch((cause: unknown) =>
 					isCliError(cause)
 						? Effect.fail(cause)
 						: Effect.fail(
-								new CliInternalError({ message: 'snapshot capture publish failed', cause }),
+								new CliInternalError({ message: 'snapshot capture failed', cause }),
 							),
 				),
 			);
@@ -108,7 +112,6 @@ const runSnapshotSave = (
 			command: 'snapshot save',
 			elapsedMs: Date.now() - started,
 			data: {
-				published: 'snapshot.capture' as const,
 				snapshotId: snapshotId ?? null,
 				label: label ?? null,
 			},
@@ -146,18 +149,20 @@ const runSnapshotRestore = (
 			return yield* Effect.fail(new CliSnapshotNotFoundError({ snapshotRef }));
 		}
 		const snapshotId = entry.snapshotId;
-		yield* deps.publisher
-			.publish({ tag: 'snapshot.restore', snapshotId })
+		yield* deps
+			.restore(snapshotId)
 			.pipe(
 				Effect.catch((cause: unknown) =>
-					Effect.fail(new CliInternalError({ message: 'snapshot restore publish failed', cause })),
+					isCliError(cause)
+						? Effect.fail(cause)
+						: Effect.fail(new CliInternalError({ message: 'snapshot restore failed', cause })),
 				),
 			);
 		yield* emitSuccess(ctx.io, ctx.flags.outputMode, {
 			command: 'snapshot restore',
 			elapsedMs: Date.now() - started,
-			data: { published: 'snapshot.restore' as const, snapshotId },
-			humanLines: [`snapshot restore requested (id: ${snapshotId})`],
+			data: { snapshotId },
+			humanLines: [`snapshot restored (id: ${snapshotId})`],
 		});
 		return { exitCode: 0 } as CommandResult;
 	});
@@ -205,18 +210,20 @@ const runSnapshotDelete = (
 			return yield* Effect.fail(new CliSnapshotNotFoundError({ snapshotRef }));
 		}
 		const snapshotId = entry.snapshotId;
-		yield* deps.publisher
-			.publish({ tag: 'snapshot.delete', snapshotId })
+		yield* deps
+			.delete(snapshotId)
 			.pipe(
 				Effect.catch((cause: unknown) =>
-					Effect.fail(new CliInternalError({ message: 'snapshot delete publish failed', cause })),
+					isCliError(cause)
+						? Effect.fail(cause)
+						: Effect.fail(new CliInternalError({ message: 'snapshot delete failed', cause })),
 				),
 			);
 		yield* emitSuccess(ctx.io, ctx.flags.outputMode, {
 			command: 'snapshot delete',
 			elapsedMs: Date.now() - started,
-			data: { published: 'snapshot.delete' as const, snapshotId },
-			humanLines: [`snapshot delete requested (id: ${snapshotId})`],
+			data: { snapshotId },
+			humanLines: [`snapshot deleted (id: ${snapshotId})`],
 		});
 		return { exitCode: 0 } as CommandResult;
 	});

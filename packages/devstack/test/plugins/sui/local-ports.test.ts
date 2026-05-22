@@ -21,6 +21,7 @@ import { PortBrokerError } from '../../../src/substrate/runtime/port-broker/inde
 import { appName, stackName } from '../../../src/substrate/brand.ts';
 import {
 	DEFAULT_HOST_FAUCET_PORT,
+	DEFAULT_HOST_GRAPHQL_PORT,
 	DEFAULT_HOST_RPC_PORT,
 	ensureLocalValidatorContainer,
 	LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
@@ -103,7 +104,7 @@ describe('Sui local port mapping', () => {
 				const calls: AllocateOptions[] = [];
 				const broker = fakeBroker((opts) => {
 					calls.push(opts);
-					return opts.kind === 'rpc' ? 51000 : 50000;
+					return opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000);
 				});
 
 				const ports = yield* resolvePortMapping(broker, undefined);
@@ -119,10 +120,16 @@ describe('Sui local port mapping', () => {
 						preferredPort: DEFAULT_HOST_FAUCET_PORT,
 						probeHost: '0.0.0.0',
 					},
+					{
+						kind: 'rpc',
+						preferredPort: DEFAULT_HOST_GRAPHQL_PORT,
+						probeHost: '0.0.0.0',
+					},
 				]);
 				expect(ports).toEqual([
-					{ containerPort: 9000, hostPort: 51000, hostIp: '0.0.0.0' },
-					{ containerPort: 9123, hostPort: 50000, hostIp: '0.0.0.0' },
+					{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: DEFAULT_HOST_GRAPHQL_PORT, hostIp: '0.0.0.0' },
 				]);
 			}),
 		),
@@ -132,10 +139,12 @@ describe('Sui local port mapping', () => {
 		const requestedAfterBrokerCollision = [
 			{ containerPort: 9000, hostPort: 51000, hostIp: '0.0.0.0' },
 			{ containerPort: 9123, hostPort: 51230, hostIp: '0.0.0.0' },
+			{ containerPort: 9125, hostPort: 51001, hostIp: '0.0.0.0' },
 		];
 		const actualFromAdoptedContainer = [
 			{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
 			{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+			{ containerPort: 9125, hostPort: DEFAULT_HOST_GRAPHQL_PORT, hostIp: '0.0.0.0' },
 		];
 
 		expect(
@@ -154,6 +163,7 @@ describe('Sui local port mapping', () => {
 				ports: [
 					{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
 					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: DEFAULT_HOST_GRAPHQL_PORT, hostIp: '0.0.0.0' },
 				],
 			},
 			{
@@ -165,6 +175,7 @@ describe('Sui local port mapping', () => {
 				ports: [
 					{ containerPort: 9000, hostPort: 51000, hostIp: '0.0.0.0' },
 					{ containerPort: 9123, hostPort: 50000, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: 51001, hostIp: '0.0.0.0' },
 				],
 			},
 		] as const;
@@ -174,11 +185,31 @@ describe('Sui local port mapping', () => {
 		);
 	});
 
+	it('does not reuse old local containers that lack GraphQL port publishing', () => {
+		const existing = [
+			{
+				id: 'same-stack',
+				name: 'devstack-app-main-sui-validator',
+				imageName: 'sui:local',
+				status: 'running',
+				ips: [],
+				ports: [
+					{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+				],
+			},
+		] as const;
+
+		expect(selectReusablePortMapping(existing, 'devstack-app-main-sui-validator')).toBeUndefined();
+	});
+
 	it.effect('keeps clean validator state but recreates after unclean shutdowns', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const specs: EnsureContainerSpec[] = [];
-				const broker = fakeBroker((opts) => (opts.kind === 'rpc' ? 51000 : 50000));
+				const broker = fakeBroker(
+					(opts) => opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000),
+				);
 				const runtime = unusedRuntime((spec) => {
 					specs.push(spec);
 					return Effect.succeed({
@@ -223,6 +254,11 @@ describe('Sui local port mapping', () => {
 						hostPort: DEFAULT_HOST_FAUCET_PORT,
 						hostIp: '0.0.0.0',
 					},
+					{
+						containerPort: 9125,
+						hostPort: DEFAULT_HOST_GRAPHQL_PORT,
+						hostIp: '0.0.0.0',
+					},
 				]);
 			}),
 		),
@@ -231,7 +267,7 @@ describe('Sui local port mapping', () => {
 	it.effect('retries Docker publish conflicts with fresh exact port bindings', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
-				const allocationPorts = [51001, 50001, 51002, 50002];
+				const allocationPorts = [51001, 50001, 51002, 51003, 50002, 51004];
 				const calls: AllocateOptions[] = [];
 				const specs: EnsureContainerSpec[] = [];
 				const broker = fakeBroker((opts) => {
@@ -263,14 +299,16 @@ describe('Sui local port mapping', () => {
 				);
 
 				expect(result.ports).toEqual([
-					{ containerPort: 9000, hostPort: 51002, hostIp: '0.0.0.0' },
+					{ containerPort: 9000, hostPort: 51003, hostIp: '0.0.0.0' },
 					{ containerPort: 9123, hostPort: 50002, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: 51004, hostIp: '0.0.0.0' },
 				]);
-				expect(calls).toHaveLength(4);
+				expect(calls).toHaveLength(6);
 				expect(specs).toHaveLength(2);
 				expect(specs[0]?.ports).toEqual([
 					{ containerPort: 9000, hostPort: 51001, hostIp: '0.0.0.0' },
 					{ containerPort: 9123, hostPort: 50001, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: 51002, hostIp: '0.0.0.0' },
 				]);
 				expect(specs[0]?.portBindingReconciliation).toBe('adopt-existing');
 				expect(specs[1]?.ports).toEqual(result.ports);
@@ -316,8 +354,9 @@ describe('Sui local port mapping', () => {
 				expect(result.ports).toEqual([
 					{ containerPort: 9000, hostPort: DEFAULT_HOST_RPC_PORT, hostIp: '0.0.0.0' },
 					{ containerPort: 9123, hostPort: DEFAULT_HOST_FAUCET_PORT, hostIp: '0.0.0.0' },
+					{ containerPort: 9125, hostPort: DEFAULT_HOST_GRAPHQL_PORT, hostIp: '0.0.0.0' },
 				]);
-				expect(calls).toHaveLength(4);
+				expect(calls).toHaveLength(6);
 				expect(specs).toHaveLength(2);
 				expect(specs[0]?.ports).toEqual(result.ports);
 				expect(specs[1]?.ports).toEqual(result.ports);
@@ -353,7 +392,7 @@ describe('Sui local port mapping', () => {
 					phase: 'container-start',
 				});
 				expect(error?.message).toContain('publish-port-conflict');
-				expect(nextPort).toBe(51000 + (MAX_DOCKER_PUBLISH_PORT_RETRIES + 1) * 2);
+				expect(nextPort).toBe(51000 + (MAX_DOCKER_PUBLISH_PORT_RETRIES + 1) * 3);
 			}),
 		),
 	);

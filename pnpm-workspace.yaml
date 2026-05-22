@@ -12,6 +12,9 @@ packages:
   - 'apps/**'
   - 'examples/*'
   - '!**/dist/**'
+  # Generated artifacts may contain non-npm metadata files named package.json
+  # (for example Move debug info). They are not workspace projects.
+  - '!**/build/**'
   # Bundled template directory shipped with `create-devstack-app`. Mirror of
   # `examples/_template/`; not a real workspace project.
   - '!packages/create-devstack-app/template/**'
@@ -50,6 +53,7 @@ catalog:
   tailwindcss: ^4.2.4
 
   # Utilities
+  '@stricli/core': ^1.2.7
   tsx: ^4.21.0
   turbo: ^2.7.4
 

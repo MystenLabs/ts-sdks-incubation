@@ -4,19 +4,33 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
-		"devstack:build": "pnpm --filter @mysten-incubation/devstack build",
-		"apply": "pnpm run devstack:build && DEVSTACK_APP=arena node ../../packages/devstack/dist/cli/main.mjs apply",
-		"typecheck": "tsc -b --noEmit",
+		"devstack:apply": "DEVSTACK_APP=arena devstack apply",
+		"apply": "pnpm run devstack:apply",
+		"dev": "DEVSTACK_APP=arena devstack up",
+		"build": "pnpm run devstack:apply && DEVSTACK_APP=arena tsc -b && DEVSTACK_APP=arena vite build",
+		"preview": "vite preview",
+		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",
 		"test": "pnpm run typecheck",
 		"clean": "rm -rf .turbo node_modules/.tmp"
 	},
 	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
 		"@mysten-incubation/devstack": "workspace:*",
-		"effect": "catalog:"
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-standard": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"effect": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:"
 	},
 	"devDependencies": {
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@types/node": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
+		"@vitejs/plugin-react": "catalog:",
 		"typescript": "catalog:",
 		"vite": "catalog:"
 	},

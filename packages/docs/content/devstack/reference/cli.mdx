@@ -3,60 +3,56 @@ title: CLI Reference
 description: Current devstack command surface.
 ---
 
-The package bin is `devstack`.
+The package bin is `devstack`. Flags are command-scoped: put flags after the command that owns
+them.
 
-Global flags include `--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`,
-`--config <path>`, `--network <name>`, `--renderer tui|plain|silent`, `--dry-run`, `--yes`,
-`--no-input`, `--verbose`, `--schema`, `--version`, and `--help`.
-
-## Core commands
+## Lifecycle commands
 
 ```bash
-devstack up
-devstack down
+devstack up --renderer tui
 devstack apply
-devstack status
-devstack logs <plugin>
-devstack exec -- <command> [args...]
+```
+
+`up` boots the stack and stays attached until you quit the TUI or interrupt the process.
+`apply` boots, reconciles, emits generated files, and exits for CI or one-shot local workflows.
+
+Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
+`--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`.
+
+## Inspection commands
+
+```bash
+devstack status --json
 devstack doctor
 devstack config
-devstack codegen
+devstack schema --json
 ```
 
-`up` stays attached to the supervisor. `apply` boots, reconciles, emits generated files, and exits.
-Peer commands such as `down`, `logs`, and `snapshot` communicate with the running supervisor through
-the stack command/event files.
-
-## Stack commands
-
-```bash
-devstack stack list
-devstack stack new <name>
-devstack stack use <name>
-devstack stack drop <name>
-devstack stack drop-fork <name>
-```
+`status` reads the persisted projection without requiring a running stack. `doctor` runs host
+preflight checks. `config` prints resolved config inputs. `schema --json` prints the command tree
+and exit-code table consumed by automation.
 
 ## Snapshot commands
 
 ```bash
-devstack snapshot save [--label <label>]
-devstack snapshot restore <id-or-label>
+devstack snapshot save [id] --label before-migration
 devstack snapshot list
+devstack snapshot restore <id-or-label>
 devstack snapshot delete <id-or-label>
 ```
 
-Snapshot support is stack-scoped and identity-guarded. See
-[state and snapshots](../features/state-and-snapshots).
+`snapshot save` performs a one-shot stack boot and can accept `--config <path>`.
+`snapshot restore` and `wipe` refuse to mutate state while an attached `devstack up` session is
+live. `snapshot list` and `snapshot delete` operate on the selected stack root.
 
-## Fork commands
+## Cleanup commands
 
 ```bash
-devstack fork status
-devstack fork advance --ms <milliseconds>
-devstack fork seed
-devstack fork replay
-devstack fork cache
+devstack prune --dry-run
+devstack prune --yes
+devstack wipe --dry-run
+devstack wipe --yes
 ```
 
-Use `--schema --json` to print the command tree consumed by automation.
+`prune` runs cross-stack orphan cleanup without requiring a running stack. `wipe` removes all state
+for the selected stack after confirmation.

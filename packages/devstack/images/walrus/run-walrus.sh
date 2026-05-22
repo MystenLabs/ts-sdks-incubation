@@ -23,6 +23,8 @@ set -euo pipefail
 mkdir -p /root/.sui/sui_config /var/walrus
 WORKING_DIR=/opt/walrus/outputs
 
+echo "run-walrus: preparing ${HOSTNAME} config from ${WORKING_DIR}"
+
 # Relocate per-node sui keystore + yaml configs out of /opt/walrus/outputs
 # (read-only mount on macOS Docker; osxfs/gRPC-fuse return ENOTSUP for
 # keystore lock/write ops the sui SDK performs during transaction signing).
@@ -68,6 +70,7 @@ FAUCET_URL="${WALRUS_FAUCET_URL:-http://host.docker.internal:9123/v2/gas}"
 # Wait for DNS to resolve (host.docker.internal can take a beat after
 # attach). Bounded to 30s.
 FAUCET_HOST=$(echo "$FAUCET_URL" | awk -F[/:] '{print $4}')
+echo "run-walrus: waiting for faucet host ${FAUCET_HOST}"
 for i in $(seq 1 30); do
 	if getent hosts "$FAUCET_HOST" >/dev/null 2>&1; then break; fi
 	if [ "$i" -eq 30 ]; then
@@ -77,12 +80,16 @@ for i in $(seq 1 30); do
 	sleep 1
 done
 
+echo "run-walrus: requesting SUI gas from ${FAUCET_URL}"
 sui client faucet --url "$FAUCET_URL"
 sleep 3
 if [ -n "${EXCHANGE_OBJECT:-}" ]; then
+	echo "run-walrus: requesting WAL from exchange ${EXCHANGE_OBJECT}"
 	walrus get-wal --amount 500000000000 || true
 fi
+echo "run-walrus: checking SUI balance"
 sui client balance || true
 
 # Launch walrus-node.
+echo "run-walrus: starting walrus-node on ${HOSTNAME}"
 exec /opt/walrus/bin/walrus-node run --config-path /root/walrus-node.yaml

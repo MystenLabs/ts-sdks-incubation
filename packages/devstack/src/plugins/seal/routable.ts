@@ -43,7 +43,7 @@ const normalizeRouteSegment = (raw: string): string => raw.toLowerCase().replace
  *  Note: distilled-doc Open Question #7 — multi-instance seal is
  *  structurally supported but untested. The two routable decls
  *  would both claim the `'seal-key-server'` entrypoint and the
- *  same `<stack>.key-server.<app>.localhost` hostname. Until v2
+ *  same `key-server.<stack>.<app>.localhost` hostname. Until v2
  *  plans canonicalize multi-instance routing, treat one-seal-per-stack
  *  as the safe default. */
 export const buildSealDispatchId = (name: string): DispatchId => ({
@@ -60,7 +60,7 @@ export const buildSealKeyServerPublicRoute = (inputs: {
 	const app = normalizeRouteSegment(inputs.app);
 	const stack = normalizeRouteSegment(inputs.stack);
 	const hostname =
-		stack === DEFAULT_STACK ? `${role}.${app}.localhost` : `${stack}.${role}.${app}.localhost`;
+		stack === DEFAULT_STACK ? `${role}.${app}.localhost` : `${role}.${stack}.${app}.localhost`;
 	return {
 		hostname,
 		url: `http://${hostname}:${inputs.port}`,

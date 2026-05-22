@@ -22,13 +22,20 @@
 //   - The faucet-strategy registration — `faucet-strategy.ts`.
 //   - The deploy one-shot — `deploy.ts`.
 
-import { Duration, Effect, Schedule, Scope } from 'effect';
+import { Duration, Effect, Scope } from 'effect';
 
 import type {
 	ContainerHandle,
 	ContainerRuntime,
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
+import {
+	ProbeTimeoutError,
+	exitCodeProbeResult,
+	waitForProbe,
+} from '../../substrate/runtime/probes.ts';
+import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
+import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 
 /** Default per-node grace window. Storage nodes maintain RocksDB-
@@ -76,6 +83,8 @@ export interface StorageNodesSpec {
 	readonly suiNetworkName: string;
 	readonly walrusFaucetUrl: string;
 	readonly deployHostMountPath: string;
+	/** Fingerprint of the deploy outputs mounted into each node. */
+	readonly deployConfigHash: string;
 	readonly stopGraceSeconds?: number;
 	readonly readyTimeoutMs?: number;
 }
@@ -94,10 +103,10 @@ export const WALRUS_NODE_IP_BASE = 10;
 /** Compute the public hostname for one storage node. Mirrors
  *  v3's `routerHostname(identity, 'walrus-node-' + i)` shape
  *  (06-walrus.md §"Routes registered"). Main stack omits the stack
- *  prefix; non-main prepends it. */
+ *  segment; non-main inserts it after the service label. */
 export const computePublicHostname = (app: string, stack: string, nodeIndex: number): string => {
 	const base = `walrus-node-${nodeIndex}.${app}.localhost`;
-	return stack === 'main' ? base : `${stack}.${base}`;
+	return stack === 'main' ? base : `walrus-node-${nodeIndex}.${stack}.${app}.localhost`;
 };
 
 export const buildWalrusNetworkName = (app: string, stack: string, walrusName: string): string =>
@@ -173,63 +182,58 @@ export const startStorageNodes = (
 				const nodeHostname = `dryrun-node-${i}`;
 				const publicHostname = computePublicHostname(spec.app, spec.stack, i);
 
+				yield* setCurrentPluginPhase(`creating storage-node-${i} container ${containerName}`);
 				// Acquire under the forked parallel stop scope so the
 				// finalizer (docker stop) joins the sibling-fanout race.
-				const handle: ContainerHandle = yield* runtime
-					.ensureContainer({
-						name: containerName,
-						image: spec.image,
-						labels: {
-							app: spec.app,
-							stack: spec.stack,
-							plugin: 'walrus',
-							// Per-index role so the snapshot orchestrator's
-							// label filter resolves each node separately.
-							role: `storage-node-${i}`,
-						},
-						recreate: 'on-config-change',
-						env: {
-							HOSTNAME: nodeHostname,
-							// Storage node dials the per-stack sui faucet
-							// over docker DNS. Resolves once dual-home is
-							// in place — see secondary-network attach
-							// caveat in the function header.
-							WALRUS_FAUCET_URL: spec.walrusFaucetUrl,
-						},
-						// Primary network owns the pinned `--ip`; the
-						// secondary attach gives docker DNS for the sui
-						// network. The adapter treats [0] as primary.
-						networkAttach: [spec.walrusNetworkName, spec.suiNetworkName],
-						// `host-gateway` resolves `host.docker.internal` to
-						// the host's loopback inside the container — Docker
-						// Desktop wires this automatically on macOS/Windows
-						// but native Linux Docker requires the explicit
-						// `--add-host` flag. Storage nodes dial sui's
-						// host-bound RPC + faucet via this hostname.
-						extraHosts: { 'host.docker.internal': 'host-gateway' },
-						mounts: [
-							{
-								// Mount the deploy outputs (per-node key + config)
-								// read-only; the run.sh inside the image selects
-								// `dryrun-node-<i>.{yaml,keystore}` by hostname.
-								source: spec.deployHostMountPath,
-								target: '/opt/walrus/outputs',
-								readonly: true,
+				const ensureNode: Effect.Effect<ContainerHandle, WalrusPluginError, Scope.Scope> =
+					ensureManagedContainer<WalrusPluginError>({
+						runtime,
+						identity: { app: spec.app, stack: spec.stack },
+						plugin: 'walrus',
+						role: `storage-node-${i}`,
+						spec: {
+							name: containerName,
+							image: spec.image,
+							recreate: 'on-config-change',
+							configHash: `${spec.deployConfigHash}|node=${i}`,
+							env: {
+								HOSTNAME: nodeHostname,
+								// Storage node dials the per-stack sui faucet
+								// over docker DNS. Resolves once dual-home is
+								// in place — see secondary-network attach
+								// caveat in the function header.
+								WALRUS_FAUCET_URL: spec.walrusFaucetUrl,
 							},
-						],
-					})
-					.pipe(
-						Scope.provide(nodeStopScope),
-						Effect.catch((cause) =>
-							Effect.fail(
-								walrusPluginError(
-									'storage-node',
-									`walrus storage-node-${i} (ip=${containerIp}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
-									{ cause },
-								),
+							// Primary network owns the pinned `--ip`; the
+							// secondary attach gives docker DNS for the sui
+							// network. The adapter treats [0] as primary.
+							networkAttach: [spec.walrusNetworkName, spec.suiNetworkName],
+							// `host-gateway` resolves `host.docker.internal` to
+							// the host's loopback inside the container — Docker
+							// Desktop wires this automatically on macOS/Windows
+							// but native Linux Docker requires the explicit
+							// `--add-host` flag. Storage nodes dial sui's
+							// host-bound RPC + faucet via this hostname.
+							extraHosts: { 'host.docker.internal': 'host-gateway' },
+							mounts: [
+								{
+									// Mount the deploy outputs (per-node key + config)
+									// read-only; the run.sh inside the image selects
+									// `dryrun-node-<i>.{yaml,keystore}` by hostname.
+									source: spec.deployHostMountPath,
+									target: '/opt/walrus/outputs',
+									readonly: true,
+								},
+							],
+						},
+						mapError: (cause) =>
+							walrusPluginError(
+								'storage-node',
+								`walrus storage-node-${i} (ip=${containerIp}) ensureContainer failed: ${cause.reason}: ${cause.detail}`,
+								{ cause },
 							),
-						),
-					);
+					});
+				const handle: ContainerHandle = yield* Scope.provide(ensureNode, nodeStopScope);
 
 				// TCP ready probe. We exec a tiny `nc`-style probe inside
 				// the container against its own listener — proves the
@@ -237,52 +241,44 @@ export const startStorageNodes = (
 				// declaring ready. `exec` only fails on daemon-level
 				// errors; a non-zero exit code is treated as "retry"
 				// (the same policy postgres uses for `pg_isready`).
-				yield* runtime
-					.exec(handle, [
-						'sh',
-						'-c',
-						// busybox-style portable probe: open TCP, write
-						// nothing, exit. `nc -z` is the common form.
-						`nc -z 127.0.0.1 ${spec.containerApiPort} || exit 1`,
-					])
-					.pipe(
-						Effect.flatMap((res) =>
-							res.exitCode === 0
-								? Effect.void
-								: Effect.fail(
-										walrusPluginError(
-											'storage-node',
-											`storage-node-${i} not yet listening on :${spec.containerApiPort}`,
-											{ exitCode: res.exitCode, stderr: res.stderr },
-										),
-									),
-						),
-						Effect.catch((err) =>
-							err._tag === 'WalrusPluginError'
-								? Effect.fail(err)
-								: Effect.fail(
-										walrusPluginError(
-											'storage-node',
-											`storage-node-${i} ready-probe exec failed: ${err.reason}: ${err.detail}`,
-											{ cause: err },
-										),
-									),
-						),
-						Effect.retry({
-							schedule: Schedule.spaced(Duration.millis(NODE_READY_PROBE_INTERVAL_MS)),
-						}),
-						Effect.timeoutOrElse({
-							duration: readyTimeout,
-							orElse: () =>
-								Effect.fail(
-									walrusPluginError(
-										'storage-node',
-										`storage-node-${i} never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
-											`(publicHostname=${publicHostname})`,
-									),
-								),
-						}),
-					);
+				yield* setCurrentPluginPhase(
+					`waiting for storage-node-${i} on 127.0.0.1:${spec.containerApiPort}`,
+				);
+				yield* waitForProbe({
+					label: `walrus.storage-node.${i}`,
+					timeoutMs: Duration.toMillis(readyTimeout),
+					intervalMs: NODE_READY_PROBE_INTERVAL_MS,
+					probe: () =>
+						runtime
+							.exec(handle, [
+								'sh',
+								'-c',
+								// busybox-style portable probe: open TCP, write
+								// nothing, exit. `nc -z` is the common form.
+								`nc -z 127.0.0.1 ${spec.containerApiPort} || exit 1`,
+							])
+							.pipe(Effect.map(exitCodeProbeResult)),
+				}).pipe(
+					Effect.mapError((cause) => {
+						if (cause instanceof ProbeTimeoutError) {
+							return walrusPluginError(
+								'storage-node',
+								`storage-node-${i} never became ready within ${Duration.toMillis(readyTimeout)}ms ` +
+									`(container=${containerName}, probe=127.0.0.1:${spec.containerApiPort}, ` +
+									`publicUrl=http://${publicHostname}:${WALRUS_ROUTER_PORT}). ` +
+									`The container was created, but walrus-node did not bind its API port. ` +
+									`Check the storage-node container logs for the faucet, WAL exchange, or ` +
+									`walrus-node run step that stalled.`,
+								{ cause: cause.lastError ?? cause.lastNotReady ?? cause },
+							);
+						}
+						return walrusPluginError(
+							'storage-node',
+							`storage-node-${i} ready-probe exec failed: ${cause.reason}: ${cause.detail}`,
+							{ cause },
+						);
+					}),
+				);
 
 				return {
 					nodeIndex: i,

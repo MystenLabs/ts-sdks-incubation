@@ -19,7 +19,13 @@ ARG TARGETARCH
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		ca-certificates curl gawk git \
+		ca-certificates curl gawk git postgresql \
+	&& PG_BIN_DIR="$(dirname "$(find /usr/lib/postgresql -name initdb -type f | sort | tail -n 1)")" \
+	&& test -x "$PG_BIN_DIR/initdb" \
+	&& ln -sf "$PG_BIN_DIR/initdb" /usr/local/bin/initdb \
+	&& ln -sf "$PG_BIN_DIR/pg_ctl" /usr/local/bin/pg_ctl \
+	&& ln -sf "$PG_BIN_DIR/postgres" /usr/local/bin/postgres \
+	&& useradd --create-home --shell /bin/sh devstack-sui \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Why `gawk` + `git`:
@@ -33,6 +39,8 @@ RUN apt-get update \
 #     `[dependencies]` blocks (`{ git = "..." }`). Without git on PATH,
 #     `sui move build` aborts with a dep-fetch error before reaching
 #     the bytecode pass.
+#   - `postgresql` — `sui start --with-graphql` initializes an embedded
+#     local indexer database and shells out to `initdb`/`postgres`.
 
 # Sui release-tarball fetch. The TARGETARCH branch picks the
 # native-architecture asset name and unpacks `sui` (and siblings,
@@ -57,8 +65,9 @@ RUN chmod +x /usr/local/bin/devstack-entrypoint.sh
 
 ENV RUST_LOG=info,sui=info
 
-# RPC (9000) and faucet (9123). Local-mode boot probes both.
-EXPOSE 9000 9123
+# RPC (9000), faucet (9123), GraphQL consistent-store helper (9124),
+# and GraphQL HTTP (9125). Local-mode boot probes the public surfaces.
+EXPOSE 9000 9123 9124 9125
 
 ENTRYPOINT ["/usr/local/bin/devstack-entrypoint.sh"]
-CMD ["start", "--with-faucet=0.0.0.0:9123"]
+CMD ["start", "--with-faucet=0.0.0.0:9123", "--with-graphql=0.0.0.0:9125"]

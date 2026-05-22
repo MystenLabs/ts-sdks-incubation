@@ -3,7 +3,7 @@
 // Architecture distilled-doc §"Outputs / capabilities provided":
 //
 //   - default ("main") stack: `<service>.<app>.localhost`
-//   - every other stack:      `<stack>.<service>.<app>.localhost`
+//   - every other stack:      `<service>.<stack>.<app>.localhost`
 //
 // "service" here is the dispatch-id's `role` segment — NOT the
 // plugin's name. Plugins emit a `(compositeKey, role)` DispatchId; we
@@ -85,7 +85,7 @@ export const normalizeDispatchSegment = (raw: string): string =>
 /** Mint the per-Routable hostname from `(identity, role)`.
  *
  *  Default stack: `<role>.<app>.localhost`
- *  Other stacks:  `<stack>.<role>.<app>.localhost`
+ *  Other stacks:  `<role>.<stack>.<app>.localhost`
  *
  *  The `role` segment is folded + validated; the `app` and `stack`
  *  segments are also validated (they come from `Identity`, which the
@@ -111,7 +111,7 @@ export const routerHostname = (
 			// (Identity brand) is held to the same character set as the
 			// role and the app. Boot validation should already enforce
 			// this; we re-check defensively.
-			return `${stackSafe}.${roleSafe}.${app}.localhost`;
+			return `${roleSafe}.${stackSafe}.${app}.localhost`;
 		})();
 		if (host.length > MAX_HOSTNAME_LEN) {
 			return yield* Effect.fail(

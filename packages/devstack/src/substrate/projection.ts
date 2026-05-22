@@ -32,6 +32,8 @@ export interface SubscribableState {
 	};
 	readonly rows: ReadonlyArray<Row>;
 	readonly endpoints: ReadonlyArray<Endpoint>;
+	readonly accounts: ReadonlyArray<AccountProjection>;
+	readonly packages: ReadonlyArray<PackageProjection>;
 	readonly errors: ReadonlyArray<StructuredError>;
 	readonly lastEvent: { readonly seq: number; readonly at: number };
 	readonly stackBuild: ReadonlyArray<BuildEntry>;
@@ -69,6 +71,34 @@ export interface Endpoint {
 	readonly registeredAt: number;
 }
 
+export interface AccountProjection {
+	readonly key: `account/${string}`;
+	readonly rowKey: PluginKey | null;
+	readonly name: string;
+	readonly address: string | null;
+	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1' | null;
+	readonly source: 'real' | 'impersonate' | null;
+	readonly funding: {
+		readonly status: 'pending' | 'funded' | 'skipped' | 'failed' | 'unknown';
+		readonly balanceMist: string | null;
+		readonly requestedMist: string | null;
+	};
+	readonly walletVisible: boolean;
+	readonly updatedAt: number;
+}
+
+export interface PackageProjection {
+	readonly key: `package/${string}`;
+	readonly rowKey: PluginKey | null;
+	readonly name: string;
+	readonly kind: 'local' | 'known';
+	readonly packageId: string;
+	readonly upgradeCapId: string | null;
+	readonly mvrPlaceholder: string;
+	readonly sourcePath: string | null;
+	readonly updatedAt: number;
+}
+
 export interface StructuredError {
 	readonly at: number;
 	readonly pluginKey: PluginKey | null;
@@ -96,6 +126,8 @@ type _ProjectionKeysClosed =
 	| 'cycle'
 	| 'rows'
 	| 'endpoints'
+	| 'accounts'
+	| 'packages'
 	| 'errors'
 	| 'lastEvent'
 	| 'stackBuild';

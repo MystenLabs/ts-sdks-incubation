@@ -6,9 +6,10 @@
 //
 // Replaces the ad-hoc `appendTagLog` shape on the legacy `EngineHandle`
 // with a typed Service. Plugins acquire a `Logger` and publish lines;
-// the substrate threads each line into (a) the typed event stream
-// (`log.appended`), (b) a bounded per-tag ring buffer for renderer
-// sampling, and (c) Effect's structured logging via `Effect.log*`.
+// the substrate keeps each line in a bounded per-tag ring buffer and
+// mirrors it into Effect's structured logging via `Effect.log*`.
+// Operator-level lines are also projected into the typed event stream
+// by the supervisor wrapper.
 //
 // Per-tag atomicity is guaranteed by `Ref.update` on the per-tag
 // buffer — single-fiber updates are linearizable and the buffer
@@ -21,6 +22,8 @@ import { Context, Effect, Layer, Ref } from 'effect';
 import { Data } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
+import { Redactor, redactValue } from './redaction.ts';
+import { SpanAttr } from './spans.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -43,10 +46,9 @@ export class LoggerError extends Data.TaggedError('LoggerError')<{
 // -----------------------------------------------------------------------------
 
 /** Closed level set. Mirrors the projection's row.logTail.level
- *  vocabulary so a renderer that reads either source sees the same
- *  shape. Note: `debug` / `trace` are accepted for structured Effect
- *  logging but the bounded buffer only retains `info | warn | error`
- *  (renderers don't surface trace/debug). */
+ *  vocabulary, plus `debug` / `trace` for lifecycle diagnostics that
+ *  should stay in buffers / Effect logs rather than the renderer's
+ *  operator event stream. */
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
 
 /** A buffered log line. Plain data; the projection's `Row.logTail`
@@ -125,9 +127,10 @@ export class Logger extends Context.Service<Logger, LoggerShape>()(
 /** Layer that constructs the per-stack Logger. Stateful (holds the
  *  per-tag ring buffers in a Ref); the substrate provides one per
  *  stack-scope. */
-export const layerLogger: Layer.Layer<Logger> = Layer.effect(
+export const layerLogger: Layer.Layer<Logger, never, Redactor> = Layer.effect(
 	Logger,
 	Effect.gen(function* () {
+		const redactor = yield* Redactor;
 		const buffers = yield* Ref.make<ReadonlyMap<string, TagBuffer>>(new Map());
 
 		const truncateLine = (s: string): string =>
@@ -150,12 +153,15 @@ export const layerLogger: Layer.Layer<Logger> = Layer.effect(
 			pluginKey: PluginKey | null,
 			payload: LogPayload,
 		) {
+			const redactionRules = yield* redactor.rules;
 			const line: LogLine = {
 				tag,
 				pluginKey,
 				level: payload.level,
-				message: truncateLine(payload.message),
-				fields: payload.fields ?? {},
+				message: truncateLine(yield* redactor.redact(payload.message)),
+				fields: redactValue(payload.fields ?? {}, redactionRules) as Readonly<
+					Record<string, unknown>
+				>,
 				at: Date.now(),
 			};
 			yield* appendInternal(line);
@@ -194,8 +200,8 @@ export const layerLogger: Layer.Layer<Logger> = Layer.effect(
 
 const logViaEffect = (line: LogLine): Effect.Effect<void> => {
 	const annotated = Effect.annotateLogs({
-		'devstack.tag': line.tag,
-		'devstack.plugin': line.pluginKey ?? '(none)',
+		[SpanAttr.logTag]: line.tag,
+		[SpanAttr.plugin]: line.pluginKey ?? '(none)',
 		...line.fields,
 	});
 	switch (line.level) {

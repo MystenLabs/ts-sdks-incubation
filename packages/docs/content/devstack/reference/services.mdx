@@ -5,10 +5,11 @@ description: Current root factories and options.
 
 Import these from `@mysten-incubation/devstack`.
 
-## `defineDevstack(...members, options?)`
+## `defineDevstack({ members, ...options })`
 
-Variadic stack composer. The trailing options bag supports `stackName`, `network`, `watchPaths`,
-`stateDir`, `renderer`, `hotRestart`, `extras`, and `codegen`.
+Object-form stack composer. `members` are entrypoints; plugin-valued dependencies are included
+recursively. Options include `stackName`, `network`, `watchPaths`, `stateDir`, `renderer`,
+`hotRestart`, `extras`, and `codegen`.
 
 ## `sui(opts?)`
 
@@ -62,10 +63,9 @@ Runs a one-shot on-chain effect after its consumed members are ready.
 
 ```ts
 const open = action('open-lobby', {
-	consumes: [publisher, hello] as const,
-	body: (ctx) =>
-		ctx.signAndExecute(ctx.use(publisher), (tx) => {
-			const pkg = ctx.use(hello);
+	dependsOn: { signer: publisher, pkg: hello },
+	body: (ctx, { signer, pkg }) =>
+		ctx.signAndExecute(signer, (tx) => {
 			tx.moveCall({ target: `${pkg.packageId}::hello::open` });
 		}),
 });

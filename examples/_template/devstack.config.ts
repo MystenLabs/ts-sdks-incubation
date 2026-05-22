@@ -10,16 +10,18 @@ import { fileURLToPath } from 'node:url';
 
 import {
 	defineDevstack,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
 	sui,
 	account,
 	localPackage,
-	type AnyMember,
-	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DEV_ORIGIN = 'http://127.0.0.1:5179';
+const DEV_PORT = 5179;
+const DEV_ORIGIN = `http://127.0.0.1:${DEV_PORT}` as const;
+const ROUTER_DEV_ORIGIN = 'http://dev.template.localhost:5175' as const;
 
 const alice = account('alice');
 const bob = account('bob');
@@ -28,16 +30,20 @@ const hello = localPackage('hello', {
 	sourcePath: resolve(HERE, 'move/hello'),
 	publisher: alice,
 });
+const devWallet = wallet({
+	accounts: [alice, bob],
+	allowedOrigins: [DEV_ORIGIN, ROUTER_DEV_ORIGIN],
+});
+const app = hostService({
+	name: 'app',
+	command: 'pnpm',
+	args: ['exec', 'vite', '--host', '127.0.0.1', '--strictPort', '--port', HOST_SERVICE_PORT_TOKEN],
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	needs: [hello, devWallet] as const,
+});
 
-const stack: Stack<ReadonlyArray<AnyMember>> = defineDevstack(
-	sui(),
-	alice,
-	bob,
-	hello,
-	wallet({ accounts: [alice, bob], allowedOrigins: [DEV_ORIGIN] }),
-	{
-		stackName: '_template',
-	},
-);
+const stack = defineDevstack({ members: [sui(), alice, bob, hello, devWallet, app], stackName: 'main', });
 
 export default stack;

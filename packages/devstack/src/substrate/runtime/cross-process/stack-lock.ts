@@ -26,6 +26,7 @@ import { dirname } from 'node:path';
 
 import { Data, Effect, Schema, Scope } from 'effect';
 
+import { decodeJsonTextSync } from '../runtime-decode.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
 import type { RosterHolder } from '../../cross-process.ts';
 
@@ -67,9 +68,10 @@ const StackLockBodySchema = Schema.Struct({
 
 const parseLockBody = (raw: string): RosterHolder | null => {
 	try {
-		const parsed = JSON.parse(raw) as unknown;
-		const decoded = Schema.decodeUnknownSync(StackLockBodySchema)(parsed);
-		return decoded;
+		return decodeJsonTextSync(StackLockBodySchema, raw, {
+			source: 'stack.lock',
+			mkError: (issue) => issue,
+		});
 	} catch {
 		return null;
 	}

@@ -9,7 +9,7 @@
 //
 // The derivation:
 //
-//   <stack-prefix>.<service>.<app>.localhost:<port>
+//   <service>.<stack-prefix>.<app>.localhost:<port>
 //
 // where:
 //   - `<service>` and `<port>` come from the endpoint's Routable
@@ -20,7 +20,7 @@
 //   - `<stack-prefix>` comes from an explicit stack, `DEVSTACK_STACK`,
 //     or the `main` default. Package metadata is not a stack selector
 //     for build integrations; it only supplies the app name.
-//   - `<stack-prefix>` is empty for the `main` stack and `<stack>.`
+//   - `<stack-prefix>` is empty for the `main` stack and `.<stack>`
 //     otherwise. Matches the router's hostname-minting rule so
 //     conventional and post-manifest URLs converge.
 //
@@ -109,7 +109,7 @@ export const conventionalRouteHost = (input: ConventionalRouteHostInput): string
 	const hostSuffix = input.hostSuffix ?? '.localhost';
 	return input.stack === 'main'
 		? `${input.service}.${input.app}${hostSuffix}`
-		: `${input.stack}.${input.service}.${input.app}${hostSuffix}`;
+		: `${input.service}.${input.stack}.${input.app}${hostSuffix}`;
 };
 
 export const conventionalRouteUrl = (input: ConventionalRouteUrlInput): string => {

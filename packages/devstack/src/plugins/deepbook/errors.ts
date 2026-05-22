@@ -20,6 +20,7 @@
 // root barrel once wired). Re-exporting per-plugin would collide with
 // the walrus / seal barrels under a single root-barrel re-export.
 import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 /** Phases for `DeepbookPluginError`. Closed sum — keeps the
  *  cause-walker's display table small. */
@@ -85,18 +86,18 @@ export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
 
 /** Configuration error — synchronous factory-time guards (missing
  *  required fields, conflicting pool ids, ambiguous publisher). */
-export interface DeepbookConfigError {
+export interface DeepbookConfigError extends ConfigIssue {
 	readonly _tag: 'DeepbookConfigError';
-	readonly field: string;
-	readonly message: string;
-	readonly hint?: string;
 }
+
+const makeDeepbookConfigError = defineConfigError('DeepbookConfigError');
 
 export const deepbookConfigError = (
 	field: string,
 	message: string,
 	hint?: string,
-): DeepbookConfigError => ({ _tag: 'DeepbookConfigError', field, message, hint });
+	cause?: unknown,
+): DeepbookConfigError => makeDeepbookConfigError({ field, message, hint, cause });
 
 /** Union of every error a deepbook-plugin caller may encounter. */
 export type DeepbookError = DeepbookPluginError | ForkIncompatibleError | DeepbookConfigError;

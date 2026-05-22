@@ -1,23 +1,18 @@
-# Walrus image for the rewrite's local-cluster mode. Vendored
-# Dockerfile fed to `ContainerRuntime.ensureImage` (content-addressed
-# builds — same Dockerfile + build args produce the same image digest).
+# Walrus image for local-cluster mode. Vendored Dockerfile fed to
+# `ContainerRuntime.ensureImage` (content-addressed builds: same
+# Dockerfile + build args produce the same image digest).
 #
-# Pattern mirrors `../sui/Dockerfile`: download the matching release
-# tarball at build time for linux/amd64. linux/arm64 is refused in the
-# resolver until upstream Walrus ubuntu-aarch64 assets are fixed or a
-# source-build fallback exists.
+# The image packages upstream release binaries only. TARGETARCH selects
+# the matching Walrus and Sui release tarballs, and the build verifies
+# the selected Walrus asset is native for that target before accepting it.
 #
 # Two binary sets baked in:
 #
 #   1. walrus / walrus-deploy / walrus-node — from the walrus release
-#      tarball at WALRUS_VERSION. The release ships all three in one
-#      archive so we don't need to cargo-build (the old upstream image
-#      cargo-built; the rewrite uses the release artifact).
+#      tarball at WALRUS_VERSION.
 #
 #   2. sui binary — from the sui release tarball at SUI_VERSION. The
-#      deploy/run scripts need a matching `sui` on PATH (they shell out
-#      for wallet creation + faucet calls). Pinned in lockstep with the
-#      sui-localnet image's version (06-walrus.md invariant 24).
+#      deploy/run scripts need a matching `sui` on PATH.
 #
 # Also vendored:
 #
@@ -41,7 +36,7 @@ ARG TARGETARCH
 
 RUN apt-get update \
 	&& apt-get install -y --no-install-recommends \
-		ca-certificates curl gawk git jq netcat-openbsd \
+		ca-certificates curl file gawk git jq netcat-openbsd \
 	&& rm -rf /var/lib/apt/lists/*
 
 # Walrus release-tarball fetch. Asset naming:
@@ -49,8 +44,8 @@ RUN apt-get update \
 # We're inside ubuntu so platform is always `ubuntu-{arch}`.
 RUN set -eux; \
 	case "$TARGETARCH" in \
-		arm64) WALRUS_PLATFORM=ubuntu-aarch64 ;; \
-		amd64) WALRUS_PLATFORM=ubuntu-x86_64 ;; \
+		arm64) WALRUS_PLATFORM=ubuntu-aarch64; EXPECTED_FILE_ARCH='ARM aarch64' ;; \
+		amd64) WALRUS_PLATFORM=ubuntu-x86_64; EXPECTED_FILE_ARCH='x86-64' ;; \
 		*) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
 	esac; \
 	url="https://github.com/MystenLabs/walrus/releases/download/${WALRUS_VERSION}/walrus-${WALRUS_VERSION}-${WALRUS_PLATFORM}.tgz"; \
@@ -63,6 +58,11 @@ RUN set -eux; \
 		test -x "/opt/walrus/bin/${bin}" || { \
 			echo "walrus release ${WALRUS_VERSION} missing required binary ${bin}" >&2; \
 			ls -la /opt/walrus/bin >&2; \
+			exit 1; \
+		}; \
+		file "/opt/walrus/bin/${bin}" | grep -q "$EXPECTED_FILE_ARCH" || { \
+			echo "walrus release ${WALRUS_VERSION} asset ${WALRUS_PLATFORM} is not native for TARGETARCH=${TARGETARCH}: ${bin}" >&2; \
+			file "/opt/walrus/bin/${bin}" >&2; \
 			exit 1; \
 		}; \
 	done; \
@@ -116,7 +116,7 @@ ENV RUST_LOG=info,walrus=info
 EXPOSE 9185
 
 # Default to storage-node entrypoint. The deploy one-shot overrides
-# via `runOneShot` argv — the wrapper dispatches: argv[0] == 'deploy'
-# runs `deploy-walrus.sh`, otherwise runs `run-walrus.sh`.
+# via `runOneShot` argv: argv[0] == 'deploy' runs `deploy-walrus.sh`,
+# otherwise runs `run-walrus.sh`.
 ENTRYPOINT ["/bin/bash", "-c", "if [ \"${1:-}\" = deploy ]; then shift; exec /opt/walrus/scripts/deploy-walrus.sh \"$@\"; else exec /opt/walrus/scripts/run-walrus.sh; fi", "--"]
 CMD []

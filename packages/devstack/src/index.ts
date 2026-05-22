@@ -29,21 +29,31 @@ export {
 
 // --- Plugin authoring helpers -------------------------------------------
 
-export { defineNodePlugin } from './api/define-plugin.ts';
 export {
-	capabilities,
-	capabilityBuilder,
-	type CapabilityBuilder,
+	capability,
+	capabilitySink,
+	codegenable,
+	defineCapability,
+	routable,
+	snapshotable,
+	strategyContributor,
 } from './api/define-capabilities.ts';
 export {
-	consumeMembers,
-	consumeMember,
-	type ConsumedMembers,
-	type ConsumedMember,
-	type ConsumesTagsOf,
-	type ResolvedValuesOf,
-} from './api/consume-members.ts';
-export { defineTag, type AnyTag, type ResolvedOf, type Tag, type TagIdOf } from './api/tag.ts';
+	defineId,
+	definePlugin,
+	resource,
+	type AnyPlugin,
+	type AnyResourceRef,
+	type DependencyInput,
+	type DependencyList,
+	type Plugin,
+	type PluginSpec,
+	type ResourceRef,
+	type ResolvedDependencies,
+	type ResourceIdOf,
+	type ResourceValueOf,
+	type StartContext,
+} from './api/define-plugin.ts';
 export {
 	defineWitness,
 	providesWitness,
@@ -59,11 +69,36 @@ export {
 	type FactoriesFor,
 	type ModeNamespace,
 } from './api/mode-narrowed-factory.ts';
+export * as ConfigValidation from './substrate/runtime/config-validation.ts';
+export * as HttpProbes from './substrate/runtime/http-probe.ts';
+export * as ManagedContainers from './substrate/runtime/managed-container.ts';
+export * as ProcessLines from './substrate/runtime/observability/process-lines.ts';
+export * as ProcessSupervisor from './substrate/runtime/process-supervisor.ts';
+export * as Probes from './substrate/runtime/probes.ts';
+export * as Redaction from './substrate/runtime/observability/redaction.ts';
+export * as RetryPolicy from './substrate/runtime/retry-policy.ts';
+export * as RuntimeDecode from './substrate/runtime/runtime-decode.ts';
+export {
+	Logger,
+	Redactor,
+	type LoggerShape,
+	type LogLevel,
+	type LogLine,
+	type LogPayload,
+	type RedactionRule,
+	type TagBuffer,
+} from './substrate/runtime/observability/index.ts';
 
 // --- Contract types plugin authors emit decls of ------------------------
 
-export type { CapabilityDecl } from './contracts/capability-decl.ts';
-export type { CodegenableDecl, CodegenEntries, EmittedFor } from './contracts/codegenable.ts';
+export type {
+	CapabilityDecl,
+	CapabilityKind,
+	CapabilityPayloadFor,
+	DevstackCapabilityRegistry,
+	ExactCapabilityPayload,
+} from './contracts/capability-decl.ts';
+export type { CodegenableDecl } from './contracts/codegenable.ts';
 export type {
 	ContainerHandle,
 	ContainerRuntime,
@@ -81,33 +116,20 @@ export type {
 } from './contracts/liveness-classifier.ts';
 export type {
 	DispatchId,
+	DevstackRoutableUpstreamRegistry,
 	RoutableDecl,
 	RoutableHttpDecl,
 	RoutableTcpDecl,
 	RoutableUpstream,
+	RoutableUpstreamKind,
 } from './contracts/routable.ts';
 export type { ContainerLabelTuple, SnapshotableDecl } from './contracts/snapshotable.ts';
 export type { StrategyContributorDecl, StrategyFor } from './contracts/strategy-contributor.ts';
 
-// --- Plugin-instance shape (the universal NodePlugin contract) ----------
-
-export type { AnyNodePlugin, NodePlugin } from './contracts/node-plugin.ts';
-export {
-	MEMBER_BRAND,
-	type AcquireContext,
-	type AnyMember,
-	type BuildContext,
-	type CapabilitiesFactory,
-	type MemberBranded,
-	type MissingProviders,
-	type StackMember,
-	type WatchDecl,
-	type __MemberNotConsumedError,
-} from './substrate/plugin.ts';
-
 // --- Lifecycle + lifted-sibling primitives plugin authors touch ---------
 
 export type {
+	DevstackPluginKindRegistry,
 	LifecycleStatus,
 	PhaseNarration,
 	PluginKind,
@@ -124,7 +146,12 @@ export {
 
 // --- Network + options --------------------------------------------------
 
-export type { NetworkConfig, NetworkMode, DefaultNetwork } from './substrate/network.ts';
+export type {
+	NetworkConfig,
+	NetworkMode,
+	DefaultNetwork,
+	DevstackNetworkModeRegistry,
+} from './substrate/network.ts';
 export type { DevstackOptions, OptionsLike } from './substrate/options.ts';
 export type {
 	ManifestExtras,
@@ -140,14 +167,12 @@ export {
 	chainId,
 	contentHash,
 	endpointKey,
-	pluginKey,
 	stackName,
 	type AppName,
 	type Brand,
 	type ChainId,
 	type ContentHash,
 	type EndpointKey,
-	type PluginKey,
 	type StackName,
 } from './substrate/brand.ts';
 
@@ -165,7 +190,6 @@ export {
 export {
 	sui,
 	suiFor,
-	SuiTag,
 	type SuiClient,
 	type ForkAdminSurface,
 	type WaitForTransactionsReady,
@@ -180,6 +204,7 @@ export {
 	type SuiError,
 	type SuiPluginError,
 	type SuiCliError,
+	type SuiConfigError,
 	type ForkUnsupportedError,
 	type SeedManifestMismatchError,
 	type SuiFundsReadyError,
@@ -199,7 +224,6 @@ export {
 	account,
 	DEFAULT_EPHEMERAL_FUND_MIST,
 	SUI_FULL_COIN_TYPE,
-	type AccountTagId,
 	type AccountOptions,
 	type AccountValue,
 	type TxResult,
@@ -223,14 +247,12 @@ export {
 	localPackage,
 	knownPackage,
 	pkg,
-	packageTagId,
 	pickCreatedByType,
 	type LocalPackageOptions,
 	type KnownPackageOptions,
 	type LocalPackageResolved,
 	type KnownPackageResolved,
 	type PackageResolved,
-	type PackageTagId,
 	type PackageCapture,
 	type PackageCaptureCallback,
 	type PackageCaptureMap,
@@ -249,11 +271,9 @@ export {
 
 export {
 	coin,
-	coinTagId,
 	BUILTIN_COINS,
 	isBareCoinType,
 	validateBareCoinType,
-	type CoinTagId,
 	type CoinValue,
 	type CoinAddressForm,
 	type ResolvedCoin,
@@ -269,12 +289,10 @@ export {
 
 export {
 	wallet,
-	WalletTag,
 	WALLET_ACCOUNTS_ALL,
 	type WalletOptions,
 	type WalletValue,
 	type WalletAccountMember,
-	type WalletAccountTags,
 	type WalletAccountsAll,
 	type DappKitConfigBindings,
 	type WalletError,
@@ -288,11 +306,21 @@ export {
 	type PairingToken,
 } from './plugins/wallet/index.ts';
 
+// --- Host Service -------------------------------------------------------
+
+export {
+	hostService,
+	HOST_SERVICE_PORT_TOKEN,
+	type HostServiceError,
+	type HostServiceOptions,
+	type HostServiceReadyProbe,
+	type HostServiceValue,
+} from './plugins/host-service/index.ts';
+
 // --- Postgres -----------------------------------------------------------
 
 export {
 	postgres,
-	PostgresTag,
 	POSTGRES_TCP_ENDPOINT_NAME,
 	credentialedUrl,
 	plainUrl,
@@ -304,6 +332,7 @@ export {
 	type PostgresConnectionParts,
 	type PostgresError,
 	type PostgresPluginError,
+	type PostgresConfigError,
 	type PostgresConnectionTimeout,
 	type DatabaseCreateFailed,
 	type PostgresPhase,
@@ -313,7 +342,6 @@ export {
 
 export {
 	faucet,
-	FaucetTag,
 	FAUCET_DISPATCH_KEY,
 	faucetCapabilityKey,
 	defineFaucetStrategy,
@@ -337,6 +365,7 @@ export {
 	type FaucetExhausted,
 	type FaucetBodyError,
 	type FaucetStrategyMissing,
+	type FaucetConfigError,
 	type FaucetStrategy,
 	type SuiLocalStrategyOptions,
 	type SuiLiveStrategyOptions,
@@ -349,10 +378,8 @@ export {
 
 export {
 	action,
-	actionTagId,
 	ActionReceiptSchema,
 	signAndExecute,
-	type ActionTagId,
 	type ActionOptions,
 	type ActionUpstreamMember,
 	type ActionBuildContext,
@@ -370,7 +397,6 @@ export {
 export {
 	walrus,
 	walrusFor,
-	WalrusTag,
 	type WalrusAdmin,
 	type WalrusResolved,
 	type WalrusLocalClusterOptions,
@@ -393,8 +419,6 @@ export {
 	seal,
 	sealFor,
 	sealLocalKeygenStrict,
-	makeSealTag,
-	sealTagId,
 	type SealOptions,
 	type SealCommonOptions,
 	type SealLocalKeygenOptions,
@@ -404,11 +428,11 @@ export {
 	type SealKeyServerEntry,
 	type SealLocalKeygenResolved,
 	type SealKnownResolved,
-	type SealTagId,
 	type SealResolved,
 	type SealKeyManager,
 	type SealError,
 	type SealAnyError,
+	type SealConfigError,
 	type SealAcquireError,
 	type SealBindings,
 } from './plugins/seal/index.ts';
@@ -418,7 +442,6 @@ export {
 export {
 	deepbook,
 	deepbookFor,
-	type DeepbookTagId,
 	type DeepbookResolved,
 	type DeepbookCommonOptions,
 	type DeepbookLocalOptions,

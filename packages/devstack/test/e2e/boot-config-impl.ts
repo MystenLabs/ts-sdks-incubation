@@ -21,6 +21,7 @@ import * as NodePath from '@effect/platform-node/NodePath';
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
+import { readStackEngine, type Stack } from '../../src/api/define-devstack.ts';
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import {
@@ -74,6 +75,10 @@ import {
 	PortBrokerService,
 	layerPortBroker,
 } from '../../src/substrate/runtime/port-broker/index.ts';
+import {
+	PostAcquireTasksService,
+	layerPostAcquireTasks,
+} from '../../src/substrate/runtime/post-acquire-tasks.ts';
 import {
 	LeaseBrokerService,
 	layerLeaseBroker,
@@ -196,7 +201,7 @@ export interface BootResult {
 }
 
 interface ConfigModule {
-	readonly default: BootStackConfig;
+	readonly default: Stack<SupervisedStack['members']>;
 }
 
 // DockerSpawner adapts platform-node's ChildProcessSpawner tag to
@@ -249,6 +254,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	const withPackageRegistry = layerPackageRegistry.pipe(Layer.provideMerge(withCoinRegistry));
 	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
+	const withPostAcquireTasks = layerPostAcquireTasks.pipe(Layer.provideMerge(withLeaseBroker));
 	const withSpawnerAdapter = layerDockerSpawnerFromNode.pipe(Layer.provideMerge(withLeaseBroker));
 	const withContainerRuntime = layerContainerRuntimeDocker.pipe(
 		Layer.provideMerge(withSpawnerAdapter),
@@ -301,7 +307,12 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		),
 	);
 	const withCodegen = Layer.mergeAll(layerCodegenOrchestrator, withCodegenPaths, stubMoveLayers);
-	const substrateLayers = Layer.mergeAll(withSnapshotOrchestrator, withRouter, withCodegen);
+	const substrateLayers = Layer.mergeAll(
+		withSnapshotOrchestrator,
+		withRouter,
+		withCodegen,
+		withPostAcquireTasks,
+	);
 
 	const loadStack = (): Effect.Effect<BootStackConfig, never> => {
 		if (opts.stack !== undefined) return Effect.succeed(opts.stack);
@@ -309,7 +320,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			try: () => import(opts.configPath) as Promise<ConfigModule>,
 			catch: (e) => new Error(`failed to load config at ${opts.configPath}: ${String(e)}`),
 		}).pipe(
-			Effect.map((mod) => mod.default),
+			Effect.map((mod) => readStackEngine(mod.default)),
 			Effect.orDie,
 		);
 	};
@@ -332,6 +343,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const coinRegistry = yield* CoinRegistryService;
 		const portBroker = yield* PortBrokerService;
 		const leaseBroker = yield* LeaseBrokerService;
+		const postAcquireTasks = yield* PostAcquireTasksService;
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
 
@@ -347,6 +359,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PortBrokerService, portBroker),
 			Context.add(LeaseBrokerService, leaseBroker),
+			Context.add(PostAcquireTasksService, postAcquireTasks),
 		) as Context.Context<never>;
 
 		const state = yield* makeProjectionRef();

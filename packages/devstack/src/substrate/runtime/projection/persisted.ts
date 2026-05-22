@@ -6,8 +6,9 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import type { SubscribableState } from '../../projection.ts';
 import { endpointKey, pluginKey } from '../../brand.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
+import { decodeJsonTextSync } from '../runtime-decode.ts';
 
-export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v1.json';
+export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v2.json';
 
 export const projectionSnapshotPath = (stackRoot: string): string =>
 	`${stackRoot}/${PROJECTION_SNAPSHOT_FILE_NAME}`;
@@ -51,6 +52,34 @@ const EndpointSchema = Schema.Struct({
 	registeredAt: Schema.Number,
 });
 
+const AccountProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	address: Schema.NullOr(Schema.String),
+	scheme: Schema.NullOr(Schema.Literals(['ed25519', 'secp256k1', 'secp256r1'])),
+	source: Schema.NullOr(Schema.Literals(['real', 'impersonate'])),
+	funding: Schema.Struct({
+		status: Schema.Literals(['pending', 'funded', 'skipped', 'failed', 'unknown']),
+		balanceMist: Schema.NullOr(Schema.String),
+		requestedMist: Schema.NullOr(Schema.String),
+	}),
+	walletVisible: Schema.Boolean,
+	updatedAt: Schema.Number,
+});
+
+const PackageProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	kind: Schema.Literals(['local', 'known']),
+	packageId: Schema.String,
+	upgradeCapId: Schema.NullOr(Schema.String),
+	mvrPlaceholder: Schema.String,
+	sourcePath: Schema.NullOr(Schema.String),
+	updatedAt: Schema.Number,
+});
+
 const RowSchema = Schema.Struct({
 	key: Schema.String,
 	kind: PluginKindSchema,
@@ -90,6 +119,8 @@ const SubscribableStateSchema = Schema.Struct({
 	}),
 	rows: Schema.Array(RowSchema),
 	endpoints: Schema.Array(EndpointSchema),
+	accounts: Schema.Array(AccountProjectionSchema),
+	packages: Schema.Array(PackageProjectionSchema),
 	errors: Schema.Array(StructuredErrorSchema),
 	lastEvent: Schema.Struct({
 		seq: Schema.Number,
@@ -99,7 +130,7 @@ const SubscribableStateSchema = Schema.Struct({
 });
 
 export const ProjectionSnapshotSchema = Schema.Struct({
-	version: Schema.Literal(1),
+	version: Schema.Literal(2),
 	state: SubscribableStateSchema,
 });
 
@@ -124,6 +155,16 @@ const rebrandPersistedState = (state: PersistedSubscribableState): SubscribableS
 		...endpoint,
 		endpointKey: endpointKey(endpoint.endpointKey),
 	})),
+	accounts: state.accounts.map((account) => ({
+		...account,
+		key: account.key as `account/${string}`,
+		rowKey: account.rowKey === null ? null : pluginKey(account.rowKey),
+	})),
+	packages: state.packages.map((pkg) => ({
+		...pkg,
+		key: pkg.key as `package/${string}`,
+		rowKey: pkg.rowKey === null ? null : pluginKey(pkg.rowKey),
+	})),
 	errors: state.errors.map(rebrandStructuredError),
 	stackBuild: state.stackBuild.map((entry) => ({
 		...entry,
@@ -136,7 +177,7 @@ export const writeProjectionSnapshot = (
 	state: SubscribableState,
 ): Effect.Effect<void> =>
 	atomicWriteJson(projectionSnapshotPath(stackRoot), ProjectionSnapshotSchema, {
-		version: 1 as const,
+		version: 2 as const,
 		state,
 	}).pipe(
 		Effect.provide(NodeFileSystem.layer),
@@ -158,8 +199,11 @@ export const readProjectionSnapshot = (stackRoot: string): SubscribableState | n
 	const path = projectionSnapshotPath(stackRoot);
 	if (!existsSync(path)) return null;
 	try {
-		const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-		return rebrandPersistedState(Schema.decodeUnknownSync(ProjectionSnapshotSchema)(parsed).state);
+		const snapshot = decodeJsonTextSync(ProjectionSnapshotSchema, readFileSync(path, 'utf8'), {
+			source: path,
+			mkError: (issue) => issue,
+		});
+		return rebrandPersistedState(snapshot.state);
 	} catch {
 		return null;
 	}

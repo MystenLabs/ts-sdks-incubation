@@ -31,9 +31,11 @@ import {
 	CONTAINER_ENV,
 	DEFAULT_KEY_SERVER_PORT,
 	DEFAULT_READY_TIMEOUT_MS,
+	deriveSealSubnetPrefix,
 	HOST_GATEWAY_EXTRA_HOSTS,
 	INSIDE_CONFIG_PATH,
 	INSIDE_MASTER_KEY_ENVFILE,
+	sealNetworkCreateSpec,
 	type KeyServerSpecInputs,
 } from '../../../src/plugins/seal/key-server.ts';
 import { SEAL_KEY_SERVER_ENDPOINT_NAME } from '../../../src/plugins/seal/routable.ts';
@@ -62,6 +64,44 @@ describe('buildSealNetworkName', () => {
 		expect(buildSealNetworkName('private-content', 'seed-snapshot', 'seal')).toBe(
 			'devstack-private-content-seed-snapshot-seal-seal-net',
 		);
+	});
+});
+
+describe('seal network addressing', () => {
+	it('derives a stable /24 prefix in the Seal address range', () => {
+		const prefix = deriveSealSubnetPrefix({
+			app: 'private-content',
+			stack: 'main',
+			sealName: 'seal',
+		});
+
+		expect(prefix).toMatch(/^10\.(12[8-9]|1[3-8][0-9]|19[0-1])\.\d{1,3}$/);
+		expect(
+			deriveSealSubnetPrefix({
+				app: 'private-content',
+				stack: 'main',
+				sealName: 'seal',
+			}),
+		).toBe(prefix);
+	});
+
+	it('requests an explicit Docker subnet for the derived key-server network', () => {
+		const prefix = deriveSealSubnetPrefix({
+			app: 'private-content',
+			stack: 'main',
+			sealName: 'seal',
+		});
+		const spec = sealNetworkCreateSpec(
+			{
+				name: buildSealNetworkName('private-content', 'main', 'seal'),
+				app: 'private-content',
+				stack: 'main',
+			},
+			prefix,
+		);
+
+		expect(spec.subnet).toBe(`${prefix}.0/24`);
+		expect(spec.gateway).toBe(`${prefix}.1`);
 	});
 });
 

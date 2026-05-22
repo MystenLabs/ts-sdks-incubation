@@ -15,7 +15,7 @@ const hello = localPackage('hello', {
 	publisher: alice,
 });
 
-export default defineDevstack(alice, hello, wallet({ accounts: [alice] }));
+export default defineDevstack({ members: [alice, hello, wallet({ accounts: [alice] })] });
 ```
 
 State is scoped by app and stack name:
@@ -26,8 +26,6 @@ State is scoped by app and stack name:
     main/
       manifest.json
       projection.v1.json
-      events.ndjson
-      commands.ndjson
       snapshots/
       runtime/
 ```
@@ -36,7 +34,8 @@ Generated files are separate. By default they go to `src/generated`; override wi
 options bag:
 
 ```ts
-export default defineDevstack(alice, hello, {
+export default defineDevstack({
+	members: [alice, hello],
 	stackName: 'local',
 	codegen: {
 		outputDir: 'src/generated',
@@ -52,12 +51,11 @@ devstack up --renderer tui
 devstack up --renderer plain
 devstack apply
 devstack status --json
-devstack logs wallet
-devstack down
 ```
 
 Use a different stack name when you want independent keys, snapshots, and runtime state:
 
 ```bash
-DEVSTACK_STACK=ci devstack apply --renderer plain
+DEVSTACK_STACK=ci devstack apply
+devstack apply --stack ci
 ```

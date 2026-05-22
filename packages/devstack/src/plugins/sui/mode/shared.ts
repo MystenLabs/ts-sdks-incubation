@@ -75,8 +75,8 @@ export interface SuiClient {
 	 *  blocklist (`fork-orchestration.wrapWithForkGuard`). */
 	readonly sdk: SuiSdkShim;
 	/** Host-reachable RPC URL for this resolved network. Local mode
-	 *  reflects the allocated host port, not just the preferred
-	 *  9000 default. */
+	 *  surfaces the router-fronted URL; direct boot/probe ports are
+	 *  available through `hostGateway` for sibling containers. */
 	readonly rpcUrl: string;
 	/** Host-reachable faucet base URL when this network has a faucet. */
 	readonly faucetUrl: string | null;

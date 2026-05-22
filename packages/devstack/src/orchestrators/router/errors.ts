@@ -56,6 +56,7 @@ export class RouterValidationError extends Schema.TaggedErrorClass<RouterValidat
  *  pair — i.e. the dispatch-id contract is violated upstream. Hard
  *  failure: routing would be ambiguous. */
 export class RouteCollision extends Schema.TaggedErrorClass<RouteCollision>()('RouteCollision', {
+	message: Schema.String,
 	hostname: Schema.String,
 	entrypoint: Schema.String,
 	dispatchIds: Schema.Array(Schema.String),

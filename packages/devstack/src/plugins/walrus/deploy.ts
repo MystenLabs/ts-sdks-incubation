@@ -63,6 +63,12 @@ export const WalrusDeployVerifyShape = Schema.Struct({
 });
 export type WalrusDeployVerified = Schema.Schema.Type<typeof WalrusDeployVerifyShape>;
 
+const SuiObjectExistsShape = Schema.Struct({
+	object: Schema.Struct({
+		objectId: Schema.String,
+	}),
+});
+
 /** Inputs to one deploy round. */
 export interface DeployInputs {
 	readonly walrusName: string;
@@ -292,16 +298,9 @@ export interface DeployOutputs {
  *  Produce: real wiring — `runDeployOneShot` runs
  *  `docker run --rm walrusImage deploy …` and parses the deploy stdout.
  *
- *  Verify-hit re-projection: when the substrate hands back a `Verified`
- *  (the `{ systemObjectId, stakingObjectId }` projection from the
- *  verify schema), we still need the broader `CachedDeployState`
- *  shape. The OCA primitive caches Produced under the same key, so on
- *  verify-hit we collapse the two id's onto a synthesized cached state
- *  (downstream readers consume `walrusPackageId` etc. — fields we
- *  don't have at hand for verify-hit, so we mark them as
- *  "<cached-not-rehydrated>" and rely on the in-process registry to
- *  surface the rich shape). This mirrors the
- *  `package/mode-local.ts::register` projection pattern. */
+ *  Verify-hit projection: the OCA primitive returns the cached
+ *  `Produced` payload after verify succeeds, so callers keep the full
+ *  `CachedDeployState` shape across warm restarts. */
 export const deployWalrusContracts = (
 	publisher: OnChainArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
@@ -314,19 +313,31 @@ export const deployWalrusContracts = (
 			chain: inputs.chainId,
 			contentHash: inputs.contentHash,
 			verifySchema: WalrusDeployVerifyShape,
-			// Verify: lenient probe of the cached system + staking
-			// objects. The OCA substrate threads the cached payload into
-			// `verify(cached)`; we read `systemObject` off it and dial
-			// `getObject` via the SuiProbeKey shape. Lenient mode coerces
-			// transient and not-found to null, triggering a re-produce.
+			// Verify: lenient probes of the cached system + staking
+			// objects. The Sui chain probe decodes raw `getObject`
+			// responses, so the probe schema matches that envelope and
+			// this closure returns the compact verified shape.
 			verify: (cached) =>
-				probe
-					.get(
+				Effect.gen(function* () {
+					const system = yield* probe.get(
 						{ kind: 'object', objectId: cached.systemObject },
-						WalrusDeployVerifyShape,
+						SuiObjectExistsShape,
 						'lenient',
-					)
-					.pipe(Effect.catch(() => Effect.succeed(null as WalrusDeployVerified | null))),
+					);
+					if (system === null) return null;
+
+					const staking = yield* probe.get(
+						{ kind: 'object', objectId: cached.stakingObject },
+						SuiObjectExistsShape,
+						'lenient',
+					);
+					if (staking === null) return null;
+
+					return {
+						systemObjectId: system.object.objectId,
+						stakingObjectId: staking.object.objectId,
+					} satisfies WalrusDeployVerified;
+				}).pipe(Effect.catch(() => Effect.succeed(null as WalrusDeployVerified | null))),
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
 				Effect.mapError(
@@ -345,7 +356,9 @@ export const deployWalrusContracts = (
 			register: () => Effect.void,
 		});
 
-		// Project Produced ∪ Verified onto CachedDeployState.
+		// Project Produced ∪ Verified onto CachedDeployState. OCA returns
+		// the cached Produced payload on verify-hit, but keep a defensive
+		// projection for custom publisher implementations in tests.
 		const state: CachedDeployState =
 			'walrusPackageId' in verified
 				? verified

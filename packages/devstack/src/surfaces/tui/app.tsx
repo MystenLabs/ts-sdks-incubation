@@ -34,7 +34,6 @@ import {
 	shutdownRequestedLine,
 	type EventLogLine,
 } from './event-log.ts';
-import { selectRowKey } from './display-derivation.ts';
 import { InputHandler, type CommandPublisher } from './input.tsx';
 
 export interface AppProps {
@@ -49,7 +48,6 @@ export interface AppProps {
 export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element => {
 	const [state, setState] = useState<SubscribableState | null>(null);
 	const [eventLog, setEventLog] = useState<ReadonlyArray<EventLogLine>>([]);
-	const [selectedRowKey, setSelectedRowKey] = useState<string | null>(null);
 	const eventSeq = useRef(0);
 	const shutdownLogged = useRef(false);
 
@@ -94,32 +92,10 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 		shutdownLogged.current = false;
 	}, [state?.cycle.phase]);
 
-	useEffect(() => {
-		if (state === null) return;
-		if (state.rows.length === 0) {
-			setSelectedRowKey(null);
-			return;
-		}
-		setSelectedRowKey((current) =>
-			current !== null && state.rows.some((row) => row.key === current)
-				? current
-				: state.rows[0]!.key,
-		);
-	}, [state]);
-
-	const moveSelection = (delta: -1 | 1): void => {
-		if (state === null) return;
-		setSelectedRowKey((current) => selectRowKey(state.rows, current, delta));
-	};
-
 	return (
 		<>
-			<InputHandler publish={publish} onMoveSelection={moveSelection} />
-			{state === null ? (
-				<></>
-			) : (
-				<Dashboard state={state} eventLog={eventLog} selectedRowKey={selectedRowKey} />
-			)}
+			<InputHandler publish={publish} />
+			{state === null ? <></> : <Dashboard state={state} eventLog={eventLog} />}
 		</>
 	);
 };

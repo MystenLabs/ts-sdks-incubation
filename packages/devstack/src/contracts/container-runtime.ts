@@ -41,6 +41,9 @@ export interface TagImageOptions {
 export interface ContainerBuildContext {
 	readonly contextPath: string;
 	readonly dockerfile?: string;
+	/** Optional Docker build platform, for example `linux/amd64`.
+	 *  Omitted means Docker uses the host/default platform. */
+	readonly platform?: string;
 	readonly buildArgs?: Readonly<Record<string, string>>;
 }
 
@@ -57,6 +60,11 @@ export interface EnsureContainerSpec {
 	readonly image: ImageRef;
 	readonly labels: ContainerLabelTuple;
 	readonly recreate: RecreatePolicy;
+	/** Optional caller-owned fingerprint for config that Docker cannot
+	 *  infer from image or port bindings (for example files behind a
+	 *  bind mount). When set, `on-config-change` recreates an existing
+	 *  container whose recorded fingerprint differs. */
+	readonly configHash?: string;
 	readonly env?: Readonly<Record<string, string>>;
 	readonly ports?: ReadonlyArray<ContainerPortPublish>;
 	/** Grace window, in seconds, used by the scope finalizer before

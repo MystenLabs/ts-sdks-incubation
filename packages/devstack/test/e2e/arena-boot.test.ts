@@ -1,4 +1,4 @@
-// End-to-end boot of `examples/arena-rewrite/` against the real
+// End-to-end boot of `examples/arena/` against the real
 // docker runtime. The most ambitious of the boot tests:
 //
 //   - Composes an `action('arena.openLobby', ...)` whose body builds,
@@ -43,7 +43,7 @@ const CONFIG_PATH = resolve(
 	'..',
 	'..',
 	'examples',
-	'arena-rewrite',
+	'arena',
 	'devstack.config.ts',
 );
 
@@ -58,7 +58,7 @@ const dockerReachable = (): { ok: boolean; detail: string } => {
 	return { ok: true, detail: res.stdout.trim() };
 };
 
-describe('arena-rewrite boots end-to-end', () => {
+describe('arena boots end-to-end', () => {
 	it('every plugin reaches `ready` and openLobby returns a real digest', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
@@ -69,16 +69,16 @@ describe('arena-rewrite boots end-to-end', () => {
 		const result = await runBoot({
 			configPath: CONFIG_PATH,
 			appName: 'arena',
-			stackName: 'main',
+			stackName: 'arena',
 			// Project the action's resolved digest. The key matches
 			// the variadic ordinal of `openLobby` in the arena config
 			// (see `expectedKeys` below).
 			digestFromKey: 'action:arena.openLobby#5',
 		});
 
-		// Seven-plugin expectation. Ordinals match the variadic position
+		// Eight-plugin expectation. Ordinals match the variadic position
 		// in the config: sui(0), publisher(1), alice(2), bob(3),
-		// connect_four(4), openLobby(5), wallet(6). If the config order
+		// connect_four(4), openLobby(5), wallet(6), app(7). If the config order
 		// changes, update this list AND the `digestFromKey` arg above
 		// deliberately.
 		const expectedKeys = [
@@ -89,6 +89,7 @@ describe('arena-rewrite boots end-to-end', () => {
 			'package:connect_four#4',
 			'action:arena.openLobby#5',
 			'wallet#6',
+			'host-service/app#7',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);

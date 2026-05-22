@@ -41,6 +41,32 @@ const makeState = (): SubscribableState => ({
 		},
 	],
 	endpoints: [],
+	accounts: [
+		{
+			key: 'account/alice',
+			rowKey: 'account/alice#1' as never,
+			name: 'alice',
+			address: '0xabc',
+			scheme: 'ed25519',
+			source: 'real',
+			funding: { status: 'unknown', balanceMist: null, requestedMist: null },
+			walletVisible: false,
+			updatedAt: 125,
+		},
+	],
+	packages: [
+		{
+			key: 'package/vault',
+			rowKey: 'package/vault#2' as never,
+			name: 'vault',
+			kind: 'local',
+			packageId: '0x123',
+			upgradeCapId: null,
+			mvrPlaceholder: '@local/vault',
+			sourcePath: 'move/vault',
+			updatedAt: 126,
+		},
+	],
 	errors: [
 		{
 			at: 124,

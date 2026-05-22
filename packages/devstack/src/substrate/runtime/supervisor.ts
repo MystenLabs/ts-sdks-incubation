@@ -34,6 +34,7 @@ import {
 	Cause,
 	Context,
 	Data,
+	Deferred,
 	Effect,
 	Exit,
 	Fiber,
@@ -51,7 +52,7 @@ import type { Identity } from '../identity.ts';
 import type { LifecycleStatus, PluginKind } from '../lifecycle.ts';
 import type { DevstackOptions } from '../options.ts';
 import type { AcquireContext, AnyMember, PluginErrorContribution } from '../plugin.ts';
-import type { SubscribableState } from '../projection.ts';
+import type { AccountProjection, SubscribableState } from '../projection.ts';
 import {
 	CapabilitySinksService,
 	layerCapabilitySinksDefault,
@@ -60,6 +61,7 @@ import {
 	type HarvestContext,
 	type OrchestratorSinks,
 } from './capability-sinks/index.ts';
+import { CurrentPluginKey, CurrentPluginProgress } from './current-plugin.ts';
 import {
 	Logger,
 	type LoggerShape,
@@ -69,9 +71,11 @@ import {
 	annotateOp,
 	prettyErrorStructured,
 } from './observability/index.ts';
+import { PostAcquireTaskFailed } from './post-acquire-tasks.ts';
 import { RuntimeRoot } from './paths.ts';
 import { getOrDefault, getOrDefaultEffect } from './context-helpers.ts';
-import { setIdentity, updateRef } from './projection/update.ts';
+import { operationalEndpointEventsFromResolvedValue } from './projection/operational-endpoints.ts';
+import { declareAccount, setIdentity, updateRef } from './projection/update.ts';
 import {
 	awaitUpstreams,
 	buildContextFor,
@@ -139,10 +143,11 @@ const noopLogger: LoggerShape = {
 
 const projectionLevel = (
 	level: 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal',
-): Extract<EngineEvent, { tag: 'log.appended' }>['level'] => {
+): Extract<EngineEvent, { tag: 'log.appended' }>['level'] | null => {
 	switch (level) {
 		case 'trace':
 		case 'debug':
+			return null;
 		case 'info':
 			return 'info';
 		case 'warn':
@@ -168,11 +173,13 @@ const withEventPublishingLogger = (
 		Effect.gen(function* () {
 			yield* base.log(tag, pluginKey, payload);
 			if (pluginKey === null) return;
+			const level = projectionLevel(payload.level);
+			if (level === null) return;
 			yield* publish(ref, hub, {
 				tag: 'log.appended',
 				pluginKey,
 				line: payload.message,
-				level: projectionLevel(payload.level),
+				level,
 				at: Date.now(),
 			});
 		}),
@@ -373,7 +380,7 @@ const dispatchContributions = (
 	sinks: CapabilitySinksShape,
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	hub: Queue.Enqueue<EngineEvent>,
-): Effect.Effect<void, never, never> =>
+): Effect.Effect<void, unknown, never> =>
 	Effect.gen(function* () {
 		const harvestCtx: HarvestContext = {
 			pluginKey,
@@ -448,7 +455,7 @@ const acquireNode = (
 		if (entry === undefined) return;
 		yield* annotatePhase('acquire');
 		yield* logger.log(`supervisor/${key}`, key, {
-			level: 'info',
+			level: 'debug',
 			message: 'plugin acquire start',
 			fields: { kind: entry.node.member.kind },
 		});
@@ -498,7 +505,19 @@ const acquireNode = (
 		const ctx = buildContextFor(registry, entry.node);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const acquire = entry.node.member.acquire as (c: any) => Effect.Effect<unknown, unknown, any>;
-		const providedAcquire = Effect.provide(acquire(ctx), pluginContext) as Effect.Effect<
+		const currentPluginContext = pluginContext.pipe(
+			Context.add(CurrentPluginKey, { key }),
+			Context.add(CurrentPluginProgress, {
+				setPhase: (phase) =>
+					publish(ref, hub, {
+						tag: 'lifecycle.phaseSet',
+						pluginKey: key,
+						phase,
+						at: Date.now(),
+					}),
+			}),
+		);
+		const providedAcquire = Effect.provide(acquire(ctx), currentPluginContext) as Effect.Effect<
 			unknown,
 			unknown,
 			Scope.Scope
@@ -566,24 +585,59 @@ const acquireNode = (
 			const caps = capsExit.value;
 			const errorContributions = entry.node.member.errorContributions ?? [];
 			if (caps.length > 0 || errorContributions.length > 0) {
-				yield* dispatchContributions(
-					key,
-					caps,
-					errorContributions,
-					entry.node.member.kind,
-					identity,
-					entry.scope,
-					sinks,
-					ref,
-					hub,
+				const dispatchExit = yield* Effect.exit(
+					dispatchContributions(
+						key,
+						caps,
+						errorContributions,
+						entry.node.member.kind,
+						identity,
+						entry.scope,
+						sinks,
+						ref,
+						hub,
+					),
 				);
+				if (Exit.isFailure(dispatchExit)) {
+					yield* registry.markFailed(key, dispatchExit.cause).pipe(Effect.catch(() => Effect.void));
+					yield* publish(ref, hub, {
+						tag: 'error.reported',
+						error: prettyErrorStructured(dispatchExit.cause, {
+							pluginKey: key,
+							severity: 'error',
+							at: Date.now(),
+						}),
+					});
+					yield* logger.log(`supervisor/${key}`, key, {
+						level: 'error',
+						message: 'plugin capability dispatch failed',
+					});
+					return;
+				}
 			}
+			const routablesPresent = caps.some((capability) => capability.kind === 'routable');
+			for (const event of operationalEndpointEventsFromResolvedValue(
+				key,
+				result.value,
+				Date.now(),
+				{
+					routablesPresent,
+				},
+			)) {
+				yield* publish(ref, hub, event);
+			}
+			yield* publish(ref, hub, {
+				tag: 'lifecycle.phaseSet',
+				pluginKey: key,
+				phase: null,
+				at: Date.now(),
+			});
 			// `markReady` populates the synchronous resolved-value map AND
 			// resolves the deferred; downstream `BuildContext.get` reads
 			// from the former.
 			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
 			yield* logger.log(`supervisor/${key}`, key, {
-				level: 'info',
+				level: 'debug',
 				message: 'plugin ready',
 				fields: {
 					capabilities: caps.length,
@@ -592,7 +646,7 @@ const acquireNode = (
 			});
 		} else {
 			yield* logger.log(`supervisor/${key}`, key, {
-				level: 'error',
+				level: 'debug',
 				message: 'plugin acquire failed',
 			});
 		}
@@ -796,6 +850,7 @@ interface CommandLoopDeps {
 	readonly hub: Queue.Enqueue<EngineEvent>;
 	readonly commands: Queue.Dequeue<EngineCommand>;
 	readonly shutdownLatch: Ref.Ref<boolean>;
+	readonly shutdownComplete: Deferred.Deferred<void>;
 	readonly pluginContext: Context.Context<never>;
 	readonly sinks: CapabilitySinksShape;
 	readonly logger: LoggerShape;
@@ -836,12 +891,13 @@ const publishHookFailure = (
 	deps: CommandLoopDeps,
 	cause: Cause.Cause<unknown>,
 	message: string,
+	pluginKey: PluginKey | null = null,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* publish(deps.ref, deps.hub, {
 			tag: 'error.reported',
 			error: prettyErrorStructured(cause, {
-				pluginKey: null,
+				pluginKey,
 				severity: 'error',
 				at: Date.now(),
 			}),
@@ -851,6 +907,14 @@ const publishHookFailure = (
 			message,
 		});
 	});
+
+const findPostAcquireTaskFailure = (cause: Cause.Cause<unknown>): PostAcquireTaskFailed | null => {
+	for (const reason of cause.reasons) {
+		if (!Cause.isFailReason(reason)) continue;
+		if (reason.error instanceof PostAcquireTaskFailed) return reason.error;
+	}
+	return null;
+};
 
 const runPostAcquireHook = (
 	deps: CommandLoopDeps,
@@ -871,7 +935,20 @@ const runPostAcquireHook = (
 			}
 			return;
 		}
-		yield* publishHookFailure(deps, exit.cause, 'post-acquire hook failed');
+		const taskFailure = findPostAcquireTaskFailure(exit.cause);
+		if (taskFailure !== null) {
+			yield* deps.registry
+				.markFailed(taskFailure.pluginKey, taskFailure.cause)
+				.pipe(Effect.catch(() => Effect.void));
+		}
+		yield* publishHookFailure(
+			deps,
+			exit.cause,
+			taskFailure === null
+				? 'post-acquire hook failed'
+				: `post-acquire task failed: ${taskFailure.label}`,
+			taskFailure?.pluginKey ?? null,
+		);
 		return yield* Effect.fail(new SupervisorPostAcquireFailed({ cause: exit.cause }));
 	}).pipe(Effect.withSpan('lifecycle.supervisor.postAcquireHook'));
 
@@ -915,6 +992,10 @@ const handleCommand = (
 					level: 'info',
 					message: 'shutdown requested',
 				});
+				const plan = planFullDrain(graph);
+				yield* teardownKeys(graph, registry, plan.teardownOrder);
+				yield* Effect.yieldNow;
+				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
 				return;
 			}
 			case 'shutdown.hardKillRequested': {
@@ -926,6 +1007,7 @@ const handleCommand = (
 				});
 				yield* setCyclePhase(ref, 'shutting-down');
 				yield* Ref.set(shutdownLatch, true);
+				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
 				yield* logger.log('supervisor', null, {
 					level: 'fatal',
 					message: `shutdown escalated by ${cmd.signal}`,
@@ -1127,7 +1209,7 @@ export const startSupervisor = (
 		const baseLogger: LoggerShape = getOrDefault(pluginContext, Logger, noopLogger);
 
 		yield* baseLogger.log('supervisor', null, {
-			level: 'info',
+			level: 'debug',
 			message: 'supervisor boot start',
 			fields: {
 				app: identity.app,
@@ -1166,6 +1248,7 @@ export const startSupervisor = (
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const shutdownLatch = yield* Ref.make(false);
+		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);
 		const logger = withEventPublishingLogger(baseLogger, state, hub);
 		const pluginRuntimeContext = pluginContext.pipe(
@@ -1184,8 +1267,9 @@ export const startSupervisor = (
 		// folds into the composite row via `compositeParent`.
 		for (const [key, node] of graph.nodes) {
 			if (node.compositeParent !== null) continue;
+			const declaredAccount = pendingAccountProjection(key, node.member.provides.id, Date.now());
 			yield* SubscriptionRef.update(state, (s) => ({
-				...s,
+				...(declaredAccount === null ? s : declareAccount(s, declaredAccount)),
 				rows: s.rows.some((r) => r.key === key)
 					? s.rows
 					: [
@@ -1268,6 +1352,7 @@ export const startSupervisor = (
 			hub,
 			commands,
 			shutdownLatch,
+			shutdownComplete,
 			pluginContext: pluginRuntimeContext,
 			sinks: sinksService,
 			logger,
@@ -1358,15 +1443,9 @@ export const startSupervisor = (
 			}),
 		);
 
-		const awaitShutdown: Effect.Effect<void> = Effect.gen(function* () {
-			// Spin until the latch flips. The shutdown latch is set by the
-			// command loop on `shutdown.requested` / `stack.stop`.
-			while (true) {
-				const done = yield* Ref.get(shutdownLatch);
-				if (done) return;
-				yield* Effect.sleep('100 millis');
-			}
-		}).pipe(Effect.withSpan('lifecycle.supervisor.awaitShutdown'));
+		const awaitShutdown: Effect.Effect<void> = Deferred.await(shutdownComplete).pipe(
+			Effect.withSpan('lifecycle.supervisor.awaitShutdown'),
+		);
 
 		const handle = {
 			identity,
@@ -1427,6 +1506,27 @@ export const supervise = (
 // -----------------------------------------------------------------------------
 // Helpers
 // -----------------------------------------------------------------------------
+
+const pendingAccountProjection = (
+	rowKey: PluginKey,
+	tagId: string,
+	updatedAt: number,
+): AccountProjection | null => {
+	if (!tagId.startsWith('account/')) return null;
+	const name = tagId.slice('account/'.length);
+	if (name.length === 0) return null;
+	return {
+		key: tagId as `account/${string}`,
+		rowKey,
+		name,
+		address: null,
+		scheme: null,
+		source: null,
+		funding: { status: 'pending', balanceMist: null, requestedMist: null },
+		walletVisible: false,
+		updatedAt,
+	};
+};
 
 const composeChildKeysFor = (
 	graph: ResolvedGraph,

@@ -19,14 +19,17 @@ export type LifecycleStatus =
  *  the engine treats phase as opaque text; renderers project. */
 export type PhaseNarration = string;
 
-/** Plugin classification — drives lifecycle transitions and renderer
- *  vocabulary computation. */
-export type PluginKind =
-	| 'leaf-long-running'
-	| 'leaf-one-shot'
-	| 'composite'
-	| 'hidden-leaf'
-	| 'renderer';
+/** Plugin classification registry — drives lifecycle transitions and
+ *  renderer vocabulary computation. */
+export interface DevstackPluginKindRegistry {
+	readonly 'leaf-long-running': {};
+	readonly 'leaf-one-shot': {};
+	readonly composite: {};
+	readonly 'hidden-leaf': {};
+	readonly renderer: {};
+}
+
+export type PluginKind = keyof DevstackPluginKindRegistry & string;
 
 /** Reboot-cost ordinal declared per plugin. Pure data; the cascade
  *  formatter (L0) reads it. Substrate violation §20 — plugins own

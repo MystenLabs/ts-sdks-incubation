@@ -1,27 +1,22 @@
 ---
-title: Refs and Tags
-description: The current stack-member substrate model.
+title: Refs and Dependencies
+description: The current plugin dependency model.
 ---
 
-Every root factory returns a stack member. A member has:
+Every root factory returns a plugin value. A plugin has one public `id`, may list `dependsOn`, and
+resolves to a typed value from `start`.
 
-- `provides`: the tag for the resolved value it publishes.
-- `consumes`: tags that must resolve before it can acquire.
+- `id`: graph identity and generated default resource id.
+- `dependsOn`: a single plugin/ref, an array, or an object.
 - `kind`: lifecycle classification for the supervisor.
-- `acquire`: the effect that produces the resolved value.
+- `start`: the effect that produces the resolved value.
 - `capabilities`: optional declarations for routing, snapshots, strategies, generated files, and
   composites.
 
-The public helpers are available from the root export and from the `substrate` subpath when you want
-smaller imports:
+The public helpers are available from the root export:
 
 ```ts
-import {
-	defineNodePlugin,
-	defineTag,
-	capabilities,
-	consumeMember,
-} from '@mysten-incubation/devstack';
+import { definePlugin, defineCapability, codegenable } from '@mysten-incubation/devstack';
 ```
 
 Direct member references are the public cross-plugin pattern:
@@ -34,12 +29,12 @@ const hello = localPackage('hello', {
 });
 ```
 
-The package factory projects `publisher.provides` into its `consumes` tuple. The supervisor then
-orders the publisher before the publish step, and TypeScript can report a missing provider at the
-`defineDevstack(...)` call site.
+The package factory records `publisher` in `dependsOn`. The supervisor then orders the publisher
+before the publish step, and TypeScript can report a missing provider at the `defineDevstack(...)`
+call site.
 
 Subpaths:
 
-- `@mysten-incubation/devstack/substrate` exports brands, tags, lifecycle types, manifest types, and
-  stack-member shapes.
+- `@mysten-incubation/devstack/substrate` exports brands, lifecycle types, manifest types, and
+  witness helpers.
 - `@mysten-incubation/devstack/contracts` exports capability declaration types.

@@ -30,6 +30,15 @@
 
 import { Context, Effect, Layer } from 'effect';
 
+import {
+	SUI_FAUCET_ENDPOINT_NAME,
+	SUI_FAUCET_ENTRYPOINT_PORT,
+	SUI_GRAPHQL_ENDPOINT_NAME,
+	SUI_GRAPHQL_ENTRYPOINT_PORT,
+	SUI_RPC_ENDPOINT_NAME,
+	SUI_RPC_ENTRYPOINT_PORT,
+} from '../../plugins/sui/routable.ts';
+import { WALLET_ENDPOINT_NAME, WALLET_ENTRYPOINT_PORT } from '../../plugins/wallet/routable.ts';
 import { EntrypointConflict, UnknownEntrypoint } from './errors.ts';
 
 /** A named entrypoint — a host port the Traefik container binds and
@@ -138,11 +147,23 @@ export const layerEntrypointRegistry = (
  *  dispatches per stack).
  *
  *  The port choices preserve the legacy assignments documented in the
- *  distilled component docs (walrus 9185, seal 2024, deepbook 9008,
- *  wallet 6173, etc). Renumbering is a follow-up. */
+ *  distilled component docs and build integrations (app dev 5175,
+ *  walrus 9185, seal 2024, deepbook 9008, wallet 6173, etc).
+ *  Renumbering is a follow-up. */
 export const DEFAULT_ENTRYPOINTS: ReadonlyArray<Entrypoint> = [
+	// Sui local mode — router-fronted RPC/faucet/GraphQL endpoints.
+	// The validator container still publishes private host ports for
+	// boot probes and container-to-host gateway calls; these entrypoints
+	// are the user-facing URLs exposed in manifests, codegen, and TUI.
+	{ name: SUI_RPC_ENDPOINT_NAME, port: SUI_RPC_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: SUI_FAUCET_ENDPOINT_NAME, port: SUI_FAUCET_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: SUI_GRAPHQL_ENDPOINT_NAME, port: SUI_GRAPHQL_ENTRYPOINT_PORT, protocol: 'http' },
+	// Browser app dev server. Matches the Vite cold-start URL:
+	// `dev.<app>.localhost:5175` for the main stack and
+	// `dev.<stack>.<app>.localhost:5175` for named stacks.
+	{ name: 'dev', port: 5175, protocol: 'http' },
 	// Wallet host-process server.
-	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+	{ name: WALLET_ENDPOINT_NAME, port: WALLET_ENTRYPOINT_PORT, protocol: 'http' },
 	// Walrus cluster — N node entrypoint aliases plus aggregator/publisher.
 	// The registry canonicalizes these to one Traefik listener on 9185;
 	// per-node distinct hostnames let that single listener fan out via

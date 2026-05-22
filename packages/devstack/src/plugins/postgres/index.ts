@@ -33,19 +33,29 @@ import { Effect } from 'effect';
 
 import { capabilities } from '../../api/define-capabilities.ts';
 import { defineNodePlugin } from '../../api/define-plugin.ts';
+import { pluginErrorContributions } from '../../api/plugin-authoring.ts';
 import { defineTag } from '../../api/tag.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
+import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 
 import { makeCodegenable } from './codegen.ts';
 import type { PostgresConnectionBindings } from './connection.ts';
-import { POSTGRES_ERROR_TAGS, postgresPluginError } from './errors.ts';
+import { POSTGRES_ERROR_TAGS, postgresConfigError, postgresPluginError } from './errors.ts';
 import { makePostgresRoutable } from './routable.ts';
 import { bootPostgresService, type Postgres, type PostgresServiceOptions } from './service.ts';
 import { makeSnapshotable } from './snapshot.ts';
+
+type PostgresCapabilities =
+	| readonly [SnapshotableDecl, CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'>]
+	| readonly [
+			SnapshotableDecl,
+			CodegenableDecl<PostgresConnectionBindings, 'postgres-connection'>,
+			RoutableDecl,
+	  ];
 
 // ---------------------------------------------------------------------------
 // Tag — the resolved value all consumers read
@@ -57,6 +67,7 @@ import { makeSnapshotable } from './snapshot.ts';
  *
  *  Tag id matches the plugin key: `'postgres'`. */
 export const PostgresTag = defineTag<'postgres', Postgres>('postgres', 'postgres');
+const postgresErrorContributions = pluginErrorContributions(POSTGRES_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Plugin construction
@@ -84,9 +95,13 @@ export interface PostgresPluginOptions extends PostgresServiceOptions {
 
 const buildPlugin = (opts: PostgresPluginOptions) => {
 	const name = opts.name ?? 'postgres';
-	const databases = opts.databases ?? ['devstack'];
+	const databases = expectNonEmptyArray(opts.databases ?? ['devstack'], {
+		field: 'databases',
+		message: 'postgres(): `databases` must be non-empty',
+		mkError: postgresConfigError,
+	});
 
-	return defineNodePlugin({
+	return defineNodePlugin<typeof PostgresTag, readonly [], PostgresCapabilities>({
 		provides: PostgresTag,
 		consumes: [] as const,
 		kind: 'leaf-long-running',
@@ -108,6 +123,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				// catch-all and surfaces as `phase: 'unknown'`.
 				Effect.catchTags({
 					PostgresPluginError: Effect.fail,
+					PostgresConfigError: Effect.fail,
 					PostgresConnectionTimeout: Effect.fail,
 					DatabaseCreateFailed: Effect.fail,
 				}),
@@ -115,7 +131,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 					Effect.fail(postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause)),
 				),
 			),
-		errorContributions: [{ _tag: 'PluginErrorContribution', errorTags: POSTGRES_ERROR_TAGS }],
+		errorContributions: postgresErrorContributions,
 		// Dynamic capability factory: receives the resolved
 		// `Postgres` handle + acquire context. Stamps the REAL
 		// app/stack into the snapshot decl and the REAL
@@ -178,6 +194,7 @@ export type { PostgresConnectionBindings, PostgresConnectionParts } from './conn
 export type {
 	PostgresError,
 	PostgresPluginError,
+	PostgresConfigError,
 	PostgresConnectionTimeout,
 	DatabaseCreateFailed,
 	PostgresPhase,

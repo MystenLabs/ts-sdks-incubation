@@ -15,9 +15,9 @@ describe('coldStartUrl', () => {
 		);
 	});
 
-	it('prefixes the stack name for non-main stacks', () => {
+	it('keeps dev first for non-main stacks', () => {
 		expect(coldStartUrl({ app: 'wallet', stack: 'test' })).toBe(
-			`http://test.dev.wallet.localhost:${DEFAULT_ROUTER_PUBLIC_PORT}/`,
+			`http://dev.test.wallet.localhost:${DEFAULT_ROUTER_PUBLIC_PORT}/`,
 		);
 	});
 
@@ -31,6 +31,6 @@ describe('coldStartUrl', () => {
 describe('coldStartHost', () => {
 	it('returns just the hostname for allowedHosts', () => {
 		expect(coldStartHost({ app: 'wallet', stack: 'main' })).toBe('dev.wallet.localhost');
-		expect(coldStartHost({ app: 'wallet', stack: 'test' })).toBe('test.dev.wallet.localhost');
+		expect(coldStartHost({ app: 'wallet', stack: 'test' })).toBe('dev.test.wallet.localhost');
 	});
 });

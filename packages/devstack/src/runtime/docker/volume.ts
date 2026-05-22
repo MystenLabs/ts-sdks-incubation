@@ -8,6 +8,7 @@
 import { Effect, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
+import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	DockerInspectDecodeFailed,
@@ -72,27 +73,23 @@ const inspectVolume = (
 			);
 		}
 		try {
-			const arr = JSON.parse(res.stdout) as unknown;
-			if (!Array.isArray(arr) || arr.length === 0) {
-				return yield* Effect.fail(
+			const decoded = decodeJsonArrayElementSync(VolumeInspectSchema, res.stdout, {
+				source: `docker volume inspect ${name}`,
+				missingMessage: 'inspect returned an empty result',
+				mkError: (issue) =>
 					new DockerInspectDecodeFailed({
 						resource: 'volume',
 						name,
-						detail: 'inspect returned an empty result',
+						detail:
+							issue.message === 'inspect returned an empty result'
+								? issue.message
+								: 'inspect returned malformed volume JSON',
+						cause: issue.cause,
 					}),
-				);
-			}
-			const decoded = Schema.decodeUnknownSync(VolumeInspectSchema)(arr[0]);
+			});
 			return { name: decoded.Name, labels: readLabels(decoded.Labels) };
 		} catch (cause) {
-			return yield* Effect.fail(
-				new DockerInspectDecodeFailed({
-					resource: 'volume',
-					name,
-					detail: 'inspect returned malformed volume JSON',
-					cause,
-				}),
-			);
+			return yield* Effect.fail(cause as DockerRuntimeError);
 		}
 	});
 

@@ -36,37 +36,26 @@ const writeCodegenConfig = (appRoot: string): string => {
 		`
 import { Effect } from 'effect';
 import {
-\tcapabilities,
+\tcodegenable,
 \tdefineDevstack,
-\tdefineNodePlugin,
-\tdefineTag,
-\ttype CodegenableDecl,
+\tdefinePlugin,
 } from '@mysten-incubation/devstack';
 
-const CliApplyCodegenTag = defineTag<'test/cli-apply-codegen', { readonly message: string }>(
-\t'test/cli-apply-codegen',
-\t'test',
-);
-
-const cliApplyCodegenPlugin = defineNodePlugin({
-\tprovides: CliApplyCodegenTag,
-\tconsumes: [] as const,
+const cliApplyCodegenPlugin = definePlugin({
+\tid: 'test/cli-apply-codegen',
 \tkind: 'leaf-long-running',
-\tacquire: () => Effect.succeed({ message: 'from-cli-apply' } as const),
-\tcapabilities: (resolved) =>
-\t\tcapabilities({
-\t\t\tkind: 'codegenable',
+\tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
+\tcapabilities: ({ value }) => [
+\t\tcodegenable({
 \t\t\temitterName: 'cli-apply-proof',
 \t\t\toutputPath: 'cli-apply-proof.ts',
 \t\t\tsensitive: false,
-\t\t\temit: () => Effect.succeed({ cliApplyProof: resolved }),
-\t\t} satisfies CodegenableDecl<
-\t\t\t{ readonly cliApplyProof: { readonly message: string } },
-\t\t\t'cli-apply-proof'
-\t\t>),
+\t\t\temit: () => Effect.succeed({ cliApplyProof: value }),
+\t\t}),
+\t],
 });
 
-export default defineDevstack(cliApplyCodegenPlugin, { stackName: 'main' });
+export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });
 `.trimStart(),
 	);
 	return configPath;
@@ -80,79 +69,6 @@ const OFFLINE_RESTORE_SUI_SNAPSHOT_IDENTITY = JSON.stringify({
 	kind: 'sui-chain',
 });
 
-const writeOfflineRestoreConfig = (appRoot: string): string => {
-	const configPath = join(appRoot, 'devstack.config.ts');
-	writeFileSync(
-		configPath,
-		`
-import { Effect } from 'effect';
-import { capabilities, defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
-
-const OfflineRestoreTag = defineTag<'test/offline-restore', { readonly ready: true }>(
-\t'test/offline-restore',
-\t'test',
-);
-
-const offlineRestorePlugin = defineNodePlugin({
-\tprovides: OfflineRestoreTag,
-\tconsumes: [] as const,
-\tkind: 'leaf-long-running',
-\tacquire: () => Effect.succeed({ ready: true } as const),
-\tcapabilities: () =>
-\t\tcapabilities({
-\t\t\tkind: 'snapshotable',
-\t\t\tsubtrees: [],
-\t\t\tmanagedContainers: [],
-\t\t\tmissingTolerance: 'fine',
-\t\t\tpreRestore: Effect.succeed({ marker: 'offline-restore' }),
-\t\t}),
-});
-
-export default defineDevstack(offlineRestorePlugin, { stackName: 'alpha' });
-`.trimStart(),
-	);
-	return configPath;
-};
-
-const writeOfflineRestoreSuiIdentityConfig = (appRoot: string, acquireMarker: string): string => {
-	const configPath = join(appRoot, 'devstack.config.ts');
-	writeFileSync(
-		configPath,
-		`
-import { writeFileSync } from 'node:fs';
-import { Effect } from 'effect';
-import { capabilities, defineDevstack, defineNodePlugin, defineTag } from '@mysten-incubation/devstack';
-
-const FakeSuiTag = defineTag<'sui', { readonly ready: true }>(
-\t'sui',
-\t'test',
-);
-
-const fakeSuiPlugin = defineNodePlugin({
-\tprovides: FakeSuiTag,
-\tconsumes: [] as const,
-\tkind: 'leaf-long-running',
-\tacquire: () =>
-\t\tEffect.sync(() => {
-\t\t\twriteFileSync(${JSON.stringify(acquireMarker)}, 'acquired');
-\t\t\treturn { ready: true } as const;
-\t\t}),
-\tcapabilities: () =>
-\t\tcapabilities({
-\t\t\tkind: 'snapshotable',
-\t\t\tsubtrees: [],
-\t\t\tmanagedContainers: [],
-\t\t\tmissingTolerance: 'fine',
-\t\t\tpreRestore: Effect.succeed({ kind: 'sui-chain', chain: 'fresh-live-chain' }),
-\t\t}),
-});
-
-export default defineDevstack(fakeSuiPlugin, { stackName: 'alpha' });
-`.trimStart(),
-	);
-	return configPath;
-};
-
 const makeProjectionState = (params: {
 	readonly app: string;
 	readonly stack: string;
@@ -162,6 +78,8 @@ const makeProjectionState = (params: {
 	cycle: { id: 1, startedAt: 123, phase: 'running' },
 	rows: [],
 	endpoints: [],
+	accounts: [],
+	packages: [],
 	errors: [],
 	lastEvent: { seq: 1, at: 124 },
 	stackBuild: [],
@@ -325,6 +243,7 @@ describe('cli/main', () => {
 			expect(existsSync(generatedPath)).toBe(false);
 
 			await runCli([
+				'apply',
 				'--config',
 				configPath,
 				'--state-dir',
@@ -335,7 +254,6 @@ describe('cli/main', () => {
 				'main',
 				'--network',
 				'localnet',
-				'apply',
 			]);
 
 			expect(process.exitCode).toBe(0);
@@ -384,6 +302,7 @@ describe('cli/main', () => {
 			);
 
 			await runCli([
+				'status',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -391,7 +310,6 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'status',
 			]);
 
 			expect(stderr.join('')).toBe('');
@@ -431,6 +349,8 @@ describe('cli/main', () => {
 			writeSnapshotMetadata(stackRoot, 'baseline');
 
 			await runCli([
+				'snapshot',
+				'list',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -438,8 +358,6 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'snapshot',
-				'list',
 			]);
 
 			expect(stderr.join('')).toBe('');
@@ -456,7 +374,7 @@ describe('cli/main', () => {
 		}
 	});
 
-	it('snapshot restore resolves and publishes through the runtime stacks root', async () => {
+	it('snapshot restore refuses to bypass a live attached supervisor', async () => {
 		const stateRoot = makeTempRoot('cli-snapshot-restore-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
 		const previousExitCode = process.exitCode;
@@ -475,6 +393,9 @@ describe('cli/main', () => {
 			writeLiveRoster(stackRoot);
 
 			await runCli([
+				'snapshot',
+				'restore',
+				'workflow-baseline',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -482,19 +403,16 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'snapshot',
-				'restore',
-				'workflow-baseline',
 			]);
 
-			expect(process.exitCode).toBe(0);
+			expect(process.exitCode).toBe(40);
 			expect(stderr.join('')).toBe('');
-			expect(
-				readCommandLog(stackRoot).map((record) => ({
-					tag: record.command.tag,
-					snapshotId: record.command.snapshotId,
-				})),
-			).toEqual([{ tag: 'snapshot.restore', snapshotId: 'baseline' }]);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: { readonly summary: string };
+			};
+			expect(envelope.error.summary).toContain('supervisor live for labeled-app/alpha');
+			expect(existsSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
 			expect(
 				existsSync(join(stateRoot, 'labeled-app', 'alpha', COMMAND_CHANNEL_COMMANDS_FILE_NAME)),
 			).toBe(false);
@@ -506,10 +424,8 @@ describe('cli/main', () => {
 	});
 
 	it('snapshot restore runs directly without a live roster', async () => {
-		const appRoot = makeTempRoot('cli-snapshot-direct-restore-app');
 		const stateRoot = makeTempRoot('cli-snapshot-direct-restore-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
-		const configPath = writeOfflineRestoreConfig(appRoot);
 		const previousExitCode = process.exitCode;
 		const stdout: Array<string> = [];
 		const stderr: Array<string> = [];
@@ -525,8 +441,9 @@ describe('cli/main', () => {
 			await writeRestorableSnapshotArtifact(stackRoot, 'baseline');
 
 			await runCli([
-				'--config',
-				configPath,
+				'snapshot',
+				'restore',
+				'baseline',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -534,21 +451,15 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'snapshot',
-				'restore',
-				'baseline',
 			]);
 
 			expect(process.exitCode).toBe(0);
 			expect(stderr.join('')).toBe('');
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
-				readonly data: { readonly published: string; readonly snapshotId: string };
+				readonly data: { readonly snapshotId: string };
 			};
-			expect(envelope.data).toEqual({
-				published: 'snapshot.restore',
-				snapshotId: 'baseline',
-			});
+			expect(envelope.data).toEqual({ snapshotId: 'baseline' });
 			const commandLogPath = join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME);
 			const commandLog = existsSync(commandLogPath) ? readCommandLog(stackRoot) : [];
 			expect(
@@ -569,7 +480,6 @@ describe('cli/main', () => {
 		const stateRoot = makeTempRoot('cli-snapshot-direct-restore-sui-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
 		const acquireMarker = join(appRoot, 'sui-acquired');
-		const configPath = writeOfflineRestoreSuiIdentityConfig(appRoot, acquireMarker);
 		const previousExitCode = process.exitCode;
 		const stdout: Array<string> = [];
 		const stderr: Array<string> = [];
@@ -587,8 +497,9 @@ describe('cli/main', () => {
 			});
 
 			await runCli([
-				'--config',
-				configPath,
+				'snapshot',
+				'restore',
+				'baseline',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -596,9 +507,6 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'snapshot',
-				'restore',
-				'baseline',
 			]);
 
 			expect(process.exitCode).toBe(0);
@@ -606,12 +514,9 @@ describe('cli/main', () => {
 			expect(existsSync(acquireMarker)).toBe(false);
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
-				readonly data: { readonly published: string; readonly snapshotId: string };
+				readonly data: { readonly snapshotId: string };
 			};
-			expect(envelope.data).toEqual({
-				published: 'snapshot.restore',
-				snapshotId: 'baseline',
-			});
+			expect(envelope.data).toEqual({ snapshotId: 'baseline' });
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();
@@ -619,7 +524,7 @@ describe('cli/main', () => {
 		}
 	});
 
-	it('down publishes to the command channel under the runtime stacks root', async () => {
+	it('down is not a public runCli command', async () => {
 		const stateRoot = makeTempRoot('cli-down-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
 		const previousExitCode = process.exitCode;
@@ -637,6 +542,7 @@ describe('cli/main', () => {
 			writeLiveRoster(stackRoot);
 
 			await runCli([
+				'down',
 				'--state-dir',
 				stateRoot,
 				'--app',
@@ -644,14 +550,16 @@ describe('cli/main', () => {
 				'--stack',
 				'alpha',
 				'--json',
-				'down',
 			]);
 
-			expect(process.exitCode).toBe(0);
+			expect(process.exitCode).toBe(64);
 			expect(stderr.join('')).toBe('');
-			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
-				'shutdown.requested',
-			]);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: { readonly summary: string };
+			};
+			expect(envelope.error.summary).toContain('No command registered for `down`');
+			expect(existsSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
 			expect(
 				existsSync(join(stateRoot, 'labeled-app', 'alpha', COMMAND_CHANNEL_COMMANDS_FILE_NAME)),
 			).toBe(false);
@@ -678,10 +586,10 @@ describe('cli/main', () => {
 
 		try {
 			process.exitCode = undefined;
-			await runCli(['--config', missingConfig, '--state-dir', stateRoot, 'up', '--help']);
+			await runCli(['up', '--config', missingConfig, '--state-dir', stateRoot, '--help']);
 
 			expect(process.exitCode).toBe(0);
-			expect(stdout.join('')).toContain('Usage: devstack up');
+			expect(stdout.join('')).toContain('devstack up');
 			expect(stderr.join('')).toBe('');
 		} finally {
 			process.exitCode = previousExitCode;
@@ -706,10 +614,10 @@ describe('cli/main', () => {
 
 		try {
 			process.exitCode = undefined;
-			await runCli(['--config', missingConfig, '--state-dir', stateRoot, 'apply', '--help']);
+			await runCli(['apply', '--config', missingConfig, '--state-dir', stateRoot, '--help']);
 
 			expect(process.exitCode).toBe(0);
-			expect(stdout.join('')).toContain('Usage: devstack apply');
+			expect(stdout.join('')).toContain('devstack apply');
 			expect(stderr.join('')).toBe('');
 		} finally {
 			process.exitCode = previousExitCode;
@@ -718,14 +626,30 @@ describe('cli/main', () => {
 		}
 	});
 
-	it('exec through runCli mirrors the child exit code', async () => {
+	it('exec is not a public runCli command', async () => {
 		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
 		try {
 			process.exitCode = undefined;
-			await runCli(['exec', '--', process.execPath, '-e', 'process.exit(23)']);
-			expect(process.exitCode).toBe(23);
+			await runCli(['exec', '--json', '--', process.execPath, '-e', 'process.exit(23)']);
+			expect(process.exitCode).toBe(64);
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: { readonly summary: string };
+			};
+			expect(envelope.error.summary).toContain('No command registered for `exec`');
 		} finally {
 			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
 		}
 	});
 });

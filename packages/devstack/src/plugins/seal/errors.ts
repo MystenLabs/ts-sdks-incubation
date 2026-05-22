@@ -18,6 +18,7 @@
 // collision at the root barrel.
 
 import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 // ---------------------------------------------------------------------------
 // SealError — the plugin's primary tagged error
@@ -94,12 +95,22 @@ export const forkIncompatibleError = (
 ): ForkIncompatibleError => new ForkIncompatibleError(parts);
 
 // ---------------------------------------------------------------------------
+// SealConfigError — synchronous factory-time configuration faults
+// ---------------------------------------------------------------------------
+
+export interface SealConfigError extends ConfigIssue {
+	readonly _tag: 'SealConfigError';
+}
+
+export const sealConfigError = defineConfigError('SealConfigError');
+
+// ---------------------------------------------------------------------------
 // Error-tag inventory
 // ---------------------------------------------------------------------------
 
 /** Error tags this plugin contributes — surfaced to the cause walker
  *  via `PluginErrorContribution`. */
-export const SEAL_ERROR_TAGS = ['SealError', 'ForkIncompatibleError'] as const;
+export const SEAL_ERROR_TAGS = ['SealError', 'ForkIncompatibleError', 'SealConfigError'] as const;
 
 /** Union of every error a Seal-plugin caller may encounter. */
-export type SealAnyError = SealError | ForkIncompatibleError;
+export type SealAnyError = SealError | ForkIncompatibleError | SealConfigError;

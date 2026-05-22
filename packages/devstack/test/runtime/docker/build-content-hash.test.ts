@@ -10,6 +10,9 @@
 // `docker build` at the build-tag site (task #71).
 
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { buildContentHash } from '../../../src/runtime/docker/service.ts';
 
@@ -19,7 +22,7 @@ describe('buildContentHash — unsigned hex projection', () => {
 		// the 32-bit space. Hash.string's distribution makes this fast.
 		const seeds = [
 			'/tmp/foo',
-			'/Users/u/code/ts-sdks-incubation/examples/deepbook-full-rewrite/move/mock_usdc',
+			'/Users/u/code/ts-sdks-incubation/examples/deepbook-full/move/mock_usdc',
 			'/a',
 			'',
 			'context-path-with-very-long-suffix-' + 'x'.repeat(200),
@@ -53,5 +56,28 @@ describe('buildContentHash — unsigned hex projection', () => {
 		const a = buildContentHash({ contextPath: '/tmp/a' });
 		const b = buildContentHash({ contextPath: '/tmp/b' });
 		expect(a).not.toBe(b);
+	});
+
+	it('differs when platform differs', () => {
+		const native = buildContentHash({ contextPath: '/tmp/ctx' });
+		const amd64 = buildContentHash({ contextPath: '/tmp/ctx', platform: 'linux/amd64' });
+		expect(native).not.toBe(amd64);
+	});
+
+	it('differs when a build-context file changes', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'devstack-build-context-'));
+		try {
+			const entrypoint = join(dir, 'entrypoint.sh');
+			writeFileSync(join(dir, 'Dockerfile'), 'FROM scratch\nCOPY entrypoint.sh /entrypoint.sh\n');
+			writeFileSync(entrypoint, 'echo first\n');
+			const first = buildContentHash({ contextPath: dir, dockerfile: 'Dockerfile' });
+
+			writeFileSync(entrypoint, 'echo second\n');
+			const second = buildContentHash({ contextPath: dir, dockerfile: 'Dockerfile' });
+
+			expect(first).not.toBe(second);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

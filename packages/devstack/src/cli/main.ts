@@ -9,22 +9,12 @@
 //    scope finalizers and container teardown leaks."
 //
 // Shape:
-//   1. Parse argv via the SAME `parseGlobalFlags` the dispatcher uses
-//      (no shim parser — every flag the dispatcher knows works on `up`).
-//   2. Resolve identity (app/stack/network) from flags + env.
-//   3. If verb is `up`: construct substrate Layers, build LIVE deps
-//      (publisher writes to a local in-process queue AND mirrors to
-//      the cross-process command channel for peer CLIs), and dispatch.
-//      Effect runs as the outer Node fiber so SIGINT reaches Scope
-//      finalizers.
-//   4. If verb is `snapshot save` and no supervisor is live: construct
-//      substrate Layers locally, boot one-shot so snapshot participants
-//      register, then run the snapshot command through the same CLI dispatcher.
-//      If verb is `snapshot restore` and no supervisor is live: restore
-//      directly from the snapshot artifact before any stack acquire can
-//      mint fresh local state.
-//   5. Otherwise: build CHANNEL deps (publisher/subscriber backed by
-//      `<stackRoot>/{commands,events}.ndjson`) and dispatch.
+//   1. The Stricli-backed dispatcher validates argv and builds command-
+//      scoped flags.
+//   2. Attached `up` and one-shot `apply` construct substrate Layers
+//      directly so signals reach scope finalizers.
+//   3. Offline/direct commands read or mutate the selected stack root
+//      without publishing peer commands to a live supervisor.
 
 import { existsSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
@@ -34,7 +24,6 @@ import {
 	Cause,
 	Effect,
 	Exit,
-	Fiber,
 	FileSystem,
 	Layer,
 	Logger,
@@ -45,7 +34,7 @@ import {
 
 import { appName, chainId, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
-import type { EngineCommand, EngineEvent } from '../substrate/events.ts';
+import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import {
@@ -57,30 +46,16 @@ import {
 	writeProjectionSnapshot,
 } from '../substrate/runtime/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../substrate/runtime/run.ts';
-import {
-	commandChannelPaths,
-	makeCommandChannelSubscriber,
-} from '../substrate/runtime/cross-process/index.ts';
 
 import {
 	dispatch,
 	type CliDeps,
 	CliConfigInvalidError,
 	CliConfigNotFoundError,
+	CliSupervisorLiveError,
 } from '../surfaces/cli/index.ts';
-import {
-	makeChannelPublisher,
-	makeChannelSubscriber,
-	defaultProbes,
-	probeSupervisorPresence,
-	runNodeChildProcess,
-	type ChannelDepsContext,
-} from '../surfaces/cli/commands/index.ts';
-import type {
-	CommandPublisher,
-	EventSubscriber,
-} from '../surfaces/cli/commands/command-channel.ts';
-import type { LoadedConfig, ShutdownLatch } from '../surfaces/cli/commands/up.ts';
+import { defaultProbes, probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
+import type { LoadedConfig } from '../surfaces/cli/commands/config-loader.ts';
 import {
 	SnapshotOrchestratorService,
 	type RestoreParticipant,
@@ -92,11 +67,13 @@ import {
 	layerProductionOrchestrators,
 } from '../orchestrators/runtime-composition.ts';
 import type { StatusReader } from '../surfaces/cli/commands/status.ts';
-import { parseGlobalFlags } from '../surfaces/cli/flags.ts';
+import type { GlobalFlags } from '../surfaces/cli/flags.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
 import { resolveStackName } from '../api/inference-network.ts';
+import { readStackEngine, type Stack } from '../api/define-devstack.ts';
+import { makeDirectPruneDeps } from './prune-direct.ts';
 
 // -----------------------------------------------------------------------------
 // Config loader (default-export = Stack)
@@ -134,8 +111,16 @@ const validateStackModule = (
 			message: `config at ${resolvedConfigPath} does not default-export a Stack value (got _tag=${String((def as { _tag?: unknown })?._tag)})`,
 		});
 	}
+	let stack: SupervisedStack;
+	try {
+		stack = readStackEngine(def as Stack<SupervisedStack['members']>);
+	} catch (cause) {
+		throw new CliConfigInvalidError({
+			message: `config at ${resolvedConfigPath} default-exported an invalid Stack handle: ${cause instanceof Error ? cause.message : String(cause)}`,
+		});
+	}
 	return {
-		stack: def as SupervisedStack,
+		stack,
 		resolvedConfigPath,
 	};
 };
@@ -226,7 +211,7 @@ const resolveIdentity = (params: {
 };
 
 // -----------------------------------------------------------------------------
-// Verb deps composition (channel-backed)
+// Verb deps composition (attached + direct/offline)
 // -----------------------------------------------------------------------------
 
 const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
@@ -234,43 +219,37 @@ const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
 		Effect.sync(() => readProjectionSnapshot(identity.stackRoot) as SubscribableState | null),
 });
 
-/** Build the deps bundle for non-`up` verbs. The publisher/subscriber
- *  go through the cross-process command channel; the publisher probes
- *  the roster for a live supervisor on every publish (cheap — same
- *  liveness predicate the substrate already uses). */
-const buildChannelDeps = (identity: ResolvedIdentity): CliDeps => {
+const commandResultFromProcess = (): { readonly exitCode: number } => ({
+	exitCode: typeof process.exitCode === 'number' ? process.exitCode : 0,
+});
+
+const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 	const loader = makeConfigLoader();
-	const channelCtx: ChannelDepsContext = {
-		app: identity.app,
-		stack: identity.stack,
-		stackRoot: identity.stackRoot,
-		rosterFile: identity.rosterFile,
-	};
-	const publisher: CommandPublisher = makeChannelPublisher(channelCtx);
-	const subscriber: EventSubscriber = makeChannelSubscriber(channelCtx);
-	const shutdown: ShutdownLatch = { await: Effect.void };
 	return {
-		up: { loader, publisher, subscriber, shutdown },
-		down: { publisher },
+		up: {
+			run: (flags) =>
+				runUpLive(flags.configPath, identity, {
+					renderer: flags.renderer,
+					stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
+				}).pipe(Effect.map(() => commandResultFromProcess())),
+		},
+		apply: {
+			run: (flags) =>
+				runApplyLive(flags.configPath, identity).pipe(Effect.map(() => commandResultFromProcess())),
+		},
 		status: { reader: projectionStatusReader(identity) },
-		snapshot: { publisher, reader: makeSnapshotReader(identity) },
-		prune: { publisher },
-		logs: { subscriber, shutdown: Effect.never },
-		exec: { runChild: runNodeChildProcess },
+		snapshot: makeDirectSnapshotDeps(identity),
+		prune: makeDirectPruneDeps({ runtimeRoot: identity.runtimeRoot }),
 		doctor: {
 			probes: defaultProbes({
 				stateDir: identity.runtimeRoot,
 				appRoot: identity.stacksRoot,
 			}),
 		},
-		codegen: { publisher },
 		config: { loader },
-		apply: { publisher },
-		wipe: { publisher },
-		stack: {
-			resolveAppRoot: () => Effect.succeed(identity.stacksRoot),
+		wipe: {
+			wipe: () => runWipeDirect(identity),
 		},
-		fork: { publisher },
 	};
 };
 
@@ -326,37 +305,30 @@ const makeSnapshotCommandHandler = (params: {
 };
 
 /**
- * Run `devstack up`. Wires the substrate Layer stack + supervisor +
- * cross-process command-channel subscriber so peer CLI publishes reach
- * the in-process supervisor. The Effect runs as the outer Node fiber.
- *
- * The command channel is "outside" the in-process queue: a peer's
- * `down` writes to `commands.ndjson`, which a forwarder fiber reads
- * and offers onto the supervisor's `commands` queue. Events from the
- * supervisor's hub are mirrored to `events.ndjson` so peer CLIs can
- * tail them.
+ * Run `devstack up`. Wires the substrate Layer stack, supervisor,
+ * attached renderer, and in-process TUI command queue. The Effect runs
+ * as the outer Node fiber so SIGINT reaches scope finalizers.
  */
 const runUpLive = (
 	configPath: string | undefined,
 	identity: ResolvedIdentity,
 	options: {
-		readonly renderer: ReturnType<typeof parseGlobalFlags>['renderer'];
+		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
 	},
 ): Effect.Effect<void> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
 		const loaded = yield* loader.load(configPath).pipe(
-			Effect.matchEffect({
-				onFailure: (err) =>
-					Effect.gen(function* () {
-						process.stderr.write(`error: ${err.message}\n`);
-						process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
-						return yield* Effect.fail('config-load-failed' as const);
-					}),
-				onSuccess: (v) => Effect.succeed(v),
-			}),
+			Effect.catch((err) =>
+				Effect.sync(() => {
+					process.stderr.write(`error: ${err.message}\n`);
+					process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
+					return null;
+				}),
+			),
 		);
+		if (loaded === null) return;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
 
 		const identityValue: Identity = {
@@ -415,43 +387,15 @@ const runUpLive = (
 									),
 								),
 							);
-							// Bridge the cross-process command channel into the
-							// supervisor. Peer CLIs publishing `down` /
-							// `snapshot.*` / `prune` / `apply.requested` etc.
-							// write to `commands.ndjson`; this fiber forwards
-							// each into the supervisor's in-process command
-							// queue. Engine events are mirrored back to
-							// `events.ndjson` so peer logs/status tailers see
-							// the supervisor's emissions.
 							const stackPaths = yield* StackPathsService;
 							yield* Effect.forkScoped(
 								persistProjectionChanges(stackPaths.stackRoot, handle.state),
 							);
-							const channelPaths = commandChannelPaths(stackPaths.stackRoot);
-							const channel = yield* makeCommandChannelSubscriber(channelPaths, {
-								fromOffset: 'current',
-							}).pipe(Effect.catch(() => Effect.succeed(null)));
-							if (channel !== null) {
-								yield* Effect.forkScoped(
-									channel.commands.pipe(
-										Stream.runForEach((record) =>
-											Effect.gen(function* () {
-												yield* Queue.offer(handle.commands, record.command as EngineCommand);
-												yield* channel.ack(record.id).pipe(Effect.catch(() => Effect.void));
-											}),
-										),
-										Effect.catch(() => Effect.void),
-									),
-								);
-							}
 							yield* Effect.forkScoped(
 								Stream.fromQueue(handle.events).pipe(
 									Stream.runForEach((event) =>
 										Effect.gen(function* () {
 											yield* Queue.offer(rendererEvents, event);
-											if (channel !== null) {
-												yield* channel.publishEvent(event).pipe(Effect.catch(() => Effect.void));
-											}
 										}),
 									),
 								),
@@ -463,7 +407,7 @@ const runUpLive = (
 
 		yield* program.pipe(
 			Effect.provide(substrateLayers),
-			Effect.provide(Logger.layer([Logger.consolePretty()])),
+			Effect.provide(Logger.layer([])),
 			Effect.matchCauseEffect({
 				onFailure: (cause) =>
 					Effect.sync(() => {
@@ -478,7 +422,7 @@ const runUpLive = (
 					}),
 			}),
 		);
-	}).pipe(Effect.catch(() => Effect.void));
+	});
 };
 
 const runApplyLive = (
@@ -559,101 +503,87 @@ const snapshotIdentityParticipants = (meta: SnapshotMetadata): ReadonlyArray<Res
 		liveIdentity: Effect.succeed({ [plugin]: value }),
 	}));
 
-/** `snapshot save|restore` is valid in CI immediately around one-shot
- *  `apply`. In that shape there is no live supervisor to receive a
- *  channel command. Capture still needs a scoped one-shot stack so
- *  snapshot participants can register from live resolved plugins.
- *  Restore must not acquire the stack first: for local Sui snapshots,
- *  the chain identity comes from the artifact being restored, not from
- *  a newly booted localnet. */
-const runSnapshotDirect = (
-	argv: ReadonlyArray<string>,
-	flags: ReturnType<typeof parseGlobalFlags>,
-	identity: ResolvedIdentity,
-	stdinIsTty: boolean,
-): Effect.Effect<void> => {
-	const loader = makeConfigLoader();
-	return Effect.gen(function* () {
-		if (snapshotSubcommand(flags) === 'restore') {
-			const identityValue: Identity = {
-				app: appName(identity.app),
-				stack: stackName(identity.stack),
-				chain: chainId(identity.network),
-			};
-			const substrateLayers = layerProductionOrchestrators().pipe(
-				Layer.provideMerge(buildSubstrateLayers(identityValue, identity.runtimeRoot)),
-			);
-			const program = Effect.gen(function* () {
-				const snapshot = yield* SnapshotOrchestratorService;
-				const fs = yield* FileSystem.FileSystem;
-				const provideFileSystem = <A, E>(
-					effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-				): Effect.Effect<A, E, never> =>
-					effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
-				const directPublisher: CommandPublisher = {
-					publish: (cmd) => {
-						if (cmd.tag !== 'snapshot.restore') {
-							return Effect.die(`direct snapshot restore publisher cannot handle ${cmd.tag}`);
-						}
-						return provideFileSystem(
-							Effect.gen(function* () {
-								const entries = yield* snapshot.list;
-								const meta = entries.find((entry) => entry.id === cmd.snapshotId)?.metadata ?? null;
-								const participants = meta === null ? [] : snapshotIdentityParticipants(meta);
-								yield* snapshot.restore({ id: cmd.snapshotId, participants });
-							}),
-						);
-					},
-				};
-				yield* dispatch(
-					{
-						...buildChannelDeps(identity),
-						snapshot: {
-							publisher: directPublisher,
-							reader: makeSnapshotReader(identity),
-						},
-					},
-					{ argv, env: { ...process.env }, stdinIsTty },
-				);
-			});
+const identityValueFor = (identity: ResolvedIdentity, stack?: SupervisedStack): Identity => ({
+	app: appName(identity.app),
+	stack: stackName(stack?.options.stackName ?? identity.stack),
+	chain: chainId(identity.network),
+});
 
-			yield* program.pipe(
-				Effect.provide(substrateLayers),
-				Effect.provide(Logger.layer([Logger.consolePretty()])),
-				Effect.matchCauseEffect({
-					onFailure: (cause) =>
-						Effect.sync(() => {
-							process.stderr.write(
-								`\nerror: snapshot restore failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-							);
-							process.exitCode = 1;
-						}),
-					onSuccess: () =>
-						Effect.sync(() => {
-							process.exitCode ??= 0;
-						}),
+const directSnapshotLayers = (identity: ResolvedIdentity) =>
+	layerProductionOrchestrators().pipe(
+		Layer.provideMerge(buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot)),
+	);
+
+const provideFileSystem = <A, E>(
+	fs: FileSystem.FileSystem,
+	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
+): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+
+const ensureNoLiveSupervisor = (
+	identity: ResolvedIdentity,
+	hint: string,
+): Effect.Effect<void, CliSupervisorLiveError> =>
+	Effect.gen(function* () {
+		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
+			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+		);
+		if (presence.live) {
+			return yield* Effect.fail(
+				new CliSupervisorLiveError({
+					app: identity.app,
+					stack: identity.stack,
+					hint,
 				}),
 			);
-			return;
 		}
+	});
 
-		const loaded = yield* loader.load(flags.configPath).pipe(
-			Effect.matchEffect({
-				onFailure: (err) =>
-					Effect.gen(function* () {
-						process.stderr.write(`error: ${err.message}\n`);
-						process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
-						return yield* Effect.fail('config-load-failed' as const);
-					}),
-				onSuccess: (v) => Effect.succeed(v),
-			}),
-		);
+const runSnapshotRestoreDirect = (
+	identity: ResolvedIdentity,
+	snapshotId: string,
+): Effect.Effect<void, unknown> => {
+	const program = Effect.gen(function* () {
+		const snapshot = yield* SnapshotOrchestratorService;
+		const fs = yield* FileSystem.FileSystem;
+		const entries = yield* provideFileSystem(fs, snapshot.list);
+		const meta = entries.find((entry) => entry.id === snapshotId)?.metadata ?? null;
+		const participants = meta === null ? [] : snapshotIdentityParticipants(meta);
+		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId, participants }));
+	});
+	const restored = program.pipe(
+		Effect.provide(directSnapshotLayers(identity)),
+		Effect.provide(Logger.layer([Logger.consolePretty()])),
+	);
+	return ensureNoLiveSupervisor(
+		identity,
+		'shut down the attached `devstack up` session before restoring a snapshot',
+	).pipe(Effect.andThen(restored));
+};
+
+const runSnapshotDeleteDirect = (
+	identity: ResolvedIdentity,
+	snapshotId: string,
+): Effect.Effect<void, unknown> => {
+	const program = Effect.gen(function* () {
+		const snapshot = yield* SnapshotOrchestratorService;
+		const fs = yield* FileSystem.FileSystem;
+		yield* provideFileSystem(fs, snapshot.delete(snapshotId));
+	});
+	return program.pipe(
+		Effect.provide(directSnapshotLayers(identity)),
+		Effect.provide(Logger.layer([Logger.consolePretty()])),
+	);
+};
+
+const runSnapshotCaptureDirect = (
+	identity: ResolvedIdentity,
+	args: { readonly snapshotId?: string; readonly label?: string; readonly configPath?: string },
+): Effect.Effect<void, unknown> => {
+	const loader = makeConfigLoader();
+	return Effect.gen(function* () {
+		const loaded = yield* loader.load(args.configPath);
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
-		const identityValue: Identity = {
-			app: appName(identity.app),
-			stack: stackName(stack.options.stackName ?? identity.stack),
-			chain: chainId(identity.network),
-		};
+		const identityValue = identityValueFor(identity, stack);
 		const appRoot = dirname(loaded.resolvedConfigPath);
 		const substrateLayers = layerProductionOrchestrators({
 			codegen: {
@@ -667,30 +597,11 @@ const runSnapshotDirect = (
 			const state = yield* makeProjectionRef();
 			const snapshot = yield* SnapshotOrchestratorService;
 			const fs = yield* FileSystem.FileSystem;
-			const provideFileSystem = <A, E>(
-				effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-			): Effect.Effect<A, E, never> =>
-				effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
-			const directPublisher: CommandPublisher = {
-				publish: (cmd) => {
-					switch (cmd.tag) {
-						case 'snapshot.capture':
-							return provideFileSystem(
-								snapshot.capture({ id: cmd.snapshotId, label: cmd.label }),
-							).pipe(Effect.asVoid);
-						case 'snapshot.restore':
-							return provideFileSystem(snapshot.restore({ id: cmd.snapshotId })).pipe(
-								Effect.asVoid,
-							);
-						default:
-							return Effect.die(`direct snapshot publisher cannot handle ${cmd.tag}`);
-					}
-				},
-			};
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
+			let captureExit: Exit.Exit<unknown, unknown> = Exit.succeed(undefined);
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
@@ -700,178 +611,96 @@ const runSnapshotDirect = (
 					postAcquireHook,
 					lifetime: 'one-shot',
 					withinScope: () =>
-						dispatch(
-							{
-								...buildChannelDeps(identity),
-								snapshot: {
-									publisher: directPublisher,
-									reader: makeSnapshotReader(identity),
-								},
-							},
-							{ argv, env: { ...process.env }, stdinIsTty },
+						provideFileSystem(
+							fs,
+							snapshot.capture({ id: args.snapshotId, label: args.label }),
+						).pipe(
+							Effect.exit,
+							Effect.tap((exit) =>
+								Effect.sync(() => {
+									captureExit = exit;
+								}),
+							),
+							Effect.asVoid,
 						),
 				},
 			);
+			if (Exit.isFailure(captureExit)) {
+				yield* Effect.failCause(captureExit.cause);
+			}
 			const stackPaths = yield* StackPathsService;
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 
-		yield* program.pipe(
+		return yield* program.pipe(
 			Effect.provide(substrateLayers),
 			Effect.provide(Logger.layer([Logger.consolePretty()])),
-			Effect.matchCauseEffect({
-				onFailure: (cause) =>
-					Effect.sync(() => {
-						const subcommand = snapshotSubcommand(flags) ?? 'command';
-						process.stderr.write(
-							`\nerror: snapshot ${subcommand} failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-						);
-						process.exitCode = 1;
-					}),
-				onSuccess: () =>
-					Effect.sync(() => {
-						process.exitCode ??= 0;
-					}),
-			}),
 		);
-	}).pipe(Effect.catch(() => Effect.void));
+	});
 };
 
-const snapshotSubcommand = (flags: ReturnType<typeof parseGlobalFlags>): string | undefined => {
-	const verbIndex = flags.rest.findIndex((tok) => !tok.startsWith('-'));
-	if (verbIndex === -1 || flags.rest[verbIndex] !== 'snapshot') return undefined;
-	return flags.rest.slice(verbIndex + 1).find((tok) => !tok.startsWith('-'));
-};
+const makeDirectSnapshotDeps = (identity: ResolvedIdentity): CliDeps['snapshot'] => ({
+	reader: makeSnapshotReader(identity),
+	capture: (args) => runSnapshotCaptureDirect(identity, args),
+	restore: (snapshotId) => runSnapshotRestoreDirect(identity, snapshotId),
+	delete: (snapshotId) => runSnapshotDeleteDirect(identity, snapshotId),
+});
 
-const hasLiveSupervisor = async (identity: ResolvedIdentity): Promise<boolean> => {
-	const exit = await Effect.runPromiseExit(probeSupervisorPresence(identity.rosterFile));
-	return Exit.isSuccess(exit) && exit.value.live;
+const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown> =>
+	Effect.gen(function* () {
+		yield* ensureNoLiveSupervisor(identity, 'shut down the attached `devstack up` session first');
+		const program = Effect.gen(function* () {
+			const snapshot = yield* SnapshotOrchestratorService;
+			const fs = yield* FileSystem.FileSystem;
+			yield* provideFileSystem(fs, snapshot.wipe({}));
+		});
+		return yield* program.pipe(
+			Effect.provide(directSnapshotLayers(identity)),
+			Effect.provide(Logger.layer([Logger.consolePretty()])),
+		);
+	});
+
+const identityInputsFromArgv = (
+	argv: ReadonlyArray<string>,
+	env: Readonly<Record<string, string | undefined>>,
+) => {
+	let app = env.DEVSTACK_APP;
+	let stack = env.DEVSTACK_STACK;
+	let network = env.DEVSTACK_NETWORK;
+	let stateDir = env.DEVSTACK_STATE_DIR;
+	for (let i = 0; i < argv.length; i += 1) {
+		const token = argv[i]!;
+		const readValue = (name: string): string | undefined => {
+			if (token.startsWith(`--${name}=`)) return token.slice(name.length + 3);
+			if (token === `--${name}`) return argv[i + 1];
+			return undefined;
+		};
+		app = readValue('app') ?? app;
+		stack = readValue('stack') ?? stack;
+		network = readValue('network') ?? network;
+		stateDir = readValue('state-dir') ?? stateDir;
+	}
+	return { app, stack, network, stateDir };
 };
 
 // -----------------------------------------------------------------------------
 // Bin entry
 // -----------------------------------------------------------------------------
 
-const findVerb = (argv: ReadonlyArray<string>): string | undefined => {
-	try {
-		const flags = parseGlobalFlags(argv, {
-			env: { ...process.env },
-			stdinIsTty: Boolean((process.stdin as { isTTY?: boolean }).isTTY),
-		});
-		return flags.rest.find((tok) => !tok.startsWith('-'));
-	} catch {
-		for (const tok of argv) {
-			if (tok === '--') return undefined;
-			if (!tok.startsWith('-')) return tok;
-		}
-	}
-	return undefined;
-};
-
-const isMetaRequest = (flags: ReturnType<typeof parseGlobalFlags>): boolean =>
-	flags.schemaEmit || flags.version || flags.help;
-
 export const runCli = async (
 	argv: ReadonlyArray<string> = process.argv.slice(2),
 ): Promise<void> => {
 	const stdinIsTty = Boolean((process.stdin as { isTTY?: boolean }).isTTY);
 	const env: Record<string, string | undefined> = { ...process.env };
-	let preFlags;
-	try {
-		preFlags = parseGlobalFlags(argv, { env, stdinIsTty });
-	} catch (err) {
-		process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-		process.exitCode = 64;
-		return;
-	}
+	const identityInputs = identityInputsFromArgv(argv, env);
 	const identity = resolveIdentity({
-		app: preFlags.app,
-		stack: preFlags.stack,
-		network: preFlags.network,
-		stateDir: preFlags.stateDir,
+		app: identityInputs.app,
+		stack: identityInputs.stack,
+		network: identityInputs.network,
+		stateDir: identityInputs.stateDir,
 	});
-
-	// `up`, one-shot `apply`, and offline `snapshot save|restore` construct
-	// substrate Layers locally. Other verbs go through the standard
-	// dispatcher with channel-backed deps and target a live supervisor.
-	if ('rest' in preFlags && isMetaRequest(preFlags)) {
-		const deps = buildChannelDeps(identity);
-		await Effect.runPromise(
-			dispatch(deps, { argv, env, stdinIsTty }) as Effect.Effect<void, never, never>,
-		);
-		return;
-	}
-
-	const verb =
-		'rest' in preFlags ? preFlags.rest.find((tok) => !tok.startsWith('-')) : findVerb(argv);
-
-	if (
-		verb === 'up' ||
-		verb === 'apply' ||
-		(verb === 'snapshot' && ['save', 'restore'].includes(snapshotSubcommand(preFlags) ?? ''))
-	) {
-		// Parse via the same global flag parser the dispatcher uses, so
-		// `up` gets every flag — `--dry-run`, `--verbose`, `--state-dir`,
-		// `--json`, etc. — not just the four the old shim parser knew.
-		let flags;
-		try {
-			flags = parseGlobalFlags(argv, {
-				env,
-				stdinIsTty,
-			});
-		} catch (err) {
-			process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-			process.exitCode = 64;
-			return;
-		}
-		const identity = resolveIdentity({
-			app: flags.app,
-			stack: flags.stack,
-			network: flags.network,
-			stateDir: flags.stateDir,
-		});
-		// Apply `--network` before config import — the loader reads env
-		// at top level, so this must happen before runUpLive's loader
-		// runs. The dispatcher applies this for the channel path; we
-		// mirror here.
-		if (flags.network !== undefined) {
-			process.env.DEVSTACK_NETWORK = flags.network;
-		}
-		if (verb === 'snapshot' && (await hasLiveSupervisor(identity))) {
-			const deps = buildChannelDeps(identity);
-			await Effect.runPromise(
-				dispatch(deps, { argv, env, stdinIsTty }) as Effect.Effect<void, never, never>,
-			);
-			return;
-		}
-		const program =
-			verb === 'up'
-				? runUpLive(flags.configPath, identity, {
-						renderer: flags.renderer,
-						stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
-					})
-				: verb === 'apply'
-					? runApplyLive(flags.configPath, identity)
-					: runSnapshotDirect(argv, flags, identity, stdinIsTty);
-		const fiber = Effect.runFork(program);
-		const exit = await Effect.runPromise(
-			Fiber.await(fiber) as Effect.Effect<Exit.Exit<void, unknown>, never, never>,
-		);
-		if (process.exitCode === undefined || process.exitCode === 0) {
-			if (Exit.isFailure(exit) && !Cause.hasInterruptsOnly(exit.cause)) {
-				process.exitCode = 1;
-			}
-		}
-		return;
-	}
-
-	// Every other verb: channel-backed deps + dispatcher.
-	// Identity resolution mirrors `up`'s path so verbs hit the same
-	// stack root. The dispatcher re-parses argv from scratch.
-	const deps = buildChannelDeps(identity);
-	await Effect.runPromise(
-		dispatch(deps, { argv, env, stdinIsTty }) as Effect.Effect<void, never, never>,
-	);
+	const deps = buildDirectDeps(identity);
+	await Effect.runPromise(dispatch(deps, { argv, env, stdinIsTty }));
 };
 
 const isMainEntrypoint = (): boolean => {

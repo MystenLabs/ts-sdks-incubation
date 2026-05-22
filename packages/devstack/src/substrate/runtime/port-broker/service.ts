@@ -50,6 +50,7 @@ import { RosterHolderSchema, type RosterHolder } from '../../cross-process.ts';
 import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
+import { decodeJsonTextSync } from '../runtime-decode.ts';
 
 // ----------------------------------------------------------------------
 // Public shape
@@ -206,8 +207,10 @@ const portReservationPath = (root: string, port: number): string =>
 
 const parseReservationDoc = (raw: string): PortReservationDoc | null => {
 	try {
-		const parsed = JSON.parse(raw) as unknown;
-		return Schema.decodeUnknownSync(PortReservationDocSchema)(parsed);
+		return decodeJsonTextSync(PortReservationDocSchema, raw, {
+			source: 'port reservation',
+			mkError: (issue) => issue,
+		});
 	} catch {
 		return null;
 	}

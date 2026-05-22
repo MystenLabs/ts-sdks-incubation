@@ -9,7 +9,7 @@
 //
 //   - HTTP (`http`, `h2c`) — Host-header dispatch on a SHARED host
 //     port. One Traefik HTTP entrypoint can fan out to N backends in
-//     parallel stacks via `Host: <stack>.<service>.<app>.localhost`.
+//     parallel stacks via `Host: <service>.<stack>.<app>.localhost`.
 //     CORS toggle is meaningful (browser-callable).
 //
 //   - TCP (`tcp`) — non-HTTP protocols (postgres, redis, mongo, …).
@@ -31,11 +31,28 @@ export interface DispatchId {
 	readonly role: string;
 }
 
-/** Upstream target type. Two variants — container-on-router-network
- *  or host-process-on-loopback. The router resolves URL. */
-export type RoutableUpstream =
-	| { readonly type: 'container'; readonly containerName: string; readonly containerPort: number }
-	| { readonly type: 'host-loopback'; readonly port: number };
+/** Upstream target registry. Module augmentation can add router-owned
+ *  target types without widening the built-in payloads. */
+export interface DevstackRoutableUpstreamRegistry {
+	readonly container: { readonly containerName: string; readonly containerPort: number };
+	readonly 'host-loopback': { readonly port: number };
+}
+
+export type RoutableUpstreamKind = keyof DevstackRoutableUpstreamRegistry & string;
+
+/** Upstream target type. Built-ins are container-on-router-network and
+ *  host-process-on-loopback. The router resolves URL. */
+export type RoutableUpstream<
+	Kind extends string = RoutableUpstreamKind,
+> = string extends Kind
+	? {
+			readonly [K in RoutableUpstreamKind]: Readonly<
+				{ readonly type: K } & DevstackRoutableUpstreamRegistry[K]
+			>;
+		}[RoutableUpstreamKind]
+	: Kind extends RoutableUpstreamKind
+		? Readonly<{ readonly type: Kind } & DevstackRoutableUpstreamRegistry[Kind]>
+		: Readonly<{ readonly type: Kind } & object>;
 
 /** Shared fields across both wire-protocol variants. */
 interface RoutableBase {

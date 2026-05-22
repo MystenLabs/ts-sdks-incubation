@@ -10,10 +10,13 @@
 //   - pretty-error        — IO convenience over the formatter +
 //                            StructuredError projection.
 //   - capture             — collapsed subprocess output capture.
+//   - process-lines       — shared process output line observation.
 
 export * from './logger.ts';
+export * from './redaction.ts';
 export * from './spans.ts';
 export * from './cascade-formatter.ts';
 export * from './formatter-registry.ts';
 export * from './pretty-error.ts';
 export * from './subprocess-capture.ts';
+export * from './process-lines.ts';

@@ -6,8 +6,7 @@
 //   3. two composites lifting siblings with conflicting `inputHash`
 //      under the same `(plugin, kind, scope)` group.
 
-import { defineDevstack, defineDevstackWith, defineNodePlugin } from '../src/index.ts';
-import { defineTag } from '../src/index.ts';
+import { defineDevstack, defineDevstackWith, definePlugin } from '../src/index.ts';
 import { Effect } from 'effect';
 import { cluster, clusterImageSibling } from '../src/samples/composite-plugin.ts';
 import { keyval } from '../src/samples/trivial-leaf-plugin.ts';
@@ -28,9 +27,7 @@ export const localStack = defineDevstackWith(
 
 // --- Flat form, manual threading ---------------------------------------
 
-export const flatLocalStack = defineDevstack(keyval(), cluster.for(localNetwork).localCluster(), {
-	stackName: 'complex-flat',
-});
+export const flatLocalStack = defineDevstack({ members: [keyval(), cluster.for(localNetwork).localCluster()], stackName: 'complex-flat', });
 
 // --- Negative case 1: removing the required leaf dependency ------------
 //
@@ -38,11 +35,11 @@ export const flatLocalStack = defineDevstack(keyval(), cluster.for(localNetwork)
 // MissingProviders<...> is `'keyval'` and the call site surfaces the
 // branded `__MissingProvidersError` (architecture open-question #11).
 
-export const missingDep = defineDevstack(
-	// @ts-expect-error — MissingProviders: 'keyval' (no member provides it)
-	cluster.for(localNetwork).localCluster(),
-	{ stackName: 'missing-dep' },
-);
+// @ts-expect-error missing provider: keyval
+export const missingDep = defineDevstack({
+	members: [cluster.for(localNetwork).localCluster()],
+	stackName: 'missing-dep',
+});
 
 // --- Negative case 2: mode-incompatible factory access -----------------
 //
@@ -71,25 +68,20 @@ export const legalForkFactory = cluster.for(forkNetwork).forkedCluster();
 // the stack composition site. We synthesize two composites that
 // declare conflicting hashes by hand.
 
-const SiblingATag = defineTag<'sibling-a', { readonly v: 'a' }>('sibling-a', 'cluster');
-const SiblingBTag = defineTag<'sibling-b', { readonly v: 'b' }>('sibling-b', 'cluster');
-
-const compositeWithHashA = defineNodePlugin({
-	provides: SiblingATag,
-	consumes: [] as const,
+const compositeWithHashA = definePlugin({
+	id: 'sibling-a',
 	kind: 'composite',
-	acquire: () => Effect.succeed({ v: 'a' as const }),
+	start: () => Effect.succeed({ v: 'a' as const }),
 	liftedSiblings: [clusterImageSibling('hash-A')] as const,
 });
 
-const compositeWithHashB = defineNodePlugin({
-	provides: SiblingBTag,
-	consumes: [] as const,
+const compositeWithHashB = definePlugin({
+	id: 'sibling-b',
 	kind: 'composite',
-	acquire: () => Effect.succeed({ v: 'b' as const }),
+	start: () => Effect.succeed({ v: 'b' as const }),
 	liftedSiblings: [clusterImageSibling('hash-B')] as const,
 });
 
 export const conflictingSiblings =
 	// @ts-expect-error — sibling-hash conflict: 'cluster|docker-image|per-app' carries 'hash-A' and 'hash-B'
-	defineDevstack(compositeWithHashA, compositeWithHashB, { stackName: 'conflict' });
+	defineDevstack({ members: [compositeWithHashA, compositeWithHashB], stackName: 'conflict' });

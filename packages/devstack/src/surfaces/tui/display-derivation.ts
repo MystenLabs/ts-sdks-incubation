@@ -11,7 +11,7 @@
 // `primary`, or `extras` — those fields don't exist on the projection
 // (the substrate's `__ProjectionFieldsClosed` guard fails to compile
 // if they did). The TUI's test of that invariant is: every visible
-// cell rendered by `row-renderer.tsx` flows through one of these pure
+// cell rendered by `resource-table.tsx` flows through one of these pure
 // functions.
 //
 // Pure. No Effect, no IO, no clocks. Input typed projection → output
@@ -19,7 +19,14 @@
 // Ink layer via `Text color={…}`).
 
 import type { LifecycleStatus, PhaseNarration, PluginKind } from '../../substrate/lifecycle.ts';
-import type { Endpoint, Row, StructuredError } from '../../substrate/projection.ts';
+import type {
+	AccountProjection,
+	Endpoint,
+	PackageProjection,
+	Row,
+	StructuredError,
+	SubscribableState,
+} from '../../substrate/projection.ts';
 
 // -----------------------------------------------------------------------------
 // Color tokens
@@ -30,15 +37,7 @@ import type { Endpoint, Row, StructuredError } from '../../substrate/projection.
  * sequences. NO_COLOR / FORCE_COLOR / TERM=dumb are honored by Ink's
  * defaults (Tension: TUI must not override user color preferences).
  */
-export type ColorToken =
-	| 'gray'
-	| 'yellow'
-	| 'green'
-	| 'red'
-	| 'magenta'
-	| 'cyan'
-	| 'blueBright'
-	| 'white';
+export type ColorToken = 'yellow' | 'green' | 'red' | 'magenta' | 'cyan' | 'blueBright' | 'white';
 
 // -----------------------------------------------------------------------------
 // Display cells — the public output shape of this module
@@ -98,10 +97,17 @@ export interface DisplaySection {
 	readonly rows: ReadonlyArray<DisplayRow>;
 }
 
-export interface EndpointGroup {
-	readonly key: string;
-	readonly label: string;
-	readonly endpoints: ReadonlyArray<Endpoint>;
+export interface DashboardSummary {
+	readonly totalRows: number;
+	readonly readyRows: number;
+	readonly activeRows: number;
+	readonly failedRows: number;
+	readonly waitingRows: number;
+	readonly endpointCount: number;
+	readonly accountCount: number;
+	readonly packageCount: number;
+	readonly errorCount: number;
+	readonly health: 'ready' | 'active' | 'blocked' | 'empty';
 }
 
 // -----------------------------------------------------------------------------
@@ -137,7 +143,7 @@ export const statusGlyph = (status: LifecycleStatus): string => {
 export const statusColor = (status: LifecycleStatus): ColorToken => {
 	switch (status) {
 		case 'pending':
-			return 'gray';
+			return 'white';
 		case 'acquiring':
 			return 'yellow';
 		case 'ready':
@@ -147,7 +153,7 @@ export const statusColor = (status: LifecycleStatus): ColorToken => {
 		case 'stopping':
 			return 'yellow';
 		case 'stopped':
-			return 'gray';
+			return 'white';
 		case 'done':
 			return 'green';
 		default: {
@@ -217,7 +223,7 @@ export const kindLabelColor = (kind: PluginKind): ColorToken => {
 		case 'composite':
 			return 'blueBright';
 		case 'hidden-leaf':
-			return 'gray';
+			return 'white';
 		case 'renderer':
 			return 'white';
 		default: {
@@ -261,12 +267,12 @@ export const sectionForRow = (
 ): RowSection => {
 	const normalized = normalizeKey(row.key).toLowerCase();
 	const ownsEndpoint = endpointsForRow(row, endpoints).length > 0 || row.endpoints.length > 0;
-	if (row.kind === 'leaf-long-running' || ownsEndpoint) return 'service';
-	if (containsKeyPart(normalized, ['account', 'accounts'])) return 'account';
 	if (containsKeyPart(normalized, ['package', 'packages', 'publish', 'move'])) return 'package';
+	if (containsKeyPart(normalized, ['account', 'accounts'])) return 'account';
 	if (containsKeyPart(normalized, ['action', 'actions', 'execute', 'tx', 'faucet', 'mint'])) {
 		return 'action';
 	}
+	if (row.kind === 'leaf-long-running' || ownsEndpoint) return 'service';
 	if (containsKeyPart(normalized, ['app', 'wallet', 'frontend', 'vite', 'server'])) return 'app';
 	if (row.kind === 'leaf-one-shot') return 'action';
 	if (row.kind === 'composite') return 'service';
@@ -304,12 +310,21 @@ export const endpointsForRow = (
 			row.endpoints.includes(endpoint.endpointKey) || endpoint.endpointKey.startsWith(row.key),
 	);
 
-export const headlineForRow = (row: Row, endpoints: ReadonlyArray<Endpoint> = []): string => {
+const OPERATIONAL_ENDPOINT_FIELDS = new Set(['url', 'rpcUrl', 'faucetUrl', 'graphqlUrl']);
+
+export const visibleEndpointsForRow = (
+	row: Pick<Row, 'key' | 'endpoints'>,
+	endpoints: ReadonlyArray<Endpoint>,
+): ReadonlyArray<Endpoint> => {
 	const rowEndpoints = endpointsForRow(row, endpoints);
+	const routed = rowEndpoints.filter((endpoint) => !isOperationalEndpoint(row.key, endpoint));
+	return routed.length > 0 ? routed : rowEndpoints;
+};
+
+export const headlineForRow = (row: Row, endpoints: ReadonlyArray<Endpoint> = []): string => {
+	const rowEndpoints = visibleEndpointsForRow(row, endpoints);
 	if (rowEndpoints.length > 0) return endpointLine(rowEndpoints[0]!);
 	if (row.lastError !== null && row.status === 'failed') return errorSummaryFor(row.lastError);
-	const latestLog = row.logTail.lines[row.logTail.lines.length - 1];
-	if (latestLog !== undefined && latestLog.length > 0) return truncate(latestLog, 96);
 	return narrationFor(row.phase, row.status);
 };
 
@@ -361,40 +376,74 @@ export const groupRows = (
 		}));
 };
 
-export const groupEndpoints = (
-	rows: ReadonlyArray<Row>,
-	endpoints: ReadonlyArray<Endpoint>,
-): ReadonlyArray<EndpointGroup> => {
-	const groups = new Map<string, { label: string; endpoints: Array<Endpoint> }>();
-	for (const endpoint of endpoints) {
-		const owner = rows.find((row) => endpointsForRow(row, [endpoint]).length > 0);
-		const key = owner?.key ?? '<unassigned>';
-		const label =
-			owner === undefined
-				? 'Unassigned'
-				: endpointGroupLabel(labelForRow(owner.key, owner.kind), ownerForRow(owner.key));
-		const group = groups.get(key) ?? { label, endpoints: [] };
-		group.endpoints.push(endpoint);
-		groups.set(key, group);
-	}
-	return Array.from(groups.entries()).map(([key, group]) => ({
-		key,
-		label: group.label,
-		endpoints: group.endpoints,
-	}));
+export const deriveDashboardSummary = (
+	state: Pick<SubscribableState, 'rows' | 'endpoints' | 'accounts' | 'packages' | 'errors'>,
+): DashboardSummary => {
+	const readyRows = state.rows.filter(
+		(row) => row.status === 'ready' || row.status === 'done',
+	).length;
+	const activeRows = state.rows.filter(
+		(row) => row.status === 'acquiring' || row.status === 'stopping',
+	).length;
+	const failedRows = state.rows.filter((row) => row.status === 'failed').length;
+	const waitingRows = state.rows.filter(
+		(row) => row.status === 'pending' || row.status === 'stopped',
+	).length;
+	const health =
+		state.rows.length === 0
+			? 'empty'
+			: failedRows > 0
+				? 'blocked'
+				: activeRows > 0 || waitingRows > 0
+					? 'active'
+					: 'ready';
+	return {
+		totalRows: state.rows.length,
+		readyRows,
+		activeRows,
+		failedRows,
+		waitingRows,
+		endpointCount: visibleEndpointCount(state.rows, state.endpoints),
+		accountCount: state.accounts.length,
+		packageCount: state.packages.length,
+		errorCount: state.errors.length,
+		health,
+	};
 };
 
-export const selectRowKey = (
+const visibleEndpointCount = (
 	rows: ReadonlyArray<Row>,
-	current: string | null,
-	delta: -1 | 1,
-): string | null => {
-	if (rows.length === 0) return null;
-	const currentIndex = current === null ? -1 : rows.findIndex((row) => row.key === current);
-	const start = currentIndex === -1 ? (delta > 0 ? -1 : 0) : currentIndex;
-	const next = (start + delta + rows.length) % rows.length;
-	return rows[next]!.key;
+	endpoints: ReadonlyArray<Endpoint>,
+): number => {
+	const rowOwned = new Set<Endpoint['endpointKey']>();
+	const visible = new Set<Endpoint['endpointKey']>();
+	for (const row of rows) {
+		for (const endpoint of endpointsForRow(row, endpoints)) {
+			rowOwned.add(endpoint.endpointKey);
+		}
+		for (const endpoint of visibleEndpointsForRow(row, endpoints)) {
+			visible.add(endpoint.endpointKey);
+		}
+	}
+	for (const endpoint of endpoints) {
+		if (!rowOwned.has(endpoint.endpointKey)) visible.add(endpoint.endpointKey);
+	}
+	return visible.size;
 };
+
+export const dashboardSummaryLine = (summary: DashboardSummary): string =>
+	[
+		`${summary.readyRows}/${summary.totalRows} ready`,
+		summary.activeRows > 0 ? `${summary.activeRows} active` : null,
+		summary.waitingRows > 0 ? `${summary.waitingRows} waiting` : null,
+		summary.failedRows > 0 ? `${summary.failedRows} failed` : null,
+		`${summary.endpointCount} urls`,
+		`${summary.accountCount} accounts`,
+		summary.packageCount > 0 ? `${summary.packageCount} packages` : null,
+		summary.errorCount === 0 ? 'no errors' : `${summary.errorCount} errors`,
+	]
+		.filter((part): part is string => part !== null)
+		.join('  ');
 
 // -----------------------------------------------------------------------------
 // Phase narration formatting
@@ -446,8 +495,98 @@ export const errorSummaryFor = (error: StructuredError | null): string => {
  */
 export const endpointLine = (endpoint: Endpoint): string => {
 	const target = endpoint.displayUrl ?? endpoint.url;
-	return `${endpoint.name}: ${target}`;
+	const backing =
+		endpoint.displayUrl !== null && endpoint.displayUrl !== endpoint.url
+			? ` -> ${endpoint.url}`
+			: '';
+	const protocol = endpoint.wireProtocol === 'http' ? '' : ` [${endpoint.wireProtocol}]`;
+	return `${endpoint.name}: ${target}${backing}${protocol}`;
 };
+
+export const endpointsSummaryForRow = (
+	row: Pick<Row, 'key' | 'endpoints'>,
+	endpoints: ReadonlyArray<Endpoint>,
+): string => {
+	const rowEndpoints = visibleEndpointsForRow(row, endpoints);
+	if (rowEndpoints.length === 0) return '';
+	return rowEndpoints.map(endpointLine).join(' | ');
+};
+
+export const accountLine = (account: AccountProjection): string => {
+	const address = account.address ?? '<pending>';
+	const scheme = account.scheme ?? 'scheme pending';
+	const source = account.source ?? 'source pending';
+	const funding = accountFundingLine(account.funding);
+	const wallet = account.walletVisible ? 'wallet' : null;
+	return [humanizeToken(account.name), address, scheme, source, funding, wallet]
+		.filter((part): part is string => part !== null && part.length > 0)
+		.join('  ');
+};
+
+export const packageLine = (pkg: PackageProjection): string => {
+	const upgrade = pkg.upgradeCapId === null ? null : `upgrade ${pkg.upgradeCapId}`;
+	return [humanizeToken(pkg.name), pkg.packageId, pkg.mvrPlaceholder, pkg.kind, upgrade]
+		.filter((part): part is string => part !== null && part.length > 0)
+		.join('  ');
+};
+
+export interface AccountCells {
+	readonly name: string;
+	readonly address: string;
+	readonly scheme: string;
+	readonly source: string;
+	readonly funding: string;
+}
+
+export interface PackageCells {
+	readonly name: string;
+	readonly packageId: string;
+	readonly mvr: string;
+	readonly kind: string;
+	readonly detail: string;
+}
+
+export const accountCells = (account: AccountProjection): AccountCells => ({
+	name: humanizeToken(account.name),
+	address: account.address ?? '<pending>',
+	scheme: account.scheme ?? 'pending',
+	source: account.source ?? 'pending',
+	funding: accountFundingLine(account.funding),
+});
+
+const accountFundingLine = (funding: AccountProjection['funding']): string => {
+	switch (funding.status) {
+		case 'pending':
+			return funding.requestedMist === null
+				? 'funding pending'
+				: `funding ${funding.requestedMist}`;
+		case 'funded':
+			return funding.balanceMist !== null
+				? `funded ${funding.balanceMist}`
+				: funding.requestedMist !== null
+					? `funded ${funding.requestedMist}`
+					: 'funded';
+		case 'skipped':
+			return 'funding skipped';
+		case 'failed':
+			return 'funding failed';
+		case 'unknown':
+			return 'funding unknown';
+		default: {
+			const _exhaustive: never = funding.status;
+			void _exhaustive;
+			return '';
+		}
+	}
+};
+
+export const packageCells = (pkg: PackageProjection): PackageCells => ({
+	name: humanizeToken(pkg.name),
+	packageId: pkg.packageId,
+	mvr: pkg.mvrPlaceholder,
+	kind: pkg.kind,
+	detail: pkg.upgradeCapId === null ? pkg.kind : `${pkg.kind}; upgrade ${pkg.upgradeCapId}`,
+});
 
 // -----------------------------------------------------------------------------
 // Top-level entry point
@@ -460,8 +599,10 @@ export const endpointLine = (endpoint: Endpoint): string => {
  * `row.lastError`. Does NOT touch `row.displayHint` (opaque blob; an
  * interpreter could be plugged in later but is out of scope for this
  * first cut), `row.endpoints` (rendered separately by
- * `endpoint-renderer.tsx`), or `row.logTail` (rendered by
- * `log-pane.tsx`).
+ * `resource-table.tsx`), or `row.logTail` (kept in the projection
+ * for renderer variants that need tails, but not used as primary
+ * dashboard state because generic lifecycle log lines duplicate the
+ * table).
  */
 export const deriveDisplayCells = (
 	row: Row,
@@ -500,11 +641,12 @@ const containsKeyPart = (key: string, parts: ReadonlyArray<string>): boolean => 
 const isSectionish = (token: string): boolean =>
 	containsKeyPart(token.toLowerCase(), ['service', 'package', 'account', 'action', 'app']);
 
-const endpointGroupLabel = (label: string, owner: string): string =>
-	label === owner ? label : `${label} (${owner})`;
-
-const truncate = (value: string, max: number): string =>
-	value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+const isOperationalEndpoint = (rowKey: Pick<Row, 'key'>['key'], endpoint: Endpoint): boolean => {
+	const prefix = `${rowKey}:`;
+	if (!endpoint.endpointKey.startsWith(prefix)) return false;
+	const field = endpoint.endpointKey.slice(prefix.length);
+	return OPERATIONAL_ENDPOINT_FIELDS.has(field);
+};
 
 // -----------------------------------------------------------------------------
 // Compile-time invariant

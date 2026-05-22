@@ -19,9 +19,9 @@ import type {
 	__SiblingHashConflictError,
 } from '../substrate/lifted-sibling.ts';
 import {
-	autoMountSui,
+	defineDevstack,
+	type ComposedMembers,
 	type Stack,
-	type WithAutoSui,
 	type __UnsatisfiedWitnessesError,
 } from './define-devstack.ts';
 import type { Tag } from '../substrate/tag.ts';
@@ -92,13 +92,13 @@ type UnsatisfiedWitnesses<Members> = Exclude<
  *  otherwise.
  *
  *  Validation runs against the auto-mounted tuple
- *  (`WithAutoSui<Members>`) so a builder returning
+ *  (`ComposedMembers<Members>`) so a builder returning
  *  `[account('alice')]` (no explicit sui) doesn't surface
  *  `MissingProviders<'sui'>` — the composer injects `sui()` at the
  *  call's tail. See `define-devstack.ts` D1 / api-surface-design.md §4. */
 type ValidateBuild<Members> =
 	Members extends ReadonlyArray<AnyMember>
-		? WithAutoSui<Members> extends infer M
+		? ComposedMembers<Members> extends infer M
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
 					? [ConflictingGroups<M>] extends [never]
@@ -128,7 +128,7 @@ export function defineDevstackWith<
 >(
 	options: DevstackOptionsWith<Mode>,
 	build: (ctx: BuildCtx<Mode>) => ValidateBuild<Members>,
-): Stack<WithAutoSui<Members>> {
+): Stack<ComposedMembers<Members>> {
 	const rawMembers = build({ network: options.network }) as ReadonlyArray<AnyMember>;
 
 	// Defensive runtime check: every element returned by the builder
@@ -138,18 +138,12 @@ export function defineDevstackWith<
 		if (!(MEMBER_BRAND in (m as object))) {
 			throw new Error(
 				'defineDevstackWith: builder returned a value that is not a plugin member ' +
-					'(missing MEMBER_BRAND). Did you forget to wrap with defineNodePlugin?',
+					'(missing MEMBER_BRAND). Did you forget to wrap it with definePlugin?',
 			);
 		}
 	}
 
-	const members = autoMountSui(rawMembers);
-
-	const stack: Stack<ReadonlyArray<AnyMember>> = {
-		_tag: 'Stack',
-		members,
-		options,
-	};
-
-	return stack as unknown as Stack<WithAutoSui<Members>>;
+	return defineDevstack({ ...options, members: rawMembers }) as unknown as Stack<
+		ComposedMembers<Members>
+	>;
 }

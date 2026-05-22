@@ -18,7 +18,6 @@
 //                             false`, so this mirrors the process-level
 //                             signal handler for TTY users.
 //   s | S                  -> 'snapshot.capture'
-//   up/down | j/k          -> local row focus movement
 //
 // Defensive: useInput is mounted at the dashboard root level, NOT in
 // per-row components, so a re-rendered row never re-registers a
@@ -40,8 +39,6 @@ export type CommandPublisher = (command: EngineCommand) => void;
 export interface InputHandlerProps {
 	/** Publish a typed EngineCommand. */
 	readonly publish: CommandPublisher;
-	/** Move local row focus without touching the engine. */
-	readonly onMoveSelection?: (delta: -1 | 1) => void;
 	/** Disable input handling (e.g. shutting-down state); defaults
 	 *  to false. */
 	readonly disabled?: boolean;
@@ -88,29 +85,11 @@ export const commandForKey = (
 	}
 };
 
-export const selectionDeltaForKey = (
-	input: string,
-	key: { readonly upArrow?: boolean; readonly downArrow?: boolean },
-): -1 | 1 | null => {
-	if (key.upArrow === true || input === 'k' || input === 'K') return -1;
-	if (key.downArrow === true || input === 'j' || input === 'J') return 1;
-	return null;
-};
-
-export const InputHandler = ({
-	publish,
-	onMoveSelection,
-	disabled = false,
-}: InputHandlerProps): null => {
+export const InputHandler = ({ publish, disabled = false }: InputHandlerProps): null => {
 	const shutdownRequested = useRef(false);
 	useInput(
 		(input, key) => {
 			if (disabled) return;
-			const move = selectionDeltaForKey(input, key);
-			if (move !== null) {
-				onMoveSelection?.(move);
-				return;
-			}
 			const command = commandForKey(input, key.ctrl, {
 				shutdownAlreadyRequested: shutdownRequested.current,
 			});

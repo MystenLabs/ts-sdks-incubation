@@ -15,13 +15,17 @@
 
 import { Effect } from 'effect';
 
-import type { CommandPublisher } from './command-channel.ts';
-import { type CliError, CliConfirmRequiredError, CliInternalError } from '../errors.ts';
+import {
+	type CliError,
+	CliConfirmRequiredError,
+	CliInternalError,
+	isCliError,
+} from '../errors.ts';
 import { emitSuccess } from '../output.ts';
 import type { CommandContext, CommandResult } from './index.ts';
 
 export interface WipeDeps {
-	readonly publisher: CommandPublisher;
+	readonly wipe: () => Effect.Effect<void, unknown>;
 }
 
 const checkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
@@ -47,14 +51,16 @@ export const runWipe = (
 		const started = Date.now();
 		yield* checkConfirm('wipe', ctx);
 		if (!ctx.flags.dryRun) {
-			yield* deps.publisher.publish({ tag: 'wipe.requested' }).pipe(
+			yield* deps.wipe().pipe(
 				Effect.catch((cause: unknown) =>
-					Effect.fail(
-						new CliInternalError({
-							message: 'failed to publish wipe.requested',
-							cause,
-						}),
-					),
+					isCliError(cause)
+						? Effect.fail(cause)
+						: Effect.fail(
+								new CliInternalError({
+									message: 'wipe failed',
+									cause,
+								}),
+							),
 				),
 			);
 		}
@@ -63,12 +69,11 @@ export const runWipe = (
 			elapsedMs: Date.now() - started,
 			dryRun: ctx.flags.dryRun,
 			data: {
-				published: ctx.flags.dryRun ? null : ('wipe.requested' as const),
 				dryRun: ctx.flags.dryRun,
 			},
 			humanLines: ctx.flags.dryRun
-				? ['[dry-run] would publish wipe.requested']
-				: ['wipe requested'],
+				? ['[dry-run] would wipe selected stack state']
+				: ['stack state wiped'],
 		});
 		return { exitCode: 0 } as CommandResult;
 	}).pipe(Effect.withSpan('cli.wipe'));

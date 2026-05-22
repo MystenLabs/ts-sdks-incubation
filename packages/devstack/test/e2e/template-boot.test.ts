@@ -1,17 +1,15 @@
-// End-to-end boot of `examples/_template-rewrite/` against the real
+// End-to-end boot of `examples/_template/` against the real
 // docker runtime.
 //
 // Promoted from `scratch/boot-template.ts` — same wiring (substrate
 // Layers + ContainerRuntime + the migrated template config), but
-// asserted via vitest so the canonical proof of "the rewrite actually
-// boots" lives in CI rather than a one-shot script.
+// asserted via vitest so the canonical boot proof lives in CI rather
+// than a one-shot script.
 //
 // What this test pins:
 //   - The substrate Layer stack composes without missing dependencies.
-//   - Each plugin in the `_template-rewrite` stack reaches `ready`
-//     within the per-test timeout. Concrete plugins: `sui#0`,
-//     `account/alice#1`, `account/bob#2`, `package:hello#3` — four
-//     of four expected by the current ported config.
+//   - Each plugin in the `_template` stack reaches `ready`
+//     within the per-test timeout.
 //   - The per-plugin Scope unwinds cleanly at the test's end (the
 //     boot driver invokes `Effect.scoped(...)`, so finalizer errors
 //     would surface as a top-level error count).
@@ -48,7 +46,7 @@ const CONFIG_PATH = resolve(
 	'..',
 	'..',
 	'examples',
-	'_template-rewrite',
+	'_template',
 	'devstack.config.ts',
 );
 
@@ -96,7 +94,7 @@ const countRunningLabeledContainers = (app: string, stack: string): number => {
 	return lines.length;
 };
 
-describe('_template-rewrite boots end-to-end', () => {
+describe('_template boots end-to-end', () => {
 	// 180s — the cold-image-build path for sui's container can take
 	// 60-80s on a fresh runtime root, plus the substrate boot
 	// overhead. Subsequent runs hit the docker layer cache and finish
@@ -123,10 +121,15 @@ describe('_template-rewrite boots end-to-end', () => {
 			withinScope: () => Effect.sleep(`${quiesceMs} millis`),
 		});
 
-		// Four-plugin expectation — `_template-rewrite` composes sui +
-		// alice + bob + hello. If the config grows a member, update
-		// this list deliberately.
-		const expectedKeys = ['sui#0', 'account/alice#1', 'account/bob#2', 'package:hello#3'];
+		// If the config grows a member, update this list deliberately.
+		const expectedKeys = [
+			'sui#0',
+			'account/alice#1',
+			'account/bob#2',
+			'package:hello#3',
+			'wallet#4',
+			'host-service/app#5',
+		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);
 		expect([...result.readyKeys].sort()).toEqual([...expectedKeys].sort());
