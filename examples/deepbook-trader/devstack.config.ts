@@ -1,4 +1,4 @@
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -21,12 +21,8 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5182;
 const TRADER_USDC_STAKE = 5_000_000_000n;
-const DEEPBOOK_SOURCE_ROOT =
-	process.env.DEEPBOOKV3_ROOT ?? resolve(HERE, '..', '..', '..', 'deepbookv3');
-const DEEPBOOK_SANDBOX_ROOT =
-	process.env.DEEPBOOK_SANDBOX_ROOT ?? resolve(HERE, '..', '..', '..', 'deepbook-sandbox');
-const STAGED_DEEPBOOK_SOURCE_ROOT = resolve(HERE, '.devstack/vendor/deepbookv3');
-const STAGED_SANDBOX_SOURCE_ROOT = resolve(HERE, '.devstack/vendor/deepbook-sandbox');
+const VENDORED_DEEPBOOK_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbookv3');
+const VENDORED_SANDBOX_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbook-sandbox');
 
 const DEEP_SUI_POOL = {
 	name: 'DEEP_SUI',
@@ -50,57 +46,20 @@ const SUI_USDC_POOL = {
 	stablePool: false,
 } as const;
 
-function copyPackage(source: string, target: string) {
-	if (!existsSync(source)) {
-		throw new Error(
-			`DeepBook source package not found at ${source}. Set DEEPBOOKV3_ROOT to a deepbookv3 checkout.`,
-		);
+function requirePackage(sourcePath: string, packageName: string) {
+	if (!existsSync(resolve(sourcePath, 'Move.toml'))) {
+		throw new Error(`Missing vendored ${packageName} Move package at ${sourcePath}`);
 	}
-	rmSync(target, { recursive: true, force: true });
-	cpSync(source, target, {
-		recursive: true,
-		filter: (path) =>
-			!path.endsWith('/Move.lock') &&
-			!path.includes('/build/') &&
-			!path.includes('/package_summaries/'),
-	});
+
+	return sourcePath;
 }
 
-function stageDeepbookSources() {
-	mkdirSync(STAGED_DEEPBOOK_SOURCE_ROOT, { recursive: true });
-	copyPackage(
-		resolve(DEEPBOOK_SOURCE_ROOT, 'packages/token'),
-		resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'token'),
-	);
-	copyPackage(
-		resolve(DEEPBOOK_SOURCE_ROOT, 'packages/deepbook'),
-		resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'deepbook'),
-	);
-	copyPackage(
-		resolve(DEEPBOOK_SOURCE_ROOT, 'packages/dusdc'),
-		resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'dusdc'),
-	);
-	copyPackage(
-		resolve(DEEPBOOK_SANDBOX_ROOT, 'sandbox/packages/pyth'),
-		resolve(STAGED_SANDBOX_SOURCE_ROOT, 'pyth'),
-	);
-
-	const deepbookToml = resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'deepbook/Move.toml');
-	const patched = readFileSync(deepbookToml, 'utf8').replace(
-		/token\s*=\s*\{[^}]*git[^}]*\}/g,
-		'token = { local = "../token" }',
-	);
-	writeFileSync(deepbookToml, patched, 'utf8');
-
-	return {
-		token: resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'token'),
-		deepbook: resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'deepbook'),
-		dusdc: resolve(STAGED_DEEPBOOK_SOURCE_ROOT, 'dusdc'),
-		pyth: resolve(STAGED_SANDBOX_SOURCE_ROOT, 'pyth'),
-	};
-}
-
-const deepbookSources = stageDeepbookSources();
+const deepbookSources = {
+	token: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'token'), 'DeepBook token'),
+	deepbook: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'deepbook'), 'DeepBook'),
+	dusdc: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'dusdc'), 'DUSDC'),
+	pyth: requirePackage(resolve(VENDORED_SANDBOX_SOURCE_ROOT, 'pyth'), 'Pyth'),
+};
 
 const localnet = sui();
 const publisher = account('publisher', {
