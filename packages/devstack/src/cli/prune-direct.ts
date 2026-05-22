@@ -15,12 +15,18 @@ import {
 	listDevstackContainers,
 	listDevstackImages,
 	listDevstackNetworks,
+	listDevstackRouterContainers,
 	listDevstackVolumes,
 	removeDevstackContainers,
 	removeDevstackImages,
 	removeDevstackNetworksBestEffort,
+	removeDevstackRouterContainers,
 	removeDevstackVolumes,
 } from '../runtime/docker/index.ts';
+import {
+	ROUTER_SHARED_APP,
+	removeRouterProfileStateForDockerStack,
+} from '../orchestrators/router/cleanup.ts';
 import { checkHolderLiveness, readRoster } from '../substrate/runtime/cross-process/index.ts';
 import {
 	summarizePruneGroups,
@@ -83,6 +89,13 @@ const readAppStack = (
 	return { app, stack };
 };
 
+const routerStackForContainer = (
+	name: string,
+): { readonly app: string; readonly stack: string } => ({
+	app: ROUTER_SHARED_APP,
+	stack: name,
+});
+
 const addBucket = (
 	buckets: Map<string, ResourceBucket>,
 	identity: { readonly app: string; readonly stack: string },
@@ -117,15 +130,19 @@ const livePidsForStack = (
 };
 
 const isSharedGroup = (app: string, stack: string): boolean =>
-	stack === '_per-app_' || app === 'devstack-router';
+	stack === '_per-app_' || app === ROUTER_SHARED_APP;
+
+const isRouterGroup = (group: Pick<PruneGroup, 'app' | 'stack'>): boolean =>
+	group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
 
 export const collectDirectPruneInventory = (
 	options: DirectPruneOptions,
 ): Effect.Effect<PruneInventory, unknown> =>
 	Effect.gen(function* () {
-		const [containers, networks, volumes, images] = yield* Effect.all(
+		const [containers, routerContainers, networks, volumes, images] = yield* Effect.all(
 			[
 				listDevstackContainers(),
+				listDevstackRouterContainers(),
 				listDevstackNetworks(),
 				listDevstackVolumes(),
 				listDevstackImages(),
@@ -139,6 +156,11 @@ export const collectDirectPruneInventory = (
 			const identity = readAppStack(container.labels);
 			if (identity === null) continue;
 			const bucket = addBucket(buckets, identity);
+			bucket.containers += 1;
+			if (container.state === 'running') bucket.runningContainers += 1;
+		}
+		for (const container of routerContainers) {
+			const bucket = addBucket(buckets, routerStackForContainer(container.name));
 			bucket.containers += 1;
 			if (container.state === 'running') bucket.runningContainers += 1;
 		}
@@ -161,12 +183,13 @@ export const collectDirectPruneInventory = (
 		const groups: Array<PruneGroup> = [];
 		for (const [key, bucket] of buckets) {
 			const [app, stack] = key.split('/') as [string, string];
-			const livePids = yield* livePidsForStack(options.runtimeRoot, stack);
+			const routerGroup = app === ROUTER_SHARED_APP;
+			const livePids = routerGroup ? [] : yield* livePidsForStack(options.runtimeRoot, stack);
 			groups.push({
 				key,
 				app,
 				stack,
-				live: livePids.length > 0,
+				live: routerGroup ? bucket.runningContainers > 0 : livePids.length > 0,
 				livePids,
 				shared: isSharedGroup(app, stack),
 				containers: bucket.containers,
@@ -225,10 +248,16 @@ export const pruneDirectSelection = (
 
 		if (!selection.dryRun && selection.resources.containers) {
 			for (const group of prunableGroups) {
-				const match = { app: group.app, stack: group.stack };
-				containersRemoved += yield* removeDevstackContainers(match).pipe(
-					Effect.provide(dockerLayer),
-				);
+				if (isRouterGroup(group)) {
+					containersRemoved += yield* removeDevstackRouterContainers(group.stack).pipe(
+						Effect.provide(dockerLayer),
+					);
+				} else {
+					const match = { app: group.app, stack: group.stack };
+					containersRemoved += yield* removeDevstackContainers(match).pipe(
+						Effect.provide(dockerLayer),
+					);
+				}
 			}
 		}
 
@@ -254,6 +283,16 @@ export const pruneDirectSelection = (
 			for (const group of prunableGroups) {
 				const match = { app: group.app, stack: group.stack };
 				imagesRemoved += yield* removeDevstackImages(match).pipe(Effect.provide(dockerLayer));
+			}
+		}
+
+		if (!selection.dryRun) {
+			for (const group of prunableGroups) {
+				if (!isRouterGroup(group)) continue;
+				yield* removeRouterProfileStateForDockerStack({
+					runtimeRoot: options.runtimeRoot,
+					routerStack: group.stack,
+				});
 			}
 		}
 

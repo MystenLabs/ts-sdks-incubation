@@ -221,6 +221,18 @@ describe('display-derivation', () => {
 		it('renders tag + summary', () => {
 			expect(errorSummaryFor(fakeErr('docker exited 1'))).toBe('BootError: docker exited 1');
 		});
+		it('includes the nested cause detail when the headline is generic', () => {
+			expect(
+				errorSummaryFor({
+					...fakeErr("capability sink 'routable' failed"),
+					tag: 'ContributionSinkFailed',
+					chain: [
+						"ContributionSinkFailed: capability sink 'routable' failed",
+						'RouterBootFailed: failed to create router: port is already allocated',
+					],
+				}),
+			).toContain('port is already allocated');
+		});
 		it('truncates over 120 chars', () => {
 			const long = 'x'.repeat(300);
 			const out = errorSummaryFor(fakeErr(long));

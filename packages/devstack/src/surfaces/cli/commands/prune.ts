@@ -159,10 +159,7 @@ export const defaultPruneSelection = (
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
 ): ReadonlyArray<string> =>
 	inventory.groups
-		.filter(
-			(group) =>
-				!group.live && !group.shared && groupResourceCountForResources(group, resources) > 0,
-		)
+		.filter((group) => !group.live && groupResourceCountForResources(group, resources) > 0)
 		.map((group) => group.key);
 
 const requireBulkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
@@ -187,11 +184,14 @@ const requireInteractive = (ctx: CommandContext): Effect.Effect<void, CliError> 
 };
 
 const formatGroupLine = (group: PruneGroup): string => {
-	const state = group.live
-		? `live pid ${group.livePids.join(',')}`
-		: group.shared
-			? 'shared'
-			: 'idle';
+	const state =
+		group.live && group.livePids.length > 0
+			? `live pid ${group.livePids.join(',')}`
+			: group.live
+				? 'live'
+				: group.shared
+					? 'shared'
+					: 'idle';
 	const running = group.runningContainers > 0 ? `, ${group.runningContainers} running` : '';
 	const images = group.images > 0 ? `, ${group.images} image(s)` : '';
 	return `  ${group.app}/${group.stack}  ${state}  ${group.containers} container(s)${running}, ${group.networks} network(s), ${group.volumes} volume(s)${images}`;

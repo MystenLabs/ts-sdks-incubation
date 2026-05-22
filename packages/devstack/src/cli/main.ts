@@ -79,6 +79,7 @@ import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle
 import { resolveAppName, resolveStackName } from '../api/inference-network.ts';
 import { readStackEngine, type Stack } from '../api/define-devstack.ts';
 import { makeDirectPruneDeps } from './prune-direct.ts';
+import { removeRouterDispatchFilesForStack } from '../orchestrators/router/cleanup.ts';
 
 // -----------------------------------------------------------------------------
 // Config loader (default-export = Stack)
@@ -644,15 +645,12 @@ const runSnapshotCaptureDirect = (
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
 					withinScope: () =>
-						provideFileSystem(
-							fs,
-							snapshot.capture({ id: args.snapshotId, label: args.name }),
-						).pipe(
-								Effect.tap((meta) =>
-									Effect.sync(() => {
-										capturedMeta.current = meta;
-									}),
-								),
+						provideFileSystem(fs, snapshot.capture({ id: args.snapshotId, label: args.name })).pipe(
+							Effect.tap((meta) =>
+								Effect.sync(() => {
+									capturedMeta.current = meta;
+								}),
+							),
 							Effect.asVoid,
 							Effect.exit,
 							Effect.tap((exit) =>
@@ -698,6 +696,11 @@ const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown>
 			const snapshot = yield* SnapshotOrchestratorService;
 			const fs = yield* FileSystem.FileSystem;
 			yield* provideFileSystem(fs, snapshot.wipe({}));
+			yield* removeRouterDispatchFilesForStack({
+				runtimeRoot: identity.runtimeRoot,
+				app: identity.app,
+				stack: identity.stack,
+			});
 		});
 		return yield* program.pipe(
 			Effect.provide(directSnapshotLayers(identity)),

@@ -33,6 +33,7 @@ import {
 	listDevstackContainers,
 	listDevstackImages,
 	listDevstackNetworks,
+	listDevstackRouterContainers,
 	listDevstackVolumes,
 	listImages,
 	listNetworks,
@@ -156,6 +157,20 @@ export const removeDevstackContainers = (
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainers'));
+
+export const removeDevstackRouterContainers = (
+	containerName: string,
+): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const containers = yield* listDevstackRouterContainers();
+		let removed = 0;
+		for (const c of containers) {
+			if (c.name !== containerName) continue;
+			const didRemove = yield* removeManagedContainer(c.name);
+			if (didRemove) removed += 1;
+		}
+		return removed;
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackRouterContainers'));
 
 const isMissingImageStderr = (stderr: string): boolean =>
 	/no such image|not found|reference does not exist/i.test(stderr);

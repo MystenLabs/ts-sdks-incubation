@@ -10,6 +10,7 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
 import { describe, expect, it } from '@effect/vitest';
 
 import {
+	ROUTER_CONTAINER_SPEC_VERSION,
 	ROUTER_PROFILE_LABEL,
 	TRAEFIK_DISPATCH_MOUNT_TARGET,
 	layerTraefikContainerOpsDocker,
@@ -123,6 +124,7 @@ const matchingDockerInspectJson = (
 					[LabelKey.managed]: 'true',
 					[LabelKey.routerMarker]: 'true',
 					[ROUTER_PROFILE_LABEL]: profile.id,
+					[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 				},
 			},
 			NetworkSettings: {
@@ -165,6 +167,7 @@ const matchingExisting = (
 		[LabelKey.managed]: 'true',
 		[LabelKey.routerMarker]: 'true',
 		[ROUTER_PROFILE_LABEL]: profile.id,
+		[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 	},
 	...overrides,
 });
@@ -206,8 +209,22 @@ describe('bootstrap dispatch bind mount adoption', () => {
 					[LabelKey.managed]: 'true',
 					[LabelKey.routerMarker]: 'true',
 					[ROUTER_PROFILE_LABEL]: profile.id,
+					[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 					[ComposeLabelKey.project]: 'example-main',
 					[ComposeLabelKey.service]: 'router.traefik',
+				},
+				profile,
+			),
+		).toBe(false);
+	});
+
+	it('rejects a router singleton from an older container spec version', () => {
+		expect(
+			routerProfileLabelsMatch(
+				{
+					[LabelKey.managed]: 'true',
+					[LabelKey.routerMarker]: 'true',
+					[ROUTER_PROFILE_LABEL]: profile.id,
 				},
 				profile,
 			),

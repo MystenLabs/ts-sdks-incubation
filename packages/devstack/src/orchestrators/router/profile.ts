@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 
@@ -92,6 +93,22 @@ const dockerContextFromCli = (
 	}
 };
 
+const dockerContextFromConfig = (
+	env: Readonly<Record<string, string | undefined>>,
+): string | null => {
+	const configDir = env.DOCKER_CONFIG ?? join(homedir(), '.docker');
+	try {
+		const raw = JSON.parse(readFileSync(join(configDir, 'config.json'), 'utf8')) as {
+			readonly currentContext?: unknown;
+		};
+		return typeof raw.currentContext === 'string' && raw.currentContext.trim().length > 0
+			? raw.currentContext.trim()
+			: null;
+	} catch {
+		return null;
+	}
+};
+
 const dockerDaemonIdFromCli = (
 	bin: string,
 	env: Readonly<Record<string, string | undefined>>,
@@ -120,7 +137,11 @@ export const resolveDockerContextId = (
 		...(env.DOCKER_CONTEXT === undefined ? {} : { DOCKER_CONTEXT: env.DOCKER_CONTEXT }),
 		...(host === 'default' ? {} : { DOCKER_HOST: host }),
 	};
-	const context = env.DOCKER_CONTEXT ?? dockerContextFromCli(bin, dockerEnv);
+	const envContext = env.DOCKER_CONTEXT?.trim();
+	const context =
+		envContext && envContext.length > 0
+			? envContext
+			: (dockerContextFromConfig(env) ?? dockerContextFromCli(bin, dockerEnv));
 	if (context !== null) return `context:${context}|host:${host}`;
 	const daemonId = dockerDaemonIdFromCli(bin, dockerEnv);
 	if (daemonId !== null) return `daemon:${daemonId}`;

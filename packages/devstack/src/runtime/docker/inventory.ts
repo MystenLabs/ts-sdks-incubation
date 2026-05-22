@@ -178,6 +178,12 @@ const toVolumeSummaries = (stdout: string): ReadonlyArray<VolumeSummary> => {
 };
 
 const devstackAppFilterArgs: ReadonlyArray<string> = ['--filter', `label=${LabelKey.app}`];
+const devstackRouterFilterArgs: ReadonlyArray<string> = [
+	'--filter',
+	`label=${LabelKey.managed}=true`,
+	'--filter',
+	`label=${LabelKey.routerMarker}=true`,
+];
 
 export const listContainers = (
 	match: Partial<ContainerLabelTuple>,
@@ -204,6 +210,21 @@ export const listDevstackContainers = (): Effect.Effect<
 		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
 		return toContainerSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainers'));
+
+export const listDevstackRouterContainers = (): Effect.Effect<
+	ReadonlyArray<ContainerSummary>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('ps', [
+			'-a',
+			'--format',
+			'{{json .}}',
+			...devstackRouterFilterArgs,
+		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
+		return toContainerSummaries(res.stdout);
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackRouterContainers'));
 
 export const listImages = (
 	match: Partial<ContainerLabelTuple>,

@@ -40,6 +40,8 @@ export const LabelKey = {
 	// Reverse-proxy / routable. Router itself is built outside this
 	// package, but if it stamps a label, this is the key it uses.
 	routerMarker: 'devstack.router',
+	routerProfile: 'devstack.router.profile',
+	routerSpecVersion: 'devstack.router.spec-version',
 } as const;
 
 export type LabelKey = (typeof LabelKey)[keyof typeof LabelKey];

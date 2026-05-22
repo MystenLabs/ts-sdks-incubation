@@ -85,7 +85,10 @@ describe('event log derivation', () => {
 					pluginKey: pluginKey('seal'),
 					tag: 'BootError',
 					summary: 'private content key server exited',
-					chain: [],
+					chain: [
+						'BootError: private content key server exited',
+						'Docker: port is already allocated',
+					],
 					severity: 'error',
 				},
 			},
@@ -95,6 +98,7 @@ describe('event log derivation', () => {
 		expect(error?.scope).toBe('Seal');
 		expect(error?.scopeColor).toBe('cyan');
 		expect(error?.message).toContain('private content key server exited');
+		expect(error?.message).toContain('port is already allocated');
 	});
 
 	it('renders shutdown escalation as an operator warning', () => {

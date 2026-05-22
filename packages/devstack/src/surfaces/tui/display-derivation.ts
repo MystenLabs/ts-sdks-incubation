@@ -496,7 +496,13 @@ const ERR_SUMMARY_TRUNC = 120;
 export const errorSummaryFor = (error: StructuredError | null): string => {
 	if (error === null) return '';
 	const head = `${error.tag}: ${error.summary}`;
-	return head.length > ERR_SUMMARY_TRUNC ? `${head.slice(0, ERR_SUMMARY_TRUNC - 1)}…` : head;
+	const detail = error.chain.find((line) => line !== head && line !== error.tag);
+	const compactDetail =
+		detail === undefined ? undefined : detail.replace(/^[A-Za-z0-9_[\]-]+:\s*/, '');
+	const summary = compactDetail === undefined ? head : `${head}: ${compactDetail}`;
+	return summary.length > ERR_SUMMARY_TRUNC
+		? `${summary.slice(0, ERR_SUMMARY_TRUNC - 1)}…`
+		: summary;
 };
 
 // -----------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -163,6 +163,38 @@ describe('productionRouterProfile', () => {
 					{ DOCKER_CONTEXT: 'context-name', DOCKER_HOST: 'tcp://docker.example:2375' },
 				),
 			).toBe('context:context-name|host:tcp://docker.example:2375');
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('uses Docker config currentContext when the CLI context probe is unavailable', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'devstack-router-profile-config-'));
+		try {
+			const bin = join(dir, 'docker');
+			const configDir = join(dir, 'docker-config');
+			mkdirSync(configDir, { recursive: true });
+			writeFileSync(
+				join(configDir, 'config.json'),
+				JSON.stringify({ currentContext: 'desktop-linux' }),
+			);
+			writeFileSync(
+				bin,
+				[
+					'#!/bin/sh',
+					'if [ "$1" = "info" ]; then printf "daemon-abc123\\n"; exit 0; fi',
+					'exit 1',
+					'',
+				].join('\n'),
+			);
+			chmodSync(bin, 0o755);
+
+			expect(
+				resolveDockerContextId(
+					{ bin },
+					{ DOCKER_CONFIG: configDir, DOCKER_CONTEXT: undefined, DOCKER_HOST: undefined },
+				),
+			).toBe('context:desktop-linux|host:default');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

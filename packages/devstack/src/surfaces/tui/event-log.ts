@@ -1,5 +1,5 @@
 import type { EngineEvent } from '../../substrate/events.ts';
-import { labelForRow, type ColorToken } from './display-derivation.ts';
+import { errorSummaryFor, labelForRow, type ColorToken } from './display-derivation.ts';
 
 export interface EventLogLine {
 	readonly id: string;
@@ -35,7 +35,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
 				scopeColor:
 					event.error.pluginKey === null ? 'white' : colorForPluginKey(event.error.pluginKey),
-				message: `failed: ${event.error.summary}`,
+				message: `failed: ${errorSummaryFor(event.error)}`,
 			});
 		case 'build.statusChanged':
 		case 'lifecycle.statusChanged':
@@ -78,10 +78,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				scope: 'Snapshot',
 				scopeColor: 'blueBright',
-				message:
-					event.name === undefined
-						? 'capture started'
-						: `capture started for ${event.name}`,
+				message: event.name === undefined ? 'capture started' : `capture started for ${event.name}`,
 			});
 		case 'snapshot.captureProgress':
 			return null;

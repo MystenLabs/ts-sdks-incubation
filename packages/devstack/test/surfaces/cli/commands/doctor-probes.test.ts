@@ -7,6 +7,7 @@ import { Effect } from 'effect';
 import { afterEach } from 'vitest';
 
 import { makeRouterProfile, type Entrypoint } from '../../../../src/orchestrators/router/index.ts';
+import { ROUTER_CONTAINER_SPEC_VERSION } from '../../../../src/orchestrators/router/traefik-container.ts';
 import {
 	routerProfileProbe,
 	type DoctorCommandRunner,
@@ -115,6 +116,7 @@ describe('routerProfileProbe', () => {
 										'devstack.managed': 'true',
 										'devstack.router': 'true',
 										'devstack.router.profile': profile.id,
+										'devstack.router.spec-version': ROUTER_CONTAINER_SPEC_VERSION,
 									},
 								},
 								NetworkSettings: {

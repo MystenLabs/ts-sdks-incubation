@@ -84,7 +84,7 @@ const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: s
 			if (isTaggedError(error)) {
 				return {
 					tag: error._tag,
-					summary: typeof error.message === 'string' ? error.message : error._tag,
+					summary: headlineText(error) ?? error._tag,
 				};
 			}
 			if (error instanceof Error) {
@@ -97,7 +97,7 @@ const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: s
 			if (isTaggedError(defect)) {
 				return {
 					tag: `Defect[${defect._tag}]`,
-					summary: typeof defect.message === 'string' ? defect.message : defect._tag,
+					summary: headlineText(defect) ?? defect._tag,
 				};
 			}
 			if (defect instanceof Error) {
@@ -110,6 +110,14 @@ const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: s
 		}
 	}
 	return { tag: 'EmptyCause', summary: '(empty cause)' };
+};
+
+const headlineText = (value: TaggedErrorLike): string | null => {
+	for (const key of ['message', 'detail', 'stderr'] as const) {
+		const field = value[key];
+		if (typeof field === 'string' && field.trim().length > 0) return field.trim();
+	}
+	return null;
 };
 
 /** Walk every layer of the cause's outermost `Fail` chain and build a
@@ -143,7 +151,7 @@ const walkChainFromValue = (value: unknown, out: Array<string>, visited: WeakSet
 	}
 	if (isTaggedError(value)) {
 		const tag = value._tag;
-		const msg = typeof value.message === 'string' ? value.message : '';
+		const msg = headlineText(value) ?? '';
 		out.push(msg ? `${tag}: ${msg}` : tag);
 		if (value.cause !== undefined && value.cause !== null) {
 			walkChainFromValue(value.cause, out, visited);

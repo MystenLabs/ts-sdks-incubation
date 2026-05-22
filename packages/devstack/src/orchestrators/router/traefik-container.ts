@@ -42,7 +42,8 @@ import { dockerRun, dockerRunOk } from '../../runtime/docker/client.ts';
 import type { RouterProfile } from './profile.ts';
 
 export const TRAEFIK_DISPATCH_MOUNT_TARGET = '/etc/traefik/dispatch';
-export const ROUTER_PROFILE_LABEL = 'devstack.router.profile';
+export const ROUTER_PROFILE_LABEL = LabelKey.routerProfile;
+export const ROUTER_CONTAINER_SPEC_VERSION = '2';
 export const HOST_GATEWAY_ALIAS = 'host.docker.internal:host-gateway';
 
 /** Default Traefik image. Tag, not digest — distilled-doc open
@@ -234,6 +235,7 @@ export const routerProfileLabelsMatch = (
 	if (labels[LabelKey.managed] !== 'true') return false;
 	if (labels[LabelKey.routerMarker] !== 'true') return false;
 	if (labels[ROUTER_PROFILE_LABEL] !== profile.id) return false;
+	if (labels[LabelKey.routerSpecVersion] !== ROUTER_CONTAINER_SPEC_VERSION) return false;
 	for (const forbidden of [
 		LabelKey.app,
 		LabelKey.stack,
@@ -436,6 +438,8 @@ const traefikRunArgs = (args: {
 		`${LabelKey.routerMarker}=true`,
 		'--label',
 		`${ROUTER_PROFILE_LABEL}=${args.routerProfileId}`,
+		'--label',
+		`${LabelKey.routerSpecVersion}=${ROUTER_CONTAINER_SPEC_VERSION}`,
 		'--add-host',
 		HOST_GATEWAY_ALIAS,
 	];
