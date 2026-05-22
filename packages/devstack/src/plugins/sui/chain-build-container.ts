@@ -17,11 +17,10 @@
 // docker-exec layer), because three distinct execution paths (host
 // CLI, fresh `docker run --rm`, container exec) all need
 // protection. Lock path: `~/.devstack/locks/sui-move-build-<repoHash>.lock`.
-//
-// Stale `.git/index.lock` sweep runs AFTER lock acquire but
-// BEFORE the build body. A 60-second mtime safety window protects
-// in-flight legitimate operations.
 
+import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { Effect, type Scope } from 'effect';
 
 import type {
@@ -31,6 +30,7 @@ import type {
 	EnsureContainerSpec,
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
+import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { containerInnerScript } from './cli-driver.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
@@ -40,15 +40,22 @@ import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } fr
  *  body only; long-running stages never share it. */
 export const MOVE_BUILD_LOCK_TIMEOUT_MS = 5 * 60_000;
 
-/** Safety mtime window for stale-git-lock sweep. A lock newer than
- *  this is in-flight legitimate work; we don't touch it. */
-export const STALE_GIT_LOCK_SAFETY_WINDOW_MS = 60_000;
-
 /** Per-app container name. The substrate's `pluginKey('sui-build')`
  *  + the app discriminator combine to a stable name; the container
  *  intentionally omits the stack/network suffix so two stacks of
  *  the same app share. */
 export const containerNameForApp = (app: string): string => `devstack-${app}-build`;
+
+const expandHome = (path: string): string =>
+	path === '~' ? homedir() : path.startsWith('~/') ? join(homedir(), path.slice(2)) : path;
+
+const repoHashForLock = (appDir: string): string =>
+	createHash('sha256').update(resolve(appDir)).digest('hex').slice(0, 16);
+
+export const moveBuildLockPathFor = (appDir: string, moveHome: string): string => {
+	const moveHomeRoot = dirname(resolve(expandHome(moveHome)));
+	return join(moveHomeRoot, '.devstack', 'locks', `sui-move-build-${repoHashForLock(appDir)}.lock`);
+};
 
 /** Build-container handle returned to plugin internals (the
  *  cli-driver dispatches into this). */
@@ -71,8 +78,7 @@ export interface ChainBuildContainer {
 	>;
 	/** Run a codegen-style "summary" build inside the container.
 	 *  Same wire shape as runBuild; the codegen plugin consumes
-	 *  this via the cross-service seam (see Opportunities — the
-	 *  cross-side documentation TODO). */
+	 *  this via the cross-service seam. */
 	readonly runSummary: (
 		hostPackagePath: string,
 	) => Effect.Effect<
@@ -97,10 +103,9 @@ export interface ChainBuildContainerSpec {
  * Acquire (or adopt) the per-app build container. Returns a
  * `ChainBuildContainer` handle scoped to the caller's Scope.
  *
- * Stub: the host-wide lock + stale-git-lock sweep are wired here
- * as TODOs. The implementation lands when the cross-process lock
- * primitive at `substrate/runtime/cross-process-lock.ts` exposes
- * its public API.
+ * The build call holds the host-wide move-build lock for the docker
+ * exec body. The lock uses the substrate's PID + start-time stale
+ * holder reclaim path, so a crashed peer cannot wedge future builds.
  */
 export const acquireChainBuildContainer = (
 	runtime: ContainerRuntime,
@@ -148,6 +153,7 @@ export const acquireChainBuildContainer = (
 			const rel = hostPath.slice(spec.appDir.length).replace(/^\/+/, '');
 			return rel === '' ? '/workspace' : `/workspace/${rel}`;
 		};
+		const moveBuildLockPath = moveBuildLockPathFor(spec.appDir, spec.moveHome);
 
 		const runInContainer = (
 			op: 'build' | 'summary',
@@ -175,13 +181,25 @@ export const acquireChainBuildContainer = (
 				// invariant flag set.
 				const pkgName = containerPath.replace(/^\/workspace\//, '').replace(/^\/+|\/+$/g, '');
 				const inner = containerInnerScript(pkgName);
-				const result = yield* runtime.exec(handle, ['sh', '-c', inner]).pipe(
-					Effect.mapError(
-						(cause): SuiCliError =>
-							suiCliError(op, {
-								cause: new Error(`runtime.exec failed: ${cause.reason}: ${cause.detail}`),
-							}),
-					),
+				const result = yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(moveBuildLockPath, MOVE_BUILD_LOCK_TIMEOUT_MS).pipe(
+							Effect.mapError(
+								(cause): SuiCliError =>
+									suiCliError(op, {
+										cause: new Error(`move-build lock acquire failed: ${cause._tag}`, { cause }),
+									}),
+							),
+						);
+						return yield* runtime.exec(handle, ['sh', '-c', inner]).pipe(
+							Effect.mapError(
+								(cause): SuiCliError =>
+									suiCliError(op, {
+										cause: new Error(`runtime.exec failed: ${cause.reason}: ${cause.detail}`),
+									}),
+							),
+						);
+					}),
 				);
 				return result;
 			});

@@ -3,6 +3,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 import {
 	IdentityContributionConflictError,
+	IdentityEmptyError,
 	mergeContributions,
 	runIdentityGuard,
 } from '../../../src/orchestrators/snapshot/identity-guard.ts';
@@ -38,6 +39,22 @@ describe('snapshot identity guard', () => {
 				Effect.exit,
 			);
 			expect(missingSnapshot._tag).toBe('Failure');
+		}),
+	);
+
+	it.effect('refuses snapshots with no recorded identity', () =>
+		Effect.gen(function* () {
+			const exit = yield* runIdentityGuard({}, {}).pipe(Effect.exit);
+
+			expect(exit._tag).toBe('Failure');
+			const error = Exit.findErrorOption(exit);
+			expect(error._tag).toBe('Some');
+			if (error._tag === 'Some') {
+				expect(error.value).toBeInstanceOf(IdentityEmptyError);
+				if (error.value instanceof IdentityEmptyError) {
+					expect(error.value.source).toBe('snapshot');
+				}
+			}
 		}),
 	);
 });

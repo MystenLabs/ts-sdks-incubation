@@ -15,6 +15,7 @@ import type {
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import {
 	CapturePhaseError,
+	IdentityEmptyError,
 	SnapshotLayout,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	containerImagesBundlePath,
@@ -54,6 +55,38 @@ const participant = (
 	captureIdentity: Effect.succeed({ chain: 'sui:local' }),
 	captureContribution: Effect.succeed({ ok: true }),
 });
+
+it.effect('refuses to write a capture artifact with empty contributed identity', () =>
+	Effect.gen(function* () {
+		const root = freshRoot();
+		const runtime = runtimeStub({
+			handlesByRole: {},
+			saveImage: () => Stream.empty,
+			pauseCalls: [],
+			saveCalls: [],
+			unpauseCalls: [],
+		});
+		try {
+			const emptyIdentityParticipant: SnapshotParticipant = {
+				...participant([]),
+				captureIdentity: Effect.succeed({}),
+			};
+			const exit = yield* runCaptureExit(root, runtime, [emptyIdentityParticipant]).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(error._tag).toBe('Some');
+			if (error._tag === 'Some') {
+				expect(error.value).toBeInstanceOf(IdentityEmptyError);
+			}
+			expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	}),
+);
 
 const runtimeStub = (opts: {
 	readonly handlesByRole: Readonly<

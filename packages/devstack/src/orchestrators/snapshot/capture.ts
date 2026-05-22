@@ -48,6 +48,7 @@ import {
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
 import { writeArtifactIntegrity } from './integrity.ts';
+import { requireIdentity, type IdentityGuardError } from './identity-guard.ts';
 import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
 
 // -----------------------------------------------------------------------------
@@ -479,7 +480,7 @@ export interface CaptureInputs {
  */
 export const runCapture = (
 	inputs: CaptureInputs,
-): Effect.Effect<SnapshotMetadata, CapturePhaseError, FileSystem.FileSystem> =>
+): Effect.Effect<SnapshotMetadata, CapturePhaseError | IdentityGuardError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		yield* Effect.annotateCurrentSpan({
@@ -719,11 +720,16 @@ export const runCapture = (
 						)
 						.pipe(
 							Effect.catch(
-								failPhase('write-contribution', `write contribution doc failed`, participant.plugin),
+								failPhase(
+									'write-contribution',
+									`write contribution doc failed`,
+									participant.plugin,
+								),
 							),
 						);
 					participantKeys.push(participant.plugin);
 				}
+				yield* requireIdentity(identityMerged, 'snapshot');
 
 				// 6. Write meta.json, then integrity over the full artifact.
 				//    The caller publishes via stage-and-swap, so catalog

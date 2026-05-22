@@ -259,11 +259,11 @@ Runtime values flow via:
 
 L5 build integrations are the only seam. Devstack is dev-tooling, not app-runtime.
 
-**Known boundary violation flagged for cleanup:** today four build integrations (vite, vitest,
-playwright, browser) re-implement manifest discovery / decode / cold-start / dapp-kit-slot instead
-of delegating to `build-integrations/runtime/`. Vite reads from the wrong path
-(`~/.devstack/<app>/<stack>/...`) instead of cwd-walkup (`<cwd>/.devstack/stacks/<stack>/...`) —
-release blocker per `build-integrations.md`.
+The manifest discovery boundary is consolidated: Vite, Vitest, Playwright, and the canonical runtime
+resolver all converge on the supervisor-written cwd-walkup path
+(`<cwd>/.devstack/stacks/<stack>/manifest.json`).
+`test/build-integrations/manifest-path-parity.test.ts` pins that behavior so the Vite preset cannot
+drift back to the old HOME-rooted path.
 
 ---
 
@@ -360,7 +360,7 @@ internals.
 
 | Orchestrator              | Walks                | Refuses                                                                                                                                                      |
 | ------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `orchestrators/snapshot/` | `SnapshotableDecl[]` | empty identity (today silently passes — release blocker per orchestrators review); concurrent capture (via `snapshot.reservation`)                           |
+| `orchestrators/snapshot/` | `SnapshotableDecl[]` | empty contributed identity; concurrent capture (via `snapshot.reservation`)                                                                                  |
 | `orchestrators/router/`   | `RoutableDecl[]`     | HTTP/TCP wireProtocol mismatch with entrypoint family; cross-stack TCP port collision; collision on `(entrypoint, hostname)` for HTTP / `entrypoint` for TCP |
 | `orchestrators/codegen/`  | `CodegenableDecl[]`  | outputPath collision; emitterName collision across non-`package` decls                                                                                       |
 
@@ -370,11 +370,10 @@ plugins with no routable contribution, such as live/external network modes. Plug
 probe, loopback, or `hostGateway` URLs on their resolved values for sibling bootstrapping, but those
 fields are not public endpoint declarations once the plugin contributes a route.
 
-**Known name leak (release blocker per orchestrators review):**
-`orchestrators/router/entrypoints.ts:DEFAULT_ENTRYPOINTS` hardcodes plugin names (`wallet-app`,
-`walrus-node-0`, `seal-key-server`, `postgres-tcp`, `redis-tcp`). The orchestrator is
-"plugin-name-agnostic" but the package owns a name-laden default. Fix: move each block of
-entrypoints next to its plugin and compose the registry at supervisor boot.
+Built-in router entrypoints are plugin-owned: each plugin exports its entrypoint declarations from
+its own `routable.ts`, `plugins/router-entrypoints.ts` composes them, and
+`orchestrators/runtime-composition.ts` seeds the router registry from that composed list. The router
+orchestrator remains responsible for registry validation and collision checks.
 
 ---
 
@@ -488,22 +487,10 @@ Specific section anchors:
 - Substrate violations + structural prevention: § "Substrate violations: structural prevention"
   (lines 2033-2113).
 
-Specific implementation findings come from:
+Specific implementation findings originally came from historical `notes/reviews/*` audits. Those
+files have since been retired; use `notes/UNRESOLVED-BLOCKERS.md` as the live release ledger and
+this document for current architectural invariants.
 
-- `notes/reviews/substrate.md` — boundary leaks (per-stack-registries/coin.ts + package.ts),
-  atomic-write duplication, CrossProcessLock wiring gap.
-- `notes/reviews/runtime-docker.md` — typed-error envelope, classifier centralization,
-  `decideRunAction` purity, `CacheService` phantom, `perNameLock` unused, `followLogs` scope.
-- `notes/reviews/orchestrators.md` — snapshot stubs (release blocker), router `DEFAULT_ENTRYPOINTS`
-  name leak (release blocker), codegen stage-and-swap absence.
-- `notes/reviews/surfaces.md` — closed-field discipline, `up` bypassing dispatcher, exec exit-code
-  drop.
-- `notes/reviews/build-integrations.md` — `runtime/` consolidation (release blocker), manifest-path
-  divergence (release blocker), `dappKitConfigPath` unwired.
-- `notes/reviews/stable-plugins.md` — Plugin A ↔ Plugin B (Coin/Package) coupling, `ctx.get` cast
-  escape, container ensure boilerplate, `containerExec` missing.
-- `notes/reviews/cross-cutting.md` — error-model split (3 styles), `ForkIncompatibleError`
-  collision, observability orphans.
 - `notes/api-comparison.md` — sugar debt + S1-S12 fixes.
 - `notes/parity-matrix.md` — the cutover gate.
 - `PHASE-3-NOTES.md` — type-system findings (load-bearing for the validation machinery).

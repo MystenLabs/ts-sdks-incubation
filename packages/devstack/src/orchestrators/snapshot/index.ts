@@ -53,10 +53,12 @@ export {
 // Identity guard
 export {
 	IdentityContributionConflictError,
+	IdentityEmptyError,
 	IdentityMismatchError,
 	IdentityMissingLiveError,
 	IdentityMissingSnapshotError,
 	mergeContributions,
+	requireIdentity,
 	runIdentityGuard,
 	runRuntimeIdentityGuard,
 	type IdentityContribution,

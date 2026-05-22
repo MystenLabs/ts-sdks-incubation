@@ -71,10 +71,19 @@ export class IdentityMissingSnapshotError extends Schema.TaggedErrorClass<Identi
 	},
 ) {}
 
+export class IdentityEmptyError extends Schema.TaggedErrorClass<IdentityEmptyError>()(
+	'SnapshotIdentityEmpty',
+	{
+		phase: Schema.Literal('identity-guard'),
+		source: Schema.Literals(['snapshot', 'live']),
+	},
+) {}
+
 export type IdentityGuardError =
 	| IdentityMismatchError
 	| IdentityMissingLiveError
-	| IdentityMissingSnapshotError;
+	| IdentityMissingSnapshotError
+	| IdentityEmptyError;
 
 // -----------------------------------------------------------------------------
 // Composition — many plugins, one merged slice
@@ -146,10 +155,19 @@ export const mergeContributions = (
 // The guard itself
 // -----------------------------------------------------------------------------
 
+export const requireIdentity = (
+	identity: IdentitySlice,
+	source: IdentityEmptyError['source'],
+): Effect.Effect<void, IdentityEmptyError> =>
+	Object.keys(identity).length === 0
+		? Effect.fail(new IdentityEmptyError({ phase: 'identity-guard', source }))
+		: Effect.void;
+
 /**
  * Compare the snapshot's recorded identity against the live stack's
  * contributed identity. Fail-closed on every shape:
  *
+ *   - snapshot identity is empty                    → IdentityEmptyError
  *   - keys present on both sides, values differ → IdentityMismatchError
  *   - keys present only in the snapshot          → IdentityMissingLiveError
  *   - keys present only in the live stack        → IdentityMissingSnapshotError
@@ -171,6 +189,7 @@ export const runIdentityGuard = (
 		});
 		const snapshotKeys = Object.keys(snapshotIdentity);
 		const liveKeys = Object.keys(liveIdentity);
+		yield* requireIdentity(snapshotIdentity, 'snapshot');
 		// 1. Keys present on both sides — disagreement is the canonical refuse.
 		for (const key of snapshotKeys) {
 			if (key in liveIdentity) {

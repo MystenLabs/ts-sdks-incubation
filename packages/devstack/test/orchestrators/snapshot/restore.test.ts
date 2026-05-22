@@ -14,6 +14,7 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import {
+	IdentityEmptyError,
 	IdentityMismatchError,
 	RESTORE_PENDING_FILE_NAME,
 	RestorePhaseError,
@@ -25,6 +26,7 @@ import {
 	contributionPath,
 	snapshotIdFromString,
 	writeArtifactIntegrity,
+	type RestoreParticipant,
 	type SnapshotMetadata,
 	type SnapshotRuntimeIdentity,
 } from '../../../src/orchestrators/snapshot/index.ts';
@@ -47,6 +49,15 @@ const runtimeIdentity: SnapshotRuntimeIdentity = {
 	network: 'sui:local',
 };
 
+const RESTORE_TEST_IDENTITY = { chain: runtimeIdentity.network } as const;
+
+const restoreIdentityParticipants = (): ReadonlyArray<RestoreParticipant> => [
+	{
+		plugin: 'sui#0',
+		liveIdentity: Effect.succeed(RESTORE_TEST_IDENTITY),
+	},
+];
+
 const metadata = (overrides: Partial<SnapshotMetadata> = {}): SnapshotMetadata => ({
 	version: SNAPSHOT_META_VERSION,
 	id: 'snap-safe',
@@ -58,7 +69,7 @@ const metadata = (overrides: Partial<SnapshotMetadata> = {}): SnapshotMetadata =
 	hostTreeIncluded: false,
 	subtrees: [],
 	containers: [],
-	identity: {},
+	identity: RESTORE_TEST_IDENTITY,
 	participants: [],
 	...overrides,
 });
@@ -195,7 +206,7 @@ const runRestoreExit = (
 				runtimeStackRoot: join(root, 'runtime-stack'),
 				runtimeStagingPath: join(root, 'runtime-stack.staging'),
 				runtimeBackupPath: join(root, 'runtime-stack.bak'),
-				participants: [],
+				participants: restoreIdentityParticipants(),
 				runtime,
 				runtimeIdentity: identity,
 			}),
@@ -249,6 +260,43 @@ describe('snapshot restore safety', () => {
 				} finally {
 					rmSync(root, { recursive: true, force: true });
 				}
+			}
+		}),
+	);
+
+	it.effect('refuses snapshots with no contributed identity before cleanup', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			try {
+				const emptyIdentityMeta = metadata({
+					identity: {},
+					containers: [
+						capturedContainer({
+							plugin: 'postgres#0',
+							imageName: 'postgres:test',
+						}),
+					],
+				});
+				const exit = yield* runRestoreExit(
+					root,
+					emptyIdentityMeta,
+					runtimeIdentity,
+					sweepCalls,
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(IdentityEmptyError);
+					if (error.value instanceof IdentityEmptyError) {
+						expect(error.value.source).toBe('snapshot');
+					}
+				}
+				expect(sweepCalls).toEqual([]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
 			}
 		}),
 	);
@@ -592,7 +640,7 @@ describe('snapshot restore safety', () => {
 						runtimeStackRoot: stackRoot,
 						runtimeStagingPath: join(root, 'runtime-stack.staging'),
 						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: [],
+						participants: restoreIdentityParticipants(),
 						runtime: runtimeStub(sweepCalls),
 						runtimeIdentity,
 					}),
@@ -682,7 +730,7 @@ describe('snapshot restore safety', () => {
 							runtimeStackRoot: stackRoot,
 							runtimeStagingPath: join(root, 'runtime-stack.staging'),
 							runtimeBackupPath: join(root, 'runtime-stack.bak'),
-							participants: [],
+							participants: restoreIdentityParticipants(),
 							runtime: runtimeStub(sweepCalls),
 							runtimeIdentity,
 						}),
@@ -986,7 +1034,7 @@ describe('snapshot restore safety', () => {
 						runtimeStackRoot: join(root, 'runtime-stack'),
 						runtimeStagingPath: join(root, 'runtime-stack.staging'),
 						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: [],
+						participants: restoreIdentityParticipants(),
 						runtime: runtimeStub(sweepCalls, { events }),
 						runtimeIdentity,
 					}),
@@ -1188,7 +1236,7 @@ describe('snapshot restore safety', () => {
 						runtimeStackRoot: stackRoot,
 						runtimeStagingPath: join(root, 'runtime-stack.staging'),
 						runtimeBackupPath: backupPath,
-						participants: [],
+						participants: restoreIdentityParticipants(),
 						runtime: runtimeStub(sweepCalls, { events, removeImageCalls }),
 						runtimeIdentity,
 					}),
