@@ -13,6 +13,7 @@
 //     caller `catchTag` flows stay stable.
 
 import {
+	manifestEnvelopeFromStackContext,
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
@@ -65,27 +66,7 @@ export interface LoadStackContextOptions {
 }
 
 const project = (ctx: RuntimeStackContext): StackContext => {
-	const envelope: ManifestEnvelope = {
-		identity: ctx.identity,
-		manifestVersion: ctx.manifestVersion,
-		services: ctx.services,
-		// Reconstruct from the EndpointRegistry — the runtime projection
-		// uses a class wrapper, but downstream vitest callers want the
-		// flat record shape of the envelope.
-		endpoints: Object.fromEntries(
-			ctx.endpoints.all().map((e) => [
-				e.name,
-				{
-					url: e.url,
-					displayUrl: e.displayUrl,
-					wireProtocol: e.wireProtocol,
-					pluginKey: e.pluginKey as never,
-					endpointKey: e.endpointKey as never,
-				},
-			]),
-		) as ManifestEnvelope['endpoints'],
-		extras: ctx.extras,
-	};
+	const envelope: ManifestEnvelope = manifestEnvelopeFromStackContext(ctx);
 	return {
 		manifestPath: ctx.manifestPath,
 		manifest: envelope,

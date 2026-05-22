@@ -1,18 +1,20 @@
-// Coin plugin — publish-receipt discovery tests.
+// Coin plugin — package-publish-output discovery tests.
 //
-// Covers the pure receipt walker that turns package publish object
+// Covers the pure output walker that turns package publish object
 // changes into CoinRegistry-ready discovered coin records.
 
 import { describe, expect, it } from '@effect/vitest';
 
-import { discoverCoinsFromPublish } from '../../../src/plugins/coin/discovery.ts';
-import type { PublishReceipt } from '../../../src/plugins/package/publish-receipt.ts';
+import {
+	discoverCoinsFromPublish,
+	type CoinDiscoveryPublishOutput,
+} from '../../../src/plugins/coin/discovery.ts';
 
 const SUI_FRAMEWORK_PADDED = '0x0000000000000000000000000000000000000000000000000000000000000002';
 
-const baseReceipt = (objectChanges: PublishReceipt['objectChanges']): PublishReceipt => ({
-	digest: 'digest',
-	packageId: '0xpkg',
+const baseOutput = (
+	objectChanges: CoinDiscoveryPublishOutput['objectChanges'],
+): CoinDiscoveryPublishOutput => ({
 	publisher: '0xpublisher',
 	objectChanges,
 });
@@ -20,7 +22,7 @@ const baseReceipt = (objectChanges: PublishReceipt['objectChanges']): PublishRec
 describe('plugins/coin/discovery', () => {
 	it('discovers TreasuryCap and CoinMetadata when the SDK emits a padded Sui framework address', () => {
 		const discovered = discoverCoinsFromPublish(
-			baseReceipt([
+			baseOutput([
 				{
 					type: 'created',
 					objectId: '0xmeta',
@@ -50,7 +52,7 @@ describe('plugins/coin/discovery', () => {
 
 	it('continues to accept the compact 0x2 framework address', () => {
 		const discovered = discoverCoinsFromPublish(
-			baseReceipt([
+			baseOutput([
 				{
 					type: 'created',
 					objectId: '0xcap',

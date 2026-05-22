@@ -1,7 +1,7 @@
 // Seal plugin — barrel + factories.
 //
-// Architecture (07-seal.md): Seal is a sibling composite plugin to
-// walrus. Three operative modes:
+// Architecture (07-seal.md): Seal is a local or known service plugin.
+// Three operative modes:
 //
 //   - `local-keygen`  — localnet, owns the master key. Heavy boot.
 //   - `live`          — testnet / mainnet, read-only handle to a
@@ -24,13 +24,12 @@
 //
 // Capability decls emitted:
 //
-//   1. Composite metadata — stable row key + lifted siblings.
-//   2. Snapshotable        — local-keygen contributes secret material
+//   1. Snapshotable        — local-keygen contributes secret material
 //                            subtree; known modes contribute the
 //                            empty shape.
-//   3. Codegenable         — `seal-key-server` bindings (server
+//   2. Codegenable         — `seal-key-server` bindings (server
 //                            configs + URL + objectId).
-//   4. Routable            — `seal-key-server` endpoint, local-keygen
+//   3. Routable            — `seal-key-server` endpoint, local-keygen
 //                            only (known modes route to a remote URL
 //                            outside Traefik's purview).
 
@@ -42,14 +41,14 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { NetworkConfig } from '../../substrate/network.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
+import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AccountResourceId } from '../account/index.ts';
 import type { AccountValue } from '../account/service.ts';
 import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';
-import { sealPluginKey } from './composite.ts';
+import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
 import {
 	forkIncompatibleError,
@@ -57,8 +56,6 @@ import {
 	SEAL_ERROR_TAGS,
 	type SealError,
 } from './errors.ts';
-import { defaultSealCargoImageSiblingKey } from './lifted-siblings/cargo-image.ts';
-import { defaultSealSourceSiblingKey } from './lifted-siblings/source-fetch.ts';
 import type { ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
@@ -108,19 +105,6 @@ export {
 	SEAL_ERROR_TAGS,
 } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
-export {
-	sealCargoImageKey,
-	type SealCargoImageKey,
-	type SealCargoImageResolved,
-} from './lifted-siblings/cargo-image.ts';
-export {
-	sealSourceFetchKey,
-	type SealSourceFetchKey,
-	type SealSourceFetchResolved,
-	DEFAULT_SEAL_REPO,
-	DEFAULT_SEAL_VERSION,
-	DEFAULT_SEAL_MOVE_SUBDIR,
-} from './lifted-siblings/source-fetch.ts';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -185,14 +169,12 @@ export type SealOptions<Signer extends SealSignerMember = SealSignerMember> =
 /** Constants + shared knobs for the buildXyz helpers below. */
 const DEFAULT_NAME = 'seal';
 
-/** Build the local-keygen-mode plugin. The composite contributes
- *  composite metadata + Snapshotable (secret) + Codegenable +
- *  Routable.
+/** Build the local-keygen-mode plugin. The service contributes
+ *  Snapshotable (secret) + Codegenable + Routable.
  *
- *  Architecture mirror (walrus): `kind: 'composite'`, lifted siblings
- *  declared at factory time, `ContainerRuntimeService` +
- *  `IdentityContext` wired via the supervisor's plugin runtime
- *  context, OCA publisher + chain probe yielded inside `acquire`. */
+ *  Architecture mirror (walrus): `ContainerRuntimeService` +
+ *  `IdentityContext` wired via the supervisor's plugin runtime context,
+ *  artifact publisher publisher + chain probe yielded inside `acquire`. */
 const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 	opts: SealLocalKeygenOptions<Signer>,
 ) => {
@@ -203,32 +185,18 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 
 	const sealResource = makeSealResource(resolved.name);
 
-	// Lifted siblings — declared at factory time so the topo scheduler
-	// places them at level 0 (parallel with sui's boot). Two siblings:
-	//   1. cargo-image — upstream cargo build (key includes seal ref +
-	//                    rust toolchain).
-	//   2. move-source — git checkout of the seal Move package subdir
-	//                    (key includes repo@ref/subdir).
-	// The move-source sibling is dropped when the user pinned a
-	// `movePackagePath` opt (lifted-sibling discipline: don't pull a
-	// fetch the user already short-circuited).
-	const cargoImageKey = defaultSealCargoImageSiblingKey();
-	const moveSourceKey = defaultSealSourceSiblingKey();
-	const siblingKeys = resolved.movePackagePath ? [cargoImageKey] : [cargoImageKey, moveSourceKey];
-
 	return definePlugin({
 		id: sealResource.id,
 		dependsOn: { sui: suiResource, signer: opts.signer },
-		kind: 'composite',
-		rebootCost: 'heavy',
-		composite: { key: sealPluginKey(resolved.name) },
+		role: 'service',
+		pluginKey: sealPluginKey(resolved.name),
 		start: (deps) =>
 			Effect.gen(function* () {
 				const { sui, signer: signerAccount } = deps;
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
 				//     via the supervisor's plugin runtime context.
-				//   - `OnChainArtifactPublisher` is the substrate-level
+				//   - `ArtifactPublisher` is the substrate-level
 				//     publisher (cache → verify → produce → register cycle).
 				//   - Chain probe is looked up via the
 				//     StrategyRegistry under `chain-probe:<chainId>`; the
@@ -242,7 +210,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				//     `<runtime>/...` template).
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
@@ -355,12 +323,10 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 			return [snap, codegen, routable] as const;
 		},
 		errorContributions: sealErrorContributions,
-		liftedSiblings: siblingKeys,
 	});
 };
 
-/** Build the live-mode plugin. No composite metadata (no inner
- *  participants), no Routable (URL is remote). */
+/** Build the live-mode plugin. No Routable (URL is remote). */
 const buildLivePlugin = (opts: SealLiveOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
 	const sealResource = makeSealResource(name);
@@ -379,12 +345,11 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 
 	return definePlugin({
 		id: sealResource.id,
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'live', name, ...opts };
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {
 					...resolved.keyServer,
@@ -408,12 +373,11 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 
 	return definePlugin({
 		id: sealResource.id,
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'fork-known', name, ...opts };
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {
 					...resolved.keyServer,
@@ -439,9 +403,8 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 // Default option resolution
 // ---------------------------------------------------------------------------
 
-/** Read `DEVSTACK_NETWORK` env to pick a mode default. Mirrors the
- *  sui plugin's resolver — `*-fork` networks route to fork-known
- *  with the wrapped upstream. */
+/** Read `DEVSTACK_NETWORK` env to pick a mode default. The shared
+ *  parser refuses `*-fork` networks while fork mode is coming soon. */
 const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keygen' }> => {
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
@@ -457,8 +420,6 @@ const resolveDefaultMode = (): Exclude<SealOptions, { readonly mode: 'local-keyg
 			});
 		case 'live':
 			return { mode: 'live', network: parsed.network };
-		case 'fork':
-			return { mode: 'fork-known', upstream: parsed.upstream };
 	}
 };
 

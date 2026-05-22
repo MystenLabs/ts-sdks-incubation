@@ -43,7 +43,7 @@ import {
 
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
-\tkind: 'leaf-long-running',
+\trole: 'service',
 \tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
 \tcapabilities: ({ value }) => [
 \t\tcodegenable({

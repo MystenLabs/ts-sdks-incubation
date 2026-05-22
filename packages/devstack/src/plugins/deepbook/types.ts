@@ -67,7 +67,7 @@ export const DEEP_PRICE_FEED_ID: PythPriceFeedId = pythPriceFeedId(
 // ---------------------------------------------------------------------------
 
 /** Whitelisted pool to create at deploy time. `base` / `quote` are
- *  the coin symbols the deepbook composite resolves to coin records
+ *  the coin symbols the DeepBook plugin resolves to coin records
  *  from user-supplied coin/package members. */
 export interface DeepbookPoolSpec {
 	readonly name: string;

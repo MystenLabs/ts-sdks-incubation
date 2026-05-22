@@ -54,15 +54,13 @@ import {
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
-import { SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
+import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
+
+export { DEFAULT_KEY_SERVER_PORT } from './routable.ts';
 
 // ---------------------------------------------------------------------------
 // Constants — mirror v3 `seal/internal.ts:102-103`
 // ---------------------------------------------------------------------------
-
-/** Port the upstream key-server binary binds to. Single shared host
- *  port across stacks — Traefik dispatches by Host: header. */
-export const DEFAULT_KEY_SERVER_PORT = 2024 as const;
 
 /** Default `/health` probe timeout. */
 export const DEFAULT_READY_TIMEOUT_MS = 60_000 as const;
@@ -133,7 +131,7 @@ const READY_PROBE_INTERVAL_MS = 500;
  *  is the substrate-blind value the ContainerRuntime adapter
  *  consumes. */
 export interface KeyServerContainerSpec {
-	/** Image ref from the lifted cargo-image sibling. */
+	/** Image ref from the Seal image resolver. */
 	readonly image: ImageRef;
 	/** Composed container name (substrate folds `<app>-<stack>-…`). */
 	readonly containerName: string;

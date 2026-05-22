@@ -6,8 +6,10 @@
 
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_SUI_VERSION } from '../../../src/plugins/walrus/lifted-siblings/cargo-image.ts';
-import { DEFAULT_WALRUS_REF } from '../../../src/plugins/walrus/lifted-siblings/source-fetch.ts';
+import {
+	DEFAULT_SUI_VERSION,
+	DEFAULT_WALRUS_REF,
+} from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 
 describe('resolveLocalClusterOptions', () => {
@@ -21,7 +23,7 @@ describe('resolveLocalClusterOptions', () => {
 		expect(r.epochDuration).toBe('24h');
 	});
 
-	it('preserves user-supplied release versions for image and source resolution', () => {
+	it('preserves user-supplied release versions for image resolution', () => {
 		const r = resolveLocalClusterOptions({
 			version: 'devnet-v1.50.0',
 			suiVersion: 'devnet-v1.72.0',
@@ -38,11 +40,6 @@ describe('resolveLocalClusterOptions', () => {
 		expect(() => resolveLocalClusterOptions({ nodeCount: 5, shards: 3 })).toThrow(
 			/shards \(3\) must be >= nodeCount \(5\)/,
 		);
-	});
-
-	it('passes through the user-supplied movePackagePath', () => {
-		const r = resolveLocalClusterOptions({ movePackagePath: '/tmp/custom/contracts' });
-		expect(r.movePackagePath).toBe('/tmp/custom/contracts');
 	});
 
 	it('coerces seedPaymentMist to bigint default when unset', () => {

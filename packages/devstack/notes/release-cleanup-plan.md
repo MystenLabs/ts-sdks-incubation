@@ -13,7 +13,7 @@ getting from "refactor in progress" to "release candidate".
 
 ## P0 release blockers
 
-### 1. Finish the current public API refactor — completed
+### 1. Finish the current public API refactor - completed
 
 Current evidence:
 
@@ -23,7 +23,7 @@ Current evidence:
 - Built-ins, tests, examples, README, architecture docs, and devstack docs use the new
   resource-native plugin API.
 - The cleanup marker scan over live source/docs/tests has no stale matches for the removed API names
-  called out by the plugin API cleanup plan.
+  from the completed plugin API cleanup.
 
 Completed scope:
 
@@ -35,102 +35,143 @@ Completed scope:
 - Callable mode namespaces replace the old namespace method form.
 - The sample-only witness and sample plugin scaffolding has been removed from `src`.
 
-### 2. Settle package contents and declaration generation
+### 2. Settle package contents and declaration generation - completed
 
 Current evidence:
 
-- `package.json` publishes `src`, `dist`, and `images`, while explicitly excluding `src/generated`,
-  `src/samples`, `dist/samples`, and `dist/node_modules`.
-- Build still relies on `scripts/repair-effect-dts-imports.mjs` after `tsdown`.
-- `UNRESOLVED-BLOCKERS.md` already calls the declaration repair path fragile and not release-ready.
-
-Acceptance:
-
-- Decide whether release packages should include `src` at all. If yes, document why; if no, move to
-  a dist/images-only package.
-- Replace or harden the declaration repair step so packed `.d.mts` files contain no
-  `node_modules/effect` or `effect/dist` specifiers.
-- `pnpm --filter @mysten-incubation/devstack build` and
-  `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` pass from a clean checkout.
-- `npm pack --dry-run` or equivalent confirms no generated app bindings, samples, nested
+- `package.json` publishes `dist` and `images`; source is not shipped.
+- The post-`tsdown` declaration repair script is removed. The root cause was the devstack-local
+  catch-all `paths: { "*": ["./*"] }` mapping, which made TypeScript name Effect helper subpaths as
+  package-local `node_modules/effect/dist/*` specifiers during declaration generation.
+- `packages/devstack/tsconfig.json` no longer defines that catch-all path mapping, so `tsdown` emits
+  public Effect subpaths such as `effect/Types` and `effect/Cause` directly.
+- `test/build-integrations/release-surface.test.ts` scans packed declaration files and fails on
+  package-local Effect specifiers or `.js` Effect subpath imports.
+- `pnpm --filter @mysten-incubation/devstack smoke:pack-consumer` passes with the dist/images-only
+  package shape.
+- A dry-run package audit confirms no `src/`, generated app bindings, samples, nested
   `node_modules`, Move build output, or local runtime state are shipped.
 
-### 3. Fix create-devstack-app template drift
+Completed scope:
+
+- Devstack package contents are now dist/images-only.
+- Declaration generation uses normal `tsdown` output without a post-build text repair.
+- Packed-consumer import, CLI, minimal boot, stack-context, removed-subpath, and skip-lib-check
+  typecheck smokes pass from the packed tarball.
+
+### 3. Fix create-devstack-app template drift - completed
 
 Current evidence:
 
 - `examples/_template/devstack.config.ts` is on the object-form app/service shape.
-- `packages/create-devstack-app/template/devstack.config.ts` is stale: it imports `AnyMember` and
-  uses the removed variadic `defineDevstack(...)` form.
-- The scaffolder build runs `sync-template`, so the committed bundled template can drift from the
-  source template unless release verification checks the generated package artifact.
+- `packages/create-devstack-app/template/devstack.config.ts` is synced from `examples/_template`.
+- `pnpm --filter @mysten-incubation/create-devstack-app run check-template` compares the bundled
+  template against a fresh temp sync and passes.
+- `pnpm --filter @mysten-incubation/create-devstack-app typecheck` passes.
+- `pnpm --filter @mysten-incubation/create-devstack-app build` passes.
+- A `skipInstall`/`skipGit` scaffold smoke rewrites package scripts to `DEVSTACK_APP=smoke-app`,
+  rewrites the router origin to `dev.smoke-app.localhost`, and does not copy `src/generated`.
+- A dry-run package audit confirms the scaffolder tarball contains `dist` and `template`, with no
+  generated app bindings, nested `node_modules`, local runtime state, Move build output, or source
+  package files.
 
-Acceptance:
+Completed scope:
 
 - `packages/create-devstack-app/template` is regenerated from `examples/_template`.
-- Add or run a no-drift check that fails when the committed bundled template differs from the synced
+- Added a no-drift check that fails when the committed bundled template differs from the synced
   output.
-- `pnpm --filter @mysten-incubation/create-devstack-app typecheck` and `build` pass.
-- A temp installed/scaffolded app can run install, typecheck, and at least a minimal
-  `devstack apply` or smoke boot from the packed packages.
+- Generated template bindings are filtered out at both sync and scaffold-copy time.
 
-### 4. Bring README and docs back to the live API
+### 4. Bring README and docs back to the live API - completed
 
 Current evidence:
 
-- `packages/devstack/README.md` still describes `defineNodePlugin`, tag/provide primitives, and a
-  flat-variadic `defineDevstack` surface.
-- `packages/docs/content/devstack/reference/services.mdx` still has a custom plugin example using
-  `start(_ctx, { sui })`.
-- The live-network docs and tests are being edited for callable mode namespaces; finish the sweep
-  after the active API refactor lands.
+- `packages/devstack/README.md` describes the object-form composer, current plugin authoring
+  helpers, capability helpers, mode-narrowed factories, and dist/images package shape.
+- Docs no longer match stale public API markers for `defineNodePlugin`, `NodePlugin`, `forNetwork`,
+  `.for(...)`, `tag/provide`, `capabilityBuilder`, `CompositePrimitiveDecl`, `displayHint`, phase
+  markers, or placeholder generated package paths.
+- `pnpm --filter @mysten-incubation/docs build` passes.
 
-Acceptance:
+Completed scope:
 
-- README describes the object-form stack composer, current plugin authoring helpers, and current
-  package subpaths only.
-- Docs snippets compile against the current source or are covered by a snippet/typecheck fixture.
-- Mode namespace docs, tests, and examples use exactly one syntax.
-- Docs no longer advertise commands excluded by the CLI surface decision.
+- README and docs are aligned to the live public API surface covered by the marker scan.
+- Generated output docs use `package/<mvr-placeholder>.ts`.
+- Refs/dependency docs no longer advertise witness helpers or composite capabilities.
 
 ### 5. Close product proof from the blocker ledger
 
 Keep `UNRESOLVED-BLOCKERS.md` as the source of truth, but these are release blockers:
 
-- `private-content` browser proof for encrypt -> Walrus store -> Walrus fetch -> Seal decrypt.
-- Live TUI/operator proof: progress, log placement, endpoint grouping, failure rendering, shutdown,
-  and hard-kill behavior.
-- Installed-consumer boot from the packed package.
-- Docker/manual lifecycle proof, including Docker Desktop grouping and the stale-network prune/wipe
-  story for long-lived hosts.
-- Current product evidence for wallet, token-studio, and fork-greeting.
+- `private-content` browser proof for encrypt -> Walrus store -> Walrus fetch -> Seal decrypt:
+  resolved 2026-05-22.
+- Live TUI/operator proof: resolved 2026-05-22. A real `_template` TUI session reached `running`,
+  `6/6 ready`, 5 URLs, 2 accounts, 1 package, and no errors; showed Services/Packages/Accounts
+  grouping with Sui, wallet, app, package, and account rows; handled `SIGINT` graceful shutdown; and
+  wiped the proof stack clean. Focused hard-kill/second-signal tests and real-Docker router traffic
+  also passed.
+- Installed-consumer boot from the packed package: resolved 2026-05-22.
+- Docker/manual lifecycle proof: Docker Desktop grouping was manually verified by the user on
+  2026-05-22. The stale-network prune/wipe story for long-lived hosts is resolved for devstack-owned
+  resources: `wipe` removes stack-scoped containers/networks/volumes, and built CLI
+  `prune --dry-run --json` inventoried devstack-labeled networks, selected non-shared stale
+  networks, and left shared router profile groups unselected by default. Unlabelled/foreign networks
+  remain outside devstack's destructive scope by design.
+- Wallet browser proof: resolved 2026-05-22 with `pnpm --filter @mysten-incubation/wallet test:e2e`.
+- Token-studio browser proof: resolved 2026-05-22 with
+  `pnpm --filter @mysten-incubation/token-studio test:e2e`.
+- Fork-greeting is no longer release-gated. Forking is marked as a coming-soon feature, and
+  `examples/fork-greeting` is no longer advertised as a runnable release target. Fork network
+  selection now fails explicitly with a coming-soon error through the CLI/env parser, and direct
+  `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`.
+- Snapshot identity conflict rejection and start-time/PID identity proof resolved on 2026-05-22 with
+  focused identity-guard, restore, snapshot-reservation, roster, stack-lock, and supervisor-presence
+  tests. The snapshot-reservation orphan sweep now forces the PID/start-time check through the
+  same-host path so stale same-PID reservations are swept instead of being treated as foreign-host
+  alive.
+- Local package-preview proof is resolved for tarballs: devstack pack-consumer boot passes,
+  `npm pack --dry-run --json` passes for devstack and create-devstack-app, and a create-devstack-app
+  tarball install/bin smoke generated a correctly rewritten app without generated artifacts. The
+  actual `pkg.pr.new` / `pkg.new` preview install remains open until the release branch is ready to
+  cut a preview.
+- The live TUI proof exposed and fixed the router-profile conflict caused by preferring daemon ID
+  over Docker context identity. Router profiles now prefer stable context/host identity, so the CLI
+  adopts the existing router singleton instead of creating a second fixed-port router profile when
+  daemon ID lookup becomes available later.
 
 ## P1 cleanup before release candidate
 
-### Samples and scaffold debt
+### Samples and scaffold debt - completed
 
-`src/samples/*` is excluded from the package but still lives under `src` and can participate in
-typecheck/refactor churn. It also still contains Phase 4 throw scaffolding and composite capability
-usage. Either make samples real current-API examples with tests, move them out of `src`, or delete
-them.
+Current evidence:
 
-### Boundary cleanup
+- `packages/devstack/src/samples` contains no tracked files.
+- `packages/devstack/examples-test` no longer imports sample plugins.
+- The package dry-run audit confirms no `src/` or `dist/samples/` files are shipped.
+- `packages/devstack/test/build-integrations/release-surface.test.ts` now pins the dist/images-only
+  package surface.
 
-Carry forward the architecture/style open slots that affect release quality:
+### Boundary cleanup - completed
 
-- Build integrations should share manifest discovery, decode, cold-start URL, and dapp-kit-slot
-  behavior through `build-integrations/runtime`.
-- Coin/package cross-plugin coupling should move to a substrate-raised event or another explicit
-  public contract instead of one plugin importing another plugin's internals.
-- `substrate/runtime/on-chain-artifact` naming should either become generic or move to the plugin
-  layer if it remains Sui/on-chain-specific.
+The boundary cleanup lane is complete; details and verification live in
+`packages/devstack/notes/boundary-cleanup-plan.md`.
+
+Completed scope:
+
+- Build integrations share runtime helpers for identity discovery, manifest projection, cold-start
+  route tables, and dapp-kit slot handling.
+- Package/Coin publish-output coupling moved out of substrate internals and through a plugin-owned
+  contribution path.
+- `on-chain-artifact` was renamed to the generic `artifact-publisher` primitive.
 
 ### Cast and residue sweep
 
 Run a user-surface sweep for `as never`, `as any`, `as unknown as`, `displayHint`,
 `CompositePrimitiveDecl`, `forNetwork`, `capabilityBuilder`, old `defineNodePlugin` terms, and phase
-markers. Some casts in boundary/test code are legitimate; release cleanup should classify them and
-remove the ones that leak into docs, examples, templates, public types, or built-in option surfaces.
+markers. Current stale public API marker scans over README, docs, examples, and the scaffolder
+template are clean; remaining source matches are either historical notes, style-guide examples,
+engine/service identifiers, or implementation comments that need separate classification before
+release.
 
 ### Example and docs evidence
 
@@ -151,6 +192,13 @@ pnpm --filter @mysten-incubation/devstack typecheck
 pnpm --filter @mysten-incubation/devstack build
 pnpm --filter @mysten-incubation/devstack exec vitest run
 pnpm --filter @mysten-incubation/devstack smoke:pack-consumer
+pnpm --filter @mysten-incubation/wallet exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/token-studio exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/private-content exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/deepbook-full exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/connect-four exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/_template exec tsc -p tsconfig.node.json --noEmit
+pnpm --filter @mysten-incubation/example-fork-greeting typecheck
 pnpm --filter @mysten-incubation/create-devstack-app typecheck
 pnpm --filter @mysten-incubation/create-devstack-app build
 ```
@@ -165,11 +213,7 @@ pnpm --filter @mysten-incubation/token-studio test:e2e
 pnpm --filter @mysten-incubation/deepbook-full test:e2e
 ```
 
-Manual release proof:
+Manual release proof still open:
 
-- `npm pack --dry-run` / package file audit for devstack and create-devstack-app.
-- Temp install from packed tarballs.
-- Scaffold a temp app from the packed scaffolder.
-- Boot a minimal installed-consumer stack.
-- Run one live TUI session and record operator observations.
-- Inspect Docker Desktop grouping and stale-resource cleanup behavior on a long-lived Docker host.
+- Run the actual `pkg.pr.new` / `pkg.new` preview flow.
+- Install/scaffold from the preview packages instead of local tarballs.

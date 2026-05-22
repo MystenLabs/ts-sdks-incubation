@@ -653,59 +653,62 @@ describe('same-name Docker resource ownership', () => {
 	);
 });
 
-describe('container lifecycle mutation policy', () => {
-	it.effect('recreates a matching container when inspect cannot prove its lifecycle state', () =>
-		Effect.gen(function* () {
-			const root = mkdtempSync(join(tmpdir(), 'docker-unknown-state-recreate-test-'));
-			try {
-				const stackRoot = join(root, 'stack');
-				mkdirSync(stackRoot, { recursive: true });
-				const created = join(root, 'created');
-				const { bin, log } = writeDocker(root, [
-					'if [ "$1" = "inspect" ]; then',
-					`  if [ -f ${JSON.stringify(created)} ]; then`,
-					`    printf '%s\\n' ${JSON.stringify(inspectJson({ id: 'created-id' }))}`,
-					'    exit 0',
-					'  fi',
-					`  printf '%s\\n' ${JSON.stringify(
-						inspectJson({ id: 'unknown-state-id', includeState: false }),
-					)}`,
-					'  exit 0',
-					'fi',
-					'if [ "$1" = "rm" ]; then exit 0; fi',
-					'if [ "$1" = "run" ]; then',
-					`  touch ${JSON.stringify(created)}`,
-					'  printf "created-id\\n"',
-					'  exit 0',
-					'fi',
-					'if [ "$1" = "start" ]; then',
-					'  echo "unexpected start" >&2',
-					'  exit 1',
-					'fi',
-					'if [ "$1" = "stop" ]; then exit 0; fi',
-					'exit 0',
-					'',
-				]);
+describe('container lifecycle mutation policy', { timeout: 10_000 }, () => {
+	it.effect(
+		'recreates a matching container when inspect cannot prove its lifecycle state',
+		() =>
+			Effect.gen(function* () {
+				const root = mkdtempSync(join(tmpdir(), 'docker-unknown-state-recreate-test-'));
+				try {
+					const stackRoot = join(root, 'stack');
+					mkdirSync(stackRoot, { recursive: true });
+					const created = join(root, 'created');
+					const { bin, log } = writeDocker(root, [
+						'if [ "$1" = "inspect" ]; then',
+						`  if [ -f ${JSON.stringify(created)} ]; then`,
+						`    printf '%s\\n' ${JSON.stringify(inspectJson({ id: 'created-id' }))}`,
+						'    exit 0',
+						'  fi',
+						`  printf '%s\\n' ${JSON.stringify(
+							inspectJson({ id: 'unknown-state-id', includeState: false }),
+						)}`,
+						'  exit 0',
+						'fi',
+						'if [ "$1" = "rm" ]; then exit 0; fi',
+						'if [ "$1" = "run" ]; then',
+						`  touch ${JSON.stringify(created)}`,
+						'  printf "created-id\\n"',
+						'  exit 0',
+						'fi',
+						'if [ "$1" = "start" ]; then',
+						'  echo "unexpected start" >&2',
+						'  exit 1',
+						'fi',
+						'if [ "$1" = "stop" ]; then exit 0; fi',
+						'exit 0',
+						'',
+					]);
 
-				const handle = yield* Effect.scoped(
-					Effect.gen(function* () {
-						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
-						return yield* ensureContainer(spec({ recreate: 'on-failure' }), {
-							cycle: 1,
-							perNameLock,
-						});
-					}),
-				).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot))));
+					const handle = yield* Effect.scoped(
+						Effect.gen(function* () {
+							const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
+							return yield* ensureContainer(spec({ recreate: 'on-failure' }), {
+								cycle: 1,
+								perNameLock,
+							});
+						}),
+					).pipe(Effect.provide(Layer.mergeAll(fakeDockerLayer(bin), stackPathsLayer(stackRoot))));
 
-				expect(handle.id).toBe('created-id');
-				const lines = readFileSync(log, 'utf8').trim().split('\n');
-				expect(lines).toContain('rm -f devstack-owned');
-				expect(lines.some((line) => line.startsWith('run -d --name devstack-owned'))).toBe(true);
-				expect(lines.some((line) => line.startsWith('start '))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+					expect(handle.id).toBe('created-id');
+					const lines = readFileSync(log, 'utf8').trim().split('\n');
+					expect(lines).toContain('rm -f devstack-owned');
+					expect(lines.some((line) => line.startsWith('run -d --name devstack-owned'))).toBe(true);
+					expect(lines.some((line) => line.startsWith('start '))).toBe(false);
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
+		{ timeout: 10_000 },
 	);
 
 	it.effect('refuses collision recovery when the remaining container lifecycle is unknown', () =>

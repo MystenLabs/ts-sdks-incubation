@@ -11,9 +11,9 @@ import {
 } from '../../../src/plugins/deepbook/routable.ts';
 
 describe('buildServerDispatchId', () => {
-	it('folds the instance name into the composite key', () => {
+	it('folds the instance name into the service key', () => {
 		expect(buildServerDispatchId('main')).toEqual({
-			compositeKey: 'deepbook:main',
+			serviceKey: 'deepbook:main',
 			role: 'server',
 		});
 	});

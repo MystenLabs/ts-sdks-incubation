@@ -1,6 +1,6 @@
 ---
 title: Live Networks
-description: Running the same stack shape against public or forked networks.
+description: Running the same stack shape against public networks.
 ---
 
 Pick a Sui mode explicitly when the config should not default from `DEVSTACK_NETWORK`.
@@ -30,11 +30,10 @@ The CLI can also set the network before config import:
 ```bash
 devstack up --network testnet
 devstack up --network mainnet
-devstack up --network mainnet-fork
 ```
 
-Local-only services may refuse fork or live modes. Use the mode-specific factories when you want the
-type system to narrow available branches:
+Forked-network mode is coming soon. Local-only services may refuse live modes. Use the mode-specific
+factories when you want the type system to narrow available branches:
 
 ```ts
 import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';

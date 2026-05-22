@@ -16,7 +16,7 @@
 // `'title' extends keyof Row` evaluates to `false`.
 
 import type { EndpointKey, PluginKey } from './brand.ts';
-import type { LifecycleStatus, PhaseNarration, PluginKind, RebootCost } from './lifecycle.ts';
+import type { LifecycleStatus, PhaseNarration, PluginRole } from './lifecycle.ts';
 
 /** Top-level subscribable state. Renderers project this. */
 export interface SubscribableState {
@@ -42,16 +42,13 @@ export interface SubscribableState {
 /** One row per visible plugin instance. */
 export interface Row {
 	readonly key: PluginKey;
-	readonly kind: PluginKind;
+	readonly role: PluginRole;
 	readonly status: LifecycleStatus;
 	readonly phase: PhaseNarration | null;
 	readonly lastError: StructuredError | null;
 	readonly logTail: LogTail;
 	readonly endpoints: ReadonlyArray<EndpointKey>;
-	readonly compositeChildren: ReadonlyArray<PluginKey> | null;
 	readonly selectiveRestartHighlight: boolean;
-	readonly narrationByContributor: Readonly<Record<string, string>> | null;
-	readonly rebootCost: RebootCost | null;
 }
 
 export interface LogTail {

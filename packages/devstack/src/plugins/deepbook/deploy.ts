@@ -1,4 +1,4 @@
-// Deepbook plugin — publish + create-pools via OCA `sui-tx` variant.
+// Deepbook plugin — publish + create-pools via artifact publisher `sui-tx` variant.
 //
 // This is the canonical example of a Move-SDK-based produce body
 // (architecture §10 / STYLE_GUIDE §11): the previous v3 deepbook
@@ -14,14 +14,14 @@
 //   4. Create whitelisted pools (one `pool::create_pool_admin` call
 //      per pool spec).
 //
-// Steps 1-3 collapse into one OCA `sui-tx` cycle; step 4 is a
+// Steps 1-3 collapse into one artifact publisher `sui-tx` cycle; step 4 is a
 // follow-on `sui-tx` cycle keyed off the resolved `packageId`.
 
 import { Effect, type Scope } from 'effect';
 
 import { chainId as brandChainId, contentHash as brandContentHash } from '../../substrate/brand.ts';
-import type { OnChainArtifactPublisher } from '../../primitives/on-chain-artifact.ts';
-import { compileChainOperation } from '../../substrate/runtime/on-chain-artifact/index.ts';
+import type { ArtifactPublisher } from '../../primitives/artifact-publisher.ts';
+import { compileChainOperation } from '../../substrate/runtime/artifact-publisher/index.ts';
 import type {
 	ResolvedSigner,
 	SuiExecuteClient,
@@ -47,7 +47,7 @@ export interface DeepbookPoolsResult {
 }
 
 // ---------------------------------------------------------------------------
-// Coin resolver — passed in by the composite (the inner coin
+// Coin resolver — passed in by the DeepBook plugin (the coin
 // registry knows which coin records back each pool's base/quote
 // symbol).
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ export interface CoinResolver {
 // ---------------------------------------------------------------------------
 
 export const publishDeepbookPackage = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	client: SuiExecuteClient,
 	chain: string,
 	signer: ResolvedSigner,
@@ -90,7 +90,7 @@ export const publishDeepbookPackage = (
 							Effect.mapError(
 								(cause) =>
 									({
-										_tag: 'OnChainArtifactError',
+										_tag: 'ArtifactPublishError',
 										reason: 'produce-failed',
 										detail: cause.message,
 									}) as const,
@@ -99,7 +99,7 @@ export const publishDeepbookPackage = (
 						),
 					parse: (_effects) =>
 						Effect.fail({
-							_tag: 'OnChainArtifactError' as const,
+							_tag: 'ArtifactPublishError' as const,
 							reason: 'produce-failed' as const,
 							detail:
 								'deepbook publish requires a Move package publish transaction. Use deepbook({ mode: "known", packageId, registryId }) for an existing deployment.',
@@ -112,7 +112,7 @@ export const publishDeepbookPackage = (
 					(err): DeepbookPluginError =>
 						deepbookPluginError(
 							'publish',
-							err._tag === 'OnChainArtifactError' ? err.detail : String(err),
+							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
 						),
 				),
 			);
@@ -125,7 +125,7 @@ export const publishDeepbookPackage = (
 // ---------------------------------------------------------------------------
 
 export const createDeepbookPools = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	client: SuiExecuteClient,
 	chain: string,
 	signer: ResolvedSigner,
@@ -178,7 +178,7 @@ export const createDeepbookPools = (
 							Effect.mapError(
 								(cause) =>
 									({
-										_tag: 'OnChainArtifactError',
+										_tag: 'ArtifactPublishError',
 										reason: 'produce-failed',
 										detail: cause.message,
 									}) as const,
@@ -187,7 +187,7 @@ export const createDeepbookPools = (
 						),
 					parse: (_effects) =>
 						Effect.fail({
-							_tag: 'OnChainArtifactError' as const,
+							_tag: 'ArtifactPublishError' as const,
 							reason: 'produce-failed' as const,
 							detail:
 								'deepbook pool creation requires a DeepBook package deployment with pool admin rights. Use known mode for an existing deployment until local pool creation is implemented.',
@@ -200,7 +200,7 @@ export const createDeepbookPools = (
 					(err): DeepbookPluginError =>
 						deepbookPluginError(
 							'create-pools',
-							err._tag === 'OnChainArtifactError' ? err.detail : String(err),
+							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
 						),
 				),
 			);

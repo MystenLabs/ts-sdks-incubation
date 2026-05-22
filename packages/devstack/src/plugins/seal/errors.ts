@@ -10,14 +10,14 @@
 // (per surrounding subsystem style). `Effect.catchTag` / `catchTags`
 // match on the literal `_tag`.
 //
-// `ForkIncompatibleError` is a cross-cutting composite-plugin shape
-// owned by `substrate/runtime/composite-errors.ts`; seal contributes
+// `ForkIncompatibleError` is a cross-cutting mode-refusal shape
+// owned by `substrate/runtime/mode-errors.ts`; seal contributes
 // the `sealLocalKeygen` variant via the factory below. Substrate
 // owns the canonical re-export; this module does NOT re-export the
 // class — the cross-plugin re-export was the cause of a name
 // collision at the root barrel.
 
-import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { ForkIncompatibleError } from '../../substrate/runtime/mode-errors.ts';
 import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +29,7 @@ import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/con
  *
  *  Phase semantics:
  *   - `port-alloc`     — router `seal` entrypoint not registered.
- *   - `image`          — image build / pull failed (lifted-sibling
+ *   - `image`          — image build / pull failed (bootstrap-asset
  *                        cargo step).
  *   - `keygen`         — `seal-cli genkey` container failed OR stdout
  *                        parse failed.

@@ -35,7 +35,7 @@ const ALLOWED: ReadonlyMap<LifecycleStatus, ReadonlySet<LifecycleStatus>> = new 
 	['stopping', new Set<LifecycleStatus>(['stopped', 'failed'])],
 	['failed', new Set<LifecycleStatus>(['pending'])],
 	['stopped', new Set<LifecycleStatus>(['pending'])],
-	['done', new Set<LifecycleStatus>()], // terminal
+	['done', new Set<LifecycleStatus>(['pending', 'failed'])],
 ] as const);
 
 /** Predicate that the type-table and the runtime table agree. The
@@ -65,7 +65,8 @@ export const assertTransition = (
 		? Effect.succeed(to)
 		: Effect.die(new InvalidLifecycleTransition({ from, to }));
 
-/** Terminal statuses — no further transitions. */
+/** Completed task status. It counts as ready, restart can return it to pending,
+ *  and post-acquire failures can still mark it failed. */
 export const isTerminal = (status: LifecycleStatus): boolean => status === 'done';
 
 /** Statuses that count toward "stack is ready" — every plugin must be

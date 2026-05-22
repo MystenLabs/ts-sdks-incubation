@@ -30,9 +30,7 @@ export interface SuiNetworkBindings {
 /** Construct the Codegenable contribution. Emit is byte-deterministic
  *  on unchanged input (architecture: no mtime churn on no-op
  *  cycles). */
-export const makeCodegenable = (
-	resolved: ResolvedSuiNetwork,
-): CodegenableDecl<'sui-network'> => ({
+export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl<'sui-network'> => ({
 	kind: 'codegenable',
 	emitterName: 'sui-network',
 	outputPath: 'sui/network.ts',

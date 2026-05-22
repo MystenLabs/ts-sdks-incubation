@@ -10,8 +10,8 @@ resolves to a typed value from `start`.
 - `dependsOn`: a single plugin/ref, an array, or an object.
 - `kind`: lifecycle classification for the supervisor.
 - `start`: the effect that produces the resolved value.
-- `capabilities`: optional declarations for routing, snapshots, strategies, generated files, and
-  composites.
+- `capabilities`: optional declarations for routing, snapshots, strategies, projection events, and
+  generated files.
 
 The public helpers are available from the root export:
 
@@ -36,6 +36,6 @@ call site.
 Package exports:
 
 - The root package exports plugin-author helpers, capability declaration types, brands, lifecycle
-  types, manifest types, and witness helpers.
+  types, and manifest types.
 - `/contracts` and `/substrate` are not package exports. Internal modules may still exist in source,
   but app and plugin-author code should import from the root package or build-integration subpaths.

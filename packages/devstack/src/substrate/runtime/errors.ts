@@ -33,19 +33,6 @@ export class CacheError extends Schema.TaggedErrorClass<CacheError>()('CacheErro
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
-/** Lifted-sibling registry conflict — same `(plugin, kind, scope)`
- *  registered with two different inputHashes. Mirrors the
- *  `LiftedSiblingConflict` shape from `primitives/lifted-sibling.ts`
- *  but is the typed yieldable surface. */
-export class LiftedSiblingConflictError extends Schema.TaggedErrorClass<LiftedSiblingConflictError>()(
-	'LiftedSiblingConflict',
-	{
-		groupKey: Schema.String,
-		existingHash: Schema.String,
-		attemptedHash: Schema.String,
-	},
-) {}
-
 /** Strategy registry missing-key surface — mirrors
  *  `StrategyNotFoundError` from `contracts/strategy-contributor.ts`
  *  as a yieldable. */

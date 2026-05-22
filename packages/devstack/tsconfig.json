@@ -6,10 +6,7 @@
 		"jsx": "react-jsx",
 		"noEmit": true,
 		"allowImportingTsExtensions": true,
-		"rootDir": ".",
-		"paths": {
-			"*": ["./*"]
-		}
+		"rootDir": "."
 	},
 	"include": ["src/**/*", "examples-test/**/*", "test/**/*"],
 	"exclude": ["node_modules"]

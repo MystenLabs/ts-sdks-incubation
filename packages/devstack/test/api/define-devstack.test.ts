@@ -32,7 +32,7 @@ import { wallet } from '../../src/plugins/wallet/index.ts';
  *  the only member. */
 const standalone = definePlugin({
 	id: 'leaf/standalone',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ id: 1 } as const),
 });
 
@@ -41,13 +41,13 @@ const bareSuiResource = resource<'sui', { readonly chain: string }>('sui');
 const customNeedsSui = definePlugin({
 	id: 'custom/needs-sui',
 	dependsOn: { sui: localnet },
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 const customNeedsBareSui = definePlugin({
 	id: 'custom/needs-bare-sui',
 	dependsOn: { sui: bareSuiResource },
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 
@@ -140,13 +140,13 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 	it('recursively includes plugin-valued dependencies before validation and runtime boot', () => {
 		const database = definePlugin({
 			id: 'test/database',
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ url: 'postgres://devstack' } as const),
 		});
 		const api = definePlugin({
 			id: 'test/api',
 			dependsOn: { database },
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: ({ database }) => Effect.succeed({ upstream: database.url } as const),
 		});
 
@@ -160,13 +160,13 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 	it('dedupes repeated dependency refs without changing callback dependency shape', () => {
 		const upstream = definePlugin({
 			id: 'test/repeated-upstream',
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 		const consumer = definePlugin({
 			id: 'test/repeated-consumer',
 			dependsOn: { first: upstream, second: upstream },
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: (deps) => Effect.succeed(deps),
 		});
 
@@ -177,18 +177,18 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 	it('throws on duplicate providers discovered through recursive dependencies', () => {
 		const first = definePlugin({
 			id: 'test/duplicate-provider',
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ from: 'first' } as const),
 		});
 		const second = definePlugin({
 			id: 'test/duplicate-provider',
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ from: 'second' } as const),
 		});
 		const consumer = definePlugin({
 			id: 'test/duplicate-consumer',
 			dependsOn: [first, second],
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 
@@ -202,13 +202,13 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const a = definePlugin({
 			id: 'test/cycle-a',
 			dependsOn: depsForA,
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ ok: 'a' } as const),
 		});
 		const b = definePlugin({
 			id: 'test/cycle-b',
 			dependsOn: [a],
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ ok: 'b' } as const),
 		});
 		depsForA.push(b);
@@ -224,14 +224,14 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const accountSetup = definePlugin({
 			id: 'test/account-setup',
 			dependsOn: { alice, bob },
-			kind: 'leaf-one-shot',
+			role: 'task',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 		const walletAll = wallet({ accounts: 'all' });
 		const app = definePlugin({
 			id: 'test/app-with-wallet-all',
 			dependsOn: [accountSetup, walletAll] as const,
-			kind: 'leaf-long-running',
+			role: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 
@@ -274,7 +274,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			name: 'app',
 			command: 'pnpm',
 			args: ['dev'],
-			needs: [demoCoin] as const,
+			after: [demoCoin] as const,
 		});
 
 		const explicit = sui();
@@ -311,7 +311,7 @@ if (false) {
 	const needsBareCache = definePlugin({
 		id: 'test/needs-bare-cache',
 		dependsOn: bareCache,
-		kind: 'leaf-long-running',
+		role: 'service',
 		start: (cache) => Effect.succeed(cache),
 	});
 	// @ts-expect-error missing provider: test/bare-cache

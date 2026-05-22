@@ -24,10 +24,15 @@ images; subsequent runs should reuse Docker cache.
 
 ## Stack And Config Examples
 
-| Example                            | What it shows                       | Command                                                        |
-| ---------------------------------- | ----------------------------------- | -------------------------------------------------------------- |
-| [`arena`](./arena)                 | Connect Four stack config target.   | `pnpm --filter @mysten-incubation/arena apply`                 |
-| [`fork-greeting`](./fork-greeting) | Forked-network stack config target. | `pnpm --filter @mysten-incubation/example-fork-greeting apply` |
+| Example                          | What it shows                     | Command                                               |
+| -------------------------------- | --------------------------------- | ----------------------------------------------------- |
+| [`connect-four`](./connect-four) | Connect Four stack config target. | `pnpm --filter @mysten-incubation/connect-four apply` |
+
+## Coming Soon
+
+| Example                            | Planned coverage                           |
+| ---------------------------------- | ------------------------------------------ |
+| [`fork-greeting`](./fork-greeting) | Forked-network package capture and replay. |
 
 ## Adding An Example
 

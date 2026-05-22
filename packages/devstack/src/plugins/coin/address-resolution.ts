@@ -14,8 +14,8 @@
 //
 //   2. **Package-scoped witness** — `coin.fromPackage(pkg, 'MOCK_USDC')`.
 //      Forces a dependency edge on the publishing package resource, then
-//      reads its publish receipt's discovered coins. Statically typed
-//      against local packages only (KnownPackages have no receipt).
+//      reads its publish output's discovered coins. Statically typed
+//      against local packages only (KnownPackages have no output).
 //
 //   3. **Bare on-chain type** — `coin.known('0x...::DEEP::DEEP')`.
 //      Bypasses the registry; calls `getCoinMetadata` against the

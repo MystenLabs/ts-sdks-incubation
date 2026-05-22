@@ -22,11 +22,15 @@
 // CORS is omitted by construction — the TCP variant of `RoutableDecl`
 // doesn't carry a `cors` field.
 
-import type { RoutableDecl } from '../../contracts/routable.ts';
+import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
-/** Canonical endpoint name — matches the `DEFAULT_ENTRYPOINTS` entry
- *  in `orchestrators/router/entrypoints.ts`. */
+/** Canonical endpoint name — matches this plugin's router entrypoint. */
 export const POSTGRES_TCP_ENDPOINT_NAME = 'postgres-tcp' as const;
+export const POSTGRES_TCP_ENTRYPOINT_PORT = 5432;
+
+export const POSTGRES_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
+	{ name: POSTGRES_TCP_ENDPOINT_NAME, port: POSTGRES_TCP_ENTRYPOINT_PORT, protocol: 'tcp' },
+];
 
 /** Construct the Postgres TCP Routable decl.
  *
@@ -44,11 +48,15 @@ export const makePostgresRoutable = (parts: {
 	endpointName: POSTGRES_TCP_ENDPOINT_NAME,
 	dispatchId: {
 		// Include the instance name for readable diagnostics; the router
-		// hashes the full `(app, stack, compositeKey, role)` tuple before
+		// hashes the full `(app, stack, serviceKey, role)` tuple before
 		// writing the global dispatch file.
-		compositeKey: `postgres.${parts.app}.${parts.stack}.${parts.name}`,
+		serviceKey: `postgres.${parts.app}.${parts.stack}.${parts.name}`,
 		role: parts.name,
 	},
-	upstream: { type: 'container', containerName: parts.containerName, containerPort: 5432 },
+	upstream: {
+		type: 'container',
+		containerName: parts.containerName,
+		containerPort: POSTGRES_TCP_ENTRYPOINT_PORT,
+	},
 	wireProtocol: 'tcp',
 });

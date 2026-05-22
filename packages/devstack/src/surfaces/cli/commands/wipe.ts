@@ -15,12 +15,7 @@
 
 import { Effect } from 'effect';
 
-import {
-	type CliError,
-	CliConfirmRequiredError,
-	CliInternalError,
-	isCliError,
-} from '../errors.ts';
+import { type CliError, CliConfirmRequiredError, CliInternalError, isCliError } from '../errors.ts';
 import { emitSuccess } from '../output.ts';
 import type { CommandContext, CommandResult } from './index.ts';
 

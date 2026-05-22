@@ -15,14 +15,7 @@
 //     closure planner.
 //   - SIGINT/SIGTERM → graceful drain; second signal escalates to abort.
 //   - Restart / drain / shutdown commands on the command stream.
-//
-// Composite roll-up: inner participants are scheduled as first-class
-// dep-graph nodes (so their lifecycle is supervised identically), but
-// in the projection their `lifecycle.statusChanged` events fold into
-// the composite parent row's `narrationByContributor` field, never
-// creating a new row. The substrate carries this with a
-// `compositeParent` link on `DepNode`.
-//
+
 // What's explicitly NOT here:
 //   - The thick watcher (L0 primitive — separate module).
 //   - The cause walker / cascade formatter (shared between supervisor
@@ -53,7 +46,7 @@ import type {
 import type { PluginKey } from '../brand.ts';
 import type { EngineCommand, EngineEvent } from '../events.ts';
 import type { Identity } from '../identity.ts';
-import type { LifecycleStatus, PluginKind } from '../lifecycle.ts';
+import type { LifecycleStatus, PluginRole } from '../lifecycle.ts';
 import type { DevstackOptions } from '../options.ts';
 import {
 	resolvePluginDependencies,
@@ -260,41 +253,19 @@ const setCyclePhase = (
 	}));
 
 /** Build the registry's `onTransition` callback — turns status changes
- *  into typed events. The composite roll-up lives here: if a node has
- *  a `compositeParent`, the status change is published as a
- *  `lifecycle.phaseSet` on the PARENT row (narration "<inner key>:
- *  <status>") instead of a new row's `lifecycle.statusChanged`. */
+ *  into typed events. */
 const buildTransitionEmitter =
 	(
-		graph: ResolvedGraph,
 		ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 		hub: Queue.Enqueue<EngineEvent>,
 	): ((key: PluginKey, from: LifecycleStatus, to: LifecycleStatus) => Effect.Effect<void>) =>
 	(key, from, to) =>
-		Effect.gen(function* () {
-			const node = graph.nodes.get(key);
-			if (node === undefined) return;
-			const at = Date.now();
-			if (node.compositeParent !== null) {
-				// Roll up: emit phase narration on the parent row. The inner's
-				// status itself stays internal — renderer sees one composite
-				// row with `narrationByContributor[innerKey] = to`.
-				const phase = `${key}: ${to}`;
-				yield* publish(ref, hub, {
-					tag: 'lifecycle.phaseSet',
-					pluginKey: node.compositeParent,
-					phase,
-					at,
-				});
-				return;
-			}
-			yield* publish(ref, hub, {
-				tag: 'lifecycle.statusChanged',
-				pluginKey: key,
-				from,
-				to,
-				at,
-			});
+		publish(ref, hub, {
+			tag: 'lifecycle.statusChanged',
+			pluginKey: key,
+			from,
+			to,
+			at: Date.now(),
 		});
 
 // -----------------------------------------------------------------------------
@@ -395,7 +366,7 @@ const dispatchContributions = (
 	pluginKey: PluginKey,
 	capabilities: ReadonlyArray<CapabilityDecl>,
 	errorContributions: ReadonlyArray<PluginErrorContribution>,
-	pluginKind: PluginKind,
+	pluginRole: PluginRole,
 	identity: Identity,
 	pluginContext: Context.Context<never>,
 	pluginScope: Scope.Scope,
@@ -443,7 +414,7 @@ const dispatchContributions = (
 			stack: identity.stack,
 			network: identity.chain,
 			pluginKey,
-			kind: pluginKind,
+			role: pluginRole,
 		}),
 	);
 
@@ -489,7 +460,7 @@ const acquireNode = (
 		yield* logger.log(`supervisor/${key}`, key, {
 			level: 'debug',
 			message: 'plugin acquire start',
-			fields: { kind: entry.node.member.kind },
+			fields: { role: entry.node.member.role },
 		});
 		yield* registry.transition(key, 'acquiring').pipe(Effect.catch(() => Effect.void));
 		// Wait for upstreams. If any failed, mark this one failed too —
@@ -625,7 +596,7 @@ const acquireNode = (
 						key,
 						caps,
 						errorContributions,
-						entry.node.member.kind,
+						entry.node.member.role,
 						identity,
 						pluginContext,
 						entry.scope,
@@ -672,9 +643,12 @@ const acquireNode = (
 			// resolves the deferred; downstream dependency resolution reads
 			// from the former.
 			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
+			if (entry.node.member.role === 'task') {
+				yield* registry.transition(key, 'done').pipe(Effect.catch(() => Effect.void));
+			}
 			yield* logger.log(`supervisor/${key}`, key, {
 				level: 'debug',
-				message: 'plugin ready',
+				message: entry.node.member.role === 'task' ? 'plugin done' : 'plugin ready',
 				fields: {
 					capabilities: caps.length,
 					errorContributions: errorContributions.length,
@@ -692,7 +666,7 @@ const acquireNode = (
 			stack: identity.stack,
 			network: identity.chain,
 			pluginKey: key,
-			kind: registry.entries.get(key)?.node.member.kind ?? 'leaf-long-running',
+			role: registry.entries.get(key)?.node.member.role ?? 'service',
 		}),
 	);
 
@@ -1212,12 +1186,12 @@ export interface SupervisorStartupOptions {
  * `CapabilitySinksService` into `pluginContext`, the supervisor
  * harvests through THAT instance instead of building its own. This is
  * the seam plugin authors use to register custom-kind sinks: compose
- * `layerCapabilitySinksDefault(orchestratorBag)` with one or more
+ * `layerCapabilitySinksDefault(orchestratorSinks)` with one or more
  * `Layer.effectDiscard` overlays that yield `CapabilitySinksService`
  * and call `registerSink({ kind: 'my-custom', accept: ... })`. The
  * `sinks: OrchestratorSinks` parameter is ignored when context carries
  * a pre-built service (the caller's Layer already supplies whatever
- * orchestrator bag it wants).
+ * sink registrations it wants).
  *
  * Architecture § Stack lifecycle:
  *   "defineStack(config) → Identity validated → NetworkResolver
@@ -1229,7 +1203,7 @@ export const startSupervisor = (
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = {},
+	sinks: OrchestratorSinks = [],
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 	options: SupervisorStartupOptions = {},
@@ -1294,15 +1268,12 @@ export const startSupervisor = (
 		// Per-plugin scopes parent off the supervisor scope.
 		const supervisorScope = yield* Effect.scope;
 
-		const emit = buildTransitionEmitter(graph, state, hub);
+		const emit = buildTransitionEmitter(state, hub);
 		const registry = yield* buildRegistry(graph, supervisorScope, emit);
 
-		// Declare a row for every top-level (non-inner) plugin so the
-		// projection's `lifecycle.statusChanged` events have a row to
-		// attach to. Inner-participants don't get rows — their narration
-		// folds into the composite row via `compositeParent`.
+		// Declare a row for every plugin so the projection's
+		// `lifecycle.statusChanged` events have a row to attach to.
 		for (const [key, node] of graph.nodes) {
-			if (node.compositeParent !== null) continue;
 			const declaredAccount = pendingAccountProjection(key, node.member.id, Date.now());
 			yield* SubscriptionRef.update(state, (s) => ({
 				...(declaredAccount === null ? s : declareAccount(s, declaredAccount)),
@@ -1312,16 +1283,13 @@ export const startSupervisor = (
 							...s.rows,
 							{
 								key,
-								kind: node.member.kind,
+								role: node.member.role,
 								status: 'pending' as LifecycleStatus,
 								phase: null,
 								lastError: null,
 								logTail: { lines: [], level: 'info' as const, truncated: false },
 								endpoints: [],
-								compositeChildren: composeChildKeysFor(graph, key),
 								selectiveRestartHighlight: false,
-								narrationByContributor: null,
-								rebootCost: node.member.rebootCost ?? null,
 							},
 						],
 			}));
@@ -1349,11 +1317,11 @@ export const startSupervisor = (
 		//       harvests through THAT instance, so custom sinks
 		//       registered by plugin authors actually fire. The
 		//       `sinks: OrchestratorSinks` arg is ignored in this path
-		//       (the caller already composed its own orchestrator bag
+		//       (the caller already composed its own sink registrations
 		//       into the Layer they handed in).
 		//
 		//   (b) Bare path: no service in context — the supervisor builds
-		//       the substrate default with the orchestrator bag passed
+		//       the substrate default with the orchestrator sinks passed
 		//       in. `Layer.build` opens the layer's resources on the
 		//       SURROUNDING scope (the supervisor's), so the sinks +
 		//       formatter registry live for the supervisor's lifetime
@@ -1405,8 +1373,8 @@ export const startSupervisor = (
 			// context provides the substrate-context services the plugins'
 			// acquire bodies yield (Identity, ContainerRuntime, etc.). The
 			// substrate's `CapabilitySinksService` routes each harvested
-			// contribution to the matching sink; the orchestrator's
-			// optional callback bag is plumbed in via the built-in sinks.
+			// contribution to the matching sink; production orchestrator
+			// sinks are registered by the higher-level runtime composer.
 			yield* acquireFullGraph(
 				graph,
 				registry,
@@ -1513,7 +1481,7 @@ export const supervise = (
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = {},
+	sinks: OrchestratorSinks = [],
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 ): Effect.Effect<SupervisorHandle, SupervisorError, Scope.Scope> =>
@@ -1561,17 +1529,6 @@ const pendingAccountProjection = (
 		walletVisible: false,
 		updatedAt,
 	};
-};
-
-const composeChildKeysFor = (
-	graph: ResolvedGraph,
-	parent: PluginKey,
-): ReadonlyArray<PluginKey> | null => {
-	const children: PluginKey[] = [];
-	for (const [key, node] of graph.nodes) {
-		if (node.compositeParent === parent) children.push(key);
-	}
-	return children.length === 0 ? null : children;
 };
 
 // -----------------------------------------------------------------------------

@@ -1,8 +1,8 @@
-// End-to-end exercise of the Action plugin's OCA cache discipline.
+// End-to-end exercise of the Action plugin's artifact publisher cache discipline.
 //
 // What this test pins (mirrors `services/action.test.ts` from v3's
 // `cache hit` describe block, but threaded through the rewrite's real
-// `OnChainArtifactPublisher` + on-disk `Cache` substrate primitives):
+// `ArtifactPublisher` + on-disk `Cache` substrate primitives):
 //
 //   - Cold boot: body runs exactly once; receipt is written to the
 //     state-store under `cache/action/<chain>/<hash>.json`.
@@ -11,13 +11,13 @@
 //
 // Unlike `template-boot.test.ts`, this test does NOT require docker —
 // the Sui chain-probe is stubbed below. We still flow through the
-// real OCA + Cache + StrategyRegistry + StackPaths Layers, so the
+// real artifact publisher + Cache + StrategyRegistry + StackPaths Layers, so the
 // on-disk cache shape, key derivation, schema-decode, and lenient
 // verify paths are exercised end-to-end.
 //
-// Why not boot the full `arena` stack? The arena stack composes
+// Why not boot the full `connect-four` stack? The connect-four stack composes
 // `sui()`, which spawns a docker validator. The action's caching
-// discipline is INDEPENDENT of the chain (the OCA substrate consults
+// discipline is INDEPENDENT of the chain (the artifact publisher substrate consults
 // `state.json` + the chain-probe; the chain-probe itself is the
 // load-bearing dependency, NOT the running container). The stub
 // chain-probe here pins the cache discipline without depending on a
@@ -46,9 +46,9 @@ import {
 } from '../../src/substrate/runtime/paths.ts';
 import { layerCache } from '../../src/substrate/runtime/cache/index.ts';
 import {
-	OnChainArtifactPublisherService,
-	layerOnChainArtifactPublisher,
-} from '../../src/substrate/runtime/on-chain-artifact/index.ts';
+	ArtifactPublisherService,
+	layerArtifactPublisher,
+} from '../../src/substrate/runtime/artifact-publisher/index.ts';
 import { layerStrategyRegistry } from '../../src/substrate/runtime/strategy-registry/index.ts';
 import type { ChainProbe } from '../../src/contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../../src/plugins/sui/chain-probe.ts';
@@ -74,7 +74,7 @@ const platformBase = Layer.mergeAll(
 
 const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(platformBase));
 const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-const substrateLayers = layerOnChainArtifactPublisher.pipe(Layer.provideMerge(withCache));
+const substrateLayers = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
 
 /** Construct a fake chain-probe that resolves transaction digests to a
  *  `{digest}` shape on hit, `null` on miss. The test seeds a known
@@ -106,7 +106,7 @@ const runOnce = (
 	digest: string,
 ): Effect.Effect<{ bodyRuns: number; digest: string }, unknown, never> =>
 	Effect.gen(function* () {
-		const publisher = yield* OnChainArtifactPublisherService;
+		const publisher = yield* ArtifactPublisherService;
 		const probe = makeFakeChainProbe([digest]);
 
 		const body: Effect.Effect<ActionReceipt, never> = Effect.gen(function* () {
@@ -143,7 +143,7 @@ const program = Effect.gen(function* () {
 	const coldCounter = yield* Ref.make(0);
 	const cold = yield* runOnce(coldCounter, 'digest-cold-warm-roundtrip');
 	// Same runtime root → cache file persists across the two
-	// `runOnce` invocations (the OCA publisher under each runOnce
+	// `runOnce` invocations (the artifact publisher publisher under each runOnce
 	// constructs its own Cache instance, but both read/write the
 	// SAME on-disk cache dir under the shared RUNTIME_ROOT).
 	const warmCounter = yield* Ref.make(0);
@@ -152,7 +152,7 @@ const program = Effect.gen(function* () {
 	return { cold, warm };
 });
 
-describe('action plugin OCA cache discipline', () => {
+describe('action plugin artifact publisher cache discipline', () => {
 	it('cold boot runs body; warm boot hits cache and skips body', async () => {
 		const result = await Effect.runPromise(
 			program.pipe(Effect.provide(Logger.layer([]))) as Effect.Effect<

@@ -1,8 +1,8 @@
 // Local mode — build from source + publish.
 //
 // This is the canonical implementation of the
-// `OnChainArtifactPublisher` substrate primitive (distilled doc
-// §Generic on-chain-artifact-publish pattern). The five-phase shape:
+// `ArtifactPublisher` substrate primitive (distilled doc
+// §Generic artifact-publisher-publish pattern). The five-phase shape:
 //
 //   1. Inputs       — `{ sourceHash, signerAddress }` →
 //                     `contentHash(inputs)`.
@@ -21,26 +21,25 @@
 //   5. Register     — write registry entry on EVERY cycle (hit AND
 //                     miss). Distilled doc Invariant 6.
 //
-// The publish receipt is exposed on the resolved value so the Coin
-// plugin can consume it (see `publish-receipt.ts` for the placement
-// rationale).
+// The publish output is exposed on the resolved value and emitted as a
+// package-owned extension contribution for sibling folds.
 
 import { Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
-import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
-import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import {
 	pickPublishedChange,
 	pickUpgradeCapChange,
-	type PublishObjectChange,
-	type PublishReceipt,
-} from './publish-receipt.ts';
+	type PackagePublishObjectChange,
+	type LocalPackagePublishOutput,
+} from './publish-output.ts';
+import type {
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
+import type { ChainProbe } from '../../contracts/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
@@ -54,7 +53,7 @@ export interface CachedPackageEntry {
 	readonly publisher: string;
 	readonly mvrPlaceholder: string;
 	readonly captured: Readonly<Record<string, string>>;
-	readonly receipt?: PublishReceipt;
+	readonly output?: LocalPackagePublishOutput;
 }
 
 /** Verify-schema: what we expect when probing `getObject(packageId)`.
@@ -97,16 +96,16 @@ export interface PublishExecutor {
 
 	/** Construct + sign + execute a `Transaction.publish({modules,
 	 *  dependencies})` against the publisher account. Returns the
-	 *  receipt projection that downstream consumers (Coin, manifest,
+	 *  output projection that downstream consumers (Coin, manifest,
 	 *  capture spec) need. Distilled doc §Move-specific concerns —
-	 *  the receipt is the source of `published` change + the
+	 *  the output is the source of `published` change + the
 	 *  `UpgradeCap` `created` change. */
 	readonly publishTx: (inputs: {
 		readonly modules: ReadonlyArray<Uint8Array>;
 		readonly dependencies: ReadonlyArray<string>;
 		readonly sourcePath: string;
 		readonly packageName: string;
-	}) => Effect.Effect<PublishReceipt, PublishError, Scope.Scope>;
+	}) => Effect.Effect<LocalPackagePublishOutput, PublishError, Scope.Scope>;
 
 	/** Post-publish fullnode/indexer ready-probe. Distilled doc
 	 *  Invariant 5: publish-tx commit precedes index visibility.
@@ -122,7 +121,7 @@ export interface LocalModeInputs {
 	readonly chainId: ChainId;
 	readonly publisherAddress: string;
 	readonly mvrOverride?: string;
-	readonly capture?: (receipt: PublishReceipt) => Readonly<Record<string, string>>;
+	readonly capture?: (output: LocalPackagePublishOutput) => Readonly<Record<string, string>>;
 	/** Publish executor — constructed per-acquire by the barrel from
 	 *  the resolved SuiClient + publisher account + ContainerRuntime
 	 *  (see `publish-executor.ts`). */
@@ -131,7 +130,7 @@ export interface LocalModeInputs {
 
 export interface LocalModeOutputs {
 	readonly resolved: ResolvedLocalPackage;
-	readonly receipt: PublishReceipt | null;
+	readonly output: LocalPackagePublishOutput | null;
 }
 
 /**
@@ -156,14 +155,14 @@ const combineInputsHash = (sourceHash: string, publisherAddress: string) =>
  * doc Invariant 7 + the "lenient verify cheaper than aggressive
  * eviction" Constraint).
  *
- * The cached id is hinted in via parameter. The OCA substrate is
+ * The cached id is hinted in via parameter. The artifact publisher substrate is
  * expected to thread the cached payload through to this closure on
  * cache hit; today we get the id from the registry's previous-cycle
  * entry (in-process, per-supervisor lookup — see `acquireLocal`
  * below). When no hint exists (first cycle / cold boot), we
  * short-circuit to null so the substrate runs `produce`.
  *
- * Mirrors `coin/mint.ts::buildVerifyProbe` exactly so the two OCA
+ * Mirrors `coin/mint.ts::buildVerifyProbe` exactly so the two artifact publisher
  * consumers stay shape-aligned.
  */
 const buildVerifyProbe = (
@@ -188,9 +187,9 @@ const buildVerifyProbe = (
 	});
 
 /**
- * Compose the OnChainArtifactSpec for a local publish.
+ * Compose the ArtifactSpec for a local publish.
  *
- * The substrate-side `OnChainArtifactPublisher.publish` consumes
+ * The substrate-side `ArtifactPublisher.publish` consumes
  * this spec and handles:
  *
  *   - cache lookup under `<namespace>/<chainId>/<contentHash>`;
@@ -199,11 +198,11 @@ const buildVerifyProbe = (
  *   - calling `register` on EVERY cycle.
  */
 export const acquireLocal = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	registry: PackageRegistry,
 	inputs: LocalModeInputs,
-): Effect.Effect<LocalModeOutputs, PublishError | OnChainArtifactError, Scope.Scope> =>
+): Effect.Effect<LocalModeOutputs, PublishError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// Distilled doc §Move-specific: hash inputs are `(sourceHash,
 		// signerAddress)`. The hashing helper strips Move.lock pinned
@@ -219,11 +218,11 @@ export const acquireLocal = (
 		// `{objectId, type}` verify shape; see the register body below.
 		const priorEntry = yield* registry.find(inputs.packageName);
 
-		// We capture the produce-side receipt out-of-band so the
-		// returned `LocalModeOutputs.receipt` can expose it; the OCA
+		// We capture the produce-side output out-of-band so the
+		// returned `LocalModeOutputs.output` can expose it; the artifact publisher
 		// substrate's `Produced | Verified` discrimination collapses
-		// the receipt away.
-		let producedReceipt: PublishReceipt | null = null;
+		// the output away.
+		let producedOutput: LocalPackagePublishOutput | null = null;
 
 		const resolved = yield* publisher.publish<CachedPackageEntry, typeof PackageVerifyShape.Type>({
 			namespace: 'package',
@@ -231,12 +230,12 @@ export const acquireLocal = (
 			contentHash: inputsHash,
 			verifySchema: PackageVerifyShape,
 			verify: (cached) =>
-				cached.receipt === undefined
+				cached.output === undefined
 					? Effect.succeed(null)
 					: buildVerifyProbe(probe, cached.packageId),
 			// Produce: scrub → build → publish-tx → wait-for-index → parse.
 			// PublishError is the plugin-internal phase taxonomy; we map
-			// it to `OnChainArtifactError` at the substrate boundary.
+			// it to `ArtifactPublishError` at the substrate boundary.
 			produce: Effect.gen(function* () {
 				yield* Effect.annotateCurrentSpan({
 					'package.publish.package': inputs.packageName,
@@ -288,15 +287,15 @@ export const acquireLocal = (
 
 				// Produce 3/5 — publish-tx. Construct `Transaction.publish`,
 				// sign + execute via the publisher's account signer, decode
-				// the receipt.
+				// the output.
 				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'publish-tx' });
-				const receipt: PublishReceipt = yield* inputs.executor.publishTx({
+				const output: LocalPackagePublishOutput = yield* inputs.executor.publishTx({
 					modules: buildOutput.modules,
 					dependencies: buildOutput.dependencies,
 					sourcePath: inputs.sourcePath,
 					packageName: inputs.packageName,
 				});
-				producedReceipt = receipt;
+				producedOutput = output;
 
 				// Produce 4/5 — wait-for-index. Distilled doc Invariant 5:
 				// publish-tx commit precedes index visibility. Without this
@@ -304,36 +303,36 @@ export const acquireLocal = (
 				// not found". Failure surfaces as `PublishError('parse')`
 				// per the distilled doc's phase catalog ("stuck indexer").
 				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'waiting-for-index' });
-				yield* inputs.executor.waitForReady(receipt.packageId);
+				yield* inputs.executor.waitForReady(output.packageId);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;
 				// pick the `UpgradeCap`-typed `'created'` change for the
 				// upgrade cap.
 				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'parse' });
-				const published = pickPublishedChange(receipt.objectChanges);
+				const published = pickPublishedChange(output.objectChanges);
 				if (!published?.objectId) {
 					return yield* Effect.fail(
 						publishError('parse', {
 							sourcePath: inputs.sourcePath,
 							packageName: inputs.packageName,
 							message:
-								'no "published" change in receipt — SDK shape drift (distilled doc §Edge cases)',
+								'no "published" change in output — SDK shape drift (distilled doc §Edge cases)',
 						}),
 					);
 				}
-				const upgradeCap: PublishObjectChange | undefined = pickUpgradeCapChange(
-					receipt.objectChanges,
+				const upgradeCap: PackagePublishObjectChange | undefined = pickUpgradeCapChange(
+					output.objectChanges,
 				);
 
-				// Capture spec — user-declared projection from receipt to
+				// Capture spec — user-declared projection from output to
 				// typed object id map. Distilled doc §Outputs + Invariant:
 				// safe to swallow individual key failures (callback form
 				// is user code), but a callback throw bubbles up as a
 				// PublishError('parse') so the user catches the typo.
 				const captured: Readonly<Record<string, string>> = inputs.capture
 					? yield* Effect.try({
-							try: () => inputs.capture!(receipt),
+							try: () => inputs.capture!(output),
 							catch: (cause): PublishError =>
 								publishError('parse', {
 									sourcePath: inputs.sourcePath,
@@ -350,13 +349,13 @@ export const acquireLocal = (
 					publisher: inputs.publisherAddress,
 					mvrPlaceholder,
 					captured,
-					receipt,
+					output,
 				};
 				return entry;
 			}).pipe(
 				Effect.mapError(
-					(err): OnChainArtifactError => ({
-						_tag: 'OnChainArtifactError',
+					(err): ArtifactPublishError => ({
+						_tag: 'ArtifactPublishError',
 						reason: 'produce-failed',
 						detail: `package.publish ${err.phase}: ${err.message}`,
 					}),
@@ -425,21 +424,22 @@ export const acquireLocal = (
 				publishError('parse', {
 					sourcePath: inputs.sourcePath,
 					packageName: inputs.packageName,
-					message: 'register did not surface entry — OCA register invariant violation',
+					message:
+						'register did not surface entry — artifact publisher register invariant violation',
 				}),
 			);
 		}
 
-		// Silence the unused-binding lint for the OCA `resolved` — the
+		// Silence the unused-binding lint for the artifact publisher `resolved` — the
 		// substrate's `Produced | Verified` return is informational
 		// here (we project through the registry instead).
 		void resolved;
 
-		const cachedReceipt =
-			'packageId' in resolved && 'receipt' in resolved ? (resolved.receipt ?? null) : null;
+		const cachedOutput =
+			'packageId' in resolved && 'output' in resolved ? (resolved.output ?? null) : null;
 
 		return {
 			resolved: final,
-			receipt: producedReceipt ?? cachedReceipt,
+			output: producedOutput ?? cachedOutput,
 		};
 	});

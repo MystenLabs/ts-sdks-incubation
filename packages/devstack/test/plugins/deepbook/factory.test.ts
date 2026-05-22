@@ -32,7 +32,7 @@ describe('deepbook(opts) — primary factory', () => {
 		const member = deepbook({ mode: 'local', publisher });
 		expect(isPlugin(member)).toBe(true);
 		expect(member.id).toMatch(/^deepbook\//);
-		expect(member.kind).toBe('composite');
+		expect(member.role).toBe('task');
 	});
 
 	it('represents the publisher direct-value ref in dependencies', () => {
@@ -41,14 +41,14 @@ describe('deepbook(opts) — primary factory', () => {
 		expect(member.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/publisher']);
 	});
 
-	it('produces a leaf-one-shot for known mode', () => {
+	it('produces a task for known mode', () => {
 		const member = deepbook({
 			mode: 'known',
 			packageId: '0xpkg',
 			registryId: '0xreg',
 			chain: 'sui:testnet',
 		});
-		expect(member.kind).toBe('leaf-one-shot');
+		expect(member.role).toBe('task');
 		expect(member.id).toMatch(/^deepbook\//);
 	});
 
@@ -57,7 +57,7 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		expect(member.kind).toBe('leaf-one-shot');
+		expect(member.role).toBe('task');
 		expect(member.id).toBe('deepbook/deepbook');
 	});
 

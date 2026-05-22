@@ -4,7 +4,7 @@
 //   - Factory accepts seedAccounts shape + threads each account resource
 //     through `dependsOn` so the supervisor's topo scheduler waits
 //     for each seed account's start (keypair mint + funding) before
-//     the walrus composite dispatches.
+//     the Walrus service dispatches.
 //
 //   - The admin shape (`WalrusAdmin.seedWal`) is backed by the first
 //     seed account and no longer has a synthetic digest fail-open path.

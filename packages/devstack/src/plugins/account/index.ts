@@ -138,10 +138,9 @@ export const account = <
 		id: accountRef.id,
 		dependsOn: dependencies,
 		// Account is a value-producer (no long-lived server / container);
-		// `leaf-one-shot` matches the lifecycle (acquire → ready → done
-		// at scope close).
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		// tasks acquire their value, publish contributions, then reach
+		// `done`.
+		role: 'task',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedCoinValues] = deps;

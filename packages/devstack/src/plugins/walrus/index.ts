@@ -1,8 +1,8 @@
 // Walrus plugin — barrel + factories.
 //
-// Architecture: Walrus is the canonical composite plugin: one engine
-// row, many children (deploy one-shot + N storage nodes + 2 lifted
-// siblings). The factory at this file folds the four modes behind:
+// Architecture: Walrus is a service plugin that owns a local cluster
+// or describes a known deployment. The factory at this file folds the
+// four modes behind:
 //
 //   - `walrus(opts?)`           — env-driven mode selection. Defaults
 //                                  to local; overridable via the typed
@@ -18,16 +18,14 @@
 // The plugin emits FOUR capability decls (per mode):
 //
 //   Local mode (full local cluster + admin signer):
-//     1. composite metadata    — one engine row + N child members +
-//                                 2 lifted siblings.
-//     2. `snapshotable`        — runtime/walrus/<name>/deploy/ subtree
+//     1. `snapshotable`        — runtime/walrus/<name>/deploy/ subtree
 //                                 + storage-node managed containers.
-//     3. `codegenable`         — `walrus-network` bindings.
-//     4. `routable` × (N + 2)  — per-node + aggregator + publisher.
-//     5. `strategy-contributor:walrus-state-registry`  — local entry.
-//     6. `strategy-contributor:endpoint-registry`      — N+2 entries.
-//     7. `strategy-contributor:package-registry`       — `walrus.<name>`.
-//     8. `strategy-contributor:coinType:WAL`           — WAL faucet
+//     2. `codegenable`         — `walrus-network` bindings.
+//     3. `routable` × (N + 2)  — per-node + aggregator + publisher.
+//     4. `strategy-contributor:walrus-state-registry`  — local entry.
+//     5. `strategy-contributor:endpoint-registry`      — N+2 entries.
+//     6. `strategy-contributor:package-registry`       — `walrus.<name>`.
+//     7. `strategy-contributor:coinType:WAL`           — WAL faucet
 //                                                         strategy
 //                                                         (when seed
 //                                                         accounts + exchange).
@@ -52,7 +50,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
+import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountValue } from '../account/service.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
@@ -61,10 +59,8 @@ import { suiResource } from '../sui/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 
 import { makeCodegenable } from './codegen.ts';
-import { walrusPluginKey } from './composite.ts';
+import { walrusPluginKey } from './plugin-key.ts';
 import { WALRUS_ERROR_TAGS, walrusPluginError } from './errors.ts';
-import { defaultWalrusCargoImageSiblingKey } from './lifted-siblings/cargo-image.ts';
-import { defaultWalrusSourceSiblingKey } from './lifted-siblings/source-fetch.ts';
 import { WAL_FAUCET_STRATEGY_KEY, type WalFaucetStrategy } from './faucet-strategy.ts';
 import { bootWalrusService, refuseLocalClusterOnFork, type WalrusMode } from './service.ts';
 import {
@@ -182,12 +178,11 @@ const withWalrusNetworkAddressing = (
  *   - 'testnet'               → known(testnet)
  *   - 'mainnet'               → known(mainnet)
  *   - 'devnet'                → known(devnet)
- *   - '<x>-fork'              → known(<x>) — auto-route per
- *                                distilled-doc invariant 13
+ *   - '<x>-fork'              → rejected by the shared network parser
+ *                                while fork mode is coming soon
  *
- *  The fork → known auto-routing means `walrus()` on a fork stack
- *  is NEVER a refusal; only the explicit `walrusLocalCluster(...)`
- *  composition on a fork network refuses. */
+ *  The explicit mode-narrowed fork branch is preserved for future work,
+ *  but env-driven fork selection is not release-supported yet. */
 type EnvMode =
 	| { readonly mode: 'local' }
 	| { readonly mode: 'known'; readonly network: WalrusKnownNetwork };
@@ -201,8 +196,6 @@ const resolveDefaultMode = (): EnvMode => {
 			return { mode: 'local' };
 		case 'live':
 			return { mode: 'known', network: parsed.network };
-		case 'fork':
-			return { mode: 'known', network: parsed.upstream };
 	}
 };
 
@@ -217,23 +210,11 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 	// 11 — `nodeCount >= 1` + `shards >= nodeCount`).
 	const resolved = resolveLocalClusterOptions(opts);
 
-	// Lifted siblings — declared at factory time so the topo scheduler
-	// places them at level 0 (parallel with sui's boot). Two siblings:
-	//   1. cargo-image  — upstream release image (key includes walrus
-	//                      ref + sui version).
-	//   2. move-source  — git checkout of the walrus Move package
-	//                      subdirectory (key includes repo@ref/subdir).
-	const cargoImageKey = defaultWalrusCargoImageSiblingKey();
-	const moveSourceKey = defaultWalrusSourceSiblingKey();
-	const siblingKeys = resolved.movePackagePath
-		? [cargoImageKey] // skip the move-source sibling if user pinned a path
-		: [cargoImageKey, moveSourceKey];
-
-	const compositeKey = walrusPluginKey(resolved.name);
+	const walrusKey = walrusPluginKey(resolved.name);
 
 	// `dependsOn` MUST include every seed-account ref so the
 	// substrate's topological scheduler waits for each seed account's
-	// acquire (keypair mint + funding) before the walrus composite
+	// acquire (keypair mint + funding) before the Walrus service
 	// dispatches WAL swaps via the first-account-doubles-as-admin-signer
 	// path. Without this edge, the first WAL swap could race the
 	// account's funding and fail with `address-not-found`.
@@ -243,9 +224,8 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 	return definePlugin({
 		id: walrusResource.id,
 		dependsOn: dependencies,
-		kind: 'composite',
-		rebootCost: 'heavy',
-		composite: { key: compositeKey },
+		role: 'service',
+		pluginKey: walrusKey,
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedSeedAccounts] = deps;
@@ -253,7 +233,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
 				//     via the supervisor's plugin runtime context.
-				//   - `OnChainArtifactPublisher` is the substrate-level
+				//   - `ArtifactPublisher` is the substrate-level
 				//     publisher (cache → verify → produce → register cycle).
 				//   - `ChainProbe<SuiProbeKey>` is looked up via the
 				//     StrategyRegistry under `chain-probe:<chainId>`;
@@ -266,7 +246,7 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
 				// Resolve the deploy-output bind-mount source from the
@@ -376,12 +356,11 @@ const buildLocalPlugin = <const Accounts extends ReadonlyArray<WalrusAccountMemb
 				name: resolved.name,
 				nodeCount: resolved.nodeCount,
 				containerApiPort: resolved.containerApiPort,
-				compositeKey: String(compositeKey),
+				serviceKey: String(walrusKey),
 				resolved: resolvedValue,
 				acquireCtx,
 			}),
 		errorContributions: walrusErrorContributions,
-		liftedSiblings: siblingKeys,
 	});
 };
 
@@ -395,8 +374,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		dependsOn: [suiResource] as const,
 		// Known deployment is a pure value-producer — no containers,
 		// no long-running children.
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: () =>
 			Effect.succeed({
 				mode: 'known',
@@ -427,11 +405,11 @@ const makeLocalCapabilities = (parts: {
 	readonly name: string;
 	readonly nodeCount: number;
 	readonly containerApiPort: number;
-	readonly compositeKey: string;
+	readonly serviceKey: string;
 	readonly resolved: WalrusResolved;
 	readonly acquireCtx: AcquireContext;
 }) => {
-	const { name, nodeCount, containerApiPort, compositeKey, resolved, acquireCtx } = parts;
+	const { name, nodeCount, containerApiPort, serviceKey, resolved, acquireCtx } = parts;
 	const snap: SnapshotableDecl = makeSnapshotable(
 		'local' satisfies WalrusSnapshotMode,
 		acquireCtx.identity.app,
@@ -475,7 +453,7 @@ const makeLocalCapabilities = (parts: {
 		app: acquireCtx.identity.app,
 		stack: acquireCtx.identity.stack,
 		walrusName: name,
-		compositeKey,
+		serviceKey,
 		nodeCount,
 		containerApiPort,
 	});
@@ -630,8 +608,8 @@ export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/kn
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';
 export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } from './errors.ts';
-// `ForkIncompatibleError` is the cross-cutting composite shape owned
-// by `substrate/runtime/composite-errors.ts`; seal re-exports it
+// `ForkIncompatibleError` is the cross-cutting mode-refusal shape owned
+// by `substrate/runtime/mode-errors.ts`; seal re-exports it
 // under its canonical name from its barrel, so walrus exposes the
 // SAME class under a walrus-namespaced alias to avoid a collision
 // when a downstream consumer imports both plugin barrels in the same

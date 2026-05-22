@@ -3,17 +3,12 @@
 //
 // Architecture § Plugin lifecycle within a stack:
 //   "Resolution. Upstream keys (concrete or capability-typed) resolve
-//   once. Lifted-sibling dedup-by-key fires before scheduler emits the
+//   once. Bootstrap asset dedup-by-key fires before scheduler emits the
 //   level-0 batch. Scheduling. Plugin enters `pending`. When all
 //   upstream keys are `ready`, scheduler begins `acquiring`. Per-key
 //   serialization: only one acquire at a time per key."
 //
 // This module is the pure dep-graph math: members in, levels out.
-// Composite plugins are expanded transparently — their inner members
-// land in the same level batch they'd land in if declared at top level
-// (architecture: lifted siblings at level 0). Lifecycle roll-up
-// (composite row stays one row in the projection) is the supervisor's
-// concern — the dep-graph treats inner members as first-class nodes.
 
 import { Data, Effect } from 'effect';
 
@@ -34,8 +29,8 @@ export class DepGraphCycleError extends Data.TaggedError('DepGraphCycleError')<{
 }> {}
 
 /** A dependency resource matched no provider. This is normally caught by
- *  the compile-time `MissingProviders` check, but runtime composites
- *  whose dependencies expand from a runtime parameter can hit it. */
+ *  the compile-time `MissingProviders` check, but runtime-built stacks can
+ *  hit it. */
 export class UnresolvedDependencyError extends Data.TaggedError('UnresolvedDependencyError')<{
 	readonly pluginKey: PluginKey;
 	readonly missingResourceId: string;
@@ -47,16 +42,11 @@ export type DepGraphError = DepGraphCycleError | UnresolvedDependencyError;
 // Node shape
 // -----------------------------------------------------------------------------
 
-/** A resolved node in the dep graph. Wraps the original plugin
- *  with a substrate-assigned `PluginKey` and the flattened
- *  parent-composite key (if this node is an inner participant). */
+/** A resolved node in the dep graph. Wraps the original plugin with a
+ *  substrate-assigned `PluginKey`. */
 export interface DepNode {
 	readonly key: PluginKey;
 	readonly member: AnyPlugin;
-	/** Composite parent key — present when this node is a lifted inner
-	 *  participant; null for top-level members. Used by the supervisor
-	 *  to roll lifecycle into the composite row. */
-	readonly compositeParent: PluginKey | null;
 	/** Unique dependency refs and their resolved upstream keys. The two
 	 *  arrays are positional peers. */
 	readonly upstreamResources: ReadonlyArray<AnyResourceRef>;
@@ -75,43 +65,31 @@ export interface ResolvedGraph {
 }
 
 // -----------------------------------------------------------------------------
-// Composite expansion
+// Plugin key minting
 // -----------------------------------------------------------------------------
 
 interface NamedMember {
 	readonly key: PluginKey;
 	readonly member: AnyPlugin;
-	readonly compositeParent: PluginKey | null;
 }
 
-/** Mint a stable PluginKey for a plugin. Composites have a declared
- *  key on their plugin metadata; leaves derive
- *  from the resource id + an ordinal so duplicates don't collide. */
+/** Mint a stable PluginKey for a plugin. Plugins may declare a stable
+ *  key; otherwise keys derive from resource id + ordinal so duplicates
+ *  do not collide. */
 const mintKey = (member: AnyPlugin, ordinal: number): PluginKey => {
-	if (member.composite !== undefined) {
-		return makePluginKey(String(member.composite.key));
+	if (member.pluginKey !== undefined) {
+		return makePluginKey(String(member.pluginKey));
 	}
 	return makePluginKey(`${member.id}#${ordinal}`);
 };
 
-/** Walk the member tuple and emit one named-member entry per node,
- *  expanding composites' `innerParticipants` inline. */
+/** Walk the member tuple and emit one named-member entry per node. */
 const expand = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<NamedMember> => {
 	const out: NamedMember[] = [];
 	let ordinal = 0;
 	for (const member of members) {
 		const key = mintKey(member, ordinal++);
-		out.push({ key, member, compositeParent: null });
-		const composite = member.composite;
-		if (composite !== undefined) {
-			for (const inner of composite.innerParticipants ?? []) {
-				out.push({
-					key: makePluginKey(`${key}/inner/${inner.id}#${ordinal++}`),
-					member: inner,
-					compositeParent: key,
-				});
-			}
-		}
+		out.push({ key, member });
 	}
 	return out;
 };
@@ -124,9 +102,8 @@ const expand = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<NamedMember> =
  * Resolve a flat member tuple into a topo-sorted level batch.
  *
  * Steps:
- *  1. Expand composites — their `innerParticipants` become first-class
- *     nodes with a `compositeParent` link.
- *  2. Build the resource-id → key index (providers).
+ *  1. Mint a plugin key for every member.
+ *  2. Build the resource-id -> key index (providers).
  *  3. For each node, resolve its dependency refs to upstream keys.
  *  4. Kahn's algorithm: peel zero-indegree nodes into level 0, decrement
  *     downstream indegrees, repeat.
@@ -145,8 +122,8 @@ export const resolveGraph = (
 		// Provider index: resource-id → key. Last writer wins; the
 		// compile-time `MissingProviders` check ensures uniqueness on
 		// the user-typed path, so a duplicate here would be a programmer
-		// error in a runtime-typed composite — we don't enforce uniqueness
-		// at runtime; the duplicate just resolves to the latest declaration.
+		// error in a runtime-typed stack — we don't enforce uniqueness at
+		// runtime; the duplicate just resolves to the latest declaration.
 		const providerByResourceId = new Map<string, PluginKey>();
 		for (const { key, member } of named) {
 			providerByResourceId.set(member.id, key);
@@ -160,7 +137,7 @@ export const resolveGraph = (
 			downstream.set(key, new Set());
 		}
 
-		for (const { key, member, compositeParent } of named) {
+		for (const { key, member } of named) {
 			const upstreamKeys: PluginKey[] = [];
 			const upstreamResources = uniqueResourceRefs(member.dependsOn);
 			for (const resource of upstreamResources) {
@@ -174,17 +151,9 @@ export const resolveGraph = (
 				downstream.get(providerKey)?.add(key);
 				indegree.set(key, (indegree.get(key) ?? 0) + 1);
 			}
-			// Composite inner participants gain an implicit edge from the
-			// composite parent — the supervisor must acquire the parent's
-			// row first so the row exists in the projection.
-			if (compositeParent !== null) {
-				downstream.get(compositeParent)?.add(key);
-				indegree.set(key, (indegree.get(key) ?? 0) + 1);
-			}
 			nodes.set(key, {
 				key,
 				member,
-				compositeParent,
 				upstreamResources,
 				upstreamKeys,
 			});
@@ -239,9 +208,8 @@ export const resolveGraph = (
  * and re-acquire in forward order.
  *
  * Architecture § Watch-triggered invalidation:
- *   "Invalidating a composite invalidates its children. Invalidating a
- *   producer invalidates downstream consumers along dep-graph edges
- *   (cascade semantics)."
+ *   Invalidating a producer invalidates downstream consumers along
+ *   dep-graph edges (cascade semantics).
  */
 export const downstreamClosure = (
 	graph: ResolvedGraph,
@@ -256,12 +224,6 @@ export const downstreamClosure = (
 				closure.add(child);
 				queue.push(child);
 			}
-		}
-	}
-	// Composite parents always propagate to their inner participants.
-	for (const key of [...closure]) {
-		for (const [innerKey, node] of graph.nodes) {
-			if (node.compositeParent === key) closure.add(innerKey);
 		}
 	}
 	return closure;

@@ -1,9 +1,4 @@
-// Unit tests for the walrus cargo-image lifted-sibling key derivation
-// and pure resolver policy.
-// The (plugin, kind, scope, inputHash) tuple drives first-wins dedup
-// across composites + compile-time conflict refusal — this test pins
-// the shape so the type-level conflict refusal stays sound after a
-// refactor.
+// Unit tests for the walrus cargo-image resolver policy.
 
 import { readFileSync } from 'node:fs';
 
@@ -16,11 +11,9 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import {
 	DEFAULT_SUI_VERSION,
-	defaultWalrusCargoImageSiblingKey,
+	DEFAULT_WALRUS_REF,
 	resolveDefaultCargoImage,
-	walrusCargoImageSiblingKey,
-} from '../../../src/plugins/walrus/lifted-siblings/cargo-image.ts';
-import { DEFAULT_WALRUS_REF } from '../../../src/plugins/walrus/lifted-siblings/source-fetch.ts';
+} from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
 
 const ORIGINAL_WALRUS_CARGO_IMAGE_OVERRIDE = process.env.WALRUS_CARGO_IMAGE_OVERRIDE;
 
@@ -58,36 +51,7 @@ afterEach(() => {
 	restoreEnvVar('WALRUS_CARGO_IMAGE_OVERRIDE', ORIGINAL_WALRUS_CARGO_IMAGE_OVERRIDE);
 });
 
-describe('walrusCargoImageSiblingKey', () => {
-	it('folds (ref, sui) into the inputHash', () => {
-		const k = walrusCargoImageSiblingKey('vA', 'vB');
-		expect(k.plugin).toBe('walrus');
-		expect(k.kind).toBe('cargo-image');
-		expect(k.scope).toBe('per-process');
-		expect(k.inputHash).toBe('vA|vB');
-	});
-
-	it('two composites with the SAME pair share one key (dedup target)', () => {
-		const a = walrusCargoImageSiblingKey('x', 'y');
-		const b = walrusCargoImageSiblingKey('x', 'y');
-		// Same shape — substrate uses structural compare to dedup.
-		expect(a.plugin).toBe(b.plugin);
-		expect(a.kind).toBe(b.kind);
-		expect(a.scope).toBe(b.scope);
-		expect(a.inputHash).toBe(b.inputHash);
-	});
-
-	it('two composites with DIFFERENT refs surface DIFFERENT inputHashes', () => {
-		const a = walrusCargoImageSiblingKey('vA', 'vB');
-		const b = walrusCargoImageSiblingKey('vA2', 'vB');
-		expect(a.inputHash).not.toBe(b.inputHash);
-	});
-
-	it('default key uses the pinned defaults', () => {
-		const k = defaultWalrusCargoImageSiblingKey();
-		expect(k.inputHash).toBe(`${DEFAULT_WALRUS_REF}|${DEFAULT_SUI_VERSION}`);
-	});
-
+describe('walrus cargo image resolver', () => {
 	it('default release tag is pinned to the deploy-capable Walrus release', () => {
 		expect(DEFAULT_WALRUS_REF).toBe('testnet-v1.49.1');
 	});
@@ -113,7 +77,10 @@ describe('walrusCargoImageSiblingKey', () => {
 			'utf8',
 		);
 		expect(script).toContain('DEVSTACK_HOST_UID_GID');
-		expect(script).toContain('chown -R "$DEVSTACK_HOST_UID_GID" "$WORKING_DIR"');
+		expect(script).toContain('OUTPUT_DIR="$WORKING_DIR"');
+		expect(script).toContain('STAGING_DIR="$OUTPUT_DIR/.deploy-next-$$"');
+		expect(script).toContain('chown -R "$DEVSTACK_HOST_UID_GID" "$OUTPUT_DIR"');
+		expect(script).toContain('rm -rf "$STAGING_DIR"');
 		expect(script).toContain('rm -rf "$HOME"');
 	});
 });

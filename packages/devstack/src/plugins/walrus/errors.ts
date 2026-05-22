@@ -2,17 +2,17 @@
 //
 // Errors raised and consumed inside the Walrus plugin live here.
 // Cross-service errors that Walrus *consumes* but the substrate
-// raises (e.g. `OnChainArtifactError`) come from the substrate's
+// raises (e.g. `ArtifactPublishError`) come from the substrate's
 // primitive — we don't redeclare those.
 //
-// `ForkIncompatibleError` is a cross-cutting composite-plugin shape
-// owned by `substrate/runtime/composite-errors.ts`; walrus contributes
+// `ForkIncompatibleError` is a cross-cutting mode-refusal shape
+// owned by `substrate/runtime/mode-errors.ts`; walrus contributes
 // the `walrusLocalCluster` variant via the factory below.
 //
 // Effect v4: plain interfaces with `_tag` discriminator (per
 // surrounding subsystem style). `Effect.catchTag` matches on `_tag`.
 
-import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { ForkIncompatibleError } from '../../substrate/runtime/mode-errors.ts';
 import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 export { ForkIncompatibleError };
@@ -34,7 +34,7 @@ export type WalrusPhase =
 	| 'seed-wal'
 	| 'register-known';
 
-/** Generic Walrus plugin error. Raised by the composite's acquire
+/** Generic Walrus plugin error. Raised by the plugin's acquire
  *  body, its admin surface (`seedWal`), and the per-mode builders. */
 export interface WalrusPluginError {
 	readonly _tag: 'WalrusPluginError';

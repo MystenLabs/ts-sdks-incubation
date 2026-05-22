@@ -10,6 +10,7 @@ import {
 	hostService,
 	localPackage,
 	sui,
+	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
@@ -43,13 +44,13 @@ const USDC_AMOUNTS = [75_000_000_000n, 10_000_000_000n, 5_000_000_000n] as const
 const WETH_AMOUNTS = [6_000_000_000n, 500_000_000n, 200_000_000n] as const;
 
 const seedTokens = action('wallet.seedTokens', {
-	dependsOn: { usdc, weth, publisher, alice, bob, carol },
-	body: (ctx, { usdc, weth, publisher, alice, bob, carol }) =>
+	dependsOn: { usdc, weth, mUSDC, mWETH, publisher, alice, bob, carol },
+	body: (ctx, { usdc, weth, mUSDC, mWETH, publisher, alice, bob, carol }) =>
 		ctx.signAndExecute(publisher, (tx) => {
 			const recipients = [alice.address, bob.address, carol.address];
 			const mints = [
-				{ pkg: usdc, c: usdc.coins.mock_usdc, module: 'mock_usdc', amounts: USDC_AMOUNTS },
-				{ pkg: weth, c: weth.coins.mock_weth, module: 'mock_weth', amounts: WETH_AMOUNTS },
+				{ pkg: usdc, c: mUSDC, module: 'mock_usdc', amounts: USDC_AMOUNTS },
+				{ pkg: weth, c: mWETH, module: 'mock_weth', amounts: WETH_AMOUNTS },
 			];
 			for (const { pkg, c, module, amounts } of mints) {
 				if (c?.treasuryCapId === undefined) continue;
@@ -78,9 +79,9 @@ const app = hostService({
 	cwd: HERE,
 	port: WALLET_DEV_SERVER_PORT,
 	ready: { kind: 'http' },
-	needs: [usdc, weth, mUSDC, mWETH, seedTokens, devWallet] as const,
+	after: [usdc, weth, mUSDC, mWETH, seedTokens, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, app], stackName: 'wallet' });
+const stack: Stack = defineDevstack({ members: [localnet, app], stackName: 'wallet' });
 
 export default stack;

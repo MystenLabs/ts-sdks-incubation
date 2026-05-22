@@ -3,7 +3,7 @@
 // Architecture (13-coin.md): Coin is the user-facing primitive family
 // for *addressing* custom Move coin types. It does NOT publish Move
 // modules itself — the Package plugin publishes; coin auto-discovery
-// (in `discovery.ts`) folds the publish receipt into the per-stack
+// (in `discovery.ts`) folds the publish output into the per-stack
 // `CoinRegistry`; this factory resolves user-supplied addresses
 // (symbol / witness / bare-type / builtin) against that registry plus
 // the live RPC.
@@ -32,7 +32,7 @@
 // on the publisher. The registry is a substrate-context lookup; the
 // type system can't see the producer→consumer edge. Consumers that
 // need the coin available BEFORE acquisition MUST include the
-// publishing `localPackage(...)` in their `needs:` list (or in the
+// publishing `localPackage(...)` in their `after:` list (or in the
 // `defineDevstack(...)` composition before the consumer). The
 // `coin.fromPackage(pkg, ...)` form forces the edge explicitly via the
 // `dependsOn` tuple — prefer it when the publisher is reachable.
@@ -44,10 +44,9 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
+import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
-import type { PackageResourceId, PackageResolved } from '../package/index.ts';
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
@@ -155,11 +154,10 @@ export const local = <Sym extends string>(symbol: Sym) => {
 	return definePlugin({
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'symbol', symbol };
 				return yield* acquireCoin(form, {
@@ -182,9 +180,14 @@ export const local = <Sym extends string>(symbol: Sym) => {
  *  `localPackage('foo', …)` / `knownPackage('foo', …)` — NOT a bare string
  *  value. Generic over the literal package name so the witness-form
  *  coin's dependency preserves the per-package resource id. */
+export interface PackageMemberValue {
+	readonly name: string;
+	readonly packageId: string;
+}
+
 export type PackageMember<Name extends string = string> = ResourceRef<
-	PackageResourceId<Name>,
-	PackageResolved
+	`package:${Name}`,
+	PackageMemberValue
 >;
 
 /** Resolve a coin by `(publishing package member, witness)`. Forces
@@ -210,11 +213,10 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 	return definePlugin({
 		id: coinRef.id,
 		dependsOn: { pkg, sui: suiResource },
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
-				const oca = yield* OnChainArtifactPublisherService;
+				const artifactPublisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = {
 					kind: 'witness',
@@ -225,7 +227,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 					registry,
 					sdk: projectCoinSdk(sui),
 					chain: sui.chain,
-					publisher: oca,
+					publisher: artifactPublisher,
 				});
 			}),
 		errorContributions: coinErrorContributions,
@@ -254,11 +256,10 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 	return definePlugin({
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'known', fullCoinType };
 				return yield* acquireCoin(form, {
@@ -286,11 +287,10 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 	return definePlugin({
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'builtin', name };
 				return yield* acquireCoin(form, {

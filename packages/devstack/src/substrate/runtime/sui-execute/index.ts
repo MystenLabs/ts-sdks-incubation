@@ -30,7 +30,7 @@
 //   - Failures route through `SuiExecuteError` whose `phase`
 //     discriminates the failing step. Callers map to their plugin's
 //     phase taxonomy in the executor closure passed to
-//     `compileChainOperation` (see `on-chain-artifact/chain-operation.ts`).
+//     `compileChainOperation` (see `artifact-publisher/chain-operation.ts`).
 
 import { Effect, Schema, Scope } from 'effect';
 
@@ -96,7 +96,7 @@ export interface TransactionSignerScope<SignError = unknown> {
 }
 
 /** Resolved signer — narrow slice of `AccountValue` (see
- *  `on-chain-artifact/chain-operation.ts::ResolvedSigner`). */
+ *  `artifact-publisher/chain-operation.ts::ResolvedSigner`). */
 export interface ResolvedSigner {
 	readonly name: string;
 	readonly address: string;

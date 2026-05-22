@@ -6,6 +6,7 @@ import {
 	defineDevstack,
 	localPackage,
 	sui,
+	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
@@ -25,9 +26,13 @@ const greeting = localPackage('greeting', {
 });
 const devWallet = wallet({
 	accounts: [publisher, alice, bob],
+	enableRouter: true,
 	allowLocalhostVite: true,
 	allowedOrigins: [ROUTER_DEV_ORIGIN, `http://localhost:${DEV_PORT}`],
 });
-const stack = defineDevstack({ members: [localnet, greeting, devWallet], stackName: 'fork-greeting' });
+const stack: Stack = defineDevstack({
+	members: [localnet, greeting, devWallet],
+	stackName: 'fork-greeting',
+});
 
 export default stack;

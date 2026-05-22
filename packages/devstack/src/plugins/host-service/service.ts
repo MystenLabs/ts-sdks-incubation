@@ -52,10 +52,10 @@ export type HostServiceReadyProbe =
 			readonly timeoutMs?: number;
 	  };
 
-interface HostServiceCommandOptions<Needs extends ReadonlyArray<AnyResourceRef>> {
+interface HostServiceCommandOptions<After extends ReadonlyArray<AnyResourceRef>> {
 	readonly name?: string;
 	readonly endpointName?: string;
-	readonly needs?: Needs;
+	readonly after?: After;
 	readonly command: string;
 	readonly args?: ReadonlyArray<string>;
 	readonly script?: never;
@@ -66,23 +66,9 @@ interface HostServiceCommandOptions<Needs extends ReadonlyArray<AnyResourceRef>>
 	readonly shutdownGraceMs?: number;
 }
 
-interface HostServiceScriptOptions<Needs extends ReadonlyArray<AnyResourceRef>> {
-	readonly name?: string;
-	readonly endpointName?: string;
-	readonly needs?: Needs;
-	readonly script: string;
-	readonly command?: never;
-	readonly args?: never;
-	readonly cwd?: string;
-	readonly port?: number;
-	readonly env?: Readonly<Record<string, string>>;
-	readonly ready?: HostServiceReadyProbe;
-	readonly shutdownGraceMs?: number;
-}
-
 export type HostServiceOptions<
-	Needs extends ReadonlyArray<AnyResourceRef> = ReadonlyArray<AnyResourceRef>,
-> = HostServiceCommandOptions<Needs> | HostServiceScriptOptions<Needs>;
+	After extends ReadonlyArray<AnyResourceRef> = ReadonlyArray<AnyResourceRef>,
+> = HostServiceCommandOptions<After>;
 
 export interface HostServiceResolvedOptions {
 	readonly serviceName: string;
@@ -171,10 +157,9 @@ export const normalizeHostServiceOptions = (
 	expectNonEmptyString(serviceName, { field: 'name', mkError });
 	expectNonEmptyString(endpointName, { field: 'endpointName', mkError });
 
-	const hasCommand = 'command' in options && options.command !== undefined;
-	const hasScript = 'script' in options && options.script !== undefined;
-	if (hasCommand === hasScript) {
-		throw mkError({ field: 'command', message: 'provide exactly one of command or script' });
+	const script = (options as { readonly script?: unknown }).script;
+	if (script !== undefined) {
+		throw mkError({ field: 'script', message: 'script is not supported; use command and args' });
 	}
 
 	const preferredPort = expectOptionalPort(options.port, { field: 'port', mkError });
@@ -186,20 +171,6 @@ export const normalizeHostServiceOptions = (
 			mkError,
 		}) ?? DEFAULT_SHUTDOWN_GRACE_MS;
 	const ready = normalizeReadyProbe(serviceName, options.ready);
-
-	if (hasScript) {
-		return {
-			serviceName,
-			endpointName,
-			command: 'bash',
-			args: ['-lc', expectNonEmptyString(options.script, { field: 'script', mkError })],
-			cwd,
-			...(preferredPort === undefined ? {} : { preferredPort }),
-			env,
-			...(ready === undefined ? {} : { ready }),
-			shutdownGraceMs,
-		};
-	}
 
 	return {
 		serviceName,

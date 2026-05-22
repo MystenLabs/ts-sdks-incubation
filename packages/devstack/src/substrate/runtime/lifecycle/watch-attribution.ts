@@ -26,10 +26,7 @@ export interface WatchEntry {
 	readonly cascade: boolean;
 }
 
-/** Build the watch index from a resolved dep-graph's nodes. Composite
- *  inner participants contribute their own watch paths — they're
- *  scheduled as first-class nodes, so their `watch` decl is honored
- *  identically. */
+/** Build the watch index from a resolved dep-graph's nodes. */
 export const buildWatchIndex = (
 	nodes: ReadonlyMap<PluginKey, DepNode>,
 ): ReadonlyArray<WatchEntry> => {

@@ -68,6 +68,12 @@ run_as_sui() {
 	setpriv --reuid "$SUI_UID" --regid "$SUI_GID" --init-groups env HOME="$SUI_HOME" "$@"
 }
 
+STARTED_PID=""
+start_as_sui() {
+	setpriv --reuid "$SUI_UID" --regid "$SUI_GID" --init-groups env HOME="$SUI_HOME" "$@" &
+	STARTED_PID=$!
+}
+
 if [ ! -d "$SUI_HOME/.sui/sui_config" ]; then
 	run_as_sui sui genesis -f --with-faucet
 fi
@@ -149,11 +155,11 @@ set -- $SUI_ARGV
 IFS=$SAVED_IFS
 
 # Start sui in the background. The shell stays PID 1 so it can trap
-# docker's SIGTERM and forward; sui becomes a child whose SIGINT
-# handler the kernel actually delivers (PID 1 ignores undelivered
-# signals; non-PID-1 children get them by default).
-run_as_sui sui "$@" &
-SUI_PID=$!
+# docker's SIGTERM and forward; sui becomes a direct child whose
+# SIGINT handler the kernel actually delivers (PID 1 ignores
+# undelivered signals; non-PID-1 children get them by default).
+start_as_sui sui "$@"
+SUI_PID=$STARTED_PID
 register_signal_forward "$SUI_PID"
 
 # Start sui-faucet as a sibling, scoped to the requested bind addr.
@@ -189,8 +195,8 @@ if [ -n "$FAUCET_BIND" ]; then
 		fi
 		sleep 1
 	done
-	run_as_sui sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT" &
-	FAUCET_PID=$!
+	start_as_sui sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT"
+	FAUCET_PID=$STARTED_PID
 	register_signal_forward "$FAUCET_PID"
 fi
 

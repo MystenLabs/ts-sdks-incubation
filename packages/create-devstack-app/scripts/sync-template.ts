@@ -20,12 +20,14 @@ import {
 	cpSync,
 	existsSync,
 	mkdirSync,
+	mkdtempSync,
 	readFileSync,
 	readdirSync,
 	rmSync,
 	writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -33,42 +35,42 @@ const PKG_ROOT = resolve(HERE, '..');
 const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
 const SRC = resolve(REPO_ROOT, 'examples', '_template');
 const DST = resolve(PKG_ROOT, 'template');
-
-if (!existsSync(SRC)) {
-	throw new Error(`sync-template: source ${SRC} not found. The repo layout may have changed.`);
-}
-
-if (existsSync(DST)) {
-	rmSync(DST, { recursive: true, force: true });
-}
-mkdirSync(DST, { recursive: true });
-
+const CHECK = process.argv.includes('--check');
 const SKIP = new Set([
 	'node_modules',
 	'dist',
 	'.devstack',
 	'.turbo',
+	'generated',
 	'tsconfig.app.tsbuildinfo',
 	'tsconfig.node.tsbuildinfo',
 ]);
 
-cpSync(SRC, DST, {
-	recursive: true,
-	filter: (s) => {
-		const parts = s.split('/');
-		for (const p of parts) {
-			if (SKIP.has(p)) return false;
-			if (/^.*\.config\.(js|d\.ts)$/.test(p)) return false;
+if (!existsSync(SRC)) {
+	throw new Error(`sync-template: source ${SRC} not found. The repo layout may have changed.`);
+}
+
+if (CHECK) {
+	const tmpRoot = mkdtempSync(join(tmpdir(), 'create-devstack-app-template-'));
+	const expected = join(tmpRoot, 'template');
+	try {
+		syncTemplate(expected);
+		const diffs = diffTemplateDirs(DST, expected);
+		if (diffs.length > 0) {
+			for (const diff of diffs) {
+				process.stderr.write(`template drift: ${diff}\n`);
+			}
+			process.exitCode = 1;
+		} else {
+			process.stdout.write(`template is in sync with ${SRC}\n`);
 		}
-		return true;
-	},
-});
-
-resolveTemplateDeps(DST, REPO_ROOT);
-applyTemplateCutoverFixups(DST);
-writeTemplateSupportFiles(DST);
-
-process.stdout.write(`synced ${SRC} → ${DST}\n`);
+	} finally {
+		rmSync(tmpRoot, { recursive: true, force: true });
+	}
+} else {
+	syncTemplate(DST);
+	process.stdout.write(`synced ${SRC} → ${DST}\n`);
+}
 
 interface PkgJson {
 	name?: string;
@@ -76,6 +78,78 @@ interface PkgJson {
 	scripts?: Record<string, string>;
 	dependencies?: Record<string, string>;
 	devDependencies?: Record<string, string>;
+}
+
+function syncTemplate(dst: string): void {
+	if (existsSync(dst)) {
+		rmSync(dst, { recursive: true, force: true });
+	}
+	mkdirSync(dst, { recursive: true });
+
+	cpSync(SRC, dst, {
+		recursive: true,
+		filter: (s) => {
+			const parts = s.split('/');
+			for (const p of parts) {
+				if (SKIP.has(p)) return false;
+				if (/^.*\.config\.(js|d\.ts)$/.test(p)) return false;
+			}
+			return true;
+		},
+	});
+
+	resolveTemplateDeps(dst, REPO_ROOT);
+	applyTemplateCutoverFixups(dst);
+	writeTemplateSupportFiles(dst);
+}
+
+function diffTemplateDirs(actual: string, expected: string): ReadonlyArray<string> {
+	if (!existsSync(actual)) {
+		return [`missing bundled template directory ${actual}`];
+	}
+	const actualFiles = collectFiles(actual);
+	const expectedFiles = collectFiles(expected);
+	const actualSet = new Set(actualFiles);
+	const expectedSet = new Set(expectedFiles);
+	const diffs: string[] = [];
+
+	for (const file of expectedFiles) {
+		if (!actualSet.has(file)) {
+			diffs.push(`missing file ${file}`);
+		}
+	}
+	for (const file of actualFiles) {
+		if (!expectedSet.has(file)) {
+			diffs.push(`extra file ${file}`);
+		}
+	}
+	for (const file of expectedFiles) {
+		if (!actualSet.has(file)) continue;
+		const actualBytes = readFileSync(join(actual, file));
+		const expectedBytes = readFileSync(join(expected, file));
+		if (!actualBytes.equals(expectedBytes)) {
+			diffs.push(`changed file ${file}`);
+		}
+	}
+
+	return diffs.sort();
+}
+
+function collectFiles(root: string): ReadonlyArray<string> {
+	const files: string[] = [];
+	const walk = (dir: string, prefix: string): void => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+			const full = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(full, rel);
+			} else if (entry.isFile()) {
+				files.push(rel);
+			}
+		}
+	};
+	walk(root, '');
+	return files.sort();
 }
 
 /** Rewrite `workspace:*` and `catalog:` specifiers in `template/package.json`
@@ -130,11 +204,12 @@ function rewriteTemplateScripts(json: PkgJson): void {
 		'devstack:apply': 'DEVSTACK_APP=_template devstack apply',
 		apply: 'pnpm run devstack:apply',
 		dev: 'pnpm run devstack:apply && DEVSTACK_APP=_template vite --host 127.0.0.1',
-		build: 'pnpm run devstack:apply && DEVSTACK_APP=_template tsc -b && DEVSTACK_APP=_template vite build',
+		build:
+			'pnpm run devstack:apply && DEVSTACK_APP=_template tsc -b && DEVSTACK_APP=_template vite build',
 		preview: scripts.preview ?? 'vite preview',
 		typecheck: 'pnpm run devstack:apply && tsc -b --noEmit',
 		test: scripts.test ?? 'pnpm run typecheck && vitest run',
-		'test:e2e': scripts['test:e2e'] ?? 'DEVSTACK_APP=_template playwright test',
+		'test:e2e': 'DEVSTACK_APP=_template playwright test',
 		clean: scripts.clean ?? 'rm -rf dist .turbo node_modules/.tmp',
 	};
 
@@ -193,19 +268,21 @@ function stripQuotes(s: string): string {
 
 function applyTemplateCutoverFixups(templateDir: string): void {
 	const oldGeneratedMetadataComment =
-		/\/\/ Codegen runs before Dev \(`needs: \[\.\.\., codegen\]`\), so this file\n\/\/ existing implies hello is published.*\nconst helloPackageId = packages\.hello\.packageId;/;
+		/\/\/ Codegen runs before Dev \(`after: \[\.\.\., codegen\]`\), so this file\n\/\/ existing implies hello is published.*\nconst helloPackageId = packages\.hello\.packageId;/;
 	const oldPackageLabel = "Package:{' '}";
 	replaceInFile(join(templateDir, 'src', 'App.tsx'), [
 		[
 			oldGeneratedMetadataComment,
-			"// `devstack apply` emits this generated package metadata after hello is\n// published, so no deployment guard is needed here.\nconst helloPackageId = packages.hello.packageId;",
+			'// `devstack apply` emits this generated package metadata after hello is\n// published, so no deployment guard is needed here.\nconst helloPackageId = packages.hello.packageId;',
 		],
 		[oldPackageLabel, "Move package:{' '}"],
 	]);
-	replaceInFile(
-		join(templateDir, 'src', 'dapp-kit.ts'),
-		[['(RPC URL + MVR overrides + burner-wallet adapter)', '(RPC URL + MVR overrides + dev-wallet adapter)']],
-	);
+	replaceInFile(join(templateDir, 'src', 'dapp-kit.ts'), [
+		[
+			'(RPC URL + MVR overrides + burner-wallet adapter)',
+			'(RPC URL + MVR overrides + dev-wallet adapter)',
+		],
+	]);
 }
 
 function writeTemplateSupportFiles(templateDir: string): void {

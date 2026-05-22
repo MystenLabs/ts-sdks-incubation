@@ -4,7 +4,7 @@
 // that runs once per (chain × content-hash), caches its receipt, and
 // re-fires when its discriminator changes (or the chain regenesises).
 //
-// Implementation: thin wrapper over `OnChainArtifactPublisher`. The
+// Implementation: thin wrapper over `ArtifactPublisher`. The
 // substrate handles the cache → verify → produce → register cycle; this
 // file composes the spec:
 //
@@ -38,9 +38,9 @@ import { Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import type { ActionBuildContext } from './build-context.ts';
@@ -60,7 +60,7 @@ import {
  *  objectType?, outputState?, idOperation? }`). Consumers can cast or
  *  use `findCreatedByType`-style helpers — mirrors v3's
  *  `pickCreatedByType(r.objectChanges, ...)` pattern from
- *  `examples/arena/devstack.config.ts`.
+ *  `examples/connect-four/devstack.config.ts`.
  *
  *  Distilled doc §"Capabilities PRODUCED" — the v3 Action's `TxResult`
  *  carries `digest`, `effects`, `objectChanges`, `balanceChanges`. We
@@ -76,7 +76,7 @@ export interface ActionReceipt {
  *  `balanceChanges` are `Unknown`-typed arrays — we don't enforce the
  *  SDK's wide change-shape here because callers project these
  *  manually (mirrors v3's `pickCreatedByType(r.objectChanges, ...)`
- *  pattern from `examples/arena/devstack.config.ts`). */
+ *  pattern from `examples/connect-four/devstack.config.ts`). */
 export const ActionReceiptSchema = Schema.Struct({
 	digest: Schema.String,
 	objectChanges: Schema.optional(Schema.Array(Schema.Unknown)),
@@ -151,17 +151,17 @@ const buildVerifyProbe = (
 		Effect.catch(() => Effect.succeed(null as typeof VerifyTxShape.Type | null)),
 	);
 
-/** Main acquire body. Composes the OnChainArtifactSpec for the action
+/** Main acquire body. Composes the ArtifactSpec for the action
  *  and yields it to the publisher.
  *
  *  Returns the cached/produced `ActionReceipt`. Errors flow as
- *  `ActionError | OnChainArtifactError` — the latter when the substrate
+ *  `ActionError | ArtifactPublishError` — the latter when the substrate
  *  itself surfaces a produce-failure wrap. */
 export const bootActionService = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	inputs: ActionAcquireInputs,
-): Effect.Effect<ActionReceipt, ActionError | OnChainArtifactError, Scope.Scope> =>
+): Effect.Effect<ActionReceipt, ActionError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
 			'action.name': inputs.actionName,
@@ -180,7 +180,7 @@ export const bootActionService = (
 
 		// --- Submit the spec to the publisher.
 		//
-		// The OCA substrate decodes the cached `ActionReceipt` and
+		// The artifact publisher substrate decodes the cached `ActionReceipt` and
 		// passes it into `verify(cached)` — so the verify Effect can
 		// pull the digest off the cached payload directly. No
 		// in-process registry-hop required (mirrors the seam pattern
@@ -216,8 +216,8 @@ export const bootActionService = (
 				return receipt;
 			}).pipe(
 				Effect.mapError(
-					(err): OnChainArtifactError => ({
-						_tag: 'OnChainArtifactError',
+					(err): ArtifactPublishError => ({
+						_tag: 'ArtifactPublishError',
 						reason: 'produce-failed',
 						detail: `action.${inputs.actionName} ${err.phase}: ${err.message}`,
 					}),
@@ -227,7 +227,7 @@ export const bootActionService = (
 				// Action declares no in-process registry (mirrors v3's
 				// `services/action.ts:189-191` "Action does NOT populate
 				// any in-process registries"). The cached digest is now
-				// threaded directly via the OCA's `verify(cached)`
+				// threaded directly via the artifact publisher's `verify(cached)`
 				// parameter — no register-hop hint required.
 				Effect.void,
 		});

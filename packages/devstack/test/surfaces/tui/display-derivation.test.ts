@@ -1,10 +1,10 @@
 // Display-derivation tests.
 //
 // These verify the load-bearing invariants:
-//   1. EVERY visible cell is computed from `row.kind` + `row.status`
+//   1. EVERY visible cell is computed from `row.role` + `row.status`
 //      + `row.phase` + `row.lastError` — NOT from any pre-baked
 //      `title`/`primary`/`extras` field.
-//   2. Status / kind tables are exhaustive (all enum members render).
+//   2. Status / role tables are exhaustive (all enum members render).
 //   3. Truncation caps fire on overly-long phase / error inputs.
 //
 // The tests do NOT boot any engine; they call pure functions with
@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
-import type { LifecycleStatus, PluginKind } from '../../../src/substrate/lifecycle.ts';
+import type { LifecycleStatus, PluginRole } from '../../../src/substrate/lifecycle.ts';
 import type {
 	AccountProjection,
 	Endpoint,
@@ -33,33 +33,31 @@ import {
 	endpointLine,
 	errorSummaryFor,
 	groupRows,
-	kindGlyph,
-	kindLabel,
-	kindLabelColor,
 	labelForRow,
 	narrationFor,
 	ownerForRow,
 	packageCells,
 	packageLine,
+	roleGlyph,
+	roleLabel,
+	roleLabelColor,
 	sectionForRow,
 	statusColor,
 	statusGlyph,
 	statusLabel,
+	type RowSection,
 	visibleEndpointsForRow,
 } from '../../../src/surfaces/tui/display-derivation.ts';
 
 const fakeRow = (overrides: Partial<Row> = {}): Row => ({
 	key: pluginKey('devstack:sui'),
-	kind: 'leaf-long-running',
+	role: 'service',
 	status: 'ready',
 	phase: null,
 	lastError: null,
 	logTail: { lines: [], level: 'info', truncated: false },
 	endpoints: [],
-	compositeChildren: null,
 	selectiveRestartHighlight: false,
-	narrationByContributor: null,
-	rebootCost: null,
 	...overrides,
 });
 
@@ -85,42 +83,45 @@ describe('display-derivation', () => {
 				expect(statusColor(s).length).toBeGreaterThan(0);
 			}
 		});
-		it('statusLabel mirrors the status', () => {
+		it('returns operator-facing labels for every status', () => {
+			const expected: Record<LifecycleStatus, string> = {
+				pending: 'pending',
+				acquiring: 'starting',
+				ready: 'ready',
+				failed: 'failed',
+				stopping: 'stopping',
+				stopped: 'stopped',
+				done: 'done',
+			};
 			for (const s of allStatuses) {
-				expect(statusLabel(s)).toBe(s);
+				expect(statusLabel(s)).toBe(expected[s]);
 			}
 		});
 	});
 
-	describe('kindGlyph / kindLabel / kindLabelColor', () => {
-		const allKinds: ReadonlyArray<PluginKind> = [
-			'leaf-long-running',
-			'leaf-one-shot',
-			'composite',
-			'hidden-leaf',
-			'renderer',
-		];
-		it('returns a non-empty glyph + label for every kind', () => {
-			for (const k of allKinds) {
-				expect(kindGlyph(k).length).toBeGreaterThan(0);
-				expect(kindGlyph(k)).not.toBe('?');
-				expect(kindLabel(k).length).toBeGreaterThan(0);
-				expect(kindLabel(k)).not.toBe('unknown');
-				expect(kindLabelColor(k)).not.toBe(undefined);
+	describe('roleGlyph / roleLabel / roleLabelColor', () => {
+		const allRoles: ReadonlyArray<PluginRole> = ['service', 'task'];
+		it('returns a non-empty glyph + label for every role', () => {
+			for (const role of allRoles) {
+				expect(roleGlyph(role).length).toBeGreaterThan(0);
+				expect(roleGlyph(role)).not.toBe('?');
+				expect(roleLabel(role).length).toBeGreaterThan(0);
+				expect(roleLabel(role)).not.toBe('unknown');
+				expect(roleLabelColor(role)).not.toBe(undefined);
 			}
 		});
 	});
 
 	describe('labelForRow', () => {
 		it('strips the devstack: prefix', () => {
-			expect(labelForRow('devstack:sui', 'leaf-long-running')).toBe('Sui');
+			expect(labelForRow('devstack:sui')).toBe('Sui');
 		});
 		it('strips the app: prefix', () => {
-			expect(labelForRow('app:wallet', 'composite')).toBe('Wallet');
+			expect(labelForRow('app:wallet')).toBe('Wallet');
 		});
 		it('removes internal prefixes and counters', () => {
-			expect(labelForRow('account/alice#0', 'leaf-one-shot')).toBe('Alice');
-			expect(labelForRow('seal/composite/0', 'composite')).toBe('Composite');
+			expect(labelForRow('account/alice#0')).toBe('Alice');
+			expect(labelForRow('seal/service/0')).toBe('Service');
 		});
 	});
 
@@ -130,12 +131,12 @@ describe('display-derivation', () => {
 			expect(ownerForRow('sui.localnet')).toBe('Sui');
 		});
 		it('groups long-running and endpoint rows as services unless the key names a package', () => {
-			expect(sectionForRow(fakeRow({ kind: 'leaf-long-running' }))).toBe('service');
+			expect(sectionForRow(fakeRow({ role: 'service' }))).toBe('service');
 			expect(
 				sectionForRow(
 					fakeRow({
 						key: pluginKey('package/connect-four#0'),
-						kind: 'leaf-one-shot',
+						role: 'task',
 						endpoints: [endpointKey('package/connect-four#0:docs')],
 					}),
 				),
@@ -144,7 +145,7 @@ describe('display-derivation', () => {
 				sectionForRow(
 					fakeRow({
 						key: pluginKey('app/frontend#0'),
-						kind: 'leaf-one-shot',
+						role: 'task',
 						endpoints: [endpointKey('app/frontend#0:http')],
 					}),
 				),
@@ -152,17 +153,37 @@ describe('display-derivation', () => {
 		});
 		it('groups one-shot rows by friendly domain', () => {
 			expect(
-				sectionForRow(fakeRow({ key: pluginKey('package/connect-four#0'), kind: 'leaf-one-shot' })),
+				sectionForRow(fakeRow({ key: pluginKey('package/connect-four#0'), role: 'task' })),
 			).toBe('package');
-			expect(
-				sectionForRow(fakeRow({ key: pluginKey('account/alice#0'), kind: 'leaf-one-shot' })),
-			).toBe('account');
-			expect(
-				sectionForRow(fakeRow({ key: pluginKey('action/mint#0'), kind: 'leaf-one-shot' })),
-			).toBe('action');
-			expect(
-				sectionForRow(fakeRow({ key: pluginKey('app/frontend#0'), kind: 'leaf-one-shot' })),
-			).toBe('app');
+			expect(sectionForRow(fakeRow({ key: pluginKey('account/alice#0'), role: 'task' }))).toBe(
+				'account',
+			);
+			expect(sectionForRow(fakeRow({ key: pluginKey('action/mint#0'), role: 'task' }))).toBe(
+				'action',
+			);
+			expect(sectionForRow(fakeRow({ key: pluginKey('app/frontend#0'), role: 'task' }))).toBe(
+				'app',
+			);
+		});
+		it('pins the section for every built-in plugin family', () => {
+			const cases: ReadonlyArray<readonly [string, Row['role'], RowSection]> = [
+				['sui#0', 'service', 'service'],
+				['wallet#0', 'service', 'service'],
+				['walrus:walrus', 'service', 'service'],
+				['seal:seal', 'service', 'service'],
+				['deepbook:deepbook', 'service', 'service'],
+				['postgres#0', 'service', 'service'],
+				['faucet#0', 'service', 'service'],
+				['host-service/web', 'service', 'service'],
+				['package:vault', 'task', 'package'],
+				['account/alice', 'task', 'account'],
+				['action:mint', 'task', 'action'],
+				['coin:wal', 'task', 'action'],
+				['app/frontend', 'task', 'app'],
+			];
+			for (const [key, role, section] of cases) {
+				expect(sectionForRow(fakeRow({ key: pluginKey(key), role })), key).toBe(section);
+			}
 		});
 	});
 
@@ -351,14 +372,14 @@ describe('display-derivation', () => {
 				wireProtocol: 'http',
 				registeredAt: 0,
 			};
-			const row = fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' });
+			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
 			expect(endpointsSummaryForRow(row, [walletEndpoint])).toBe(
 				'wallet-app: http://wallet.demo.localhost:5175',
 			);
 		});
 
 		it('prefers routed endpoints over raw operational loopback fallbacks', () => {
-			const row = fakeRow({ key: pluginKey('wallet#0'), kind: 'leaf-long-running' });
+			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
 			const operational = {
 				endpointKey: endpointKey('wallet#0:url'),
 				name: 'http',
@@ -383,9 +404,9 @@ describe('display-derivation', () => {
 
 		it('groups rows in operator scan order', () => {
 			const sections = groupRows([
-				fakeRow({ key: pluginKey('action/mint#0'), kind: 'leaf-one-shot' }),
-				fakeRow({ key: pluginKey('account/alice#0'), kind: 'leaf-one-shot' }),
-				fakeRow({ key: pluginKey('sui'), kind: 'leaf-long-running' }),
+				fakeRow({ key: pluginKey('action/mint#0'), role: 'task' }),
+				fakeRow({ key: pluginKey('account/alice#0'), role: 'task' }),
+				fakeRow({ key: pluginKey('sui'), role: 'service' }),
 			]);
 			expect(sections.map((section) => section.key)).toEqual(['service', 'account', 'action']);
 		});
@@ -449,18 +470,18 @@ describe('display-derivation', () => {
 	});
 
 	describe('deriveDisplayCells', () => {
-		it('produces every cell from row.kind/status/phase/lastError', () => {
+		it('produces every cell from row.role/status/phase/lastError', () => {
 			const row = fakeRow({
-				kind: 'leaf-long-running',
+				role: 'service',
 				status: 'acquiring',
 				phase: 'pulling image',
 			});
 			const cells = deriveDisplayCells(row);
 			expect(cells.statusGlyph).toBe(statusGlyph('acquiring'));
 			expect(cells.statusColor).toBe(statusColor('acquiring'));
-			expect(cells.statusLabel).toBe('acquiring');
-			expect(cells.kindGlyph).toBe(kindGlyph('leaf-long-running'));
-			expect(cells.kindLabel).toBe('service');
+			expect(cells.statusLabel).toBe('starting');
+			expect(cells.roleGlyph).toBe(roleGlyph('service'));
+			expect(cells.roleLabel).toBe('service');
 			expect(cells.label).toBe('Sui');
 			expect(cells.narration).toBe('pulling image');
 			expect(cells.errorSummary).toBe('');

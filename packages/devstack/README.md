@@ -15,17 +15,15 @@ ledger.
 
 This package contains:
 
-- The nine capability contracts as TypeScript interfaces.
+- Capability contracts as TypeScript interfaces.
 - The substrate primitives (lifecycle, plugin shape, manifest envelope, renderer projection,
   state-store, cross-process roster protocol, typed events/commands, OnChainArtifactPublisher,
-  lifted-sibling, cache).
-- The user-facing API: `defineDevstack` (flat-variadic + callback forms), plugin authoring helpers,
-  tag/provide primitives, the typed capability builder, and substrate-minted witnesses.
+  cache).
+- The user-facing API: `defineDevstack({ members, ...options })`, plugin authoring helpers,
+  capability declaration helpers, mode-narrowed factories, and branded primitives.
 - L2 plugins (sui, walrus, seal, deepbook, postgres, account, wallet, package, coin, faucet,
   action).
 - Orchestrators (snapshot, router, codegen) and surfaces (CLI, TUI).
-- Internal/sample plugins used for development experiments. These are not release surface unless the
-  blocker ledger explicitly clears them.
 
 For agents/orchestrators picking up this work, start with the rolling blocker ledger at
 `notes/UNRESOLVED-BLOCKERS.md`. That compact first-read file is enough to begin a clean
@@ -44,10 +42,10 @@ through the absence of any app-shaped entry point.
 src/
   substrate/      lifecycle SM, resource-native plugin shape, manifest,
                   projection, state-store, cross-process protocol, typed events
-  contracts/      the nine capability contracts
-  primitives/     on-chain-artifact publisher, lifted-sibling, cache
-  api/            defineDevstack (both forms), definePlugin,
-                  define-capability helpers, mode-narrowed factories
+  contracts/      capability contracts
+  primitives/     on-chain-artifact publisher, cache
+  api/            defineDevstack, definePlugin, capability helpers,
+                  mode-narrowed factories
   plugins/        L2 plugins (sui, walrus, seal, deepbook, postgres,
                   account, wallet, package, coin, faucet, action)
   orchestrators/  snapshot, router, codegen

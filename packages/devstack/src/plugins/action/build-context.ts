@@ -22,10 +22,6 @@ import type { ActionReceipt } from './service.ts';
  *   - `sui` — the resolved `SuiClient` (sdk shim + chain id + opaque
  *     `client` for `Transaction.build({client})`). Threaded eagerly
  *     because suiResource is always part of the action's hard upstream.
- *   - `tx(build, opts?)` — low-level helper that allocates a
- *     `Transaction`, lets the user populate it, and serialises to
- *     raw bytes. Use this if you need the raw bytes (e.g. to drive a
- *     custom signing surface).
  *   - `signAndExecute(account, build)` — high-level helper. Drives
  *     the full build → sign → execute → wait → project pipeline
  *     against the supplied account, returning a parsed
@@ -38,15 +34,6 @@ export interface ActionBuildContext {
 	/** Resolved SuiClient. suiResource is part of action's hard upstream so
 	 *  this is always populated. */
 	readonly sui: SuiClient;
-	/** Low-level: allocate a Transaction, let the caller populate it
-	 *  (moveCall / transferObjects / etc.), then serialise to bytes.
-	 *  Sets the sender if `opts.sender` is provided (typically the
-	 *  signing account's address). Catches serialisation throws and
-	 *  wraps them as `ActionError({phase:'sign'})`. */
-	readonly tx: (
-		build: (tx: Transaction) => void,
-		opts?: { readonly sender?: string },
-	) => Effect.Effect<Uint8Array, ActionError>;
 	/** High-level: build + sign + execute + wait + project the
 	 *  transaction in one call. The `account` is the signer, usually
 	 *  from the resolved dependency values passed to the action body.

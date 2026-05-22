@@ -18,7 +18,7 @@
 //     forked parallel scope").
 //
 // What we DON'T own here:
-//   - The composite row narration — that's `composite.ts`.
+//   - Plugin row narration.
 //   - The faucet-strategy registration — `faucet-strategy.ts`.
 //   - The deploy one-shot — `deploy.ts`.
 
@@ -57,7 +57,7 @@ export const WALRUS_ROUTER_PORT = 9185;
  *  in-container bind matches the on-chain public_port). */
 export const DEFAULT_CONTAINER_API_PORT = WALRUS_ROUTER_PORT;
 
-/** Per-node descriptor — what the composite resolved-value surfaces
+/** Per-node descriptor — what the plugin resolved value surfaces
  *  for downstream consumers (the `@mysten/walrus` SDK reads this). */
 export interface WalrusStorageNode {
 	readonly nodeIndex: number;
@@ -67,7 +67,7 @@ export interface WalrusStorageNode {
 	readonly rpcUrl: string;
 }
 
-/** Storage-node startup config — the composite's local-cluster mode
+/** Storage-node startup config — the plugin's local-cluster mode
  *  passes this in once per cluster boot. */
 export interface StorageNodesSpec {
 	readonly app: string;
@@ -90,7 +90,7 @@ export interface StorageNodesSpec {
 }
 
 /** Result of starting the committee — descriptors used by the
- *  composite's resolved value. */
+ *  plugin's resolved value. */
 export interface StorageNodesAcquired {
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
 }
@@ -142,7 +142,7 @@ const NODE_READY_PROBE_INTERVAL_MS = 500;
  *      to the primary. The dual-home is documented inline below and
  *      relies on that adapter behavior.
  *    - Per-node `networkAlias` (`walrus-node-<i>.localhost`). The
- *      contract doesn't expose alias plumbing yet; siblings dial by
+ *      contract doesn't expose alias plumbing yet; peer containers dial by
  *      container name, which docker DNS publishes. The architecture
  *      revision is tracked in `index.ts`.
  *    - Stop-grace duration propagation. The contract's `stop` takes a
@@ -184,7 +184,7 @@ export const startStorageNodes = (
 
 				yield* setCurrentPluginPhase(`creating storage-node-${i} container ${containerName}`);
 				// Acquire under the forked parallel stop scope so the
-				// finalizer (docker stop) joins the sibling-fanout race.
+				// finalizer (docker stop) joins the per-node fan-out race.
 				const ensureNode: Effect.Effect<ContainerHandle, WalrusPluginError, Scope.Scope> =
 					ensureManagedContainer<WalrusPluginError>({
 						runtime,

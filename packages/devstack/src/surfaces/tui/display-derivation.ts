@@ -2,9 +2,9 @@
 // "no display vocab in projection" invariant testable.
 //
 // The renderer consumes ONLY the typed projection (`Row`, `Endpoint`,
-// `StructuredError`, `LifecycleStatus`, `PluginKind`, …) from
+// `StructuredError`, `LifecycleStatus`, `PluginRole`, ...) from
 // `substrate/projection.ts`. Every visible glyph, color, label, and
-// narration string is computed HERE from `row.kind`, `row.status`,
+// narration string is computed HERE from `row.role`, `row.status`,
 // `row.phase`, `row.lastError`, etc.
 //
 // HARD INVARIANT: this module never reads a field named `title`,
@@ -18,7 +18,7 @@
 // strings + enum-y "color tokens" (resolved to terminal colors by the
 // Ink layer via `Text color={…}`).
 
-import type { LifecycleStatus, PhaseNarration, PluginKind } from '../../substrate/lifecycle.ts';
+import type { LifecycleStatus, PhaseNarration, PluginRole } from '../../substrate/lifecycle.ts';
 import type {
 	AccountProjection,
 	Endpoint,
@@ -46,11 +46,11 @@ export type ColorToken = 'yellow' | 'green' | 'red' | 'magenta' | 'cyan' | 'blue
 /**
  * Per-row display cells the row renderer consumes. None of these
  * fields are read from the projection — they are computed from
- * `Row.kind` + `Row.status` + `Row.phase` + `Row.lastError`.
+ * `Row.role` + `Row.status` + `Row.phase` + `Row.lastError`.
  *
  * Naming note: we DELIBERATELY avoid the words `title`, `primary`,
  * `extras` in this type's field names to make the invariant grep-able.
- * `label` is computed from `key` + `kind`; `narration` from `phase`;
+ * `label` is computed from `key`; `narration` from `phase`;
  * `summary` from `lastError`.
  */
 export interface DisplayCells {
@@ -60,10 +60,10 @@ export interface DisplayCells {
 	readonly statusColor: ColorToken;
 	/** Status label (short verbal, e.g. "ready"). */
 	readonly statusLabel: string;
-	/** Kind glyph (single char). */
-	readonly kindGlyph: string;
-	/** Kind label (e.g. "service"). */
-	readonly kindLabel: string;
+	/** Role glyph (single char). */
+	readonly roleGlyph: string;
+	/** Role label (e.g. "service"). */
+	readonly roleLabel: string;
 	/** Computed row label — derived from `row.key`, not from any
 	 *  projection-side `title`. */
 	readonly label: string;
@@ -71,7 +71,7 @@ export interface DisplayCells {
 	readonly narration: string;
 	/** Error summary — formatted from `row.lastError`. */
 	readonly errorSummary: string;
-	/** Color the row's label should render in (kind-derived,
+	/** Color the row's label should render in (role-derived,
 	 *  optionally tinted by status). */
 	readonly labelColor: ColorToken;
 	/** Group bucket for dashboard sectioning. */
@@ -85,6 +85,28 @@ export interface DisplayCells {
 }
 
 export type RowSection = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
+
+interface RowSectionClassifier {
+	readonly prefixes: ReadonlyArray<string>;
+	readonly section: RowSection;
+	readonly endpointSection?: RowSection;
+}
+
+const ROW_SECTION_CLASSIFIERS = [
+	{ prefixes: ['package:', 'package/'], section: 'package' },
+	{ prefixes: ['account/'], section: 'account' },
+	{ prefixes: ['action:', 'action/'], section: 'action' },
+	{ prefixes: ['coin:'], section: 'action' },
+	{ prefixes: ['app:', 'app/'], section: 'app', endpointSection: 'service' },
+	{ prefixes: ['host-service/'], section: 'service' },
+	{ prefixes: ['sui'], section: 'service' },
+	{ prefixes: ['wallet'], section: 'service' },
+	{ prefixes: ['walrus:', 'walrus/'], section: 'service' },
+	{ prefixes: ['seal:', 'seal/'], section: 'service' },
+	{ prefixes: ['deepbook:', 'deepbook/'], section: 'service' },
+	{ prefixes: ['postgres'], section: 'service' },
+	{ prefixes: ['faucet'], section: 'service' },
+] as const satisfies ReadonlyArray<RowSectionClassifier>;
 
 export interface DisplayRow {
 	readonly row: Row;
@@ -164,70 +186,74 @@ export const statusColor = (status: LifecycleStatus): ColorToken => {
 	}
 };
 
-/** Pure: status → short label. */
-export const statusLabel = (status: LifecycleStatus): string => status;
-
-// -----------------------------------------------------------------------------
-// Kind → glyph / label / color
-// -----------------------------------------------------------------------------
-
-/** Pure: kind → ANSI glyph. */
-export const kindGlyph = (kind: PluginKind): string => {
-	switch (kind) {
-		case 'leaf-long-running':
-			return '⚙';
-		case 'leaf-one-shot':
-			return '⚡';
-		case 'composite':
-			return '◆';
-		case 'hidden-leaf':
-			return '·';
-		case 'renderer':
-			return '☷';
+/** Pure: status → short operator-facing label. */
+export const statusLabel = (status: LifecycleStatus): string => {
+	switch (status) {
+		case 'pending':
+			return 'pending';
+		case 'acquiring':
+			return 'starting';
+		case 'ready':
+			return 'ready';
+		case 'failed':
+			return 'failed';
+		case 'stopping':
+			return 'stopping';
+		case 'stopped':
+			return 'stopped';
+		case 'done':
+			return 'done';
 		default: {
-			const _exhaustive: never = kind;
-			void _exhaustive;
-			return '?';
-		}
-	}
-};
-
-/** Pure: kind → short label. */
-export const kindLabel = (kind: PluginKind): string => {
-	switch (kind) {
-		case 'leaf-long-running':
-			return 'service';
-		case 'leaf-one-shot':
-			return 'one-shot';
-		case 'composite':
-			return 'composite';
-		case 'hidden-leaf':
-			return 'hidden';
-		case 'renderer':
-			return 'renderer';
-		default: {
-			const _exhaustive: never = kind;
+			const _exhaustive: never = status;
 			void _exhaustive;
 			return 'unknown';
 		}
 	}
 };
 
-/** Pure: kind → label color token. */
-export const kindLabelColor = (kind: PluginKind): ColorToken => {
-	switch (kind) {
-		case 'leaf-long-running':
-			return 'cyan';
-		case 'leaf-one-shot':
-			return 'magenta';
-		case 'composite':
-			return 'blueBright';
-		case 'hidden-leaf':
-			return 'white';
-		case 'renderer':
-			return 'white';
+// -----------------------------------------------------------------------------
+// Role -> glyph / label / color
+// -----------------------------------------------------------------------------
+
+/** Pure: role -> ANSI glyph. */
+export const roleGlyph = (role: PluginRole): string => {
+	switch (role) {
+		case 'service':
+			return '⚙';
+		case 'task':
+			return '⚡';
 		default: {
-			const _exhaustive: never = kind;
+			const _exhaustive: never = role;
+			void _exhaustive;
+			return '?';
+		}
+	}
+};
+
+/** Pure: role -> short label. */
+export const roleLabel = (role: PluginRole): string => {
+	switch (role) {
+		case 'service':
+			return 'service';
+		case 'task':
+			return 'task';
+		default: {
+			const _exhaustive: never = role;
+			void _exhaustive;
+			return 'unknown';
+		}
+	}
+};
+
+/** Pure: role -> label color token. */
+export const roleLabelColor = (role: PluginRole): ColorToken => {
+	switch (role) {
+		case 'service':
+			return 'cyan';
+		case 'task':
+			return 'magenta';
+		default: {
+			const _exhaustive: never = role;
 			void _exhaustive;
 			return 'white';
 		}
@@ -245,10 +271,10 @@ export const kindLabelColor = (kind: PluginKind): ColorToken => {
  * (`devstack:`, `app:`) plus instance counters so common cases read
  * cleanly.
  *
- * The function consumes `key` and `kind` only — never `row.title`,
- * which doesn't exist in the projection.
+ * The function consumes `key` only — never `row.title`, which doesn't
+ * exist in the projection.
  */
-export const labelForRow = (key: string, _kind: PluginKind): string => {
+export const labelForRow = (key: string): string => {
 	const normalized = normalizeKey(key);
 	const parts = normalized.split(/[/:]/).filter((part) => part.length > 0);
 	if (parts.length >= 2 && isSectionish(parts[0]!)) return humanizeToken(parts[parts.length - 1]!);
@@ -262,20 +288,18 @@ export const ownerForRow = (key: string): string => {
 };
 
 export const sectionForRow = (
-	row: Pick<Row, 'key' | 'kind' | 'endpoints'>,
+	row: Pick<Row, 'key' | 'role' | 'endpoints'>,
 	endpoints: ReadonlyArray<Endpoint> = [],
 ): RowSection => {
-	const normalized = normalizeKey(row.key).toLowerCase();
+	const normalized = normalizeClassificationKey(row.key).toLowerCase();
 	const ownsEndpoint = endpointsForRow(row, endpoints).length > 0 || row.endpoints.length > 0;
-	if (containsKeyPart(normalized, ['package', 'packages', 'publish', 'move'])) return 'package';
-	if (containsKeyPart(normalized, ['account', 'accounts'])) return 'account';
-	if (containsKeyPart(normalized, ['action', 'actions', 'execute', 'tx', 'faucet', 'mint'])) {
-		return 'action';
+	const classifier = rowSectionClassifierFor(normalized);
+	if (classifier !== undefined) {
+		if (ownsEndpoint && classifier.endpointSection !== undefined) return classifier.endpointSection;
+		return classifier.section;
 	}
-	if (row.kind === 'leaf-long-running' || ownsEndpoint) return 'service';
-	if (containsKeyPart(normalized, ['app', 'wallet', 'frontend', 'vite', 'server'])) return 'app';
-	if (row.kind === 'leaf-one-shot') return 'action';
-	if (row.kind === 'composite') return 'service';
+	if (row.role === 'service' || ownsEndpoint) return 'service';
+	if (row.role === 'task') return 'action';
 	return 'other';
 };
 
@@ -335,15 +359,6 @@ export const secondaryForRow = (
 	const out: Array<string> = [];
 	const rowEndpoints = endpointsForRow(row, endpoints);
 	for (const endpoint of rowEndpoints.slice(1)) out.push(endpointLine(endpoint));
-	if (row.compositeChildren !== null && row.compositeChildren.length > 0) {
-		out.push(`${row.compositeChildren.length} children`);
-	}
-	if (row.rebootCost !== null) out.push(`restart ${row.rebootCost}`);
-	if (row.narrationByContributor !== null) {
-		for (const [contributor, narration] of Object.entries(row.narrationByContributor)) {
-			if (narration.trim().length > 0) out.push(`${humanizeToken(contributor)}: ${narration}`);
-		}
-	}
 	if (row.logTail.truncated) out.push('log tail truncated');
 	return out;
 };
@@ -595,7 +610,7 @@ export const packageCells = (pkg: PackageProjection): PackageCells => ({
 /**
  * Derive every visible display cell for a single row.
  *
- * Consumes ONLY `row.key`, `row.kind`, `row.status`, `row.phase`,
+ * Consumes ONLY `row.key`, `row.role`, `row.status`, `row.phase`,
  * `row.lastError`, `row.endpoints` (rendered separately by
  * `resource-table.tsx`), or `row.logTail` (kept in the projection
  * for renderer variants that need tails, but not used as primary
@@ -609,12 +624,12 @@ export const deriveDisplayCells = (
 	statusGlyph: statusGlyph(row.status),
 	statusColor: statusColor(row.status),
 	statusLabel: statusLabel(row.status),
-	kindGlyph: kindGlyph(row.kind),
-	kindLabel: kindLabel(row.kind),
-	label: labelForRow(row.key, row.kind),
+	roleGlyph: roleGlyph(row.role),
+	roleLabel: roleLabel(row.role),
+	label: labelForRow(row.key),
 	narration: narrationFor(row.phase, row.status),
 	errorSummary: errorSummaryFor(row.lastError),
-	labelColor: kindLabelColor(row.kind),
+	labelColor: roleLabelColor(row.role),
 	section: sectionForRow(row, endpoints),
 	owner: ownerForRow(row.key),
 	headline: headlineForRow(row, endpoints),
@@ -628,6 +643,13 @@ const normalizeKey = (key: string): string =>
 		.replace(/#\d+$/, '')
 		.replace(/\/\d+$/, '');
 
+const normalizeClassificationKey = (key: string): string =>
+	key
+		.replace(/^@devstack\//, '')
+		.replace(/^devstack:/, '')
+		.replace(/#\d+$/, '')
+		.replace(/\/\d+$/, '');
+
 const humanizeToken = (token: string): string =>
 	token.replace(/[-_]+/g, ' ').replace(/^\w/, (head) => head.toUpperCase());
 
@@ -638,6 +660,18 @@ const containsKeyPart = (key: string, parts: ReadonlyArray<string>): boolean => 
 
 const isSectionish = (token: string): boolean =>
 	containsKeyPart(token.toLowerCase(), ['service', 'package', 'account', 'action', 'app']);
+
+const rowSectionClassifierFor = (key: string): RowSectionClassifier | undefined =>
+	ROW_SECTION_CLASSIFIERS.find((classifier) =>
+		classifier.prefixes.some((prefix) => keyMatchesClassifierPrefix(key, prefix)),
+	);
+
+const keyMatchesClassifierPrefix = (key: string, prefix: string): boolean => {
+	if (prefix.endsWith(':') || prefix.endsWith('/')) return key.startsWith(prefix);
+	if (key === prefix) return true;
+	const next = key[prefix.length];
+	return key.startsWith(prefix) && next !== undefined && '/:._-'.includes(next);
+};
 
 const isOperationalEndpoint = (rowKey: Pick<Row, 'key'>['key'], endpoint: Endpoint): boolean => {
 	const prefix = `${rowKey}:`;

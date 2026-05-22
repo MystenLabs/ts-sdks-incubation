@@ -25,7 +25,7 @@ export type _NoDeepbookMarginOptionsOnDeepbookBarrel = DB.DeepbookMarginOptions;
 // @ts-expect-error — market-maker configuration has no acquire path in this release
 export type _NoDeepbookMarketMakerOptionsOnDeepbookBarrel = DB.DeepbookMarketMakerOptions;
 
-// @ts-expect-error — Pyth configuration is internal to DeepBook until the composite wires it
+// @ts-expect-error — Pyth configuration is internal to DeepBook until it has real acquire behavior
 export type _NoPythOptionsOnDeepbookBarrel = DB.PythOptions;
 
 // @ts-expect-error — margin defaults are not exported without margin behavior
@@ -90,5 +90,5 @@ export const _forkKnownByNetwork = deepbookFor(forkNet).known({
 });
 
 // --- Negative: fork mode has no .local ----------------------------------
-// @ts-expect-error — `.local` doesn't exist on the fork branch (composite refusal)
+// @ts-expect-error — `.local` doesn't exist on the fork branch (mode refusal)
 export const _forkLocalRefused = deepbookFor(forkNet).local({ publisher });

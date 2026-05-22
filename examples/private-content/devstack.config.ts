@@ -11,6 +11,7 @@ import {
 	walrus,
 	seal,
 	sui,
+	type Stack,
 } from '@mysten-incubation/devstack';
 
 import {
@@ -50,9 +51,9 @@ const app = hostService({
 	cwd: HERE,
 	port: PRIVATE_CONTENT_APP_PORT,
 	ready: { kind: 'http' },
-	needs: [localnet, vault, walrusCluster, sealKeyServer, devWallet] as const,
+	after: [localnet, vault, walrusCluster, sealKeyServer, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, app] });
+const stack: Stack = defineDevstack({ members: [localnet, app] });
 
 export default stack;

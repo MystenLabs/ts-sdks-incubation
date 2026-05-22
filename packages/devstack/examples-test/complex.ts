@@ -1,10 +1,8 @@
-// Complex callback-form stack with mode-narrowed factories,
-// resource dependencies, and lifted siblings. The three
-// `@ts-expect-error` directives demonstrate the type system catching:
+// Complex callback-form stack with mode-narrowed factories and
+// resource dependencies. The two `@ts-expect-error` directives
+// demonstrate the type system catching:
 //   1. removing a required dependency,
-//   2. using a mode-incompatible factory,
-//   3. two composites lifting siblings with conflicting `inputHash`
-//      under the same `(plugin, kind, scope)` group.
+//   2. using a mode-incompatible factory.
 
 import {
 	chainId,
@@ -12,7 +10,6 @@ import {
 	defineDevstackWith,
 	defineModeNamespace,
 	definePlugin,
-	litSiblingKey,
 	resource,
 	sui,
 } from '../src/index.ts';
@@ -24,12 +21,9 @@ const keyvalResource = resource<'keyval', { readonly url: string }>('keyval');
 const keyval = () =>
 	definePlugin({
 		id: keyvalResource.id,
-		kind: 'leaf-long-running',
+		role: 'service',
 		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } as const),
 	});
-
-const clusterImageSibling = <const Hash extends string>(hash: Hash) =>
-	litSiblingKey('cluster', 'docker-image', 'per-app', hash);
 
 const cluster = defineModeNamespace({
 	local: {
@@ -37,9 +31,8 @@ const cluster = defineModeNamespace({
 			definePlugin({
 				id: 'cluster',
 				dependsOn: { leaf: keyvalResource },
-				kind: 'composite',
-				composite: { key: 'cluster' },
-				liftedSiblings: [clusterImageSibling('cluster-image-v1')] as const,
+				role: 'service',
+				pluginKey: 'cluster',
 				start: ({ leaf }) => Effect.succeed({ endpoint: leaf.url } as const),
 			}),
 	},
@@ -47,7 +40,7 @@ const cluster = defineModeNamespace({
 		forkedCluster: () =>
 			definePlugin({
 				id: 'cluster-fork',
-				kind: 'leaf-one-shot',
+				role: 'task',
 				start: () => Effect.succeed({ endpoint: 'https://example.invalid' } as const),
 			}),
 	},
@@ -55,8 +48,8 @@ const cluster = defineModeNamespace({
 
 // --- Positive case ------------------------------------------------------
 //
-// Local-mode stack: keyval leaf + cluster composite (local factory).
-// The composite depends on the `keyval` resource — the leaf provides it.
+// Local-mode stack: keyval service + cluster service (local factory).
+// The cluster service depends on the `keyval` resource — the keyval service provides it.
 
 const localNetwork: NetworkConfig<'local'> = { mode: 'local', chain: chainId('demo:local') };
 
@@ -76,7 +69,7 @@ const suiExternal = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
 const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 
@@ -116,28 +109,3 @@ export const _illegalModeFactory = cluster(forkNetwork).localCluster();
 
 // Positive: forkedCluster IS available on the fork branch.
 export const legalForkFactory = cluster(forkNetwork).forkedCluster();
-
-// --- Negative case 3: lifted-sibling hash conflict ---------------------
-//
-// Two composites lifting siblings with the same (plugin, kind, scope)
-// but DIFFERENT literal `inputHash` are refused by the type system at
-// the stack composition site. We synthesize two composites that
-// declare conflicting hashes by hand.
-
-const compositeWithHashA = definePlugin({
-	id: 'sibling-a',
-	kind: 'composite',
-	start: () => Effect.succeed({ v: 'a' as const }),
-	liftedSiblings: [clusterImageSibling('hash-A')] as const,
-});
-
-const compositeWithHashB = definePlugin({
-	id: 'sibling-b',
-	kind: 'composite',
-	start: () => Effect.succeed({ v: 'b' as const }),
-	liftedSiblings: [clusterImageSibling('hash-B')] as const,
-});
-
-export const conflictingSiblings =
-	// @ts-expect-error — sibling-hash conflict: 'cluster|docker-image|per-app' carries 'hash-A' and 'hash-B'
-	defineDevstack({ members: [compositeWithHashA, compositeWithHashB], stackName: 'conflict' });

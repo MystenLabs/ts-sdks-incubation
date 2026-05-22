@@ -10,10 +10,10 @@ import { fileURLToPath } from 'node:url';
 
 export interface ScaffoldOptions {
 	/** App name. Used as the directory name, package name, `DEVSTACK_APP`,
-	 *  and the generated `stackName`. Must match `/^[a-z][a-z0-9-]*$/` —
-	 *  lowercase, dash-separated, starts with
-	 *  a letter, no underscores (the `_template` underscore is reserved
-	 *  for the template itself; user apps don't use it). */
+	 *  and generated local router hostnames. Must match
+	 *  `/^[a-z][a-z0-9-]*$/` - lowercase, dash-separated, starts with a
+	 *  letter, no underscores (the `_template` underscore is reserved for
+	 *  the bundled template placeholder; user apps don't use it). */
 	name: string;
 	/** Where to create the app directory. Defaults to `process.cwd()`.
 	 *  The final path is `<targetDir>/<name>/`. */
@@ -130,6 +130,7 @@ const SKIP = new Set([
 	'dist',
 	'.devstack',
 	'.turbo',
+	'generated',
 	'tsconfig.app.tsbuildinfo',
 	'tsconfig.node.tsbuildinfo',
 ]);
@@ -169,7 +170,9 @@ function rewritePackageJson(path: string, name: string): void {
 	if (json.version === undefined) json.version = '0.0.0';
 	if (json.scripts !== undefined) {
 		for (const [script, command] of Object.entries(json.scripts)) {
-			json.scripts[script] = command.replaceAll('DEVSTACK_APP=_template', `DEVSTACK_APP=${name}`);
+			json.scripts[script] = command
+				.replaceAll('DEVSTACK_APP=_template', `DEVSTACK_APP=${name}`)
+				.replaceAll('DEVSTACK_APP=template', `DEVSTACK_APP=${name}`);
 		}
 	}
 	writeFileSync(path, `${JSON.stringify(json, null, '\t')}\n`);
@@ -177,7 +180,12 @@ function rewritePackageJson(path: string, name: string): void {
 
 function rewriteDevstackConfig(path: string, name: string): void {
 	const raw = readFileSync(path, 'utf8');
-	writeFileSync(path, raw.replace("stackName: '_template'", `stackName: '${name}'`));
+	writeFileSync(
+		path,
+		raw
+			.replaceAll('dev.template.localhost', `dev.${name}.localhost`)
+			.replaceAll("stackName: '_template'", `stackName: '${name}'`),
+	);
 }
 
 function* walk(dir: string): IterableIterator<string> {

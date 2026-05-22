@@ -9,10 +9,7 @@ author imports.
 
 ```ts
 import { Effect } from 'effect';
-import {
-	codegenable,
-	definePlugin,
-} from '@mysten-incubation/devstack';
+import { codegenable, definePlugin } from '@mysten-incubation/devstack';
 
 interface KeyValueResolved {
 	readonly url: string;
@@ -21,8 +18,7 @@ interface KeyValueResolved {
 export const keyValue = () =>
 	definePlugin({
 		id: 'kv',
-		kind: 'leaf-long-running',
-		rebootCost: 'cheap',
+		role: 'service',
 		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } satisfies KeyValueResolved),
 		capabilities: ({ value }) => [
 			codegenable({

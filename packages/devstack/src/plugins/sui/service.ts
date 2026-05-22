@@ -16,7 +16,7 @@
 //
 //   - Provision the build container — `chain-build-container.ts`
 //     owns that; the plugin acquires it ONLY when needed (Move
-//     publish or codegen) via the OnChainArtifactPublisher seam.
+//     publish or codegen) via the ArtifactPublisher seam.
 //   - Wire the StrategyContributor capabilities — that's the
 //     barrel's job; the body just returns the resolved value.
 

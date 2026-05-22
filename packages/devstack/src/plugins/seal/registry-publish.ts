@@ -21,7 +21,7 @@ import type { SealKeyManager } from './key-manager.ts';
  *  Distilled-doc invariant #9 + #18: peer-dep structural
  *  assignability. `@mysten/seal` is a peer dep — we duplicate the
  *  shape locally to keep the runtime import off the bundle. A
- *  compile-time `_SealKeyServerEntryCheck` (in `composite.ts`)
+ *  compile-time `_SealKeyServerEntryCheck`
  *  guards against drift. */
 export interface SealKeyServerEntry {
 	readonly objectId: string;
@@ -56,10 +56,10 @@ export const makeSealResource = <Name extends string>(name: Name) =>
 	resource<SealResourceId<Name>, SealResolved>(sealResourceId(name));
 
 // ---------------------------------------------------------------------------
-// Projection helpers — narrow the composite's resolved value
+// Projection helpers — narrow the plugin's resolved value
 // ---------------------------------------------------------------------------
 
-/** Aggregate resolved value the composite's acquire body returns.
+/** Aggregate resolved value the plugin's acquire body returns.
  *  Distilled-doc §"SealLocalKeygenInternalShape" — `{keyServer,
  *  keyManager, packageId}`. Modes that don't own a manager omit it. */
 export interface SealLocalKeygenResolved {

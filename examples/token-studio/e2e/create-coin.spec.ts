@@ -1,22 +1,31 @@
-import { expect, test } from '@playwright/test';
-import { connectAs, selectAccount } from '@mysten-incubation/devstack/playwright';
+import { expect, test, type Locator } from '@playwright/test';
+import { connectAs } from '@mysten-incubation/devstack/playwright';
 
 /**
  * Happy-path: alice (TreasuryCap holder) mints STUDIO to bob and the digest
  * surfaces in the UI. Real Vite dev server, real Sui localnet, real
  * wallet-standard adapter — no mocks.
- *
- * NOTE: deferred until the supervisor supports this full browser flow.
  */
 
 test.describe.configure({ mode: 'serial' });
 
+const selectOptionStartingWith = async (select: Locator, text: string) => {
+	const value = await select
+		.locator('option')
+		.filter({ hasText: new RegExp(`^${text}\\b`) })
+		.first()
+		.getAttribute('value');
+	expect(value, `option starting with "${text}"`).not.toBeNull();
+	await select.selectOption(value!);
+};
+
 test('alice mints STUDIO to bob', async ({ page }) => {
+	await page.goto('/');
 	await connectAs(page, 'alice');
 	await expect(page.getByText('TreasuryCap holder', { exact: true })).toBeVisible();
 
 	const mintCard = page.locator('section').filter({ hasText: /^Mint/ });
-	await selectAccount(mintCard.getByLabel(/recipient/i), 'bob');
+	await selectOptionStartingWith(mintCard.getByLabel(/recipient/i), 'bob');
 	await mintCard.getByLabel(/amount/i).fill('17');
 	await mintCard.getByRole('button', { name: /^Mint$/ }).click();
 
@@ -24,11 +33,12 @@ test('alice mints STUDIO to bob', async ({ page }) => {
 });
 
 test('bob transfers STUDIO to carol', async ({ page }) => {
+	await page.goto('/');
 	await connectAs(page, 'bob');
 	await expect(page.getByText('TreasuryCap holder', { exact: true })).toHaveCount(0);
 
 	const transferCard = page.locator('section').filter({ hasText: /^Transfer/ });
-	await selectAccount(transferCard.getByLabel(/recipient/i), 'carol');
+	await selectOptionStartingWith(transferCard.getByLabel(/recipient/i), 'carol');
 	await transferCard.getByLabel(/amount/i).fill('5');
 	await transferCard.getByRole('button', { name: /^Transfer$/ }).click();
 

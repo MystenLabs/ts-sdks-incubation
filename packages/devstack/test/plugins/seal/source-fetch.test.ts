@@ -21,7 +21,7 @@ import {
 	sealSourceCacheDir,
 	sealSourcePublishLockPath,
 	SEAL_SOURCE_FETCH_IMAGE,
-} from '../../../src/plugins/seal/lifted-siblings/source-fetch.ts';
+} from '../../../src/plugins/seal/bootstrap-assets/source-fetch.ts';
 
 const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 

@@ -7,7 +7,7 @@ import { resource } from '../../src/substrate/plugin.ts';
 describe('manifest extras', () => {
 	it.effect('resolves callback extras against direct member values', () =>
 		Effect.gen(function* () {
-			const openLobby = resource('action:arena.openLobby');
+			const openLobby = resource('action:connect-four.openLobby');
 			const seal = resource('seal:seal');
 			const extras = yield* resolveManifestExtras(
 				(ctx) => {
@@ -26,7 +26,7 @@ describe('manifest extras', () => {
 				},
 				{
 					value: (resource) => {
-						if (resource.id === 'action:arena.openLobby') {
+						if (resource.id === 'action:connect-four.openLobby') {
 							return { objectId: '0xfeed' };
 						}
 						if (resource.id === 'seal:seal') {

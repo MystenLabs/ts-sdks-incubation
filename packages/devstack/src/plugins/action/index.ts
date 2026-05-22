@@ -8,7 +8,7 @@
 //
 // User-facing factory shape (recommended high-level form):
 //
-//   const openLobby = action('arena.openLobby', {
+//   const openLobby = action('connect-four.openLobby', {
 //     dependsOn: { signer: alice, pkg: connectFour },
 //     body: (ctx, { signer, pkg }) =>
 //       ctx.signAndExecute(signer, (tx) => {
@@ -24,34 +24,27 @@
 // SDK's `changedObjects` (with `kind: 'created' | 'mutated'` + the
 // fully-qualified `objectType` string when available).
 //
-// Lower-level bodies (custom signing surfaces, multi-tx flows) can
-// drop down to `ctx.tx(build, opts?)` which returns the serialised
-// bytes only.
-//
 // Resource id: `'action:<name>'` — one tag per user-declared action (the
 // symbolic name is part of the identity so two `action('foo', ...)`
 // calls in one stack collide cleanly at compose time).
 //
-// Caching: delegated to the substrate's `OnChainArtifactPublisher`.
+// Caching: delegated to the substrate's `ArtifactPublisher`.
 // Namespace is `action`; the cache key folds chainId + content-hash
 // derived from (name, dependencyResourceIds, dynamic discriminator).
 
 import { Effect, type Scope } from 'effect';
 
-import { Transaction } from '@mysten/sui/transactions';
-
 import {
 	definePlugin,
 	dependencyList,
-	isResourceRef,
 	resource,
+	resolveDependencyValues,
 	type AnyResourceRef,
 	type DependencyInput,
-	type DependencyList,
 	type ResolvedDependencies,
 } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
+import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
@@ -93,8 +86,6 @@ export type ActionUpstreamRef = AnyResourceRef;
 /** Options for `action(name, opts)`. */
 type ActionDependencySpec = DependencyInput;
 
-type ActionDependencyList<Input extends ActionDependencySpec> = DependencyList<Input>;
-
 type ResolvedActionDependencies<Input extends ActionDependencySpec> = ResolvedDependencies<Input>;
 
 export interface ActionOptions<DependsOn extends ActionDependencySpec> {
@@ -132,7 +123,7 @@ export interface ActionOptions<DependsOn extends ActionDependencySpec> {
  *     `action:<name>`,
  *   - `dependsOn:` `[suiResource, ...userDependencies]` (Sui hard upstream for
  *     ChainProbe lookup + chainId folding),
- *   - `kind: 'leaf-one-shot'` — Action has no long-lived resources;
+ *   - `role: 'task'` — Action has no long-lived resources;
  *     the substrate's lifecycle wrap surfaces it as "done" after
  *     `start` resolves.
  */
@@ -160,8 +151,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 		// Action has no long-lived resources — the body runs once at
 		// acquire and returns; supervisor's lifecycle wrap surfaces
 		// "done" after that.
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedUpstream] = deps;
@@ -175,9 +165,9 @@ export const action = <const Name extends string, const DependsOn extends Action
 					return resolvedByResourceId.get(id);
 				};
 
-				// Substrate-context primitives. OCA + strategy registry
+				// Substrate-context primitives. artifact publisher + strategy registry
 				// are both provided by the supervisor's pluginContext.
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
 				// Compose the user's body Effect, closing over the
@@ -185,9 +175,6 @@ export const action = <const Name extends string, const DependsOn extends Action
 				// passed separately in the same shape as `dependsOn`.
 				//   - `ctx.sui` — the resolved SuiClient (always set;
 				//     suiResource is the hard upstream).
-				//   - `ctx.tx(build, opts)` — low-level helper that
-				//     returns the serialised bytes (used when the body
-				//     needs to drive a custom signing surface).
 				//   - `ctx.signAndExecute(account, build)` — high-level
 				//     helper that drives the full build → sign → execute
 				//     → wait → project pipeline against the supplied
@@ -204,54 +191,11 @@ export const action = <const Name extends string, const DependsOn extends Action
 							account,
 							build,
 						}),
-					tx: (build, opts) =>
-						Effect.gen(function* () {
-							const transaction = new Transaction();
-							if (opts?.sender !== undefined) {
-								transaction.setSender(opts.sender);
-							}
-							// The user populates the Transaction synchronously.
-							// Throws here surface as ActionError('sign') —
-							// mirrors the existing body catch-all phase.
-							yield* Effect.try({
-								try: () => {
-									build(transaction);
-								},
-								catch: (cause): ActionError =>
-									actionError('sign', {
-										actionName: name,
-										message: `Action '${name}': ctx.tx(build) callback threw before serialisation.`,
-										cause,
-									}),
-							});
-							// `Transaction.build({ client })` resolves gas
-							// budget + object versions through the SDK.
-							// Opaque-cast the client (same boundary cast as
-							// the package's publish-executor).
-							return yield* Effect.tryPromise({
-								try: () =>
-									transaction.build({
-										client: sui.sdk.client as Parameters<typeof transaction.build>[0] extends
-											| { client?: infer C }
-											| undefined
-											? C
-											: never,
-									}),
-								catch: (cause): ActionError =>
-									actionError('sign', {
-										actionName: name,
-										message: `Action '${name}': Transaction.build failed — ${
-											cause instanceof Error ? cause.message : String(cause)
-										}.`,
-										cause,
-									}),
-							});
-						}),
 				};
 
-				const bodyDeps = resolveActionDependencies(opts.dependsOn, (member) =>
+				const bodyDeps = resolveDependencyValues(opts.dependsOn, (member) =>
 					readDeclaredDependency(member.id),
-				);
+				) as ResolvedActionDependencies<DependsOn>;
 				const acquireInputs: ActionAcquireInputs = {
 					actionName: name,
 					chainId: sui.chain,
@@ -265,7 +209,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 
 				const receipt = yield* bootActionService(publisher, probe, acquireInputs).pipe(
 					Effect.catch((err): Effect.Effect<ActionReceipt, ActionError> => {
-						// Re-wrap the OnChainArtifactError into an
+						// Re-wrap the ArtifactPublishError into an
 						// ActionError so downstream consumers always see
 						// the typed `ActionError` shape. The detail
 						// already includes the phase + message from the
@@ -295,22 +239,6 @@ export const action = <const Name extends string, const DependsOn extends Action
 		// with the action's phase/message header.
 		errorContributions: actionErrorContributions,
 	});
-};
-
-const resolveActionDependencies = <Input extends ActionDependencySpec>(
-	dependsOn: Input,
-	read: (member: ActionDependencyList<Input>[number]) => unknown,
-): ResolvedActionDependencies<Input> => {
-	const readAny = (member: AnyResourceRef) => read(member as ActionDependencyList<Input>[number]);
-	if (Array.isArray(dependsOn)) {
-		return dependsOn.map((member) => readAny(member)) as ResolvedActionDependencies<Input>;
-	}
-	if (isResourceRef(dependsOn)) {
-		return readAny(dependsOn) as ResolvedActionDependencies<Input>;
-	}
-	return Object.fromEntries(
-		Object.entries(dependsOn).map(([key, member]) => [key, readAny(member)]),
-	) as ResolvedActionDependencies<Input>;
 };
 
 // ---------------------------------------------------------------------------

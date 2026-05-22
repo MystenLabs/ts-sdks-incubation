@@ -34,13 +34,13 @@ const mUSDC = coin.fromPackage(usdc, 'MOCK_USDC');
 const mWETH = coin.fromPackage(weth, 'MOCK_WETH');
 
 const seedTokens = action('wallet.seedTokens', {
-	dependsOn: { usdc, weth, publisher, alice, bob },
-	body: (ctx, { usdc, weth, publisher, alice, bob }) =>
+	dependsOn: { usdc, weth, mUSDC, mWETH, publisher, alice, bob },
+	body: (ctx, { usdc, weth, mUSDC, mWETH, publisher, alice, bob }) =>
 		ctx.signAndExecute(publisher, (tx) => {
 			const recipients = [alice.address, bob.address];
 			const specs = [
-				{ pkg: usdc, coin: usdc.coins.mock_usdc, module: 'mock_usdc' },
-				{ pkg: weth, coin: weth.coins.mock_weth, module: 'mock_weth' },
+				{ pkg: usdc, coin: mUSDC, module: 'mock_usdc' },
+				{ pkg: weth, coin: mWETH, module: 'mock_weth' },
 			] as const;
 
 			for (const spec of specs) {

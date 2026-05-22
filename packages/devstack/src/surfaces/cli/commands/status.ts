@@ -42,7 +42,7 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 		errorCount: state.errors.length,
 		rows: state.rows.map((r) => ({
 			key: r.key as string,
-			kind: r.kind,
+			role: r.role,
 			status: r.status,
 			phase: r.phase,
 			lastErrorTag: r.lastError?.tag ?? null,

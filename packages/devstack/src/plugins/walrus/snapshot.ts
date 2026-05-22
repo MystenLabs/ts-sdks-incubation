@@ -32,7 +32,7 @@ export type WalrusSnapshotMode = 'local' | 'known';
  *
  *  `app` / `stack` / `walrusName` are resolved at the plugin's
  *  acquire-time so the snapshot's identity guard can match the
- *  composite's actual container labels.
+ *  plugin's actual container labels.
  *
  *  `nodeCount` (local mode only) drives the per-node managed-container
  *  decls. Each storage node carries `role: storage-node-${i}` so the

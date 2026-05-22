@@ -18,17 +18,31 @@
 // URLs land on the codegen-emitted `WalrusBindings.{aggregator,
 // publisher}Url` instead.
 
-import type { RoutableDecl } from '../../contracts/routable.ts';
+import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 import { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
 
+export const WALRUS_ENTRYPOINT_PORT = 9185;
+export const WALRUS_NODE_ENDPOINT_PREFIX = 'walrus-node-' as const;
+export const WALRUS_AGGREGATOR_ENDPOINT_NAME = 'walrus-aggregator' as const;
+export const WALRUS_PUBLISHER_ENDPOINT_NAME = 'walrus-publisher' as const;
+
+export const WALRUS_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
+	{ name: 'walrus-node-0', port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: 'walrus-node-1', port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: 'walrus-node-2', port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: 'walrus-node-3', port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: WALRUS_AGGREGATOR_ENDPOINT_NAME, port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: WALRUS_PUBLISHER_ENDPOINT_NAME, port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+];
+
 /** Build the Routable contributions for the local cluster. `nodeCount`
- *  drives the per-node fan-out; the composite's plugin key + role
+ *  drives the per-node fan-out; the plugin's service key + route role
  *  identify the dispatch target. */
 export const makeLocalRoutables = (args: {
 	readonly app: string;
 	readonly stack: string;
 	readonly walrusName: string;
-	readonly compositeKey: string;
+	readonly serviceKey: string;
 	readonly nodeCount: number;
 	readonly containerApiPort?: number;
 }): ReadonlyArray<RoutableDecl> => {
@@ -39,10 +53,10 @@ export const makeLocalRoutables = (args: {
 		{ length: args.nodeCount },
 		(_, i): RoutableDecl => ({
 			kind: 'routable',
-			endpointName: `walrus-node-${i}`,
+			endpointName: `${WALRUS_NODE_ENDPOINT_PREFIX}${i}`,
 			dispatchId: {
-				compositeKey: args.compositeKey,
-				role: `walrus-node-${i}`,
+				serviceKey: args.serviceKey,
+				role: `${WALRUS_NODE_ENDPOINT_PREFIX}${i}`,
 			},
 			upstream: {
 				type: 'container',
@@ -62,10 +76,10 @@ export const makeLocalRoutables = (args: {
 	// substrate's endpoint registry.
 	const aggregator: RoutableDecl = {
 		kind: 'routable',
-		endpointName: 'walrus-aggregator',
+		endpointName: WALRUS_AGGREGATOR_ENDPOINT_NAME,
 		dispatchId: {
-			compositeKey: args.compositeKey,
-			role: 'walrus-aggregator',
+			serviceKey: args.serviceKey,
+			role: WALRUS_AGGREGATOR_ENDPOINT_NAME,
 		},
 		upstream: { type: 'container', containerName: containerNameFor(0), containerPort },
 		cors: true,
@@ -73,10 +87,10 @@ export const makeLocalRoutables = (args: {
 	};
 	const publisher: RoutableDecl = {
 		kind: 'routable',
-		endpointName: 'walrus-publisher',
+		endpointName: WALRUS_PUBLISHER_ENDPOINT_NAME,
 		dispatchId: {
-			compositeKey: args.compositeKey,
-			role: 'walrus-publisher',
+			serviceKey: args.serviceKey,
+			role: WALRUS_PUBLISHER_ENDPOINT_NAME,
 		},
 		upstream: { type: 'container', containerName: containerNameFor(0), containerPort },
 		cors: true,

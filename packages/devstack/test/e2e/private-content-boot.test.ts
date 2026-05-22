@@ -1,5 +1,5 @@
 // End-to-end boot of `examples/private-content/` — the
-// composite-real-walrus + composite-real-seal vault stack. Scoped to
+// local Walrus + local Seal vault stack. Scoped to
 // boot + resolved-value invariants; full vault encrypt/decrypt
 // roundtrip lives in the example's Playwright spec.
 //
@@ -15,13 +15,13 @@
 // The example config does NOT reference stub images / stub move
 // packages — its happy path targets the real vendored walrus + seal
 // binaries against the real upstream Move sources. This test uses
-// test-owned override fixtures for both services: pre-built stub images
-// and on-disk stub Move packages.
+// test-owned override fixtures: pre-built stub images for both services
+// and an on-disk stub Move package for Seal.
 //
 // What this test pins:
 //
 //   1. Every plugin member reaches `ready` — explicit sui + 3 accounts +
-//      vault package + walrus composite + seal composite + wallet.
+//      vault package + walrus service + seal service + wallet.
 //      Eight keys total.
 //   2. NO resolved value carries a `<unresolved>` or
 //      `<seed-account-not-wired>` sentinel string — the recursive
@@ -45,7 +45,7 @@
 //     driver that imports generated bindings and performs the signed
 //     upload/grant/decrypt transaction flow.
 //   - Snapshot save → kill → restore roundtrip across the full
-//     composite. `runBoot` now provides registration-level snapshot
+//     local services. `runBoot` now provides registration-level snapshot
 //     wiring; the remaining gap is the full save/restore roundtrip.
 //
 // Prerequisites: docker reachable on the host. Soft-skips otherwise.
@@ -81,10 +81,8 @@ const WALRUS_STUB_DOCKERFILE_DIR = resolve(HERE, 'fixtures', 'walrus-stub');
 const SEAL_STUB_DOCKERFILE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
 const WALRUS_STUB_IMAGE_TAG = 'walrus-test-stub:latest';
 const SEAL_STUB_IMAGE_TAG = 'seal-test-stub:latest';
-const PRIVATE_CONTENT_ROUTER_ORIGIN =
-	'http://dev.private-content.private-content.localhost:5175';
+const PRIVATE_CONTENT_ROUTER_ORIGIN = 'http://dev.private-content.private-content.localhost:5175';
 
-const WALRUS_STUB_MOVE_DIR = resolve(HERE, 'fixtures', 'walrus-stub');
 const SEAL_STUB_MOVE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
 
 const dockerReachable = (): { ok: boolean; detail: string } => {
@@ -150,7 +148,7 @@ const findSentinel = (
 };
 
 describe('private-content boots end-to-end @e2e', () => {
-	it('every plugin reaches `ready` and the composite vault stack carries no sentinels', async () => {
+	it('every plugin reaches `ready` and the vault stack carries no sentinels', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
 			console.warn(`private-content-boot: skipping — ${docker.detail}`);
@@ -163,16 +161,13 @@ describe('private-content boots end-to-end @e2e', () => {
 		expect(sealBuild.ok, sealBuild.detail).toBe(true);
 
 		// Trust-the-tag fast paths in the cargo-image resolvers
-		// (`walrus/lifted-siblings/cargo-image.ts` +
-		//  `seal/lifted-siblings/cargo-image.ts`).
+		// (`walrus/bootstrap-assets/cargo-image.ts` +
+		//  `seal/bootstrap-assets/cargo-image.ts`).
 		process.env.WALRUS_CARGO_IMAGE_OVERRIDE = WALRUS_STUB_IMAGE_TAG;
 		process.env.SEAL_CARGO_IMAGE_OVERRIDE = SEAL_STUB_IMAGE_TAG;
-		// Trust-the-path fast paths in the move-source resolvers
-		// (`walrus/lifted-siblings/source-fetch.ts` +
-		//  `seal/lifted-siblings/source-fetch.ts`). The override
-		//  path is treated as the Move package root (Move.toml +
-		//  sources/) directly — both stub dirs satisfy that shape.
-		process.env.WALRUS_MOVE_SOURCE_OVERRIDE = WALRUS_STUB_MOVE_DIR;
+		// Trust-the-path fast path in Seal's move-source resolver. The
+		// override path is treated as the Move package root (Move.toml
+		// + sources/) directly.
 		process.env.SEAL_MOVE_SOURCE_OVERRIDE = SEAL_STUB_MOVE_DIR;
 
 		let walletHealthStatus: number | null = null;
@@ -181,23 +176,23 @@ describe('private-content boots end-to-end @e2e', () => {
 			appName: 'private-content',
 			stackName: 'private-content',
 			withinScope: (ctx) =>
-					Effect.gen(function* () {
-						const wallet = ctx.resolvedValues.get('wallet#7') as WalletValue | undefined;
-						if (wallet === undefined) return;
-						walletHealthStatus = yield* Effect.promise(async () => {
-							try {
-								const res = await fetch(`${wallet.url}${WalletHttpPath.HEALTH}`, {
-									headers: {
-										[WALLET_AUTH_HEADER]: `${WALLET_BEARER_PREFIX}${wallet.token}`,
-										origin: PRIVATE_CONTENT_ROUTER_ORIGIN,
-									},
-								});
-								return res.status;
-							} catch {
-								return null;
-							}
-						});
-					}),
+				Effect.gen(function* () {
+					const wallet = ctx.resolvedValues.get('wallet#7') as WalletValue | undefined;
+					if (wallet === undefined) return;
+					walletHealthStatus = yield* Effect.promise(async () => {
+						try {
+							const res = await fetch(`${wallet.url}${WalletHttpPath.HEALTH}`, {
+								headers: {
+									[WALLET_AUTH_HEADER]: `${WALLET_BEARER_PREFIX}${wallet.token}`,
+									origin: PRIVATE_CONTENT_ROUTER_ORIGIN,
+								},
+							});
+							return res.status;
+						} catch {
+							return null;
+						}
+					});
+				}),
 		});
 
 		// Recursive-entrypoint expectation. Ordinals come from the
@@ -229,7 +224,7 @@ describe('private-content boots end-to-end @e2e', () => {
 			expect(hit, hit === null ? '' : `sentinel found at ${hit.path}: ${hit.value}`).toBeNull();
 		}
 
-		// Walrus composite resolved-value spot-check.
+		// Walrus resolved-value spot-check.
 		const walrus = result.resolvedValues.get('walrus#5') as
 			| {
 					readonly mode: 'local' | 'known';
@@ -252,7 +247,7 @@ describe('private-content boots end-to-end @e2e', () => {
 		expect(walrus!.aggregatorUrl).toMatch(/^https?:\/\//);
 		expect(walrus!.publisherUrl).toMatch(/^https?:\/\//);
 
-		// Seal composite resolved-value spot-check.
+		// Seal resolved-value spot-check.
 		const seal = result.resolvedValues.get('seal:seal#6') as
 			| {
 					readonly objectId: string;

@@ -38,7 +38,7 @@ const StrangerResource = resource<'account/stranger', AliceValue>('account/stran
 
 const alice = definePlugin({
 	id: AliceResource.id,
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed<AliceValue>({ address: '0xa11ce' }),
 });
 
@@ -50,10 +50,9 @@ const makeConsumerNode = (
 	member: definePlugin({
 		id: 'consumer',
 		dependsOn: upstreamResources,
-		kind: 'leaf-long-running',
+		role: 'service',
 		start: () => Effect.succeed({ ok: true } as const),
 	}) as AnyPlugin,
-	compositeParent: null,
 	upstreamResources,
 	upstreamKeys,
 });
@@ -68,7 +67,6 @@ const setupRegistry = (
 			const node: DepNode = {
 				key,
 				member: alice,
-				compositeParent: null,
 				upstreamResources: [],
 				upstreamKeys: [],
 			};

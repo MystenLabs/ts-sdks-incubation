@@ -19,7 +19,7 @@
 // Following the package plugin's pattern, contributions land via
 // `StrategyContributor` capability keys; the orchestrator dispatches
 // by key. This file declares the *contribution shapes*; the actual
-// `Register` closures live in `composite.ts` where the resolved
+// `Register` closures live with the local-cluster acquire path where the resolved
 // values are bound.
 
 /** Capability-key constant for the per-stack Walrus state registry. */

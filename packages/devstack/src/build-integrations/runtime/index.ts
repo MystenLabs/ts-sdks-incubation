@@ -22,12 +22,18 @@
 // write path. Architecture § Runtime substrate scope: three-way split.
 
 export {
+	discoverBuildIntegrationIdentity,
 	discoverManifestPath,
+	readAppName,
+	readAppNameWalkup,
 	type DiscoverManifestPathOptions,
+	type DiscoverBuildIntegrationIdentityOptions,
+	type BuildIntegrationIdentity,
 	DEFAULT_STACK,
 	DEFAULT_STATE_DIR,
 } from './discover.ts';
 export {
+	manifestEnvelopeFromStackContext,
 	readStackContext,
 	type ReadStackContextOptions,
 	CONSUMER_MANIFEST_VERSION,
@@ -38,10 +44,11 @@ export {
 	coldStartUrl,
 	conventionalRouteHost,
 	conventionalRouteUrl,
+	conventionalRoutesFromHints,
 	tryColdStartUrl,
-	readAppName,
 	type ColdStartUrlOptions,
 	type ConventionalRoute,
+	type ConventionalRouteHint,
 	type ConventionalRouteHostInput,
 	type ConventionalRouteUrlInput,
 } from './cold-start-url.ts';

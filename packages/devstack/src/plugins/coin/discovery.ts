@@ -1,9 +1,9 @@
-// Coin auto-discovery — pure projection over a `PublishReceipt`.
+// Coin auto-discovery — pure projection over a `LocalPackagePublishOutput`.
 //
 // Distilled-doc 13-coin.md §"Capabilities PRODUCED" §"Registry
 // entries" + Invariant 6 + Invariant 7:
 //
-//   - Iterate `receipt.objectChanges`,
+//   - Iterate `output.objectChanges`,
 //   - Find paired Sui-framework `coin::TreasuryCap<T>` +
 //     `coin::CoinMetadata<T>`,
 //   - Reject nested generics (`TreasuryCap<A<B>>` returns no record),
@@ -11,23 +11,22 @@
 //
 // This file is PURE — no Effect, no RPC. Metadata enrichment (the
 // `getCoinMetadata` RPC fold) lives in `metadata.ts`; we just emit
-// the raw discovered shape here.
-//
-// IMPORTANT (distilled-doc placement): this walker lives in the COIN
-// plugin, NOT the Package plugin. Package emits the receipt; we
-// consume it. See `packages/devstack/src/plugins/package/
-// publish-receipt.ts` for the placement rationale.
+// the raw discovered shape here. The input is structural so Coin does
+// not import Package internals.
 
-// Open slot O5 (STYLE_GUIDE / ARCHITECTURE.md):
-//   Plugin A may NOT import from Plugin B. The `PublishReceipt` /
-//   `PublishObjectChange` shapes are owned by the package plugin
-//   today; coin imports them across the L2 boundary. The proper fix
-//   is a substrate-raised `PublishReceiptEmitted` event the coin
-//   plugin subscribes to (pending PR2-A harvest loop OR a substrate
-//   event-bus primitive). Until then this cross-import stands.
-import type { PublishObjectChange, PublishReceipt } from '../package/index.ts';
+export interface CoinDiscoveryObjectChange {
+	readonly type: 'created' | 'published' | 'mutated' | 'wrapped' | 'transferred';
+	readonly objectId?: string;
+	readonly objectType?: string;
+	readonly owner?: unknown;
+}
 
-/** A discovered coin pulled out of a publish receipt. The downstream
+export interface CoinDiscoveryPublishOutput {
+	readonly publisher: string;
+	readonly objectChanges: ReadonlyArray<CoinDiscoveryObjectChange>;
+}
+
+/** A discovered coin pulled out of a publish output. The downstream
  *  metadata enricher in `metadata.ts` turns this into a full
  *  `CoinRecord`. */
 export interface DiscoveredCoin {
@@ -93,11 +92,11 @@ const splitCoinType = (
 	return { moduleName, witness };
 };
 
-/** Read the address owner from a publish-receipt change. Handles
+/** Read the address owner from a package-publish-output change. Handles
  *  the SDK's discriminated owner-shape; non-address owners surface as
  *  `undefined`. The owner shape varies across SDK versions; this
  *  helper covers the common surface and degrades gracefully. */
-const pickAddressOwner = (change: PublishObjectChange): string | undefined => {
+const pickAddressOwner = (change: CoinDiscoveryObjectChange): string | undefined => {
 	const owner = change.owner as
 		| { readonly AddressOwner?: string; readonly $kind?: string }
 		| string
@@ -110,7 +109,7 @@ const pickAddressOwner = (change: PublishObjectChange): string | undefined => {
 	return undefined;
 };
 
-/** Walk a publish receipt for coin pairs.
+/** Walk a publish output for coin pairs.
  *
  *  Sort ascending by fullCoinType — distilled-doc invariant 6 — so
  *  the registry sees a stable order across re-runs of the same
@@ -118,17 +117,17 @@ const pickAddressOwner = (change: PublishObjectChange): string | undefined => {
  *
  *  Pure. No Effect / RPC. */
 export const discoverCoinsFromPublish = (
-	receipt: PublishReceipt,
+	output: CoinDiscoveryPublishOutput,
 ): ReadonlyArray<DiscoveredCoin> => {
-	const publisher = receipt.publisher;
+	const publisher = output.publisher;
 	// Two passes over the changes: collect caps, collect metadata,
 	// then JOIN on fullCoinType. The straightforward "iterate once and
 	// build per-coin records" is harder to read when the two object
-	// types interleave in the receipt.
+	// types interleave in the output.
 	const caps = new Map<string, { readonly id: string; readonly owner: string | undefined }>();
 	const metadata = new Map<string, string>();
 
-	for (const change of receipt.objectChanges) {
+	for (const change of output.objectChanges) {
 		if (change.type !== 'created') continue;
 		if (!change.objectType) continue;
 		const capInner = pickInnerGeneric(change.objectType, 'TreasuryCap');

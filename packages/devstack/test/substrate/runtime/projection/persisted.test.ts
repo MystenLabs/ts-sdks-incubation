@@ -20,7 +20,7 @@ const makeState = (): SubscribableState => ({
 	rows: [
 		{
 			key: 'test:row#0' as never,
-			kind: 'leaf-long-running',
+			role: 'service',
 			status: 'failed',
 			phase: null,
 			lastError: {
@@ -33,10 +33,7 @@ const makeState = (): SubscribableState => ({
 			},
 			logTail: { lines: ['hello'], level: 'error', truncated: false },
 			endpoints: [],
-			compositeChildren: null,
 			selectiveRestartHighlight: false,
-			narrationByContributor: null,
-			rebootCost: null,
 		},
 	],
 	endpoints: [],

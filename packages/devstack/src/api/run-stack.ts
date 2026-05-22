@@ -49,6 +49,10 @@ import {
 	layerProductionOrchestrators,
 	type ProductionCodegenOptions,
 } from '../orchestrators/runtime-composition.ts';
+import {
+	extendBuiltInPluginContext,
+	layerBuiltInPluginRuntime,
+} from '../runtime/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import { resolveStackName } from './inference-network.ts';
@@ -210,6 +214,7 @@ export const runStack = (
 		yield* superviseStackEffect(supervisedStack, identity, state, {
 			orchestratorSinks,
 			postAcquireHook,
+			extendContext: extendBuiltInPluginContext,
 			withinScope: (handle) =>
 				Effect.gen(function* () {
 					yield* Deferred.succeed(eventQueueRef, handle.events);
@@ -251,7 +256,7 @@ export const runStack = (
 						}),
 					);
 				}),
-		});
+		}).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 	});
 
 	const loggerLayer = Logger.layer([]);

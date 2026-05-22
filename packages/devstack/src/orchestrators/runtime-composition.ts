@@ -3,7 +3,7 @@
 // CLI, programmatic runStack, and the e2e boot harness all use this
 // module for capability delivery. Tests may swap service
 // implementations (Traefik ops, upstream resolver, codegen paths), but
-// the `OrchestratorSinks` bag and router boot step stay shared.
+// the sink registrations and router boot step stay shared.
 
 import { Effect, FileSystem, Layer, Scope } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
@@ -22,7 +22,6 @@ import {
 } from './codegen/service.ts';
 import { makeExtrasCodegenable } from './codegen/extras.ts';
 import {
-	DEFAULT_ENTRYPOINTS,
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
 	layerEntrypointRegistry,
@@ -33,12 +32,18 @@ import {
 	type EndpointUrl,
 	type ResolvedRoute,
 } from './router/index.ts';
+import { BUILT_IN_ENTRYPOINTS } from '../plugins/router-entrypoints.ts';
 import {
 	makeDefaultRouterProfile,
 	type DefaultRouterProfileOptions,
 	type RouterProfile,
 } from './router/profile.ts';
 import { layerSnapshotOrchestrator, SnapshotOrchestratorService } from './snapshot/index.ts';
+import type { LivenessClassifierDecl } from '../contracts/liveness-classifier.ts';
+import type { ProjectionDecl } from '../contracts/projection.ts';
+import type { RoutableDecl } from '../contracts/routable.ts';
+import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
+import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
 import { endpointKey, type PluginKey } from '../substrate/brand.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import {
@@ -50,7 +55,12 @@ import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
 import { resolveManifestExtras, type ManifestExtrasInput } from '../substrate/manifest.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import { PostAcquireTasksService } from '../substrate/runtime/post-acquire-tasks.ts';
-import type { OrchestratorSinks } from '../substrate/runtime/capability-sinks/index.ts';
+import type {
+	CapabilitySink,
+	ContributionKind,
+	HarvestContext,
+	OrchestratorSinks,
+} from '../substrate/runtime/capability-sinks/index.ts';
 import type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
@@ -100,7 +110,7 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 		layerRouterService.pipe(
 			Layer.provideMerge(
 				Layer.mergeAll(
-					layerEntrypointRegistry(DEFAULT_ENTRYPOINTS),
+					layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
 					layerTraefikContainerOpsDocker,
 					layerDockerUpstreamResolver(profile),
 					layerRouterConfigLiteral({
@@ -151,6 +161,58 @@ export const endpointEventFromRoutable = (
 	},
 });
 
+const orchestratorSink = <K extends ContributionKind, TDecl>(
+	sink: CapabilitySink<K, TDecl>,
+): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
+
+export const makeProjectionCapabilitySink = (): OrchestratorSinks[number] =>
+	orchestratorSink<'projection', ProjectionDecl>({
+		kind: 'projection',
+		accept: (decl, ctx) =>
+			Effect.gen(function* () {
+				const event =
+					decl.event.tag === 'account.updated'
+						? {
+								...decl.event,
+								account: {
+									...decl.event.account,
+									rowKey: decl.event.account.rowKey ?? ctx.pluginKey,
+								},
+							}
+						: {
+								...decl.event,
+								package: {
+									...decl.event.package,
+									rowKey: decl.event.package.rowKey ?? ctx.pluginKey,
+								},
+							};
+				yield* ctx.publish(event);
+			}),
+	});
+
+export const makeStrategyContributorCapabilitySink = (): OrchestratorSinks[number] =>
+	orchestratorSink<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
+		kind: 'strategy-contributor',
+		accept: (decl, ctx) =>
+			Effect.gen(function* () {
+				yield* ctx.registerStrategy(decl);
+				const at = Date.now();
+				yield* ctx.publish({
+					tag: 'strategy.registered',
+					capabilityKey: decl.capabilityKey,
+					autoMounted: decl.autoMounted,
+					at,
+				});
+				yield* Effect.addFinalizer(() =>
+					ctx.publish({
+						tag: 'strategy.unregistered',
+						capabilityKey: decl.capabilityKey,
+						at: Date.now(),
+					}),
+				);
+			}),
+	});
+
 export const buildProductionOrchestratorSinks = (
 	observers: CapabilityDeliveryObservers = {},
 ): Effect.Effect<
@@ -162,32 +224,48 @@ export const buildProductionOrchestratorSinks = (
 		const snapshot = yield* SnapshotOrchestratorService;
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
-		return {
-			snapshotable: (pluginKey, decl) => snapshot.registerParticipant(pluginKey, decl),
-			liveness: (pluginKey, decl) => snapshot.registerClassifier(pluginKey, decl),
-			routable: (pluginKey, decl, ctx) =>
-				router.boot().pipe(
-					Effect.andThen(router.contributeRoute(decl)),
-					Effect.flatMap((endpoint) => {
-						const event = endpointEventFromRoutable(pluginKey, endpoint);
-						return ctx.publish(event).pipe(
-							Effect.andThen(
-								observers.routable
-									? observers.routable(pluginKey, endpoint, event)
-									: Effect.void,
-							),
-						);
-					}),
-				),
-			codegenable: (pluginKey, decl) =>
-				codegen
-					.registerContribution(pluginKey, decl)
-					.pipe(
-						Effect.flatMap(() =>
-							observers.codegenable ? observers.codegenable(pluginKey, decl) : Effect.void,
-						),
+		return [
+			orchestratorSink<'snapshotable', SnapshotableDecl>({
+				kind: 'snapshotable',
+				accept: (decl, ctx) => snapshot.registerParticipant(ctx.pluginKey, decl),
+			}),
+			orchestratorSink<'liveness-classifier', LivenessClassifierDecl>({
+				kind: 'liveness-classifier',
+				accept: (decl, ctx) => snapshot.registerClassifier(ctx.pluginKey, decl),
+			}),
+			orchestratorSink<'routable', RoutableDecl>({
+				kind: 'routable',
+				accept: (decl, ctx: HarvestContext) =>
+					router.boot().pipe(
+						Effect.andThen(router.contributeRoute(decl)),
+						Effect.flatMap((endpoint) => {
+							const event = endpointEventFromRoutable(ctx.pluginKey, endpoint);
+							return ctx
+								.publish(event)
+								.pipe(
+									Effect.andThen(
+										observers.routable
+											? observers.routable(ctx.pluginKey, endpoint, event)
+											: Effect.void,
+									),
+								);
+						}),
 					),
-		};
+			}),
+			orchestratorSink<'codegenable', Codegenable>({
+				kind: 'codegenable',
+				accept: (decl, ctx) =>
+					codegen
+						.registerContribution(ctx.pluginKey, decl)
+						.pipe(
+							Effect.flatMap(() =>
+								observers.codegenable ? observers.codegenable(ctx.pluginKey, decl) : Effect.void,
+							),
+						),
+			}),
+			makeProjectionCapabilitySink(),
+			makeStrategyContributorCapabilitySink(),
+		];
 	});
 
 const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {

@@ -1,4 +1,4 @@
-// Minimal flat-variadic stack.
+// Minimal object-form stack.
 //
 // Compile-only smoke test for `defineDevstack` + a single trivial leaf
 // plugin.
@@ -12,7 +12,7 @@ const keyvalResource = resource<'keyval', { readonly url: string }>('keyval');
 const keyval = () =>
 	definePlugin({
 		id: keyvalResource.id,
-		kind: 'leaf-long-running',
+		role: 'service',
 		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } as const),
 	});
 

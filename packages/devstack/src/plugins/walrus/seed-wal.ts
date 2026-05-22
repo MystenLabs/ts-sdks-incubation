@@ -44,10 +44,8 @@ export interface WalSeedAccountReceipt {
 }
 
 const WalExchangeObjectShape = Schema.Struct({
-	object: Schema.Struct({
-		objectId: Schema.String,
-		type: Schema.String,
-	}),
+	objectId: Schema.String,
+	type: Schema.String,
 });
 
 export const resolveWalExchange = (
@@ -68,12 +66,12 @@ export const resolveWalExchange = (
 				),
 			);
 		if (found === null) return null;
-		const packageId = found.object.type.split('::')[0];
+		const packageId = found.type.split('::')[0];
 		if (packageId === undefined || !packageId.startsWith('0x')) {
 			return yield* Effect.fail(
 				walrusPluginError(
 					'exchange',
-					`walrus.exchange: unexpected exchange object type "${found.object.type}" — expected "<pkg>::wal_exchange::Exchange"`,
+					`walrus.exchange: unexpected exchange object type "${found.type}" — expected "<pkg>::wal_exchange::Exchange"`,
 				),
 			);
 		}

@@ -34,10 +34,8 @@ describe('walrus seed WAL swap', () => {
 				_mode: ChainProbeMode,
 			) =>
 				Schema.decodeUnknownEffect(schema)({
-					object: {
-						objectId: '0xabc',
-						type: '0xfeed::wal_exchange::Exchange',
-					},
+					objectId: '0xabc',
+					type: '0xfeed::wal_exchange::Exchange',
 				}).pipe(
 					Effect.mapError(
 						(cause): ChainProbeError => ({

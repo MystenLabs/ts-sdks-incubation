@@ -3,16 +3,16 @@
 // Architecture § L0 Observability: "span/annotation conventions".
 // Centralises the attribute keys so every wrapped span uses the same
 // vocabulary — OTEL consumers can filter by `devstack.app`,
-// `devstack.stack`, `devstack.plugin`, `devstack.kind` reliably.
+// `devstack.stack`, `devstack.plugin`, `devstack.role` reliably.
 //
 // Discipline: no service names appear anywhere; only the four
 // engine-level dimensions. Plugins call `withPluginSpan` and pass
-// their `pluginKey` + `kind`.
+// their `pluginKey` + `role`.
 
 import { Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import type { PluginKind } from '../../lifecycle.ts';
+import type { PluginRole } from '../../lifecycle.ts';
 
 /** Canonical span-attribute keys. Single source of truth for the
  *  observability vocabulary. */
@@ -25,7 +25,7 @@ export const SpanAttr = {
 	network: 'devstack.network',
 	coinType: 'coin.type',
 	plugin: 'devstack.plugin',
-	kind: 'devstack.kind',
+	role: 'devstack.role',
 	phase: 'devstack.phase',
 	containerName: 'container.name',
 	containerRole: 'container.role',
@@ -68,7 +68,7 @@ export interface StackSpanContext {
 
 export interface PluginSpanContext extends StackSpanContext {
 	readonly pluginKey: PluginKey;
-	readonly kind: PluginKind;
+	readonly role: PluginRole;
 }
 
 /**
@@ -105,7 +105,7 @@ export const withPluginSpan =
 					[SpanAttr.stack]: ctx.stack,
 					[SpanAttr.network]: ctx.network,
 					[SpanAttr.plugin]: ctx.pluginKey,
-					[SpanAttr.kind]: ctx.kind,
+					[SpanAttr.role]: ctx.role,
 				},
 			}),
 		);

@@ -15,7 +15,7 @@
 // (when the vite plugin is enabled)"). The factory in `index.ts`
 // adds it conditionally — see `wallet({ enableRouter: true })`.
 
-import type { RoutableDecl } from '../../contracts/routable.ts';
+import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
 // ----------------------------------------------------------------------
 // Endpoint name constant
@@ -29,6 +29,10 @@ import type { RoutableDecl } from '../../contracts/routable.ts';
 export const WALLET_ENDPOINT_NAME = 'wallet-app' as const;
 export const WALLET_ROUTE_ROLE = 'api' as const;
 export const WALLET_ENTRYPOINT_PORT = 6173;
+
+export const WALLET_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
+	{ name: WALLET_ENDPOINT_NAME, port: WALLET_ENTRYPOINT_PORT, protocol: 'http' },
+];
 
 // ----------------------------------------------------------------------
 // Decl
@@ -47,8 +51,8 @@ export const makeWalletRoutable = (parts: {
 	dispatchId: {
 		// Convention: `<plugin>.<app>.<stack>` keeps dispatch-file
 		// listings readable; the router still hashes the full
-		// `(app, stack, compositeKey, role)` tuple for uniqueness.
-		compositeKey: `wallet.${parts.app}.${parts.stack}`,
+		// `(app, stack, serviceKey, role)` tuple for uniqueness.
+		serviceKey: `wallet.${parts.app}.${parts.stack}`,
 		role: WALLET_ROUTE_ROLE,
 	},
 	upstream: { type: 'host-loopback', port: parts.port },

@@ -9,9 +9,9 @@
 import { Effect, type Scope } from 'effect';
 
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import type { SealAnyError } from './errors.ts';
 import { acquireForkKnown, type ForkKnownInputs } from './mode/fork-known.ts';
 import { acquireLive, type LiveModeInputs } from './mode/live.ts';
@@ -28,9 +28,9 @@ export type SealKnownBootResult = SealKnownResolved;
  *  is unused by the known paths (no on-chain artifact produce); it's
  *  accepted for shape uniformity with the local-keygen entry point. */
 export const bootSealService = (
-	_publisher: OnChainArtifactPublisher,
+	_publisher: ArtifactPublisher,
 	opts: SealMode,
-): Effect.Effect<SealKnownBootResult, SealAnyError | OnChainArtifactError, Scope.Scope> => {
+): Effect.Effect<SealKnownBootResult, SealAnyError | ArtifactPublishError, Scope.Scope> => {
 	switch (opts.mode) {
 		case 'live':
 			return acquireLive(opts);

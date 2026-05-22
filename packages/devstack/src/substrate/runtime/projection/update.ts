@@ -119,7 +119,6 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 
 		case 'strategy.registered':
 		case 'strategy.unregistered':
-		case 'sibling.deduped':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
 		case 'snapshot.captured':
@@ -212,9 +211,8 @@ export const bumpCycle = (
 });
 
 /**
- * Register (or replace) a row in the projection. Composite plugins
- * call this from their declaration site; the supervisor wires the
- * call in.
+ * Register (or replace) a row in the projection. The supervisor wires
+ * the call in.
  */
 export const declareRow = (state: SubscribableState, row: Row): SubscribableState => {
 	const idx = state.rows.findIndex((r) => r.key === row.key);

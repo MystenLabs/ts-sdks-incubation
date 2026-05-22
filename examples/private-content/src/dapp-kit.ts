@@ -60,9 +60,9 @@ const findDevWalletAccount = async (accountName: string) => {
 	const address = accountAddressByName[accountName];
 	if (address === undefined) {
 		throw new Error(
-			`Unknown devstack account "${accountName}". Available: ${Object.keys(accountAddressByName).join(
-				', ',
-			)}`,
+			`Unknown devstack account "${accountName}". Available: ${Object.keys(
+				accountAddressByName,
+			).join(', ')}`,
 		);
 	}
 
@@ -93,8 +93,9 @@ const selectAccount = async (accountName: string) => {
 };
 
 // Expose the narrow slot contract the Playwright `connectAs` helper consumes.
-(globalThis as { __devstackDAppKit__?: { selectAccount?: typeof selectAccount } }).__devstackDAppKit__ =
-	{ selectAccount };
+(
+	globalThis as { __devstackDAppKit__?: { selectAccount?: typeof selectAccount } }
+).__devstackDAppKit__ = { selectAccount };
 
 declare module '@mysten/dapp-kit-react' {
 	interface Register {

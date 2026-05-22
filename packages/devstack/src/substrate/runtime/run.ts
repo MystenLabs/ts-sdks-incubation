@@ -11,14 +11,8 @@
 // and exposes the handle's events / state / awaitShutdown directly.
 //
 // Architecture: this is L0 substrate. It names no plugin and no
-// capability decl — the only L2 names it touches are the wrapper
-// `CoinRegistryService` / `PackageRegistryService` Layers (consumed by
-// the supervisor's harvest loop and by built-in plugins that yield
-// them from their `acquire` bodies). These two registry layers ride at
-// the substrate boundary because the supervisor needs them in
-// `pluginContext` regardless of whether the stack actually uses coin /
-// package plugins (cf. STYLE_GUIDE §10b — L2 wrapper-service around
-// `defineScopedRefMap`).
+// capability declaration. Built-in plugin services are composed by the
+// higher-level runtime composition layer before the supervisor starts.
 
 import { Context, Effect, Layer, Logger as EffectLogger, Scope, SubscriptionRef } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -29,10 +23,7 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
 import type { Identity } from '../identity.ts';
 import { CacheService, layerCache } from './cache/index.ts';
 import { LeaseBrokerService, layerLeaseBroker } from './lease-broker/index.ts';
-import {
-	OnChainArtifactPublisherService,
-	layerOnChainArtifactPublisher,
-} from './on-chain-artifact/index.ts';
+import { ArtifactPublisherService, layerArtifactPublisher } from './artifact-publisher/index.ts';
 import {
 	IdentityContext,
 	RuntimeRoot,
@@ -43,8 +34,6 @@ import {
 } from './paths.ts';
 import { PortBrokerService, layerPortBroker } from './port-broker/index.ts';
 import { StrategyRegistryService, layerStrategyRegistry } from './strategy-registry/index.ts';
-import { CoinRegistryService, coinRegistryLayer } from '../../plugins/coin/registry.ts';
-import { PackageRegistryService, layerPackageRegistry } from '../../plugins/package/registry.ts';
 import {
 	ContainerRuntimeService,
 	DockerSpawner,
@@ -66,9 +55,9 @@ import {
 } from './supervisor.ts';
 
 /** Substrate Layer stack for a single supervised run. Composes every L0
- *  service the supervisor + built-in plugins yield from their
- *  R-channels, plus the L1 Docker `ContainerRuntime`. The output is the
- *  full `R` requirement set for `supervise()`'s pluginContext build. */
+ *  service the supervisor yields from its R-channel, plus the L1 Docker
+ *  `ContainerRuntime`. Built-in plugin services are layered outside
+ *  substrate and added through `extendContext`. */
 export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) => {
 	// DockerSpawner adapts platform-node's ChildProcessSpawner tag onto
 	// the docker subsystem's local DockerSpawner tag (same shape; the
@@ -96,10 +85,8 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 	);
 	const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(childProcessSpawnerWired));
 	const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-	const withOca = layerOnChainArtifactPublisher.pipe(Layer.provideMerge(withCache));
-	const withCoinRegistry = coinRegistryLayer.pipe(Layer.provideMerge(withOca));
-	const withPackageRegistry = layerPackageRegistry.pipe(Layer.provideMerge(withCoinRegistry));
-	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
+	const withArtifactPublisher = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
+	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withArtifactPublisher));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
 	const withSpawnerAdapter = layerDockerSpawnerFromNode.pipe(Layer.provideMerge(withLeaseBroker));
 	const withContainerRuntime = layerContainerRuntimeDocker.pipe(
@@ -124,9 +111,7 @@ const buildPluginContext = (): Effect.Effect<
 	| CacheService
 	| StrategyRegistryService
 	| ContainerRuntimeService
-	| OnChainArtifactPublisherService
-	| PackageRegistryService
-	| CoinRegistryService
+	| ArtifactPublisherService
 	| PortBrokerService
 	| LeaseBrokerService
 	| PostAcquireTasksService
@@ -140,9 +125,7 @@ const buildPluginContext = (): Effect.Effect<
 		const cache = yield* CacheService;
 		const registry = yield* StrategyRegistryService;
 		const containerRuntime = yield* ContainerRuntimeService;
-		const publisher = yield* OnChainArtifactPublisherService;
-		const packageRegistry = yield* PackageRegistryService;
-		const coinRegistry = yield* CoinRegistryService;
+		const publisher = yield* ArtifactPublisherService;
 		const portBroker = yield* PortBrokerService;
 		const leaseBroker = yield* LeaseBrokerService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
@@ -156,9 +139,7 @@ const buildPluginContext = (): Effect.Effect<
 			Context.add(CacheService, cache),
 			Context.add(StrategyRegistryService, registry),
 			Context.add(ContainerRuntimeService, containerRuntime),
-			Context.add(OnChainArtifactPublisherService, publisher),
-			Context.add(PackageRegistryService, packageRegistry),
-			Context.add(CoinRegistryService, coinRegistry),
+			Context.add(ArtifactPublisherService, publisher),
 			Context.add(PortBrokerService, portBroker),
 			Context.add(LeaseBrokerService, leaseBroker),
 			Context.add(PostAcquireTasksService, postAcquireTasks),
@@ -177,7 +158,7 @@ const buildPluginContext = (): Effect.Effect<
  *  Generic `R` widens the hook R-channel so callers can yield
  *  substrate services (e.g. `StackPathsService`) that are in scope at
  *  the supervisor-boot site. */
-export interface SuperviseStackOptions<R = Scope.Scope> {
+export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never> {
 	readonly lifetime?: 'long-running' | 'one-shot';
 	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, never, R>;
 	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, never, R>;
@@ -191,18 +172,18 @@ export interface SuperviseStackOptions<R = Scope.Scope> {
 	 *  override. */
 	readonly extendContext?: (
 		ctx: Context.Context<never>,
-	) => Effect.Effect<Context.Context<never>, never, never>;
+	) => Effect.Effect<Context.Context<never>, never, ExtendR>;
 }
 
 /** Effect that boots the supervisor for `stack` and blocks on the
  *  supervisor's shutdown latch. Returns the final `SubscribableState`
  *  snapshot so callers (CLI, library handle) can inspect post-shutdown
  *  state. */
-export const superviseStackEffect = <R = Scope.Scope>(
+export const superviseStackEffect = <R = Scope.Scope, ExtendR = never>(
 	stack: SupervisedStack,
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<import('../projection.ts').SubscribableState>,
-	opts: SuperviseStackOptions<R> = {},
+	opts: SuperviseStackOptions<R, ExtendR> = {},
 ) =>
 	Effect.gen(function* () {
 		const baseContext = yield* buildPluginContext();
@@ -216,7 +197,7 @@ export const superviseStackEffect = <R = Scope.Scope>(
 					identity,
 					state,
 					pluginContext,
-					opts.orchestratorSinks ?? {},
+					opts.orchestratorSinks ?? [],
 					opts.commandHandler,
 					opts.postAcquireHook,
 					{ commandLoop: opts.lifetime !== 'one-shot' },

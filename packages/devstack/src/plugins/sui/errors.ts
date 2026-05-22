@@ -58,6 +58,18 @@ export interface SuiConfigError extends ConfigIssue {
 
 export const suiConfigError = defineConfigError('SuiConfigError');
 
+export class SuiForkComingSoonError extends Error {
+	readonly _tag = 'SuiForkComingSoonError';
+	readonly upstream: 'mainnet' | 'testnet' | 'devnet';
+	readonly feature = 'fork' as const;
+
+	constructor(upstream: 'mainnet' | 'testnet' | 'devnet') {
+		super(`Sui fork mode is coming soon; '${upstream}' forks are not available in this release.`);
+		this.name = 'SuiForkComingSoonError';
+		this.upstream = upstream;
+	}
+}
+
 /** Move-build / sui-cli error. Carries the sub-process capture
  *  envelope (exit + stderr + stdout). The plugin doc lists 11
  *  shell-shaped phases today; we tighten to a much smaller set

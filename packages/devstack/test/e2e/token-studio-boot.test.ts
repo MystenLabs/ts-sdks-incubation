@@ -14,12 +14,12 @@
 // Six plugin keys, with wallet depending on every account + sui.
 //
 // What this test pins beyond `ready`:
-//   - The published `managed_coin` package's receipt carries the
+//   - The published `managed_coin` package's output carries the
 //     `TreasuryCap<T>` + `CoinMetadata<T>` created objects for every
 //     coin declared by the Move module. The package plugin's
 //     `coin-discovery.ts` walk uses exactly these object-change rows
 //     to populate `treasuryCapId` / `metadataId` in CoinRegistry. By
-//     asserting the receipt's projection here, the discovery walk's
+//     asserting the output's projection here, the discovery walk's
 //     load-bearing inputs are pinned non-sentinel.
 //
 // Prerequisites: docker reachable on the host. Cold runs pay the
@@ -34,7 +34,10 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { runBoot } from './boot-config-impl.ts';
-import type { LocalPackageResolved, PublishObjectChange } from '../../src/plugins/package/index.ts';
+import type {
+	LocalPackageResolved,
+	PackagePublishObjectChange,
+} from '../../src/plugins/package/index.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
@@ -63,7 +66,7 @@ const TREASURY_CAP_RE = /::coin::TreasuryCap<.+>$/;
 const COIN_METADATA_RE = /::coin::CoinMetadata<.+>$/;
 
 describe('token-studio boots end-to-end', () => {
-	it('every plugin reaches `ready` and managed_coin publish receipt carries TreasuryCap + CoinMetadata', async () => {
+	it('every plugin reaches `ready` and managed_coin publish output carries TreasuryCap + CoinMetadata', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
 			console.warn(`token-studio-boot: skipping — ${docker.detail}`);
@@ -93,13 +96,13 @@ describe('token-studio boots end-to-end', () => {
 		expect([...result.readyKeys].sort()).toEqual([...expectedKeys].sort());
 
 		// Pull the published package's resolved value. On a fresh boot
-		// the receipt is populated (cache miss); on a warm boot the
-		// receipt is null but the discovery walk has already populated
+		// the output is populated (cache miss); on a warm boot the
+		// output is null but the discovery walk has already populated
 		// the registry. We assert on the warm-boot-tolerant invariants:
-		// either the receipt exists AND carries the cap + metadata
-		// rows, OR (cache hit case) we accept the absence of receipt.
+		// either the output exists AND carries the cap + metadata
+		// rows, OR (cache hit case) we accept the absence of output.
 		// For this test (every invocation gets a fresh tmpdir runtime
-		// root, so cache state never carries over) the receipt is
+		// root, so cache state never carries over) the output is
 		// always populated.
 		const pkg = result.resolvedValues.get('package:managed_coin#2') as
 			| LocalPackageResolved
@@ -107,9 +110,9 @@ describe('token-studio boots end-to-end', () => {
 		expect(pkg, 'managed_coin resolved value should be present').toBeDefined();
 		expect(pkg!.packageId).toMatch(/^0x[0-9a-f]+$/);
 
-		const receipt = pkg!.publishReceipt;
-		expect(receipt, 'fresh boot should carry a publish receipt').not.toBeNull();
-		const changes = receipt!.objectChanges as ReadonlyArray<PublishObjectChange>;
+		const output = pkg!.publishResult;
+		expect(output, 'fresh boot should carry a publish output').not.toBeNull();
+		const changes = output!.objectChanges as ReadonlyArray<PackagePublishObjectChange>;
 
 		const treasuryCaps = changes.filter(
 			(c) =>

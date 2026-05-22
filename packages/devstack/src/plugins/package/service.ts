@@ -3,7 +3,7 @@
 // Dispatch on `opts.mode` ∈ {local, known} and delegate to the
 // per-mode acquire. This file is INTENTIONALLY thin: the substrate
 // concerns (cache key, verify, produce, register) live inside the
-// OnChainArtifactPublisher primitive; the toolchain concerns (build,
+// ArtifactPublisher primitive; the toolchain concerns (build,
 // scrub) live in `build.ts`. We just route.
 //
 // Substrate dependencies arrive via `definePlugin({ dependsOn })`:
@@ -14,7 +14,7 @@
 // And via the StrategyContributor registry (by capability key):
 //
 //   - chain-probe:<chainId> — ChainProbe<SuiProbeKey>
-//   - on-chain-artifact     — the OnChainArtifactPublisher (substrate
+//   - artifact-publisher     — the ArtifactPublisher (substrate
 //                             primitive, available everywhere)
 //
 // And via the plugin-owned PackageRegistry service (instantiated from
@@ -26,9 +26,9 @@
 import { Effect, type Scope } from 'effect';
 
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import { acquireKnown, type KnownModeInputs } from './mode-known.ts';
@@ -39,7 +39,7 @@ import type {
 	ResolvedLocalPackage,
 	ResolvedPackage,
 } from './registry.ts';
-import type { PublishReceipt } from './publish-receipt.ts';
+import type { LocalPackagePublishOutput } from './publish-output.ts';
 import type { PublishError } from './errors.ts';
 
 /** Discriminated mode union — mirrors the public factory shape
@@ -52,52 +52,52 @@ export type PackageMode =
 
 export interface BootPackageResult {
 	readonly resolved: ResolvedPackage;
-	/** Fresh publish receipt — populated on cache MISS (the produce
+	/** Fresh publish output — populated on cache MISS (the produce
 	 *  path ran), `null` on cache hit (verify path). Threaded out so
 	 *  the barrel can fan out coin auto-discovery (and any other
-	 *  receipt-consuming siblings) once per fresh publish.
+	 *  output-consuming siblings) once per fresh publish.
 	 *
 	 *  Known mode never publishes, so this is always `null` there. */
-	readonly receipt: PublishReceipt | null;
+	readonly output: LocalPackagePublishOutput | null;
 }
 
 export interface BootLocalPackageResult {
 	readonly resolved: ResolvedLocalPackage;
-	readonly receipt: PublishReceipt | null;
+	readonly output: LocalPackagePublishOutput | null;
 }
 
 export interface BootKnownPackageResult {
 	readonly resolved: ResolvedKnownPackage;
-	readonly receipt: null;
+	readonly output: null;
 }
 
 /** Dispatch on the typed mode. */
 export function bootPackageService(
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	registry: PackageRegistry,
 	opts: { readonly mode: 'local' } & LocalModeInputs,
-): Effect.Effect<BootLocalPackageResult, PublishError | OnChainArtifactError, Scope.Scope>;
+): Effect.Effect<BootLocalPackageResult, PublishError | ArtifactPublishError, Scope.Scope>;
 export function bootPackageService(
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	registry: PackageRegistry,
 	opts: { readonly mode: 'known' } & KnownModeInputs,
-): Effect.Effect<BootKnownPackageResult, PublishError | OnChainArtifactError, Scope.Scope>;
+): Effect.Effect<BootKnownPackageResult, PublishError | ArtifactPublishError, Scope.Scope>;
 export function bootPackageService(
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	registry: PackageRegistry,
 	opts: PackageMode,
-): Effect.Effect<BootPackageResult, PublishError | OnChainArtifactError, Scope.Scope> {
+): Effect.Effect<BootPackageResult, PublishError | ArtifactPublishError, Scope.Scope> {
 	switch (opts.mode) {
 		case 'local':
 			return acquireLocal(publisher, probe, registry, opts).pipe(
-				Effect.map(({ resolved, receipt }) => ({ resolved, receipt })),
+				Effect.map(({ resolved, output }) => ({ resolved, output })),
 			);
 		case 'known':
 			return acquireKnown(probe, registry, opts).pipe(
-				Effect.map(({ resolved }) => ({ resolved, receipt: null })),
+				Effect.map(({ resolved }) => ({ resolved, output: null })),
 			);
 	}
 }

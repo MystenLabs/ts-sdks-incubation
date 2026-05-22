@@ -4,7 +4,6 @@ import { Field } from '../ui/Field.js';
 import { useState } from 'react';
 
 import { deployment } from '../lib/deployment.js';
-import * as managedCoin from '../generated/bindings/managed_coin/managed_coin.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
@@ -24,7 +23,10 @@ export function MintForm() {
 			const raw = parseStudioAmount(amount);
 			if (raw <= 0n) throw new Error('Amount must be greater than zero');
 			const tx = new Transaction();
-			tx.add(managedCoin.mint({ arguments: [TREASURY_CAP_ID, raw, recipient] }));
+			tx.moveCall({
+				target: `${deployment.packageId}::managed_coin::mint`,
+				arguments: [tx.object(TREASURY_CAP_ID), tx.pure.u64(raw), tx.pure.address(recipient)],
+			});
 			const result = await mutateAsync(tx);
 			invalidate();
 			setLastDigest(result.digest);

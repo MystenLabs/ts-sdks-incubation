@@ -1,9 +1,7 @@
 // CapabilitySinks — kind→sink registry tests.
 //
 // Architecture invariants under test:
-//   1. Built-in sinks (snapshotable/routable/codegenable/strategy-
-//      contributor/projection/liveness-classifier/error-contribution)
-//      all dispatch through the same `registerSink` /
+//   1. Registered sinks dispatch through the same `registerSink` /
 //      `dispatch` API.
 //   2. A plugin-author-supplied sink can extend the registry with a
 //      custom kind; built-in dispatch is unaffected.
@@ -21,6 +19,7 @@ import {
 	layerCapabilitySinksDefault,
 	type AnyContribution,
 	type CapabilitySink,
+	type ContributionKind,
 	type HarvestContext,
 	type OrchestratorSinks,
 } from '../../../../src/substrate/runtime/index.ts';
@@ -44,6 +43,10 @@ const ctxFor = (key: string): HarvestContext => ({
 	registerStrategy: () => Effect.void,
 });
 
+const orchestratorSink = <K extends ContributionKind, TDecl>(
+	sink: CapabilitySink<K, TDecl>,
+): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
+
 const snapDecl: SnapshotableDecl = {
 	kind: 'snapshotable',
 	subtrees: ['runtime/x'],
@@ -53,7 +56,7 @@ const snapDecl: SnapshotableDecl = {
 const routeDecl: RoutableDecl = {
 	kind: 'routable',
 	endpointName: 'demo-endpoint',
-	dispatchId: { compositeKey: 'demo', role: 'app' },
+	dispatchId: { serviceKey: 'demo', role: 'app' },
 	upstream: { type: 'host-loopback', port: 6173 },
 	wireProtocol: 'http',
 	cors: false,
@@ -63,10 +66,16 @@ describe('CapabilitySinksService', () => {
 	it.effect('dispatch routes a snapshotable decl to the registered sink', () =>
 		Effect.gen(function* () {
 			const captured = yield* Ref.make<ReadonlyArray<{ key: string; subtree: string }>>([]);
-			const orchestrator: OrchestratorSinks = {
-				snapshotable: (key, decl) =>
-					Ref.update(captured, (xs) => [...xs, { key: String(key), subtree: decl.subtrees[0]! }]),
-			};
+			const orchestrator: OrchestratorSinks = [
+				orchestratorSink<'snapshotable', SnapshotableDecl>({
+					kind: 'snapshotable',
+					accept: (decl, ctx) =>
+						Ref.update(captured, (xs) => [
+							...xs,
+							{ key: String(ctx.pluginKey), subtree: decl.subtrees[0]! },
+						]),
+				}),
+			];
 			yield* Effect.scoped(
 				Effect.gen(function* () {
 					const sinks = yield* CapabilitySinksService;
@@ -84,10 +93,16 @@ describe('CapabilitySinksService', () => {
 	it.effect('orchestrator sink receives the routable decl', () =>
 		Effect.gen(function* () {
 			const captured = yield* Ref.make<ReadonlyArray<{ key: string; role: string }>>([]);
-			const orchestrator: OrchestratorSinks = {
-				routable: (key, decl) =>
-					Ref.update(captured, (xs) => [...xs, { key: String(key), role: decl.dispatchId.role }]),
-			};
+			const orchestrator: OrchestratorSinks = [
+				orchestratorSink<'routable', RoutableDecl>({
+					kind: 'routable',
+					accept: (decl, ctx) =>
+						Ref.update(captured, (xs) => [
+							...xs,
+							{ key: String(ctx.pluginKey), role: decl.dispatchId.role },
+						]),
+				}),
+			];
 			yield* Effect.scoped(
 				Effect.gen(function* () {
 					const sinks = yield* CapabilitySinksService;
@@ -112,6 +127,29 @@ describe('CapabilitySinksService', () => {
 						strategy: { run: () => undefined },
 						autoMounted: true,
 					};
+				const strategySink = orchestratorSink<
+					'strategy-contributor',
+					StrategyContributorDecl<string, unknown>
+				>({
+					kind: 'strategy-contributor',
+					accept: (decl, ctx) =>
+						Effect.gen(function* () {
+							yield* ctx.registerStrategy(decl);
+							yield* ctx.publish({
+								tag: 'strategy.registered',
+								capabilityKey: decl.capabilityKey,
+								autoMounted: decl.autoMounted,
+								at: 1,
+							});
+							yield* Effect.addFinalizer(() =>
+								ctx.publish({
+									tag: 'strategy.unregistered',
+									capabilityKey: decl.capabilityKey,
+									at: 2,
+								}),
+							);
+						}),
+				});
 
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -127,7 +165,7 @@ describe('CapabilitySinksService', () => {
 						);
 						expect(yield* Ref.get(registered)).toEqual(['demo-strategy']);
 						expect(yield* Ref.get(published)).toEqual(['strategy.registered']);
-					}).pipe(Effect.provide(layerCapabilitySinksDefault({}))),
+					}).pipe(Effect.provide(layerCapabilitySinksDefault([strategySink]))),
 				);
 
 				expect(yield* Ref.get(published)).toEqual(['strategy.registered', 'strategy.unregistered']);
@@ -181,7 +219,7 @@ describe('CapabilitySinksService', () => {
 						},
 						ctxFor('plug-d'),
 					);
-				}).pipe(Effect.provide(layerCapabilitySinksDefault({}))),
+				}).pipe(Effect.provide(layerCapabilitySinksDefault())),
 			);
 
 			const captured = yield* Ref.get(customCaptured);
@@ -203,7 +241,7 @@ describe('CapabilitySinksService', () => {
 					yield* sinks.dispatch({ source: 'error', contribution: contrib }, ctxFor('plug-e'));
 					const fmt = yield* FormatterRegistryService;
 					return yield* fmt.snapshot;
-				}).pipe(Effect.provide(layerCapabilitySinksDefault({}))),
+				}).pipe(Effect.provide(layerCapabilitySinksDefault())),
 			);
 
 			expect(snapshot.has('AlphaError')).toBe(true);

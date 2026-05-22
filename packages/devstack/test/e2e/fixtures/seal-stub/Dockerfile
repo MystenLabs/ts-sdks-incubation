@@ -3,9 +3,8 @@
 # hours-long rust toolchain build the real upstream image needs.
 #
 # Built once, tagged `seal-test-stub:latest` (the e2e test sets
-# `SEAL_CARGO_IMAGE_OVERRIDE=seal-test-stub:latest` so the lifted-
-# sibling resolver short-circuits to this image instead of failing
-# with the documented "cargo build not implemented" error).
+# `SEAL_CARGO_IMAGE_OVERRIDE=seal-test-stub:latest` so the image
+# resolver short-circuits to this tag).
 #
 # Behaviors the seal plugin's local-keygen boot path drives:
 #

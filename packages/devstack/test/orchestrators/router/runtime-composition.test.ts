@@ -37,7 +37,13 @@ import {
 } from '../../../src/substrate/brand.ts';
 import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
-import { supervise, type HarvestContext } from '../../../src/substrate/runtime/index.ts';
+import {
+	supervise,
+	type CapabilitySink,
+	type ContributionKind,
+	type HarvestContext,
+	type OrchestratorSinks,
+} from '../../../src/substrate/runtime/index.ts';
 import { makeProjectionRef, updateRef } from '../../../src/substrate/runtime/projection/index.ts';
 
 const bootReport: BootReport = {
@@ -58,7 +64,7 @@ const endpoint: EndpointUrl = {
 const routable: RoutableDecl = {
 	kind: 'routable',
 	endpointName: 'wallet-app',
-	dispatchId: { compositeKey: 'wallet', role: 'api' },
+	dispatchId: { serviceKey: 'wallet', role: 'api' },
 	upstream: { type: 'host-loopback', port: 49152 },
 	cors: true,
 	wireProtocol: 'http',
@@ -72,7 +78,7 @@ const identity: Identity = {
 
 const routablePlugin = definePlugin({
 	id: 'test/routable',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ ready: true } as const),
 	capabilities: [routable] as const,
 });
@@ -107,6 +113,17 @@ const routerLayer = Layer.effect(
 
 const sinkTestLayer = Layer.mergeAll(snapshotLayer, codegenLayer, routerLayer);
 
+const findSink = <K extends ContributionKind, TDecl>(
+	sinks: OrchestratorSinks,
+	kind: K,
+): CapabilitySink<K, TDecl> => {
+	const sink = sinks.find((candidate) => candidate.kind === kind);
+	if (sink === undefined) {
+		throw new Error(`missing sink '${kind}'`);
+	}
+	return sink as unknown as CapabilitySink<K, TDecl>;
+};
+
 describe('productionRouterProfile', () => {
 	it('is profile-wide and does not vary with runtime roots', () => {
 		const runtimeRootA = '/tmp/devstack-runtime-a';
@@ -124,7 +141,7 @@ describe('productionRouterProfile', () => {
 		expect(profileA.networkName).toContain('devstack-router-');
 	});
 
-	it('prefers daemon identity over context name when docker exposes it', () => {
+	it('prefers stable context identity over daemon identity when docker exposes both', () => {
 		const dir = mkdtempSync(join(tmpdir(), 'devstack-router-profile-'));
 		try {
 			const bin = join(dir, 'docker');
@@ -145,7 +162,7 @@ describe('productionRouterProfile', () => {
 					{ bin },
 					{ DOCKER_CONTEXT: 'context-name', DOCKER_HOST: 'tcp://docker.example:2375' },
 				),
-			).toBe('daemon:daemon-abc123');
+			).toBe('context:context-name|host:tcp://docker.example:2375');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
@@ -182,8 +199,8 @@ describe('buildProductionOrchestratorSinks', () => {
 				registerStrategy: () => Effect.void,
 			};
 
-			expect(sinks.routable).toBeDefined();
-			yield* Effect.scoped(sinks.routable!(pluginKey('wallet#0'), routable, harvestCtx));
+			const routableSink = findSink<'routable', RoutableDecl>(sinks, 'routable');
+			yield* Effect.scoped(routableSink.accept(routable, harvestCtx));
 
 			const events = yield* Ref.get(observed);
 			expect(events).toHaveLength(1);

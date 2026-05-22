@@ -145,6 +145,29 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 	};
 };
 
+/** Reconstruct the manifest envelope from the runtime projection.
+ *  Integration adapters that preserve their older envelope-shaped
+ *  surfaces use this instead of duplicating endpoint-registry
+ *  projection logic. */
+export const manifestEnvelopeFromStackContext = (ctx: StackContext): ManifestEnvelope => ({
+	identity: ctx.identity as ManifestEnvelope['identity'],
+	manifestVersion: ctx.manifestVersion,
+	services: ctx.services,
+	endpoints: Object.fromEntries(
+		ctx.endpoints.all().map((e) => [
+			e.name,
+			{
+				url: e.url,
+				displayUrl: e.displayUrl,
+				wireProtocol: e.wireProtocol,
+				pluginKey: e.pluginKey as never,
+				endpointKey: e.endpointKey as never,
+			},
+		]),
+	) as ManifestEnvelope['endpoints'],
+	extras: ctx.extras,
+});
+
 /**
  * Sync read + decode + project. Throws `ManifestDiscoveryError` (no
  * manifest located) or `ManifestShapeError` (manifest found but

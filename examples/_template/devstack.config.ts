@@ -15,6 +15,7 @@ import {
 	account,
 	localPackage,
 	sui,
+	type Stack,
 	wallet,
 } from '@mysten-incubation/devstack';
 
@@ -42,9 +43,9 @@ const app = hostService({
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },
-	needs: [hello, devWallet] as const,
+	after: [hello, devWallet] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, app], stackName: 'main' });
+const stack: Stack = defineDevstack({ members: [localnet, app], stackName: 'main' });
 
 export default stack;

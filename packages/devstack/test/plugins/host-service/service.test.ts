@@ -85,7 +85,7 @@ const acquire = (
 
 const neededMember = definePlugin({
 	id: 'test/needed',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ ok: true } as const),
 });
 
@@ -99,24 +99,27 @@ describe('hostService option validation', () => {
 		);
 	});
 
-	it('requires exactly one command source', () => {
+	it('requires command and rejects script services', () => {
 		expect(() => hostService({} as never)).toThrowError(
 			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'command' }),
 		);
 		expect(() => hostService({ command: 'pnpm', script: 'pnpm dev' } as never)).toThrowError(
-			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'command' }),
+			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'script' }),
+		);
+		expect(() => hostService({ script: 'pnpm dev' } as never)).toThrowError(
+			expect.objectContaining({ _tag: 'HostServiceConfigError', field: 'script' }),
 		);
 	});
 });
 
-describe('hostService needs', () => {
-	it('keeps no-needs services as dependency-free leaves', () => {
+describe('hostService after', () => {
+	it('keeps no-after services as dependency-free leaves', () => {
 		const member = hostService({ command: 'pnpm' });
 		expect(member.dependsOn).toEqual([]);
 	});
 
-	it('projects needs members into dependencies for startup ordering', () => {
-		const member = hostService({ command: 'pnpm', needs: [neededMember] as const });
+	it('projects after members into dependencies for startup ordering', () => {
+		const member = hostService({ command: 'pnpm', after: [neededMember] as const });
 		expect(member.dependsOn).toEqual([neededMember]);
 		expect(member.dependsOn[0]).toBe(neededMember);
 	});
@@ -322,30 +325,6 @@ describe('acquireHostService', () => {
 		}).pipe(Effect.provide(layerPostAcquireTasks));
 	});
 
-	it('supports bash script services with port token substitution', async () => {
-		const child = new FakeChild();
-		const calls: SpawnCall[] = [];
-		const options = normalizeHostServiceOptions({
-			name: 'script-service',
-			script: 'pnpm exec vite --port {port}',
-			ready: { kind: 'log', pattern: /ready/ },
-		});
-
-		await Effect.runPromise(
-			acquire(options, (command, args, spawnOptions) => {
-				calls.push({ command, args, options: spawnOptions });
-				setTimeout(() => child.stdout.write('ready\n'), 0);
-				return child;
-			}),
-		);
-
-		expect(calls).toHaveLength(1);
-		const call = calls[0];
-		if (call === undefined) throw new Error('expected one spawn call');
-		expect(call.command).toBe('bash');
-		expect(call.args).toEqual(['-lc', 'pnpm exec vite --port 6173']);
-	});
-
 	it('fails acquire when the process exits before readiness', async () => {
 		const child = new FakeChild();
 		const options = normalizeHostServiceOptions({
@@ -390,7 +369,7 @@ describe('host service routable capability', () => {
 			kind: 'routable',
 			endpointName: 'dev',
 			dispatchId: {
-				compositeKey: 'host-service.frontend',
+				serviceKey: 'host-service.frontend',
 				role: 'dev',
 			},
 			upstream: { type: 'host-loopback', port: 6173 },

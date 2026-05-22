@@ -1,4 +1,4 @@
-// Pyth — INTERNAL module under the deepbook composite (per memory
+// Pyth — INTERNAL module under the DeepBook plugin (per memory
 // `project_pyth_inside_deepbook`).
 //
 // Pyth is NOT a top-level devstack plugin. It is part of the
@@ -6,17 +6,17 @@
 //
 // Why an internal module:
 //
-//   - The user-facing composite "deepbook" includes the Pyth oracle
+//   - The user-facing DeepBook plugin includes the Pyth oracle
 //     wiring as an implementation detail (price feeds drive the
 //     deepbook margin module's risk math + the market-maker's mid).
-//   - Promoting Pyth to a top-level plugin would split the composite
+//   - Promoting Pyth to a top-level plugin would split the feature
 //     and force users to compose two plugins for one capability.
 //   - A future external market-maker need MAY promote Pyth to a
 //     top-level plugin; until then it lives here. See memory
 //     `project_pyth_inside_deepbook`.
 //
 // This module exports:
-//   - The publish flow (`publishPythPackage`) — uses OCA via the
+//   - The publish flow (`publishPythPackage`) — uses artifact publisher via the
 //     `sui-tx` ChainOperation variant, signed by `pyth.pusher`.
 //   - The price-init flow (`initPythFeeds`) — one `update_price_feed`
 //     Move call per declared feed.
@@ -24,8 +24,8 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { OnChainArtifactPublisher } from '../../../primitives/on-chain-artifact.ts';
-import { compileChainOperation } from '../../../substrate/runtime/on-chain-artifact/index.ts';
+import type { ArtifactPublisher } from '../../../primitives/artifact-publisher.ts';
+import { compileChainOperation } from '../../../substrate/runtime/artifact-publisher/index.ts';
 import type {
 	ResolvedSigner,
 	SuiExecuteClient,
@@ -50,11 +50,11 @@ export interface PythPublishResult {
 }
 
 // ---------------------------------------------------------------------------
-// Publish — via OCA / sui-tx variant
+// Publish — via artifact publisher / sui-tx variant
 // ---------------------------------------------------------------------------
 
 /** Publish the Pyth + Wormhole packages and initialize per-feed
- *  price-info objects. Signed by `pyth.pusher`. The OCA primitive
+ *  price-info objects. Signed by `pyth.pusher`. The artifact publisher primitive
  *  handles cache → verify → produce → register; on warm restart a
  *  prior publish is reused.
  *
@@ -62,7 +62,7 @@ export interface PythPublishResult {
  *  'sui-tx'` so the `sui-execute` substrate helper owns the
  *  sign/execute/wait/parse round-trip. */
 export const publishPythPackage = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	client: SuiExecuteClient,
 	chain: string,
 	signer: ResolvedSigner,
@@ -99,7 +99,7 @@ export const publishPythPackage = (
 							Effect.mapError(
 								(cause) =>
 									({
-										_tag: 'OnChainArtifactError',
+										_tag: 'ArtifactPublishError',
 										reason: 'produce-failed',
 										detail: cause.message,
 									}) as const,
@@ -110,7 +110,7 @@ export const publishPythPackage = (
 						),
 					parse: (_effects) =>
 						Effect.fail({
-							_tag: 'OnChainArtifactError' as const,
+							_tag: 'ArtifactPublishError' as const,
 							reason: 'produce-failed' as const,
 							detail:
 								'pyth publish requires a Wormhole/Pyth deployment transaction. Use deepbook known mode with an existing oracle deployment.',
@@ -123,7 +123,7 @@ export const publishPythPackage = (
 					(err): DeepbookPluginError =>
 						deepbookPluginError(
 							'pyth-publish',
-							err._tag === 'OnChainArtifactError' ? err.detail : String(err),
+							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
 						),
 				),
 			);
@@ -140,7 +140,7 @@ export const publishPythPackage = (
  *  feed's price info object is created on first call and re-priced on
  *  subsequent calls. */
 export const initPythFeeds = (
-	_publisher: OnChainArtifactPublisher,
+	_publisher: ArtifactPublisher,
 	_client: SuiExecuteClient,
 	_chain: string,
 	_signer: ResolvedSigner,
@@ -177,7 +177,7 @@ export const initPythFeeds = (
 // ---------------------------------------------------------------------------
 
 /** Start the pusher fiber. Forked via `Effect.forkScoped` by the
- *  composite acquire body so the fiber dies with the surrounding
+ *  DeepBook acquire body so the fiber dies with the surrounding
  *  scope. */
 export const pushPythPrices = (
 	_pyth: PythHandle,

@@ -70,7 +70,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'wallet-app',
-					dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+					dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
 					upstream: { type: 'host-loopback', port: 6173 },
 					cors: true,
 					wireProtocol: 'http',
@@ -93,7 +93,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'walrus-aggregator',
-					dispatchId: { compositeKey: 'walrus.local', role: 'walrus-aggregator' },
+					dispatchId: { serviceKey: 'walrus.local', role: 'walrus-aggregator' },
 					upstream: {
 						type: 'container',
 						containerName: 'walrus-node-0',
@@ -117,7 +117,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'postgres-tcp',
-					dispatchId: { compositeKey: 'postgres.my-app.main', role: 'db' },
+					dispatchId: { serviceKey: 'postgres.my-app.main', role: 'db' },
 					upstream: {
 						type: 'container',
 						containerName: 'postgres-c1',
@@ -142,7 +142,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'wallet-app',
-					dispatchId: { compositeKey: 'mismatch', role: 'db' },
+					dispatchId: { serviceKey: 'mismatch', role: 'db' },
 					upstream: { type: 'container', containerName: 'c', containerPort: 8080 },
 					wireProtocol: 'tcp',
 				},
@@ -160,7 +160,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'postgres-tcp',
-					dispatchId: { compositeKey: 'mismatch', role: 'api' },
+					dispatchId: { serviceKey: 'mismatch', role: 'api' },
 					upstream: { type: 'container', containerName: 'c', containerPort: 8080 },
 					cors: false,
 					wireProtocol: 'http',
@@ -179,7 +179,7 @@ describe('resolveRoute', () => {
 				{
 					kind: 'routable',
 					endpointName: 'nope',
-					dispatchId: { compositeKey: 'k', role: 'r' },
+					dispatchId: { serviceKey: 'k', role: 'r' },
 					upstream: { type: 'host-loopback', port: 6173 },
 					wireProtocol: 'http',
 					cors: false,

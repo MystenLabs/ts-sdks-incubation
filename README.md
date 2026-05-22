@@ -8,11 +8,11 @@ prototype packages breaks freely as we iterate; pin nothing from outside this mo
 
 ## Packages
 
-| Package                                                                  | Description                                                                                              | Status                                                                                                                            |
-| ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                                  | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
-| [`@mysten-incubation/devstack`](packages/devstack)                       | Effect v4 devstack for local Sui app development, seeded services, codegen, and product tests             | Prototype — actively developed                                                                                                    |
-| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                                  | Prototype — not published to npm                                                                                                  |
+| Package                                                                  | Description                                                                                   | Status                                                                                                                            |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                       | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
+| [`@mysten-incubation/devstack`](packages/devstack)                       | Effect v4 devstack for local Sui app development, seeded services, codegen, and product tests | Prototype — actively developed                                                                                                    |
+| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                       | Prototype — not published to npm                                                                                                  |
 
 ## Examples
 

@@ -55,16 +55,13 @@
 	},
 	"sideEffects": false,
 	"files": [
-		"src",
 		"dist",
 		"images",
-		"!src/generated",
-		"!src/samples",
 		"!dist/samples",
 		"!dist/node_modules"
 	],
 	"scripts": {
-		"build": "tsdown && node scripts/repair-effect-dts-imports.mjs",
+		"build": "tsdown",
 		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",

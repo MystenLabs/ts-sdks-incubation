@@ -3,8 +3,101 @@ title: CLI Reference
 description: Current devstack command surface.
 ---
 
-The package bin is `devstack`. Flags are command-scoped: put flags after the command that owns
-them.
+The package bin is `devstack`. Flags are command-scoped: put flags after the command that owns them.
+
+## Command index
+
+### `devstack up [options]`
+
+Boot a stack and stay attached until interrupted.
+
+Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`,
+`--renderer <tui|plain|silent>`.
+
+### `devstack apply [options]`
+
+Boot, reconcile, emit generated files, and exit.
+
+Lifecycle: one-shot. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+
+### `devstack status [options]`
+
+Show the persisted stack projection.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack doctor [options]`
+
+Run host and stack preflight checks.
+
+Lifecycle: offline. Side effects: read. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack config [options]`
+
+Print resolved config inputs.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+
+### `devstack schema --json`
+
+Emit the CLI schema.
+
+Lifecycle: offline. Side effects: none. Docker: no. Options: `--json`.
+
+### `devstack snapshot <command> [options]`
+
+Capture, restore, list, or delete stack snapshots.
+
+Lifecycle: offline. Side effects: write. Docker: yes. Options: none.
+
+### `devstack snapshot save [id] [--label <label>] [options]`
+
+Capture a snapshot through a one-shot stack boot.
+
+Lifecycle: one-shot. Side effects: write. Docker: yes. Arguments: `id`. Options: `--json`,
+`--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
+`--network <name>`, `--label <label>`.
+
+### `devstack snapshot restore <id-or-label> [options]`
+
+Restore a snapshot by id or label.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Arguments: `id-or-label`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack snapshot list [options]`
+
+List snapshots for the selected stack.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack snapshot delete <id-or-label> [options]`
+
+Delete a snapshot by id or label.
+
+Lifecycle: offline. Side effects: destructive. Docker: no. Arguments: `id-or-label`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack prune [--list | --dry-run | --all --yes] [options]`
+
+Inventory and prune devstack-labelled Docker resources.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--list`, `--all`, `--no-containers`,
+`--no-networks`, `--no-volumes`, `--include-images`, `--dry-run`, `--yes`, `--no-input`.
+
+### `devstack wipe [--dry-run] [--yes] [options]`
+
+Destroy all state for the selected stack.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--dry-run`, `--yes`, `--no-input`.
 
 ## Lifecycle commands
 
@@ -13,8 +106,8 @@ devstack up --renderer tui
 devstack apply
 ```
 
-`up` boots the stack and stays attached until you quit the TUI or interrupt the process.
-`apply` boots, reconciles, emits generated files, and exits for CI or one-shot local workflows.
+`up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
+boots, reconciles, emits generated files, and exits for CI or one-shot local workflows.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`.
@@ -41,9 +134,9 @@ devstack snapshot restore <id-or-label>
 devstack snapshot delete <id-or-label>
 ```
 
-`snapshot save` performs a one-shot stack boot and can accept `--config <path>`.
-`snapshot restore` and `wipe` refuse to mutate state while an attached `devstack up` session is
-live. `snapshot list` and `snapshot delete` operate on the selected stack root.
+`snapshot save` performs a one-shot stack boot and can accept `--config <path>`. `snapshot restore`
+and `wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list`
+and `snapshot delete` operate on the selected stack root.
 
 ## Cleanup commands
 

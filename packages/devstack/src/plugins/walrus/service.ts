@@ -21,18 +21,18 @@
 //   1. Receive a resolved mode discriminator.
 //   2. Dispatch to the right `boot*` builder.
 //   3. Return the mode's boot artifacts (the barrel projects them
-//      onto the composite's resolved value).
+//      onto the plugin's resolved value).
 //
 // What it does NOT do:
 //
 //   - Provision the container runtime — that arrives via the
 //     `BuildContext` passed by the barrel.
-//   - Construct the lifted-sibling members — that's the barrel's
-//     job; this file just dispatches.
+//   - Resolve bootstrap assets — local-cluster mode owns those
+//     resolvers; this file just dispatches.
 
 import { Effect, FileSystem, Path, type Scope } from 'effect';
 
-import type { OnChainArtifactError } from '../../primitives/on-chain-artifact.ts';
+import type { ArtifactPublishError } from '../../primitives/artifact-publisher.ts';
 import type { WalrusError } from './errors.ts';
 import {
 	bootKnownDeployment,
@@ -68,7 +68,7 @@ export const bootWalrusService = (
 	mode: WalrusMode,
 ): Effect.Effect<
 	WalrusBootResult,
-	WalrusError | OnChainArtifactError,
+	WalrusError | ArtifactPublishError,
 	Scope.Scope | FileSystem.FileSystem | Path.Path
 > => {
 	switch (mode.mode) {

@@ -55,12 +55,11 @@ import {
 	type SeedObjectsAccumulator,
 } from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
-import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
+import { SUI_ERROR_TAGS, SuiForkComingSoonError, type SuiPluginError } from './errors.ts';
 import { makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
 import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
 import type { SuiClient } from './mode/shared.ts';
-import { resolveAutoTickIntervalMs } from './auto-tick.ts';
 import type {
 	SuiExternalOptions,
 	SuiForkOptions,
@@ -99,8 +98,6 @@ const resolveDefaultMode = (): SuiOptions => {
 			return { mode: 'local' };
 		case 'live':
 			return { mode: 'live', network: parsed.network };
-		case 'fork':
-			return { mode: 'fork', upstream: parsed.upstream };
 	}
 };
 
@@ -109,11 +106,12 @@ const resolveDefaultMode = (): SuiOptions => {
 // ---------------------------------------------------------------------------
 
 const buildPlugin = (opts: SuiOptions) => {
-	if (opts.mode === 'fork') resolveAutoTickIntervalMs(opts.autoTick);
+	if (opts.mode === 'fork') {
+		throw new SuiForkComingSoonError(opts.upstream);
+	}
 	return definePlugin({
 		id: suiResource.id,
-		kind: 'leaf-long-running',
-		rebootCost: 'heavy',
+		role: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// The substrate threads `ContainerRuntime` + `IdentityContext`
@@ -295,7 +293,7 @@ export type {
 	SeedManifestMismatchError,
 	SuiFundsReadyError,
 } from './errors.ts';
-export { SUI_ERROR_TAGS } from './errors.ts';
+export { SUI_ERROR_TAGS, SuiForkComingSoonError } from './errors.ts';
 
 // Cross-plugin seams (consumed by Walrus/Seal/Deepbook fork variants
 // and by Account/Coin/Wallet/Package).

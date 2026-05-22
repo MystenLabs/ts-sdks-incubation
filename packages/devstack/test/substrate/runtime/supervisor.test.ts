@@ -5,26 +5,26 @@
 // wiring contract directly: a minimal stack with mixed
 // `CapabilityDecl` kinds + `PluginErrorContribution`s is supervised
 // to ready, and we assert each contribution reached the matching
-// `OrchestratorSinks` callback at the supervisor boundary.
+// `OrchestratorSinks` registration at the supervisor boundary.
 //
 // Architecture invariants under test:
 //   1. The supervisor's post-acquire harvest walks `member.capabilities`
 //      AND `member.errorContributions`, routing each through
 //      `CapabilitySinksService.dispatch`.
-//   2. The substrate's default sinks adapt each capability `kind`
-//      literal to the corresponding optional `OrchestratorSinks`
-//      callback. Plugins emitting decls of different kinds dispatch
-//      to different callbacks.
+//   2. Caller-supplied sink registrations adapt each capability `kind`
+//      literal. Plugins emitting decls of different kinds dispatch to
+//      different registered sinks.
 //   3. Dispatch occurs once per plugin after acquire succeeds — no
 //      duplicate calls; no calls for plugins that failed acquire.
 //   4. The supervisor stays name-blind: it walks the `kind` literal
-//      and dispatches structurally; the orchestrator callback bag is
-//      the ONE place orchestrator names land.
+//      and dispatches structurally; the sink registry is the ONE place
+//      orchestrator names land.
 
 import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import { makeProjectionCapabilitySink } from '../../../src/orchestrators/runtime-composition.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	CapabilitySinksService,
@@ -36,6 +36,7 @@ import {
 	startSupervisor,
 	supervise,
 	type CapabilitySink,
+	type ContributionKind,
 	type OrchestratorSinks,
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
@@ -72,30 +73,55 @@ const makeCapture = () =>
 			codegenable: [],
 			strategy: [],
 		});
-		const sinks: OrchestratorSinks = {
-			snapshotable: (key, decl) =>
-				Ref.update(ref, (c) => ({
-					...c,
-					snapshotable: [...c.snapshotable, { key: String(key), subtree: decl.subtrees[0] ?? '' }],
-				})),
-			routable: (key, decl) =>
-				Ref.update(ref, (c) => ({
-					...c,
-					routable: [...c.routable, { key: String(key), endpoint: decl.endpointName }],
-				})),
-			codegenable: (key, decl) =>
-				Ref.update(ref, (c) => ({
-					...c,
-					codegenable: [...c.codegenable, { key: String(key), emitter: decl.emitterName }],
-				})),
-			strategy: (key, decl) =>
-				Ref.update(ref, (c) => ({
-					...c,
-					strategy: [...c.strategy, { key: String(key), capabilityKey: decl.capabilityKey }],
-				})),
-		};
+		const sinks: OrchestratorSinks = [
+			orchestratorSink<'snapshotable', SnapshotableDecl>({
+				kind: 'snapshotable',
+				accept: (decl, ctx) =>
+					Ref.update(ref, (c) => ({
+						...c,
+						snapshotable: [
+							...c.snapshotable,
+							{ key: String(ctx.pluginKey), subtree: decl.subtrees[0] ?? '' },
+						],
+					})),
+			}),
+			orchestratorSink<'routable', RoutableDecl>({
+				kind: 'routable',
+				accept: (decl, ctx) =>
+					Ref.update(ref, (c) => ({
+						...c,
+						routable: [...c.routable, { key: String(ctx.pluginKey), endpoint: decl.endpointName }],
+					})),
+			}),
+			orchestratorSink<'codegenable', CodegenableDecl<string>>({
+				kind: 'codegenable',
+				accept: (decl, ctx) =>
+					Ref.update(ref, (c) => ({
+						...c,
+						codegenable: [
+							...c.codegenable,
+							{ key: String(ctx.pluginKey), emitter: decl.emitterName },
+						],
+					})),
+			}),
+			orchestratorSink<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
+				kind: 'strategy-contributor',
+				accept: (decl, ctx) =>
+					Ref.update(ref, (c) => ({
+						...c,
+						strategy: [
+							...c.strategy,
+							{ key: String(ctx.pluginKey), capabilityKey: decl.capabilityKey },
+						],
+					})),
+			}),
+		];
 		return { ref, sinks };
 	});
+
+const orchestratorSink = <K extends ContributionKind, TDecl>(
+	sink: CapabilitySink<K, TDecl>,
+): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
 
 // Each plugin provides a distinct resource id and
 // declares a single capability `kind`. The supervisor's resolve-graph
@@ -112,7 +138,7 @@ const snapDecl: SnapshotableDecl = {
 const routeDecl: RoutableDecl = {
 	kind: 'routable',
 	endpointName: 'demo-endpoint',
-	dispatchId: { compositeKey: 'demo', role: 'app' },
+	dispatchId: { serviceKey: 'demo', role: 'app' },
 	upstream: { type: 'host-loopback', port: 6173 },
 	wireProtocol: 'http',
 	cors: false,
@@ -241,57 +267,57 @@ const errorContribBeta: PluginErrorContribution = {
 
 const pluginSnap = definePlugin({
 	id: 'test:snap',
-	kind: 'leaf-long-running' as const,
+	role: 'service' as const,
 	start: () => Effect.succeed({ v: 'snap' as const }),
 	capabilities: [snapDecl] as const,
 });
 
 const pluginRoute = definePlugin({
 	id: 'test:route',
-	kind: 'leaf-long-running' as const,
+	role: 'service' as const,
 	start: () => Effect.succeed({ v: 'route' as const }),
 	capabilities: [routeDecl] as const,
 });
 
 const pluginCodegen = definePlugin({
 	id: 'test:codegen',
-	kind: 'leaf-long-running' as const,
+	role: 'service' as const,
 	start: () => Effect.succeed({ v: 'codegen' as const }),
 	capabilities: [codegenDecl] as const,
 });
 
 const pluginStrat = definePlugin({
 	id: 'test:strat',
-	kind: 'leaf-long-running' as const,
+	role: 'service' as const,
 	start: () => Effect.succeed({ v: 'strat' as const }),
 	capabilities: [strategyDecl] as const,
 });
 
 const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
-	kind: 'leaf-one-shot' as const,
+	role: 'task' as const,
 	start: () => Effect.succeed({ v: 'account' as const }),
 	capabilities: [accountStrategyDecl, accountProjectionDecl] as const,
 });
 
 const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
-	kind: 'leaf-long-running' as const,
+	role: 'service' as const,
 	start: () => Effect.succeed({ v: 'package' as const }),
 	capabilities: [packageStrategyDecl, packageProjectionDecl] as const,
 });
 
-const pluginComposite = definePlugin({
-	id: 'test:composite',
-	kind: 'composite' as const,
-	composite: { key: 'plug-composite' },
-	start: () => Effect.succeed({ v: 'composite' as const }),
+const pluginStableKey = definePlugin({
+	id: 'test:stable-key',
+	role: 'task' as const,
+	pluginKey: 'plug-stable-key',
+	start: () => Effect.succeed({ v: 'stable-key' as const }),
 	errorContributions: [errorContribAlpha],
 });
 
 const pluginErrorOnly = definePlugin({
 	id: 'test:errorOnly',
-	kind: 'leaf-one-shot' as const,
+	role: 'task' as const,
 	start: () => Effect.succeed({ v: 'err' as const }),
 	errorContributions: [errorContribBeta],
 });
@@ -311,7 +337,7 @@ describe('supervisor harvest loop', () => {
 
 			const pluginSlow = definePlugin({
 				id: 'test:slow',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () =>
 					Effect.gen(function* () {
 						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
@@ -412,7 +438,7 @@ describe('supervisor harvest loop', () => {
 		Effect.gen(function* () {
 			const pluginShutdown = definePlugin({
 				id: 'test:shutdown',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () => Effect.succeed({ v: 'shutdown' as const }),
 			});
 			const state = yield* makeProjectionRef();
@@ -458,7 +484,7 @@ describe('supervisor harvest loop', () => {
 			// Plugin keys are derived as `<member.id>#<ordinal>` by the
 			// dep-graph resolver (see `lifecycle/dep-graph.ts:120`),
 			// where `<ordinal>` is the member's position in the stack
-			// tuple. Composite plugins use their declared metadata key.
+			// tuple. Plugins may use their declared metadata key.
 			expect(captured.snapshotable).toEqual([
 				{ key: 'test:snap#0', subtree: 'runtime/snap-subtree' },
 			]);
@@ -481,7 +507,9 @@ describe('supervisor harvest loop', () => {
 
 				yield* Effect.scoped(
 					Effect.gen(function* () {
-						const startup = yield* startSupervisor(stack, identity, state);
+						const startup = yield* startSupervisor(stack, identity, state, Context.empty(), [
+							makeProjectionCapabilitySink(),
+						]);
 						const pending = yield* SubscriptionRef.get(state);
 						expect(pending.accounts).toEqual([
 							{
@@ -534,7 +562,9 @@ describe('supervisor harvest loop', () => {
 
 				yield* Effect.scoped(
 					Effect.gen(function* () {
-						const startup = yield* startSupervisor(stack, identity, state);
+						const startup = yield* startSupervisor(stack, identity, state, Context.empty(), [
+							makeProjectionCapabilitySink(),
+						]);
 						const pending = yield* SubscriptionRef.get(state);
 						expect(pending.packages).toEqual([]);
 
@@ -558,11 +588,11 @@ describe('supervisor harvest loop', () => {
 			}),
 	);
 
-	it.effect('uses plugin metadata for composite keys', () =>
+	it.effect('uses plugin metadata for stable plugin keys', () =>
 		Effect.gen(function* () {
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
-				members: [pluginSnap, pluginComposite],
+				members: [pluginSnap, pluginStableKey],
 				options: {},
 			};
 			const state = yield* makeProjectionRef();
@@ -577,7 +607,7 @@ describe('supervisor harvest loop', () => {
 			);
 
 			const snapshot = yield* SubscriptionRef.get(state);
-			expect(snapshot.rows.map((row) => row.key)).toEqual(['test:snap#0', 'plug-composite']);
+			expect(snapshot.rows.map((row) => row.key)).toEqual(['test:snap#0', 'plug-stable-key']);
 		}),
 	);
 
@@ -681,7 +711,7 @@ describe('supervisor harvest loop', () => {
 				};
 				const pluginCustom = definePlugin({
 					id: 'test:custom',
-					kind: 'leaf-long-running' as const,
+					role: 'service' as const,
 					start: () => Effect.succeed({ v: 'custom' as const }),
 					// Cast: the custom decl isn't part of the built-in
 					// CapabilityDecl union. The substrate dispatches
@@ -711,10 +741,10 @@ describe('supervisor harvest loop', () => {
 					}),
 				);
 
-				// Compose: base default sinks (empty orchestrator bag for
+				// Compose: base default sinks (no orchestrator registrations for
 				// this test) + the plugin-author overlay. This is the layer
 				// the caller hands to the supervisor via pluginContext.
-				const sinksLayer = customOverlay.pipe(Layer.provideMerge(layerCapabilitySinksDefault({})));
+				const sinksLayer = customOverlay.pipe(Layer.provideMerge(layerCapabilitySinksDefault()));
 
 				const stack: SupervisedStack = {
 					_tag: 'Stack',
@@ -746,11 +776,37 @@ describe('supervisor harvest loop', () => {
 			}),
 	);
 
+	it.effect('unregistered custom capability kinds are ignored at the supervisor boundary', () =>
+		Effect.gen(function* () {
+			const pluginCustom = definePlugin({
+				id: 'test:custom-unregistered',
+				role: 'service' as const,
+				start: () => Effect.succeed({ v: 'custom-unregistered' as const }),
+				capabilities: [
+					{ kind: 'plugin-author:unregistered', payload: 'ignored' },
+				] as unknown as readonly never[],
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginCustom], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const handle = yield* supervise(stack, identity, state);
+					yield* handle.registry.awaitReady(pluginKey('test:custom-unregistered#0'));
+				}),
+			);
+
+			const snap = yield* SubscriptionRef.get(state);
+			expect(snap.rows.find((r) => r.key === 'test:custom-unregistered#0')?.status).toBe('stopped');
+			expect(snap.errors).toEqual([]);
+		}),
+	);
+
 	it.effect('omitted OrchestratorSinks slots are no-ops without crashing dispatch', () =>
-		// The default OrchestratorSinks bag is `{}` — every slot
-		// undefined. The substrate's built-in sinks adapt absent slots
-		// to `Effect.void`, so the harvest path stays alive even when
-		// the orchestrator declines to handle a kind.
+		// The default OrchestratorSinks list is empty. Unknown
+		// contribution kinds are downgraded to no-ops at the supervisor
+		// boundary, so the harvest path stays alive even when the
+		// orchestrator declines to handle a kind.
 		Effect.gen(function* () {
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
@@ -784,7 +840,7 @@ describe('supervisor harvest loop', () => {
 		Effect.gen(function* () {
 			const pluginLog = definePlugin({
 				id: 'test:log',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () =>
 					Effect.gen(function* () {
 						const logger = yield* Logger;
@@ -838,7 +894,7 @@ describe('supervisor harvest loop', () => {
 		Effect.gen(function* () {
 			const pluginFail = definePlugin({
 				id: 'test:fail',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () =>
 					Effect.fail(new Error('boom from acquire')) as Effect.Effect<
 						{ readonly v: 'fail' },
@@ -868,7 +924,7 @@ describe('supervisor harvest loop', () => {
 		Effect.gen(function* () {
 			const pluginCaps = definePlugin({
 				id: 'test:caps',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () => Effect.succeed({ v: 'caps' as const }),
 				capabilities: (() => {
 					throw new Error('capability boom');
@@ -897,9 +953,12 @@ describe('supervisor harvest loop', () => {
 		Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
 			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRoute], options: {} };
-			const sinks: OrchestratorSinks = {
-				routable: () => Effect.fail(new Error('route dispatch boom')),
-			};
+			const sinks: OrchestratorSinks = [
+				orchestratorSink<'routable', RoutableDecl>({
+					kind: 'routable',
+					accept: () => Effect.fail(new Error('route dispatch boom')),
+				}),
+			];
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {

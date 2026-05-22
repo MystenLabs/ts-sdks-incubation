@@ -1,4 +1,4 @@
-// Unit tests for `lifted-siblings/cargo-image.ts::resolveSealCargoImage`.
+// Unit tests for `bootstrap-assets/cargo-image.ts::resolveSealCargoImage`.
 //
 // The resolver dispatches between two paths:
 //   (a) `SEAL_CARGO_IMAGE_OVERRIDE` set → trust-the-tag shortcut.
@@ -24,11 +24,11 @@ import {
 	DEFAULT_SEAL_RUST_TOOLCHAIN,
 	resolveDefaultSealCargoImage,
 	resolveSealCargoImage,
-} from '../../../src/plugins/seal/lifted-siblings/cargo-image.ts';
+} from '../../../src/plugins/seal/bootstrap-assets/cargo-image.ts';
 import {
 	DEFAULT_SEAL_REPO,
 	DEFAULT_SEAL_VERSION,
-} from '../../../src/plugins/seal/lifted-siblings/source-fetch.ts';
+} from '../../../src/plugins/seal/bootstrap-assets/source-fetch.ts';
 
 /** Minimal `ContainerRuntime` stub: only `ensureImage` matters here.
  *  We use a Spy to capture the build context the resolver passes. */

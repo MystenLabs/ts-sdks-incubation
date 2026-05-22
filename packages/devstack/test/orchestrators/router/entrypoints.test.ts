@@ -11,10 +11,8 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import {
-	DEFAULT_ENTRYPOINTS,
-	makeEntrypointRegistry,
-} from '../../../src/orchestrators/router/entrypoints.ts';
+import { makeEntrypointRegistry } from '../../../src/orchestrators/router/entrypoints.ts';
+import { BUILT_IN_ENTRYPOINTS } from '../../../src/plugins/router-entrypoints.ts';
 
 describe('makeEntrypointRegistry', () => {
 	it('builds from a literal seed and exposes byName + all', () => {
@@ -132,8 +130,8 @@ describe('makeEntrypointRegistry', () => {
 		expect(err.attempted).toEqual({ port: 5432, protocol: 'tcp' });
 	});
 
-	it('DEFAULT_ENTRYPOINTS includes the in-tree plugin endpoints', () => {
-		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
+	it('BUILT_IN_ENTRYPOINTS includes the in-tree plugin endpoints', () => {
+		const reg = makeEntrypointRegistry(BUILT_IN_ENTRYPOINTS);
 		// Every in-tree plugin's Routable.endpointName must be registered.
 		for (const name of [
 			'rpc',
@@ -155,23 +153,22 @@ describe('makeEntrypointRegistry', () => {
 		expect(reg.all().filter((entrypoint) => entrypoint.port === 9185)).toHaveLength(1);
 	});
 
-	it('DEFAULT_ENTRYPOINTS includes the app dev entrypoint without conflicting names or ports', () => {
-		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
+	it('BUILT_IN_ENTRYPOINTS includes the app dev entrypoint without conflicting names or ports', () => {
+		const reg = makeEntrypointRegistry(BUILT_IN_ENTRYPOINTS);
 		const dev = Effect.runSync(reg.byName('dev'));
 		expect(dev).toEqual({ name: 'dev', port: 5175, protocol: 'http' });
 		expect(reg.all().filter((entrypoint) => entrypoint.port === 5175)).toEqual([dev]);
-		expect(DEFAULT_ENTRYPOINTS.map((entrypoint) => entrypoint.name)).not.toContain(
+		expect(BUILT_IN_ENTRYPOINTS.map((entrypoint) => entrypoint.name)).not.toContain(
 			'frontend.dev-server',
 		);
-		expect(DEFAULT_ENTRYPOINTS.some((entrypoint) => entrypoint.name.includes('.'))).toBe(false);
+		expect(BUILT_IN_ENTRYPOINTS.some((entrypoint) => entrypoint.name.includes('.'))).toBe(false);
 	});
 
-	it('DEFAULT_ENTRYPOINTS carries TCP entries for postgres and redis', () => {
-		const reg = makeEntrypointRegistry(DEFAULT_ENTRYPOINTS);
+	it('BUILT_IN_ENTRYPOINTS carries the plugin-owned postgres TCP entry', () => {
+		const reg = makeEntrypointRegistry(BUILT_IN_ENTRYPOINTS);
 		const byName = new Map(reg.all().map((e) => [e.name, e]));
 		expect(byName.get('postgres-tcp')?.protocol).toBe('tcp');
 		expect(byName.get('postgres-tcp')?.port).toBe(5432);
-		expect(byName.get('redis-tcp')?.protocol).toBe('tcp');
-		expect(byName.get('redis-tcp')?.port).toBe(6379);
+		expect(BUILT_IN_ENTRYPOINTS.map((entrypoint) => entrypoint.name)).not.toContain('redis-tcp');
 	});
 });

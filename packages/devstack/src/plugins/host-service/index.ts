@@ -6,11 +6,7 @@
 
 import { Effect, Option } from 'effect';
 
-import {
-	definePlugin,
-	resource,
-	type AnyResourceRef,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
@@ -48,20 +44,19 @@ export const hostServiceResource = <Name extends string>(name: Name) =>
 
 const hostServiceErrorContributions = pluginErrorContributions(HOST_SERVICE_ERROR_TAGS);
 
-export type HostServiceNeeds = ReadonlyArray<AnyResourceRef>;
+export type HostServiceAfter = ReadonlyArray<AnyResourceRef>;
 
-export const hostService = <const Needs extends HostServiceNeeds = readonly []>(
-	options: HostServiceOptions<Needs>,
+export const hostService = <const After extends HostServiceAfter = readonly []>(
+	options: HostServiceOptions<After>,
 ) => {
 	const normalized = normalizeHostServiceOptions(options);
 	const serviceResource = hostServiceResource(normalized.serviceName);
-	const needs = options.needs ?? ([] as unknown as Needs);
+	const after = options.after ?? ([] as unknown as After);
 
 	return definePlugin({
 		id: serviceResource.id,
-		dependsOn: needs,
-		kind: 'leaf-long-running',
-		rebootCost: 'cheap',
+		dependsOn: after,
+		role: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;

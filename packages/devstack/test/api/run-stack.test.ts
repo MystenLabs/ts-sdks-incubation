@@ -44,13 +44,13 @@ import {
 // cache + manifest writer).
 const leaf = definePlugin({
 	id: 'test/leaf',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ ok: true } as const),
 });
 
 const runtimeCodegenPlugin = definePlugin({
 	id: 'test/runtime-codegen',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ message: 'from-acquire' } as const),
 	capabilities: ({ value: resolved }) =>
 		[
@@ -70,7 +70,7 @@ const runtimeCodegenPlugin = definePlugin({
 
 const failingRuntimeCodegenPlugin = definePlugin({
 	id: 'test/failing-runtime-codegen',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ message: 'from-acquire' } as const),
 	capabilities: () =>
 		[

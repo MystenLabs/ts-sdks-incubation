@@ -6,7 +6,7 @@
 // lives at `./cross-process/stack-lock.ts` as a free function; THIS
 // module wraps it in a Layer satisfying the typed
 // `CrossProcessLock` service so consumers (state-store, cache,
-// lifted-sibling registry) yield ONE name and let wiring decide
+// etc.) yield ONE name and let wiring decide
 // whether they get the OS-advisory implementation or the in-process
 // semaphore.
 //

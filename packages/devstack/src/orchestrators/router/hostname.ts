@@ -6,10 +6,10 @@
 //   - every other stack:      `<service>.<stack>.<app>.localhost`
 //
 // "service" here is the dispatch-id's `role` segment — NOT the
-// plugin's name. Plugins emit a `(compositeKey, role)` DispatchId; we
+// plugin's name. Plugins emit a `(serviceKey, role)` DispatchId; we
 // fold the role into the hostname, since the role is the
 // user-meaningful side ("api", "key-server", "indexer-metrics") and
-// the composite-key already encodes plugin + app + stack on the
+// the service key already encodes plugin + app + stack on the
 // dispatch-file side.
 //
 // Architecture invariants:
@@ -144,7 +144,7 @@ const canonicalDispatchTuple = (inputs: DispatchFileIdInputs): string =>
 		'devstack-router-dispatch-v1',
 		inputs.identity.app,
 		inputs.identity.stack,
-		inputs.dispatch.compositeKey,
+		inputs.dispatch.serviceKey,
 		inputs.dispatch.role,
 	]);
 
@@ -162,7 +162,7 @@ const truncateReadable = (value: string): string =>
  *
  *  The readable prefix is intentionally lossy; it exists only to make
  *  directory listings diagnosable. The SHA-256 suffix is over the
- *  canonical `(version, app, stack, compositeKey, role)` tuple, so
+ *  canonical `(version, app, stack, serviceKey, role)` tuple, so
  *  raw underscores, separator strings, case, and dot/hyphen folding do
  *  not affect identity. */
 export const dispatchFileId = (
@@ -174,7 +174,7 @@ export const dispatchFileId = (
 				[
 					inputs.identity.app,
 					inputs.identity.stack,
-					inputs.dispatch.compositeKey,
+					inputs.dispatch.serviceKey,
 					inputs.dispatch.role,
 				].join('-'),
 			),

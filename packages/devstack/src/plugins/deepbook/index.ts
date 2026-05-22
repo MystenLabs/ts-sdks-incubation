@@ -1,11 +1,7 @@
 // Deepbook plugin — barrel + factories.
 //
-// Architecture: Deepbook is a composite plugin (after walrus + seal).
-// One supervisor row, many children:
-//
-//   - The Move-package publish (deepbook v3).
-//   - Existing local deployments identified by explicit environment
-//     overrides.
+// Architecture: Deepbook is a task plugin that resolves a local or
+// known DeepBook deployment and emits bindings.
 //
 // Mode discipline:
 //
@@ -21,9 +17,8 @@
 // Capability decls emitted:
 //
 //   Local mode:
-//     1. composite metadata — one row + lifted siblings.
-//     2. snapshotable        — `deepbook/<name>` subtree.
-//     3. codegenable         — `deepbook-network` bindings.
+//     1. snapshotable        — `deepbook/<name>` subtree.
+//     2. codegenable         — `deepbook-network` bindings.
 //
 //   Known mode:
 //     1. snapshotable        — identity guard only.
@@ -40,7 +35,7 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { suiResource } from '../sui/index.ts';
 
-import { deepbookPluginKey } from './composite.ts';
+import { deepbookPluginKey } from './plugin-key.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
@@ -220,9 +215,8 @@ const buildLocalPlugin = <const Publisher extends AccountMemberAlias>(
 	return definePlugin({
 		id: deepbookResource.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
-		kind: 'composite',
-		rebootCost: 'heavy',
-		composite: { key: deepbookPluginKey(name) },
+		role: 'task',
+		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.gen(function* () {
 				const { sui, publisher } = deps;
@@ -331,8 +325,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 	return definePlugin({
 		id: deepbookResource.id,
 		dependsOn: [suiResource] as const,
-		kind: 'leaf-one-shot',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;
@@ -476,7 +469,7 @@ export const deepbook = deepbookCore;
 // Re-exports for advanced callers
 // ---------------------------------------------------------------------------
 
-export { deepbookPluginKey } from './composite.ts';
+export { deepbookPluginKey } from './plugin-key.ts';
 export {
 	DEEPBOOK_ERROR_TAGS,
 	type DeepbookError,

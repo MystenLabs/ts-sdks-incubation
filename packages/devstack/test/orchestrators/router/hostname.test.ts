@@ -86,7 +86,7 @@ describe('dispatchFileId', () => {
 			const id = yield* dispatchFileId({
 				identity: identity('main'),
 				dispatch: {
-					compositeKey: 'wallet.my-app.main',
+					serviceKey: 'wallet.my-app.main',
 					role: 'api',
 				},
 			});
@@ -99,14 +99,14 @@ describe('dispatchFileId', () => {
 			const a = yield* dispatchFileId({
 				identity: identity('main'),
 				dispatch: {
-					compositeKey: 'walrus.composite.local',
+					serviceKey: 'walrus.service.local',
 					role: 'walrus.node.0',
 				},
 			});
 			const b = yield* dispatchFileId({
 				identity: identity('main'),
 				dispatch: {
-					compositeKey: 'walrus-composite-local',
+					serviceKey: 'walrus-service-local',
 					role: 'walrus-node-0',
 				},
 			});
@@ -120,14 +120,14 @@ describe('dispatchFileId', () => {
 			const a = yield* dispatchFileId({
 				identity: identity('main'),
 				dispatch: {
-					compositeKey: 'walrus:walrus',
+					serviceKey: 'walrus:walrus',
 					role: 'node',
 				},
 			});
 			const b = yield* dispatchFileId({
 				identity: identity('main'),
 				dispatch: {
-					compositeKey: 'walrus_3a_walrus',
+					serviceKey: 'walrus_3a_walrus',
 					role: 'node',
 				},
 			});
@@ -139,11 +139,11 @@ describe('dispatchFileId', () => {
 		Effect.gen(function* () {
 			const a = yield* dispatchFileId({
 				identity: identity('main'),
-				dispatch: { compositeKey: 'a--b', role: 'c' },
+				dispatch: { serviceKey: 'a--b', role: 'c' },
 			});
 			const b = yield* dispatchFileId({
 				identity: identity('main'),
-				dispatch: { compositeKey: 'a', role: 'b--c' },
+				dispatch: { serviceKey: 'a', role: 'b--c' },
 			});
 			expect(a).not.toBe(b);
 		}),
@@ -151,16 +151,16 @@ describe('dispatchFileId', () => {
 
 	it.effect('distinct source identity tuples mint distinct ids', () =>
 		Effect.gen(function* () {
-			const dispatch = { compositeKey: 'k1', role: 'r1' };
+			const dispatch = { serviceKey: 'k1', role: 'r1' };
 			const a = yield* dispatchFileId({ identity: identity('main'), dispatch });
 			const b = yield* dispatchFileId({ identity: identity('feature-x'), dispatch });
 			const c = yield* dispatchFileId({
 				identity: identity('main'),
-				dispatch: { compositeKey: 'k1', role: 'r2' },
+				dispatch: { serviceKey: 'k1', role: 'r2' },
 			});
 			const d = yield* dispatchFileId({
 				identity: identity('main'),
-				dispatch: { compositeKey: 'k2', role: 'r1' },
+				dispatch: { serviceKey: 'k2', role: 'r1' },
 			});
 			expect(new Set([a, b, c, d]).size).toBe(4);
 		}),

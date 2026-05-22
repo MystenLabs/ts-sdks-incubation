@@ -1,4 +1,4 @@
-// Deepbook composite — minimal-boot smoke test.
+// Deepbook local-mode plugin — minimal-boot smoke test.
 //
 // Pins the public-surface composition contract:
 //
@@ -23,7 +23,7 @@
 // server images.
 //
 // The substrate-name-blind composition is the load-bearing surface
-// — pin it here so the composite's `dependsOn` tuple and the
+// — pin it here so the plugin's `dependsOn` tuple and the
 // per-account-member ordering don't silently drift.
 
 import { describe, expect, it } from 'vitest';
@@ -59,7 +59,7 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 			name: 'arena',
 		});
 		expect(dex.id).toBe('deepbook/arena');
-		expect(dex.kind).toBe('composite');
+		expect(dex.role).toBe('task');
 		expect(dex.dependsOn.map((resource) => resource.id)).toEqual(['sui', 'account/publisher']);
 	});
 
@@ -83,9 +83,9 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		expect(dex.id).toBe('deepbook/deepbook');
 	});
 
-	it('composite declares a stable plugin metadata key', () => {
+	it('declares a stable plugin metadata key', () => {
 		const publisher = account('publisher');
 		const dex = deepbook({ mode: 'local', publisher, name: 'main' });
-		expect(String(dex.composite?.key)).toBe('deepbook:main');
+		expect(String(dex.pluginKey)).toBe('deepbook:main');
 	});
 });

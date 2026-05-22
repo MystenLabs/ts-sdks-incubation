@@ -10,12 +10,31 @@
 // Substrate's router mints hostnames from `(app, stack, dispatch-id)`
 // — no service hostnames hardcoded in router code.
 
-import type { DispatchId, RoutableDecl } from '../../contracts/routable.ts';
+import type { DispatchId, EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
 export const DEEPBOOK_SERVER_ENDPOINT_NAME = 'deepbook-server' as const;
+export const DEEPBOOK_SERVER_METRICS_ENDPOINT_NAME = 'deepbook-server-metrics' as const;
+export const DEEPBOOK_INDEXER_METRICS_ENDPOINT_NAME = 'deepbook-indexer-metrics' as const;
+export const DEEPBOOK_SERVER_ENTRYPOINT_PORT = 9008;
+export const DEEPBOOK_SERVER_METRICS_ENTRYPOINT_PORT = 9186;
+export const DEEPBOOK_INDEXER_METRICS_ENTRYPOINT_PORT = 9184;
+
+export const DEEPBOOK_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
+	{ name: DEEPBOOK_SERVER_ENDPOINT_NAME, port: DEEPBOOK_SERVER_ENTRYPOINT_PORT, protocol: 'http' },
+	{
+		name: DEEPBOOK_SERVER_METRICS_ENDPOINT_NAME,
+		port: DEEPBOOK_SERVER_METRICS_ENTRYPOINT_PORT,
+		protocol: 'http',
+	},
+	{
+		name: DEEPBOOK_INDEXER_METRICS_ENDPOINT_NAME,
+		port: DEEPBOOK_INDEXER_METRICS_ENTRYPOINT_PORT,
+		protocol: 'http',
+	},
+];
 
 export const buildServerDispatchId = (name: string): DispatchId => ({
-	compositeKey: `deepbook:${name}`,
+	serviceKey: `deepbook:${name}`,
 	role: 'server',
 });
 
@@ -29,7 +48,7 @@ export const makeServerRoutable = (inputs: {
 	upstream: {
 		type: 'container',
 		containerName: inputs.containerName,
-		containerPort: 9008,
+		containerPort: DEEPBOOK_SERVER_ENTRYPOINT_PORT,
 	},
 	cors: true,
 	wireProtocol: 'http',

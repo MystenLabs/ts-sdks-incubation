@@ -66,6 +66,10 @@ import {
 	buildProductionPostAcquireHook,
 	layerProductionOrchestrators,
 } from '../orchestrators/runtime-composition.ts';
+import {
+	extendBuiltInPluginContext,
+	layerBuiltInPluginRuntime,
+} from '../runtime/built-in-plugin-layers.ts';
 import type { StatusReader } from '../surfaces/cli/commands/status.ts';
 import type { GlobalFlags } from '../surfaces/cli/flags.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
@@ -368,6 +372,7 @@ const runUpLive = (
 					orchestratorSinks,
 					commandHandler: snapshotCommandHandler,
 					postAcquireHook,
+					extendContext: extendBuiltInPluginContext,
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const rendererEvents = yield* Queue.unbounded<EngineEvent>();
@@ -402,7 +407,7 @@ const runUpLive = (
 							);
 						}),
 				},
-			);
+			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 		});
 
 		yield* program.pipe(
@@ -471,8 +476,9 @@ const runApplyLive = (
 					orchestratorSinks,
 					postAcquireHook,
 					lifetime: 'one-shot',
+					extendContext: extendBuiltInPluginContext,
 				},
-			);
+			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 			const stackPaths = yield* StackPathsService;
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
@@ -610,6 +616,7 @@ const runSnapshotCaptureDirect = (
 					orchestratorSinks,
 					postAcquireHook,
 					lifetime: 'one-shot',
+					extendContext: extendBuiltInPluginContext,
 					withinScope: () =>
 						provideFileSystem(
 							fs,
@@ -624,7 +631,7 @@ const runSnapshotCaptureDirect = (
 							Effect.asVoid,
 						),
 				},
-			);
+			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 			if (Exit.isFailure(captureExit)) {
 				yield* Effect.failCause(captureExit.cause);
 			}

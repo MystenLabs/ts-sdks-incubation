@@ -68,6 +68,10 @@ done
 [ -n "$PUBLIC_HOSTS_CSV" ] || { echo "deploy-walrus: --public-hosts is required" >&2; exit 1; }
 [ -n "$LISTENING_IPS_CSV" ] || { echo "deploy-walrus: --listening-ips is required" >&2; exit 1; }
 
+OUTPUT_DIR="$WORKING_DIR"
+STAGING_DIR="$OUTPUT_DIR/.deploy-next-$$"
+WORKING_DIR="$STAGING_DIR"
+
 IFS=',' read -r -a PUBLIC_HOSTS <<< "$PUBLIC_HOSTS_CSV"
 IFS=',' read -r -a LISTENING_IPS <<< "$LISTENING_IPS_CSV"
 
@@ -97,19 +101,26 @@ if [ ! -x "$SUI_BIN" ]; then
 	exit 127
 fi
 
+mkdir -p "$OUTPUT_DIR"
+rm -rf "$STAGING_DIR"
 mkdir -p "$WORKING_DIR"
 
 fix_output_ownership() {
 	if [ -n "${DEVSTACK_HOST_UID_GID:-}" ]; then
-		chown -R "$DEVSTACK_HOST_UID_GID" "$WORKING_DIR" 2>/dev/null || true
+		chown -R "$DEVSTACK_HOST_UID_GID" "$OUTPUT_DIR" 2>/dev/null || true
 	fi
 }
-trap fix_output_ownership EXIT
+cleanup() {
+	rm -rf "$STAGING_DIR" 2>/dev/null || true
+	fix_output_ownership
+}
+trap cleanup EXIT
 
-# Clean stale build artifacts + previous deploy outputs (fresh deploy each
-# cycle — the OCA cache-key drives "is this a re-run" decision).
+# Clean stale build artifacts. Deploy outputs are written into a staging
+# directory and copied into place only after a complete successful deploy, so a
+# timeout or interrupted redeploy cannot destroy the previous runnable cluster
+# config.
 [ -d "$WALRUS_CONTRACT_DIR" ] && find "$WALRUS_CONTRACT_DIR" -name 'build' -type d -exec rm -rf {} + || true
-rm -f "$WORKING_DIR"/dryrun-node-*.yaml "$WORKING_DIR"/dryrun-node-*.log
 
 # Pre-create admin wallet so sui-cli picks up the right active_env name
 # (walrus-deploy's wallet-loading path needs `localnet`, not `custom`).
@@ -218,12 +229,22 @@ for f in "$WORKING_DIR"/dryrun-node-*[0-9].yaml; do
 	fi
 done
 
+# The generator wrote staging paths into the yaml files. Rewrite those references
+# to the stable mounted output path before publishing the staged tree.
+for f in "$WORKING_DIR"/*.yaml; do
+	[ -e "$f" ] || continue
+	sed -i "s|${WORKING_DIR}|${OUTPUT_DIR}|g" "$f"
+done
+
+find "$OUTPUT_DIR" -mindepth 1 -maxdepth 1 ! -name "$(basename "$STAGING_DIR")" -exec rm -rf {} +
+cp -a "$WORKING_DIR"/. "$OUTPUT_DIR"/
+
 # Re-emit the deploy summary on stdout so the rewrite's
 # `parseDeployOutput` regexes (which match `key: 0x<hex>` lines) pick
 # up the system/staking/exchange ids. walrus-deploy already writes them
 # to $WORKING_DIR/deploy; we just `cat` here so they're on stdout too.
 echo ""
 echo "==== deploy-walrus summary ===="
-cat "$WORKING_DIR/deploy"
+cat "$OUTPUT_DIR/deploy"
 
 rm -rf "$HOME"

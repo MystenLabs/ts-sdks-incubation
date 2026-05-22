@@ -1,0 +1,40 @@
+{
+	"name": "@mysten-incubation/connect-four",
+	"version": "0.0.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"devstack:apply": "DEVSTACK_APP=connect-four devstack apply",
+		"apply": "pnpm run devstack:apply",
+		"dev": "DEVSTACK_APP=connect-four devstack up",
+		"build": "pnpm run devstack:apply && DEVSTACK_APP=connect-four tsc -b && DEVSTACK_APP=connect-four vite build",
+		"preview": "vite preview",
+		"typecheck": "pnpm run devstack:apply && tsc -b --noEmit",
+		"test": "pnpm run typecheck",
+		"clean": "rm -rf .turbo node_modules/.tmp"
+	},
+	"dependencies": {
+		"@mysten-incubation/dev-wallet": "workspace:*",
+		"@mysten-incubation/devstack": "workspace:*",
+		"@mysten/dapp-kit-core": "catalog:",
+		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/sui": "catalog:",
+		"@mysten/wallet-standard": "catalog:",
+		"@tanstack/react-query": "catalog:",
+		"effect": "catalog:",
+		"react": "catalog:",
+		"react-dom": "catalog:"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
+		"@vitejs/plugin-react": "catalog:",
+		"typescript": "catalog:",
+		"vite": "catalog:"
+	},
+	"engines": {
+		"node": ">=24"
+	}
+}

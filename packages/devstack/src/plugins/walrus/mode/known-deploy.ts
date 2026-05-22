@@ -8,13 +8,13 @@
 //
 // Distilled-doc invariants honored:
 //   - 14: NO admin tag — known deployment cannot publish a signer.
-//         The composite's resolved shape omits `admin` here; the
+//         The plugin's resolved shape omits `admin` here; the
 //         type-level admin omission flows through `walrusFor(net).known`
 //         (no admin in the resolved shape).
 //   - 15: `WalrusProxyTag` only when ALL three URLs (proxy,
 //         aggregator, publisher) are present. Encoded as
 //         `proxyUrl / aggregatorUrl / publisherUrl: string | null`
-//         in the resolved shape; the composite's projection step
+//         in the resolved shape; the plugin's projection step
 //         hides the proxy tag when any is missing.
 //   - 16: throw synchronously when `nodes` is missing for a
 //         registered network. Testnet has 100+ nodes that the
@@ -153,7 +153,7 @@ export const resolveKnownDeploymentOptions = (
 	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? publisherUrl ?? null;
 
 	// Invariant 15: surface null when any URL is missing so the
-	// composite's projection can conditionally publish the proxy tag.
+	// plugin's projection can conditionally publish the proxy tag.
 	const allUrlsPresent = aggregatorUrl !== null && publisherUrl !== null && proxyUrl !== null;
 
 	return {

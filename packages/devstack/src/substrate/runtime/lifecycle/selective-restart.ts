@@ -8,15 +8,13 @@
 //   strategy); re-acquire."
 //
 // Architecture § Selective restart cascading:
-//   "Invalidating a composite invalidates its children. Invalidating a
-//   producer invalidates downstream consumers along dep-graph edges
-//   (cascade semantics — engine already has this)."
+//   "Invalidating a producer invalidates downstream consumers along
+//   dep-graph edges (cascade semantics — engine already has this)."
 //
 // This module is the planner: given a set of root keys to invalidate,
-// compute the slice (closure of downstream + composite children),
-// order it for teardown and re-acquire. The actual `Scope.close` /
-// `acquire` calls live in `supervisor.ts` so it can fold them into
-// the per-cycle event stream.
+// compute the downstream slice, order it for teardown and re-acquire.
+// The actual `Scope.close` / `acquire` calls live in `supervisor.ts`
+// so it can fold them into the per-cycle event stream.
 
 import { Data, Effect } from 'effect';
 
@@ -44,8 +42,7 @@ export interface RestartPlan {
 
 /**
  * Build a restart plan from a set of root invalidation targets. Each
- * root contributes its full downstream closure (including composite
- * children) to the slice.
+ * root contributes its full downstream closure to the slice.
  */
 export const planRestart = (
 	graph: ResolvedGraph,

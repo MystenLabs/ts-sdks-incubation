@@ -69,7 +69,7 @@ const identity = {
 
 const identityLayer = layerIdentity(identity);
 
-const walletApiDispatch = { compositeKey: 'wallet.my-app.main', role: 'api' };
+const walletApiDispatch = { serviceKey: 'wallet.my-app.main', role: 'api' };
 
 const registryLayer = layerEntrypointRegistry([
 	{ name: 'wallet-app', port: 6173, protocol: 'http' },
@@ -357,7 +357,7 @@ describe('RouterService.contributeRoute', () => {
 						.contributeRoute({
 							kind: 'routable',
 							endpointName: 'walrus-aggregator',
-							dispatchId: { compositeKey: 'walrus.my-app.main', role: 'aggregator' },
+							dispatchId: { serviceKey: 'walrus.my-app.main', role: 'aggregator' },
 							upstream: {
 								type: 'container',
 								containerName: 'walrus-c1',
@@ -389,7 +389,7 @@ describe('RouterService.contributeRoute', () => {
 					const endpoint = yield* router.contributeRoute({
 						kind: 'routable',
 						endpointName: 'wallet-app',
-						dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+						dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
 						upstream: { type: 'host-loopback', port: 49152 },
 						cors: true,
 						wireProtocol: 'http',
@@ -418,7 +418,7 @@ describe('RouterService.contributeRoute', () => {
 					const url = yield* router.contributeRoute({
 						kind: 'routable',
 						endpointName: 'wallet-app',
-						dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+						dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
 						upstream: { type: 'host-loopback', port: 6173 },
 						cors: true,
 						wireProtocol: 'http',
@@ -444,7 +444,7 @@ describe('RouterService.contributeRoute', () => {
 					const endpoint = yield* router.contributeRoute({
 						kind: 'routable',
 						endpointName: 'walrus-aggregator',
-						dispatchId: { compositeKey: 'walrus.my-app.main', role: 'aggregator' },
+						dispatchId: { serviceKey: 'walrus.my-app.main', role: 'aggregator' },
 						upstream: {
 							type: 'container',
 							containerName: 'walrus-c1',
@@ -484,7 +484,7 @@ describe('RouterService.contributeRoute', () => {
 							yield* router.contributeRoute({
 								kind: 'routable',
 								endpointName: 'wallet-app',
-								dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+								dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
 								upstream: { type: 'host-loopback', port: 6173 },
 								cors: true,
 								wireProtocol: 'http',
@@ -512,7 +512,7 @@ describe('RouterService.contributeRoute', () => {
 							yield* router.contributeRoute({
 								kind: 'routable',
 								endpointName: 'wallet-app',
-								dispatchId: { compositeKey: 'wallet.my-app.main', role: 'api' },
+								dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
 								upstream: { type: 'host-loopback', port: 6173 },
 								cors: true,
 								wireProtocol: 'http',
@@ -540,20 +540,20 @@ describe('RouterService.contributeRoute', () => {
 					yield* router.contributeRoute({
 						kind: 'routable',
 						endpointName: 'wallet-app',
-						dispatchId: { compositeKey: 'k1', role: 'api' },
+						dispatchId: { serviceKey: 'k1', role: 'api' },
 						upstream: { type: 'host-loopback', port: 6173 },
 						wireProtocol: 'http',
 						cors: false,
 					});
 					// Identical (entrypoint, role) under the same identity →
-					// same hostname → collision; different compositeKey
+					// same hostname → collision; different serviceKey
 					// means different dispatchFileId but the rule fires
 					// on the (hostname, entrypoint) pair.
 					const err = yield* router
 						.contributeRoute({
 							kind: 'routable',
 							endpointName: 'wallet-app',
-							dispatchId: { compositeKey: 'k2', role: 'api' },
+							dispatchId: { serviceKey: 'k2', role: 'api' },
 							upstream: { type: 'host-loopback', port: 6174 },
 							wireProtocol: 'http',
 							cors: false,
@@ -591,7 +591,7 @@ describe('RouterService.contributeRoute', () => {
 						.contributeRoute({
 							kind: 'routable',
 							endpointName: 'postgres-tcp',
-							dispatchId: { compositeKey: 'postgres.my-app.main', role: 'db' },
+							dispatchId: { serviceKey: 'postgres.my-app.main', role: 'db' },
 							upstream: {
 								type: 'container',
 								containerName: 'postgres-c1',

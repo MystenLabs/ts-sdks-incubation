@@ -34,7 +34,6 @@ export {
 } from './profile.ts';
 
 export {
-	DEFAULT_ENTRYPOINTS,
 	EntrypointRegistry,
 	layerEntrypointRegistry,
 	makeEntrypointRegistry,

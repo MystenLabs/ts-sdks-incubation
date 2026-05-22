@@ -25,7 +25,7 @@ const routable: RoutableDecl = {
 	kind: 'routable',
 	endpointName: 'wallet-app',
 	dispatchId: {
-		compositeKey: 'sink-proof',
+		serviceKey: 'sink-proof',
 		role: 'api',
 	},
 	upstream: { type: 'host-loopback', port: 49152 },
@@ -48,7 +48,7 @@ const codegenable: CodegenableDecl<'sink-proof-config'> = {
 
 const sinkProofPlugin = definePlugin({
 	id: 'sink-proof',
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: () => Effect.succeed({ ready: true } satisfies SinkProofValue),
 	capabilities: [routable, codegenable] as const,
 });

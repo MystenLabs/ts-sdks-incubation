@@ -1,13 +1,13 @@
 // Deepbook plugin — typed errors.
 //
-// Errors raised and consumed inside the Deepbook composite live here.
+// Errors raised and consumed inside the DeepBook plugin live here.
 // Cross-service errors that deepbook *consumes* but the substrate
-// raises (e.g. `OnChainArtifactError`, `SuiExecuteError`,
+// raises (e.g. `ArtifactPublishError`, `SuiExecuteError`,
 // `ContainerRuntimeError`) come from the substrate's primitives — we
 // don't redeclare those.
 //
-// `ForkIncompatibleError` is a cross-cutting composite-plugin shape
-// owned by `substrate/runtime/composite-errors.ts`; deepbook contributes
+// `ForkIncompatibleError` is a cross-cutting mode-refusal shape
+// owned by `substrate/runtime/mode-errors.ts`; deepbook contributes
 // the `deepbookLocal` variant via the factory in `index.ts`.
 //
 // Effect v4: plain interfaces with `_tag` discriminator (per
@@ -16,10 +16,10 @@
 
 // `ForkIncompatibleError` is the canonical substrate shape — import for
 // local use; do NOT re-export from this barrel. Consumers reach the
-// canonical type via `substrate/runtime/composite-errors.ts` (or the
+// canonical type via `substrate/runtime/mode-errors.ts` (or the
 // root barrel once wired). Re-exporting per-plugin would collide with
 // the walrus / seal barrels under a single root-barrel re-export.
-import { ForkIncompatibleError } from '../../substrate/runtime/composite-errors.ts';
+import { ForkIncompatibleError } from '../../substrate/runtime/mode-errors.ts';
 import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
 /** Phases for `DeepbookPluginError`. Closed sum — keeps the
@@ -40,7 +40,7 @@ export type DeepbookPhase =
 	| 'mint-deep'
 	| 'mint-usdc';
 
-/** Generic Deepbook plugin error. Raised by the composite's acquire
+/** Generic Deepbook plugin error. Raised by the plugin's acquire
  *  body, sugar factories, and per-phase helpers. */
 export interface DeepbookPluginError {
 	readonly _tag: 'DeepbookPluginError';

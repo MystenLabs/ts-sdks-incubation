@@ -23,17 +23,15 @@
 // AND the in-process `node:http.Server` listen loop are real. The
 // listener buffers each request body up to `MAX_BODY_BYTES`, forks the
 // dispatcher Effect under the captured supervisor context (so handler
-// logs flow to the TUI logger sink), and the scope finalizer awaits
-// `closeAllConnections()` + `close()` on teardown. A substrate-level
-// `runtime/http-server.ts` primitive could later own the accept loop
-// + body buffering uniformly across plugins; until then this file is
-// the wallet-local implementation.
+// logs flow to the TUI logger sink), while the substrate scoped HTTP
+// listener owns bind/close lifecycle.
 
 import { Context, Effect, Schema } from 'effect';
 import type { Scope } from 'effect';
 import { randomUUID } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import type { AccountValue } from '../account/service.ts';
@@ -136,19 +134,11 @@ export const startHttpServer = (
 		const supervisorContext = yield* Effect.context<never>();
 		const runDispatch = Effect.runForkWith(supervisorContext as Context.Context<never>);
 
-		// Build the Node server + listen.
-		const server = yield* Effect.tryPromise({
-			try: () =>
-				new Promise<Server>((resolve, reject) => {
-					const srv = createServer(makeRequestListener(config, runDispatch));
-					const onError = (err: Error) => reject(err);
-					srv.once('error', onError);
-					srv.listen(config.port, config.bindAddress, () => {
-						srv.removeListener('error', onError);
-						resolve(srv);
-					});
-				}),
-			catch: (cause): WalletBootError =>
+		const handle = yield* listenScopedHttpServer({
+			bindAddress: config.bindAddress,
+			port: config.port,
+			listener: makeRequestListener(config, runDispatch),
+			onListenError: (cause): WalletBootError =>
 				walletBootError({
 					phase: 'listen',
 					message:
@@ -161,12 +151,6 @@ export const startHttpServer = (
 				}),
 		});
 
-		// Scope finalizer: graceful close. `closeAllConnections()` drops
-		// idle keepalive sockets so `close()` doesn't park forever; then
-		// `close()` waits for in-flight requests to complete. Best-effort
-		// — a hung handler shouldn't block teardown.
-		yield* Effect.addFinalizer(() => gracefulClose(server).pipe(Effect.uninterruptible));
-
 		yield* Effect.logInfo('wallet HTTP server listening').pipe(
 			Effect.annotateLogs({
 				[SpanAttr.host]: config.bindAddress,
@@ -174,25 +158,10 @@ export const startHttpServer = (
 			}),
 		);
 
-		const url = `http://${config.bindAddress}:${config.port}`;
 		return {
-			url,
-			close: () => gracefulClose(server),
+			url: handle.url,
+			close: handle.close,
 		} satisfies WalletServerHandle;
-	});
-
-/** Best-effort graceful close. `closeAllConnections()` drops idle
- *  keepalive sockets so `close()` resolves; older Node versions
- *  without `closeAllConnections` rely on `close()` alone. */
-const gracefulClose = (server: Server): Effect.Effect<void> =>
-	Effect.callback<void>((resume) => {
-		try {
-			server.closeAllConnections();
-		} catch {
-			// Older Node versions don't expose closeAllConnections;
-			// `close()` alone will still terminate.
-		}
-		server.close(() => resume(Effect.void));
 	});
 
 // ----------------------------------------------------------------------

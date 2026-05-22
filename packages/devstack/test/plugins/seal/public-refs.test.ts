@@ -8,8 +8,6 @@ import {
 	sealResourceId,
 	type SealResolved,
 } from '../../../src/plugins/seal/index.ts';
-import { defaultSealCargoImageSiblingKey } from '../../../src/plugins/seal/lifted-siblings/cargo-image.ts';
-import { defaultSealSourceSiblingKey } from '../../../src/plugins/seal/lifted-siblings/source-fetch.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 
 describe('seal public refs', () => {
@@ -50,18 +48,6 @@ describe('seal public refs', () => {
 		expect(plugin.id).toBe(sealResourceId('seal'));
 		expect(resolved.keyServerUrl).toBe('http://key-server.localhost');
 		expect(resolved.manager?.masterKeyEnvFile).toBe('/tmp/master-key.env');
-	});
-
-	it('movePackagePath skips the default move-source sibling', () => {
-		const signer = account('publisher');
-		const plugin = seal({
-			mode: 'local-keygen',
-			signer,
-			movePackagePath: '/tmp/seal/move/seal',
-		});
-
-		expect(plugin.liftedSiblings).toEqual([defaultSealCargoImageSiblingKey()]);
-		expect(plugin.liftedSiblings).not.toContainEqual(defaultSealSourceSiblingKey());
 	});
 
 	it('does not export an unsupported manager resource constructor from the plugin barrel', () => {

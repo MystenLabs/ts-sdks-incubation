@@ -1,3 +1,7 @@
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
@@ -7,6 +11,7 @@ import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
+import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
 
 const fakeResolvedAccount = {
@@ -130,5 +135,42 @@ describe('account env and private-key variant surface', () => {
 			balanceMist: null,
 			requestedMist: null,
 		});
+	});
+});
+
+describe('account ephemeral variant persistence', () => {
+	it('reuses the persisted keypair on warm start', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-'));
+		const secretFilePath = join(root, 'account', 'alice.key');
+
+		const first = await Effect.runPromise(
+			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+		);
+		const second = await Effect.runPromise(
+			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+		);
+
+		expect(second.address).toBe(first.address);
+		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
+		expect(statSync(secretFilePath).mode & 0o777).toBe(0o600);
+		expect(statSync(join(root, 'account')).mode & 0o777).toBe(0o700);
+	});
+
+	it('collapses concurrent first acquires onto one persisted keypair', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-race-'));
+		const secretFilePath = join(root, 'account', 'alice.key');
+
+		const [first, second] = await Effect.runPromise(
+			Effect.all(
+				[
+					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+				],
+				{ concurrency: 2 },
+			),
+		);
+
+		expect(second.address).toBe(first.address);
+		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
 	});
 });

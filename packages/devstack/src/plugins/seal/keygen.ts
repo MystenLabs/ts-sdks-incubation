@@ -1,6 +1,6 @@
 // Seal plugin — BLS12-381 keygen helpers + master-key redactor.
 //
-// Distilled-doc invariant (07-seal.md §"Generic on-chain-artifact-publish"
+// Distilled-doc invariant (07-seal.md §"Generic artifact-publisher-publish"
 // + §Hard requirements #16): the master-key MUST be redacted from any
 // stdout/stderr that may surface in a SealError. The redactor lives
 // here as the single owner so call sites (`mode/local-keygen.ts`,
@@ -9,7 +9,7 @@
 // The keygen pipeline is REAL — `runtime.runOneShot` against the cargo
 // image runs `seal-cli genkey`, captures stdout, parses the BLS hex
 // pair. The image itself is the seam (`SEAL_CARGO_IMAGE_OVERRIDE` env
-// — see `lifted-siblings/cargo-image.ts`).
+// — see `bootstrap-assets/cargo-image.ts`).
 
 import { Duration, Effect, type Scope } from 'effect';
 
@@ -46,7 +46,7 @@ const KEYGEN_TIMEOUT_MS = 30_000;
  *  master key is the secret; the public key is on-chain in the
  *  registered `KeyServer` object. Distilled-doc §"Persistence model"
  *  + §Hard requirements #5 — chainId is folded into the cache key by
- *  the OnChainArtifactPublisher substrate. */
+ *  the ArtifactPublisher substrate. */
 export interface PersistedBlsKeypair {
 	readonly masterKey: string;
 	readonly publicKey: string;

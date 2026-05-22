@@ -9,8 +9,8 @@
 // `(app, stack, dispatch-id)`. We provide:
 //
 //   - `endpointName`  — the well-known string `'seal-key-server'`.
-//   - `dispatchId`    — `{compositeKey: 'seal:<name>', role: 'key-server'}`.
-//                        The composite key folds the seal instance
+//   - `dispatchId`    — `{serviceKey: 'seal:<name>', role: 'key-server'}`.
+//                        The service key folds the seal instance
 //                        name so multi-instance stacks (distilled-doc
 //                        Open Question #7) don't collide.
 //   - `upstream`      — container kind; the substrate resolves the
@@ -21,22 +21,26 @@
 //
 // Distilled-doc invariant #1: the URL the router publishes for this
 // routable decl MUST equal the URL we register on chain. The
-// composite's acquire body reads the router's published URL ONCE
+// plugin's acquire body reads the router's published URL ONCE
 // and threads the same value into the Move register call.
 
-import type { DispatchId, RoutableDecl } from '../../contracts/routable.ts';
-import { DEFAULT_KEY_SERVER_PORT } from './key-server.ts';
+import type { DispatchId, EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
 /** Well-known endpoint name for the seal key-server. Conventional
  *  router entrypoint `'seal-key-server'` on port 2024. */
 export const SEAL_KEY_SERVER_ENDPOINT_NAME = 'seal-key-server' as const;
 export const SEAL_KEY_SERVER_ROUTE_ROLE = 'key-server' as const;
+export const DEFAULT_KEY_SERVER_PORT = 2024 as const;
+
+export const SEAL_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
+	{ name: SEAL_KEY_SERVER_ENDPOINT_NAME, port: DEFAULT_KEY_SERVER_PORT, protocol: 'http' },
+];
 
 const DEFAULT_STACK = 'main';
 
 const normalizeRouteSegment = (raw: string): string => raw.toLowerCase().replace(/\./g, '-');
 
-/** Build the DispatchId for a seal instance. The composite key
+/** Build the DispatchId for a seal instance. The service key
  *  encodes the instance name so multi-instance seal in the same
  *  stack mints distinct dispatch files.
  *
@@ -47,7 +51,7 @@ const normalizeRouteSegment = (raw: string): string => raw.toLowerCase().replace
  *  plans canonicalize multi-instance routing, treat one-seal-per-stack
  *  as the safe default. */
 export const buildSealDispatchId = (name: string): DispatchId => ({
-	compositeKey: `seal:${name}`,
+	serviceKey: `seal:${name}`,
 	role: SEAL_KEY_SERVER_ROUTE_ROLE,
 });
 

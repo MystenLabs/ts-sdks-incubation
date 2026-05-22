@@ -1,4 +1,4 @@
-// Walrus deploy one-shot — Move publish via OnChainArtifactPublisher.
+// Walrus deploy one-shot — Move publish via ArtifactPublisher.
 //
 // Distilled-doc reference (06-walrus.md §"Lifecycle phase 2"):
 // the `walrus-deploy` one-shot:
@@ -7,7 +7,7 @@
 //   - emits per-node config files (`dryrun-node-<i>.yaml`,
 //     `dryrun-node-<i>.keystore`) under `runtime/walrus/<name>/deploy/`.
 //
-// We route this through the substrate's `OnChainArtifactPublisher`
+// We route this through the substrate's `ArtifactPublisher`
 // primitive (architecture §10 — "callable from any plugin; no
 // plugin-side contract to implement"). The publisher owns:
 //   - cache key derivation (folds `chainId`),
@@ -29,12 +29,14 @@
 //        `produce-failed` reason).
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
+import { access } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
@@ -64,10 +66,33 @@ export const WalrusDeployVerifyShape = Schema.Struct({
 export type WalrusDeployVerified = Schema.Schema.Type<typeof WalrusDeployVerifyShape>;
 
 const SuiObjectExistsShape = Schema.Struct({
-	object: Schema.Struct({
-		objectId: Schema.String,
-	}),
+	objectId: Schema.String,
 });
+
+const requiredDeployOutputFiles = (inputs: DeployInputs): ReadonlyArray<string> => [
+	join(inputs.outputDirHostPath, 'deploy'),
+	...Array.from({ length: inputs.committeeSize }, (_, nodeIndex) => [
+		join(inputs.outputDirHostPath, `dryrun-node-${nodeIndex}.yaml`),
+		join(inputs.outputDirHostPath, `dryrun-node-${nodeIndex}-sui.yaml`),
+		join(inputs.outputDirHostPath, `dryrun-node-${nodeIndex}.keystore`),
+	]).flat(),
+];
+
+const deployOutputFilesComplete = (
+	inputs: DeployInputs,
+): Effect.Effect<boolean, WalrusPluginError> =>
+	Effect.tryPromise({
+		try: async () => {
+			await Promise.all(requiredDeployOutputFiles(inputs).map((file) => access(file)));
+			return true;
+		},
+		catch: (cause) =>
+			walrusPluginError(
+				'deploy',
+				`walrus deploy cache is missing local output files under ${inputs.outputDirHostPath}`,
+				{ cause },
+			),
+	}).pipe(Effect.catch(() => Effect.succeed(false)));
 
 /** Inputs to one deploy round. */
 export interface DeployInputs {
@@ -85,7 +110,7 @@ export interface DeployInputs {
 	readonly epochDuration: string;
 	readonly publicHostsCsv: string;
 	readonly listeningIpsCsv: string;
-	/** Wrapper image — the cargo-built walrus image (lifted sibling).
+	/** Wrapper image — the cargo-built walrus image (bootstrap asset).
 	 *  The deploy one-shot is `docker run --rm <image> deploy …`. */
 	readonly walrusImage: ImageRef;
 	/** Docker network the deploy one-shot attaches to, so its in-network
@@ -285,28 +310,28 @@ export const runDeployOneShot = (
 		}),
 	);
 
-/** Outputs of one deploy round — surfaced to the composite's
+/** Outputs of one deploy round — surfaced to the plugin's
  *  resolved value. */
 export interface DeployOutputs {
 	readonly state: CachedDeployState;
 }
 
-/** Compose the OnChainArtifactSpec for a walrus deploy and dispatch
+/** Compose the ArtifactSpec for a walrus deploy and dispatch
  *  through the substrate primitive. The publisher handles the full
  *  cache/verify/produce/register loop.
  *
  *  Produce: real wiring — `runDeployOneShot` runs
  *  `docker run --rm walrusImage deploy …` and parses the deploy stdout.
  *
- *  Verify-hit projection: the OCA primitive returns the cached
+ *  Verify-hit projection: the artifact publisher primitive returns the cached
  *  `Produced` payload after verify succeeds, so callers keep the full
  *  `CachedDeployState` shape across warm restarts. */
 export const deployWalrusContracts = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
 	runtime: ContainerRuntime,
 	inputs: DeployInputs,
-): Effect.Effect<DeployOutputs, WalrusPluginError | OnChainArtifactError, Scope.Scope> =>
+): Effect.Effect<DeployOutputs, WalrusPluginError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const verified = yield* publisher.publish<CachedDeployState, WalrusDeployVerified>({
 			namespace: 'walrus-deploy',
@@ -319,6 +344,8 @@ export const deployWalrusContracts = (
 			// this closure returns the compact verified shape.
 			verify: (cached) =>
 				Effect.gen(function* () {
+					if (!(yield* deployOutputFilesComplete(inputs))) return null;
+
 					const system = yield* probe.get(
 						{ kind: 'object', objectId: cached.systemObject },
 						SuiObjectExistsShape,
@@ -334,21 +361,21 @@ export const deployWalrusContracts = (
 					if (staking === null) return null;
 
 					return {
-						systemObjectId: system.object.objectId,
-						stakingObjectId: staking.object.objectId,
+						systemObjectId: system.objectId,
+						stakingObjectId: staking.objectId,
 					} satisfies WalrusDeployVerified;
 				}).pipe(Effect.catch(() => Effect.succeed(null as WalrusDeployVerified | null))),
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
 				Effect.mapError(
-					(err): OnChainArtifactError => ({
-						_tag: 'OnChainArtifactError',
+					(err): ArtifactPublishError => ({
+						_tag: 'ArtifactPublishError',
 						reason: 'produce-failed',
 						detail: `walrus.deploy ${err.phase}: ${err.message}`,
 					}),
 				),
 			),
-			// Register: fires on EVERY cycle. The composite's outer body
+			// Register: fires on EVERY cycle. The plugin's outer body
 			// performs the walrus-state / endpoint / package registry
 			// publishes after both deploy + storage-nodes are up; this
 			// closure is the publisher-side null-op so the substrate
@@ -356,7 +383,7 @@ export const deployWalrusContracts = (
 			register: () => Effect.void,
 		});
 
-		// Project Produced ∪ Verified onto CachedDeployState. OCA returns
+		// Project Produced ∪ Verified onto CachedDeployState. artifact publisher returns
 		// the cached Produced payload on verify-hit, but keep a defensive
 		// projection for custom publisher implementations in tests.
 		const state: CachedDeployState =
@@ -365,9 +392,9 @@ export const deployWalrusContracts = (
 				: {
 						// Verify-hit path: synthesize from the cached id's.
 						// The richer fields (packageId, exchange etc.) live
-						// in the on-disk OCA cache; downstream consumers
+						// in the on-disk artifact publisher cache; downstream consumers
 						// surface them through the in-process registry. The
-						// OCA primitive's next API revision will hand the
+						// artifact publisher primitive's next API revision will hand the
 						// full Produced payload back here directly —
 						// architecture revision tracked in the file header.
 						walrusPackageId: '<cache-hit-not-rehydrated>',

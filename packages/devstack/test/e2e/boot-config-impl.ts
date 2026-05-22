@@ -38,13 +38,11 @@ import {
 	layerStrategyRegistry,
 } from '../../src/substrate/runtime/strategy-registry/index.ts';
 import {
-	OnChainArtifactPublisherService,
-	layerOnChainArtifactPublisher,
-} from '../../src/substrate/runtime/on-chain-artifact/index.ts';
-import {
-	layerEntrypointRegistry,
-	DEFAULT_ENTRYPOINTS,
-} from '../../src/orchestrators/router/entrypoints.ts';
+	ArtifactPublisherService,
+	layerArtifactPublisher,
+} from '../../src/substrate/runtime/artifact-publisher/index.ts';
+import { layerEntrypointRegistry } from '../../src/orchestrators/router/entrypoints.ts';
+import { BUILT_IN_ENTRYPOINTS } from '../../src/plugins/router-entrypoints.ts';
 import type { ResolvedRoute } from '../../src/orchestrators/router/file-provider.ts';
 import {
 	RouterService,
@@ -93,6 +91,10 @@ import {
 	buildProductionOrchestratorSinks,
 	productionRouterProfile,
 } from '../../src/orchestrators/runtime-composition.ts';
+import {
+	extendBuiltInPluginContext,
+	layerBuiltInPluginRuntime,
+} from '../../src/runtime/built-in-plugin-layers.ts';
 import {
 	SnapshotOrchestratorService,
 	layerSnapshotOrchestrator,
@@ -148,7 +150,7 @@ export type BootOptions = BootSource & {
 	readonly stackName: string;
 	readonly chainId?: string;
 	/** Opt-in: project `{digest, objectChanges}` from a specific
-	 *  ready key's resolved value. Used by the arena test to assert
+	 *  ready key's resolved value. Used by the connect-four test to assert
 	 *  the openLobby action produced a real digest + created object. */
 	readonly digestFromKey?: string;
 	/** Opt-in: an Effect that runs INSIDE the boot scope (containers
@@ -249,8 +251,8 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	);
 	const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(childProcessSpawnerWired));
 	const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-	const withOca = layerOnChainArtifactPublisher.pipe(Layer.provideMerge(withCache));
-	const withCoinRegistry = coinRegistryLayer.pipe(Layer.provideMerge(withOca));
+	const withArtifactPublisher = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
+	const withCoinRegistry = coinRegistryLayer.pipe(Layer.provideMerge(withArtifactPublisher));
 	const withPackageRegistry = layerPackageRegistry.pipe(Layer.provideMerge(withCoinRegistry));
 	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
@@ -270,7 +272,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		Layer.provideMerge(
 			Layer.mergeAll(
 				platformBase,
-				layerEntrypointRegistry(DEFAULT_ENTRYPOINTS),
+				layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
 				layerTraefikContainerOpsStub,
 				fakeRouterUpstreams,
 				layerRouterConfigLiteral({
@@ -338,7 +340,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const containerRuntime = yield* ContainerRuntimeService;
 		const snapshot = yield* SnapshotOrchestratorService;
 		const fs = yield* FileSystem.FileSystem;
-		const publisher = yield* OnChainArtifactPublisherService;
+		const publisher = yield* ArtifactPublisherService;
 		const packageRegistry = yield* PackageRegistryService;
 		const coinRegistry = yield* CoinRegistryService;
 		const portBroker = yield* PortBrokerService;
@@ -354,7 +356,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			Context.add(CacheService, cache),
 			Context.add(StrategyRegistryService, registry),
 			Context.add(ContainerRuntimeService, containerRuntime),
-			Context.add(OnChainArtifactPublisherService, publisher),
+			Context.add(ArtifactPublisherService, publisher),
 			Context.add(PackageRegistryService, packageRegistry),
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PortBrokerService, portBroker),
@@ -406,11 +408,14 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				// fake upstream resolver, while using the same sink delivery
 				// path as production.
 				yield* bootRouterOrchestrator;
+				const builtInPluginContext = yield* extendBuiltInPluginContext(pluginContext).pipe(
+					Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)),
+				);
 				const handle = yield* supervise(
 					{ _tag: 'Stack', members: stack.members, options: stack.options },
 					identity,
 					state,
-					pluginContext,
+					builtInPluginContext,
 					orchestratorSinks,
 				);
 

@@ -28,6 +28,7 @@
 	"files": ["dist", "template", "README.md", "LICENSE"],
 	"scripts": {
 		"build": "tsdown && pnpm run sync-template",
+		"check-template": "node --experimental-strip-types scripts/sync-template.ts --check",
 		"sync-template": "node --experimental-strip-types scripts/sync-template.ts",
 		"typecheck": "tsc --noEmit",
 		"prepublishOnly": "pnpm run build"

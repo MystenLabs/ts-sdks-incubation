@@ -13,9 +13,10 @@ recursively. Options include `stackName`, `network`, `watchPaths`, `stateDir`, `
 
 ## `sui(opts?)`
 
-Starts or references the active Sui network. Modes include local, live, fork, and external. Include
-one `sui(...)` member in any stack whose members depend on Sui. The `sui()` factory returns a plugin
-resource ref, so custom plugins can depend on a specific Sui member directly:
+Starts or references the active Sui network. Modes include local, live, and external. Fork mode is
+coming soon. Include one `sui(...)` member in any stack whose members depend on Sui. The `sui()`
+factory returns a plugin resource ref, so custom plugins can depend on a specific Sui member
+directly:
 
 ```ts
 import { Effect } from 'effect';
@@ -25,7 +26,7 @@ const localnet = sui({ mode: 'external', rpcUrl: 'http://127.0.0.1:9000' });
 const app = definePlugin({
 	id: 'app',
 	dependsOn: { sui: localnet },
-	kind: 'leaf-long-running',
+	role: 'service',
 	start: ({ sui }) => Effect.succeed({ rpc: sui.rpcUrl }),
 });
 
@@ -95,7 +96,8 @@ const open = action('open-lobby', {
 
 ## `walrus`, `seal`, `deepbook`
 
-Composite service factories. See [services](../features/services) for current mode caveats.
+Service factories with mode-specific behavior. See [services](../features/services) for current mode
+caveats.
 
 ## `runStack(stack, opts?)`
 

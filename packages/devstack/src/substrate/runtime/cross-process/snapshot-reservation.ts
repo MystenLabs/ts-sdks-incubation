@@ -101,15 +101,17 @@ export const sweepOrphan = (
 		}
 		// PID-liveness check: synthesize a roster-shaped holder so the
 		// shared liveness predicate applies.
-		const liveness = yield* checkHolderLiveness({
-			pid: reservation.creatorPid,
-			startTime: reservation.creatorStartTime,
-			hostname: '', // unknown — same-host fallthrough; checkHolderLiveness
-			// reads `process` so we need to feed it the local hostname.
-			claimedAt: reservation.createdAt,
-			heartbeatAt: reservation.createdAt,
-			intent: 'snapshot',
-		}).pipe(Effect.catch(() => Effect.succeed('alive' as const)));
+		const liveness = yield* checkHolderLiveness(
+			{
+				pid: reservation.creatorPid,
+				startTime: reservation.creatorStartTime,
+				hostname: '',
+				claimedAt: reservation.createdAt,
+				heartbeatAt: reservation.createdAt,
+				intent: 'snapshot',
+			},
+			'',
+		).pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 		if (liveness === 'alive') return { swept: false };
 		yield* Effect.try({
 			try: () => unlinkSync(path),

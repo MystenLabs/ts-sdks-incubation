@@ -1,9 +1,9 @@
 // Package plugin — barrel + factories.
 //
 // Architecture: Package is the canonical implementation of the
-// `OnChainArtifactPublisher` substrate primitive. Many composite
-// services depend on its publish output (Coin types, Walrus/Seal/
-// Deepbook contracts, Action receipts).
+// `ArtifactPublisher` substrate primitive. Many service
+// plugins depend on its publish output (Coin types, Walrus/Seal/
+// Deepbook contracts, Action outputs).
 //
 // Public surface:
 //
@@ -34,30 +34,21 @@ import { definePlugin, resource, type ResourceRef } from '../../api/define-plugi
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
+import {
+	makeLocalPackagePublishedDecl,
+	pickCreatedByType,
+	type LocalPackagePublishOutput,
+} from './publish-output.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import { OnChainArtifactPublisherService } from '../../substrate/runtime/on-chain-artifact/index.ts';
-// Cross-plugin import — Open slot O5 (STYLE_GUIDE §7, ARCHITECTURE.md
-// "Plugin A ↔ Plugin B coupling"). Package fires coin auto-discovery
-// at publish time because the supply ordering is: localPackage acquires →
-// publish receipt → coin records must land BEFORE downstream coin.local/
-// witness consumers run. The substrate-correct fix is a raised
-// `PublishReceiptEmitted` event the coin plugin subscribes to via the
-// supervisor's harvest loop (PR2-A) OR a future event-bus primitive —
-// at which point this import disappears in favour of `events.publish(...)`.
-import { CoinRegistryService, type CoinRecord } from '../coin/registry.ts';
+import type { ChainId } from '../../substrate/brand.ts';
+import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiProbeKey } from '../sui/chain-probe.ts';
 import type { AccountResourceId } from '../account/index.ts';
 import type { AccountValue } from '../account/service.ts';
-// Cross-plugin import — Open slot O5. The coin-discovery walker is a
-// PURE projection over `PublishReceipt`; it lives in the coin plugin
-// because the discovery shape (`CoinRecord` rows) belongs to coin's
-// domain. Pending substrate harvest loop / event-bus (see comment above)
-// the walker is called directly from this barrel.
-import { discoverCoinsFromPublish } from '../coin/discovery.ts';
 import { makeKnownCodegenable, makeLocalCodegenable } from './codegen.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
@@ -68,7 +59,6 @@ import {
 	type ResolvedLocalPackage,
 } from './registry.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import { pickCreatedByType, type PublishReceipt } from './publish-receipt.ts';
 import { PACKAGE_ERROR_TAGS, type PublishError } from './errors.ts';
 
 const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
@@ -105,21 +95,24 @@ export type PackageResourceId<Name extends string> = `package:${Name}`;
 export type { ResolvedLocalPackage, ResolvedKnownPackage, ResolvedPackage } from './registry.ts';
 export type {
 	PickCreatedByTypeOptions,
-	PublishReceipt,
-	PublishObjectChange,
-} from './publish-receipt.ts';
-export { pickCreatedByType } from './publish-receipt.ts';
+	LocalPackagePublishOutput,
+	PackagePublishObjectChange,
+} from './publish-output.ts';
+export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
 export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 
 /** Resolved value carried by the package resource. Local packages also
- *  expose the publish receipt so downstream consumers (Coin plugin,
- *  manifest emitter, capture-spec callers) can read it. */
+ *  expose the publish output so manifest emitters and capture-spec
+ *  callers can read it. Sibling plugin folds consume the package-owned
+ *  extension contribution instead of importing package internals. */
 export type PackageCaptureMap = Readonly<Record<string, string>>;
 
-export type PackageCaptureCallback = (receipt: PublishReceipt) => Readonly<Record<string, string>>;
+export type PackageCaptureCallback = (
+	output: LocalPackagePublishOutput,
+) => Readonly<Record<string, string>>;
 
 export type PackageCapture = PackageCaptureMap | PackageCaptureCallback;
 
@@ -129,23 +122,17 @@ export type CapturedPackageValues<Capture> = Capture extends PackageCaptureCallb
 		? { readonly [K in keyof Capture]: string }
 		: Readonly<Record<string, string>>;
 
-export type PackageCoins = Readonly<Record<string, CoinRecord | undefined>>;
-
 export interface LocalPackageResolved<Capture = undefined> extends Omit<
 	ResolvedLocalPackage,
 	'captured'
 > {
 	/** Captured object ids keyed by the user's `capture` option. */
 	readonly captured: CapturedPackageValues<Capture>;
-	/** Coins discovered from this package's publish receipt, keyed by
-	 *  registry symbol/witness. Empty when the package does not publish
-	 *  coins or when discovery cannot prove a record. */
-	readonly coins: PackageCoins;
-	/** Publish receipt — present after a fresh publish, null on
+	/** Publish output — present after a fresh publish, null on
 	 *  cache hit (verify-only path). Consumers that need the
-	 *  receipt MUST tolerate null and fall back to chain reads via
+	 *  output MUST tolerate null and fall back to chain reads via
 	 *  the ChainProbe. */
-	readonly publishReceipt: PublishReceipt | null;
+	readonly publishResult: LocalPackagePublishOutput | null;
 }
 
 export type KnownPackageResolved = ResolvedKnownPackage;
@@ -168,10 +155,10 @@ export interface LocalPackageOptions<
 	readonly resolveSourcePath?: Effect.Effect<string, PublishError>;
 	readonly mvrPlaceholder?: string;
 	readonly excludeFromCodegen?: boolean;
-	/** Capture created objects from the publish receipt. The record
+	/** Capture created objects from the publish output. The record
 	 *  form maps output keys to object-type suffixes, e.g.
 	 *  `{ boardId: '::board::Board' }`; the callback form is the
-	 *  escape hatch for custom receipt projections. */
+	 *  escape hatch for custom output projections. */
 	readonly capture?: Capture;
 	/** Publisher account — the signer for the publish tx. Pass the
 	 *  result of `account('alice')` (the same plugin/resource ref used
@@ -234,10 +221,10 @@ const normalizeCapture = <Capture extends PackageCapture | undefined>(
 ): PackageCaptureCallback | undefined => {
 	if (capture === undefined) return undefined;
 	if (typeof capture === 'function') return capture;
-	return (receipt) => {
+	return (output) => {
 		const captured: Record<string, string> = {};
 		for (const [key, suffix] of Object.entries(capture)) {
-			const objectId = pickCreatedByType(receipt.objectChanges, { suffix });
+			const objectId = pickCreatedByType(output.objectChanges, { suffix });
 			if (objectId === undefined) {
 				throw new Error(
 					`localPackage('${packageName}') capture '${key}' matched no created object with suffix '${suffix}'.`,
@@ -265,8 +252,7 @@ const buildLocalPlugin = <
 	return definePlugin({
 		id: packageRef.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
-		kind: 'leaf-long-running',
-		rebootCost: 'heavy',
+		role: 'task',
 		watch: {
 			// File-watcher contribution — restart on Move source edits.
 			// Distilled doc §Outputs: literal-path Packages contribute
@@ -280,7 +266,7 @@ const buildLocalPlugin = <
 		},
 		start: ({ sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
-				// Substrate-context primitives: OnChainArtifactPublisher
+				// Substrate-context primitives: ArtifactPublisher
 				// is provided by the supervisor's pluginContext;
 				// ChainProbe is looked up via the StrategyRegistry
 				// (Sui registered itself there at acquire). The
@@ -291,7 +277,7 @@ const buildLocalPlugin = <
 				// via `PackageRegistryService`, so cross-plugin lookups
 				// stay consistent and warm-restart verify can use the
 				// previous packageId as a hint.
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
 				// ContainerRuntime + the Sui plugin's resolved image feed
@@ -327,84 +313,17 @@ const buildLocalPlugin = <
 					executor,
 				} satisfies PackageMode;
 
-				const { resolved, receipt } = yield* bootPackageService(publisher, probe, registry, mode);
-				const coins: Record<string, CoinRecord> = {};
-
-				// Coin auto-discovery hook (Coin plugin pattern).
-				//
-				// Walks the fresh publish receipt for paired
-				// `TreasuryCap<T>` + `CoinMetadata<T>` and registers a
-				// `CoinRecord` into the per-stack `CoinRegistry` for
-				// each discovered coin. This is the canonical "Package
-				// emits a receipt; Coin consumes it" seam (distilled-doc
-				// 13-coin.md §Cross-component references): the walker
-				// lives in the coin plugin (`plugins/coin/discovery.ts`)
-				// — keeping the projection close to the registry shape
-				// it folds into — and we fire it from the package's
-				// acquire so the records land BEFORE downstream
-				// `coin.local(...)` / `coin.fromPackage(...)` plugins run
-				// their lookup. The substrate's compose-time ordering
-				// (`coin.local('USDC')` depends on suiResource; localPackage
-				// depends on suiResource + publisher account) doesn't carry an
-				// edge between Package → Coin — the symbol-form coin's
-				// no-edge documentation calls this out, and we close
-				// the loop here.
-				//
-				// On cache-hit (receipt === null) we skip discovery: the
-				// records from the previous boot are already in the
-				// registry under the same fullCoinType keys.
-				//
-				// Open slot O5 (cross-plugin coupling): Package reaches
-				// into the coin plugin (`CoinRegistryService` +
-				// `discoverCoinsFromPublish`) here because the substrate
-				// lacks a plugin-author event-bus today. The architectural
-				// fix is a substrate-raised `PublishReceiptEmitted` event
-				// the coin plugin subscribes to via the supervisor harvest
-				// loop (PR2-A) OR a generic event-bus primitive — at which
-				// point this block becomes `events.publish({ kind:
-				// 'PublishReceiptEmitted', receipt })` with no direct
-				// import of the coin plugin from this barrel.
-				if (receipt !== null) {
-					const coinRegistry = yield* CoinRegistryService;
-					const discovered = discoverCoinsFromPublish(receipt);
-					for (const d of discovered) {
-						// Project the discovery walker's output into the
-						// substrate's CoinRecord shape. Metadata enrichment
-						// (decimals, symbol, displayName, iconUrl) lives in
-						// the coin plugin's `metadata.ts`; we register the
-						// on-chain identity here without the RPC fold so
-						// the registry surfaces a degraded record
-						// immediately (distilled-doc 13-coin.md Invariant
-						// 8 — soft-degrade on metadata fetch).
-						const record: CoinRecord = {
-							key: d.witness,
-							type: d.fullCoinType,
-							witness: d.witness,
-							moduleName: d.moduleName,
-							decimals: 0,
-							...(d.treasuryCapId !== undefined ? { treasuryCapId: d.treasuryCapId } : {}),
-							...(d.metadataId !== undefined ? { metadataId: d.metadataId } : {}),
-							packageId: receipt.packageId,
-							publishingPackageName: name,
-						};
-						yield* coinRegistry.register(record);
-						coins[record.key] = record;
-						if (record.symbol !== undefined) {
-							coins[record.symbol] = record;
-						}
-					}
-				}
+				const { resolved, output } = yield* bootPackageService(publisher, probe, registry, mode);
 
 				const projected: LocalPackageResolved<Capture> = {
 					...resolved,
 					captured: resolved.captured as CapturedPackageValues<Capture>,
-					coins,
-					publishReceipt: receipt,
+					publishResult: output,
 				};
 				return projected;
 			}),
 		errorContributions: packageErrorContributions,
-		capabilities: ({ value }) => makeLocalCapabilities(name, opts, value),
+		capabilities: ({ value, runtime }) => makeLocalCapabilities(name, opts, value, runtime.chain),
 	});
 };
 
@@ -415,11 +334,10 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 	return definePlugin({
 		id: packageRef.id,
 		dependsOn: { sui: suiResource },
-		kind: 'leaf-long-running',
-		rebootCost: 'cheap',
+		role: 'task',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
-				const publisher = yield* OnChainArtifactPublisherService;
+				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
 				const mode = {
@@ -430,13 +348,13 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 					mvrOverride: opts.mvrPlaceholder,
 				} satisfies PackageMode;
 				const { resolved } = yield* bootPackageService(publisher, probe, registry, mode);
-				// Known mode never publishes — no receipt to walk, so
+				// Known mode never publishes — no output to walk, so
 				// the coin-discovery hook is skipped here. Users who
 				// want coin records for a knownPackage point a
 				// `coin.known('0xPKG::module::Witness')` at the
 				// fully-qualified type directly; the bare-type path
 				// hits the live RPC for metadata rather than the
-				// receipt-walker.
+				// output-walker.
 				return resolved;
 			}),
 		errorContributions: packageErrorContributions,
@@ -448,13 +366,14 @@ const makeLocalCapabilities = (
 	name: string,
 	opts: { readonly excludeFromCodegen?: boolean },
 	resolved: LocalPackageResolved,
+	chain: ChainId,
 ) => {
 	// Snapshot + codegen lift their typed fields off the resolved
 	// publish (real packageId + captured object ids). The static-form
 	// placeholders are gone.
 	const snap: SnapshotableDecl = makeSnapshotable(
 		name,
-		resolved.publishReceipt?.packageId ?? resolved.packageId,
+		resolved.publishResult?.packageId ?? resolved.packageId,
 	);
 	const codegen: CodegenableDecl<'package'> = makeLocalCodegenable(
 		{
@@ -493,6 +412,16 @@ const makeLocalCapabilities = (
 		codegen,
 		registryContribution,
 		makePackageProjectionContribution(projection),
+		...(resolved.publishResult === null
+			? []
+			: [
+					makeLocalPackagePublishedDecl({
+						packageName: name,
+						packageId: resolved.packageId,
+						chain,
+						output: resolved.publishResult,
+					}),
+				]),
 	] as const;
 };
 

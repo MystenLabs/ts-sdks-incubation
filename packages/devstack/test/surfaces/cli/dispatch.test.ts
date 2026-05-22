@@ -311,6 +311,15 @@ describe('dispatch', () => {
 		}
 	});
 
+	it('marks fork networks as coming soon at the CLI boundary', async () => {
+		const { deps, read } = makeHarness();
+		await run(['apply', '--network', 'mainnet-fork'], deps, { io: read().io });
+		const h = read();
+		expect(h.exitCode).toBe(64);
+		expect(h.stderr.join('\n')).toMatch(/fork networks are coming soon/i);
+		expect(h.applyRuns).toHaveLength(0);
+	});
+
 	it('lifecycle commands run through attached/direct deps', async () => {
 		const { deps, read } = makeHarness();
 		await run(['up', '--renderer', 'plain', '--config', 'devstack.ci.ts'], deps, {

@@ -3,15 +3,19 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Exit, Option, Stream, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-	OnChainArtifactSpec,
-} from '../../../src/primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+	ArtifactSpec,
+} from '../../../src/primitives/artifact-publisher.ts';
 import { makeSuiChainProbe, type SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
 import {
 	deployWalrusContracts,
@@ -47,11 +51,11 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 	removeManagedVolumes: unusedRuntimeMethod,
 });
 
-const deployInputs = (): DeployInputs => ({
+const deployInputs = (outputDirHostPath = '/tmp/devstack/walrus/deploy'): DeployInputs => ({
 	walrusName: 'walrus',
 	chainId: chainId('sui:localnet'),
 	contentHash: contentHash('walrus-test'),
-	outputDirHostPath: '/tmp/devstack/walrus/deploy',
+	outputDirHostPath,
 	suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
 	walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
 	committeeSize: 4,
@@ -62,6 +66,22 @@ const deployInputs = (): DeployInputs => ({
 	walrusImage: { digest: 'walrus:test' },
 	suiNetworkName: 'devstack-test-sui',
 });
+
+const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount = 4) => {
+	writeFileSync(
+		join(dir, 'deploy'),
+		[
+			`walrus_package_id: ${state.walrusPackageId}`,
+			`system_object: ${state.systemObject}`,
+			`staking_object: ${state.stakingObject}`,
+		].join('\n'),
+	);
+	for (let index = 0; index < nodeCount; index += 1) {
+		writeFileSync(join(dir, `dryrun-node-${index}.yaml`), 'node config\n');
+		writeFileSync(join(dir, `dryrun-node-${index}-sui.yaml`), 'sui config\n');
+		writeFileSync(join(dir, `dryrun-node-${index}.keystore`), '[]\n');
+	}
+};
 
 const cachedWalrusDeployState = (): CachedDeployState => ({
 	walrusPackageId: '0xwalruspackage',
@@ -214,6 +234,8 @@ describe('parseDeployOutput', () => {
 	it.effect('verifies cached system and staking objects without re-running walrus-deploy', () =>
 		Effect.gen(function* () {
 			const cached = cachedWalrusDeployState();
+			const outputDir = mkdtempSync(join(tmpdir(), 'devstack-walrus-deploy-'));
+			writeDeployOutputFiles(outputDir, cached);
 			const requestedObjects: string[] = [];
 			const sdk: SuiSdkShim = {
 				core: {
@@ -231,10 +253,10 @@ describe('parseDeployOutput', () => {
 				client: {},
 			};
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
-			const publisher: OnChainArtifactPublisher = {
+			const publisher: ArtifactPublisher = {
 				publish: <Produced, Verified>(
-					spec: OnChainArtifactSpec<Produced, Verified>,
-				): Effect.Effect<Produced | Verified, OnChainArtifactError, Scope.Scope> =>
+					spec: ArtifactSpec<Produced, Verified>,
+				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
 					Effect.gen(function* () {
 						const verified = yield* spec.verify(cached as unknown as Produced);
 						if (verified !== null) return cached as unknown as Produced;
@@ -246,11 +268,64 @@ describe('parseDeployOutput', () => {
 			);
 
 			const result = yield* Effect.scoped(
-				deployWalrusContracts(publisher, probe, runtime, deployInputs()),
+				deployWalrusContracts(publisher, probe, runtime, deployInputs(outputDir)),
 			);
 
 			expect(result.state).toEqual(cached);
 			expect(requestedObjects).toEqual([cached.systemObject, cached.stakingObject]);
+		}),
+	);
+
+	it.effect('treats missing local deploy outputs as a cache miss', () =>
+		Effect.gen(function* () {
+			const cached = cachedWalrusDeployState();
+			const outputDir = mkdtempSync(join(tmpdir(), 'devstack-walrus-missing-deploy-'));
+			const requestedObjects: string[] = [];
+			const sdk: SuiSdkShim = {
+				core: {
+					getObject: async ({ objectId }) => {
+						requestedObjects.push(objectId);
+						return { object: { objectId } };
+					},
+					getTransaction: async () => ({}),
+					executeTransaction: async () => ({}),
+					waitForTransaction: async () => ({}),
+				},
+				client: {},
+			};
+			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
+			const publisher: ArtifactPublisher = {
+				publish: <Produced, Verified>(
+					spec: ArtifactSpec<Produced, Verified>,
+				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+					Effect.gen(function* () {
+						const verified = yield* spec.verify(cached as unknown as Produced);
+						if (verified !== null) return cached as unknown as Produced;
+						return yield* spec.produce;
+					}),
+			};
+			const runtime = oneShotRuntime(() =>
+				Effect.succeed({
+					exitCode: 0,
+					stdout: [
+						'package_id: 0xnewpackage',
+						'system_object: 0xnewsystem',
+						'staking_object: 0xnewstaking',
+					].join('\n'),
+					stderr: '',
+				}),
+			);
+
+			const result = yield* Effect.scoped(
+				deployWalrusContracts(publisher, probe, runtime, deployInputs(outputDir)),
+			);
+
+			expect(result.state).toEqual({
+				walrusPackageId: '0xnewpackage',
+				systemObject: '0xnewsystem',
+				stakingObject: '0xnewstaking',
+			});
+			expect(requestedObjects).toEqual([]);
 		}),
 	);
 });

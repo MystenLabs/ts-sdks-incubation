@@ -5,12 +5,12 @@
 //
 //   0. Yield deps (Sui, Identity, ChainProbe, faucet strategy opt,
 //                  seed accounts).
-//   1. Image build — upstream cargo image (lifted sibling) +
+//   1. Image build — upstream cargo image (bootstrap asset) +
 //                    wrapper image (inline; content-addressed on
 //                    the upstream tag + suiVersion).
 //  1b. Docker network create — per-stack `/24` via
 //      `Docker.networkCreate(networkName, {subnet})`.
-//   2. Deploy contracts — via `OnChainArtifactPublisher`. The
+//   2. Deploy contracts — via `ArtifactPublisher`. The
 //                          publisher folds chainId into the cache
 //                          key; verify probes BOTH the on-disk
 //                          `deploy` file AND on-chain object
@@ -36,15 +36,15 @@
 // surface + the synchronous factory-time validation.
 //
 // What this file delegates: container/Move heavy paths live in
-// `storage-nodes.ts`, `deploy.ts`, and the `OnChainArtifactPublisher`
+// `storage-nodes.ts`, `deploy.ts`, and the `ArtifactPublisher`
 // primitive.
 
 import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/chain-probe.ts';
@@ -55,12 +55,7 @@ import { expectPositiveInteger } from '../../../substrate/runtime/config-validat
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import type { AccountResourceId } from '../../account/index.ts';
 import type { AccountValue } from '../../account/service.ts';
-import {
-	walrusConfigError,
-	walrusPluginError,
-	type WalrusError,
-	type WalrusPluginError,
-} from '../errors.ts';
+import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
 import type { WalrusStorageNode } from '../storage-nodes.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -70,13 +65,11 @@ import {
 	startStorageNodes,
 } from '../storage-nodes.ts';
 import { deployWalrusContracts, type CachedDeployState } from '../deploy.ts';
-import { DEFAULT_SUI_VERSION, resolveCargoImage } from '../lifted-siblings/cargo-image.ts';
 import {
-	DEFAULT_WALRUS_MOVE_SUBDIR,
+	DEFAULT_SUI_VERSION,
 	DEFAULT_WALRUS_REF,
-	DEFAULT_WALRUS_REPO,
-	resolveWalrusSource,
-} from '../lifted-siblings/source-fetch.ts';
+	resolveCargoImage,
+} from '../bootstrap-assets/cargo-image.ts';
 import { makeWalFaucetStrategy, type WalFaucetStrategy } from '../faucet-strategy.ts';
 import {
 	resolveWalExchange,
@@ -108,8 +101,8 @@ export interface WalrusLocalClusterOptions<
 	/** Total shards distributed across the committee. Must be
 	 *  `>= nodeCount`. Default `100` (distilled-doc default block). */
 	readonly shards?: number;
-	/** Pinned walrus release — drives the lifted source-fetch +
-	 *  cargo-image siblings. Default `'testnet-v1.49.1'`. */
+	/** Pinned walrus release — drives the wrapper image build.
+	 *  Default `'testnet-v1.49.1'`. */
 	readonly version?: string;
 	/** Sui release whose binary the wrapper image bakes (distilled-
 	 *  doc invariant 24). Default `'devnet-v1.71.0'`. */
@@ -124,13 +117,10 @@ export interface WalrusLocalClusterOptions<
 	readonly readyTimeoutMs?: number;
 	/** SUI MIST to spend per seed account on SUI → WAL swap. */
 	readonly seedPaymentMist?: bigint;
-	/** If set, skips the lifted `gitFetch` of the walrus Move source
-	 *  and uses the on-disk path. */
-	readonly movePackagePath?: string;
 	/** Seed account refs that should receive WAL. Each entry is the
 	 *  plugin/resource ref returned by `account('name')`. The ref is
 	 *  threaded through `dependsOn` so the walrus
-	 *  composite waits for each seed account's acquire (keypair mint +
+	 *  local service waits for each seed account's acquire (keypair mint +
 	 *  funding) before the WAL faucet strategy registers.
 	 *
 	 *  The FIRST entry doubles as the WAL-exchange admin signer
@@ -139,8 +129,7 @@ export interface WalrusLocalClusterOptions<
 	readonly seedAccounts?: Accounts;
 }
 
-/** Resolved local-cluster boot artifacts — the composite projects
- *  these onto the four `Context.Service` tags. */
+/** Resolved local-cluster boot artifacts. */
 export interface LocalClusterBootResult {
 	readonly mode: 'local';
 	readonly deploy: CachedDeployState;
@@ -175,7 +164,6 @@ export interface ResolvedLocalClusterOptions {
 	readonly epochDuration: string;
 	readonly readyTimeoutMs: number;
 	readonly seedPaymentMist: bigint;
-	readonly movePackagePath?: string;
 	readonly seedAccountCount: number;
 }
 
@@ -223,15 +211,14 @@ export const resolveLocalClusterOptions = (
 		epochDuration: opts.epochDuration ?? '24h',
 		readyTimeoutMs: opts.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS,
 		seedPaymentMist: opts.seedPaymentMist ?? 500_000_000n,
-		movePackagePath: opts.movePackagePath,
 		seedAccountCount: opts.seedAccounts?.length ?? 0,
 	};
 };
 
-/** Dependencies the composite passes in at acquire-time. */
+/** Dependencies the local service consumes at acquire-time. */
 export interface LocalClusterDeps {
 	readonly runtime: ContainerRuntime;
-	readonly publisher: OnChainArtifactPublisher;
+	readonly publisher: ArtifactPublisher;
 	readonly probe: ChainProbe<SuiProbeKey>;
 	readonly suiSdk: WalSwapSdk;
 	readonly suiChainId: ChainId;
@@ -252,19 +239,17 @@ export interface LocalClusterDeps {
 	readonly seedAccounts: ReadonlyArray<AccountValue>;
 }
 
-/** Boot the local cluster. Returns the resolved value the composite
- *  projects onto the four tags.
+/** Boot the local cluster. Returns the resolved value the plugin
+ *  projects onto its tags.
  *
  *  Steps:
- *    - Image build — `resolveCargoImage` (lifted sibling).
+ *    - Image build — `resolveCargoImage` (bootstrap asset).
  *      Honors `WALRUS_CARGO_IMAGE_OVERRIDE` for the pre-baked path.
- *    - Move source resolve — `resolveWalrusSource` (lifted
- *      sibling). Skipped when `opts.movePackagePath` is set.
  *    - Docker network ensure — `runtime.ensureNetwork(walrusNet)`.
  *      The sui network is owned by the sui plugin; we attach to it
  *      as a secondary network on each storage node.
  *    - Deploy contracts — `deployWalrusContracts` dispatches through
- *      the OCA primitive; the produce body runs the walrus deploy
+ *      the artifact publisher primitive; the produce body runs the walrus deploy
  *      one-shot.
  *    - Storage nodes — parallel boot via `startStorageNodes`.
  *    - Proxy URL pick — `nodes[0].rpcUrl`.
@@ -273,54 +258,27 @@ export interface LocalClusterDeps {
  *      the contributor decl.
  *
  *  Per-step failures surface as `WalrusPluginError` with the phase
- *  vocabulary from `errors.ts`; OCA failures pass through as
- *  `OnChainArtifactError`. The composite's narration vocabulary
- *  (`composite.ts`) anchors on these phase tags.
+ *  vocabulary from `errors.ts`; artifact publisher failures pass through as
+ *  `ArtifactPublishError`. The plugin narration vocabulary anchors
+ *  on these phase tags.
  */
 export const bootLocalCluster = (
 	deps: LocalClusterDeps,
 	opts: ResolvedLocalClusterOptions,
 ): Effect.Effect<
 	LocalClusterBootResult,
-	WalrusError | OnChainArtifactError,
+	WalrusError | ArtifactPublishError,
 	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
-		// ---- cargo image (lifted sibling) -----------------------
-		// The cargo image is content-addressed; the sibling's resolver
-		// owns the cache check + the registry-tag override fast path.
+		// ---- cargo image (bootstrap asset) -----------------------
+		// The cargo image is content-addressed; the resolver owns the
+		// cache check + the registry-tag override fast path.
 		yield* setCurrentPluginPhase(`resolving Walrus image ${opts.version}`);
 		const walrusImage = yield* resolveCargoImage(deps.runtime, {
-			walrusRepo: DEFAULT_WALRUS_REPO,
 			walrusRef: opts.version,
 			suiVersion: opts.suiVersion,
 		});
-
-		// ---- move source (lifted sibling, conditional) ----------
-		// Source is only fetched when no user-pinned path is provided.
-		// The deploy one-shot bakes its own Move package inside the
-		// walrus image; we still resolve the lifted sibling so its key
-		// participates in the dedup dance — two `walrus()` instances
-		// pinned to the same ref share one source-fetch.
-		if (!opts.movePackagePath) {
-			yield* setCurrentPluginPhase(`resolving Walrus Move source ${opts.version}`);
-			yield* resolveWalrusSource({
-				repo: DEFAULT_WALRUS_REPO,
-				ref: opts.version,
-				subdir: DEFAULT_WALRUS_MOVE_SUBDIR,
-			}).pipe(
-				Effect.catch(
-					(_err): Effect.Effect<unknown, WalrusPluginError> =>
-						// Source fetch is best-effort in the lifted-sibling
-						// model — the deploy one-shot today embeds its own
-						// Move package via the wrapper image. Until the OCA
-						// primitive accepts a per-call `movePackagePath`
-						// override, we degrade the source-fetch failure to a
-						// warning narration and continue.
-						Effect.succeed(undefined),
-				),
-			);
-		}
 
 		// ---- docker network ensure ------------------------------
 		yield* setCurrentPluginPhase(`ensuring Walrus network ${deps.walrusNetworkName}`);
@@ -342,7 +300,7 @@ export const bootLocalCluster = (
 				),
 			);
 
-		// ---- deploy via OnChainArtifactPublisher ----------------
+		// ---- deploy via ArtifactPublisher ----------------
 		// The deploy one-shot needs the walrus image + sui network so it
 		// can dial the per-stack sui RPC + faucet over docker DNS.
 		//

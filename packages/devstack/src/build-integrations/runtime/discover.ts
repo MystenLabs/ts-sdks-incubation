@@ -28,7 +28,7 @@
 // Playwright config-load, and Playwright's loader API is sync. Cost is
 // a handful of `existsSync` calls — cheap.
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { ManifestDiscoveryError } from './errors.ts';
@@ -75,6 +75,80 @@ export interface DiscoverManifestPathOptions {
 	 *  "no manifest" as cold-start branch cleanly). */
 	readonly required?: boolean;
 }
+
+export interface BuildIntegrationIdentity {
+	readonly app: string | undefined;
+	readonly stack: string;
+	readonly stateDir: string;
+	readonly manifestPath: string;
+}
+
+export interface DiscoverBuildIntegrationIdentityOptions {
+	/** Resolution cwd. Defaults to `process.cwd()`. */
+	readonly cwd?: string;
+	/** Explicit app name. Overrides env + package.json walk-up. */
+	readonly app?: string;
+	/** Explicit stack name. Overrides `DEVSTACK_STACK`; otherwise
+	 *  defaults to `main`. */
+	readonly stack?: string;
+	/** Explicit state-dir name. Overrides `DEVSTACK_STATE_DIR`. */
+	readonly stateDir?: string;
+	/** Env bag for tests and config loaders. Defaults to `process.env`. */
+	readonly env?: Readonly<Record<string, string | undefined>>;
+}
+
+/** Read `name` out of `<dir>/package.json`, strip the `@scope/`
+ *  prefix and any leading non-alphanumerics. Returns `undefined`
+ *  when the file is missing / unreadable / has no name field. */
+export const readAppName = (dir: string): string | undefined => {
+	try {
+		const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')) as {
+			name?: string;
+		};
+		if (typeof pkg.name !== 'string') return undefined;
+		const stripped = pkg.name.replace(/^@[^/]+\//, '').replace(/^[^a-zA-Z0-9]+/, '');
+		return stripped.length > 0 ? stripped : undefined;
+	} catch {
+		return undefined;
+	}
+};
+
+/** Walk up from `cwd` to find the closest `package.json` and return
+ *  its un-scoped `name` field. Returns `undefined` if no package.json
+ *  is reachable. Bounded to 32 levels — defense against pathological
+ *  symlink loops. */
+export const readAppNameWalkup = (cwd: string): string | undefined => {
+	let dir = resolve(cwd);
+	for (let i = 0; i < 32; i += 1) {
+		const name = readAppName(dir);
+		if (name !== undefined) return name;
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+	return undefined;
+};
+
+/** Resolve the framework-neutral identity tuple build integrations
+ *  need at config-load time. The manifest path is returned even when
+ *  it does not exist yet so cold-start callers can still compute
+ *  conventional URLs and watch-ignore paths. */
+export const discoverBuildIntegrationIdentity = (
+	options: DiscoverBuildIntegrationIdentityOptions = {},
+): BuildIntegrationIdentity => {
+	const env = options.env ?? (process.env as Readonly<Record<string, string | undefined>>);
+	const cwd = options.cwd ?? process.cwd();
+	const stack = resolveBuildIntegrationStack(options.stack, env);
+	const stateDirName = options.stateDir ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
+
+	const discovered = discoverManifestPath({ cwd, stack, stateDir: stateDirName, env });
+	const manifestPath = discovered ?? resolve(cwd, stateDirName, 'stacks', stack, 'manifest.json');
+	const stateDir =
+		discovered !== undefined ? dirname(dirname(dirname(discovered))) : resolve(cwd, stateDirName);
+	const app = options.app ?? env.DEVSTACK_APP ?? readAppNameWalkup(cwd);
+
+	return { app, stack, stateDir, manifestPath };
+};
 
 /**
  * Locate an existing devstack manifest on disk. Sync — Playwright's

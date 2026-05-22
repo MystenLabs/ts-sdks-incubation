@@ -3,9 +3,8 @@
 # the hours-long rust toolchain build the real upstream image needs.
 #
 # Built once, tagged `walrus-test-stub:latest` (the e2e test sets
-# `WALRUS_CARGO_IMAGE_OVERRIDE=walrus-test-stub:latest` so the lifted-
-# sibling resolver short-circuits to this image instead of failing
-# with the documented "cargo build not implemented" seam error).
+# `WALRUS_CARGO_IMAGE_OVERRIDE=walrus-test-stub:latest` so the image
+# resolver short-circuits to this tag).
 #
 # Two behaviors the walrus plugin's local-cluster boot path drives:
 #

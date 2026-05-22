@@ -17,7 +17,7 @@
 //
 // What it does NOT do:
 //
-//   - Consume the PublishReceipt — that's the discovery-fold path
+//   - Consume the LocalPackagePublishOutput — that's the discovery-fold path
 //     handled at compose-time in the barrel (the barrel calls into
 //     `discovery.ts` + `metadata.ts` to populate the registry as
 //     packages publish; this file just READS the registry).
@@ -27,9 +27,9 @@ import { Effect, type Scope } from 'effect';
 
 import type { ChainId } from '../../substrate/brand.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import {
 	BUILTIN_COINS,
 	resolveBuiltin,
@@ -64,12 +64,12 @@ export type CoinAddressForm =
 /** Per-acquire context supplied by the barrel from the BuildContext.
  *  Carries the resolved per-stack registry, the Sui-side SDK shim
  *  (verify probe + tx build), the chain id, and the
- *  `OnChainArtifactPublisher` substrate primitive used by `performMint`. */
+ *  `ArtifactPublisher` substrate primitive used by `performMint`. */
 export interface CoinAcquireContext {
 	readonly registry: CoinRegistry;
 	readonly sdk: MetadataSdkShim & MintSdkShim;
 	readonly chain: ChainId;
-	readonly publisher: OnChainArtifactPublisher;
+	readonly publisher: ArtifactPublisher;
 }
 
 /** The tag's resolved value — the four address forms unified PLUS a
@@ -77,12 +77,12 @@ export interface CoinAcquireContext {
 export interface CoinValue extends ResolvedCoin {
 	/** Generic mint. Requires the cap id (either resolved from the
 	 *  registry record's `treasuryCapId`, or supplied explicitly for
-	 *  bare-type coins). Each call yields a fresh OCA round (cache
+	 *  bare-type coins). Each call yields a fresh artifact publisher round (cache
 	 *  hit means short-circuit per the substrate primitive). */
 	readonly mint: (
 		signer: MintSigner,
 		opts: { readonly to: string; readonly amount: bigint; readonly treasuryCapId?: string },
-	) => Effect.Effect<MintResult, CoinError | OnChainArtifactError, Scope.Scope>;
+	) => Effect.Effect<MintResult, CoinError | ArtifactPublishError, Scope.Scope>;
 }
 
 /** Resolve a coin instance to the tag's resolved value. */

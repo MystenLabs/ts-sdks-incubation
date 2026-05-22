@@ -19,7 +19,6 @@ export {
 	type AnyResourceRef,
 	type CapabilitySource,
 	type CapabilitiesFactory,
-	type CompositePluginMetadata,
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,

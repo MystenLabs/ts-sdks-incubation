@@ -35,11 +35,10 @@
 // conventional-port map. (Architecture: "engine knows zero service
 // names" — the table is plugin-emitted.)
 
-import { readFileSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { basename } from 'node:path';
 
 import { NoConventionalRouteError } from './errors.ts';
-import { resolveBuildIntegrationStack } from './discover.ts';
+import { readAppName, resolveBuildIntegrationStack } from './discover.ts';
 
 /** One row of the conventional-route table. The supervisor's router
  *  plugin emits a `Map<endpointName, ConventionalRoute>` from its
@@ -89,21 +88,11 @@ export interface ConventionalRouteUrlInput extends ConventionalRouteHostInput {
 	readonly trailingSlash?: boolean;
 }
 
-/** Read `name` out of `<dir>/package.json`, strip the `@scope/`
- *  prefix and any leading non-alphanumerics. Returns `undefined`
- *  when the file is missing / unreadable / has no name field. */
-export const readAppName = (dir: string): string | undefined => {
-	try {
-		const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')) as {
-			name?: string;
-		};
-		if (typeof pkg.name !== 'string') return undefined;
-		const stripped = pkg.name.replace(/^@[^/]+\//, '').replace(/^[^a-zA-Z0-9]+/, '');
-		return stripped.length > 0 ? stripped : undefined;
-	} catch {
-		return undefined;
-	}
-};
+export interface ConventionalRouteHint {
+	readonly endpoint: string;
+	readonly service: string;
+	readonly wireProtocol?: 'http' | 'h2c';
+}
 
 export const conventionalRouteHost = (input: ConventionalRouteHostInput): string => {
 	const hostSuffix = input.hostSuffix ?? '.localhost';
@@ -118,6 +107,21 @@ export const conventionalRouteUrl = (input: ConventionalRouteUrlInput): string =
 	const url = `${scheme}://${host}:${input.route.port}`;
 	return input.trailingSlash === true ? `${url}/` : url;
 };
+
+export const conventionalRoutesFromHints = (
+	hints: ReadonlyArray<ConventionalRouteHint>,
+	port: number,
+): ReadonlyMap<string, ConventionalRoute> =>
+	new Map(
+		hints.map((hint): [string, ConventionalRoute] => [
+			hint.endpoint,
+			{
+				service: hint.service,
+				port,
+				wireProtocol: hint.wireProtocol ?? 'http',
+			},
+		]),
+	);
 
 /**
  * Compute the conventional URL for `endpoint`. Throws

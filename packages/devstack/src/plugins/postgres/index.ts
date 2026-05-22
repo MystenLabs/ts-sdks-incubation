@@ -48,11 +48,7 @@ import { makeSnapshotable } from './snapshot.ts';
 
 type PostgresCapabilities =
 	| readonly [SnapshotableDecl, CodegenableDecl<'postgres-connection'>]
-	| readonly [
-			SnapshotableDecl,
-			CodegenableDecl<'postgres-connection'>,
-			RoutableDecl,
-	  ];
+	| readonly [SnapshotableDecl, CodegenableDecl<'postgres-connection'>, RoutableDecl];
 
 // ---------------------------------------------------------------------------
 // Resource identity
@@ -96,8 +92,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 
 	return definePlugin({
 		id: postgresResource.id,
-		kind: 'leaf-long-running',
-		rebootCost: 'heavy',
+		role: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// Substrate-context plumbing supplies real
@@ -154,9 +149,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 						containerName: `${runtime.identity.app}-${runtime.identity.stack}-${name}`,
 					})
 				: null;
-			return routable === null
-				? ([snap, codegen] as const)
-				: ([snap, codegen, routable] as const);
+			return routable === null ? ([snap, codegen] as const) : ([snap, codegen, routable] as const);
 		},
 	});
 };

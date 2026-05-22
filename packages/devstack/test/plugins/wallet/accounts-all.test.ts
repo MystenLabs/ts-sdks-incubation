@@ -126,7 +126,9 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 
 	it('empty all still composes to the placeholder dependency shape', () => {
 		const explicitSui = sui();
-		const stack = defineDevstack({ members: [explicitSui, wallet({ accounts: WALLET_ACCOUNTS_ALL })] });
+		const stack = defineDevstack({
+			members: [explicitSui, wallet({ accounts: WALLET_ACCOUNTS_ALL })],
+		});
 
 		const walletMember = readStackEngine(stack).members.find((m) => m.id === 'wallet')!;
 		expect(walletMember.dependsOn).toHaveLength(1);

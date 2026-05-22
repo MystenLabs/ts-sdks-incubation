@@ -23,7 +23,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				id,
 				at,
 				level: event.level,
-				scope: labelForRow(event.pluginKey, 'leaf-long-running'),
+				scope: labelForRow(event.pluginKey),
 				scopeColor: colorForPluginKey(event.pluginKey),
 				message: event.line,
 			});
@@ -32,10 +32,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				id,
 				level: event.error.severity === 'warn' ? 'warn' : 'error',
 				at,
-				scope:
-					event.error.pluginKey === null
-						? 'Stack'
-						: labelForRow(event.error.pluginKey, 'leaf-long-running'),
+				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
 				scopeColor:
 					event.error.pluginKey === null ? 'white' : colorForPluginKey(event.error.pluginKey),
 				message: `failed: ${event.error.summary}`,
@@ -97,7 +94,6 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
-		case 'sibling.deduped':
 			return null;
 		default: {
 			const _exhaustive: never = event;

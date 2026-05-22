@@ -50,11 +50,11 @@ describe('release surface static checks', () => {
 	it('packs Docker image contexts and does not export samples', () => {
 		const pkg = readPackageJson();
 
+		expect(pkg.files).toContain('dist');
 		expect(pkg.files).toContain('images');
-		expect(pkg.files).toContain('!src/generated');
-		expect(pkg.files).toContain('!src/samples');
 		expect(pkg.files).toContain('!dist/samples');
 		expect(pkg.files).toContain('!dist/node_modules');
+		expect(pkg.files).not.toContain('src');
 		expect(pkg.exports).not.toHaveProperty('./samples');
 		expect(pkg.exports).toHaveProperty('./vitest/setup');
 		expect(pkg.exports).toHaveProperty('./browser/setup');
@@ -81,6 +81,15 @@ describe('release surface static checks', () => {
 		expect(readText('dist/cli/main.d.mts')).not.toMatch(/^#!/);
 	});
 
+	it('keeps declarations on public package specifiers', () => {
+		const badSpecifier =
+			/(?:node_modules\/(?:\.pnpm\/effect@[^/]+\/node_modules\/)?effect\/dist\/|effect\/[^"']+\.js|\.pnpm\/effect)/;
+
+		for (const file of packFiles().filter((file) => file.endsWith('.d.mts'))) {
+			expect(readText(file), file).not.toMatch(badSpecifier);
+		}
+	}, 20_000);
+
 	it('pack dry-run includes runtime assets and excludes generated artifacts', () => {
 		const files = packFiles();
 
@@ -103,6 +112,7 @@ describe('release surface static checks', () => {
 			expect(files, `${specifier} types`).toContain(types?.slice(2));
 		}
 
+		expect(files.some((file) => file.startsWith('src/'))).toBe(false);
 		expect(files.some((file) => file.startsWith('src/generated/'))).toBe(false);
 		expect(files.some((file) => file.startsWith('src/samples/'))).toBe(false);
 		expect(files.some((file) => file.startsWith('dist/samples/'))).toBe(false);
@@ -169,6 +179,12 @@ describe('release surface static checks', () => {
 			'makeSealManagerTag',
 			'sealManagerTagId',
 			'SealManagerTagId',
+			'ActionReceiptSchema',
+			'signAndExecute',
+			'ActionLifecyclePhase',
+			'DynamicDiscriminator',
+			'StaticDiscriminator',
+			'ActionObjectChange',
 		]) {
 			expect(root).not.toContain(leaked);
 			expect(substrate).not.toContain(leaked);

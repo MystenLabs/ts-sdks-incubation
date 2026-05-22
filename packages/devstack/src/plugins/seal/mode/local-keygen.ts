@@ -3,13 +3,13 @@
 // Distilled-doc reference (07-seal.md §"Lifecycle / Startup —
 // `sealLocalKeygen`"). Eight ordered phases:
 //
-//   0. Yield deps (Sui, Identity, ContainerRuntime, OCA publisher).
-//   1. Image build (lifted sibling — parallel with sui's boot).
-//  1a. Move source resolve (lifted sibling, conditional).
+//   0. Yield deps (Sui, Identity, ContainerRuntime, artifact publisher publisher).
+//   1. Image build (bootstrap asset — parallel with sui's boot).
+//  1a. Move source resolve (bootstrap asset, conditional).
 //   2. BLS keygen one-shot (real `runtime.runOneShot` against cargo
 //                            image; output parsed via regex).
-//   3. Publish seal Move package (via OCA primitive).
-//   4. Register on-chain KeyServer (via OCA primitive).
+//   3. Publish seal Move package (via artifact publisher primitive).
+//   4. Register on-chain KeyServer (via artifact publisher primitive).
 //   5. Render config yaml + stage master-key env-file (atomic
 //                                                       FileSystem
 //                                                       writes).
@@ -17,7 +17,7 @@
 //                                               `runtime.ensureContainer`
 //                                               + exec-based ready
 //                                               probe).
-//   7. Project the composite's aggregate value.
+//   7. Project the plugin's aggregate value.
 //
 // Distilled-doc invariants pinned by this file:
 //
@@ -34,7 +34,7 @@
 //   #8  Fork incompatibility throw — handled at the barrel
 //       (`index.ts`), NOT here.
 //   #9  Peer-dep structural assignability (compile-time check
-//       lives in `composite.ts`).
+//       lives in registry-publish.ts).
 //
 // This is the substrate-name-LEAK boundary. Inside this file we can
 // say "seal"; outside `src/plugins/seal/`, the substrate doesn't
@@ -47,9 +47,9 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { ContainerRuntime, ImageRef } from '../../../contracts/container-runtime.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../../primitives/artifact-publisher.ts';
 import type { AccountValue } from '../../account/service.ts';
 import { renderSealKeyServerConfig, stageSealConfig } from '../config-render.ts';
 import {
@@ -63,8 +63,8 @@ import { runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
 import { makeKeyManager, stubRotate } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
 import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-publish.ts';
-import { resolveDefaultSealCargoImage } from '../lifted-siblings/cargo-image.ts';
-import { resolveDefaultSealSource } from '../lifted-siblings/source-fetch.ts';
+import { resolveDefaultSealCargoImage } from '../bootstrap-assets/cargo-image.ts';
+import { resolveDefaultSealSource } from '../bootstrap-assets/source-fetch.ts';
 
 // ---------------------------------------------------------------------------
 // Options (factory-time)
@@ -117,17 +117,17 @@ export const resolveLocalKeygenOptions = (
  *  barrel (`index.ts`) from a mix of:
  *
  *   - substrate-resolved values (`IdentityContext`,
- *     `ContainerRuntimeService`, `OnChainArtifactPublisher`);
+ *     `ContainerRuntimeService`, `ArtifactPublisher`);
  *   - substrate-derived identifiers (chainId, servicePath,
  *     subnet, etc.);
  *   - router-resolved URL (single mint — distilled-doc invariant #1).
  *
  *  The barrel composes these from substrate services
- *  (ContainerRuntime, IdentityContext, OnChainArtifactPublisher,
+ *  (ContainerRuntime, IdentityContext, ArtifactPublisher,
  *  StackPathsService) at acquire-time. */
 export interface LocalKeygenDeps {
 	readonly runtime: ContainerRuntime;
-	readonly publisher: OnChainArtifactPublisher;
+	readonly publisher: ArtifactPublisher;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
 	readonly buildImage?: ImageRef;
@@ -156,30 +156,30 @@ export interface LocalKeygenDeps {
 // Boot pipeline
 // ---------------------------------------------------------------------------
 
-/** The composite's aggregate acquire body. Calls each phase in
+/** The plugin's aggregate acquire body. Calls each phase in
  *  order; failures surface as typed `SealError` /
- *  `OnChainArtifactError` through the Effect's error channel.
+ *  `ArtifactPublishError` through the Effect's error channel.
  *
  *  Distilled-doc invariant #2 — phase order is keygen → publish →
  *  register → config-render → container. Any phase failure short-
  *  circuits before downstream phases (cheap on warm restart because
- *  the OnChainArtifactPublisher cache + verify covers steps 3-4). */
+ *  the ArtifactPublisher cache + verify covers steps 3-4). */
 export const bootLocalKeygen = (
 	deps: LocalKeygenDeps,
 	opts: ResolvedLocalKeygenOptions,
 ): Effect.Effect<
 	SealLocalKeygenResolved,
-	SealError | OnChainArtifactError,
+	SealError | ArtifactPublishError,
 	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
-		// ---- cargo image (lifted sibling) -----------------------
+		// ---- cargo image (bootstrap asset) -----------------------
 		// The cargo image's resolver honors `SEAL_CARGO_IMAGE_OVERRIDE`
 		// for the pre-baked path; falls back to a documented seam error
 		// pointing at the override hatch.
 		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime);
 
-		// ---- move source resolve (lifted sibling, conditional) --
+		// ---- move source resolve (bootstrap asset, conditional) --
 		// Source is only fetched when no user-pinned path is provided.
 		const movePackagePath: string = opts.movePackagePath
 			? opts.movePackagePath
@@ -187,7 +187,7 @@ export const bootLocalKeygen = (
 
 		// ---- keygen (BLS12-381 master + public) -----------------
 		// The keypair flows directly into the publish + register
-		// passes rather than through the OCA primitive — the publisher
+		// passes rather than through the artifact publisher primitive — the publisher
 		// only sees the artifacts the keygen produces (packageId,
 		// keyServerObjectId).
 		const keypair: PersistedBlsKeypair = yield* runSealKeygen(deps.runtime, opts.name, cargoImage);
@@ -256,7 +256,7 @@ export const bootLocalKeygen = (
 		const { containerName } = yield* startKeyServer(deps.runtime, spec, opts.name);
 		void containerName;
 
-		// ---- assemble the composite's aggregate value -----------
+		// ---- assemble the plugin's aggregate value --------------
 		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
 			{ objectId: keyServerObjectId, weight: 1 },
 		];
@@ -279,7 +279,7 @@ export const bootLocalKeygen = (
 			packageId,
 		} satisfies SealLocalKeygenResolved;
 	}).pipe(
-		Effect.catchTag('OnChainArtifactError', (err) =>
+		Effect.catchTag('ArtifactPublishError', (err) =>
 			Effect.fail(
 				sealError('seal', {
 					name: opts.name,

@@ -104,12 +104,6 @@ export type EngineEvent =
 			readonly at: number;
 	  }
 	| {
-			readonly tag: 'sibling.deduped';
-			readonly composite: PluginKey;
-			readonly siblingKey: string;
-			readonly at: number;
-	  }
-	| {
 			readonly tag: 'snapshot.captured';
 			readonly snapshotId: string;
 			readonly at: number;

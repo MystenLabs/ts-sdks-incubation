@@ -13,7 +13,7 @@
 //     failures would force every caller to handle a recovery path
 //     they don't need. The corruption is logged via the span.
 //   - `write` is best-effort. The architecture is explicit: an
-//     OnChainArtifactPublisher commits the on-chain effect, THEN
+//     ArtifactPublisher commits the on-chain effect, THEN
 //     writes the cache; a cache-write IO failure must NOT roll back
 //     the on-chain effect. We surface write failures via the
 //     `CacheError` channel so callers can opt into reporting them,

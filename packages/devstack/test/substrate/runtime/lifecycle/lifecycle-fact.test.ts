@@ -25,16 +25,13 @@ import type { Row, SubscribableState } from '../../../../src/substrate/projectio
 
 const sampleRow: Row = {
 	key: pluginKey('demo'),
-	kind: 'leaf-long-running',
+	role: 'service',
 	status: 'pending',
 	phase: null,
 	lastError: null,
 	logTail: { lines: [], level: 'info', truncated: false },
 	endpoints: [],
-	compositeChildren: null,
 	selectiveRestartHighlight: false,
-	narrationByContributor: null,
-	rebootCost: null,
 };
 
 const emptyState = (): SubscribableState => ({

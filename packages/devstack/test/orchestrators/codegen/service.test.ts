@@ -13,10 +13,7 @@ import { pathToFileURL } from 'node:url';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 
-import type {
-	CodegenableDecl,
-	CodegenEmitContext,
-} from '../../../src/contracts/codegenable.ts';
+import type { CodegenableDecl, CodegenEmitContext } from '../../../src/contracts/codegenable.ts';
 
 import {
 	MoveCodegenService,

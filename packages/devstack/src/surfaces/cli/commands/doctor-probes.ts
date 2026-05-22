@@ -24,7 +24,6 @@ import { join } from 'node:path';
 import { Effect } from 'effect';
 
 import {
-	DEFAULT_ENTRYPOINTS,
 	dispatchFileIdFromFilename,
 	makeDefaultRouterProfile,
 	parseDispatchRouteFile,
@@ -33,6 +32,7 @@ import {
 	type Entrypoint,
 	type RouterProfile,
 } from '../../../orchestrators/router/index.ts';
+import { BUILT_IN_ENTRYPOINTS } from '../../../plugins/router-entrypoints.ts';
 import { checkHolderLiveness, readRoster } from '../../../substrate/runtime/cross-process/index.ts';
 import type { RosterHolder } from '../../../substrate/cross-process.ts';
 import type { Probe, ProbeOutcome } from './doctor.ts';
@@ -406,7 +406,7 @@ export const routerProfileProbe = (options: RouterProfileProbeOptions = {}): Pro
 	run: () =>
 		Effect.gen(function* () {
 			const profile = options.profile ?? makeDefaultRouterProfile();
-			const entrypoints = options.entrypoints ?? DEFAULT_ENTRYPOINTS;
+			const entrypoints = options.entrypoints ?? BUILT_IN_ENTRYPOINTS;
 			const command = options.command ?? captureCommand;
 			const probePort = options.probePort ?? probePortFree;
 			const ports = uniqueSortedEntrypointPorts(entrypoints);

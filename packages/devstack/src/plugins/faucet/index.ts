@@ -64,8 +64,7 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
 		// Faucet is a leaf: it has no Sui dependency. Sui contributes
 		// its own `faucet:request:<chainId>` strategy when its resolved
 		// mode exposes a faucet URL.
-		kind: 'leaf-long-running',
-		rebootCost: 'cheap',
+		role: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				return yield* acquireFaucetService(opts);
@@ -87,7 +86,7 @@ export const faucet = (opts: FaucetServiceOptions = {}) => {
  * ```ts
  * definePlugin({
  *   id: 'my-faucet-strategy',
- *   kind: 'leaf-long-running',
+ *   role: 'service',
  *   start: () => Effect.succeed({}),
  *   capabilities: [
  *     defineFaucetStrategy({

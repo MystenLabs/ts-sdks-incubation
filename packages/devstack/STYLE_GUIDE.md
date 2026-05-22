@@ -121,9 +121,9 @@ Rules that apply across all four styles:
   Plain-interface plugins use `cause?: unknown` — fine, but document.
 - One `_tag` literal per logical error type across the whole package — no duplicates.
   **`ForkIncompatibleError` was duplicated** in `plugins/walrus/errors.ts` +
-  `plugins/seal/errors.ts`; PR1-E promoted the canonical shape to
-  `substrate/runtime/composite-errors.ts` (O3 closed). The plugin-side duplicates remain pending PR3
-  delete; **do NOT add a second variant of any tag** when a canonical substrate shape exists.
+  `plugins/seal/errors.ts`; PR1-E promoted the canonical shape to `substrate/runtime/mode-errors.ts`
+  (O3 closed). The plugin-side duplicates remain pending PR3 delete; **do NOT add a second variant
+  of any tag** when a canonical substrate shape exists.
 - Tag naming: PascalCase. Suffix `Error` is preferred for "the error a caller catches"
   (`WalletBootError`, `SealError`); unsuffixed is acceptable for "the failure event variant"
   (`DaemonUnreachable`, `RecreateRefused`). Mixed today; convention is invisible — be consistent
@@ -185,7 +185,7 @@ Per memory `feedback_no_compat_for_never_cases`:
 - No `as never` / `as any` / `as unknown as ...` at the **user-facing surface** — they are
   diagnostic markers of incomplete substrate types and MUST be zero at cutover. Known sites flagged
   for removal: `wallet-rewrite/devstack.config.ts:130`, `deepbook-full-rewrite` chainId placeholder,
-  arena's `sdkClient as { ... }`.
+  connect-four's `sdkClient as { ... }`.
 - Code either WORKS as written or DOESN'T EXIST. Phase markers are dead scaffold — delete.
 - Substrate-side: same rule applies. No `// future` reservations, no orphan exports waiting for a
   wiring layer (`Logger` service, `SpanAttr` helpers, `LifecycleFact`, `PluginErrorContribution`,
@@ -212,31 +212,29 @@ edge is documented even though the wallet body doesn't read the resolved value).
   `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
-  `OnChainArtifactPublisherService`, `ContainerRuntimeService`, `PackageRegistryService`,
+  `ArtifactPublisherService`, `ContainerRuntimeService`, `PackageRegistryService`,
   `CoinRegistryService`).
 - Branded primitives: `AppName`, `StackName`, `ChainId`, `PluginKey`, `EndpointKey`, `ContentHash`,
-  `LitHash`, `LiftedSiblingKey`, etc. — established in `substrate/brand.ts`.
+  etc. — established in `substrate/brand.ts`.
 - Type-only generics with phantom witnesses: `__PrefixedWithDoubleUnderscore` (e.g.
-  `__MissingProvidersError<Missing>`, `__SiblingHashConflictError<G>`, `__LifecycleTableShape`,
-  `__ProjectionFieldsClosed`, `__TuiDisplayVocabClean`). Established convention — surfaces
-  structural validation errors at the call-site argument.
+  `__MissingProvidersError<Missing>`, `__LifecycleTableShape`, `__ProjectionFieldsClosed`,
+  `__TuiDisplayVocabClean`). Established convention — surfaces structural validation errors at the
+  call-site argument.
 - Per-instance resource id literal templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
   `action:<name>`, `deepbook/<name>`. Mixing `/` vs `:` separators is intentional per plugin
   convention; do not "normalize".
 - File names: kebab-case (`stage-and-swap.ts`, `cross-process-lock.ts`). Effect-Service module shape
   commonly: `{ index, layer, service }.ts` when nontrivial.
 - **`PluginKey` derivation** (substrate `lifecycle/dep-graph.ts:mintKey`):
-  - **Composites** carry a declared `composite.key: PluginKey | string` in plugin metadata; the
-    dep-graph reads it verbatim. Composite authors choose the key shape (`seal:${name}`,
-    `args.compositeKey`) — kept stable across cycles.
-  - **Leaves** mint `${member.id}#${ordinal}` where `ordinal` is the position in the surrounding
-    member tuple. The `#N` suffix disambiguates two members providing the same resource id in one
-    stack.
-  - **Inner composite participants** mint `${parentKey}/inner/${inner.id}#${ordinal}` so two
-    composites embedding the same leaf shape stay distinct.
-  - Plugin authors do NOT call `pluginKey(...)` to derive their own leaf key — the substrate mints
-    it. Composites that need a stable key publish one via plugin metadata; everything else is
-    derived.
+  - Plugins that need a stable lifecycle key declare `pluginKey: PluginKey | string` in plugin
+    metadata; the dep-graph reads it verbatim. Local service factories choose the key shape
+    (`seal:${name}`, `walrus:${name}`) so routed services and persisted projection rows remain
+    stable across cycles.
+  - Plugins without a declared key mint `${member.id}#${ordinal}` where `ordinal` is the position in
+    the surrounding member tuple. The `#N` suffix disambiguates two members providing the same
+    resource id in one stack.
+  - Plugin authors do NOT call `pluginKey(...)` for ordinary task plugins. Reserve declared keys for
+    long-lived services or factories whose row identity must survive member reordering.
 
 ---
 
@@ -244,21 +242,12 @@ edge is documented even though the wallet body doesn't read the resolved value).
 
 Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
 
-- **Plugin A may NOT import from Plugin B.** **Open slot O5 STILL violated** and more visible after
-  PR1.5: `plugins/coin/discovery.ts` imports `PublishObjectChange` / `PublishReceipt` from
-  `../package/index.ts`; `plugins/package/index.ts` imports those same types from its own
-  `coin-discovery.ts` (the PublishReceipt contract now lives in the package plugin, but coin reaches
-  across the plugin boundary to consume it). The proper fix is a substrate-raised
-  `PublishReceiptEmitted` event that the coin plugin subscribes to — pending PR2-A's harvest loop OR
-  a future event-bus primitive.
-- **Substrate is name-blind:** substrate code MUST NOT mention plugin names. Known violations to be
-  lifted out (substrate triage pass):
-  - `substrate/runtime/per-stack-registries/coin.ts` — `witness`, `treasuryCapId`, `metadataId`,
-    `packageId`, `mvrPlaceholder`, `publishingPackageName`, `moduleName` are Sui/Move-coin concepts.
-  - `substrate/runtime/per-stack-registries/package.ts` — `packageId`, `upgradeCapId`, `sourcePath`,
-    `mvrPlaceholder`, `captured` are Move-package concepts.
-  - `substrate/runtime/on-chain-artifact/` — the framing names "on-chain"; rename to generic
-    `artifact-publisher` or move to L2 alongside Sui plugins.
+- **Plugin A may NOT import from Plugin B.** Cross-plugin communication goes through explicit
+  `dependsOn` resource values, public resource refs, or a higher-level runtime composition layer
+  that is allowed to import both plugins. Do not import a sibling plugin's internal modules.
+- **Substrate is name-blind:** substrate code MUST NOT mention plugin names. Plugin-domain services
+  such as `CoinRegistryService` and `PackageRegistryService` are composed outside
+  `substrate/runtime/` and injected through `pluginContext`.
 - **Substrate must not depend on contract NAMES either.** `substrate/runtime/supervisor.ts:35-40`
   imports six named capability-decl modules; the substrate is name-blind only at the plugin level,
   but capability awareness is also a coupling. Pending inversion via a `CapabilitySinks` registry —
@@ -317,8 +306,8 @@ local-keygen/live/fork-known, deepbook local/live/fork):
 
 - Use `defineModeNamespace` and call the returned namespace with `network` (per
   `api/mode-narrowed-factory.ts`).
-- Composite refusal lives at the **TYPE LEVEL**. `walrus.localOf(sui)` is the only valid local
-  Walrus call; `walrus()` on a fork-typed branch is a compile error.
+- Mode refusal lives at the **TYPE LEVEL**. `walrus.localOf(sui)` is the only valid local Walrus
+  call; `walrus()` on a fork-typed branch is a compile error.
 - Do NOT add runtime mode checks that the type system could have caught. Mode-narrowed factories use
   two `as` casts inside `defineModeNamespace` — that is the **sole** boundary between runtime
   breadth and type-level narrowness; do not add ad-hoc `if (mode === ...)` runtime guards
@@ -379,17 +368,17 @@ wrapper shape. This rule prevents the recurrence — any future generic-primitiv
 
 ---
 
-## 11. OCA usage
+## 11. artifact publisher usage
 
-All on-chain artifacts MUST go through `OnChainArtifactPublisher` (substrate primitive at
-`primitives/on-chain-artifact.ts` + `substrate/runtime/on-chain-artifact/`):
+All cacheable produce/verify/register artifacts MUST go through `ArtifactPublisher` (substrate
+primitive at `primitives/artifact-publisher.ts` + `substrate/runtime/artifact-publisher/`):
 
 - Pattern: `cache → verify(cached) → produce → register`.
 - Use `LENIENT_RETRY_PROFILE` for chain reads (cross-cutting convention).
 - Do NOT write ad-hoc publish paths. Reference impls: `plugins/package/mode-local.ts:255+`,
   `plugins/coin/mint.ts:223+`.
 - Typed seam for `ChainOperation<Produced>` is at
-  `substrate/runtime/on-chain-artifact/chain-operation.ts` (`sui-tx` / `shell-oneshot` /
+  `substrate/runtime/artifact-publisher/chain-operation.ts` (`sui-tx` / `shell-oneshot` /
   `register-only` variants); O1 closed in PR1-E. New produce bodies MUST express themselves as a
   `ChainOperation` variant; do NOT re-derive the produce shape per-plugin.
 
@@ -544,8 +533,7 @@ Rules:
 - ONE cross-process lock primitive: the typed `CrossProcessLock` Effect Service.
 - Production wiring uses `layerCrossProcessLockFlock` (O_EXCL + PID/start-time liveness via
   `acquireStackLock`). Test wiring uses `layerCrossProcessLockInProcess` (in-memory semaphore —
-  single-process only). State-store + cache + lifted-sibling registry yield `CrossProcessLock` and
-  let wiring decide.
+  single-process only). State-store + cache yield `CrossProcessLock` and let wiring decide.
 - Cross-process modules use sync `node:fs` (substrate-fix-plan #11 tracks unification onto Effect
   `FileSystem`); the canonical atomic-write primitive exposes both surfaces (§17) so duplication
   does not creep back in during the interim.
@@ -658,7 +646,7 @@ each.
 **Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):
 
 - ~~O1~~: `ChainOperation<Produced>` typed seam landed (PR1-E).
-- ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/composite-errors.ts`
+- ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/mode-errors.ts`
   (PR1-E); plugin-side duplicates pending PR3 delete.
 - ~~O9~~: `ContainerRuntime.exec` on the contract with `ExecOptions` (PR1-D).
 - ~~O11~~: `LeaseBroker` substrate primitive (PR1-B); `plugins/account/lease.ts` consumes.

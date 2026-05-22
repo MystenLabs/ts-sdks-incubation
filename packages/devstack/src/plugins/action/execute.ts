@@ -29,7 +29,7 @@
 // All failures route through `ActionError` (phase: `sign` for transport
 // / RPC failures; `parse` for "no digest" / "wrong envelope shape"
 // situations). The action plugin's outer wrap collapses these into the
-// substrate's OCA `produce-failed` channel.
+// substrate's artifact publisher `produce-failed` channel.
 
 import { Effect, type Scope } from 'effect';
 

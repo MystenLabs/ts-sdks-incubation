@@ -7,12 +7,8 @@
 //   - the scope owning the plugin's `start` finalizers,
 //   - a `Deferred` that downstream consumers await for the ready gate.
 //
-// Composite roll-up: inner participants' status transitions still
-// flow through their own entries, but the supervisor consults
-// `compositeParent` on the dep-graph node to decide whether to emit a
-// projection row for the inner OR roll the narration into the parent
-// row's `narrationByContributor`. The registry itself is parent-agnostic
-// — it just tracks per-key lifecycle.
+// The registry tracks per-key lifecycle only; projection concerns stay
+// in the supervisor and reducer.
 
 import { Data, Deferred, Effect, Ref, Scope } from 'effect';
 

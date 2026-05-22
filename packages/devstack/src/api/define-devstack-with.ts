@@ -1,7 +1,7 @@
 // `defineDevstackWith` — callback form.
 //
 // Architecture § Programmable API: the canonical surface when one or
-// more composites need mode-narrowing. The callback receives a
+// more plugin factories need mode-narrowing. The callback receives a
 // `BuildCtx` whose `network` is the resolved-narrow `NetworkConfig`;
 // plugin-author factories that take `(network)` recover the mode
 // discriminator structurally, and the compiler refuses illegal-mode
@@ -11,13 +11,6 @@ import { isPlugin, type AnyPlugin } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
 import type { NetworkConfig, NetworkMode } from '../substrate/network.ts';
 import type { __MissingProvidersError, MissingProviders } from '../substrate/plugin.ts';
-import type {
-	GroupKey,
-	IsUniformHash,
-	LitSiblingKey,
-	SiblingScope,
-	__SiblingHashConflictError,
-} from '../substrate/lifted-sibling.ts';
 import { defineDevstack, type ComposedMembers, type Stack } from './define-devstack.ts';
 
 // --- Callback context ---------------------------------------------------
@@ -37,30 +30,6 @@ export interface DevstackOptionsWith<Mode extends NetworkMode> extends DevstackO
 	readonly network: NetworkConfig<Mode>;
 }
 
-// --- Type-level validation (mirrors flat form) --------------------------
-
-type SiblingKeysOfInline<Members> =
-	Members extends ReadonlyArray<unknown>
-		? (Members[number] extends { readonly liftedSiblings?: infer Sibs } ? Sibs : never) extends
-				| ReadonlyArray<infer S>
-				| undefined
-			? S
-			: never
-		: never;
-
-type ConflictingGroups<Members> =
-	Members extends ReadonlyArray<unknown>
-		? (Members[number] extends { readonly liftedSiblings?: infer Sibs } ? Sibs : never) extends
-				| ReadonlyArray<infer S>
-				| undefined
-			? S extends LitSiblingKey<string, string, SiblingScope, string>
-				? IsUniformHash<GroupKey<S>, SiblingKeysOfInline<Members>> extends false
-					? GroupKey<S>
-					: never
-				: never
-			: never
-		: never;
-
 /** Validation gate. Mirrors the flat-form rule: resolves to the
  *  caller's `Members` tuple on a clean check, branded error
  *  otherwise.
@@ -74,9 +43,7 @@ type ValidateBuild<Members> =
 		? ComposedMembers<Members> extends infer M
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
-					? [ConflictingGroups<M>] extends [never]
-						? Members
-						: __SiblingHashConflictError<ConflictingGroups<M>>
+					? Members
 					: __MissingProvidersError<MissingProviders<M>>
 				: never
 			: never

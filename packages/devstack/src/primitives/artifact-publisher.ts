@@ -1,0 +1,76 @@
+// ArtifactPublisher — L0 substrate primitive (architecture §10).
+//
+// Unifies the discipline that recurs across many on-chain
+// produce/verify plugins (substrate must remain service-name-blind;
+// the plugin index is the authoritative list). cache → verify →
+// produce → register on EVERY cycle.
+//
+// This is callable from any plugin; there is NO plugin-side contract
+// to implement. Plugins pass in:
+//
+//   - a namespace + cache-key derivation,
+//   - a verify procedure (calls ChainProbe with a typed Schema,
+//     lenient mode),
+//   - a produce procedure (run on miss / verify-fail),
+//   - a register procedure (fires on EVERY cycle — hit AND miss).
+
+import type { Effect, Schema, Scope } from 'effect';
+
+import type { ChainId, ContentHash } from '../substrate/brand.ts';
+
+/** Lenient retry profile constants — shared with ChainProbe.
+ *  Architecture: 15 attempts, 90s budget, 500ms initial, 1.5×
+ *  backoff, [0.8, 1.2) jitter. */
+export const LENIENT_RETRY_PROFILE = {
+	attempts: 15,
+	totalBudgetMillis: 90_000,
+	initialMillis: 500,
+	backoffMultiplier: 1.5,
+	jitterRange: [0.8, 1.2] as const,
+} as const;
+
+/** Input contract for ArtifactPublisher.publish. */
+export interface ArtifactSpec<Produced, Verified> {
+	/** Cache namespace — plugin-chosen, e.g. `package`. */
+	readonly namespace: string;
+	/** Chain identity — substrate folds into the cache key. */
+	readonly chain: ChainId;
+	/** Content-hash of canonical input bytes. */
+	readonly contentHash: ContentHash;
+	/** Verify probe — typed Schema; lenient mode. Returns null on
+	 *  not-found OR transient failure.
+	 *
+	 *  The substrate decodes the cached payload (if any) and passes it
+	 *  in as `cached`. Plugins that key their on-chain probe off a
+	 *  field of the cached payload (e.g. action's `digest`, package's
+	 *  `packageId`) read it from here directly — no in-process
+	 *  registry-hop required. Plugins that don't care about the
+	 *  cached payload ignore the parameter.
+	 *
+	 *  When the cache is empty (cold boot) OR decode failed
+	 *  (corruption) the substrate short-circuits to "miss" before
+	 *  invoking this; callers can therefore assume `cached` is
+	 *  defined on every call. */
+	readonly verify: (cached: Produced) => Effect.Effect<Verified | null, never>;
+	/** Schema for the verified shape (drives decode in `verify`). */
+	readonly verifySchema: Schema.Schema<Verified>;
+	/** Produce procedure — runs on cache miss OR verify-fail. */
+	readonly produce: Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
+	/** Register procedure — fires on EVERY cycle (hit AND miss). */
+	readonly register: (artifact: Produced | Verified) => Effect.Effect<void, never>;
+}
+
+/** Tagged error from a publish round. */
+export interface ArtifactPublishError {
+	readonly _tag: 'ArtifactPublishError';
+	readonly reason: 'produce-failed' | 'verify-exhausted' | 'cache-corrupt';
+	readonly detail: string;
+}
+
+/** The publisher service. Plugins call `publish`; substrate handles
+ *  cache lookup, verify, produce-on-miss, idempotent register. */
+export interface ArtifactPublisher {
+	readonly publish: <Produced, Verified>(
+		spec: ArtifactSpec<Produced, Verified>,
+	) => Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope>;
+}

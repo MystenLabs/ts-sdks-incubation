@@ -3,8 +3,8 @@
 // What needs to survive snapshot:
 //
 //   - Cached publish receipts under runtime/deepbook/<name>/cache/
-//     (driven by the OCA primitive's cache layer; the host-tree
-//     subtree is `deepbook/<name>` and the OCA cache lives inside it).
+//     (driven by the artifact publisher primitive's cache layer; the host-tree
+//     subtree is `deepbook/<name>` and the artifact publisher cache lives inside it).
 //   - Managed containers — the optional indexer + server use
 //     labeled tuples drive the docker commit + save path.
 //
@@ -16,7 +16,7 @@ import { Effect } from 'effect';
 
 import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
 
-/** Build the Snapshotable contribution for the local-mode composite. */
+/** Build the Snapshotable contribution for the local-mode plugin. */
 export const makeLocalSnapshotable = (inputs: {
 	readonly name: string;
 	readonly app: string;

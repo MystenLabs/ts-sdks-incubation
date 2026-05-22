@@ -11,9 +11,9 @@ import {
 import type { ChainProbe, ChainProbeSchema } from '../../contracts/chain-probe.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
 import {
 	executeSuiTx,
@@ -39,8 +39,8 @@ export interface SealSuiSdk {
 	readonly client: unknown;
 }
 
-const sealProduceFailed = (op: 'publish' | 'register', err: SealError): OnChainArtifactError => ({
-	_tag: 'OnChainArtifactError',
+const sealProduceFailed = (op: 'publish' | 'register', err: SealError): ArtifactPublishError => ({
+	_tag: 'ArtifactPublishError',
 	reason: 'produce-failed',
 	detail: `seal.${op} ${err.phase}: ${err.message}`,
 });
@@ -225,9 +225,9 @@ export const runSealPublishTransaction = (
 	);
 
 export const publishSealPackage = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	inputs: SealPublishInputs,
-): Effect.Effect<{ readonly packageId: string }, OnChainArtifactError | SealError, Scope.Scope> =>
+): Effect.Effect<{ readonly packageId: string }, ArtifactPublishError | SealError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const sourceHash = yield* hashMoveSources(inputs.movePackagePath).pipe(
 			Effect.mapError((err) => moveBuildToSealError(inputs.name, err)),
@@ -425,9 +425,9 @@ export const runRegisterKeyServerTransaction = (
 	);
 
 export const registerKeyServer = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	inputs: RegisterKeyServerInputs,
-): Effect.Effect<{ readonly objectId: string }, OnChainArtifactError | SealError, Scope.Scope> =>
+): Effect.Effect<{ readonly objectId: string }, ArtifactPublishError | SealError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const inputsHash = sealRegisterInputsHash(inputs, inputs.signer.address);
 		const result = yield* publisher.publish<SealKeyServerCached, SealKeyServerVerified>({

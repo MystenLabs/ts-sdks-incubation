@@ -189,14 +189,10 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 	return definePlugin({
 		id: walletResource.id,
 		dependsOn: dependencies,
-		// `leaf-long-running` — the HTTP server is a long-lived host
-		// process; per-request handlers fork off the supervisor-context
-		// fiber but the server itself lives for the stack's lifetime.
-		kind: 'leaf-long-running',
-		// `rebootCost: 'cheap'` — restart is bounded by the port-broker
-		// allocator + an http listen + a token-file read. The on-disk
-		// token survives so the dev-wallet pairing isn't disturbed.
-		rebootCost: 'cheap',
+		// The HTTP server is a long-lived host process; per-request
+		// handlers fork off the supervisor-context fiber but the server
+		// itself lives for the stack's lifetime.
+		role: 'service',
 		start: (deps) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-

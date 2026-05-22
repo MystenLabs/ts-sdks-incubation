@@ -120,10 +120,11 @@ export const resolveDockerContextId = (
 		...(env.DOCKER_CONTEXT === undefined ? {} : { DOCKER_CONTEXT: env.DOCKER_CONTEXT }),
 		...(host === 'default' ? {} : { DOCKER_HOST: host }),
 	};
+	const context = env.DOCKER_CONTEXT ?? dockerContextFromCli(bin, dockerEnv);
+	if (context !== null) return `context:${context}|host:${host}`;
 	const daemonId = dockerDaemonIdFromCli(bin, dockerEnv);
 	if (daemonId !== null) return `daemon:${daemonId}`;
-	const context = env.DOCKER_CONTEXT ?? dockerContextFromCli(bin, dockerEnv) ?? 'default';
-	return `context:${context}|host:${host}`;
+	return `context:default|host:${host}`;
 };
 
 export const makeDefaultRouterProfile = (

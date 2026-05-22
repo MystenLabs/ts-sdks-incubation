@@ -18,22 +18,7 @@ export {
 	type StackName,
 } from './brand.ts';
 export type { Assert, Equal, Expect, Not } from './equal.ts';
-export type {
-	DevstackPluginKindRegistry,
-	LifecycleStatus,
-	PhaseNarration,
-	PluginKind,
-	RebootCost,
-} from './lifecycle.ts';
-export {
-	litHash,
-	litSiblingKey,
-	type LiftedSiblingKey,
-	type LitHash,
-	type LitSiblingKey,
-	type SiblingScope,
-	type __SiblingHashConflictError,
-} from './lifted-sibling.ts';
+export type { LifecycleStatus, PhaseNarration, PluginRole } from './lifecycle.ts';
 export {
 	ManifestEnvelopeSchema,
 	type EndpointEntry,

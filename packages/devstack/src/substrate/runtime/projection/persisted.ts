@@ -8,7 +8,7 @@ import { endpointKey, pluginKey } from '../../brand.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
-export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v2.json';
+export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v3.json';
 
 export const projectionSnapshotPath = (stackRoot: string): string =>
 	`${stackRoot}/${PROJECTION_SNAPSHOT_FILE_NAME}`;
@@ -24,15 +24,8 @@ const LifecycleStatusSchema = Schema.Literals([
 	'stopped',
 	'done',
 ]);
-const PluginKindSchema = Schema.Literals([
-	'leaf-long-running',
-	'leaf-one-shot',
-	'composite',
-	'hidden-leaf',
-	'renderer',
-]);
+const PluginRoleSchema = Schema.Literals(['service', 'task']);
 const CyclePhaseSchema = Schema.Literals(['booting', 'running', 'restarting', 'shutting-down']);
-const RebootCostSchema = Schema.Literals(['cheap', 'moderate', 'heavy']);
 
 const StructuredErrorSchema = Schema.Struct({
 	at: Schema.Number,
@@ -82,7 +75,7 @@ const PackageProjectionSchema = Schema.Struct({
 
 const RowSchema = Schema.Struct({
 	key: Schema.String,
-	kind: PluginKindSchema,
+	role: PluginRoleSchema,
 	status: LifecycleStatusSchema,
 	phase: Schema.NullOr(Schema.String),
 	lastError: Schema.NullOr(StructuredErrorSchema),
@@ -92,10 +85,7 @@ const RowSchema = Schema.Struct({
 		truncated: Schema.Boolean,
 	}),
 	endpoints: Schema.Array(Schema.String),
-	compositeChildren: Schema.NullOr(Schema.Array(Schema.String)),
 	selectiveRestartHighlight: Schema.Boolean,
-	narrationByContributor: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
-	rebootCost: Schema.NullOr(RebootCostSchema),
 });
 
 const BuildEntrySchema = Schema.Struct({
@@ -129,7 +119,7 @@ const SubscribableStateSchema = Schema.Struct({
 });
 
 export const ProjectionSnapshotSchema = Schema.Struct({
-	version: Schema.Literal(2),
+	version: Schema.Literal(3),
 	state: SubscribableStateSchema,
 });
 
@@ -148,7 +138,6 @@ const rebrandPersistedState = (state: PersistedSubscribableState): SubscribableS
 		key: pluginKey(row.key),
 		lastError: row.lastError === null ? null : rebrandStructuredError(row.lastError),
 		endpoints: row.endpoints.map(endpointKey),
-		compositeChildren: row.compositeChildren?.map(pluginKey) ?? null,
 	})),
 	endpoints: state.endpoints.map((endpoint) => ({
 		...endpoint,
@@ -176,7 +165,7 @@ export const writeProjectionSnapshot = (
 	state: SubscribableState,
 ): Effect.Effect<void> =>
 	atomicWriteJson(projectionSnapshotPath(stackRoot), ProjectionSnapshotSchema, {
-		version: 2 as const,
+		version: 3 as const,
 		state,
 	}).pipe(
 		Effect.provide(NodeFileSystem.layer),

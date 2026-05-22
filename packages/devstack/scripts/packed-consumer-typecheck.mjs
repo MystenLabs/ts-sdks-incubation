@@ -139,7 +139,7 @@ import { defineDevstack, definePlugin } from '@mysten-incubation/devstack';
 
 const installedConsumerSmokePlugin = definePlugin({
 \tid: 'installed-consumer/smoke',
-\tkind: 'leaf-long-running',
+\trole: 'service',
 \tstart: () =>
 \t\tEffect.sync(() => {
 \t\t\twriteFileSync(new URL('./installed-consumer-smoke.marker', import.meta.url), 'acquired\\n');
@@ -153,13 +153,7 @@ export default defineDevstack({ members: [installedConsumerSmokePlugin], stackNa
 
 	run(
 		'npm',
-		[
-			'install',
-			join(tempRoot, tarball),
-			'effect@4.0.0-beta.65',
-			'typescript@5.9.3',
-			'vite@6.4.2',
-		],
+		['install', join(tempRoot, tarball), 'effect@4.0.0-beta.65', 'typescript@5.9.3', 'vite@6.4.2'],
 		{
 			cwd: consumerRoot,
 			stdio: 'ignore',

@@ -3,7 +3,7 @@
 // Architecture §11 + distilled/21-tui §Renderers: when stdout is not
 // a TTY (CI, pipe, log file), the live ink dashboard is replaced by
 // a structured line stream. One line per event; periodic heartbeat
-// per acquiring row.
+// per internally-acquiring row, surfaced to operators as "starting".
 //
 // Discipline:
 //   - One line per EngineEvent — no batching, no aggregation, no
@@ -16,9 +16,10 @@
 //     side is the `mount` function.
 //   - Heartbeat formatting is pure here; scheduling belongs to the
 //     renderer mount path. The architecture says it
-//     "anchors on first sighting in acquiring; phase changes do NOT
-//     reset the clock; a late tick emits exactly one heartbeat (no
-//     backlog catch-up)". The seam is exposed via `formatHeartbeat`.
+//     "anchors on first sighting in the internal acquiring state; phase
+//     changes do NOT reset the clock; a late tick emits exactly one
+//     heartbeat (no backlog catch-up)". The seam is exposed via
+//     `formatHeartbeat`.
 
 import { Effect, Stream, SubscriptionRef } from 'effect';
 
@@ -28,10 +29,10 @@ import type { SubscribableState } from '../../substrate/projection.ts';
 import {
 	accountLine,
 	endpointLine,
-	kindLabel,
 	labelForRow,
 	narrationFor,
 	packageLine,
+	roleLabel,
 	statusLabel,
 } from './display-derivation.ts';
 import { mountFailed } from './errors.ts';
@@ -47,7 +48,7 @@ import { mountFailed } from './errors.ts';
  *   <iso-timestamp> <level> <event-tag> <key>=<value> ...
  *
  * Example:
- *   2026-05-19T20:11:32.001Z INFO lifecycle.statusChanged key=sui from=acquiring to=ready
+ *   2026-05-19T20:11:32.001Z INFO lifecycle.statusChanged key=sui from=starting to=ready
  *   2026-05-19T20:11:32.500Z WARN log.appended key=walrus line="failed to bind port 9000"
  *   2026-05-19T20:11:33.000Z INFO endpoint.registered name=aggregator url=http://localhost:9000
  */
@@ -59,7 +60,7 @@ export const formatEventLine = (event: EngineEvent): string => {
 };
 
 /**
- * Heartbeat line for an in-flight acquiring row. Emitted by the
+ * Heartbeat line for an in-flight internal acquiring row. Emitted by the
  * scheduler at architecture-blessed intervals; this function is the
  * pure formatter only.
  */
@@ -67,11 +68,11 @@ export const formatHeartbeat = (
 	now: number,
 	key: string,
 	phase: string | null,
-	kindToken: string,
+	roleToken: string,
 ): string => {
 	const ts = isoTimestamp(now);
 	const narration = narrationFor(phase, 'acquiring');
-	return `${ts} INFO heartbeat key=${key} kind=${kindToken} narration=${quote(narration)}`;
+	return `${ts} INFO heartbeat key=${key} role=${roleToken} narration=${quote(narration)}`;
 };
 
 // -----------------------------------------------------------------------------
@@ -138,8 +139,8 @@ const payloadFor = (event: EngineEvent): string => {
 		case 'lifecycle.statusChanged':
 			return kv({
 				key: event.pluginKey,
-				from: event.from,
-				to: event.to,
+				from: statusLabel(event.from),
+				to: statusLabel(event.to),
 			});
 		case 'lifecycle.phaseSet':
 			return kv({
@@ -219,11 +220,6 @@ const payloadFor = (event: EngineEvent): string => {
 				signal: event.signal,
 				exitCode: event.exitCode,
 			});
-		case 'sibling.deduped':
-			return kv({
-				composite: event.composite,
-				sibling: event.siblingKey,
-			});
 		case 'snapshot.captured':
 		case 'snapshot.restored':
 			return kv({ snapshotId: event.snapshotId });
@@ -258,8 +254,8 @@ const emitInitialSweep = (state: SubscribableState): Effect.Effect<void> =>
 			yield* writeStderrLine(
 				`${isoTimestamp(Date.now())} INFO row.declared ${kv({
 					key: row.key,
-					label: labelForRow(row.key, row.kind),
-					kind: kindLabel(row.kind),
+					label: labelForRow(row.key),
+					role: roleLabel(row.role),
 					status: statusLabel(row.status),
 				})}`,
 			);

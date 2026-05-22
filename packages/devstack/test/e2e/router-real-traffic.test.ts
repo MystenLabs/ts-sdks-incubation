@@ -233,7 +233,7 @@ describe('router real Docker traffic', () => {
 			kind: 'routable',
 			endpointName: ENTRYPOINT_NAME,
 			dispatchId: {
-				compositeKey: `router-real-traffic.${suffix}`,
+				serviceKey: `router-real-traffic.${suffix}`,
 				role: 'api',
 			},
 			upstream: {

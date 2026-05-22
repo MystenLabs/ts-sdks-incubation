@@ -14,10 +14,7 @@
 // selection stays explicit/env/main to match the supervisor-written
 // default path; package metadata identifies the app, not the stack.
 
-import { dirname, resolve } from 'node:path';
-
-import { discoverManifestPath, DEFAULT_STATE_DIR, readAppName } from '../runtime/index.ts';
-import { resolveBuildIntegrationStack } from '../runtime/discover.ts';
+import { discoverBuildIntegrationIdentity } from '../runtime/index.ts';
 import { ViteIdentityResolutionError } from './errors.ts';
 
 export interface ResolvedIdentity {
@@ -53,17 +50,13 @@ export interface DiscoverOptions {
  */
 export const discoverIdentity = (options: DiscoverOptions = {}): ResolvedIdentity => {
 	const cwd = options.cwd ?? process.cwd();
-	const stack = resolveBuildIntegrationStack(options.stack);
-	const stateDirName = options.stateDir ?? process.env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
-
-	const discovered = discoverManifestPath({ cwd, stack, stateDir: stateDirName });
-
-	const manifestPath = discovered ?? resolve(cwd, stateDirName, 'stacks', stack, 'manifest.json');
-	const stateDir =
-		discovered !== undefined ? dirname(dirname(dirname(discovered))) : resolve(cwd, stateDirName);
-
-	const app = options.app ?? process.env.DEVSTACK_APP ?? readAppNameWalkup(cwd);
-	if (app === undefined) {
+	const identity = discoverBuildIntegrationIdentity({
+		cwd,
+		...(options.app !== undefined ? { app: options.app } : {}),
+		...(options.stack !== undefined ? { stack: options.stack } : {}),
+		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+	});
+	if (identity.app === undefined) {
 		throw new ViteIdentityResolutionError({
 			message:
 				'Could not resolve the devstack app name. Pass `app` to ' +
@@ -77,21 +70,5 @@ export const discoverIdentity = (options: DiscoverOptions = {}): ResolvedIdentit
 		});
 	}
 
-	return { app, stack, stateDir, manifestPath };
-};
-
-/** Walk up from `cwd` to find the closest `package.json` and return
- *  its un-scoped `name` field. Returns `undefined` if no package.json
- *  is reachable. Bounded to 32 levels — defense against pathological
- *  symlink loops. */
-const readAppNameWalkup = (cwd: string): string | undefined => {
-	let dir = resolve(cwd);
-	for (let i = 0; i < 32; i += 1) {
-		const name = readAppName(dir);
-		if (name !== undefined) return name;
-		const parent = dirname(dir);
-		if (parent === dir) return undefined;
-		dir = parent;
-	}
-	return undefined;
+	return { ...identity, app: identity.app };
 };

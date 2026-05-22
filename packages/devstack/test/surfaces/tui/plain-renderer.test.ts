@@ -23,7 +23,7 @@ describe('plain-renderer formatters', () => {
 		});
 		expect(line).toContain('lifecycle.statusChanged');
 		expect(line).toContain('key=sui');
-		expect(line).toContain('from=acquiring');
+		expect(line).toContain('from=starting');
 		expect(line).toContain('to=ready');
 		expect(line).toContain('2026-05-19T20:11:32.001Z');
 		expect(line.startsWith('2026-05-19T20:11:32.001Z INFO')).toBe(true);

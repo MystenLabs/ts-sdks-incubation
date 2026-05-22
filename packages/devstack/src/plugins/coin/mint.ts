@@ -1,5 +1,5 @@
 // Generic mint — wraps `0x2::coin::mint_and_transfer<T>` in the
-// `OnChainArtifactPublisher` substrate primitive.
+// `ArtifactPublisher` substrate primitive.
 //
 // Distilled-doc 13-coin.md §"Lifecycle" §"mintFromTreasury":
 //
@@ -17,7 +17,7 @@
 // next supervisor cycle re-mints. Don't let a StateStore failure
 // roll back the mint.
 //
-// Substrate constraint: the `OnChainArtifactPublisher.publish` shape
+// Substrate constraint: the `ArtifactPublisher.publish` shape
 // already covers cache + verify + produce + register-on-every-cycle.
 // We compose its spec; the substrate dispatches.
 
@@ -28,9 +28,9 @@ import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import type {
-	OnChainArtifactError,
-	OnChainArtifactPublisher,
-} from '../../primitives/on-chain-artifact.ts';
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
 import { coinError, type CoinError } from './errors.ts';
 
 /** Sign+execute surface narrowed from `AccountValue.signAndExecute`.
@@ -76,7 +76,7 @@ export const MintedCoinVerifyShape = Schema.Struct({
 /** Build the cache-key content hash. Distilled-doc 13-coin.md
  *  §"Persistence model": key shape is
  *  `coin/mint/<chainId>/<treasuryCapId>/<recipient>/<amount>`. The
- *  substrate's OCA folds in chainId via the `chain` parameter; we
+ *  substrate's artifact publisher folds in chainId via the `chain` parameter; we
  *  fold the remaining columns into `contentHash`. */
 const buildMintContentHash = (parts: {
 	readonly treasuryCapId: string;
@@ -95,9 +95,9 @@ export interface MintInputs {
 
 export interface MintResult {
 	/** Tx digest of the producing mint. `null` on the verify-hit path:
-	 *  the OCA's cache-hit verify returns the decoded probe shape
+	 *  the artifact publisher's cache-hit verify returns the decoded probe shape
 	 *  (which doesn't carry the digest); callers that need the digest
-	 *  on cache hit consult the OCA cache directly. */
+	 *  on cache hit consult the artifact publisher cache directly. */
 	readonly digest: string | null;
 	readonly mintedCoinId: string;
 	readonly recipient: string;
@@ -155,7 +155,7 @@ const buildVerifyProbe = (
 			catch: () => 'transient' as const,
 		}).pipe(
 			// Lenient: not-found AND transient both coerce to null. The
-			// OCA's cache layer will then re-run produce.
+			// artifact publisher's cache layer will then re-run produce.
 			Effect.catch(() => Effect.succeed(null)),
 		);
 		if (raw === null || raw === undefined) return null;
@@ -211,23 +211,23 @@ const isCreatedObjectChange = (raw: unknown): raw is CreatedObjectChange => {
 	return r.type === 'created' && typeof r.objectId === 'string';
 };
 
-/** Build the `OnChainArtifactPublisher` spec for one mint round.
+/** Build the `ArtifactPublisher` spec for one mint round.
  *
  *  Substrate dispatches: cache lookup, verify-on-hit, produce-on-
  *  miss-or-verify-fail, register-on-every-cycle. We hand it the
  *  procedures; the substrate handles best-effort cache writes per
  *  Invariant 2.
  *
- *  Note on the `Produced | Verified` union: the OCA's `publish`
+ *  Note on the `Produced | Verified` union: the artifact publisher's `publish`
  *  returns one OR the other shape; both are `CachedMint`-compatible
  *  for our purposes, so we collapse downstream. */
 export const performMint = (
-	publisher: OnChainArtifactPublisher,
+	publisher: ArtifactPublisher,
 	chain: ChainId,
 	signer: MintSigner,
 	sdk: MintSdkShim,
 	inputs: MintInputs,
-): Effect.Effect<MintResult, CoinError | OnChainArtifactError, Scope.Scope> =>
+): Effect.Effect<MintResult, CoinError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const cacheHash = buildMintContentHash(inputs);
 
@@ -237,12 +237,12 @@ export const performMint = (
 				chain,
 				contentHash: cacheHash,
 				verifySchema: MintedCoinVerifyShape,
-				// Verify probe runs on cache hit. The OCA threads the
+				// Verify probe runs on cache hit. The artifact publisher threads the
 				// cached payload through to its internal probe — our
 				// closure here just hands back a "null = miss" signal
 				// when the cached id has vanished on chain.
 				//
-				// The OCA substrate now threads the decoded
+				// The artifact publisher substrate now threads the decoded
 				// `CachedMint` into `verify(cached)`; we pull
 				// `mintedCoinId` off it and probe the chain. Lenient
 				// mode masks transient + not-found → null → substrate
@@ -289,8 +289,8 @@ export const performMint = (
 											? C
 											: never,
 									}),
-								catch: (cause): OnChainArtifactError => ({
-									_tag: 'OnChainArtifactError',
+								catch: (cause): ArtifactPublishError => ({
+									_tag: 'ArtifactPublishError',
 									reason: 'produce-failed',
 									detail:
 										`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
@@ -299,12 +299,12 @@ export const performMint = (
 							});
 
 							// 3. Sign + execute via the Account-supplied signer. Map
-							//    `AccountSignError` → `OnChainArtifactError`. The
+							//    `AccountSignError` → `ArtifactPublishError`. The
 							//    Account plugin's signer handles waitForTransaction internally.
 							return yield* lockedSigner.signAndExecute(txBytes).pipe(
 								Effect.mapError(
-									(cause): OnChainArtifactError => ({
-										_tag: 'OnChainArtifactError',
+									(cause): ArtifactPublishError => ({
+										_tag: 'ArtifactPublishError',
 										reason: 'produce-failed',
 										detail:
 											`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
@@ -322,14 +322,14 @@ export const performMint = (
 					const mintedCoinId = pickCreatedCoin(result.objectChanges, inputs.fullCoinType);
 					if (mintedCoinId === null) {
 						return yield* Effect.fail({
-							_tag: 'OnChainArtifactError' as const,
+							_tag: 'ArtifactPublishError' as const,
 							reason: 'produce-failed' as const,
 							detail:
 								`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
 								`objectChanges (digest=${result.digest}). ` +
 								mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
 									.message,
-						} satisfies OnChainArtifactError);
+						} satisfies ArtifactPublishError);
 					}
 
 					yield* Effect.annotateCurrentSpan({
@@ -337,7 +337,7 @@ export const performMint = (
 						'coin.mint.mintedCoinId': mintedCoinId,
 					});
 
-					// 5. Return the cached payload. The OCA caches it under
+					// 5. Return the cached payload. The artifact publisher caches it under
 					//    the content hash; the next cycle's verify probe (on
 					//    cache hit) will lenient-probe `mintedCoinId`.
 					return {
@@ -365,10 +365,10 @@ export const performMint = (
 				fullCoinType: inputs.fullCoinType,
 			};
 		}
-		// Verify-hit path — the OCA returned the decoded probe shape.
-		// The producing-tx digest lives only in the OCA cache layer (not on
+		// Verify-hit path — the artifact publisher returned the decoded probe shape.
+		// The producing-tx digest lives only in the artifact publisher cache layer (not on
 		// the probe response), so we surface `null` here. Callers that need
-		// the producing digest on a cache hit consult the OCA cache directly.
+		// the producing digest on a cache hit consult the artifact publisher cache directly.
 		return {
 			digest: null,
 			mintedCoinId: verified.objectId,
@@ -386,8 +386,8 @@ export const performMint = (
 		}),
 	);
 
-/** Project an OCA-wire error back to a CoinError when the consumer
- *  wants a coin-side tagged shape. The OCA boundary is generic; this
+/** Project an artifact publisher-wire error back to a CoinError when the consumer
+ *  wants a coin-side tagged shape. The artifact publisher boundary is generic; this
  *  helper recovers the typed `mint-tx` / `mint-parse` phase the cause
  *  walker uses. */
 export const mintTxError = (fullCoinType: string, message: string, cause?: unknown): CoinError =>

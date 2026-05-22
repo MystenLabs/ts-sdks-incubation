@@ -9,7 +9,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 import { dappKitConfig } from './generated/dapp-kit/config.js';
 import { suiNetwork } from './generated/sui/network.js';
 
-const devstackNetwork = dappKitConfig.chain;
+const devstackNetwork = 'localnet' as const;
 
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],

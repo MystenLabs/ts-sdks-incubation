@@ -8,6 +8,7 @@ import {
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
 	sui,
+	type Stack,
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -27,9 +28,9 @@ const app = hostService({
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },
-	needs: [localnet, alice, dex] as const,
+	after: [localnet, alice, dex] as const,
 });
 
-const stack = defineDevstack({ members: [localnet, app] });
+const stack: Stack = defineDevstack({ members: [localnet, app] });
 
 export default stack;

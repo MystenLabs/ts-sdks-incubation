@@ -9,8 +9,8 @@
 // failure — verify pipelines re-derive on the next cycle rather than
 // fail boot. Strict mode: distinguishes via tagged error.
 //
-// Why lenient is the default in this plugin's wiring: OCA verify is
-// the dominant consumer; OCA's lenient-retry profile (15 attempts,
+// Why lenient is the default in this plugin's wiring: artifact publisher verify is
+// the dominant consumer; artifact publisher's lenient-retry profile (15 attempts,
 // 90s budget) is calibrated against lenient semantics. A strict
 // surface exists for explicit "I want to know if the chain is
 // reachable" callers (the doctor command, debugging).
@@ -154,11 +154,13 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 				),
 			);
 			if (raw === null) return null;
+			const payload = projectProbePayload(key, raw);
+			if (payload === null) return null;
 
 			// Decode against the caller-supplied Schema. A decode failure
 			// is structured (NOT silent undefined) — this is the
 			// load-bearing learning from deepbook.
-			const decoded = yield* decodeUnknown(schema, raw, {
+			const decoded = yield* decodeUnknown(schema, payload, {
 				source: `chain probe ${chain}`,
 				mkError: (issue): ChainProbeError => ({
 					_tag: 'ChainProbeError',
@@ -170,6 +172,13 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 			return decoded;
 		}),
 });
+
+const projectProbePayload = (key: SuiProbeKey, raw: unknown): unknown | null => {
+	if (key.kind !== 'object') return raw;
+	if (typeof raw !== 'object' || raw === null || !('object' in raw)) return raw;
+
+	return (raw as { readonly object?: unknown }).object ?? null;
+};
 
 /** Heuristic: SDK errors carrying "not found" / "Not exist" in
  *  the message are treated as not-found; everything else is

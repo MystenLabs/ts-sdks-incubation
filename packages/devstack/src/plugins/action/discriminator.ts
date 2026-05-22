@@ -6,7 +6,7 @@
 //   - `actionName`   — symbolic action name (drives namespace + TUI
 //                      attribution).
 //   - `chainId`      — substrate-folded automatically (substrate-side
-//                      of the OCA cache key).
+//                      of the artifact publisher cache key).
 //   - `consumedKeys` — the literal resource ids of every entry in
 //                      `dependsOn`. Folded so reordering/changing
 //                      upstream deps invalidates the cache. Static —
@@ -66,7 +66,7 @@ export const composeDiscriminatorMaterial = (
 ): string => {
 	const lines: string[] = [
 		`action=${staticParts.actionName}`,
-		`dependencies=`,
+		`dependencies=${JSON.stringify(staticParts.dependencyResourceIds)}`,
 	];
 	if (resolvedDynamic !== undefined) {
 		lines.push(`discriminator=${resolvedDynamic}`);

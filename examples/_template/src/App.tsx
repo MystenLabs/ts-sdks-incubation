@@ -6,7 +6,7 @@ import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/r
 import { useState } from 'react';
 import { packages } from './generated/packages.js';
 
-// Codegen runs before Dev (`needs: [..., codegen]`), so this file
+// Codegen runs before Dev (`after: [..., codegen]`), so this file
 // existing implies hello is published — no `isDeployed` guard needed.
 const helloPackageId = packages.hello.packageId;
 

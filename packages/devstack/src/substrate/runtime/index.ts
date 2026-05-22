@@ -5,7 +5,7 @@
 
 export * from './atomic-write.ts';
 export * from './config-validation.ts';
-export * from './composite-errors.ts';
+export * from './mode-errors.ts';
 export * from './cross-process-lock.ts';
 export * from './errors.ts';
 export * from './http-probe.ts';
@@ -16,14 +16,14 @@ export * from './paths.ts';
 export * from './process-supervisor.ts';
 export * from './retry-policy.ts';
 export * from './runtime-decode.ts';
+export * from './scoped-http-server.ts';
 export * from './stage-and-swap/index.ts';
 export * from './sui-execute/index.ts';
 
 export * from './state-store/index.ts';
 export * from './cache/index.ts';
-export * from './lifted-sibling-registry/index.ts';
 export * from './strategy-registry/index.ts';
-export * from './on-chain-artifact/index.ts';
+export * from './artifact-publisher/index.ts';
 export * from './scoped-ref-map/index.ts';
 export * from './port-broker/index.ts';
 export * from './lease-broker/index.ts';

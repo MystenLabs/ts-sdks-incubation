@@ -8,12 +8,12 @@ import { describe, expect, it } from 'vitest';
 
 import { makeLocalRoutables } from '../../../src/plugins/walrus/routable.ts';
 
-const makeRoutes = (nodeCount: number, compositeKey = 'walrus:walrus') =>
+const makeRoutes = (nodeCount: number, serviceKey = 'walrus:walrus') =>
 	makeLocalRoutables({
 		app: 'app',
 		stack: 'main',
 		walrusName: 'walrus',
-		compositeKey,
+		serviceKey,
 		nodeCount,
 	});
 
@@ -56,11 +56,11 @@ describe('walrus makeLocalRoutables', () => {
 		}
 	});
 
-	it('per-node dispatchIds carry the composite key + per-index role', () => {
+	it('per-node dispatchIds carry the service key + per-index role', () => {
 		const routes = makeRoutes(2, 'walrus:other');
 		const node0 = routes.find((r) => r.endpointName === 'walrus-node-0');
 		const node1 = routes.find((r) => r.endpointName === 'walrus-node-1');
-		expect(node0?.dispatchId).toEqual({ compositeKey: 'walrus:other', role: 'walrus-node-0' });
-		expect(node1?.dispatchId).toEqual({ compositeKey: 'walrus:other', role: 'walrus-node-1' });
+		expect(node0?.dispatchId).toEqual({ serviceKey: 'walrus:other', role: 'walrus-node-0' });
+		expect(node1?.dispatchId).toEqual({ serviceKey: 'walrus:other', role: 'walrus-node-1' });
 	});
 });

@@ -10,13 +10,6 @@ import {
 	pluginDependencyRefs,
 } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
-import type {
-	GroupKey,
-	IsUniformHash,
-	LitSiblingKey,
-	SiblingScope,
-	__SiblingHashConflictError,
-} from '../substrate/lifted-sibling.ts';
 import {
 	WALLET_EXPAND_ACCOUNTS_ALL,
 	type WalletExpandAccountsAllExpander,
@@ -50,36 +43,6 @@ export type DependencyClosure<Members extends ReadonlyArray<AnyPlugin>> = Readon
 
 export type ComposedMembers<Members extends ReadonlyArray<AnyPlugin>> = DependencyClosure<Members>;
 
-/** Collect every sibling-key carried by a member tuple's
- *  `liftedSiblings` field, and the group-keys whose hashes conflict.
- *
- *  IMPORTANT (Phase-3 finding): intermediate type aliases that take a
- *  generic parameter erase the per-member literal `Siblings` generic
- *  via constraint widening. The dedup detection therefore inlines its
- *  whole chain into one type alias. Don't decompose this into smaller
- *  helpers without re-verifying the negative test still fires. */
-type SiblingKeysOfInline<Members> =
-	Members extends ReadonlyArray<unknown>
-		? (Members[number] extends { readonly liftedSiblings?: infer Sibs } ? Sibs : never) extends
-				| ReadonlyArray<infer S>
-				| undefined
-			? S
-			: never
-		: never;
-
-type ConflictingGroups<Members> =
-	Members extends ReadonlyArray<unknown>
-		? (Members[number] extends { readonly liftedSiblings?: infer Sibs } ? Sibs : never) extends
-				| ReadonlyArray<infer S>
-				| undefined
-			? S extends LitSiblingKey<string, string, SiblingScope, string>
-				? IsUniformHash<GroupKey<S>, SiblingKeysOfInline<Members>> extends false
-					? GroupKey<S>
-					: never
-				: never
-			: never
-		: never;
-
 export interface DevstackConfig<Members extends ReadonlyArray<AnyPlugin>> extends DevstackOptions {
 	readonly members: Members;
 }
@@ -95,7 +58,7 @@ export interface DevstackConfig<Members extends ReadonlyArray<AnyPlugin>> extend
  * The runtime value is a struct; orchestrators consume it through
  * the supervisor entry point.
  */
-export interface Stack<Members extends ReadonlyArray<AnyPlugin>> {
+export interface Stack<Members extends ReadonlyArray<AnyPlugin> = ReadonlyArray<AnyPlugin>> {
 	readonly _tag: 'Stack';
 	readonly options: DevstackOptions;
 	/** Phantom — preserves the union of provided ids for downstream
@@ -125,10 +88,9 @@ export const readStackEngine = <Members extends ReadonlyArray<AnyPlugin>>(
 
 // --- Diagnostic gating --------------------------------------------------
 //
-// If `MissingProviders` or `ConflictingGroups`
-// is non-empty, the call signature surfaces a branded structured error
-// so the IDE diagnostic names the missing piece (Phase-3 finding #6 /
-// architecture open question #11).
+// If `MissingProviders` is non-empty, the call signature surfaces a
+// branded structured error so the IDE diagnostic names the missing
+// piece.
 
 /** Validation gate. Resolves to `unknown` when every check passes
  *  (assignable to any `Args`); to a branded structured error
@@ -146,9 +108,7 @@ export type ValidateArgs<Members> =
 		? ComposedMembers<Members> extends infer M
 			? M extends ReadonlyArray<unknown>
 				? [MissingProviders<M>] extends [never]
-					? [ConflictingGroups<M>] extends [never]
-						? unknown
-						: __SiblingHashConflictError<ConflictingGroups<M>>
+					? unknown
 					: __MissingProvidersError<MissingProviders<M>>
 				: never
 			: never
@@ -161,9 +121,7 @@ export type ValidateArgs<Members> =
  *
  * Compile-time checks performed:
  *   - missing-provider: every dependency id has a matching plugin id
- *     somewhere in the plugin set,
- *   - lifted-sibling dedup conflict: literal-hash siblings under the
- *     same `(plugin, kind, scope)` group must agree.
+ *     somewhere in the plugin set.
  *
  * Validation surfaces at the PARAMETER (not the return type) — the
  * generic `Args` is constrained against a branded error type whose

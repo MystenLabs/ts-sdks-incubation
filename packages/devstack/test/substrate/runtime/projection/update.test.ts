@@ -10,16 +10,13 @@ const makeState = (): SubscribableState => ({
 	rows: [
 		{
 			key: pluginKey('wallet#0'),
-			kind: 'leaf-long-running',
+			role: 'service',
 			status: 'ready',
 			phase: null,
 			lastError: null,
 			logTail: { lines: [], level: 'info', truncated: false },
 			endpoints: [endpointKey('wallet#0:wallet-app')],
-			compositeChildren: null,
 			selectiveRestartHighlight: false,
-			narrationByContributor: null,
-			rebootCost: 'cheap',
 		},
 	],
 	endpoints: [

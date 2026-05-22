@@ -14,7 +14,7 @@
 //      for `publishTx`, serialising via `tx.build({ client })`,
 //      signing/executing inside the publisher account's transaction
 //      critical section, and projecting the response to a
-//      `PublishReceipt`.
+//      `LocalPackagePublishOutput`.
 //   3. Wrapping `sdk.core.waitForTransaction({ digest })` for
 //      `waitForReady` — the SDK already retries / waits for index
 //      visibility internally.
@@ -34,7 +34,7 @@ import type { AccountValue } from '../account/service.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
-import type { PublishObjectChange, PublishReceipt } from './publish-receipt.ts';
+import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
 import type { SuiSdkShim } from '../sui/chain-probe.ts';
@@ -51,7 +51,7 @@ export interface PublishExecutorInputs {
 	/** Publisher account — provides `signAndExecute` (which internally
 	 *  signs, submits via `executeTransaction`, and awaits finality via
 	 *  `waitForTransaction`). The address surfaces as the publisher on
-	 *  the receipt. */
+	 *  the output. */
 	readonly account: AccountValue;
 	/** Container runtime + image consumed by `runMoveBuild`'s path-(b)
 	 *  (`docker run --rm`). Absent → path-(c) (host CLI). */
@@ -102,7 +102,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 		readonly dependencies: ReadonlyArray<string>;
 		readonly sourcePath: string;
 		readonly packageName: string;
-	}): Effect.Effect<PublishReceipt, PublishError, Scope.Scope> =>
+	}): Effect.Effect<LocalPackagePublishOutput, PublishError, Scope.Scope> =>
 		Effect.gen(function* () {
 			// Build the publish transaction. `tx.publish` accepts
 			// `modules: number[][] | string[]` — coerce Uint8Array → number[].
@@ -230,7 +230,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			);
 
 			// Project the SDK's `TransactionResult` envelope to the
-			// receipt shape. On `$kind: FailedTransaction` we raise a
+			// output shape. On `$kind: FailedTransaction` we raise a
 			// publish-tx error; on the success branch we walk
 			// `effects.changedObjects` for the published package id and
 			// the upgrade cap.
@@ -281,7 +281,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				);
 			}
 
-			const objectChanges: Array<PublishObjectChange> = [];
+			const objectChanges: Array<PackagePublishObjectChange> = [];
 			const objectTypes = txOk.objectTypes ?? {};
 			for (const ch of txOk.effects?.changedObjects ?? []) {
 				if (!ch.objectId) continue;
@@ -306,7 +306,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				(c) => c.type === 'created' && (c.objectType?.endsWith('::package::UpgradeCap') ?? false),
 			);
 
-			const receipt: PublishReceipt = {
+			const output: LocalPackagePublishOutput = {
 				digest: txOk.digest,
 				packageId: published?.objectId ?? '',
 				publisher: inputs.account.address,
@@ -314,7 +314,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				objectChanges,
 			};
 
-			return receipt;
+			return output;
 		}).pipe(
 			Effect.withSpan('package.publish-tx', {
 				attributes: { 'package.publish.packageName': packageName },
@@ -339,7 +339,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 					await inputs.sdk.core.getObject({ objectId: packageId });
 				} catch {
 					// A stale object read here is non-fatal — the next
-					// produce phase (parse) only inspects the receipt.
+					// produce phase (parse) only inspects the output.
 				}
 			},
 			catch: (cause): PublishError =>

@@ -116,23 +116,9 @@ export type {
 export type { ContainerLabelTuple, SnapshotableDecl } from './contracts/snapshotable.ts';
 export type { StrategyContributorDecl, StrategyFor } from './contracts/strategy-contributor.ts';
 
-// --- Lifecycle + lifted-sibling primitives plugin authors touch ---------
+// --- Lifecycle primitives plugin authors touch --------------------------
 
-export type {
-	DevstackPluginKindRegistry,
-	LifecycleStatus,
-	PhaseNarration,
-	PluginKind,
-	RebootCost,
-} from './substrate/lifecycle.ts';
-export {
-	litHash,
-	litSiblingKey,
-	type LitHash,
-	type LitSiblingKey,
-	type LiftedSiblingKey,
-	type SiblingScope,
-} from './substrate/lifted-sibling.ts';
+export type { LifecycleStatus, PhaseNarration, PluginRole } from './substrate/lifecycle.ts';
 
 // --- Network + options --------------------------------------------------
 
@@ -246,11 +232,10 @@ export {
 	type PackageCapture,
 	type PackageCaptureCallback,
 	type PackageCaptureMap,
-	type PackageCoins,
 	type PickCreatedByTypeOptions,
 	type PublisherAccountMember,
-	type PublishReceipt,
-	type PublishObjectChange,
+	type LocalPackagePublishOutput,
+	type PackagePublishObjectChange,
 	type PublishError,
 	type PackageBindings,
 	type ResolvedLocalPackage,
@@ -367,18 +352,12 @@ export {
 
 export {
 	action,
-	ActionReceiptSchema,
-	signAndExecute,
 	type ActionOptions,
 	type ActionUpstreamRef,
 	type ActionBuildContext,
 	type ActionError,
 	type ActionPhase,
-	type ActionLifecyclePhase,
-	type DynamicDiscriminator,
-	type StaticDiscriminator,
 	type ActionReceipt,
-	type ActionObjectChange,
 } from './plugins/action/index.ts';
 
 // --- Walrus -------------------------------------------------------------

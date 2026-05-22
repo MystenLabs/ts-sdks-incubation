@@ -27,7 +27,7 @@
  *  the runtime identity `(app, stack)` before minting the file-provider
  *  id, so the dispatch id itself does not need to encode app/stack. */
 export interface DispatchId {
-	readonly compositeKey: string;
+	readonly serviceKey: string;
 	readonly role: string;
 }
 
@@ -76,3 +76,13 @@ export interface RoutableTcpDecl extends RoutableBase {
 
 /** Routable declaration. Plugin emits one per endpoint it serves. */
 export type RoutableDecl = RoutableHttpDecl | RoutableTcpDecl;
+
+/** A plugin-owned router entrypoint declaration: the public listener
+ *  name, host port, and wire family that a Routable endpoint may
+ *  reference by `endpointName`. The router orchestrator owns registry
+ *  validation and collision checks; plugins own these names. */
+export interface EntrypointDecl {
+	readonly name: string;
+	readonly port: number;
+	readonly protocol: 'http' | 'h2c' | 'tcp';
+}

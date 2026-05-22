@@ -8,21 +8,18 @@
 // re-shapes the result into playwright-flavored typed errors and the
 // `endpoint(key)` accessor in-spec helpers use.
 
-import { Schema } from 'effect';
-import { readFileSync } from 'node:fs';
-
 import {
 	discoverManifestPath as runtimeDiscoverManifestPath,
 	coldStartUrl as runtimeColdStartUrl,
+	conventionalRoutesFromHints,
+	manifestEnvelopeFromStackContext,
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
-	type ConventionalRoute,
 	type DiscoverManifestPathOptions,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
 import type { EndpointEntry, ManifestEnvelope } from '../../substrate/manifest.ts';
-import { ManifestEnvelopeSchema } from '../../substrate/manifest.ts';
 import {
 	PlaywrightEndpointNotFoundError,
 	PlaywrightManifestDiscoveryError,
@@ -114,50 +111,8 @@ export const discoverManifestPath = (
  * the path (preset's webServer.url resolution + global-setup).
  */
 export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
-	// Read directly so the version-gate / parse / shape phases project
-	// cleanly to the Playwright error tags. The runtime `readStackContext`
-	// would project to a typed `StackContext` but loses the `version-mismatch`
-	// arm distinct from `shape`.
-	let text: string;
 	try {
-		text = readFileSync(manifestPath, 'utf8');
-	} catch (cause) {
-		throw new PlaywrightManifestShapeError({
-			message: `failed to read manifest at ${manifestPath}`,
-			manifestPath,
-			phase: 'parse',
-			recoveryHint:
-				`Confirm the file exists and is readable. Run \`devstack up\` to ` +
-				`regenerate it if the supervisor was interrupted mid-write.`,
-			cause,
-		});
-	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(text) as unknown;
-	} catch (cause) {
-		throw new PlaywrightManifestShapeError({
-			message: `manifest at ${manifestPath} is not valid JSON`,
-			manifestPath,
-			phase: 'parse',
-			recoveryHint:
-				`Delete \`${manifestPath}\` and run \`devstack up\` — the supervisor ` +
-				`will regenerate it atomically.`,
-			cause,
-		});
-	}
-
-	// Use runtime's readStackContext to enforce the version gate
-	// uniformly across integrations; map its errors to playwright tags.
-	try {
-		const ctx = readStackContextRuntime({ manifestPath });
-		// Re-decode for the strict envelope shape (runtime widens to
-		// plain strings on read). The decode is cheap and is the
-		// authoritative shape for in-spec helpers.
-		const envelope = Schema.decodeUnknownSync(ManifestEnvelopeSchema)(parsed) as ManifestEnvelope;
-		void ctx;
-		return envelope;
+		return manifestEnvelopeFromStackContext(readStackContextRuntime({ manifestPath }));
 	} catch (cause) {
 		if (cause instanceof ManifestShapeError) {
 			throw new PlaywrightManifestShapeError({
@@ -174,6 +129,17 @@ export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
 							`that understands the new envelope.`
 						: `Delete \`${manifestPath}\` and run \`devstack up\`. If the error ` +
 							`persists, the build-integration is older than the supervisor.`,
+				cause,
+			});
+		}
+		if (cause instanceof ManifestDiscoveryError) {
+			throw new PlaywrightManifestShapeError({
+				message: `failed to read manifest at ${manifestPath}`,
+				manifestPath,
+				phase: 'parse',
+				recoveryHint:
+					`Confirm the file exists and is readable. Run \`devstack up\` to ` +
+					`regenerate it if the supervisor was interrupted mid-write.`,
 				cause,
 			});
 		}
@@ -210,20 +176,17 @@ export const conventionalUrlFor = (
 
 	if (!Number.isFinite(port) || port <= 0) return null;
 
-	const entries = [
-		['app', 'dev'],
-		['sui-rpc', 'sui-rpc'],
-		['sui-faucet', 'sui-faucet'],
-		['walrus-aggregator', 'walrus-aggregator'],
-		['walrus-publisher', 'walrus-publisher'],
-		['seal', 'seal'],
-		['wallet', 'wallet'],
-	] as const;
-	const routes = new Map<string, ConventionalRoute>(
-		entries.map(([key, service]): [string, ConventionalRoute] => [
-			key,
-			{ service, port, wireProtocol: 'http' },
-		]),
+	const routes = conventionalRoutesFromHints(
+		[
+			{ endpoint: 'app', service: 'dev' },
+			{ endpoint: 'sui-rpc', service: 'sui-rpc' },
+			{ endpoint: 'sui-faucet', service: 'sui-faucet' },
+			{ endpoint: 'walrus-aggregator', service: 'walrus-aggregator' },
+			{ endpoint: 'walrus-publisher', service: 'walrus-publisher' },
+			{ endpoint: 'seal', service: 'seal' },
+			{ endpoint: 'wallet', service: 'wallet' },
+		],
+		port,
 	);
 	if (!routes.has(endpointKey)) return null;
 
@@ -273,24 +236,7 @@ export const readStackContext = (options: ResolveStackContextOptions = {}): Stac
 };
 
 const projectFromRuntime = (ctx: RuntimeStackContext): StackContext => {
-	const envelope: ManifestEnvelope = {
-		identity: ctx.identity,
-		manifestVersion: ctx.manifestVersion,
-		services: ctx.services,
-		endpoints: Object.fromEntries(
-			ctx.endpoints.all().map((e) => [
-				e.name,
-				{
-					url: e.url,
-					displayUrl: e.displayUrl,
-					wireProtocol: e.wireProtocol,
-					pluginKey: e.pluginKey as never,
-					endpointKey: e.endpointKey as never,
-				} satisfies EndpointEntry,
-			]),
-		) as ManifestEnvelope['endpoints'],
-		extras: ctx.extras,
-	};
+	const envelope = manifestEnvelopeFromStackContext(ctx);
 	return makeStackContext(envelope, ctx.manifestPath);
 };
 

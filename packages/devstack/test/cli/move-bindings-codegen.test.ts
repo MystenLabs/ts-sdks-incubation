@@ -39,7 +39,7 @@ import {
 
 const moveBindingsProofPlugin = definePlugin({
 \tid: 'test/move-bindings-proof',
-\tkind: 'leaf-long-running',
+\trole: 'service',
 \tstart: () => Effect.succeed({ packageName: 'hello' } as const),
 \tcapabilities: () => [
 \t\tcodegenable({

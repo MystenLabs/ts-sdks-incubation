@@ -22,7 +22,7 @@ describe('substrate/runtime/run', () => {
 		Effect.gen(function* () {
 			const pluginFail = definePlugin({
 				id: 'test:one-shot-fail',
-				kind: 'leaf-long-running' as const,
+				role: 'service' as const,
 				start: () =>
 					Effect.fail(new Error('initial acquire failed')) as Effect.Effect<
 						{ readonly ok: true },
