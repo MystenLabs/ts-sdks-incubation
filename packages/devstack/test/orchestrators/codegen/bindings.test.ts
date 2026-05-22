@@ -114,6 +114,7 @@ describe('codegen Move summary runner', () => {
 					{
 						contextPath: new URL('../../../images/', import.meta.url).pathname,
 						dockerfile: 'sui/Dockerfile',
+						fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
 						buildArgs: { SUI_VERSION: 'devnet-v1.71.0' },
 					},
 				]);

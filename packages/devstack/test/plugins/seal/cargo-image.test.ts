@@ -120,6 +120,11 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 		// `COPY` the shared `_shared/signal-forward.sh` snippet; the
 		// plugin-specific Dockerfile lives at `seal/Dockerfile` under it.
 		expect(captured!.dockerfile).toBe('seal/Dockerfile');
+		expect(captured!.fingerprintPaths).toEqual([
+			'seal/Dockerfile',
+			'seal/entrypoint.sh',
+			'_shared/signal-forward.sh',
+		]);
 		expect(captured!.buildArgs).toEqual({ SEAL_VERSION: 'seal-v0.7.0' });
 		// Sanity: the resolved contextPath points at the vendored
 		// `images/` dir. We don't pin the absolute path (varies per

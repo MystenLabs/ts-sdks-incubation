@@ -368,6 +368,32 @@ describe('docker inspect ownership boundary', () => {
 				);
 
 				expect(facts?.image).toBe('img:desired');
+				expect(facts?.imageDigest).toBeUndefined();
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('records Docker inspect top-level Image as the image digest', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-inspect-image-digest-test-'));
+			try {
+				const { bin } = writeDocker(root, [
+					'if [ "$1" = "inspect" ]; then',
+					`  printf '%s\\n' ${JSON.stringify(inspectJson())}`,
+					'  exit 0',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const facts = yield* inspectContainer('devstack-owned').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+
+				expect(facts?.image).toBe('img:desired');
+				expect(facts?.imageDigest).toBe('sha256:desired');
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}
@@ -527,6 +553,48 @@ describe('container lifecycle decisions', () => {
 				'new',
 			),
 		).toEqual({ kind: 'adopt', id: 'running-id' });
+	});
+
+	it('adopts and resumes when only the image tag changed but the image digest still matches', () => {
+		const runningFacts = {
+			id: 'running-id',
+			lifecycle: { kind: 'running', exitCode: 0 },
+			running: true,
+			paused: false,
+			exitCode: 0,
+			image: 'devstack-build:old-tag',
+			imageDigest: 'sha256:desired',
+			portBindings: [],
+		} as const;
+
+		expect(
+			decideRunAction(
+				runningFacts,
+				'devstack-build:new-tag',
+				'on-failure',
+				[],
+				'exact',
+				undefined,
+				'sha256:desired',
+			),
+		).toEqual({ kind: 'adopt', id: 'running-id' });
+
+		expect(
+			decideRunAction(
+				{
+					...runningFacts,
+					id: 'stopped-id',
+					lifecycle: { kind: 'stopped', exitCode: 0 },
+					running: false,
+				},
+				'devstack-build:new-tag',
+				'on-failure',
+				[],
+				'exact',
+				undefined,
+				'sha256:desired',
+			),
+		).toEqual({ kind: 'resume', id: 'stopped-id' });
 	});
 });
 

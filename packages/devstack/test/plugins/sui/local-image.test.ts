@@ -76,4 +76,25 @@ describe('Sui local image resolution', () => {
 		]);
 		expect(resolved.digest).toBe('sha256:built');
 	});
+
+	it('fingerprints only Sui image inputs for the vendored image context', async () => {
+		const calls: unknown[] = [];
+		const runtime = unusedRuntime({
+			ensureImage: (build) =>
+				Effect.sync(() => {
+					calls.push(build);
+					return { digest: 'sha256:built', tag: 'built' };
+				}),
+		});
+
+		await Effect.runPromise(resolveImage(runtime, { mode: 'local', version: 'v1' }));
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				dockerfile: 'sui/Dockerfile',
+				fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
+				buildArgs: { SUI_VERSION: 'v1' },
+			}),
+		]);
+	});
 });

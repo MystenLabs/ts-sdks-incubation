@@ -80,7 +80,11 @@ export interface InspectFacts {
 	readonly running: boolean;
 	readonly paused: boolean;
 	readonly exitCode: number | null;
+	/** Create-time image ref recorded by Docker. For tagged builds this is
+	 *  usually the tag passed to `docker run`. */
 	readonly image: string;
+	/** Resolved image id from Docker inspect's top-level `Image` field. */
+	readonly imageDigest?: string;
 	readonly mounts?: ReadonlyArray<InspectMount>;
 	readonly portBindings?: ReadonlyArray<string>;
 	readonly ports?: ReadonlyArray<ContainerPortPublish>;
@@ -125,9 +129,13 @@ export const decideRunAction = (
 	desiredPortBindings: ReadonlyArray<string> = [],
 	portBindingReconciliation: PortBindingReconciliation = 'exact',
 	desiredConfigHash?: string,
+	desiredImageDigest?: string,
 ): RunAction => {
 	if (facts === null) return { kind: 'fresh' };
-	const imageMatches = facts.image === desiredImage;
+	const imageMatches =
+		facts.image === desiredImage ||
+		(desiredImageDigest !== undefined &&
+			(facts.image === desiredImageDigest || facts.imageDigest === desiredImageDigest));
 	const portsMatch = sameBindings(facts.portBindings ?? [], desiredPortBindings);
 	const portsCompatible =
 		portsMatch ||
@@ -393,6 +401,7 @@ export const inspectContainer = (
 				// top-level digest field, but lifecycle decisions need the
 				// create-time ref from Config.Image.
 				image: decoded.Config.Image,
+				...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
 				mounts,
 				portBindings: canonicalPortBindings(ports),
 				ports,
@@ -873,6 +882,7 @@ export const ensureContainer = (
 						canonicalPortBindings(spec.ports),
 						spec.portBindingReconciliation ?? 'exact',
 						spec.configHash,
+						spec.image.digest,
 					);
 					const id = yield* applyAction(action, spec, deps);
 					return yield* ensureEffectivePublishedPorts(id, spec, deps);

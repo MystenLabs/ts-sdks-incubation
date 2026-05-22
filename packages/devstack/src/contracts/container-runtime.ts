@@ -41,6 +41,12 @@ export interface TagImageOptions {
 export interface ContainerBuildContext {
 	readonly contextPath: string;
 	readonly dockerfile?: string;
+	/** Optional context-relative paths that define this image's cache
+	 *  identity. Omitted or empty means fingerprint the whole Docker build
+	 *  context. Use this when Docker needs a shared parent context only to
+	 *  copy a small set of files; unrelated sibling image edits must not
+	 *  retag stateful containers. */
+	readonly fingerprintPaths?: ReadonlyArray<string>;
 	/** Optional Docker build platform, for example `linux/amd64`.
 	 *  Omitted means Docker uses the host/default platform. */
 	readonly platform?: string;

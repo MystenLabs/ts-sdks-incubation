@@ -31,6 +31,7 @@ export const suiCliImageBuildContext = (
 ): ContainerBuildContext => ({
 	contextPath: new URL('../../../../images/', import.meta.url).pathname,
 	dockerfile: 'sui/Dockerfile',
+	fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
 	buildArgs: { SUI_VERSION: version },
 });
 

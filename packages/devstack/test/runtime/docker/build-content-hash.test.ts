@@ -10,7 +10,7 @@
 // `docker build` at the build-tag site (task #71).
 
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -76,6 +76,41 @@ describe('buildContentHash — unsigned hex projection', () => {
 			const second = buildContentHash({ contextPath: dir, dockerfile: 'Dockerfile' });
 
 			expect(first).not.toBe(second);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it('can fingerprint only the files an image copies from a shared context', () => {
+		const dir = mkdtempSync(join(tmpdir(), 'devstack-build-context-scoped-'));
+		try {
+			const suiDir = join(dir, 'sui');
+			const walrusDir = join(dir, 'walrus');
+			const sharedDir = join(dir, '_shared');
+			writeFileSync(join(dir, 'marker'), 'context root\n');
+			mkdirSync(suiDir, { recursive: true });
+			mkdirSync(walrusDir, { recursive: true });
+			mkdirSync(sharedDir, { recursive: true });
+			writeFileSync(
+				join(suiDir, 'Dockerfile'),
+				'FROM scratch\nCOPY sui/entrypoint.sh /entrypoint.sh\n',
+			);
+			writeFileSync(join(suiDir, 'entrypoint.sh'), 'echo sui\n');
+			writeFileSync(join(sharedDir, 'signal-forward.sh'), 'echo shared\n');
+			writeFileSync(join(walrusDir, 'run-walrus.sh'), 'echo walrus first\n');
+
+			const build = {
+				contextPath: dir,
+				dockerfile: 'sui/Dockerfile',
+				fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
+			};
+			const first = buildContentHash(build);
+
+			writeFileSync(join(walrusDir, 'run-walrus.sh'), 'echo walrus second\n');
+			expect(buildContentHash(build)).toBe(first);
+
+			writeFileSync(join(sharedDir, 'signal-forward.sh'), 'echo shared second\n');
+			expect(buildContentHash(build)).not.toBe(first);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

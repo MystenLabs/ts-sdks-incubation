@@ -85,6 +85,7 @@ export const resolveSealCargoImage = (
 		const buildCtx: ContainerBuildContext = {
 			contextPath: new URL('../../../../images/', import.meta.url).pathname,
 			dockerfile: 'seal/Dockerfile',
+			fingerprintPaths: ['seal/Dockerfile', 'seal/entrypoint.sh', '_shared/signal-forward.sh'],
 			buildArgs: { SEAL_VERSION: inputs.sealRef },
 		};
 		return yield* runtime.ensureImage(buildCtx).pipe(

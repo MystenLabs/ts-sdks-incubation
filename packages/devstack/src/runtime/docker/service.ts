@@ -156,10 +156,37 @@ const updateContextEntryHash = (
 	hash.update('\0');
 };
 
-const buildContextFingerprint = (contextPath: string): string => {
+const normalizeFingerprintPath = (path: string): string =>
+	path
+		.split(/[\\/]+/g)
+		.filter((part) => part.length > 0)
+		.join('/');
+
+const normalizeFingerprintPaths = (
+	paths: ReadonlyArray<string> | undefined,
+): ReadonlyArray<string> =>
+	[...new Set((paths ?? []).map(normalizeFingerprintPath).filter((path) => path.length > 0))].sort(
+		(a, b) => a.localeCompare(b),
+	);
+
+const buildContextFingerprint = (
+	contextPath: string,
+	fingerprintPaths?: ReadonlyArray<string>,
+): string => {
 	const hash = createHash('sha256');
+	const requestedPaths = normalizeFingerprintPaths(fingerprintPaths);
+	const paths = requestedPaths.length === 0 ? null : requestedPaths;
 	try {
-		updateContextEntryHash(hash, contextPath, contextPath);
+		if (paths === null) {
+			updateContextEntryHash(hash, contextPath, contextPath);
+		} else {
+			for (const relPath of paths) {
+				hash.update('fingerprint-path\0');
+				hash.update(relPath);
+				hash.update('\0');
+				updateContextEntryHash(hash, contextPath, join(contextPath, relPath));
+			}
+		}
 	} catch (err) {
 		hash.update('unreadable\0');
 		hash.update(String(err));
@@ -177,6 +204,7 @@ export const buildContentHash = (ctx: ContainerBuildContext): string => {
 	const sortedArgs = Object.entries(ctx.buildArgs ?? {}).sort(([a], [b]) => a.localeCompare(b));
 	const argsKey = sortedArgs.map(([k, v]) => `${k}=${v}`).join('\x00');
 	const platform = ctx.platform ?? '';
+	const fingerprintPathsKey = normalizeFingerprintPaths(ctx.fingerprintPaths).join('\x00');
 	return createHash('sha256')
 		.update(ctx.contextPath)
 		.update('\x00')
@@ -186,7 +214,9 @@ export const buildContentHash = (ctx: ContainerBuildContext): string => {
 		.update('\x00')
 		.update(argsKey)
 		.update('\x00')
-		.update(buildContextFingerprint(ctx.contextPath))
+		.update(fingerprintPathsKey)
+		.update('\x00')
+		.update(buildContextFingerprint(ctx.contextPath, ctx.fingerprintPaths))
 		.digest('hex');
 };
 
