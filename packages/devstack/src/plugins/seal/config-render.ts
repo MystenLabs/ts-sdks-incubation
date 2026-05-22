@@ -42,6 +42,12 @@ export interface SealKeyServerConfigInputs {
 	readonly tsSdkVersionRequirement?: string;
 }
 
+export interface ParsedSealKeyServerConfig {
+	readonly sealPackageId: string;
+	readonly nodeUrl: string;
+	readonly keyServerObjectId: string;
+}
+
 const DEFAULT_TS_SDK_REQUIREMENT = '>=0.4.5';
 
 // ---------------------------------------------------------------------------
@@ -76,6 +82,27 @@ export const renderSealKeyServerConfig = (inputs: SealKeyServerConfigInputs): st
  *  the secret in `docker inspect` and host process env. */
 export const renderMasterKeyEnvFile = (masterKeyHex: string): string =>
 	`MASTER_KEY=${masterKeyHex}\n`;
+
+const readQuotedYamlField = (body: string, field: string): string | null => {
+	const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const match = new RegExp(`(?:^|\\n)\\s*${escaped}:\\s*"([^"]+)"\\s*(?:\\n|$)`).exec(body);
+	return match?.[1] ?? null;
+};
+
+export const parseSealKeyServerConfig = (body: string): ParsedSealKeyServerConfig | null => {
+	const sealPackageId = readQuotedYamlField(body, 'seal_package');
+	const nodeUrl = readQuotedYamlField(body, 'node_url');
+	const keyServerObjectId = readQuotedYamlField(body, 'key_server_object_id');
+	if (sealPackageId === null || nodeUrl === null || keyServerObjectId === null) {
+		return null;
+	}
+	return { sealPackageId, nodeUrl, keyServerObjectId };
+};
+
+export const parseMasterKeyEnvFile = (body: string): string | null => {
+	const match = /^MASTER_KEY=(0x)?([0-9a-fA-F]+)\s*$/m.exec(body);
+	return match?.[2] ?? null;
+};
 
 // ---------------------------------------------------------------------------
 // Staging procedure — write yaml + env-file with proper mode bits

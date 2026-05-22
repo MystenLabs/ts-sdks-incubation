@@ -51,7 +51,12 @@ import type {
 	ArtifactPublisher,
 } from '../../../primitives/artifact-publisher.ts';
 import type { AccountValue } from '../../account/service.ts';
-import { renderSealKeyServerConfig, stageSealConfig } from '../config-render.ts';
+import {
+	parseMasterKeyEnvFile,
+	parseSealKeyServerConfig,
+	renderSealKeyServerConfig,
+	stageSealConfig,
+} from '../config-render.ts';
 import {
 	publishSealPackage,
 	registerKeyServer,
@@ -59,7 +64,12 @@ import {
 	type SealSuiSdk,
 } from '../deploy.ts';
 import { sealError, type SealError } from '../errors.ts';
-import { runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
+import {
+	KEY_SERVER_CONFIG_BASENAME,
+	MASTER_KEY_ENVFILE_BASENAME,
+	runSealKeygen,
+	type PersistedBlsKeypair,
+} from '../keygen.ts';
 import { makeKeyManager, stubRotate } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
 import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-publish.ts';
@@ -152,6 +162,83 @@ export interface LocalKeygenDeps {
 	readonly routedUrl: string;
 }
 
+interface PersistedLocalKeygenState {
+	readonly packageId: string;
+	readonly keyServerObjectId: string;
+	readonly masterKeyEnvFile: string;
+}
+
+const readPersistedLocalKeygenState = (
+	servicePath: string,
+): Effect.Effect<PersistedLocalKeygenState | null, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const configPath = `${servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
+		const masterKeyEnvFile = `${servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
+		const [configExists, masterKeyExists] = yield* Effect.all([
+			fs.exists(configPath).pipe(Effect.catch(() => Effect.succeed(false))),
+			fs.exists(masterKeyEnvFile).pipe(Effect.catch(() => Effect.succeed(false))),
+		]);
+		if (!configExists || !masterKeyExists) return null;
+
+		const configBody = yield* fs
+			.readFileString(configPath)
+			.pipe(Effect.catch(() => Effect.succeed(null)));
+		const masterKeyBody = yield* fs
+			.readFileString(masterKeyEnvFile)
+			.pipe(Effect.catch(() => Effect.succeed(null)));
+		if (configBody === null || masterKeyBody === null) return null;
+		const parsedConfig = parseSealKeyServerConfig(configBody);
+		const masterKey = parseMasterKeyEnvFile(masterKeyBody);
+		if (parsedConfig === null || masterKey === null) return null;
+
+		return {
+			packageId: parsedConfig.sealPackageId,
+			keyServerObjectId: parsedConfig.keyServerObjectId,
+			masterKeyEnvFile,
+		};
+	});
+
+const startLocalKeygenContainer = (
+	deps: LocalKeygenDeps,
+	opts: ResolvedLocalKeygenOptions,
+	cargoImage: ImageRef,
+	state: PersistedLocalKeygenState,
+): Effect.Effect<SealLocalKeygenResolved, SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const spec: KeyServerContainerSpec = buildKeyServerSpec({
+			name: opts.name,
+			image: cargoImage,
+			containerName: deps.containerName,
+			labels: deps.labels,
+			suiNetwork: deps.suiNetworkName,
+			servicePath: deps.servicePath,
+			routedHostname: deps.routedHostname,
+			routedUrl: deps.routedUrl,
+			readyTimeoutMs: opts.readyTimeoutMs,
+		});
+		const { containerName } = yield* startKeyServer(deps.runtime, spec, opts.name);
+		void containerName;
+
+		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
+			{ objectId: state.keyServerObjectId, weight: 1 },
+		];
+		const keyManager = makeKeyManager({
+			name: opts.name,
+			masterKeyEnvFile: state.masterKeyEnvFile,
+			rotateImpl: stubRotate(opts.name),
+		});
+		return {
+			keyServer: {
+				serverConfigs,
+				keyServerUrl: deps.routedUrl,
+				objectId: state.keyServerObjectId,
+			},
+			keyManager,
+			packageId: state.packageId,
+		} satisfies SealLocalKeygenResolved;
+	});
+
 // ---------------------------------------------------------------------------
 // Boot pipeline
 // ---------------------------------------------------------------------------
@@ -178,6 +265,11 @@ export const bootLocalKeygen = (
 		// for the pre-baked path; falls back to a documented seam error
 		// pointing at the override hatch.
 		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime);
+
+		const persisted = yield* readPersistedLocalKeygenState(deps.servicePath);
+		if (persisted !== null) {
+			return yield* startLocalKeygenContainer(deps, opts, cargoImage, persisted);
+		}
 
 		// ---- move source resolve (bootstrap asset, conditional) --
 		// Source is only fetched when no user-pinned path is provided.
@@ -237,47 +329,11 @@ export const bootLocalKeygen = (
 		);
 		void configPath; // referenced via servicePath assembly in the spec
 
-		// ---- start long-running key-server container ------------
-		// Distilled-doc invariants #3 (env-file via bind-mount + entrypoint
-		// shell sourcing — see key-server.ts header), #5 (no host-port),
-		// #7 (signal-forwarding entrypoint) encoded in `buildKeyServerSpec`
-		// + `startKeyServer`.
-		const spec: KeyServerContainerSpec = buildKeyServerSpec({
-			name: opts.name,
-			image: cargoImage,
-			containerName: deps.containerName,
-			labels: deps.labels,
-			suiNetwork: deps.suiNetworkName,
-			servicePath: deps.servicePath,
-			routedHostname: deps.routedHostname,
-			routedUrl: deps.routedUrl,
-			readyTimeoutMs: opts.readyTimeoutMs,
-		});
-		const { containerName } = yield* startKeyServer(deps.runtime, spec, opts.name);
-		void containerName;
-
-		// ---- assemble the plugin's aggregate value --------------
-		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
-			{ objectId: keyServerObjectId, weight: 1 },
-		];
-		// Distilled-doc invariant #23 — `rotate` has R = never (the
-		// substrate services were pre-provided when assembling the
-		// rotate body). The current `stubRotate` body fails-closed
-		// with a typed error; see `key-manager.ts`.
-		const keyManager = makeKeyManager({
-			name: opts.name,
-			masterKeyEnvFile,
-			rotateImpl: stubRotate(opts.name),
-		});
-		return {
-			keyServer: {
-				serverConfigs,
-				keyServerUrl: deps.routedUrl,
-				objectId: keyServerObjectId,
-			},
-			keyManager,
+		return yield* startLocalKeygenContainer(deps, opts, cargoImage, {
 			packageId,
-		} satisfies SealLocalKeygenResolved;
+			keyServerObjectId,
+			masterKeyEnvFile,
+		});
 	}).pipe(
 		Effect.catchTag('ArtifactPublishError', (err) =>
 			Effect.fail(

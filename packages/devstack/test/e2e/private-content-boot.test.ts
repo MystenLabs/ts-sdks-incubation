@@ -444,6 +444,7 @@ const assertPrivateContentBoot = (boot: PrivateContentBoot): void => {
 			.map((a) => `${a.origin} -> ${a.status}: ${a.body}`)
 			.join(' | ')}`,
 	).toBe(200);
+	expect(walletHealth.origin).toBe(PRIVATE_CONTENT_APP_ORIGIN);
 
 	for (const [key, resolved] of result.resolvedValues) {
 		const hit = findSentinel(resolved, `$${key}`);
