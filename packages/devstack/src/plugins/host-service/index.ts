@@ -8,7 +8,10 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
+import {
+	PortBrokerService,
+	type PortProbeHost,
+} from '../../substrate/runtime/port-broker/index.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
 
@@ -42,6 +45,7 @@ export const hostServiceResource = <Name extends string>(name: Name) =>
 	resource<`host-service/${Name}`, HostServiceValue>(hostServiceResourceId(name));
 
 const hostServiceErrorContributions = pluginErrorContributions(HOST_SERVICE_ERROR_TAGS);
+const HOST_SERVICE_PORT_PROBE_HOST: PortProbeHost = '0.0.0.0';
 
 export type HostServiceAfter = ReadonlyArray<AnyResourceRef>;
 
@@ -66,6 +70,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 						portBroker
 							.allocate({
 								kind: 'http',
+								probeHost: HOST_SERVICE_PORT_PROBE_HOST,
 								...(preferredPort === undefined ? {} : { preferredPort }),
 							})
 							.pipe(Effect.map((allocation) => allocation.port)),

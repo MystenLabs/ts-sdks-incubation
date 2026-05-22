@@ -11,6 +11,7 @@ import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observa
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import {
 	PortBrokerService,
+	type AllocateOptions,
 	type PortBroker,
 } from '../../../src/substrate/runtime/port-broker/index.ts';
 import {
@@ -267,18 +268,22 @@ describe('acquireHostService', () => {
 		}
 	});
 
-	it.effect('starts the process before returning from plugin acquire', () => {
+	it.effect('probes all interfaces when allocating the routed host-service port', () => {
 		loggerLines.length = 0;
+		const allocations: AllocateOptions[] = [];
 		const broker: PortBroker = {
-			allocate: () =>
-				Effect.succeed({
+			allocate: (opts) => {
+				allocations.push(opts);
+				return Effect.succeed({
 					port: 6173,
 					kind: 'http',
 					release: Effect.void,
-				}),
+				});
+			},
 		};
 		const member = hostService({
 			name: 'frontend',
+			port: 5170,
 			command: process.execPath,
 			args: ['-e', `console.log('ready'); setInterval(() => {}, 1000);`],
 			ready: { kind: 'log', pattern: 'ready', timeoutMs: 1_000 },
@@ -296,6 +301,7 @@ describe('acquireHostService', () => {
 					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
 				expect(value.url).toBe('http://127.0.0.1:6173');
+				expect(allocations).toEqual([{ kind: 'http', preferredPort: 5170, probeHost: '0.0.0.0' }]);
 				yield* Effect.promise<void>(
 					() => new Promise((resolveReady) => setTimeout(resolveReady, 0)),
 				);
