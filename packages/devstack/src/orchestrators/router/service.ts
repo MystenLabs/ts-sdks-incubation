@@ -77,9 +77,10 @@ import { dispatchFileId } from './hostname.ts';
 import type { RouterProfile } from './profile.ts';
 import { bootstrap, type BootReport, TraefikContainerOpsService } from './traefik-container.ts';
 
-// Router operations are shared across every stack using the same Docker context.
-// Router boot and dispatch writes can legitimately queue behind parallel example
-// runs in CI, so use a longer lease timeout than normal metadata mutations.
+// Router operations are shared across every stack using the same Docker
+// context. The generic stack-lock default stays short for normal metadata
+// mutations; router boot and dispatch can legitimately queue behind other
+// devstack processes during multi-example CI or local parallel runs.
 const ROUTER_LOCK_TIMEOUT_MILLIS = 120_000;
 
 // ---------------------------------------------------------------------------

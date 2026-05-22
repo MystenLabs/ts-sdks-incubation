@@ -125,7 +125,9 @@ Keep `UNRESOLVED-BLOCKERS.md` as the source of truth. These were the P0 release 
 - Fork-greeting is no longer release-gated. Forking is marked as a coming-soon feature, and
   `examples/fork-greeting` is no longer advertised as a runnable release target. Fork network
   selection now fails explicitly with a coming-soon error through the CLI/env parser, and direct
-  `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`.
+  `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`. The `fork-greeting` config now
+  requests fork mode directly, so trying to apply it fails at config import with
+  `Sui fork mode is coming soon; 'testnet' forks are not available in this release.`
 - Snapshot identity conflict rejection and start-time/PID identity proof resolved on 2026-05-22 with
   focused identity-guard, restore, snapshot-reservation, roster, stack-lock, and supervisor-presence
   tests. The snapshot-reservation orphan sweep now forces the PID/start-time check through the

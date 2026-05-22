@@ -214,7 +214,9 @@ Current evidence:
 - Fork-greeting is no longer a release blocker. Forking is a coming-soon feature, so
   `examples/fork-greeting` remains prototype coverage but is no longer advertised as a runnable
   release target. Fork network selection now fails explicitly with a coming-soon error through the
-  CLI/env parser, and direct `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`.
+  CLI/env parser, and direct `sui({ mode: 'fork', ... })` usage throws `SuiForkComingSoonError`. The
+  `fork-greeting` config now requests fork mode directly, so trying to apply it fails at config
+  import with `Sui fork mode is coming soon; 'testnet' forks are not available in this release.`
 - Docker-dependent tests that soft-skip are classified as follows: Docker absence is an environment
   gap for release-gate lanes, not a passing result; fake-Docker runtime tests remain the normal
   package regression lane; real-Docker e2e files belong in a separate Docker lane. The prior
