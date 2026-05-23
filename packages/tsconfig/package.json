@@ -3,6 +3,15 @@
 	"version": "0.0.1",
 	"description": "Shared TypeScript configurations",
 	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation",
+		"directory": "packages/tsconfig"
+	},
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/tsconfig#readme",
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
 	"files": [
 		"*.json"
 	]
