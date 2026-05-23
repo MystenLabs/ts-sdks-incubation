@@ -1,6 +1,7 @@
 // Copies `examples/_template/` into `packages/create-devstack-app/template/`
 // at build time so the published package is self-contained. Skips generated
-// dirs (`node_modules`, `dist`, `.devstack`, `.turbo`, build-tsbuildinfo).
+// dirs (`node_modules`, `dist`, `.devstack`, `.turbo`, Move build outputs,
+// build-tsbuildinfo).
 //
 // Also rewrites `template/package.json` so the published package can be
 // `pnpm install`-ed in a fresh app outside the monorepo:
@@ -38,10 +39,12 @@ const DST = resolve(PKG_ROOT, 'template');
 const CHECK = process.argv.includes('--check');
 const SKIP = new Set([
 	'node_modules',
+	'build',
 	'dist',
 	'.devstack',
 	'.turbo',
 	'generated',
+	'package_summaries',
 	'test-results',
 	'playwright-report',
 	'playwright',
@@ -289,8 +292,10 @@ function applyTemplateCutoverFixups(templateDir: string): void {
 }
 
 function writeTemplateSupportFiles(templateDir: string): void {
+	// npm treats `.gitignore` specially while packing. Ship it under a neutral
+	// name and let the scaffolder restore it after copying the template.
 	writeFileSync(
-		join(templateDir, '.gitignore'),
+		join(templateDir, '_gitignore'),
 		`# Dependencies
 node_modules/
 

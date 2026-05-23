@@ -4,7 +4,15 @@
 // from a config file).
 
 import { spawn } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	readdirSync,
+	renameSync,
+	writeFileSync,
+} from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -123,14 +131,21 @@ function copyTemplate(src: string, dst: string): void {
 			return rel === '' || !shouldSkip(rel);
 		},
 	});
+
+	const packedGitignore = join(dst, '_gitignore');
+	if (existsSync(packedGitignore)) {
+		renameSync(packedGitignore, join(dst, '.gitignore'));
+	}
 }
 
 const SKIP = new Set([
 	'node_modules',
+	'build',
 	'dist',
 	'.devstack',
 	'.turbo',
 	'generated',
+	'package_summaries',
 	'test-results',
 	'playwright-report',
 	'playwright',
