@@ -63,7 +63,12 @@ import {
 	DEFAULT_WALRUS_REF,
 	resolveCargoImage,
 } from '../bootstrap-assets/cargo-image.ts';
-import { makeWalFaucetStrategy, walCoinType, type WalFaucetStrategy } from '../faucet-strategy.ts';
+import {
+	makeWalFaucetStrategy,
+	walPackageIdFromCoinType,
+	resolveWalCoinType,
+	type WalFaucetStrategy,
+} from '../faucet-strategy.ts';
 import { resolveWalExchange, type WalExchangeHandle, type WalSwapSdk } from '../wal-swap.ts';
 
 /** Options for the local-cluster mode. Mirrors v3
@@ -99,6 +104,8 @@ export interface WalrusLocalClusterOptions {
 export interface LocalClusterBootResult {
 	readonly mode: 'local';
 	readonly deploy: CachedDeployState;
+	readonly walrusPackageId: string;
+	readonly walPackageId: string;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
 	readonly aggregatorUrl: string;
 	readonly publisherUrl: string;
@@ -337,11 +344,19 @@ export const bootLocalCluster = (
 					sdk: deps.suiSdk,
 				})
 			: null;
-		const resolvedWalCoinType = walCoinType(state.walrusPackageId);
+		const resolvedWalCoinType = yield* resolveWalCoinType({
+			probe: deps.probe,
+			treasuryObjectId: state.treasuryObject,
+			deployPackageId: state.walrusPackageId,
+			requireTreasuryObject: exchange !== null,
+		});
+		const resolvedWalPackageId = walPackageIdFromCoinType(resolvedWalCoinType);
 
 		return {
 			mode: 'local' as const,
 			deploy: state,
+			walrusPackageId: state.walrusPackageId,
+			walPackageId: resolvedWalPackageId,
 			nodes,
 			aggregatorUrl: proxyUrl,
 			publisherUrl: proxyUrl,

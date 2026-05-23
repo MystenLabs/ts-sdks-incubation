@@ -24,6 +24,8 @@ const fakeAcquireContext: AcquireContext = {
 const fakeWalrusResolved: WalrusResolved = {
 	mode: 'local',
 	chain: 'sui:localnet',
+	walrusPackageId: '0xwalrus',
+	walPackageId: '0xfeed',
 	packageConfig: {
 		systemObjectId: '0xsystem',
 		stakingPoolId: '0xstaking',

@@ -37,6 +37,9 @@ export interface WalrusNodeBinding {
 export interface WalrusBindings {
 	readonly mode: 'local' | 'known';
 	readonly chain: string;
+	readonly walrusPackageId: string | null;
+	readonly walPackageId: string | null;
+	readonly walCoinType: string | null;
 	/** SDK-ready `packageConfig` — structurally compatible with
 	 *  `@mysten/walrus`'s `WalrusPackageConfig`. */
 	readonly packageConfig: {
@@ -65,6 +68,9 @@ export interface WalrusBindings {
 export interface MakeCodegenableInputs {
 	readonly mode: 'local' | 'known';
 	readonly chain: string;
+	readonly walrusPackageId: string | null;
+	readonly walPackageId: string | null;
+	readonly walCoinType: string | null;
 	readonly systemObjectId: string;
 	readonly stakingPoolId: string;
 	readonly exchangeIds: ReadonlyArray<string>;
@@ -88,6 +94,9 @@ export const makeCodegenable = (
 			const bindings: WalrusBindings = {
 				mode: inputs.mode,
 				chain: inputs.chain,
+				walrusPackageId: inputs.walrusPackageId,
+				walPackageId: inputs.walPackageId,
+				walCoinType: inputs.walCoinType,
 				packageConfig: {
 					systemObjectId: inputs.systemObjectId,
 					stakingPoolId: inputs.stakingPoolId,

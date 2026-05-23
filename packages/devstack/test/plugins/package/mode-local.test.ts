@@ -1,7 +1,12 @@
-import { Effect } from 'effect';
+import { Effect, Schema } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import type { ChainProbe, ChainProbeError } from '../../../src/contracts/chain-probe.ts';
+import type {
+	ChainProbe,
+	ChainProbeError,
+	ChainProbeMode,
+	ChainProbeSchema,
+} from '../../../src/contracts/chain-probe.ts';
 import { buildVerifyProbe } from '../../../src/plugins/package/mode-local.ts';
 import type { SuiProbeKey } from '../../../src/plugins/sui/chain-probe.ts';
 
@@ -10,12 +15,27 @@ const transientProbe = (
 ): ChainProbe<SuiProbeKey> => {
 	let calls = 0;
 	return {
-		get: () =>
+		get: <Shape>(_key: SuiProbeKey, schema: ChainProbeSchema<Shape>, _mode: ChainProbeMode) =>
 			Effect.sync(() => {
 				const value = values[Math.min(calls, values.length - 1)] ?? null;
 				calls += 1;
 				return value;
-			}),
+			}).pipe(
+				Effect.flatMap((value) =>
+					value === null
+						? Effect.succeed(null)
+						: Schema.decodeUnknownEffect(schema)(value).pipe(
+								Effect.mapError(
+									(cause): ChainProbeError => ({
+										_tag: 'ChainProbeError',
+										reason: 'decode-failed',
+										chain: 'sui:localnet',
+										detail: String(cause),
+									}),
+								),
+							),
+				),
+			),
 	};
 };
 

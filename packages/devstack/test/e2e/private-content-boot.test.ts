@@ -203,6 +203,8 @@ interface AccountFundingEntry {
 
 interface WalrusBootValue {
 	readonly mode: 'local' | 'known';
+	readonly walrusPackageId: string | null;
+	readonly walPackageId: string | null;
 	readonly packageConfig: {
 		readonly systemObjectId: string;
 		readonly stakingPoolId: string;
@@ -459,6 +461,9 @@ const assertPrivateContentBoot = (boot: PrivateContentBoot): void => {
 	const walrus = walrusValue(result);
 	expect(walrus.mode).toBe('local');
 	expect(walrus.nodes.length).toBe(4);
+	expect(walrus.walrusPackageId).toMatch(/^0x[0-9a-f]+$/i);
+	expect(walrus.walPackageId).toMatch(/^0x[0-9a-f]+$/i);
+	expect(walrus.walCoinType).toBe(`${walrus.walPackageId}::wal::WAL`);
 	expect(walrus.packageConfig.systemObjectId).toMatch(/^0x[0-9a-f]+$/i);
 	expect(walrus.packageConfig.stakingPoolId).toMatch(/^0x[0-9a-f]+$/i);
 	expect(walrus.proxyUrl).toMatch(/^https?:\/\//);

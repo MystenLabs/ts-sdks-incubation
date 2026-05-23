@@ -85,6 +85,8 @@ import { buildWalrusNetworkName, type WalrusStorageNode } from './storage-nodes.
 export interface WalrusResolved {
 	readonly mode: 'local' | 'known';
 	readonly chain: string;
+	readonly walrusPackageId: string | null;
+	readonly walPackageId: string | null;
 	/** SDK-ready `packageConfig` — structurally compatible with
 	 *  `@mysten/walrus`'s `WalrusPackageConfig`. */
 	readonly packageConfig: {
@@ -271,6 +273,8 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				const resolvedValue: WalrusResolved = {
 					mode: 'local',
 					chain: sui.chain,
+					walrusPackageId: boot.walrusPackageId,
+					walPackageId: boot.walPackageId,
 					packageConfig: {
 						systemObjectId: boot.deploy.systemObject,
 						stakingPoolId: boot.deploy.stakingObject,
@@ -312,6 +316,8 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 			Effect.succeed({
 				mode: 'known',
 				chain: resolved.chain,
+				walrusPackageId: null,
+				walPackageId: null,
 				packageConfig: {
 					systemObjectId: resolved.systemObjectId,
 					stakingPoolId: resolved.stakingPoolId,
@@ -353,6 +359,9 @@ const makeLocalCapabilities = (parts: {
 	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
 		mode: 'local',
 		chain: resolved.chain,
+		walrusPackageId: resolved.walrusPackageId,
+		walPackageId: resolved.walPackageId,
+		walCoinType: resolved.walCoinType,
 		systemObjectId: resolved.packageConfig.systemObjectId,
 		stakingPoolId: resolved.packageConfig.stakingPoolId,
 		exchangeIds: resolved.packageConfig.exchangeIds ? [...resolved.packageConfig.exchangeIds] : [],
@@ -416,6 +425,9 @@ const makeKnownCapabilities = (parts: {
 	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
 		mode: 'known',
 		chain: resolved.chain,
+		walrusPackageId: resolved.walrusPackageId,
+		walPackageId: resolved.walPackageId,
+		walCoinType: resolved.walCoinType,
 		systemObjectId: resolved.packageConfig.systemObjectId,
 		stakingPoolId: resolved.packageConfig.stakingPoolId,
 		exchangeIds: resolved.packageConfig.exchangeIds ? [...resolved.packageConfig.exchangeIds] : [],

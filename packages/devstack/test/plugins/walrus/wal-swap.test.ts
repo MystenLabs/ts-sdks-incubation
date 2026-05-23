@@ -12,29 +12,36 @@ import {
 	resolveWalExchange,
 	type WalExchangeProbeKey,
 } from '../../../src/plugins/walrus/wal-swap.ts';
+import {
+	parseWalCoinTypeFromTreasuryType,
+	resolveWalCoinType,
+} from '../../../src/plugins/walrus/faucet-strategy.ts';
+
+const objectProbe = (object: { readonly objectId: string; readonly type: string }) =>
+	({
+		get: <Shape>(
+			_key: WalExchangeProbeKey,
+			schema: ChainProbeSchema<Shape>,
+			_mode: ChainProbeMode,
+		) =>
+			Schema.decodeUnknownEffect(schema)(object).pipe(
+				Effect.mapError(
+					(cause): ChainProbeError => ({
+						_tag: 'ChainProbeError',
+						reason: 'decode-failed',
+						chain: 'sui:localnet',
+						detail: String(cause),
+					}),
+				),
+			),
+	}) satisfies ChainProbe<WalExchangeProbeKey>;
 
 describe('walrus WAL swap', () => {
 	it('resolves the exchange package id from the on-chain object type', async () => {
-		const probe: ChainProbe<WalExchangeProbeKey> = {
-			get: <Shape>(
-				_key: WalExchangeProbeKey,
-				schema: ChainProbeSchema<Shape>,
-				_mode: ChainProbeMode,
-			) =>
-				Schema.decodeUnknownEffect(schema)({
-					objectId: '0xabc',
-					type: '0xfeed::wal_exchange::Exchange',
-				}).pipe(
-					Effect.mapError(
-						(cause): ChainProbeError => ({
-							_tag: 'ChainProbeError',
-							reason: 'decode-failed',
-							chain: 'sui:localnet',
-							detail: String(cause),
-						}),
-					),
-				),
-		};
+		const probe = objectProbe({
+			objectId: '0xabc',
+			type: '0xfeed::wal_exchange::Exchange',
+		});
 
 		const exchange = await Effect.runPromise(resolveWalExchange(probe, '0xabc'));
 
@@ -74,5 +81,33 @@ describe('walrus WAL swap', () => {
 			},
 		});
 		expect(data.commands[2]?.$kind).toBe('TransferObjects');
+	});
+
+	it('derives the WAL coin type from the protected treasury original package', () => {
+		expect(parseWalCoinTypeFromTreasuryType('0x123::wal::ProtectedTreasury')).toBe(
+			'0x123::wal::WAL',
+		);
+		expect(parseWalCoinTypeFromTreasuryType('0x2::coin::TreasuryCap<0x456::wal::WAL>')).toBe(
+			'0x456::wal::WAL',
+		);
+		expect(parseWalCoinTypeFromTreasuryType('0xabc::wal_exchange::Exchange')).toBeNull();
+	});
+
+	it('uses the treasury package id for WAL funding instead of the upgraded walrus package id', async () => {
+		const probe = objectProbe({
+			objectId: '0xtreasury',
+			type: '0x111::wal::ProtectedTreasury',
+		});
+
+		const coinType = await Effect.runPromise(
+			resolveWalCoinType({
+				probe,
+				treasuryObjectId: '0xtreasury',
+				deployPackageId: '0x222',
+				requireTreasuryObject: true,
+			}),
+		);
+
+		expect(coinType).toBe('0x111::wal::WAL');
 	});
 });
