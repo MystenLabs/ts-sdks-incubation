@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 
@@ -85,6 +86,22 @@ const acquire = (
 			processEnv: { PATH: '/usr/bin' },
 		}),
 	);
+
+const findFreePort = (): Promise<number> =>
+	new Promise((resolvePort, rejectPort) => {
+		const server = createServer();
+		server.once('error', rejectPort);
+		server.listen(0, '127.0.0.1', () => {
+			const address = server.address();
+			server.close(() => {
+				if (typeof address === 'object' && address !== null) {
+					resolvePort(address.port);
+				} else {
+					rejectPort(new Error('expected TCP server address with a port'));
+				}
+			});
+		});
+	});
 
 const neededMember = definePlugin({
 	id: 'test/needed',
@@ -237,6 +254,39 @@ describe('acquireHostService', () => {
 
 		expect(value.url).toBe('http://127.0.0.1:6173');
 	});
+
+	it.live('treats any HTTP response as host-service readiness', () =>
+		Effect.scoped(
+			Effect.gen(function* () {
+				const port = yield* Effect.promise(findFreePort);
+				const options = normalizeHostServiceOptions({
+					name: 'frontend',
+					command: process.execPath,
+					args: [
+						'-e',
+						[
+							"const http = require('node:http');",
+							'const server = http.createServer((_req, res) => {',
+							'  res.statusCode = 500;',
+							"  res.end('generated files not ready yet');",
+							'});',
+							"server.listen(Number(process.env.PORT), '127.0.0.1');",
+						].join(' '),
+					],
+					ready: { kind: 'http', timeoutMs: 2_000, intervalMs: 50 },
+				});
+
+				const value = yield* acquireHostService(options, {
+					allocatePort: () => Effect.succeed(port),
+					logger: fakeLogger,
+					pluginKey: pluginKey('host-service-test#0'),
+					processEnv: { PATH: '/usr/bin' },
+				});
+
+				expect(value.url).toBe(`http://127.0.0.1:${port}`);
+			}),
+		),
+	);
 
 	it('fails acquire when the process emits an error before readiness', async () => {
 		const child = new FakeChild();

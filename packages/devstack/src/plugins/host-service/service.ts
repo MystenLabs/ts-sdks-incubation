@@ -288,7 +288,14 @@ const httpReady = (
 	error: HostServiceAcquireError,
 ): Effect.Effect<void, HostServiceAcquireError> =>
 	awaitManagedProcessReady({
-		ready: waitForHttpEndpoint({ endpoint: url, timeoutMs, intervalMs }).pipe(
+		ready: waitForHttpEndpoint({
+			endpoint: url,
+			timeoutMs,
+			intervalMs,
+			// Host services only need to prove their listener is up. App-level
+			// 4xx/5xx responses can be transient while devstack writes generated files.
+			validate: () => true,
+		}).pipe(
 			Effect.mapError(
 				(cause) =>
 					new HostServiceAcquireError({
