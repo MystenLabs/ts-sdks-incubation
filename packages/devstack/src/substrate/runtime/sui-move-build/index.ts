@@ -98,12 +98,13 @@ export const stripPinnedSections = (source: string): string => {
 		}
 		if (!skipping) out.push(line);
 	}
+	if (skipping && source.endsWith('\n') && out.at(-1) === '') out.push('');
 	return out.join('\n');
 };
 
 export const CONTAINER_SCRUB_AWK_SCRIPT = [
-	'/^\\[pinned\\./ { skip=1; next }',
-	'/^\\[/ && !/^\\[pinned\\./ { skip=0 }',
+	'/^\\[pinned\\./ || /^\\[env(\\.|\\])/ { skip=1; next }',
+	'/^\\[/ && !/^\\[pinned\\./ && !/^\\[env(\\.|\\])/ { skip=0 }',
 	'!skip { print }',
 ].join('\n');
 
@@ -162,10 +163,12 @@ export const hostBuildArgv = (input: MoveBuildInput): ReadonlyArray<string> => [
 export const containerInnerScript = (pkgName: string): string => {
 	const scrub = containerScrubShellScript('/workspace', '/root/.move');
 	const build =
-		`exec sui move build --path /workspace/${shellQuote(pkgName)} ` +
+		`sui move build --path /workspace/${shellQuote(pkgName)} ` +
 		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
-	return ['set -e', scrub, build].join('; ');
+	return ['set -e', scrub, 'set +e', build, 'status=$?', 'set -e', scrub, 'exit "$status"'].join(
+		'; ',
+	);
 };
 
 const isHashedFile = (name: string): boolean =>
