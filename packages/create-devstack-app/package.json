@@ -1,8 +1,13 @@
 {
 	"name": "@mysten-incubation/create-devstack-app",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Scaffold a new devstack-backed Sui app from the canonical template. Run via `pnpm create @mysten-incubation/devstack-app <name>`.",
-	"keywords": ["sui", "devstack", "scaffold", "create"],
+	"keywords": [
+		"sui",
+		"devstack",
+		"scaffold",
+		"create"
+	],
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
@@ -25,7 +30,12 @@
 	"bin": {
 		"create-devstack-app": "./dist/bin.mjs"
 	},
-	"files": ["dist", "template", "README.md", "LICENSE"],
+	"files": [
+		"dist",
+		"template",
+		"README.md",
+		"LICENSE"
+	],
 	"scripts": {
 		"build": "tsdown && pnpm run sync-template",
 		"check-template": "node --experimental-strip-types scripts/sync-template.ts --check",
