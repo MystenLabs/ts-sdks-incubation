@@ -1,0 +1,168 @@
+---
+title: CLI Reference
+description: Current devstack command surface.
+---
+
+The package bin is `devstack`. Flags are command-scoped: put flags after the command that owns them.
+
+## Command index
+
+### `devstack up [options]`
+
+Boot a stack and stay attached until interrupted.
+
+Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`,
+`--renderer <tui|plain|silent>`.
+
+### `devstack apply [options]`
+
+Reconcile through a live supervisor when present; otherwise run one-shot setup.
+
+Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+
+### `devstack status [options]`
+
+Show the persisted stack projection.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack doctor [options]`
+
+Run host and stack preflight checks.
+
+Lifecycle: offline. Side effects: read. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack config [options]`
+
+Print resolved config inputs.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
+
+### `devstack schema --json`
+
+Emit the CLI schema.
+
+Lifecycle: offline. Side effects: none. Docker: no. Options: `--json`.
+
+### `devstack snapshot <command> [options]`
+
+Capture, restore, list, or delete stack snapshots.
+
+Lifecycle: offline. Side effects: write. Docker: yes. Options: none.
+
+### `devstack snapshot save [name] [options]`
+
+Capture a snapshot through a one-shot stack boot.
+
+Lifecycle: one-shot. Side effects: write. Docker: yes. Arguments: `name`. Options: `--json`,
+`--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`,
+`--network <name>`, `--name <name>`.
+
+### `devstack snapshot restore <name-or-id> [options]`
+
+Restore a snapshot by name or id.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Arguments: `name-or-id`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--yes`,
+`--no-input`.
+
+### `devstack snapshot list [options]`
+
+List snapshots for the selected stack.
+
+Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`.
+
+### `devstack snapshot delete <name-or-id> [options]`
+
+Delete a snapshot by name or id.
+
+Lifecycle: offline. Side effects: destructive. Docker: no. Arguments: `name-or-id`. Options:
+`--json`, `--app <name>`, `--stack <name>`, `--state-dir <path>`, `--verbose`, `--yes`,
+`--no-input`.
+
+### `devstack prune [--list | --dry-run | --all --yes] [options]`
+
+Inventory and prune devstack-labelled Docker resources.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Options: `--json`, `--state-dir <path>`,
+`--verbose`, `--list`, `--all`, `--no-containers`, `--no-networks`, `--no-volumes`,
+`--include-images`, `--dry-run`, `--yes`, `--no-input`.
+
+### `devstack wipe [--dry-run] [--yes] [options]`
+
+Destroy all state for the selected stack.
+
+Lifecycle: offline. Side effects: destructive. Docker: yes. Options: `--json`, `--app <name>`,
+`--stack <name>`, `--state-dir <path>`, `--verbose`, `--dry-run`, `--yes`, `--no-input`.
+
+## Lifecycle commands
+
+```bash
+devstack up --renderer tui
+devstack apply
+```
+
+`up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
+checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
+waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
+emits generated files, and exits.
+
+Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
+`--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`.
+
+Accepted network names are `localnet`, `testnet`, `mainnet`, `devnet`, `testnet-fork`,
+`mainnet-fork`, and `devnet-fork`. The same names are accepted with a `sui:` prefix, and `local`
+maps to `localnet`. Plain `sui()` still means localnet; fork and live names select the surface
+network for mode-narrowed configs, generated identity, and configs that explicitly branch on the
+resolved network.
+
+## Inspection commands
+
+```bash
+devstack status --json
+devstack doctor
+devstack config
+devstack schema --json
+```
+
+`status` reads the persisted projection without requiring a running stack. `doctor` runs host
+preflight checks. `config` prints resolved config inputs. `schema --json` prints the command tree
+and exit-code table consumed by automation.
+
+## Snapshot commands
+
+```bash
+devstack snapshot save before-migration
+devstack snapshot list
+devstack snapshot restore <name-or-id>
+devstack snapshot delete <name-or-id>
+```
+
+`snapshot save` performs a one-shot stack boot and can accept `--config <path>`. A name can be
+provided positionally or with `--name`; if omitted, devstack generates a `manual-...` name. Restore
+and delete resolve an exact snapshot id first, then a unique name.
+
+If you are already attached to `devstack up --renderer tui`, press `s` in the TUI instead of
+starting a second snapshot command. That shortcut is the attached-session snapshot flow; it is not
+available in `plain` or `silent` renderer mode. `snapshot restore`, `snapshot delete`, and `wipe`
+prompt for `y` in a TTY or require `--yes` when prompts are unavailable. `snapshot restore` and
+`wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list` and
+`snapshot delete` operate on the selected stack root.
+
+## Cleanup commands
+
+```bash
+devstack prune --dry-run
+devstack prune --yes
+devstack wipe --dry-run
+devstack wipe --yes
+```
+
+`prune` runs cross-stack orphan cleanup without requiring a running stack. `wipe` removes all state
+for the selected stack after confirmation.

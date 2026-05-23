@@ -1,0 +1,26 @@
+---
+title: Seal
+description: Local Seal key servers and live key-server references.
+---
+
+Local keygen mode starts a local key server and requires a signer account.
+
+```ts title="devstack.config.ts"
+import { account, defineDevstack, seal, sui } from '@mysten-incubation/devstack';
+
+const localnet = sui();
+const publisher = account('publisher');
+const keyServer = seal({
+	mode: 'local-keygen',
+	signer: publisher,
+});
+
+export default defineDevstack({ members: [localnet, keyServer] });
+```
+
+Live modes reference existing key servers and do not expose a local manager. Fork stacks can point
+at the upstream key server through `sealFor(forkNetwork).forkKnown(...)`; local keygen is not
+available on fork networks.
+
+`seal(...)` returns a service member. Put it in `members`, and order any app server or package
+action that needs the key server after that member.

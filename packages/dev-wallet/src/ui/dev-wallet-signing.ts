@@ -9,10 +9,25 @@ import { customElement, property, state } from 'lit/decorators.js';
 
 import type { PendingSigningRequest } from '../wallet/dev-wallet.js';
 import { CopyController } from './copy-controller.js';
-import { actionButtonStyles, sharedStyles } from './styles.js';
+import {
+	actionButtonStyles,
+	copyableTextStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sharedStyles,
+	subLabelStyles,
+} from './styles.js';
 import type { TransactionAnalysis } from './transaction-analyzer.js';
 import { analyzeTransaction } from './transaction-analyzer.js';
-import { emitEvent, formatAddress, formatCoinBalance, getCoinSymbol } from './utils.js';
+import type { CoinManifestEntry, CoinRecord } from './utils.js';
+import {
+	emitEvent,
+	formatAddress,
+	formatCoinBalance,
+	getCoinSymbol,
+	indexCoinsByType,
+	lookupCoinByType,
+} from './utils.js';
 
 const REQUEST_TYPE_LABELS: Record<PendingSigningRequest['type'], string> = {
 	'sign-personal-message': 'Sign Message',
@@ -25,9 +40,14 @@ export class DevWalletSigning extends LitElement {
 	static override styles = [
 		sharedStyles,
 		actionButtonStyles,
+		copyableTextStyles,
+		listContainerStyles,
+		monoTruncateStyles,
+		subLabelStyles,
 		css`
 			:host {
 				display: flex;
+				flex: 1;
 				flex-direction: column;
 				overflow: hidden;
 				min-height: 0;
@@ -37,18 +57,20 @@ export class DevWalletSigning extends LitElement {
 				flex: 1;
 				overflow-y: auto;
 				padding: 16px;
+				background: var(--dev-wallet-bg-0);
 			}
 
 			.signing-footer {
 				padding: 12px 16px;
 				border-top: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 			}
 
 			.signing-header {
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				margin-bottom: 12px;
+				margin-bottom: 10px;
 			}
 
 			.signing-badge {
@@ -71,22 +93,31 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.signing-title {
-				font-size: 14px;
+				font-size: 12px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}
 
 			.request-type {
-				font-size: 13px;
+				display: inline-flex;
+				align-items: center;
+				height: 22px;
+				padding: 0 8px;
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border-strong);
+				background: var(--dev-wallet-accent-fade);
+				font-family: var(--dev-wallet-font-mono);
+				font-size: 10.5px;
 				color: var(--dev-wallet-primary);
 				font-weight: var(--dev-wallet-font-weight-medium);
-				margin-bottom: 8px;
+				margin-bottom: 10px;
 			}
 
 			.request-detail {
 				display: flex;
 				justify-content: space-between;
-				padding: 6px 0;
+				gap: 12px;
+				padding: 8px 0;
 				font-size: 12px;
 				border-bottom: 1px solid var(--dev-wallet-border);
 			}
@@ -109,18 +140,7 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.detail-value.copyable-addr {
-				cursor: pointer;
-				border-radius: var(--dev-wallet-radius-2xs);
 				padding: 1px 3px;
-				transition: background 0.15s;
-			}
-
-			.detail-value.copyable-addr:hover {
-				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
-			}
-
-			.detail-value.copied {
-				color: var(--dev-wallet-positive);
 			}
 
 			.detail-secondary {
@@ -130,30 +150,24 @@ export class DevWalletSigning extends LitElement {
 
 			.request-data {
 				margin: 12px 0;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 10px 12px;
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-0);
 				font-family: var(--dev-wallet-font-mono);
-				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				max-height: 80px;
+				font-size: 11.5px;
+				color: var(--dev-wallet-foreground);
+				max-height: 120px;
 				overflow-y: auto;
 				word-break: break-all;
+				line-height: 1.55;
 			}
 
 			.section-label {
-				font-size: 11px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				color: var(--dev-wallet-muted-foreground);
-				text-transform: uppercase;
-				letter-spacing: 0.5px;
 				margin: 12px 0 6px;
 			}
 
 			.coin-flows {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
 				margin-bottom: 4px;
 			}
 
@@ -161,9 +175,10 @@ export class DevWalletSigning extends LitElement {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 8px 10px;
+				border-radius: var(--dev-wallet-radius);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				font-size: 12px;
 			}
 
@@ -177,16 +192,11 @@ export class DevWalletSigning extends LitElement {
 				color: var(--dev-wallet-destructive);
 			}
 
-			.commands-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-			}
-
 			.command-item {
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-xs);
-				background: var(--dev-wallet-background);
+				padding: 10px;
+				border-radius: var(--dev-wallet-radius-lg);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				font-size: 12px;
 			}
 
@@ -197,12 +207,7 @@ export class DevWalletSigning extends LitElement {
 			}
 
 			.command-detail {
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
 				font-size: 11px;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.command-args {
@@ -213,12 +218,7 @@ export class DevWalletSigning extends LitElement {
 
 			.command-arg {
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
 				padding: 1px 0;
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.arg-access {
@@ -252,10 +252,6 @@ export class DevWalletSigning extends LitElement {
 				word-break: break-word;
 			}
 
-			.section-label-error {
-				color: var(--dev-wallet-destructive);
-			}
-
 			.error-title {
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				margin-bottom: 4px;
@@ -285,6 +281,13 @@ export class DevWalletSigning extends LitElement {
 	@property({ attribute: false })
 	client: ClientWithCoreApi | null = null;
 
+	/** Optional pre-seeded coin metadata — pass the generated `coins`
+	 *  constant from devstack codegen to skip per-coin `getCoinMetadata`
+	 *  RPC fetches when rendering coin-flow estimates. Unknown coin types
+	 *  fall through to an RPC fetch as before. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	@state()
 	private _analysis: TransactionAnalysis | null = null;
 
@@ -297,8 +300,15 @@ export class DevWalletSigning extends LitElement {
 	#copy = new CopyController(this);
 	#analysisGeneration = 0;
 	#coinDecimalsCache = new Map<string, number>();
+	#coinSymbolCache = new Map<string, string>();
+	#coinIndex: ReadonlyMap<string, CoinManifestEntry> = new Map();
+	#lastCoinsRef: CoinRecord | null = null;
 
 	override willUpdate(changedProperties: Map<string, unknown>) {
+		if (changedProperties.has('coins') && this.coins !== this.#lastCoinsRef) {
+			this.#coinIndex = indexCoinsByType(this.coins);
+			this.#lastCoinsRef = this.coins;
+		}
 		if (changedProperties.has('request')) {
 			this._analysis = null;
 			this._analysisError = null;
@@ -320,26 +330,41 @@ export class DevWalletSigning extends LitElement {
 
 		if (result.kind === 'rich') {
 			this._analysis = result.analysis;
-			// Fetch coin metadata for all coin types in flows
-			if (this.client && result.analysis.coinFlows?.length) {
+			// Seed coin metadata for all coin types in flows. The generated
+			// `coins` record (when provided) short-circuits the per-coin
+			// `getCoinMetadata` RPC; only unknown coin types fall through to
+			// the network.
+			if (result.analysis.coinFlows?.length) {
 				const coinTypes = [...new Set(result.analysis.coinFlows.map((f) => f.coinType))];
-				await Promise.all(
-					coinTypes
-						.filter((ct) => !this.#coinDecimalsCache.has(ct))
-						.map(async (ct) => {
+				const unresolved: string[] = [];
+				for (const ct of coinTypes) {
+					if (this.#coinDecimalsCache.has(ct)) continue;
+					const seed = lookupCoinByType(this.#coinIndex, ct);
+					if (seed !== undefined) {
+						this.#coinDecimalsCache.set(ct, seed.decimals);
+						if (seed.symbol !== undefined) this.#coinSymbolCache.set(ct, seed.symbol);
+						continue;
+					}
+					unresolved.push(ct);
+				}
+				if (this.client && unresolved.length > 0) {
+					await Promise.all(
+						unresolved.map(async (ct) => {
 							try {
 								const { coinMetadata } = await this.client!.core.getCoinMetadata({
 									coinType: ct,
 								});
 								if (coinMetadata) {
 									this.#coinDecimalsCache.set(ct, coinMetadata.decimals);
+									if (coinMetadata.symbol) this.#coinSymbolCache.set(ct, coinMetadata.symbol);
 								}
 							} catch {
 								// leave uncached — will use 0 as fallback
 							}
 						}),
-				);
-				if (generation !== this.#analysisGeneration) return;
+					);
+					if (generation !== this.#analysisGeneration) return;
+				}
 				this.requestUpdate();
 			}
 		} else {
@@ -355,6 +380,7 @@ export class DevWalletSigning extends LitElement {
 		}
 
 		const typeLabel = REQUEST_TYPE_LABELS[this.request.type];
+		const account = this.request.account as PendingSigningRequest['account'] | undefined;
 
 		// For transactions: only allow approval after successful analysis
 		// For personal messages: always allow (no analysis needed)
@@ -370,36 +396,36 @@ export class DevWalletSigning extends LitElement {
 					<span class="signing-title">Approval Required</span>
 				</div>
 
-				<div class="request-type" part="request-type">${typeLabel}</div>
+				<div class="request-type" part="request-type">${typeLabel ?? 'Signing Request'}</div>
 
-				<div class="request-detail">
-					<span class="detail-label">Account</span>
-					<span
-						class="detail-value copyable-addr ${this.#copy.isCopied(this.request.account.address)
-							? 'copied'
-							: ''}"
-						title="Click to copy"
-						role="button"
-						tabindex="0"
-						aria-label="Copy account address"
-						@click=${() => this.#copy.copy(this.request!.account.address)}
-						@keydown=${(e: KeyboardEvent) => {
-							if (e.key === 'Enter' || e.key === ' ') {
-								e.preventDefault();
-								this.#copy.copy(this.request!.account.address);
-							}
-						}}
-					>
-						${this.#copy.isCopied(this.request.account.address)
-							? 'Copied!'
-							: this.request.account.label
-								? html`${this.request.account.label}
-										<span class="detail-secondary"
-											>${formatAddress(this.request.account.address)}</span
-										>`
-								: formatAddress(this.request.account.address)}
-					</span>
-				</div>
+				${account
+					? html`<div class="request-detail">
+							<span class="detail-label">Account</span>
+							<span
+								class="detail-value copyable-addr ${this.#copy.isCopied(account.address)
+									? 'copied'
+									: ''}"
+								title="Click to copy"
+								role="button"
+								tabindex="0"
+								aria-label="Copy account address"
+								@click=${() => this.#copy.copy(account.address)}
+								@keydown=${(e: KeyboardEvent) => {
+									if (e.key === 'Enter' || e.key === ' ') {
+										e.preventDefault();
+										this.#copy.copy(account.address);
+									}
+								}}
+							>
+								${this.#copy.isCopied(account.address)
+									? 'Copied!'
+									: account.label
+										? html`${account.label}
+												<span class="detail-secondary">${formatAddress(account.address)}</span>`
+										: formatAddress(account.address)}
+							</span>
+						</div>`
+					: nothing}
 				${isTransaction
 					? html`<div class="request-detail">
 							<span class="detail-label">Chain</span>
@@ -459,10 +485,11 @@ export class DevWalletSigning extends LitElement {
 			<div class="coin-flows">
 				${flows.map((flow) => {
 					const decimals = this.#coinDecimalsCache.get(flow.coinType) ?? 0;
+					const symbol = this.#coinSymbolCache.get(flow.coinType) ?? getCoinSymbol(flow.coinType);
 					const formatted = formatCoinBalance(flow.amount, decimals);
 					return html`
 						<div class="coin-flow-item">
-							<span class="coin-flow-type">${getCoinSymbol(flow.coinType)}</span>
+							<span class="coin-flow-type">${symbol}</span>
 							<span class="coin-flow-amount"> -${formatted} </span>
 						</div>
 					`;

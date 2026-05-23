@@ -1,0 +1,13 @@
+{
+	"extends": "@mysten-incubation/tsconfig/strict.json",
+	"compilerOptions": {
+		"lib": ["ES2022", "DOM"],
+		"types": ["node"],
+		"jsx": "react-jsx",
+		"noEmit": true,
+		"allowImportingTsExtensions": true,
+		"rootDir": "."
+	},
+	"include": ["src/**/*", "test/**/*"],
+	"exclude": ["node_modules"]
+}

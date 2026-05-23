@@ -1,0 +1,7 @@
+{
+	"name": "@mysten-incubation/tsconfig",
+	"version": "0.0.0",
+	"description": "Shared TypeScript configurations",
+	"license": "Apache-2.0",
+	"files": ["*.json"]
+}

@@ -1,0 +1,64 @@
+---
+title: Generated Outputs
+description: Current generated-file behavior.
+---
+
+There is no root factory for generated output. The supervisor collects each member's codegenable
+capability and emits files during `devstack up` or `devstack apply`.
+
+Default root:
+
+```txt
+src/generated/
+```
+
+Common outputs:
+
+```txt
+sui/network.ts
+accounts/<name>.ts
+coins/<symbol>.ts
+package/<mvr-placeholder>.ts
+dapp-kit/config.ts
+walrus/network.ts
+seal/<name>.ts
+deepbook/<name>.ts
+extras.ts
+```
+
+Configure the root in the stack options:
+
+```ts
+import { defineDevstack, account, sui } from '@mysten-incubation/devstack';
+
+const localnet = sui();
+const alice = account('alice');
+
+export default defineDevstack({
+	members: [localnet, alice],
+	codegen: {
+		outputDir: 'src/generated',
+		stackSubdir: null,
+	},
+	extras: {
+		featureFlag: 'local-demo',
+	},
+});
+```
+
+Generated files are normal source imports. Runtime state under `.devstack/` is not importable app
+code.
+
+```ts
+import { suiNetwork } from './generated/sui/network.js';
+import { dappKitConfig } from './generated/dapp-kit/config.js';
+```
+
+To force a re-emit, run apply:
+
+```bash
+devstack apply
+```
+
+When a matching `devstack up` supervisor is live, `apply` asks it to emit from the current runtime
+state. Otherwise, `apply` boots the stack once, emits, and exits.

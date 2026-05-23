@@ -1,0 +1,474 @@
+// Seal plugin — SDK-backed Move publish + on-chain KeyServer register.
+
+import { createHash } from 'node:crypto';
+
+import { Effect, Schema, type Scope } from 'effect';
+
+import {
+	Transaction,
+	type TransactionArgument,
+	type TransactionObjectArgument,
+} from '@mysten/sui/transactions';
+
+import type { ChainProbe, ChainProbeSchema } from '../../contracts/chain-probe.ts';
+import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
+import type {
+	ArtifactPublishError,
+	ArtifactPublisher,
+} from '../../primitives/artifact-publisher.ts';
+import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
+import {
+	executeSuiTx,
+	type ExecutedReceipt,
+	type SuiExecuteClient,
+} from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	hashMoveSources,
+	runMoveBuild,
+	scrubLocksHost,
+	type BuildOutput,
+	type MoveBuildError,
+} from '../../substrate/runtime/sui-move-build/index.ts';
+import type { AccountValue } from '../account/service.ts';
+import { sealError, type SealError } from './errors.ts';
+import { decodeHex } from './keygen.ts';
+
+const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
+
+export type SealObjectProbeKey = { readonly kind: 'object'; readonly objectId: string };
+
+export interface SealSuiSdk {
+	readonly client: unknown;
+}
+
+const sealProduceFailed = (op: 'publish' | 'register', err: SealError): ArtifactPublishError => ({
+	_tag: 'ArtifactPublishError',
+	reason: 'produce-failed',
+	detail: `seal.${op} ${err.phase}: ${err.message}`,
+});
+
+const moveBuildToSealError = (name: string, err: MoveBuildError): SealError =>
+	sealError('publish', {
+		name,
+		message: `seal publish ${err.phase} failed for source '${err.sourcePath}': ${err.message}`,
+		cause: err,
+	});
+
+const verifyObjectLenient = <Verified>(
+	probe: ChainProbe<SealObjectProbeKey>,
+	objectId: string,
+	schema: ChainProbeSchema<Verified>,
+): Effect.Effect<Verified | null, never> =>
+	probe
+		.get({ kind: 'object', objectId }, schema, 'lenient')
+		.pipe(Effect.catch(() => Effect.succeed(null as Verified | null)));
+
+// ---------------------------------------------------------------------------
+// Move publish — `sealPackage` artifact
+// ---------------------------------------------------------------------------
+
+export const SEAL_PACKAGE_NAMESPACE = 'seal/package' as const;
+
+export interface SealPackageCached {
+	readonly packageId: string;
+	readonly upgradeCapId?: string;
+}
+
+export const SealPackageVerifyShape = Schema.Struct({
+	objectId: Schema.String,
+	type: Schema.optional(Schema.Unknown),
+});
+export type SealPackageVerified = Schema.Schema.Type<typeof SealPackageVerifyShape>;
+
+export interface SealPublishInputs {
+	readonly name: string;
+	readonly chain: ChainId;
+	readonly movePackagePath: string;
+	readonly signer: AccountValue;
+	readonly sdk: SealSuiSdk;
+	readonly runtime: ContainerRuntime;
+	readonly buildImage?: ImageRef;
+	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
+}
+
+export const sealPackageInputsHash = (
+	sourceHash: ContentHash,
+	signerAddress: string,
+): ContentHash => contentHash(`seal-package|source=${sourceHash}|signer=${signerAddress}`);
+
+export const parseSealPublishOutput = (stdout: string): SealPackageCached | null => {
+	const re = /(?:^|\n)\s*(?:package_id|packageId)\s*[:=]\s*(0x[0-9a-fA-F]+)/;
+	const m = re.exec(stdout);
+	if (!m?.[1]) return null;
+	return { packageId: m[1] };
+};
+
+export interface SealPublishTransactionBuilder<TUpgradeCap = unknown> {
+	readonly setSender: (address: string) => void;
+	readonly publish: (input: {
+		readonly modules: ReadonlyArray<ReadonlyArray<number>>;
+		readonly dependencies: ReadonlyArray<string>;
+	}) => TUpgradeCap;
+	readonly transferObjects: (objects: ReadonlyArray<TUpgradeCap>, recipient: string) => void;
+}
+
+const publishTransactionBuilder = (
+	tx: Transaction,
+): SealPublishTransactionBuilder<TransactionObjectArgument> => ({
+	setSender: (address) => tx.setSender(address),
+	publish: (input) =>
+		tx.publish({
+			modules: input.modules.map((m) => [...m]),
+			dependencies: [...input.dependencies],
+		}),
+	transferObjects: (objects, recipient) => tx.transferObjects([...objects], recipient),
+});
+
+export const buildSealPublishTransaction = <TUpgradeCap>(
+	tx: SealPublishTransactionBuilder<TUpgradeCap>,
+	buildOutput: BuildOutput,
+	signerAddress: string,
+): void => {
+	tx.setSender(signerAddress);
+	const upgradeCap = tx.publish({
+		modules: buildOutput.modules.map((m) => Array.from(m)),
+		dependencies: [...buildOutput.dependencies],
+	});
+	tx.transferObjects([upgradeCap], signerAddress);
+};
+
+export const pickPackageWriteObjectId = (receipt: ExecutedReceipt): string | null =>
+	receipt.objectChanges.find((change) => change.outputState === 'PackageWrite')?.objectId ?? null;
+
+export const pickUpgradeCapObjectId = (receipt: ExecutedReceipt): string | null =>
+	receipt.objectChanges.find(
+		(change) =>
+			change.idOperation === 'Created' &&
+			(change.objectType?.endsWith('::package::UpgradeCap') ?? false),
+	)?.objectId ?? null;
+
+export const projectSealPublishReceipt = (
+	name: string,
+	receipt: ExecutedReceipt,
+): Effect.Effect<SealPackageCached, SealError> => {
+	const packageId = pickPackageWriteObjectId(receipt);
+	if (packageId === null) {
+		return Effect.fail(
+			sealError('publish', {
+				name,
+				message: `seal publish tx wrote no PackageWrite object ` + `(digest=${receipt.digest})`,
+			}),
+		);
+	}
+	const upgradeCapId = pickUpgradeCapObjectId(receipt);
+	return Effect.succeed({
+		packageId,
+		...(upgradeCapId !== null ? { upgradeCapId } : {}),
+	});
+};
+
+export const runSealPublishTransaction = (
+	inputs: SealPublishInputs,
+): Effect.Effect<SealPackageCached, SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		// The one-shot build path scrubs the mounted package again. Seal's
+		// default source is a shared cache, so a prior container build can
+		// leave Move.lock unwritable to the host.
+		yield* scrubLocksHost(inputs.movePackagePath, '~/.move', {
+			packageLockFailures: inputs.buildImage !== undefined ? 'best-effort' : 'fatal',
+		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
+
+		const buildOutput = yield* runMoveBuild({
+			sourcePath: inputs.movePackagePath,
+			packageName: inputs.name,
+			chainId: inputs.chain,
+			runtime: inputs.runtime,
+			...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
+		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
+
+		const receipt = yield* executeSuiTx({
+			client: inputs.sdk.client as SuiExecuteClient,
+			signer: inputs.signer,
+			build: async () => {
+				const tx = new Transaction();
+				buildSealPublishTransaction(
+					publishTransactionBuilder(tx),
+					buildOutput,
+					inputs.signer.address,
+				);
+				return tx.build({
+					client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
+						| { client?: infer C }
+						| undefined
+						? C
+						: never,
+				});
+			},
+		}).pipe(
+			Effect.mapError((cause) =>
+				sealError('publish', {
+					name: inputs.name,
+					message:
+						`seal publish tx failed for signer '${inputs.signer.name}' ` +
+						`(address=${inputs.signer.address}) during ${cause.phase}: ${cause.message}`,
+					cause,
+				}),
+			),
+		);
+
+		return yield* projectSealPublishReceipt(inputs.name, receipt);
+	}).pipe(
+		Effect.withSpan('devstack.plugin.seal.publish.suiTx', {
+			attributes: {
+				'seal.name': inputs.name,
+				'seal.signer': inputs.signer.address,
+			},
+		}),
+	);
+
+export const publishSealPackage = (
+	publisher: ArtifactPublisher,
+	inputs: SealPublishInputs,
+): Effect.Effect<{ readonly packageId: string }, ArtifactPublishError | SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const sourceHash = yield* hashMoveSources(inputs.movePackagePath).pipe(
+			Effect.mapError((err) => moveBuildToSealError(inputs.name, err)),
+		);
+		const inputsHash = sealPackageInputsHash(sourceHash, inputs.signer.address);
+
+		const result = yield* publisher.publish<SealPackageCached, SealPackageVerified>({
+			namespace: SEAL_PACKAGE_NAMESPACE,
+			chain: inputs.chain,
+			contentHash: inputsHash,
+			verifySchema: SealPackageVerifyShape,
+			verify: (cached) =>
+				verifyObjectLenient(inputs.chainProbe, cached.packageId, SealPackageVerifyShape),
+			produce: runSealPublishTransaction(inputs).pipe(
+				Effect.mapError((err) => sealProduceFailed('publish', err)),
+			),
+			register: () => Effect.void,
+		});
+
+		const packageId = 'packageId' in result ? result.packageId : result.objectId;
+		if (!packageId) {
+			return yield* Effect.fail(
+				sealError('publish', {
+					name: inputs.name,
+					message: 'seal.deploy.publishSealPackage: publisher returned no package id',
+				}),
+			);
+		}
+		return { packageId };
+	}).pipe(
+		Effect.withSpan('devstack.plugin.seal.publish', {
+			attributes: { 'seal.name': inputs.name, 'seal.chain': inputs.chain },
+		}),
+	);
+
+// ---------------------------------------------------------------------------
+// KeyServer register — `keyServer` artifact
+// ---------------------------------------------------------------------------
+
+export const SEAL_KEY_SERVER_NAMESPACE = 'seal/key-server-id' as const;
+
+export interface SealKeyServerCached {
+	readonly objectId: string;
+}
+
+export const SealKeyServerVerifyShape = Schema.Struct({
+	objectId: Schema.String,
+	type: Schema.optional(Schema.Unknown),
+});
+export type SealKeyServerVerified = Schema.Schema.Type<typeof SealKeyServerVerifyShape>;
+
+export interface RegisterKeyServerTransactionInputs {
+	readonly keyServerUrl: string;
+	readonly sealPackageId: string;
+	readonly publicKeyHex: string;
+	readonly keyServerName: string;
+}
+
+export interface RegisterKeyServerInputs extends RegisterKeyServerTransactionInputs {
+	readonly name: string;
+	readonly chain: ChainId;
+	readonly signer: AccountValue;
+	readonly sdk: SealSuiSdk;
+	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
+}
+
+export const sealRegisterInputsHash = (
+	inputs: RegisterKeyServerTransactionInputs,
+	signerAddress: string,
+): ContentHash =>
+	// Keep the cache key path-safe and bounded. The raw material includes
+	// a routed URL plus a long BLS public key; using it directly made the
+	// best-effort cache write miss on normal restarts.
+	contentHash(
+		`seal-register-v2|${createHash('sha256')
+			.update(
+				JSON.stringify({
+					packageId: inputs.sealPackageId,
+					keyServerUrl: inputs.keyServerUrl,
+					keyServerName: inputs.keyServerName,
+					publicKeyHex: inputs.publicKeyHex,
+					signerAddress,
+				}),
+			)
+			.digest('hex')}`,
+	);
+
+export const parseRegisterKeyServerOutput = (stdout: string): SealKeyServerCached | null => {
+	const re =
+		/(?:^|\n)\s*(?:key_server_object_id|object_id|objectId|key_server_id)\s*[:=]\s*(0x[0-9a-fA-F]+)/;
+	const m = re.exec(stdout);
+	if (!m?.[1]) return null;
+	return { objectId: m[1] };
+};
+
+export interface SealRegisterTransactionBuilder<TArgument = unknown> {
+	readonly pure: {
+		readonly string: (value: string) => TArgument;
+		readonly u8: (value: number) => TArgument;
+		readonly vector: (type: 'u8', value: ReadonlyArray<number>) => TArgument;
+	};
+	readonly setSender: (address: string) => void;
+	readonly moveCall: (input: {
+		readonly target: string;
+		readonly arguments: ReadonlyArray<TArgument>;
+	}) => unknown;
+}
+
+export type SealRegisterSdk = SealSuiSdk;
+
+const registerTransactionBuilder = (
+	tx: Transaction,
+): SealRegisterTransactionBuilder<TransactionArgument> => ({
+	pure: {
+		string: (value) => tx.pure.string(value),
+		u8: (value) => tx.pure.u8(value),
+		vector: (type, value) => tx.pure.vector(type, [...value]),
+	},
+	setSender: (address) => tx.setSender(address),
+	moveCall: (input) =>
+		tx.moveCall({
+			target: input.target,
+			arguments: [...input.arguments],
+		}),
+});
+
+export const buildRegisterKeyServerMoveCall = <TArgument>(
+	tx: SealRegisterTransactionBuilder<TArgument>,
+	inputs: RegisterKeyServerTransactionInputs,
+	signerAddress: string,
+): void => {
+	const pkBytes = decodeHex(inputs.publicKeyHex);
+	tx.setSender(signerAddress);
+	tx.moveCall({
+		target: `${inputs.sealPackageId}::key_server::create_and_transfer_v2_independent_server`,
+		arguments: [
+			tx.pure.string(inputs.keyServerName),
+			tx.pure.string(inputs.keyServerUrl),
+			tx.pure.u8(KEY_TYPE_BONEH_FRANKLIN_BLS12381),
+			tx.pure.vector('u8', Array.from(pkBytes)),
+		],
+	});
+};
+
+export const pickCreatedKeyServerObjectId = (receipt: ExecutedReceipt): string | null =>
+	receipt.objectChanges.find(
+		(change) =>
+			change.idOperation === 'Created' &&
+			(change.objectType?.endsWith('::key_server::KeyServer') ?? false),
+	)?.objectId ?? null;
+
+export const projectRegisterKeyServerReceipt = (
+	name: string,
+	receipt: ExecutedReceipt,
+): Effect.Effect<SealKeyServerCached, SealError> => {
+	const objectId = pickCreatedKeyServerObjectId(receipt);
+	if (objectId === null) {
+		return Effect.fail(
+			sealError('register', {
+				name,
+				message:
+					`seal register tx created no ::key_server::KeyServer object ` +
+					`(digest=${receipt.digest})`,
+			}),
+		);
+	}
+	return Effect.succeed({ objectId });
+};
+
+export const runRegisterKeyServerTransaction = (
+	sdk: SealRegisterSdk,
+	signer: AccountValue,
+	inputs: RegisterKeyServerInputs,
+): Effect.Effect<SealKeyServerCached, SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const receipt = yield* executeSuiTx({
+			client: sdk.client as SuiExecuteClient,
+			signer,
+			build: async () => {
+				const tx = new Transaction();
+				buildRegisterKeyServerMoveCall(registerTransactionBuilder(tx), inputs, signer.address);
+				return tx.build({
+					client: sdk.client as Parameters<typeof tx.build>[0] extends
+						| { client?: infer C }
+						| undefined
+						? C
+						: never,
+				});
+			},
+		}).pipe(
+			Effect.mapError((cause) =>
+				sealError('register', {
+					name: inputs.name,
+					message:
+						`seal register tx failed for signer '${signer.name}' ` +
+						`(address=${signer.address}) during ${cause.phase}: ${cause.message}`,
+					cause,
+				}),
+			),
+		);
+
+		return yield* projectRegisterKeyServerReceipt(inputs.name, receipt);
+	}).pipe(
+		Effect.withSpan('devstack.plugin.seal.register.suiTx', {
+			attributes: { 'seal.name': inputs.name, 'seal.url': inputs.keyServerUrl },
+		}),
+	);
+
+export const registerKeyServer = (
+	publisher: ArtifactPublisher,
+	inputs: RegisterKeyServerInputs,
+): Effect.Effect<{ readonly objectId: string }, ArtifactPublishError | SealError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const inputsHash = sealRegisterInputsHash(inputs, inputs.signer.address);
+		const result = yield* publisher.publish<SealKeyServerCached, SealKeyServerVerified>({
+			namespace: SEAL_KEY_SERVER_NAMESPACE,
+			chain: inputs.chain,
+			contentHash: inputsHash,
+			verifySchema: SealKeyServerVerifyShape,
+			verify: (cached) =>
+				verifyObjectLenient(inputs.chainProbe, cached.objectId, SealKeyServerVerifyShape),
+			produce: runRegisterKeyServerTransaction(inputs.sdk, inputs.signer, inputs).pipe(
+				Effect.mapError((err) => sealProduceFailed('register', err)),
+			),
+			register: () => Effect.void,
+		});
+
+		const objectId = 'objectId' in result ? result.objectId : undefined;
+		if (!objectId) {
+			return yield* Effect.fail(
+				sealError('register', {
+					name: inputs.name,
+					message: 'seal.deploy.registerKeyServer: publisher returned no objectId',
+				}),
+			);
+		}
+		return { objectId };
+	}).pipe(
+		Effect.withSpan('devstack.plugin.seal.register', {
+			attributes: { 'seal.name': inputs.name, 'seal.url': inputs.keyServerUrl },
+		}),
+	);

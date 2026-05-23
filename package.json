@@ -3,16 +3,19 @@
 	"private": true,
 	"license": "Apache-2.0",
 	"scripts": {
-		"test": "turbo run test",
+		"test": "turbo run test --filter \"./packages/*\" --filter \"./apps/*\" --concurrency=1",
 		"test:e2e": "turbo run test:e2e --concurrency=1",
 		"changeset-version": "pnpm changeset version",
+		"setup:repos": "bash scripts/setup-repos.sh",
 		"prettier:check": "prettier -c --ignore-unknown .",
 		"prettier:fix": "prettier -w --ignore-unknown .",
-		"oxlint:check": "oxlint .",
-		"oxlint:fix": "oxlint --fix .",
+		"oxlint:check": "oxlint --ignore-pattern='repos/**' .",
+		"oxlint:fix": "oxlint --fix --ignore-pattern='repos/**' .",
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
-		"build": "turbo run build",
+		"build": "turbo run build --filter \"./packages/*\" --filter \"./apps/*\" --concurrency=1",
+		"build:examples": "turbo run build --filter \"./examples/*\" --concurrency=1",
+		"typecheck": "turbo run typecheck --filter \"./packages/*\" --filter \"./apps/*\"",
 		"release": "pnpm turbo run build --filter \"./packages/*\" && pnpm changeset publish"
 	},
 	"packageManager": "pnpm@10.17.0",
@@ -22,15 +25,19 @@
 	"manypkg": {
 		"ignoredRules": [
 			"INTERNAL_MISMATCH",
-			"ROOT_HAS_DEV_DEPENDENCIES"
+			"ROOT_HAS_DEV_DEPENDENCIES",
+			"INVALID_DEV_AND_PEER_DEPENDENCY_RELATIONSHIP"
 		]
 	},
 	"pnpm": {
+		"onlyBuiltDependencies": [
+			"esbuild"
+		],
 		"overrides": {
-			"picomatch@<2.3.2": "^2.3.2",
-			"picomatch@>=4.0.0 <4.0.4": "^4.0.4",
-			"path-to-regexp@<8.4.0": "^8.4.0",
-			"vite@>=7.0.0 <7.3.2": "^7.3.2"
+			"@mysten/sui": "catalog:",
+			"picomatch": "^4.0.4",
+			"path-to-regexp": "^8.4.0",
+			"vite": "^7.3.2"
 		}
 	},
 	"devDependencies": {
@@ -42,7 +49,7 @@
 		"oxlint": "1.39.0",
 		"prettier": "^3.7.4",
 		"prettier-plugin-tailwindcss": "^0.7.2",
-		"tsdown": "0.20.0-beta.1",
+		"tsdown": "^0.21.10",
 		"tsx": "^4.21.0",
 		"turbo": "^2.7.4",
 		"typescript": "^5.9.3"

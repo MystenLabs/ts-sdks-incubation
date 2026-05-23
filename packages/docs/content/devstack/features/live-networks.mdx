@@ -1,0 +1,138 @@
+---
+title: Live Networks
+description: Running the same stack shape against public networks.
+---
+
+Pick a Sui mode explicitly in the config. `sui()` is the local shorthand; public networks use
+`sui({ mode: 'live', network })`.
+
+```ts
+import {
+	defineDevstack,
+	sui,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	knownPackage,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const DEV_PORT = 5173;
+
+const alice = account('alice', {
+	kind: 'env',
+	key: 'ALICE_PRIVATE_KEY',
+});
+
+const registry = knownPackage('registry', {
+	packageId: '0x...',
+});
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const devWallet = wallet({
+	accounts: [alice],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [registry, devWallet] as const,
+});
+
+export default defineDevstack({
+	members: [liveSui, app],
+	stackName: 'main',
+});
+```
+
+The CLI can also select the surface network for mode-narrowed configs:
+
+```bash
+devstack up --network testnet
+devstack up --network mainnet
+devstack up --network testnet-fork
+```
+
+Fork mode runs a local `sui-fork` container against an upstream public network. It exposes the same
+devstack Sui RPC route as other modes, but it does not expose a faucet or GraphQL endpoint. First
+boot builds the bundled `sui-fork` image from a pinned Sui revision, so expect the cold path to take
+longer than localnet.
+
+```ts
+import { defineDevstack, sui, account, localPackage } from '@mysten-incubation/devstack';
+
+const publisherAddress = process.env.PUBLISHER_ADDRESS!;
+const aliceAddress = process.env.ALICE_ADDRESS!;
+
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	seed: { addresses: [publisherAddress, aliceAddress] },
+});
+const publisher = account('publisher', {
+	kind: 'impersonate',
+	address: publisherAddress,
+});
+const alice = account('alice', {
+	kind: 'impersonate',
+	address: aliceAddress,
+});
+
+const pkg = localPackage('demo', {
+	sourcePath: './move/demo',
+	publisher,
+});
+
+export default defineDevstack({
+	members: [forkedTestnet, pkg],
+	stackName: 'fork-demo',
+});
+```
+
+Use funded upstream addresses with fork mode. `kind: 'impersonate'` accounts submit empty-signature
+transactions through the fork admin surface, which is useful for deterministic local replay, but no
+private key exists and direct signing APIs intentionally fail.
+
+Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `testnet`, `mainnet`,
+`devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork`; the same names are accepted with a
+`sui:` prefix. The `local` alias maps to `localnet`.
+
+Local-only services may refuse live or fork modes. Use the mode-specific factories when you want the
+type system to narrow available branches:
+
+```ts
+import { chainId, walrusFor, sealFor, deepbookFor } from '@mysten-incubation/devstack';
+
+const live = { mode: 'live', chain: chainId('sui:testnet') } as const;
+const fork = { mode: 'fork', chain: chainId('sui:testnet-fork') } as const;
+
+const wal = walrusFor(live).known({
+	systemObjectId: '0x...',
+	stakingPoolId: '0x...',
+	nodes: [],
+});
+const forkWal = walrusFor(fork).known({
+	systemObjectId: '0x...',
+	stakingPoolId: '0x...',
+	nodes: [],
+});
+
+const keyServer = sealFor(live).testnet({
+	objectId: '0x...',
+	keyServerUrl: 'https://example.test/key',
+});
+const forkKeyServer = sealFor(fork).forkKnown({
+	upstream: 'testnet',
+	objectId: '0x...',
+	keyServerUrl: 'https://example.test/key',
+});
+
+const dex = deepbookFor(live).known({
+	packageId: '0x...',
+	registryId: '0x...',
+});
+```
+
+Live accounts should use `env`, `keystore`, `inline`, or `signer` as appropriate. Fork replay
+accounts can use `impersonate`. The default ephemeral form is designed for local development, not
+custody of real assets.

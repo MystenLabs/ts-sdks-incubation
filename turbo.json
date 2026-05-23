@@ -4,6 +4,7 @@
 		"lint": {
 			"inputs": [
 				"src/**",
+				"!src/generated/**",
 				"test/**",
 				"tests/**",
 				"examples/**",
@@ -20,11 +21,36 @@
 				"src/**",
 				"test/**",
 				"tests/**",
+				"test-setup/**",
 				"__tests__/**",
 				"*.ts",
 				"*.tsx",
+				"move/*/Move.toml",
+				"move/*/sources/**",
+				"move/vendor/*/*/Move.toml",
+				"move/vendor/*/*/sources/**",
+				"!src/generated/**",
 				"vitest.config.*",
 				"tsconfig.json"
+			]
+		},
+		"typecheck": {
+			"dependsOn": ["^build"],
+			"inputs": [
+				"src/**",
+				"test/**",
+				"tests/**",
+				"__tests__/**",
+				"e2e/**",
+				"move/*/Move.toml",
+				"move/*/sources/**",
+				"move/vendor/*/*/Move.toml",
+				"move/vendor/*/*/sources/**",
+				"!src/generated/**",
+				"*.ts",
+				"*.tsx",
+				"tsconfig.json",
+				"tsconfig.*.json"
 			]
 		},
 		"test:e2e": {
@@ -34,8 +60,16 @@
 				"test/**",
 				"tests/**",
 				"__tests__/**",
+				"e2e/**",
+				"move/*/Move.toml",
+				"move/*/sources/**",
+				"move/vendor/*/*/Move.toml",
+				"move/vendor/*/*/sources/**",
+				"!src/generated/**",
 				"*.ts",
 				"*.tsx",
+				"devstack.config.*",
+				"playwright.config.*",
 				"vitest.config.*",
 				"tsconfig.json"
 			],
@@ -55,6 +89,11 @@
 				"templates/**",
 				"*.ts",
 				"*.mjs",
+				"move/*/Move.toml",
+				"move/*/sources/**",
+				"move/vendor/*/*/Move.toml",
+				"move/vendor/*/*/sources/**",
+				"!src/generated/**",
 				"tsconfig.json",
 				"tsdown.config.ts",
 				"package.json"

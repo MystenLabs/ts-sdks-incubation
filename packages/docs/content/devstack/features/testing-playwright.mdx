@@ -1,0 +1,78 @@
+---
+title: Playwright
+description: Current Playwright config helpers and wallet helpers.
+---
+
+Use the `playwright` subpath from the Playwright config and from e2e specs.
+
+```ts title="playwright.config.ts"
+import { defineConfig } from '@playwright/test';
+import {
+	devstackPlaywrightBaseConfig,
+	devstackPlaywrightProjects,
+	devstackPlaywrightUse,
+	devstackPlaywrightWebServer,
+} from '@mysten-incubation/devstack/playwright';
+
+export default defineConfig({
+	...devstackPlaywrightBaseConfig(),
+	use: devstackPlaywrightUse(),
+	projects: devstackPlaywrightProjects(),
+	webServer: devstackPlaywrightWebServer(),
+});
+```
+
+The helpers set a single worker, disable full parallelism, start `pnpm dev`, and discover the app
+endpoint from the devstack manifest with a cold-start fallback. The public `app` alias resolves the
+`dev` endpoint name in the manifest. Before the manifest exists, the fallback targets the
+conventional dev-server route on port `5175`; pass `baseURL` when your stack uses a different route.
+
+For suites that require a verified manifest before specs run, add a thin global setup module:
+
+```ts title="e2e/global-setup.ts"
+import { buildGlobalSetup } from '@mysten-incubation/devstack/playwright';
+
+export default buildGlobalSetup({
+	requireEndpoints: ['app', 'wallet'],
+});
+```
+
+Then point the config at that file:
+
+```ts title="playwright.config.ts"
+import { defineConfig } from '@playwright/test';
+import {
+	devstackPlaywrightBaseConfig,
+	devstackPlaywrightProjects,
+	devstackPlaywrightUse,
+	devstackPlaywrightWebServer,
+} from '@mysten-incubation/devstack/playwright';
+
+export default defineConfig({
+	...devstackPlaywrightBaseConfig({ globalSetup: './e2e/global-setup.ts' }),
+	use: devstackPlaywrightUse(),
+	projects: devstackPlaywrightProjects(),
+	webServer: devstackPlaywrightWebServer(),
+});
+```
+
+Current test helpers include `connectAs`, `selectAccount`, `createWalletAdapter`,
+`loadStackManifest`, and `readStackContext`.
+
+```ts title="e2e/connect.spec.ts"
+import { expect, test } from '@playwright/test';
+import { connectAs, createWalletAdapter } from '@mysten-incubation/devstack/playwright';
+
+test('connects alice', async ({ page }) => {
+	await page.goto('/');
+	await connectAs(page, 'alice');
+
+	const wallet = createWalletAdapter();
+	const accounts = await wallet.listAccounts();
+	expect(accounts.some((entry) => entry.name === 'alice')).toBe(true);
+});
+```
+
+The account switch helper uses `globalThis.__devstackDAppKit__` as a narrow test bridge. Populate
+that slot with `{ selectAccount }` in your app's dapp-kit setup when you want Playwright to switch
+accounts without clicking through wallet UI state. It is not a general app API.

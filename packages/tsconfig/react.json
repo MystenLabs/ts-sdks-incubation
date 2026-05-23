@@ -1,0 +1,17 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"display": "React (Vite)",
+	"extends": "./strict.json",
+	"compilerOptions": {
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"jsx": "react-jsx",
+		"useDefineForClassFields": true,
+		// `.ts` import extensions in codegen output. Devstack's codegen
+		// plugin emits with `importExtension: '.ts'` so `devstack console`
+		// (Node 24 native type-stripping + plain `await import()`) and
+		// the dev server (Vite/esbuild) share one source-of-truth — no
+		// custom loader, no parallel `.js` outputs.
+		"allowImportingTsExtensions": true,
+		"noEmit": true
+	}
+}

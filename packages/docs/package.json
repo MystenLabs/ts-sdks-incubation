@@ -13,14 +13,14 @@
 		"validate-docs": "tsx scripts/validate-llm-docs.ts",
 		"prettier:check": "prettier -c --ignore-unknown .",
 		"prettier:fix": "prettier -w --ignore-unknown .",
-		"oxlint:check": "oxlint  .",
-		"oxlint:fix": "oxlint --fix",
+		"oxlint:check": "oxlint --ignore-pattern='.next/**' --ignore-pattern='.source/**' --ignore-pattern='.turbo/**' --ignore-pattern='.vercel/**' --ignore-pattern='dist/**' --ignore-pattern='next-env.d.ts' .",
+		"oxlint:fix": "oxlint --fix --ignore-pattern='.next/**' --ignore-pattern='.source/**' --ignore-pattern='.turbo/**' --ignore-pattern='.vercel/**' --ignore-pattern='dist/**' --ignore-pattern='next-env.d.ts'",
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix"
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:*",
-		"@tanstack/react-query": "^5.90.16",
+		"@tanstack/react-query": "catalog:",
 		"fast-glob": "^3.3.3",
 		"fumadocs-core": "16.4.7",
 		"fumadocs-docgen": "3.0.5",
@@ -29,17 +29,17 @@
 		"fumadocs-ui": "16.4.7",
 		"gray-matter": "^4.0.3",
 		"next": "^16.2.6",
-		"react": "^19.2.3",
-		"react-dom": "^19.2.3"
+		"react": "catalog:",
+		"react-dom": "catalog:"
 	},
 	"devDependencies": {
-		"@tailwindcss/postcss": "^4.1.18",
+		"@tailwindcss/postcss": "catalog:",
 		"@types/mdx": "^2.0.13",
 		"@types/node": "^25.0.8",
-		"@types/react": "^19.2.8",
-		"@types/react-dom": "^19.2.3",
+		"@types/react": "catalog:",
+		"@types/react-dom": "catalog:",
 		"postcss": "^8.5.6",
-		"tailwindcss": "^4.1.18",
-		"typescript": "^5.9.3"
+		"tailwindcss": "catalog:",
+		"typescript": "catalog:"
 	}
 }

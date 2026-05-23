@@ -4,6 +4,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { mountDevWallet } from '../ui/mount.js';
+import type { DevWalletDockStyle } from '../ui/dev-wallet-panel.js';
 import { DevWallet, type DevWalletConfig } from '../wallet/dev-wallet.js';
 
 export interface UseDevWalletOptions extends DevWalletConfig {
@@ -13,6 +14,8 @@ export interface UseDevWalletOptions extends DevWalletConfig {
 	createInitialAccount?: boolean;
 	/** Whether to mount the floating wallet drawer UI. Defaults to true. */
 	mountUI?: boolean;
+	/** Floating dock presentation when `mountUI` is true. Defaults to `corner-pill`. */
+	dockStyle?: DevWalletDockStyle;
 	/** Container element for the UI drawer. Defaults to document.body. */
 	container?: HTMLElement;
 }
@@ -51,6 +54,7 @@ export function useDevWallet(options: UseDevWalletOptions): UseDevWalletResult {
 			autoInitialize = true,
 			createInitialAccount = true,
 			mountUI = true,
+			dockStyle,
 			container,
 			...walletConfig
 		} = optionsRef.current;
@@ -90,7 +94,7 @@ export function useDevWallet(options: UseDevWalletOptions): UseDevWalletResult {
 			unregister = devWallet.register();
 
 			if (mountUI && typeof document !== 'undefined') {
-				unmountUI = mountDevWallet(devWallet, { container });
+				unmountUI = mountDevWallet(devWallet, { container, dockStyle });
 			}
 
 			if (!cancelled) {

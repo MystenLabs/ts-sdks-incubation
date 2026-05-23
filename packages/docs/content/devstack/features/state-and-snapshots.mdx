@@ -1,0 +1,85 @@
+---
+title: State and Snapshots
+description: Current state layout and the supported snapshot command surface.
+---
+
+Runtime state is stack-scoped:
+
+```txt
+.devstack/stacks/<stack>/
+  manifest.json
+  projection.v3.json
+  runtime/
+  snapshots/
+```
+
+`projection.v3.json` is the persisted operator read model used by `devstack status`, the TUI, and
+plain renderer startup sweeps. If the file is missing, malformed, or from an unsupported shape,
+devstack treats it as absent and rebuilds status from the next running stack rather than crashing.
+
+The usual snapshot flow is a one-shot CLI capture when no attached `devstack up` session is running:
+
+```bash
+devstack snapshot save
+devstack snapshot save before-migration
+devstack snapshot list
+devstack snapshot restore <name-or-id>
+devstack snapshot delete <name-or-id>
+```
+
+Snapshot names are the operator-facing handle. `save before-migration` records the name in metadata
+and stores the artifact under a generated immutable id. If no name is supplied, devstack generates a
+`manual-...` name. Names must be unique within a stack, so `restore before-migration` is
+deterministic. The generated id is still shown by `list` and can always be used as an escape hatch.
+
+When you are already attached to `devstack up --renderer tui`, use the TUI shortcut instead of
+starting a second snapshot command. Press `s`, type a snapshot name, and press Enter. Press Enter on
+an empty prompt to use a generated `manual-...` name, or press Esc to cancel. The shortcut exists
+only in TUI mode; `plain` and `silent` renderers do not handle keypress commands.
+
+TUI capture runs in the background after the prompt submits. The bottom status row shows the active
+phase and when the stack is paused for snapshot consistency. While capture is running, a second
+submitted snapshot is skipped and `q` still enters graceful shutdown instead of waiting behind the
+capture command.
+
+Snapshot capture takes one stack-wide quiescence window for managed runtime state. Devstack
+validates the full capture set, pauses every running managed container, commits container writable
+layers, archives declared host subtrees, writes state/contribution metadata, then unpauses the
+containers. The TUI stays responsive during that window, but services behind the stack may briefly
+stop responding while Docker containers are paused.
+
+One artifact lives under `.devstack/stacks/<stack>/snapshots/<snapshotId>/` and uses this layout:
+
+```txt
+meta.json
+state.json              # present only when the stack state store exists
+host-tree.tar
+containers/images.tar
+contributions/<encoded-plugin>.json
+integrity.json
+```
+
+Supported behavior:
+
+- CLI save performs a one-shot stack boot and captures a snapshot of the selected stack.
+- TUI save captures the currently attached stack and is intended for operator snapshots during
+  `devstack up --renderer tui`.
+- Restore resolves a name or id, refuses to run while `devstack up` is live, then restores that
+  artifact directly after `--yes` or an interactive `y` confirmation.
+- List reads snapshot metadata from the active stack root and tolerates corrupt entries by showing a
+  fallback row.
+- Delete removes the resolved artifact from the selected stack root after `--yes` or an interactive
+  `y` confirmation.
+
+Important caveats:
+
+- Do not rely on cross-stack restore. Snapshot metadata carries app, stack, network, and plugin
+  identity slices; restore is expected to refuse identity drift before destructive changes.
+- Product evidence for non-empty wallet, Seal, Walrus, Postgres, and DeepBook roundtrips is still
+  incomplete. These docs describe the supported CLI and artifact contract, not a claim that every
+  service has full restore proof.
+- Snapshot docs should point at `orchestrators/snapshot` and `cli/snapshot-reader` source when
+  inspecting behavior. Old engine and snapshot-smoke paths are not current.
+
+Use `devstack wipe --yes --stack <name>` to remove all state for a selected stack in non-interactive
+shells. In a TTY, omitting `--yes` prompts for `y` before deleting state.

@@ -1,0 +1,11 @@
+{
+	"$schema": "https://json.schemastore.org/tsconfig",
+	"display": "Strict",
+	"extends": "./base.json",
+	"compilerOptions": {
+		"noUncheckedIndexedAccess": true,
+		"noImplicitReturns": true,
+		"noPropertyAccessFromIndexSignature": false,
+		"exactOptionalPropertyTypes": false
+	}
+}

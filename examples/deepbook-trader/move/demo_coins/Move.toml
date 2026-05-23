@@ -1,0 +1,8 @@
+[package]
+name = "demo_coins"
+edition = "2024.beta"
+
+[dependencies]
+
+[addresses]
+demo_coins = "0x0"

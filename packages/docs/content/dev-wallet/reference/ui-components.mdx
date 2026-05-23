@@ -26,14 +26,14 @@ unmount();
 
 ## The Wallet Panel
 
-The `<dev-wallet-panel>` element renders a floating action button (FAB) in the bottom-right corner.
-Clicking it opens a slide-out sidebar with tabs:
+The `<dev-wallet-panel>` element renders a compact wallet dock in the bottom-right corner. Clicking
+it opens a slide-out drawer with tabs:
 
-- **Assets** — account balances for each coin type
+- **Home** — active account, SUI balance, and coin balances
 - **Objects** — owned NFTs and objects
 - **Settings** — network switching, wallet configuration
 
-![Wallet panel open with Assets tab](/dev-wallet/wallet-panel-open.png)
+![Wallet panel open with Home tab](/dev-wallet/wallet-panel-open.png)
 
 The panel also shows the signing modal when a request is pending.
 
@@ -49,7 +49,7 @@ The Settings tab lets you manage networks and accounts:
 
 | Component                       | Description                                         |
 | ------------------------------- | --------------------------------------------------- |
-| `<dev-wallet-panel>`            | Full floating panel with FAB trigger + sidebar      |
+| `<dev-wallet-panel>`            | Full floating panel with dock trigger + drawer      |
 | `<dev-wallet-accounts>`         | Account list with selection and management          |
 | `<dev-wallet-balances>`         | Coin balances for the selected account              |
 | `<dev-wallet-new-account>`      | Create account form (adapter picker + label input)  |
@@ -60,6 +60,7 @@ The Settings tab lets you manage networks and accounts:
 | `<dev-wallet-connect>`          | Account picker for connect requests                 |
 | `<dev-wallet-account-selector>` | Account selection dropdown                          |
 | `<dev-wallet-network-badge>`    | Network indicator badge                             |
+| `<dev-wallet-fork-panel>`       | Fork controls (advance clock / checkpoint, status)  |
 
 ## Using Components Directly
 
@@ -88,10 +89,10 @@ Override CSS custom properties on the host element:
 
 ```css
 dev-wallet-panel {
-	--dev-wallet-primary: oklch(0.6 0.2 250);
-	--dev-wallet-background: oklch(0.15 0.02 270);
-	--dev-wallet-foreground: oklch(0.95 0 0);
-	--dev-wallet-border: oklch(0.3 0.03 270);
+	--dev-wallet-primary: #4da2ff;
+	--dev-wallet-background: #05080f;
+	--dev-wallet-foreground: #e6eefb;
+	--dev-wallet-border: rgba(255, 255, 255, 0.07);
 }
 ```
 
@@ -112,7 +113,7 @@ dev-wallet-panel {
 
 **Layout:**
 
-- `--dev-wallet-radius` — base border radius (default: `12px`)
+- `--dev-wallet-radius` — base border radius (default: `6px`)
 
 **Typography:**
 

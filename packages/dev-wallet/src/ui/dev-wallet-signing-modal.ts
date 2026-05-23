@@ -7,6 +7,7 @@ import { customElement, property } from 'lit/decorators.js';
 
 import type { PendingSigningRequest } from '../wallet/dev-wallet.js';
 import { sharedStyles } from './styles.js';
+import type { CoinRecord } from './utils.js';
 import { emitEvent } from './utils.js';
 import './dev-wallet-signing.js';
 
@@ -24,37 +25,40 @@ export class DevWalletSigningModal extends LitElement {
 		css`
 			:host {
 				display: block;
+				pointer-events: auto;
 			}
 
 			dialog {
-				width: 360px;
+				width: 440px;
 				max-width: calc(100vw - 32px);
-				max-height: min(600px, 80vh);
+				max-height: min(680px, 86vh);
 				border-radius: var(--dev-wallet-radius-xl);
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
+				border: 1px solid var(--dev-wallet-border-2);
 				box-shadow: var(--dev-wallet-shadow-lg);
 				overflow: hidden;
 				display: flex;
 				flex-direction: column;
 				padding: 0;
 				color: inherit;
+				pointer-events: auto;
 			}
 
 			dialog::backdrop {
-				background: color-mix(in oklab, oklch(0 0 0) 50%, transparent);
+				background: rgba(2, 6, 14, 0.55);
 			}
 
 			.modal-header {
 				display: flex;
 				justify-content: space-between;
 				align-items: center;
-				padding: 14px 16px;
+				padding: 12px 14px;
 				border-bottom: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-bg-1);
 			}
 
 			.modal-title {
-				font-size: 15px;
+				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}
@@ -65,6 +69,23 @@ export class DevWalletSigningModal extends LitElement {
 				display: flex;
 				flex-direction: column;
 			}
+
+			/* Phase 4 P4.19 — footnote rendered when the active account
+			   is in fork-mode impersonation. Visually distinct so users
+			   don't conflate this with a real signature flow. */
+			.fork-footnote {
+				padding: 8px 16px;
+				background: rgba(234, 179, 8, 0.12);
+				border-top: 1px solid rgba(234, 179, 8, 0.35);
+				font-size: 11px;
+				color: var(--dev-wallet-muted-foreground);
+				line-height: 1.4;
+			}
+
+			.fork-footnote strong {
+				color: #92400e;
+				font-weight: var(--dev-wallet-font-weight-semibold);
+			}
 		`,
 	];
 
@@ -74,8 +95,19 @@ export class DevWalletSigningModal extends LitElement {
 	@property({ attribute: false })
 	client: ClientWithCoreApi | null = null;
 
+	/** Pre-seeded coin metadata forwarded to `<dev-wallet-signing>`. See
+	 *  the matching property on `DevWalletSigning` for details. */
+	@property({ attribute: false })
+	coins: CoinRecord | null = null;
+
 	@property({ type: String })
 	walletName = 'Dev Wallet';
+
+	/** Phase 4 P4.19 — when the active account's `source === 'impersonate'`,
+	 *  the parent flips this on and the modal renders a footnote
+	 *  explaining no real signature will be produced. */
+	@property({ type: Boolean })
+	impersonation = false;
 
 	#handleDialogCancel = (e: Event) => {
 		e.preventDefault();
@@ -110,10 +142,18 @@ export class DevWalletSigningModal extends LitElement {
 						exportparts="approve-button: signing-approve-button, reject-button: signing-reject-button, request-type: signing-request-type, empty-state: signing-empty-state, error-message: signing-error-message, footer: signing-footer"
 						.request=${this.request}
 						.client=${this.client}
+						.coins=${this.coins}
 						@approve=${this.#handleApprove}
 						@reject=${this.#handleReject}
 					></dev-wallet-signing>
 				</div>
+				${this.impersonation
+					? html`<div class="fork-footnote" part="fork-footnote">
+							<strong>Fork-only:</strong> this account is in <em>impersonation</em> mode. The fork
+							accepts the transaction with an empty signature (no real private key signs it), so it
+							would be rejected by mainnet / testnet / devnet validators.
+						</div>`
+					: nothing}
 			</dialog>
 		`;
 	}

@@ -1,0 +1,102 @@
+#!/bin/sh
+# Walrus binary stub. Dispatches on argv[1] between two modes:
+#
+#   - `deploy ...`  → emit parseable deploy output + per-node config
+#                      files; exit 0.
+#   - (no args)     → bind TCP on WALRUS_ROUTER_PORT (9185) and stay
+#                      alive, so the storage-node `nc -z 127.0.0.1
+#                      9185` ready probe succeeds.
+#
+# The real `walrus` binary uses subcommands; the plugin's argv path
+# always starts with `deploy` for the one-shot. Anything else is
+# treated as "long-lived node" (the real binary's `walrus node` /
+# `walrus aggregator` invocations dispatched via the wrapper image's
+# run.sh; we don't model the wrapper here — the stub IS the wrapper-
+# image-equivalent, so the bare ENTRYPOINT runs the listener).
+
+set -eu
+
+mint_object_id() {
+	# 32 bytes hex, lowercase. /dev/urandom + busybox `od` gives a
+	# deterministic-ish but per-invocation fresh id.
+	od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+mode="${1:-listen}"
+
+case "$mode" in
+	deploy)
+		shift
+		# Walk argv to find --output-dir, --committee-size, and the
+		# public-hosts / listening-ips CSVs. We do this manually with
+		# busybox `getopts` is too restrictive for `--long` flags.
+		out_dir="/opt/walrus/outputs"
+		committee_size=1
+		while [ $# -gt 0 ]; do
+			case "$1" in
+				--output-dir) out_dir="$2"; shift 2 ;;
+				--committee-size) committee_size="$2"; shift 2 ;;
+				--shards) shift 2 ;;
+				--epoch-duration) shift 2 ;;
+				--sui-rpc-url) shift 2 ;;
+				--faucet-url) shift 2 ;;
+				--public-hosts) shift 2 ;;
+				--listening-ips) shift 2 ;;
+				*) shift ;;
+			esac
+		done
+
+		mkdir -p "$out_dir"
+
+		# Mint a per-deploy package id, but use an existing Sui system
+		# package object for the system/staking ids. The e2e stub does
+		# not publish real Walrus objects; using an existing object lets
+		# the ArtifactPublisher verify cache hits on warm restart while
+		# still exercising the on-chain probe path.
+		pkg_id="0x$(mint_object_id)"
+		sys_id="0x2"
+		staking_id="0x2"
+		upgrade_id="0x$(mint_object_id)"
+		treasury_id="0x$(mint_object_id)"
+
+		# Emit per-node config files so the storage-node read-only
+		# bind-mount of /opt/walrus/outputs has something to find.
+		# (The real walrus deploy emits `dryrun-node-<i>.yaml` +
+		# `dryrun-node-<i>-sui.yaml` + `dryrun-node-<i>.keystore`
+		# per committee member.)
+		i=0
+		while [ "$i" -lt "$committee_size" ]; do
+			printf 'name: dryrun-node-%s\n' "$i" > "$out_dir/dryrun-node-$i.yaml"
+			printf 'sui: localnet\n' > "$out_dir/dryrun-node-$i-sui.yaml"
+			printf 'stub-keystore-%s\n' "$i" > "$out_dir/dryrun-node-$i.keystore"
+			i=$((i + 1))
+		done
+
+		# Emit the deploy summary both on stdout and in the cache file
+		# shape the real deploy writes.
+		cat > "$out_dir/deploy" <<EOF
+walrus_package_id: $pkg_id
+system_object: $sys_id
+staking_object: $staking_id
+upgrade_manager_object: $upgrade_id
+treasury_object: $treasury_id
+exchange_object: None
+EOF
+		cat "$out_dir/deploy"
+		exit 0
+		;;
+	*)
+		# Storage-node mode. Bind TCP on 9185 and hold the listener.
+		# busybox `nc -lk -p PORT -e CMD` accepts connections in a
+		# loop; `-e` runs a command per accept so the probe gets a
+		# clean close. Use `/bin/true` so the connection closes
+		# immediately with no payload — `nc -z` only cares about the
+		# TCP handshake.
+		port="${WALRUS_CONTAINER_PORT:-9185}"
+		# busybox `nc` doesn't support `-k` everywhere; fall back to
+		# a loop that respawns the listener after each connect.
+		while true; do
+			nc -l -p "$port" -e /bin/true >/dev/null 2>&1 || true
+		done
+		;;
+esac

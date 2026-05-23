@@ -8,15 +8,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 
-import { createCliSigningMiddleware } from '../src/server/cli-signing-middleware.js';
-
-// Mock child_process.execFile
-vi.mock('node:child_process', () => ({
-	execFile: vi.fn(),
+const { mockExecFile } = vi.hoisted(() => ({
+	mockExecFile: vi.fn(),
 }));
 
-import { execFile } from 'node:child_process';
-const mockExecFile = vi.mocked(execFile);
+vi.mock('node:child_process', () => ({
+	default: { execFile: mockExecFile },
+	execFile: mockExecFile,
+}));
+
+import { createCliSigningMiddleware } from '../src/server/cli-signing-middleware.js';
 
 // Test data
 const mockAccountList = [

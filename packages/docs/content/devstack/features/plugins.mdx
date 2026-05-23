@@ -1,0 +1,48 @@
+---
+title: Plugins
+description: Current plugin-author entry points.
+---
+
+A plugin is a function that returns a stack member. The root package exports the authoring helpers;
+`contracts` and `substrate` are internal source modules, not package subpaths for app or plugin
+author imports.
+
+```ts
+import { Effect } from 'effect';
+import { codegenable, definePlugin } from '@mysten-incubation/devstack';
+
+interface KeyValueResolved {
+	readonly url: string;
+}
+
+export const keyValue = () =>
+	definePlugin({
+		id: 'kv',
+		role: 'service',
+		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } satisfies KeyValueResolved),
+		capabilities: ({ value }) => [
+			codegenable({
+				emitterName: 'kv',
+				outputPath: 'kv.ts',
+				emit: (ctx) =>
+					Effect.sync(() => {
+						ctx.exportConst('kv', value);
+						return ctx.done();
+					}),
+			}),
+		],
+	});
+```
+
+Compose the plugin like any built-in factory:
+
+```ts
+import { defineDevstack } from '@mysten-incubation/devstack';
+import { keyValue } from './devstack/key-value.js';
+
+export default defineDevstack({ members: [keyValue()] });
+```
+
+Use direct plugin/resource references for cross-plugin dependencies. For example, if a plugin needs
+an account, accept the `account('name')` plugin and put it in `dependsOn`; the resolved account
+value is passed to `start` as the second argument.

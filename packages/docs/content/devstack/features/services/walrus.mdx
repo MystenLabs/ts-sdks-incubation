@@ -1,0 +1,37 @@
+---
+title: Walrus
+description: Local Walrus clusters, known deployments, and WAL funding.
+---
+
+Local mode starts a local cluster. Use `walCoin(localWalrus)` with account funding when an account
+needs WAL.
+
+```ts title="devstack.config.ts"
+import { account, defineDevstack, sui, walCoin, walrus } from '@mysten-incubation/devstack';
+
+const localnet = sui();
+const localWalrus = walrus({
+	local: {
+		nodeCount: 1,
+		shards: 4,
+	},
+});
+const wal = walCoin(localWalrus);
+
+const alice = account('alice', {
+	funding: [
+		{ coin: 'sui', amount: 1_000_000_000n },
+		{ coin: wal, amount: 500_000_000n },
+	],
+});
+
+export default defineDevstack({ members: [localnet, localWalrus, alice] });
+```
+
+Known mode references an existing deployment and requires explicit on-chain ids plus an explicit
+node list. Fork stacks can use `walrusFor(forkNetwork).known(...)` for upstream deployments; local
+Walrus clusters are only available on local networks.
+
+`walCoin(walrusMember)` returns the WAL funding coin for the resolved Walrus member. Account funding
+can use it like any other coin ref when the Walrus service contributes the matching funding
+strategy.

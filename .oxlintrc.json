@@ -22,7 +22,15 @@
 		"vite-env.d.ts",
 		"vitest.config.*",
 		".git",
-		"packages/*/docs"
+		"packages/*/docs",
+		"**/.devstack/**",
+		"**/move/**/build/**",
+		"**/move/**/package_summaries/**",
+		"examples/*/*.config.js",
+		"examples/*/*.config.d.ts",
+		"examples/*/*Plugin.js",
+		"examples/*/*Plugin.d.ts",
+		"repos"
 	],
 	"settings": {
 		"jsdoc": {
@@ -52,5 +60,23 @@
 				"tsx": "always"
 			}
 		]
-	}
+	},
+	"overrides": [
+		{
+			"files": ["packages/devstack/src/**/*.ts", "packages/dev-wallet/src/**/*.ts"],
+			"rules": {
+				"no-restricted-imports": [
+					"error",
+					{
+						"paths": [
+							{
+								"name": "@mysten/sui/jsonRpc",
+								"message": "Phase -1: devstack + dev-wallet internals use gRPC exclusively. Import from '@mysten/sui/grpc' or '@mysten/sui/client' (transport-neutral types) instead. See packages/devstack/notes/sui-fork-integration.md § Phase -1."
+							}
+						]
+					}
+				]
+			}
+		}
+	]
 }

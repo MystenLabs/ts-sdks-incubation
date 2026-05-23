@@ -1,0 +1,45 @@
+{
+	"name": "@mysten-incubation/create-devstack-app",
+	"version": "0.1.0",
+	"description": "Scaffold a new devstack-backed Sui app from the canonical template. Run via `pnpm create @mysten-incubation/devstack-app <name>`.",
+	"keywords": ["sui", "devstack", "scaffold", "create"],
+	"license": "Apache-2.0",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/MystenLabs/ts-sdks-incubation.git",
+		"directory": "packages/create-devstack-app"
+	},
+	"homepage": "https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app#readme",
+	"bugs": {
+		"url": "https://github.com/MystenLabs/ts-sdks-incubation/issues"
+	},
+	"type": "module",
+	"main": "./dist/index.mjs",
+	"types": "./dist/index.d.mts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.mts",
+			"import": "./dist/index.mjs"
+		}
+	},
+	"bin": {
+		"create-devstack-app": "./dist/bin.mjs"
+	},
+	"files": ["dist", "template", "README.md", "LICENSE"],
+	"scripts": {
+		"build": "tsdown && pnpm run sync-template",
+		"check-template": "node --experimental-strip-types scripts/sync-template.ts --check",
+		"sync-template": "node --experimental-strip-types scripts/sync-template.ts",
+		"typecheck": "tsc --noEmit",
+		"prepublishOnly": "pnpm run build"
+	},
+	"devDependencies": {
+		"@mysten-incubation/tsconfig": "workspace:*",
+		"@types/node": "catalog:",
+		"tsdown": "^0.21.10",
+		"typescript": "catalog:"
+	},
+	"engines": {
+		"node": ">=24.0.0"
+	}
+}

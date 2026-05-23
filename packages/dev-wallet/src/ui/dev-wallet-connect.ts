@@ -21,22 +21,25 @@ export class DevWalletConnect extends LitElement {
 		css`
 			:host {
 				display: flex;
+				flex: 1;
 				flex-direction: column;
 				min-height: 0;
 			}
 
 			.connect-content {
 				flex: 1;
+				min-height: 0;
 				padding: 16px;
+				background: var(--dev-wallet-bg-0);
 			}
 
 			.connect-header {
-				text-align: center;
-				margin-bottom: 12px;
+				text-align: left;
+				margin-bottom: 14px;
 			}
 
 			.connect-title {
-				font-size: 14px;
+				font-size: 13px;
 				font-weight: var(--dev-wallet-font-weight-semibold);
 				color: var(--dev-wallet-foreground);
 			}
@@ -67,19 +70,25 @@ export class DevWalletConnect extends LitElement {
 			.account-list {
 				max-height: 240px;
 				overflow-y: auto;
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
 			}
 
 			.account-item {
 				display: flex;
 				align-items: center;
 				gap: 8px;
-				padding: 8px;
-				border-radius: var(--dev-wallet-radius-md);
+				padding: 10px;
+				border-radius: var(--dev-wallet-radius-lg);
+				border: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 				cursor: pointer;
 			}
 
 			.account-item:hover {
-				background: var(--dev-wallet-secondary);
+				background: var(--dev-wallet-bg-hover);
+				border-color: var(--dev-wallet-border-strong);
 			}
 
 			.account-item input[type='checkbox'] {
@@ -105,8 +114,9 @@ export class DevWalletConnect extends LitElement {
 				text-transform: uppercase;
 				letter-spacing: 0.3px;
 				padding: 1px 5px;
-				border-radius: var(--dev-wallet-radius-2xs);
-				background: color-mix(in oklab, var(--dev-wallet-primary) 15%, transparent);
+				border-radius: 999px;
+				border: 1px solid var(--dev-wallet-border-strong);
+				background: var(--dev-wallet-accent-fade);
 				color: var(--dev-wallet-primary);
 				margin-left: 6px;
 			}
@@ -114,6 +124,7 @@ export class DevWalletConnect extends LitElement {
 			.connect-footer {
 				padding: 12px 16px;
 				border-top: 1px solid var(--dev-wallet-border);
+				background: var(--dev-wallet-surface);
 			}
 
 			/* Override: connect uses --primary instead of --positive for approve */

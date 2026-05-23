@@ -1,0 +1,114 @@
+---
+title: Quickstart
+description: Create a current devstack config with a supervised dev server.
+---
+
+Start with a `devstack.config.ts` at the app root:
+
+```ts title="devstack.config.ts"
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	defineDevstack,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
+
+export const localnet = sui();
+export const publisher = account('publisher');
+export const alice = account('alice');
+export const bob = account('bob');
+
+export const hello = localPackage('hello', {
+	sourcePath: resolve(HERE, 'move/hello'),
+	publisher,
+});
+export const devWallet = wallet({
+	accounts: [publisher, alice, bob],
+});
+export const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [hello, devWallet] as const,
+});
+
+export default defineDevstack({
+	members: [localnet, app],
+	stackName: 'main',
+	codegen: { outputDir: 'src/generated' },
+});
+```
+
+Add a plain Vite config. The stack passes the allocated port through the `hostService` command.
+
+```ts title="vite.config.ts"
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
+
+export default defineConfig({ plugins: [react()] });
+```
+
+The generated files are importable from application code. For dapp-kit wiring, consume the generated
+config file and the generated Sui network file:
+
+```ts title="src/dapp-kit.ts"
+import { createDAppKit } from '@mysten/dapp-kit-react';
+import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
+import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
+import { SuiGrpcClient } from '@mysten/sui/grpc';
+
+import { dappKitConfig } from './generated/dapp-kit/config.js';
+import { suiNetwork } from './generated/sui/network.js';
+
+export const dAppKit = createDAppKit({
+	networks: [dappKitConfig.chain],
+	defaultNetwork: dappKitConfig.chain,
+	createClient() {
+		return new SuiGrpcClient({
+			network: dappKitConfig.chain,
+			baseUrl: suiNetwork.rpcUrl,
+		});
+	},
+	walletInitializers: [
+		devWalletInitializer({
+			adapters: [
+				new DevstackSignerAdapter({
+					serverOrigin: dappKitConfig.walletUrl,
+					token: parseDevstackToken(dappKitConfig.pairUrl),
+					name: 'Devstack',
+				}),
+			],
+			autoConnect: true,
+			createInitialAccount: false,
+		}),
+	],
+});
+```
+
+Run the stack:
+
+```bash
+pnpm devstack up
+```
+
+Reconcile from another shell, CI, or before typechecking:
+
+```bash
+pnpm devstack apply
+```
+
+If `pnpm devstack up` is already live for this stack, `apply` reuses that supervisor and waits for
+it to finish. Without a live supervisor, it runs the same setup in one-shot mode.
+
+Use the generated files from `src/generated`, and treat `.devstack/` as runtime state only.

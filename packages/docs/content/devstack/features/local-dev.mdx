@@ -1,0 +1,102 @@
+---
+title: Local Development
+description: How the local supervisor, manifest, and generated files fit together.
+---
+
+Local mode is the default. `sui()` starts an in-stack local network; include it once in any stack
+whose members depend on Sui.
+
+```ts
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	defineDevstack,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
+
+const localnet = sui();
+const alice = account('alice');
+const hello = localPackage('hello', {
+	sourcePath: resolve(HERE, 'move/hello'),
+	publisher: alice,
+});
+const devWallet = wallet({
+	accounts: [alice],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [hello, devWallet] as const,
+});
+
+export default defineDevstack({ members: [localnet, app], stackName: 'main' });
+```
+
+State is scoped by app and stack name:
+
+```txt
+.devstack/
+  stacks/
+    main/
+      manifest.json
+      projection.v3.json
+      snapshots/
+      runtime/
+```
+
+## Routing
+
+Devstack routes stack endpoints through stable localhost hostnames. A `hostService(...)` dev server
+may bind an automatically assigned process port, but the default routed endpoint remains
+`http://dev.<app>.localhost:5175`. That stable route is what generated config, Playwright helpers,
+wallet origin policy, and the manifest should use.
+
+The same router model is used for service endpoints such as wallet, Sui RPC/faucet, Walrus, and
+Seal: plugins publish named endpoints into the manifest, and the router maps those names to the
+current upstream process or container port.
+
+Generated files are separate. By default they go to `src/generated`; override with the trailing
+options bag:
+
+```ts
+export default defineDevstack({
+	members: [localnet, app],
+	stackName: 'local',
+	codegen: {
+		outputDir: 'src/generated',
+		stackSubdir: null,
+	},
+});
+```
+
+Useful commands:
+
+```bash
+devstack up --renderer tui
+devstack up --renderer plain
+devstack apply
+devstack status --json
+```
+
+`devstack apply` is safe to run while `devstack up` owns the same stack: it publishes a reconcile
+request to the live supervisor and waits. If the stack is not live, it performs the reconcile in a
+one-shot run.
+
+Use a different stack name when you want independent keys, snapshots, and runtime state:
+
+```bash
+DEVSTACK_STACK=ci devstack apply
+devstack apply --stack ci
+```

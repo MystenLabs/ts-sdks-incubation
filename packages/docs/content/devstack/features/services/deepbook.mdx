@@ -1,0 +1,126 @@
+---
+title: DeepBook
+description: Local DeepBook deployments, Pyth feeds, pools, and known deployments.
+---
+
+Local mode publishes or consumes a local DeepBook package, initializes optional local Pyth feeds,
+creates pools, and seeds those pools through the same funding strategy system used by accounts. Use
+the generic `coin` helper for every pool coin so funding, generated bindings, and app code all read
+the same resolved coin metadata.
+
+```ts title="devstack.config.ts"
+import {
+	DEEP_PRICE_FEED_ID,
+	SUI_PRICE_FEED_ID,
+	USDC_PRICE_FEED_ID,
+	account,
+	coin,
+	deepbook,
+	defineDevstack,
+	localPackage,
+	sui,
+} from '@mysten-incubation/devstack';
+
+const localnet = sui();
+const publisher = account('publisher');
+const suiCoin = coin.builtin('sui');
+
+const deepbookPackage = localPackage('deepbook', {
+	sourcePath: './move/deepbook',
+	publisher,
+	capture: {
+		registryId: '::registry::Registry',
+		adminCapId: '::registry::DeepbookAdminCap',
+		deepTreasuryId: '::deep::ProtectedTreasury',
+	},
+});
+const usdcPackage = localPackage('dusdc', {
+	sourcePath: './move/dusdc',
+	publisher,
+});
+const pythPackage = localPackage('pyth', {
+	sourcePath: './move/pyth',
+	publisher,
+});
+
+const deep = coin.fromPackage(deepbookPackage, 'DEEP');
+const usdc = coin.fromPackage(usdcPackage, 'DUSDC');
+
+const dex = deepbook({
+	mode: 'local',
+	publisher,
+	package: deepbookPackage,
+	deepTreasuryIdKey: 'deepTreasuryId',
+	pyth: {
+		package: pythPackage,
+		pusher: publisher,
+		feeds: [
+			{ symbol: 'DEEP', feedId: DEEP_PRICE_FEED_ID, initialPrice: 2_000_000n, expo: -8 },
+			{ symbol: 'SUI', feedId: SUI_PRICE_FEED_ID, initialPrice: 345_000_000n, expo: -8 },
+			{ symbol: 'USDC', feedId: USDC_PRICE_FEED_ID, initialPrice: 100_000_000n, expo: -8 },
+		],
+	},
+	pools: [
+		{
+			name: 'DEEP_SUI',
+			base: { key: 'DEEP', coin: deep },
+			quote: { key: 'SUI', coin: suiCoin },
+			tickSize: 1_000_000n,
+			lotSize: 1_000_000n,
+			minSize: 10_000_000n,
+			seed: {
+				baseAmount: 1_000_000_000n,
+				orders: [{ side: 'ask', price: 6_000_000n, quantity: 1_000_000_000n }],
+			},
+		},
+		{
+			name: 'SUI_USDC',
+			base: { key: 'SUI', coin: suiCoin },
+			quote: { key: 'USDC', coin: usdc },
+			tickSize: 1_000n,
+			lotSize: 100_000_000n,
+			minSize: 1_000_000_000n,
+		},
+	],
+});
+
+export default defineDevstack({ members: [localnet, dex] });
+```
+
+Local Pyth feeds are generated into the DeepBook bindings so app and Playwright code can assert the
+feed ids and initial prices that the stack created. Pool seeding works when the referenced coins
+have funding strategies, for example SUI faucet funding or local package coins that keep their
+TreasuryCap with the package publisher.
+
+Known mode references an existing DeepBook deployment. Pass explicit ids, or use a supported network
+shortcut when available.
+
+```ts title="devstack.config.ts"
+import { deepbook, defineDevstack, sui } from '@mysten-incubation/devstack';
+
+const liveSui = sui({ mode: 'live', network: 'testnet' });
+const dex = deepbook({
+	mode: 'known',
+	packageId: '0x...',
+	registryId: '0x...',
+});
+
+export default defineDevstack({ members: [liveSui, dex] });
+```
+
+Override mode wraps explicit deployment ids when you already manage the deployment yourself:
+
+```ts title="devstack.config.ts"
+const dex = deepbook({
+	mode: 'override',
+	packageId: '0x...',
+	registryId: '0x...',
+	adminCapId: '0x...',
+});
+```
+
+Override mode does not publish or manage DeepBook locally. Margin, indexer, server, and market-maker
+options are intentionally absent until those modes have real acquire behavior.
+
+`deepbook(...)` returns a service member. Known testnet/mainnet helpers may also contribute funding
+strategies for service-owned coins when the mode supports them.

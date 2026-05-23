@@ -5,7 +5,19 @@ import { css, html, LitElement, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 
 import type { SignerAdapter } from '../types.js';
-import { actionButtonStyles, sharedStyles, stateStyles } from './styles.js';
+import {
+	actionButtonStyles,
+	badgeStyles,
+	cardItemStyles,
+	dialogStyles,
+	formInputStyles,
+	inlineErrorStyles,
+	listContainerStyles,
+	monoTruncateStyles,
+	sharedStyles,
+	subLabelStyles,
+	stateStyles,
+} from './styles.js';
 import {
 	emitEvent,
 	formatAddress,
@@ -29,38 +41,19 @@ export class DevWalletNewAccount extends LitElement {
 		sharedStyles,
 		actionButtonStyles,
 		stateStyles,
+		dialogStyles,
+		cardItemStyles,
+		listContainerStyles,
+		formInputStyles,
+		monoTruncateStyles,
+		badgeStyles,
+		inlineErrorStyles,
+		subLabelStyles,
 		css`
-			:host {
-				display: block;
-			}
-
-			dialog:not([open]) {
-				display: none;
-			}
-
 			dialog {
 				width: 320px;
-				max-width: calc(100vw - 32px);
 				max-height: min(420px, 80vh);
-				border-radius: var(--dev-wallet-radius-xl);
-				background: var(--dev-wallet-background);
-				border: 1px solid var(--dev-wallet-border);
-				box-shadow: var(--dev-wallet-shadow-lg);
 				padding: 20px;
-				display: flex;
-				flex-direction: column;
-				color: inherit;
-			}
-
-			dialog::backdrop {
-				background: color-mix(in oklab, oklch(0 0 0) 50%, transparent);
-			}
-
-			.dialog-title {
-				font-size: 16px;
-				font-weight: var(--dev-wallet-font-weight-semibold);
-				color: var(--dev-wallet-foreground);
-				margin-bottom: 16px;
 			}
 
 			.tabs {
@@ -97,29 +90,15 @@ export class DevWalletNewAccount extends LitElement {
 				margin-bottom: 12px;
 			}
 
-			.field-label {
-				display: block;
-				font-size: 12px;
-				font-weight: var(--dev-wallet-font-weight-medium);
-				color: var(--dev-wallet-muted-foreground);
-				margin-bottom: 4px;
-			}
-
 			.field-input {
-				width: 100%;
 				padding: 8px 10px;
 				border-radius: var(--dev-wallet-radius-sm);
 				border: 1px solid var(--dev-wallet-input);
 				background: var(--dev-wallet-secondary);
-				color: var(--dev-wallet-foreground);
 				font-size: 14px;
-				font-family: inherit;
-				outline: none;
-				box-sizing: border-box;
 			}
 
 			.field-input:focus {
-				border-color: var(--dev-wallet-primary);
 				outline: 2px solid color-mix(in oklab, var(--dev-wallet-ring) 50%, transparent);
 				outline-offset: -1px;
 			}
@@ -177,22 +156,14 @@ export class DevWalletNewAccount extends LitElement {
 			}
 
 			.import-list {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
 				overflow-y: auto;
 				max-height: 240px;
 				min-height: 60px;
 			}
 
 			.import-item {
-				display: flex;
-				align-items: center;
 				gap: 10px;
 				padding: 8px 10px;
-				border-radius: var(--dev-wallet-radius-sm);
-				border: 1px solid var(--dev-wallet-border);
-				background: var(--dev-wallet-secondary);
 				width: 100%;
 				text-align: left;
 				transition: border-color 0.15s;
@@ -203,7 +174,6 @@ export class DevWalletNewAccount extends LitElement {
 			}
 
 			.import-item.selected {
-				border-color: var(--dev-wallet-primary);
 				background: color-mix(in oklab, var(--dev-wallet-primary) 10%, var(--dev-wallet-secondary));
 			}
 
@@ -244,24 +214,15 @@ export class DevWalletNewAccount extends LitElement {
 
 			.import-item-address {
 				font-size: 11px;
-				color: var(--dev-wallet-muted-foreground);
-				font-family: var(--dev-wallet-font-mono);
-				overflow: hidden;
-				text-overflow: ellipsis;
-				white-space: nowrap;
 			}
 
 			.import-item-badge {
-				font-size: 10px;
 				padding: 1px 6px;
 				border-radius: var(--dev-wallet-radius-xs);
 				background: var(--dev-wallet-background);
 				border: 1px solid var(--dev-wallet-border);
 				color: var(--dev-wallet-muted-foreground);
-				font-weight: var(--dev-wallet-font-weight-medium);
-				text-transform: uppercase;
 				letter-spacing: 0.3px;
-				white-space: nowrap;
 				flex-shrink: 0;
 			}
 
@@ -275,8 +236,6 @@ export class DevWalletNewAccount extends LitElement {
 			}
 
 			.error {
-				color: var(--dev-wallet-destructive);
-				font-size: 12px;
 				margin-top: 8px;
 			}
 		`,

@@ -1,0 +1,79 @@
+---
+title: Devstack
+description: Current package API and workflow for @mysten-incubation/devstack.
+---
+
+Devstack composes a local Sui development stack from one TypeScript config. A stack is a list of
+members such as `sui()`, `account()`, `localPackage()`, `wallet()`, `walrus()`, `seal()`,
+`deepbook()`, and `action()`.
+
+```ts title="devstack.config.ts"
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import {
+	defineDevstack,
+	account,
+	HOST_SERVICE_PORT_TOKEN,
+	hostService,
+	localPackage,
+	sui,
+	wallet,
+} from '@mysten-incubation/devstack';
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const DEV_PORT = 5173;
+
+const localnet = sui();
+const publisher = account('publisher');
+const alice = account('alice');
+
+const hello = localPackage('hello', {
+	sourcePath: resolve(HERE, 'move/hello'),
+	publisher,
+});
+const devWallet = wallet({
+	accounts: [publisher, alice],
+});
+const app = hostService({
+	name: 'app',
+	script: `pnpm exec vite --host 127.0.0.1 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
+	cwd: HERE,
+	port: DEV_PORT,
+	ready: { kind: 'http' },
+	after: [hello, devWallet] as const,
+});
+
+export default defineDevstack({
+	members: [localnet, app],
+	stackName: 'main',
+});
+```
+
+The public package surface is:
+
+- Root API: `defineDevstack`, `runStack`, built-in factories, plugin-author helpers, and public
+  types.
+- Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, and `/runtime`.
+
+There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
+reads generated files and the runtime manifest instead of importing private helpers.
+
+## Core Flow
+
+1. Put stack members in `devstack.config.ts`.
+2. Include your dev server as a `hostService(...)` member when the stack backs a browser app.
+3. Run `devstack up` for an attached local supervisor, or `devstack apply` to reconcile through the
+   live supervisor when one exists and one-shot otherwise.
+4. Generated files land under `src/generated` by default. Runtime state, manifests, snapshots, and
+   logs stay under `.devstack/stacks/<stack>`.
+5. Use the Vitest, Playwright, or runtime subpaths from application tooling.
+
+## Start Here
+
+- [Quickstart](./quickstart) for a small app config.
+- [Local development](./features/local-dev) for state and generated output.
+- [Vitest](./features/testing-vitest) and [Playwright](./features/testing-playwright) for test
+  integration.
+- [Services](./features/services) for Walrus, Seal, DeepBook, and known deployments.
+- [Snapshot state](./features/state-and-snapshots) for the currently supported snapshot surface.

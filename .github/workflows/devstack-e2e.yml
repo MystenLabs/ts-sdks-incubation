@@ -1,0 +1,422 @@
+name: Devstack E2E
+
+# Product coverage for the devstack package and worked example stacks.
+# The workflow proves that representative examples can apply their stack,
+# capture a restorable snapshot, restore that snapshot in a fresh job, and
+# validate restored runtime files/images. It also shards the package's
+# Docker-backed integration tests.
+#
+# Two-stage matrix:
+#
+#   1. seed:  per-example, brings the stack up via `pnpm devstack apply`
+#             (one-shot reconcile + manifest write), takes a snapshot
+#             with `pnpm devstack snapshot save`, uploads the snapshot
+#             directory as a build artifact. The snapshot contains the
+#             full writable layer of every container plus the canonical
+#             runtime directory for account keys, wallet pairing state,
+#             seal keys, and service deployment outputs.
+#
+#   2. restore: per-example. Downloads the artifact, extracts to
+#             `.devstack/stacks/<stack>/snapshots/`, runs
+#             `devstack snapshot restore baseline`, then reads the restored
+#             snapshot catalog through the CLI, resolves the `baseline`
+#             label to its canonical snapshot directory id, and verifies
+#             restored runtime files/images.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Permissions: read-only; snapshots move between jobs as workflow artifacts.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  changes:
+    name: Detect devstack E2E changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      seed: ${{ steps.filter.outputs.seed }}
+      docker: ${{ steps.filter.outputs.docker }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+        with:
+          fetch-depth: 0
+
+      - id: filter
+        name: Classify changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Main pushes keep full coverage. PRs are filtered so expensive
+          # product jobs run only when their package/example surface changed.
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            {
+              echo "seed=true"
+              echo "docker=true"
+            } >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          if ! git cat-file -e "${base}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$base"
+          fi
+          if ! git cat-file -e "${head}^{commit}" 2>/dev/null; then
+            pull_ref="refs/remotes/pull/${{ github.event.pull_request.number }}/head"
+            git fetch --no-tags origin "pull/${{ github.event.pull_request.number }}/head:${pull_ref}"
+            head="$pull_ref"
+          fi
+          git diff --name-only "$base" "$head" > /tmp/devstack-e2e-files
+
+          matches_seed() {
+            case "$1" in
+              .github/workflows/devstack-e2e.yml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/scripts/*|packages/dev-wallet/*|examples/connect-four/*|examples/private-content/*|examples/deepbook-trader/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          matches_docker() {
+            case "$1" in
+              .github/workflows/devstack-e2e.yml|package.json|pnpm-lock.yaml|pnpm-workspace.yaml|turbo.json|packages/tsconfig/*|packages/devstack/package.json|packages/devstack/tsdown.config.ts|packages/devstack/src/*|packages/devstack/images/*|packages/devstack/test/*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          seed=false
+          docker=false
+          while IFS= read -r file; do
+            if matches_seed "$file"; then
+              seed=true
+            fi
+            if matches_docker "$file"; then
+              docker=true
+            fi
+          done < /tmp/devstack-e2e-files
+
+          {
+            echo "seed=$seed"
+            echo "docker=$docker"
+          } >> "$GITHUB_OUTPUT"
+
+  seed:
+    name: Seed snapshot · ${{ matrix.example }}
+    needs: changes
+    if: needs.changes.outputs.seed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Representative product apps: a Sui-only app, a Walrus/Seal app,
+        # and the DeepBook trader app. Stack dirs are the resolved
+        # devstack identity; example configs currently pin stackName to
+        # the unscoped package name, so artifact names stay keyed by
+        # example package.
+        include:
+          - example: connect-four
+            stack: connect-four
+          - example: private-content
+            stack: private-content
+          - example: deepbook-trader
+            stack: deepbook-trader
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack runtime packages
+        run: pnpm turbo build --filter @mysten-incubation/devstack --filter @mysten-incubation/dev-wallet
+
+      # Invoke the built CLI directly via node so this step doesn't
+      # depend on pnpm having created the `devstack` bin symlink in
+      # `examples/<example>/node_modules/.bin/`. pnpm skips bin creation
+      # (with a WARN) when the target file doesn't exist at install time,
+      # which is exactly our case: `dist/cli/main.mjs` is built AFTER
+      # `pnpm install --frozen-lockfile`. Going through node sidesteps
+      # the bin-symlink lookup entirely.
+      - name: Apply stack (boot + write state + tear down)
+        working-directory: examples/${{ matrix.example }}
+        timeout-minutes: 20
+        run: node ../../packages/devstack/dist/cli/main.mjs apply --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
+
+      # `apply` boots service containers that bind-mount host paths under
+      # `.devstack/stacks/<stack>/runtime/` (walrus deploy outputs,
+      # walrus storage-node state, seal master-key, etc.). Anything the
+      # container writes lands on the host owned by root:root (the
+      # container's UID), and walrus storage-node private keys / seal
+      # master-key files are mode 0600. On the GHA runner — uid 1001
+      # (`runner`) — those files are unreadable, so the snapshot save's
+      # `tar -cf` of `runtime/` exits 2 with EACCES. Re-own the tree to
+      # the runner before tarring. We have passwordless sudo on
+      # `ubuntu-latest`; `id -u`/`-g` works regardless of the runner's
+      # default user. No-op when `.devstack/stacks` doesn't exist
+      # (state-only stacks with no runtime tree).
+      - name: Reown runtime/ to runner uid (CI permissions fix)
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          if [ -d .devstack/stacks ]; then
+            sudo chown -R "$(id -u):$(id -g)" .devstack/stacks
+          fi
+
+      - name: Capture snapshot
+        working-directory: examples/${{ matrix.example }}
+        # `apply` exits after the supervisor scope closes, leaving the
+        # containers stopped with their writable layer intact. The
+        # snapshot CLI captures stopped containers into the snapshot
+        # bundle so the restore job can restore the same state.
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot save baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
+
+      - name: Show snapshot contents (debug)
+        working-directory: examples/${{ matrix.example }}
+        run: |
+          snapshot_dir=".devstack/stacks/${{ matrix.stack }}/snapshots"
+          echo "--- ${snapshot_dir}/ tree ---"
+          find "${snapshot_dir}" -maxdepth 4 -type f -exec ls -la {} +
+          echo '--- meta.json ---'
+          find "${snapshot_dir}" -name meta.json -exec cat {} \;
+
+      - name: Upload snapshot artifact
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: devstack-snapshot-${{ matrix.example }}
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.stack }}/snapshots
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Upload devstack state on seed failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: devstack-seed-${{ matrix.example }}-failure
+          path: |
+            examples/${{ matrix.example }}/.devstack/
+            examples/${{ matrix.example }}/src/generated/
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  restore:
+    name: Restore snapshot · ${{ matrix.example }}
+    needs: [changes, seed]
+    if: needs.changes.outputs.seed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - example: connect-four
+            stack: connect-four
+          - example: private-content
+            stack: private-content
+          - example: deepbook-trader
+            stack: deepbook-trader
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack
+        run: pnpm turbo build --filter @mysten-incubation/devstack
+
+      - name: Download snapshot artifact
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806 # pin@v4.1.9
+        with:
+          name: devstack-snapshot-${{ matrix.example }}
+          path: examples/${{ matrix.example }}/.devstack/stacks/${{ matrix.stack }}/snapshots
+
+      - name: Restore snapshot
+        working-directory: examples/${{ matrix.example }}
+        # The artifact has already been downloaded under `snapshots/`;
+        # restore materializes runtime files into the stack root and
+        # loads every committed container image into Docker. Direct-node
+        # invocation: see the seed job's apply step for the bin-symlink
+        # rationale.
+        run: node ../../packages/devstack/dist/cli/main.mjs snapshot restore baseline --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }} --yes
+
+      - name: Validate restored snapshot state
+        working-directory: examples/${{ matrix.example }}
+        # Use production CLI paths for restore/catalog/status, then inspect
+        # the restored runtime root and Docker image refs. `devstack status`
+        # reads projection.v1.json, which is a live-surface cache; offline
+        # restore currently materializes snapshot state, not a new projection.
+        run: |
+          snapshot_json="$(node ../../packages/devstack/dist/cli/main.mjs snapshot list --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }})"
+          status_json="$(node ../../packages/devstack/dist/cli/main.mjs status --json --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }})"
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const { existsSync, readFileSync } = require("node:fs");
+            const { join } = require("node:path");
+
+            const [snapshotRaw, statusRaw, expectedApp, expectedStack] = process.argv.slice(1);
+            const snapshots = JSON.parse(snapshotRaw);
+            const status = JSON.parse(statusRaw);
+            const entries = snapshots.data?.entries ?? [];
+            const baseline = entries.find(
+              (entry) => entry.name === "baseline" || entry.snapshotId === "baseline",
+            );
+            if (!snapshots.ok || baseline === undefined) {
+              throw new Error("restored snapshot catalog does not contain baseline");
+            }
+            if (!status.ok) {
+              throw new Error("status command failed after restore");
+            }
+            if (status.data?.present === true && status.data.identity?.stack !== expectedStack) {
+              throw new Error(`restored status stack mismatch: ${status.data.identity?.stack}`);
+            }
+
+            const stackRoot = join(".devstack", "stacks", expectedStack);
+            const metaPath = join(stackRoot, "snapshots", baseline.snapshotId, "meta.json");
+            const meta = JSON.parse(readFileSync(metaPath, "utf8"));
+            if (meta.app !== expectedApp) {
+              throw new Error(`restored snapshot app mismatch: ${meta.app}`);
+            }
+            if (meta.stack !== expectedStack) {
+              throw new Error(`restored snapshot stack mismatch: ${meta.stack}`);
+            }
+
+            const materialized = [];
+            const statePath = join(stackRoot, "state.json");
+            if (existsSync(statePath)) {
+              materialized.push(statePath);
+            }
+            for (const subtree of meta.subtrees ?? []) {
+              const relPath = String(subtree.relPath ?? "");
+              if (relPath.startsWith("/") || relPath.split(/[\\/]+/).includes("..")) {
+                throw new Error(`unsafe restored subtree path in metadata: ${relPath}`);
+              }
+              const subtreePath = join(stackRoot, relPath);
+              if (!existsSync(subtreePath)) {
+                throw new Error(`restored subtree is missing: ${relPath}`);
+              }
+              materialized.push(subtreePath);
+            }
+            for (const container of meta.containers ?? []) {
+              try {
+                execFileSync("docker", ["image", "inspect", container.imageName], {
+                  stdio: "ignore",
+                });
+              } catch (cause) {
+                throw new Error(`restored image is missing: ${container.imageName}`, { cause });
+              }
+              materialized.push(`image:${container.imageName}`);
+            }
+            if (materialized.length === 0) {
+              throw new Error("restored snapshot did not materialize state, subtrees, or images");
+            }
+          ' "$snapshot_json" "$status_json" "${{ matrix.example }}" "${{ matrix.stack }}"
+
+      - name: Upload devstack state on failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: devstack-restore-${{ matrix.example }}-failure
+          path: |
+            examples/${{ matrix.example }}/.devstack/
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+
+  # Docker integration shards. Runs the package's `*.docker.test.ts`
+  # product tests gated behind `DEVSTACK_INTEGRATION_TESTS=1`. Sharded
+  # 4-way on standard hosted Ubuntu so image pulls and container boot
+  # still parallelize without requiring a larger-runner label.
+  docker-integration:
+    name: Docker integration · shard ${{ matrix.shard }}/4
+    needs: changes
+    if: needs.changes.outputs.docker == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # pin@v4.1.1
+      - uses: pnpm/action-setup@a3252b78c470c02df07e9d59298aecedc3ccdd6d # pin@v3.0.0
+      - name: Install Node.js
+        uses: actions/setup-node@60edb5dd545a775178f52524783378180af0d1f8 # pin@v4.0.2
+        with:
+          node-version: '24'
+          cache: 'pnpm'
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build devstack
+        run: pnpm turbo build --filter @mysten-incubation/devstack
+
+      - name: Pre-pull docker images
+        run: |
+          docker pull postgres:16-alpine || true
+          # Deepbook indexer + server images come from the pairing table
+          # in the devstack package. Best-effort pull so the first test
+          # that uses them doesn't pay the cold-pull cost
+          # against the shard's 30-min budget.
+          docker pull mysten/deepbook-indexer:v7.0.0 || true
+          docker pull mysten/deepbook-server:v7.0.0 || true
+
+      - name: Run L3 docker tests (shard ${{ matrix.shard }}/4)
+        working-directory: packages/devstack
+        env:
+          DEVSTACK_INTEGRATION_TESTS: '1'
+        # Run only `*.docker.test.ts` files; vitest's `--shard` distributes
+        # them across 4 workers. The suite covers Postgres, Pyth, indexer,
+        # server, margin, maker, vendor, and codegen behavior.
+        run: pnpm vitest run --testNamePattern docker --shard ${{ matrix.shard }}/4
+
+      - name: Upload failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: docker-integration-shard-${{ matrix.shard }}-failure
+          # Capture container state plus manifests/state files reachable
+          # on the runner so failures are reproducible from the artifact.
+          path: |
+            packages/devstack/test-results/
+            packages/devstack/.devstack/
+            examples/*/.devstack/manifest.json
+            examples/*/.devstack/stacks/*/manifest.json
+            examples/*/.devstack/stacks/*/state.json
+            /tmp/docker-ps.txt
+            /tmp/docker-logs/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      - name: Capture container state on failure
+        if: failure()
+        run: |
+          docker ps -a > /tmp/docker-ps.txt 2>&1 || true
+          mkdir -p /tmp/docker-logs
+          for c in $(docker ps -a --format '{{.Names}}'); do
+            docker logs "$c" > "/tmp/docker-logs/${c}.log" 2>&1 || true
+          done

@@ -2,7 +2,70 @@ autoInstallPeers: false
 # Enforce that packages must be at least 2 days old before they're installed
 # This reduces the risk of supply chain attacks from newly published packages
 minimumReleaseAge: 2880
+# Mysten Labs packages are first-party — apply the age gate only to
+# third-party deps so we can pull SDK updates the day they ship.
+minimumReleaseAgeExclude:
+  - '@mysten/*'
+  - '@mysten-incubation/*'
 packages:
   - 'packages/**'
   - 'apps/**'
+  - 'examples/*'
   - '!**/dist/**'
+  # Generated artifacts may contain non-npm metadata files named package.json
+  # (for example Move debug info). They are not workspace projects.
+  - '!**/build/**'
+  # Bundled template directory shipped with `create-devstack-app`. Mirror of
+  # `examples/_template/`; not a real workspace project.
+  - '!packages/create-devstack-app/template/**'
+  # Vendored repositories (read-only reference for coding agents). The
+  # subtree carries its own pnpm-workspace.yaml that must not nest into ours.
+  - '!repos/**'
+
+catalog:
+  # @mysten/* — kept on a single shared version across the monorepo.
+  '@mysten/bcs': ^1.10.0
+  '@mysten/codegen': ^0.10.4
+  '@mysten/dapp-kit-core': ^1.3.0
+  '@mysten/dapp-kit-react': ^2.0.1
+  '@mysten/deepbook-v3': ^1.3.3
+  '@mysten/seal': ^1.1.1
+  '@mysten/signers': ^1.0.1
+  '@mysten/sui': ^2.17.0
+  '@mysten/wallet-standard': ^0.20.1
+  '@playwright/test': ^1.59.1
+  '@tailwindcss/postcss': ^4.2.4
+  '@tailwindcss/vite': ^4.2.4
+
+  # State / data
+  '@tanstack/react-query': ^5.100.0
+  '@types/node': ^24.12.2
+  '@types/react': ^19.2.14
+  '@types/react-dom': ^19.2.3
+  '@vitejs/plugin-react': ^4.7.0
+  '@vitest/ui': ^2.1.8
+
+  # React
+  react: ^19.2.5
+  react-dom: ^19.2.5
+
+  # Styling
+  tailwindcss: ^4.2.4
+
+  # Utilities
+  '@stricli/core': ^1.2.7
+  tsx: ^4.21.0
+  turbo: ^2.7.4
+
+  # Build / lint / test
+  typescript: ^5.9.3
+  vite: ^6.4.2
+  vitest: ^2.1.9
+  zod: ^3.24.1
+
+  # Effect — pinned to a v4 beta that has cleared the 2-day quarantine.
+  # In v4, Schema/Stream/FileSystem/Path/etc. live in core `effect`; only
+  # the platform-node bindings and the vitest integration are separate.
+  effect: 4.0.0-beta.65
+  '@effect/platform-node': 4.0.0-beta.65
+  '@effect/vitest': 4.0.0-beta.65

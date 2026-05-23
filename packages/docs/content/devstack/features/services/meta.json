@@ -1,0 +1,4 @@
+{
+	"title": "Services",
+	"pages": ["dev-server", "walrus", "seal", "deepbook", "known-packages"]
+}
