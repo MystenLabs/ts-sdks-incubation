@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
-import { Effect } from 'effect';
+import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { runCli } from '../../src/cli/main.ts';
@@ -16,7 +16,11 @@ import {
 	writeArtifactIntegrity,
 } from '../../src/orchestrators/snapshot/index.ts';
 import type { SubscribableState } from '../../src/substrate/projection.ts';
-import { COMMAND_CHANNEL_COMMANDS_FILE_NAME } from '../../src/substrate/runtime/cross-process/index.ts';
+import {
+	commandChannelPaths,
+	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
+	makeCommandChannelSubscriber,
+} from '../../src/substrate/runtime/cross-process/index.ts';
 import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
 import {
 	readProjectionSnapshot,
@@ -279,6 +283,82 @@ describe('cli/main', () => {
 					process.env[key] = value;
 				}
 			}
+		}
+	}, 60_000);
+
+	it('apply publishes to a live supervisor instead of starting a second one-shot stack', async () => {
+		const appRoot = makeTempRoot('cli-live-apply-app');
+		const stateRoot = makeTempRoot('cli-live-apply-state');
+		const configPath = writeCodegenConfig(appRoot);
+		const stackRoot = join(stateRoot, 'stacks', 'main');
+		const generatedPath = join(appRoot, 'src', 'generated', 'cli-apply-proof.ts');
+		const observed: Array<{ readonly tag?: string }> = [];
+		const previousExitCode = process.exitCode;
+		const previousEnv = {
+			DEVSTACK_APP: process.env.DEVSTACK_APP,
+			DEVSTACK_STACK: process.env.DEVSTACK_STACK,
+			DEVSTACK_NETWORK: process.env.DEVSTACK_NETWORK,
+			DEVSTACK_STATE_DIR: process.env.DEVSTACK_STATE_DIR,
+			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
+		};
+
+		writeLiveRoster(stackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(stackRoot), {
+						fromOffset: 'start',
+						pollMillis: 20,
+					});
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								yield* Effect.sync(() => {
+									observed.push(record.command as { readonly tag?: string });
+								});
+								yield* subscriber.ack(record.id, 'applied');
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'apply',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'cli-live-apply',
+				'--stack',
+				'main',
+				'--network',
+				'localnet',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(observed).toEqual([{ tag: 'apply.requested' }]);
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'apply.requested',
+			]);
+			expect(existsSync(generatedPath)).toBe(false);
+		} finally {
+			process.exitCode = previousExitCode;
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
 		}
 	}, 60_000);
 

@@ -158,10 +158,10 @@ const buildPluginContext = (): Effect.Effect<
  *  Generic `R` widens the hook R-channel so callers can yield
  *  substrate services (e.g. `StackPathsService`) that are in scope at
  *  the supervisor-boot site. */
-export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never> {
+export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never, HookE = never> {
 	readonly lifetime?: 'long-running' | 'one-shot';
-	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, never, R>;
-	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, never, R>;
+	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
+	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly commandHandler?: SupervisorCommandHandler;
 	readonly orchestratorSinks?: OrchestratorSinks;
 	readonly postAcquireHook?: SupervisorPostAcquireHook;
@@ -179,11 +179,11 @@ export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never> {
  *  supervisor's shutdown latch. Returns the final `SubscribableState`
  *  snapshot so callers (CLI, library handle) can inspect post-shutdown
  *  state. */
-export const superviseStackEffect = <R = Scope.Scope, ExtendR = never>(
+export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = never>(
 	stack: SupervisedStack,
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<import('../projection.ts').SubscribableState>,
-	opts: SuperviseStackOptions<R, ExtendR> = {},
+	opts: SuperviseStackOptions<R, ExtendR, HookE> = {},
 ) =>
 	Effect.gen(function* () {
 		const baseContext = yield* buildPluginContext();
@@ -238,15 +238,19 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never>(
  *  Callers that need to capture intermediate state (errors, terminal
  *  snapshot, etc.) supply `opts.withinScope` and read off the
  *  supervisor handle directly. */
-export interface RunStackEffectOptions extends SuperviseStackOptions {
+export interface RunStackEffectOptions<
+	R = Scope.Scope,
+	ExtendR = never,
+	HookE = never,
+> extends SuperviseStackOptions<R, ExtendR, HookE> {
 	readonly runtimeRoot: string;
 	readonly loggerLayer?: Layer.Layer<never>;
 }
 
-export const runStackEffect = (
+export const runStackEffect = <R = Scope.Scope, ExtendR = never, HookE = never>(
 	stack: SupervisedStack,
 	identity: Identity,
-	opts: RunStackEffectOptions,
+	opts: RunStackEffectOptions<R, ExtendR, HookE>,
 ) => {
 	const substrate = buildSubstrateLayers(identity, opts.runtimeRoot);
 	const program = Effect.gen(function* () {

@@ -94,10 +94,10 @@ export interface EnsureContainerSpec {
 		readonly readonly?: boolean;
 	}>;
 	/** Optional `--entrypoint <bin>` override. The Move build container
-	 *  uses `sh` so the long-lived sleeper can be `sh -c 'sleep infinity'`. */
+	 *  uses `sh` so its long-lived sleeper can trap Docker stop signals. */
 	readonly entrypoint?: string;
 	/** Optional positional argv appended after the image. Used to set the
-	 *  sleeper's `sleep infinity` command without changing the image. */
+	 *  sleeper command without changing the image. */
 	readonly command?: ReadonlyArray<string>;
 	/** Extra `<host>:<ip>` entries to inject into /etc/hosts via
 	 *  `docker run --add-host`. The literal `host-gateway` is supported

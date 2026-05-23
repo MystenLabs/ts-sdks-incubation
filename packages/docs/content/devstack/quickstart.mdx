@@ -102,10 +102,13 @@ Run the stack:
 pnpm devstack up
 ```
 
-For one-shot setup in CI or before typechecking:
+Reconcile from another shell, CI, or before typechecking:
 
 ```bash
 pnpm devstack apply
 ```
+
+If `pnpm devstack up` is already live for this stack, `apply` reuses that supervisor and waits for
+it to finish. Without a live supervisor, it runs the same setup in one-shot mode.
 
 Use the generated files from `src/generated`, and treat `.devstack/` as runtime state only.

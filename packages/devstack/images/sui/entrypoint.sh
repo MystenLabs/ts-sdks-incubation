@@ -37,10 +37,8 @@
 # the validator process. Sui without `--with-faucet` reaches its
 # ctrl_c-aware loop and exits cleanly on SIGINT. The shell becomes PID
 # 1 instead of `exec sui` so it can trap docker's SIGTERM and forward
-# SIGINT to both children; sui-faucet has no signal handler of its own
-# but as a non-PID-1 child the kernel applies SIGINT's default-action
-# terminate, and the faucet is stateless (re-derives everything from
-# `~/.sui` on next start).
+# SIGINT to sui. The sibling sui-faucet is stateless; it is also nudged
+# via the shared trap and is force-killed after sui exits if still alive.
 #
 # GraphQL's embedded PostgreSQL indexer refuses to initialize as root,
 # so the entrypoint performs setup as PID 1/root and then starts Sui

@@ -39,7 +39,9 @@ const DEEP_SUI_POOL = {
 	lotSize: 1_000_000n,
 	minSize: 10_000_000n,
 	seedPrice: 6_000_000n,
+	seedBidPrice: 5_000_000n,
 	seedBaseAmount: 1_000_000_000n,
+	seedQuoteAmount: 10_000_000_000n,
 	whitelisted: true,
 	stablePool: false,
 } as const;
@@ -50,7 +52,9 @@ const SUI_USDC_POOL = {
 	lotSize: 100_000_000n,
 	minSize: 1_000_000_000n,
 	seedPrice: 3_500_000n,
+	seedBidPrice: 3_499_000n,
 	seedBaseAmount: 100_000_000_000n,
+	seedQuoteAmount: 1_000_000_000n,
 	whitelisted: true,
 	stablePool: false,
 } as const;
@@ -61,7 +65,9 @@ const DBTC_USDC_POOL = {
 	lotSize: 10_000n,
 	minSize: 10_000n,
 	seedPrice: 65_000_000_000n,
+	seedBidPrice: 64_999_000_000n,
 	seedBaseAmount: 200_000_000n,
+	seedQuoteAmount: 200_000_000_000n,
 	whitelisted: true,
 	stablePool: false,
 } as const;
@@ -72,7 +78,9 @@ const DETH_USDC_POOL = {
 	lotSize: 100_000n,
 	minSize: 100_000n,
 	seedPrice: 3_200_000_000n,
+	seedBidPrice: 3_199_900_000n,
 	seedBaseAmount: 1_000_000_000n,
+	seedQuoteAmount: 50_000_000_000n,
 	whitelisted: true,
 	stablePool: false,
 } as const;
@@ -193,10 +201,16 @@ const dex = deepbook({
 			quote: { key: 'SUI', coin: suiCoin },
 			seed: {
 				baseAmount: DEEP_SUI_POOL.seedBaseAmount,
+				quoteAmount: DEEP_SUI_POOL.seedQuoteAmount,
 				orders: [
 					{
 						side: 'ask',
 						price: DEEP_SUI_POOL.seedPrice,
+						quantity: DEEP_SUI_POOL.seedBaseAmount,
+					},
+					{
+						side: 'bid',
+						price: DEEP_SUI_POOL.seedBidPrice,
 						quantity: DEEP_SUI_POOL.seedBaseAmount,
 					},
 				],
@@ -208,10 +222,16 @@ const dex = deepbook({
 			quote: { key: 'USDC', coin: usdc },
 			seed: {
 				baseAmount: SUI_USDC_POOL.seedBaseAmount,
+				quoteAmount: SUI_USDC_POOL.seedQuoteAmount,
 				orders: [
 					{
 						side: 'ask',
 						price: SUI_USDC_POOL.seedPrice,
+						quantity: SUI_USDC_POOL.seedBaseAmount,
+					},
+					{
+						side: 'bid',
+						price: SUI_USDC_POOL.seedBidPrice,
 						quantity: SUI_USDC_POOL.seedBaseAmount,
 					},
 				],
@@ -223,10 +243,16 @@ const dex = deepbook({
 			quote: { key: 'USDC', coin: usdc },
 			seed: {
 				baseAmount: DBTC_USDC_POOL.seedBaseAmount,
+				quoteAmount: DBTC_USDC_POOL.seedQuoteAmount,
 				orders: [
 					{
 						side: 'ask',
 						price: DBTC_USDC_POOL.seedPrice,
+						quantity: DBTC_USDC_POOL.seedBaseAmount,
+					},
+					{
+						side: 'bid',
+						price: DBTC_USDC_POOL.seedBidPrice,
 						quantity: DBTC_USDC_POOL.seedBaseAmount,
 					},
 				],
@@ -238,10 +264,16 @@ const dex = deepbook({
 			quote: { key: 'USDC', coin: usdc },
 			seed: {
 				baseAmount: DETH_USDC_POOL.seedBaseAmount,
+				quoteAmount: DETH_USDC_POOL.seedQuoteAmount,
 				orders: [
 					{
 						side: 'ask',
 						price: DETH_USDC_POOL.seedPrice,
+						quantity: DETH_USDC_POOL.seedBaseAmount,
+					},
+					{
+						side: 'bid',
+						price: DETH_USDC_POOL.seedBidPrice,
 						quantity: DETH_USDC_POOL.seedBaseAmount,
 					},
 				],

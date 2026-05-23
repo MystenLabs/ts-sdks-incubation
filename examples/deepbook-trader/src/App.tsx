@@ -13,8 +13,8 @@ import { accounts } from './generated/accounts.js';
 import { coins } from './generated/coins.js';
 import { deepbookBindings } from './generated/deepbook/deepbook.js';
 import { suiNetwork } from './generated/sui/network.js';
-import { formatCoinAmount, shortId } from './lib/format.js';
-import { useCoinBalance, useFirstCoinObject, useSignAndExecute } from './lib/queries.js';
+import { formatCoinAmount, parseCoinAmount, shortId } from './lib/format.js';
+import { useCoinBalance, useSignAndExecute } from './lib/queries.js';
 
 const SUI_SCALAR = 1_000_000_000;
 const DEEP_SCALAR = 1_000_000;
@@ -22,6 +22,7 @@ const USDC_SCALAR = 1_000_000;
 const DBTC_SCALAR = 100_000_000;
 const DETH_SCALAR = 100_000_000;
 const DEFAULT_POOL = 'DEEP_SUI';
+const DEFAULT_TRADE_DIRECTION: TradeDirection = 'quote-to-base';
 const configuredPoolCount: number = deepbookBindings.pools.length;
 const coinBindings = coins as Record<string, CoinBinding>;
 const deepCoin = requireCoinBinding('DEEP', coinBindings.deep ?? coinBindings.DEEP);
@@ -34,6 +35,7 @@ const dethCoin = requireCoinBinding('DETH', coinBindings.deth ?? coinBindings.DE
 const pythBindings = deepbookBindings.pyth as PythBinding | null;
 
 type DemoCoinKey = 'SUI' | 'DEEP' | 'USDC' | 'DBTC' | 'DETH';
+type TradeDirection = 'quote-to-base' | 'base-to-quote';
 
 const COIN_SCALARS: Record<DemoCoinKey, number> = {
 	SUI: SUI_SCALAR,
@@ -55,6 +57,7 @@ interface DemoMarket {
 	readonly pool: string;
 	readonly base: DemoCoinKey;
 	readonly quote: DemoCoinKey;
+	readonly baseAmountRaw: bigint;
 	readonly quoteAmountRaw: bigint;
 }
 
@@ -62,14 +65,33 @@ const DEFAULT_MARKET: DemoMarket = {
 	pool: DEFAULT_POOL,
 	base: 'DEEP',
 	quote: 'SUI',
+	baseAmountRaw: 10_000_000n,
 	quoteAmountRaw: 20_000_000n,
 };
 
 const DEMO_MARKETS: ReadonlyArray<DemoMarket> = [
 	DEFAULT_MARKET,
-	{ pool: 'SUI_USDC', base: 'SUI', quote: 'USDC', quoteAmountRaw: 10_000_000n },
-	{ pool: 'DBTC_USDC', base: 'DBTC', quote: 'USDC', quoteAmountRaw: 50_000_000n },
-	{ pool: 'DETH_USDC', base: 'DETH', quote: 'USDC', quoteAmountRaw: 25_000_000n },
+	{
+		pool: 'SUI_USDC',
+		base: 'SUI',
+		quote: 'USDC',
+		baseAmountRaw: 1_000_000_000n,
+		quoteAmountRaw: 10_000_000n,
+	},
+	{
+		pool: 'DBTC_USDC',
+		base: 'DBTC',
+		quote: 'USDC',
+		baseAmountRaw: 100_000n,
+		quoteAmountRaw: 50_000_000n,
+	},
+	{
+		pool: 'DETH_USDC',
+		base: 'DETH',
+		quote: 'USDC',
+		baseAmountRaw: 1_000_000n,
+		quoteAmountRaw: 25_000_000n,
+	},
 ];
 
 export function App() {
@@ -77,6 +99,10 @@ export function App() {
 	const suiClient = useCurrentClient();
 	const availableMarkets = useMemo(() => configuredDemoMarkets(), []);
 	const [selectedPool, setSelectedPool] = useState(DEFAULT_POOL);
+	const [tradeDirection, setTradeDirection] = useState<TradeDirection>(DEFAULT_TRADE_DIRECTION);
+	const [amountInput, setAmountInput] = useState(() =>
+		defaultTradeAmountInput(DEFAULT_MARKET, DEFAULT_TRADE_DIRECTION),
+	);
 	const selectedMarket =
 		availableMarkets.find((market) => market.pool === selectedPool) ??
 		availableMarkets[0] ??
@@ -86,10 +112,6 @@ export function App() {
 	const usdcBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.USDC.fullCoinType);
 	const dbtcBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.DBTC.fullCoinType);
 	const dethBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.DETH.fullCoinType);
-	const selectedQuoteObject = useFirstCoinObject(
-		currentAccount?.address,
-		demoCoinBindings[selectedMarket.quote].fullCoinType,
-	);
 	const trade = useSignAndExecute({ invalidateKeys: [['balance'], ['coin-object']] });
 	const deepbookClient = useMemo(() => {
 		if (!currentAccount?.address || configuredPoolCount === 0) return null;
@@ -109,36 +131,75 @@ export function App() {
 		DBTC: readBalanceRaw(dbtcBalance.data),
 		DETH: readBalanceRaw(dethBalance.data),
 	} satisfies Record<DemoCoinKey, bigint>;
-	const needsQuoteCoinObject = selectedMarket.quote !== 'SUI';
+	const balanceLoading = {
+		SUI: suiBalance.isLoading,
+		DEEP: deepBalance.isLoading,
+		USDC: usdcBalance.isLoading,
+		DBTC: dbtcBalance.isLoading,
+		DETH: dethBalance.isLoading,
+	} satisfies Record<DemoCoinKey, boolean>;
+	const payCoin = tradeInputCoin(selectedMarket, tradeDirection);
+	const receiveCoin = tradeOutputCoin(selectedMarket, tradeDirection);
+	const parsedTradeAmount = useMemo(
+		() => parseTradeAmountInput(amountInput, payCoin),
+		[amountInput, payCoin],
+	);
+	const amountError =
+		parsedTradeAmount.error ??
+		(parsedTradeAmount.raw <= 0n ? 'Enter an amount greater than zero.' : undefined);
+	const loadingBalanceError =
+		currentAccount && !amountError && balanceLoading[payCoin]
+			? `Loading ${payCoin} balance.`
+			: undefined;
+	const balanceError =
+		currentAccount &&
+		!amountError &&
+		!loadingBalanceError &&
+		balances[payCoin] < parsedTradeAmount.raw
+			? `Not enough ${payCoin} in the connected account.`
+			: undefined;
+	const tradeFormError = amountError ?? loadingBalanceError ?? balanceError;
 	const canSwap = Boolean(
 		currentAccount &&
 		deepbookClient &&
 		!trade.isPending &&
-		(!needsQuoteCoinObject || selectedQuoteObject.data),
+		!tradeFormError &&
+		parsedTradeAmount.raw > 0n,
 	);
 
+	const selectMarket = (pool: string) => {
+		const market = availableMarkets.find((candidate) => candidate.pool === pool) ?? selectedMarket;
+		setSelectedPool(pool);
+		setAmountInput(defaultTradeAmountInput(market, tradeDirection));
+	};
+
+	const flipTradeDirection = () => {
+		const nextDirection: TradeDirection =
+			tradeDirection === 'quote-to-base' ? 'base-to-quote' : 'quote-to-base';
+		setTradeDirection(nextDirection);
+		setAmountInput(defaultTradeAmountInput(selectedMarket, nextDirection));
+	};
+
 	const submitSwap = () => {
-		if (!currentAccount || !deepbookClient) return;
+		if (!currentAccount || !deepbookClient || !canSwap) return;
 		const tx = new Transaction();
-		const [quoteCoinInput] =
-			selectedMarket.quote === 'SUI'
-				? tx.splitCoins(tx.gas, [tx.pure.u64(selectedMarket.quoteAmountRaw)])
-				: selectedQuoteObject.data
-					? tx.splitCoins(tx.object(selectedQuoteObject.data.objectId), [
-							tx.pure.u64(selectedMarket.quoteAmountRaw),
-						])
-					: [];
-		if (quoteCoinInput === undefined) return;
 		const [baseCoin, quoteCoin, returnedDeepCoin] = tx.add(
-			deepbookClient.deepbook.deepBook.swapExactQuoteForBase({
-				poolKey: selectedMarket.pool,
-				amount: quoteAmount(selectedMarket),
-				deepAmount: 0,
-				minOut: 0,
-				quoteCoin: quoteCoinInput,
-			}),
+			tradeDirection === 'base-to-quote'
+				? deepbookClient.deepbook.deepBook.swapExactBaseForQuote({
+						poolKey: selectedMarket.pool,
+						amount: parsedTradeAmount.raw,
+						deepAmount: 0n,
+						minOut: 0n,
+					})
+				: deepbookClient.deepbook.deepBook.swapExactQuoteForBase({
+						poolKey: selectedMarket.pool,
+						amount: parsedTradeAmount.raw,
+						deepAmount: 0n,
+						minOut: 0n,
+					}),
 		);
 		tx.transferObjects([baseCoin, quoteCoin, returnedDeepCoin], currentAccount.address);
+		trade.reset();
 		trade.mutate(tx);
 	};
 
@@ -187,13 +248,7 @@ export function App() {
 						connectedAddress={currentAccount?.address}
 						balances={balances}
 						selectedPool={selectedMarket.pool}
-						loading={
-							suiBalance.isLoading ||
-							deepBalance.isLoading ||
-							usdcBalance.isLoading ||
-							dbtcBalance.isLoading ||
-							dethBalance.isLoading
-						}
+						loading={balanceLoading}
 					/>
 				</aside>
 
@@ -203,7 +258,18 @@ export function App() {
 					<TradePanel
 						markets={availableMarkets}
 						selectedMarket={selectedMarket}
-						onSelectMarket={setSelectedPool}
+						tradeDirection={tradeDirection}
+						amountInput={amountInput}
+						payCoin={payCoin}
+						receiveCoin={receiveCoin}
+						payBalance={balances[payCoin]}
+						receiveBalance={balances[receiveCoin]}
+						payBalanceLoading={balanceLoading[payCoin]}
+						receiveBalanceLoading={balanceLoading[receiveCoin]}
+						amountError={tradeFormError}
+						onAmountInput={setAmountInput}
+						onFlipDirection={flipTradeDirection}
+						onSelectMarket={selectMarket}
 						connected={Boolean(currentAccount)}
 						canSwap={canSwap}
 						pending={trade.isPending}
@@ -273,12 +339,64 @@ function configuredDemoMarkets(): ReadonlyArray<DemoMarket> {
 	return DEMO_MARKETS.filter((market) => poolNames.has(market.pool));
 }
 
-function marketLabel(market: DemoMarket): string {
-	return `${market.quote} -> ${market.base}`;
+function poolLabel(market: DemoMarket): string {
+	return `${market.base} / ${market.quote}`;
 }
 
-function quoteAmount(market: DemoMarket): number {
-	return Number(market.quoteAmountRaw) / COIN_SCALARS[market.quote];
+function tradeInputCoin(market: DemoMarket, direction: TradeDirection): DemoCoinKey {
+	return direction === 'base-to-quote' ? market.base : market.quote;
+}
+
+function tradeOutputCoin(market: DemoMarket, direction: TradeDirection): DemoCoinKey {
+	return direction === 'base-to-quote' ? market.quote : market.base;
+}
+
+function tradeRouteLabel(market: DemoMarket, direction: TradeDirection): string {
+	return `${tradeInputCoin(market, direction)} -> ${tradeOutputCoin(market, direction)}`;
+}
+
+function defaultTradeAmountRaw(market: DemoMarket, direction: TradeDirection): bigint {
+	return direction === 'base-to-quote' ? market.baseAmountRaw : market.quoteAmountRaw;
+}
+
+function defaultTradeAmountInput(market: DemoMarket, direction: TradeDirection): string {
+	return formatEditableCoinAmount(
+		defaultTradeAmountRaw(market, direction),
+		tradeInputCoin(market, direction),
+	);
+}
+
+function formatEditableCoinAmount(raw: bigint, coin: DemoCoinKey): string {
+	return formatCoinAmount(raw, COIN_SCALARS[coin], 9).replace(/(?:\.0+|(\.\d*?)0+)$/, '$1');
+}
+
+function parseTradeAmountInput(
+	input: string,
+	coin: DemoCoinKey,
+): { readonly raw: bigint; readonly error?: string } {
+	try {
+		return { raw: parseCoinAmount(input, COIN_SCALARS[coin]) };
+	} catch (error) {
+		return {
+			raw: 0n,
+			error: error instanceof Error ? error.message : 'Enter a valid amount.',
+		};
+	}
+}
+
+function connectedBalanceText(
+	connectedAddress: string | undefined,
+	raw: bigint,
+	scalar: number,
+	loading: boolean,
+): string {
+	if (!connectedAddress) return 'connect wallet';
+	if (loading) return 'loading';
+	return formatCoinAmount(raw, scalar, 4);
+}
+
+function tradeBalanceText(raw: bigint, coin: DemoCoinKey, loading: boolean): string {
+	return `${loading ? 'loading' : formatCoinAmount(raw, COIN_SCALARS[coin], 4)} ${coin}`;
 }
 
 function addressFromCoinType(coinType: string): string {
@@ -316,12 +434,12 @@ function WalletPanel({
 	connectedAddress: string | undefined;
 	balances: Record<DemoCoinKey, bigint>;
 	selectedPool: string;
-	loading: boolean;
+	loading: Record<DemoCoinKey, boolean>;
 }) {
 	return (
 		<section className="rounded-lg border border-neutral-200 bg-white p-4 shadow-sm dark:border-neutral-800 dark:bg-neutral-950">
 			<div className="mb-4 flex items-center justify-between gap-3">
-				<h2 className="text-sm font-semibold">Wallet</h2>
+				<h2 className="text-sm font-semibold">Connected balances</h2>
 				<span
 					className={`rounded-md px-2 py-1 text-xs ${
 						connectedAddress
@@ -333,35 +451,35 @@ function WalletPanel({
 				</span>
 			</div>
 			<div className="space-y-3 text-sm">
-				<KeyValue label="Trader" value={accounts.trader.address} testId="trader-address" />
 				<KeyValue
-					label="Active"
+					label="Account"
 					value={connectedAddress ?? 'not connected'}
 					testId="active-address"
 				/>
+				<KeyValue label="Demo" value={accounts.trader.address} testId="trader-address" />
 				<KeyValue
 					label="SUI"
-					value={loading ? 'loading' : formatCoinAmount(balances.SUI, SUI_SCALAR, 4)}
+					value={connectedBalanceText(connectedAddress, balances.SUI, SUI_SCALAR, loading.SUI)}
 					testId="sui-balance"
 				/>
 				<KeyValue
 					label="USDC"
-					value={loading ? 'loading' : formatCoinAmount(balances.USDC, USDC_SCALAR, 4)}
+					value={connectedBalanceText(connectedAddress, balances.USDC, USDC_SCALAR, loading.USDC)}
 					testId="usdc-balance"
 				/>
 				<KeyValue
 					label="DEEP"
-					value={loading ? 'loading' : formatCoinAmount(balances.DEEP, DEEP_SCALAR, 4)}
+					value={connectedBalanceText(connectedAddress, balances.DEEP, DEEP_SCALAR, loading.DEEP)}
 					testId="deep-balance"
 				/>
 				<KeyValue
 					label="DBTC"
-					value={loading ? 'loading' : formatCoinAmount(balances.DBTC, DBTC_SCALAR, 4)}
+					value={connectedBalanceText(connectedAddress, balances.DBTC, DBTC_SCALAR, loading.DBTC)}
 					testId="dbtc-balance"
 				/>
 				<KeyValue
 					label="DETH"
-					value={loading ? 'loading' : formatCoinAmount(balances.DETH, DETH_SCALAR, 4)}
+					value={connectedBalanceText(connectedAddress, balances.DETH, DETH_SCALAR, loading.DETH)}
 					testId="deth-balance"
 				/>
 				<KeyValue label="Pool" value={selectedPool} testId="deepbook-pool" />
@@ -438,6 +556,17 @@ function PricePanel() {
 function TradePanel({
 	markets,
 	selectedMarket,
+	tradeDirection,
+	amountInput,
+	payCoin,
+	receiveCoin,
+	payBalance,
+	receiveBalance,
+	payBalanceLoading,
+	receiveBalanceLoading,
+	amountError,
+	onAmountInput,
+	onFlipDirection,
 	onSelectMarket,
 	connected,
 	canSwap,
@@ -448,6 +577,17 @@ function TradePanel({
 }: {
 	markets: ReadonlyArray<DemoMarket>;
 	selectedMarket: DemoMarket;
+	tradeDirection: TradeDirection;
+	amountInput: string;
+	payCoin: DemoCoinKey;
+	receiveCoin: DemoCoinKey;
+	payBalance: bigint;
+	receiveBalance: bigint;
+	payBalanceLoading: boolean;
+	receiveBalanceLoading: boolean;
+	amountError: string | undefined;
+	onAmountInput: (amount: string) => void;
+	onFlipDirection: () => void;
 	onSelectMarket: (pool: string) => void;
 	connected: boolean;
 	canSwap: boolean;
@@ -463,7 +603,7 @@ function TradePanel({
 					<h2 className="text-sm font-semibold">Trade ticket</h2>
 					<p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
 						{connected
-							? `Swap ${selectedMarket.quote} for local ${selectedMarket.base}`
+							? `Swap ${payCoin} from the connected account`
 							: 'Connect a dev wallet account on localnet'}
 					</p>
 				</div>
@@ -471,7 +611,7 @@ function TradePanel({
 					className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
 					data-testid="selected-market"
 				>
-					{selectedMarket.pool}
+					{tradeRouteLabel(selectedMarket, tradeDirection)}
 				</span>
 			</div>
 			<div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -492,37 +632,63 @@ function TradePanel({
 						>
 							<span className="block truncate font-mono text-xs">{market.pool}</span>
 							<span className="mt-1 block text-xs text-neutral-500 dark:text-neutral-400">
-								{marketLabel(market)}
+								{poolLabel(market)}
 							</span>
 						</button>
 					);
 				})}
 			</div>
-			<div className="grid gap-3 lg:grid-cols-[1fr_120px_160px]">
+			<div className="grid gap-3 lg:grid-cols-[1fr_auto_1fr]">
 				<label className="block">
-					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">Market</span>
-					<input
-						type="text"
-						value={marketLabel(selectedMarket)}
-						disabled
-						data-testid="trade-market"
-						className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
-					/>
-				</label>
-				<label className="block">
-					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">
-						{selectedMarket.quote}
+					<span className="flex items-center justify-between gap-3 text-xs uppercase text-neutral-500 dark:text-neutral-400">
+						<span>You pay</span>
+						<span className="font-mono normal-case" data-testid="trade-pay-balance">
+							{tradeBalanceText(payBalance, payCoin, payBalanceLoading)}
+						</span>
 					</span>
 					<input
 						type="text"
-						value={formatCoinAmount(
-							selectedMarket.quoteAmountRaw,
-							COIN_SCALARS[selectedMarket.quote],
-							4,
-						)}
+						inputMode="decimal"
+						value={amountInput}
+						onChange={(event) => onAmountInput(event.currentTarget.value)}
+						disabled={pending}
+						data-testid="trade-pay-amount"
+						className="mt-1 h-11 w-full rounded-md border border-neutral-300 bg-white px-3 font-mono text-sm text-neutral-900 outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 disabled:bg-neutral-100 dark:border-neutral-700 dark:bg-neutral-950 dark:text-neutral-100 dark:focus:border-emerald-400 dark:disabled:bg-neutral-900"
+					/>
+				</label>
+				<button
+					type="button"
+					onClick={onFlipDirection}
+					disabled={pending}
+					data-testid="trade-direction-toggle"
+					className="mt-5 h-11 rounded-md border border-neutral-300 px-4 text-sm font-medium text-neutral-700 transition hover:border-emerald-500 hover:text-emerald-700 disabled:text-neutral-400 dark:border-neutral-700 dark:text-neutral-200 dark:hover:border-emerald-400 dark:hover:text-emerald-300 lg:mt-auto"
+				>
+					Flip
+				</button>
+				<div>
+					<span className="flex items-center justify-between gap-3 text-xs uppercase text-neutral-500 dark:text-neutral-400">
+						<span>You receive</span>
+						<span className="font-mono normal-case" data-testid="trade-receive-balance">
+							{tradeBalanceText(receiveBalance, receiveCoin, receiveBalanceLoading)}
+						</span>
+					</span>
+					<div
+						className="mt-1 flex h-11 items-center rounded-md border border-neutral-300 bg-neutral-100 px-3 font-mono text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+						data-testid="trade-receive-preview"
+					>
+						Market fill in {receiveCoin}
+					</div>
+				</div>
+			</div>
+			<div className="mt-3 grid gap-3 lg:grid-cols-[1fr_160px]">
+				<label className="block">
+					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">Route</span>
+					<input
+						type="text"
+						value={tradeRouteLabel(selectedMarket, tradeDirection)}
 						disabled
-						data-testid="trade-quote-amount"
-						className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 font-mono text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
+						data-testid="trade-market"
+						className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 					/>
 				</label>
 				<button
@@ -532,9 +698,17 @@ function TradePanel({
 					onClick={onSwap}
 					className="mt-5 h-10 rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white disabled:bg-neutral-400 lg:mt-auto"
 				>
-					{pending ? 'Swapping' : `Swap ${selectedMarket.quote}`}
+					{pending ? 'Swapping' : `Swap ${payCoin}`}
 				</button>
 			</div>
+			{amountError ? (
+				<p
+					className="mt-3 text-xs text-amber-700 dark:text-amber-300"
+					data-testid="trade-form-error"
+				>
+					{amountError}
+				</p>
+			) : null}
 			{digest ? (
 				<p
 					className="mt-3 font-mono text-xs text-emerald-700 dark:text-emerald-300"

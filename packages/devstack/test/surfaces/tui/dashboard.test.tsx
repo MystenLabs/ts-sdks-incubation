@@ -84,7 +84,7 @@ const state = (): SubscribableState => ({
 			name: 'connect-four',
 			kind: 'local',
 			packageId: '0x123',
-			upgradeCapId: null,
+			upgradeCapId: '0xcap',
 			mvrPlaceholder: '@local/connect-four',
 			sourcePath: 'move/connect_four',
 			updatedAt: AT,
@@ -216,6 +216,7 @@ describe('Dashboard', () => {
 		expect(frame).toContain('Connect four');
 		expect(frame).toContain('0x123');
 		expect(frame).toContain('@local/connect-four');
+		expect(frame).not.toContain('0xcap');
 		expect(frame.replace(/\s+/g, '')).toContain(
 			'rpc:http://sui.wallet.localhost:9000->http://127.0.0.1:9000[h2c]',
 		);

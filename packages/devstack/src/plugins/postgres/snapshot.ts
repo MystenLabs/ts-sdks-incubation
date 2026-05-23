@@ -14,15 +14,12 @@
 // the user pointed at a different cluster shape mid-cycle, the
 // identity-guard refuses BEFORE any destructive mutation.
 //
-// Stop-grace mismatch (distilled doc § Postgres-specific concerns):
-// the v3 generic factory does not set `stopGraceSeconds`; the
-// sui-indexer-db sidecar uses 20s for the same image. We pick 20s
-// here as the documented default — a busy DB needs the WAL-flush
-// budget, and 10s is too short. The substrate's `stop()` accepts a
-// `Duration`; the plugin's service body threads that in. This file's
-// `quiesce` Effect is intentionally `Effect.void` (the substrate
-// engine pauses the container around `docker commit`); the plugin
-// only contributes the LABEL TUPLE that lets the engine find it.
+// Stop-grace (distilled doc § Postgres-specific concerns): the service
+// threads a 20s Docker stop grace into the container spec, matching the
+// sui-indexer-db sidecar for the same image. This file's `quiesce`
+// Effect is intentionally `Effect.void` (the substrate engine pauses the
+// container around `docker commit`); the plugin only contributes the
+// LABEL TUPLE that lets the engine find it.
 
 import { Effect } from 'effect';
 

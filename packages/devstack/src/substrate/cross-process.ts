@@ -1,12 +1,14 @@
 // Cross-process safety protocol.
 //
-// Architecture § Cross-process safety protocol. Three artifacts per
+// Architecture § Cross-process safety protocol. Core artifacts per
 // stack on disk under `<runtime-root>/stacks/<stack>/`:
 //
 //   - `stack.lock` — OS-advisory exclusive lock; short critical
 //     sections only.
 //   - `roster.json` — authoritative cross-process record of holders;
 //     mutated only under the lock.
+//   - `commands.ndjson` / `events.ndjson` — filesystem command
+//     channel between peer CLI commands and the live supervisor.
 //   - `snapshot.reservation` — present-or-absent file (O_EXCL create
 //     = acquire; unlink = release).
 

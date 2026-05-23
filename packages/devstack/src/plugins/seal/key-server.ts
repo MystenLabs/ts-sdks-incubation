@@ -32,7 +32,7 @@
 //
 //   #7 (signal-forwarding entrypoint shell): the cargo-built image
 //      embeds the entrypoint shell that traps SIGTERM and forwards
-//      SIGINT to the key-server child. Distilled doc §Hard
+//      SIGTERM to the key-server child. Distilled doc §Hard
 //      requirements #21. The image declares the right entrypoint;
 //      this file does NOT re-declare it.
 
@@ -172,7 +172,7 @@ export interface KeyServerContainerSpec {
 	/** Timeout for the ready probe. */
 	readonly readyTimeoutMs: number;
 	/** Graceful stop deadline. Distilled-doc invariant #21 — the
-	 *  entrypoint shell needs ~15s to forward SIGINT cleanly. */
+	 *  entrypoint shell forwards Docker's SIGTERM to the key-server. */
 	readonly stopGraceSeconds: number;
 	/** In-container port the daemon binds. */
 	readonly containerPort: number;
@@ -261,6 +261,7 @@ export const buildKeyServerEnsureContainerSpec = (
 		CONFIG_PATH: spec.configContainerPath,
 		MASTER_KEY_ENVFILE: spec.masterKeyEnvFileContainerPath,
 	},
+	stopGraceSeconds: spec.stopGraceSeconds,
 	networkAttach: [spec.network],
 	// Distilled-doc invariant #5 — `ports` intentionally absent.
 	extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
@@ -298,9 +299,7 @@ export const buildKeyServerEnsureContainerSpec = (
  *       distilled-doc §"Container start + ready").
  *
  *  Stop semantics: scope-close runs `ensureContainer`'s finalizer
- *  which calls `docker stop` with the substrate's default grace
- *  (15s aligns with distilled-doc invariant #21 once the runtime
- *  adapter accepts per-spec grace). */
+ *  which calls `docker stop` with the Seal-specific grace window. */
 export const startKeyServer = (
 	runtime: ContainerRuntime,
 	spec: KeyServerContainerSpec,

@@ -19,8 +19,19 @@
 
 import { Effect } from 'effect';
 
+import { leaseKey, type LeaseBroker } from '../../../substrate/runtime/lease-broker/index.ts';
 import { requestFundsWithRetry, type RetryOptions } from '../http.ts';
 import type { FaucetBodyError, FaucetExhausted, FaucetUnreachable } from '../errors.ts';
+
+/** Optional serialization for faucet backends that spend a shared funding coin. */
+export interface SuiLocalFaucetSerialization {
+	/** Stack-local broker; callers choose the resource key shape. */
+	readonly broker: LeaseBroker;
+	/** Opaque lease key, typically scoped by chain id. */
+	readonly key: string;
+	/** Diagnostic owner reported by the lease broker. */
+	readonly owner: string;
+}
 
 /** Per-strategy options. */
 export interface SuiLocalStrategyOptions {
@@ -31,6 +42,8 @@ export interface SuiLocalStrategyOptions {
 	readonly timeoutMs?: number;
 	/** Max retry attempts; forwarded to `requestFundsWithRetry`. */
 	readonly maxAttempts?: number;
+	/** Serialize requests when the faucet backend shares one funding coin. */
+	readonly serialization?: SuiLocalFaucetSerialization;
 }
 
 /**
@@ -50,6 +63,28 @@ export interface FaucetStrategy {
 	}) => Effect.Effect<void, FaucetExhausted | FaucetUnreachable | FaucetBodyError>;
 }
 
+const withSerialization = <E>(
+	serialization: SuiLocalFaucetSerialization | undefined,
+	effect: Effect.Effect<void, E>,
+): Effect.Effect<void, E> => {
+	if (serialization === undefined) {
+		return effect;
+	}
+	return Effect.scoped(
+		Effect.gen(function* () {
+			yield* serialization.broker.acquire(leaseKey(serialization.key), serialization.owner);
+			yield* effect;
+		}),
+	).pipe(
+		Effect.withSpan('faucet.suiLocal.serializedRequest', {
+			attributes: {
+				'faucet.lease.key': serialization.key,
+				'faucet.lease.owner': serialization.owner,
+			},
+		}),
+	);
+};
+
 /** Build a SUI local-faucet HTTP strategy. */
 export const suiLocalStrategy = (opts: SuiLocalStrategyOptions): FaucetStrategy => ({
 	request: ({ address, amount }) => {
@@ -60,6 +95,6 @@ export const suiLocalStrategy = (opts: SuiLocalStrategyOptions): FaucetStrategy 
 			...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
 			...(opts.maxAttempts !== undefined ? { maxAttempts: opts.maxAttempts } : {}),
 		};
-		return requestFundsWithRetry(retryOpts);
+		return withSerialization(opts.serialization, requestFundsWithRetry(retryOpts));
 	},
 });

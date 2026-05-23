@@ -14,13 +14,12 @@
 # behind).
 #
 # Workaround: run key-server as a non-PID-1 CHILD of this shell. The
-# shell traps docker's SIGTERM and forwards SIGINT to the child;
-# non-PID-1 processes follow the kernel's default action for signals
-# they don't trap, and default-action for SIGINT is "Term" — the
-# process exits cleanly (exit 130 = 128+2), not 137. Seal's runtime
-# state is in-memory only (master key cached, sessions reload on
-# restart), so signal-induced termination is safe — the next start
-# reads MASTER_KEY from env again and recomputes everything.
+# shell traps docker's SIGTERM and forwards SIGTERM to the child.
+# Non-interactive POSIX shells may start background children with
+# SIGINT ignored, so SIGINT is not reliable for a binary with no
+# signal handler; SIGTERM's default action still terminates the
+# child cleanly enough for Seal's in-memory runtime state. The next
+# start reads MASTER_KEY from env again and recomputes everything.
 #
 # Master-key staging: the plugin bind-mounts a 0o600 env-file
 # containing `MASTER_KEY=<hex>`, then passes its container path via
@@ -58,7 +57,7 @@ fi
 
 /usr/local/bin/key-server "$@" &
 KS_PID=$!
-register_signal_forward "$KS_PID"
+register_signal_forward "$KS_PID" TERM
 
 KS_EXIT=0
 wait_for_child "$KS_PID" || KS_EXIT=$?

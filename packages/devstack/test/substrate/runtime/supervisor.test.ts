@@ -559,6 +559,50 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('runCommand waits for live apply post-acquire work to finish', () =>
+		Effect.gen(function* () {
+			const callCount = yield* Ref.make(0);
+			const applyStarted = yield* Deferred.make<void>();
+			const releaseApply = yield* Deferred.make<void>();
+			const applyFinished = yield* Ref.make(false);
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(
+						stack,
+						identity,
+						state,
+						Context.empty(),
+						[],
+						undefined,
+						() =>
+							Effect.gen(function* () {
+								const call = yield* Ref.updateAndGet(callCount, (n) => n + 1);
+								if (call === 1) return [];
+								yield* Deferred.succeed(applyStarted, void 0).pipe(Effect.ignore);
+								yield* Deferred.await(releaseApply);
+								yield* Ref.set(applyFinished, true);
+								return [];
+							}),
+					);
+					yield* startup.runInitialAcquire;
+					const applyFiber = yield* Effect.forkScoped(
+						startup.handle.runCommand({ tag: 'apply.requested' }),
+					);
+
+					yield* Deferred.await(applyStarted);
+					yield* Effect.yieldNow;
+					expect(yield* Ref.get(applyFinished)).toBe(false);
+					yield* Deferred.succeed(releaseApply, void 0).pipe(Effect.ignore);
+					yield* Fiber.join(applyFiber);
+					expect(yield* Ref.get(applyFinished)).toBe(true);
+				}),
+			);
+		}),
+	);
+
 	it.effect('snapshot capture does not block shutdown commands', () =>
 		Effect.gen(function* () {
 			const captureStarted = yield* Deferred.make<void>();

@@ -54,4 +54,5 @@ test('has a wallet endpoint', () => {
 ```
 
 The helpers do not boot a supervisor by themselves. Start one with `devstack up`, or run
-`devstack apply` before tests that only need generated files and a manifest.
+`devstack apply` before tests that only need generated files and a manifest. If a matching
+supervisor is already live, `apply` reuses it instead of starting a second stack.

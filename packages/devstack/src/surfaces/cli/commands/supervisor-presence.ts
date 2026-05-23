@@ -1,10 +1,8 @@
 // Detect whether a supervisor is currently live for a given stack.
 //
-// The CLI uses this to decide whether to publish via the cross-process
-// command channel (live supervisor: publish + await ack) or refuse with
-// a structured "no supervisor running" message (no live supervisor:
-// the verb can't have any effect; better to fail loudly than to write
-// an unread command line to disk).
+// The CLI uses this to decide whether a verb should publish via the
+// cross-process command channel (live supervisor: publish + await ack)
+// or use its direct/offline fallback.
 //
 // Detection reads the existing `roster.json` (architecture § Cross-
 // process safety protocol § Roster) and walks holders. A same-host

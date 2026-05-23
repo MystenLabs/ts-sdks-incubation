@@ -544,8 +544,7 @@ export const accountLine = (account: AccountProjection): string => {
 };
 
 export const packageLine = (pkg: PackageProjection): string => {
-	const upgrade = pkg.upgradeCapId === null ? null : `upgrade ${pkg.upgradeCapId}`;
-	return [humanizeToken(pkg.name), pkg.packageId, pkg.mvrPlaceholder, pkg.kind, upgrade]
+	return [humanizeToken(pkg.name), pkg.packageId, pkg.mvrPlaceholder, pkg.kind]
 		.filter((part): part is string => part !== null && part.length > 0)
 		.join('  ');
 };
@@ -614,7 +613,7 @@ export const packageCells = (pkg: PackageProjection): PackageCells => ({
 	packageId: pkg.packageId,
 	mvr: pkg.mvrPlaceholder,
 	kind: pkg.kind,
-	detail: pkg.upgradeCapId === null ? pkg.kind : `${pkg.kind}; upgrade ${pkg.upgradeCapId}`,
+	detail: pkg.kind,
 });
 
 // -----------------------------------------------------------------------------

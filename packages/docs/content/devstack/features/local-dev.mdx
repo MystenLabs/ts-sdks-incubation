@@ -90,6 +90,10 @@ devstack apply
 devstack status --json
 ```
 
+`devstack apply` is safe to run while `devstack up` owns the same stack: it publishes a reconcile
+request to the live supervisor and waits. If the stack is not live, it performs the reconcile in a
+one-shot run.
+
 Use a different stack name when you want independent keys, snapshots, and runtime state:
 
 ```bash

@@ -11,9 +11,11 @@
 // Shape:
 //   1. The Stricli-backed dispatcher validates argv and builds command-
 //      scoped flags.
-//   2. Attached `up` and one-shot `apply` construct substrate Layers
-//      directly so signals reach scope finalizers.
-//   3. Offline/direct commands read or mutate the selected stack root
+//   2. Attached `up` constructs substrate Layers directly so signals
+//      reach scope finalizers.
+//   3. `apply` is live-aware: publish to an attached supervisor when
+//      one owns the selected stack; otherwise run the one-shot path.
+//   4. Offline/direct commands read or mutate the selected stack root
 //      without publishing peer commands to a live supervisor.
 
 import { existsSync, realpathSync } from 'node:fs';
@@ -28,21 +30,29 @@ import {
 	Layer,
 	Logger,
 	Queue,
+	Scope,
 	Stream,
 	SubscriptionRef,
 } from 'effect';
 
 import { appName, chainId, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
-import type { EngineEvent } from '../substrate/events.ts';
+import type { EngineCommand, EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import {
 	makeProjectionRef,
 	persistProjectionChanges,
 	readProjectionSnapshot,
+	claim,
+	commandChannelPaths,
+	heartbeatFiber,
+	makeCommandChannelPublisher,
+	makeCommandChannelSubscriber,
+	release,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
+	type SupervisorHandle,
 	writeProjectionSnapshot,
 } from '../substrate/runtime/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../substrate/runtime/run.ts';
@@ -73,6 +83,7 @@ import {
 } from '../runtime/built-in-plugin-layers.ts';
 import type { StatusReader } from '../surfaces/cli/commands/status.ts';
 import type { GlobalFlags } from '../surfaces/cli/flags.ts';
+import { ExitCode } from '../surfaces/cli/sysexits.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
@@ -86,6 +97,87 @@ import { removeRouterDispatchFilesForStack } from '../orchestrators/router/clean
 // -----------------------------------------------------------------------------
 
 const DEFAULT_CONFIG_PATH = './devstack.config.ts';
+const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
+
+const stackRootFor = (runtimeRoot: string, stack: string): string =>
+	resolvePath(runtimeRoot, 'stacks', stack);
+
+const rosterPathsFor = (stackRoot: string) => ({
+	stackLockFile: resolvePath(stackRoot, 'stack.lock'),
+	rosterFile: resolvePath(stackRoot, 'roster.json'),
+});
+
+const ENGINE_COMMAND_TAGS = new Set<EngineCommand['tag']>([
+	'stack.start',
+	'stack.stop',
+	'stack.restart',
+	'apply.requested',
+	'codegen.requested',
+	'snapshot.capture',
+	'snapshot.restore',
+	'snapshot.list',
+	'snapshot.delete',
+	'wipe.requested',
+	'prune.requested',
+	'advance-clock.requested',
+	'shutdown.requested',
+	'shutdown.hardKillRequested',
+	'selective-restart.requested',
+]);
+
+const hasString = (value: Record<string, unknown>, key: string): boolean =>
+	typeof value[key] === 'string';
+
+const isEngineCommand = (value: unknown): value is EngineCommand => {
+	if (typeof value !== 'object' || value === null) return false;
+	const record = value as Record<string, unknown>;
+	if (
+		typeof record.tag !== 'string' ||
+		!ENGINE_COMMAND_TAGS.has(record.tag as EngineCommand['tag'])
+	) {
+		return false;
+	}
+	switch (record.tag) {
+		case 'snapshot.restore':
+		case 'snapshot.delete':
+			return hasString(record, 'snapshotId');
+		case 'advance-clock.requested':
+			return typeof record.toMillis === 'number';
+		case 'shutdown.hardKillRequested':
+			return (
+				(record.signal === 'SIGINT' || record.signal === 'SIGTERM') &&
+				typeof record.exitCode === 'number' &&
+				typeof record.at === 'number'
+			);
+		case 'selective-restart.requested':
+			return hasString(record, 'pluginKey');
+		case 'apply.requested':
+			return record.pluginKey === undefined || typeof record.pluginKey === 'string';
+		case 'snapshot.capture':
+			return (
+				(record.snapshotId === undefined || typeof record.snapshotId === 'string') &&
+				(record.name === undefined || typeof record.name === 'string')
+			);
+		default:
+			return true;
+	}
+};
+
+const findCliSupervisorLiveError = (cause: Cause.Cause<unknown>): CliSupervisorLiveError | null => {
+	for (const reason of cause.reasons) {
+		if (!Cause.isFailReason(reason)) continue;
+		const error = reason.error;
+		if (error instanceof CliSupervisorLiveError) return error;
+		if (
+			typeof error === 'object' &&
+			error !== null &&
+			(error as { readonly _tag?: unknown })._tag === 'CliSupervisorLiveError'
+		) {
+			return error as CliSupervisorLiveError;
+		}
+	}
+	return null;
+};
 
 const resolveConfigPath = (configPath: string | undefined): string | null => {
 	const target = configPath ?? DEFAULT_CONFIG_PATH;
@@ -334,6 +426,79 @@ const makeSnapshotCommandHandler = (params: {
 	};
 };
 
+const installLiveSupervisorRoster = (params: {
+	readonly stackRoot: string;
+	readonly app: string;
+	readonly stack: string;
+}): Effect.Effect<void, unknown, Scope.Scope> =>
+	Effect.gen(function* () {
+		const paths = rosterPathsFor(params.stackRoot);
+		const claimed = yield* claim(paths);
+		if (!claimed.soleHolder) {
+			yield* release(paths).pipe(Effect.catch(() => Effect.void));
+			return yield* Effect.fail(
+				new CliSupervisorLiveError({
+					app: params.app,
+					stack: params.stack,
+					hint: 'use `devstack apply` from another shell, or choose a different --stack name',
+				}),
+			);
+		}
+		yield* Effect.addFinalizer(() => release(paths).pipe(Effect.catch(() => Effect.void)));
+		yield* Effect.forkScoped(heartbeatFiber(paths));
+	});
+
+const installCommandChannelBridge = (params: {
+	readonly stackRoot: string;
+	readonly handle: SupervisorHandle;
+}): Effect.Effect<
+	{
+		readonly publishEvent: (event: EngineEvent) => Effect.Effect<void>;
+	},
+	unknown,
+	Scope.Scope
+> =>
+	Effect.gen(function* () {
+		const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(params.stackRoot), {
+			fromOffset: 'current',
+		});
+
+		yield* Effect.forkScoped(
+			subscriber.commands.pipe(
+				Stream.runForEach((record) =>
+					Effect.gen(function* () {
+						if (!isEngineCommand(record.command)) {
+							yield* subscriber
+								.fail(record.id, 'invalid command', 'command payload did not match EngineCommand')
+								.pipe(Effect.catch(() => Effect.void));
+							return;
+						}
+						yield* params.handle.runCommand(record.command).pipe(
+							Effect.andThen(subscriber.ack(record.id)),
+							Effect.catchCause((cause) =>
+								subscriber
+									.fail(record.id, 'command failed', Cause.pretty(cause as Cause.Cause<unknown>))
+									.pipe(Effect.catch(() => Effect.void)),
+							),
+						);
+					}),
+				),
+				Effect.catchCause((cause) =>
+					Effect.sync(() => {
+						process.stderr.write(
+							`command channel failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+						);
+					}),
+				),
+			),
+		);
+
+		return {
+			publishEvent: (event: EngineEvent) =>
+				subscriber.publishEvent(event).pipe(Effect.catch(() => Effect.void)),
+		};
+	});
+
 /**
  * Run `devstack up`. Wires the substrate Layer stack, supervisor,
  * attached renderer, and in-process TUI command queue. The Effect runs
@@ -401,6 +566,16 @@ const runUpLive = (
 					extendContext: extendBuiltInPluginContext,
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
+							const stackPaths = yield* StackPathsService;
+							const commandChannel = yield* installCommandChannelBridge({
+								stackRoot: stackPaths.stackRoot,
+								handle,
+							});
+							yield* installLiveSupervisorRoster({
+								stackRoot: stackPaths.stackRoot,
+								app: String(identityValue.app),
+								stack: String(identityValue.stack),
+							});
 							const rendererEvents = yield* Queue.unbounded<EngineEvent>();
 							const renderer = makeTuiSurface({
 								mode: rendererMode,
@@ -418,7 +593,6 @@ const runUpLive = (
 									),
 								),
 							);
-							const stackPaths = yield* StackPathsService;
 							yield* Effect.forkScoped(
 								persistProjectionChanges(stackPaths.stackRoot, handle.state),
 							);
@@ -427,6 +601,7 @@ const runUpLive = (
 									Stream.runForEach((event) =>
 										Effect.gen(function* () {
 											yield* Queue.offer(rendererEvents, event);
+											yield* commandChannel.publishEvent(event);
 										}),
 									),
 								),
@@ -442,6 +617,15 @@ const runUpLive = (
 			Effect.matchCauseEffect({
 				onFailure: (cause) =>
 					Effect.sync(() => {
+						const live = findCliSupervisorLiveError(cause as Cause.Cause<unknown>);
+						if (live !== null) {
+							process.stderr.write(`error: supervisor live for ${live.app}/${live.stack}\n`);
+							if (live.hint !== undefined) {
+								process.stderr.write(`hint: ${live.hint}\n`);
+							}
+							process.exitCode = ExitCode.SUPERVISOR_LIVE;
+							return;
+						}
 						process.stderr.write(
 							`\nerror: stack failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
 						);
@@ -455,6 +639,42 @@ const runUpLive = (
 		);
 	});
 };
+
+const runApplyAgainstLiveSupervisor = (
+	identity: ResolvedIdentity,
+	identityValue: Identity,
+): Effect.Effect<boolean> =>
+	Effect.gen(function* () {
+		const stackRoot = stackRootFor(identity.runtimeRoot, String(identityValue.stack));
+		const presence = yield* probeSupervisorPresence(resolvePath(stackRoot, 'roster.json')).pipe(
+			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+		);
+		if (!presence.live) return false;
+
+		const exit = yield* Effect.exit(
+			Effect.gen(function* () {
+				const publisher = yield* makeCommandChannelPublisher(commandChannelPaths(stackRoot));
+				const published = yield* publisher.publish({ tag: 'apply.requested' });
+				const reply = yield* publisher.awaitCompletion(published.id, {
+					timeoutMillis: LIVE_APPLY_ACK_TIMEOUT_MILLIS,
+				});
+				if (!reply.ok) {
+					return yield* Effect.fail(reply.message);
+				}
+			}),
+		);
+
+		if (Exit.isFailure(exit)) {
+			process.stderr.write(
+				`\nerror: live stack apply failed\n${Cause.pretty(exit.cause as Cause.Cause<unknown>)}\n`,
+			);
+			process.exitCode = 1;
+			return true;
+		}
+
+		process.exitCode ??= 0;
+		return true;
+	});
 
 const runApplyLive = (
 	configPath: string | undefined,
@@ -479,6 +699,9 @@ const runApplyLive = (
 			stack: stackName(stack.options.stackName ?? identity.stack),
 			chain: chainId(identity.network),
 		};
+		if (yield* runApplyAgainstLiveSupervisor(identity, identityValue)) {
+			return;
+		}
 		const appRoot = dirname(loaded.resolvedConfigPath);
 		const substrateLayers = layerProductionOrchestrators({
 			codegen: {

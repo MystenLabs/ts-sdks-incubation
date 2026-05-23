@@ -45,6 +45,10 @@ import type { AcquireContext } from '../../substrate/plugin.ts';
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
+import {
+	LeaseBrokerService,
+	type LeaseBroker,
+} from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
@@ -77,6 +81,14 @@ type SuiResolved = SuiClient & {
 	readonly seedObjects: SeedObjectsAccumulator;
 };
 
+const fundingFaucetLeaseBrokerSymbol: unique symbol = Symbol(
+	'@mysten-incubation/devstack/sui/fundingFaucetLeaseBroker',
+);
+
+type SuiResolvedRuntime = SuiResolved & {
+	readonly [fundingFaucetLeaseBrokerSymbol]: LeaseBroker;
+};
+
 /** The Sui plugin's resource identity. The id is `'sui'` (singular). */
 export const suiResource = resource<'sui', SuiResolved>('sui');
 const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
@@ -98,10 +110,16 @@ const buildPlugin = (opts: SuiOptions) => {
 				const identity = yield* IdentityContext;
 				const paths = yield* StackPathsService;
 				const portBroker = yield* PortBrokerService;
+				const fundingFaucetLeaseBroker = yield* LeaseBrokerService;
 				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
 
 				const seedObjects = yield* makeSeedObjectsAccumulator();
-				return { ...client, mode: opts.mode, seedObjects };
+				return {
+					...client,
+					mode: opts.mode,
+					seedObjects,
+					[fundingFaucetLeaseBrokerSymbol]: fundingFaucetLeaseBroker,
+				} satisfies SuiResolvedRuntime;
 			}),
 		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
 		errorContributions: suiErrorContributions,
@@ -121,6 +139,7 @@ const makePluginCapabilities = (
 	acquireCtx: AcquireContext,
 ) => {
 	const realChain = resolved.chain;
+	const resolvedRuntime = resolved as SuiResolvedRuntime;
 	const snap: SnapshotableDecl = makeSnapshotable(
 		opts.mode,
 		acquireCtx.identity.app,
@@ -175,7 +194,14 @@ const makePluginCapabilities = (
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: suiLocalStrategy({ faucetUrl: resolved.fundingFaucetUrl }),
+						strategy: suiLocalStrategy({
+							faucetUrl: resolved.fundingFaucetUrl,
+							serialization: {
+								broker: resolvedRuntime[fundingFaucetLeaseBrokerSymbol],
+								key: `sui-faucet:${realChain}`,
+								owner: `sui-faucet:${realChain}`,
+							},
+						}),
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<
 						`faucet:request:${string}`,

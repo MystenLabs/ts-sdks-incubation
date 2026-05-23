@@ -1,10 +1,12 @@
-// Cross-process protocol — barrel for the three on-disk artifacts.
+// Cross-process protocol — barrel for the on-disk coordination artifacts.
 //
 // Architecture § Cross-process safety protocol. Three files under
 // `<runtime-root>/stacks/<stack>/`:
 //
 //   - `stack.lock`              → stack-lock.ts
 //   - `roster.json`             → roster.ts (+ container-claims.json sibling)
+//   - `commands.ndjson` /
+//     `events.ndjson`           → command-channel/
 //   - `snapshot.reservation`    → snapshot-reservation.ts
 //
 // `liveness.ts` is the shared PID + start-time predicate used by all

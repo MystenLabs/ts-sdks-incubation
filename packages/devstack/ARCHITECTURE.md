@@ -137,13 +137,19 @@ the invariant.
 
 ## Cross-process protocol
 
-Three on-disk artifacts; one liveness predicate.
+One stack identity maps to `<runtime-root>/stacks/<stack>`. Same stack name means the same runtime
+root, roster, command channel, snapshots, and containers; different stack names are independent.
+`devstack up` is the live owner for that stack. `devstack apply` publishes to that owner when the
+roster says it is live, and falls back to one-shot supervision only when no live owner exists.
 
-| Artifact               | Owner module                                              | Purpose                                                                                                 |
-| ---------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `stack.lock` (O_EXCL)  | `substrate/runtime/cross-process/stack-lock.ts`           | Single-supervisor-per-stack mutex. Holds owner PID + startTime.                                         |
-| `roster.json`          | `substrate/runtime/cross-process/roster.ts`               | Cross-stack process roster — which stacks are live, on which host, owned by which PID.                  |
-| `snapshot.reservation` | `substrate/runtime/cross-process/snapshot-reservation.ts` | Cross-process O_EXCL on `capture` / `restore` / `prune` so concurrent snapshot is structurally refused. |
+Cross-process artifacts share one liveness predicate.
+
+| Artifact                            | Owner module                                              | Purpose                                                                                                 |
+| ----------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `stack.lock` (O_EXCL)               | `substrate/runtime/cross-process/stack-lock.ts`           | Short critical-section lock for roster, container-claim, snapshot-reservation, and channel-file writes. |
+| `roster.json`                       | `substrate/runtime/cross-process/roster.ts`               | Live supervisor roster for this stack root: PID, host, startTime, heartbeat, and intent.                |
+| `commands.ndjson` / `events.ndjson` | `substrate/runtime/cross-process/command-channel/`        | Filesystem command channel used by peer CLI commands such as live `apply`.                              |
+| `snapshot.reservation`              | `substrate/runtime/cross-process/snapshot-reservation.ts` | Cross-process O_EXCL on `capture` / `restore` / `prune` so concurrent snapshot is structurally refused. |
 
 Predicate: PID + startTime liveness (`substrate/runtime/cross-process/liveness.ts:115-132`).
 Foreign-host PIDs are conservatively-alive (NFS-safe).
@@ -445,8 +451,10 @@ against source.
 
 Current release-critical surfaces are wired directly:
 
-- `cli/main.ts#buildDirectDeps` provides direct `up`, `apply`, `status`, `snapshot`, `prune`,
-  `doctor`, `config`, and `wipe` deps for the public attached/direct CLI surface.
+- `cli/main.ts#buildDirectDeps` provides `up`, live-aware `apply`, `status`, `snapshot`, `prune`,
+  `doctor`, `config`, and `wipe` deps for the public attached/direct CLI surface. Live `apply`
+  publishes `apply.requested` through the command channel; without a live roster it uses the
+  one-shot supervisor path.
 - `doctor` uses `defaultProbes(...)`, including Docker, Sui CLI, state-dir, router profile, lock,
   and fork-cache probes.
 - The Action plugin exposes `ctx.signAndExecute(account, build)`; connect-four exercises the helper

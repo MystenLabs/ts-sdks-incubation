@@ -49,8 +49,7 @@ export const makeLocalKeygenSnapshotable = (inputs: {
 		// orchestrator's POV (just a path segment).
 		subtrees: [`seal`],
 		managedContainers: [labelTuple],
-		// 15s grace per v3 supervisor; the entrypoint shell needs
-		// time to forward SIGINT to the key-server child.
+		// The key-server's Docker stop grace is owned by key-server.ts.
 		quiesce: Effect.void,
 		preRestore: Effect.succeed({
 			kind: 'seal' as const,

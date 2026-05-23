@@ -323,7 +323,9 @@ const AccountRow = ({
 			<FixedText width={ACCOUNT_WIDTH} color={cells.labelColor} bold>
 				{facts.name}
 			</FixedText>
-			<MultiLineFixedText width={layout.addressWidth} color="white" lines={[facts.address]} />
+			<FixedText width={layout.addressWidth} color="white">
+				{facts.address}
+			</FixedText>
 			{layout.showMeta && (
 				<>
 					<FixedText width={SCHEME_WIDTH} color="white">
@@ -377,7 +379,9 @@ const PackageRow = ({
 			<FixedText width={PACKAGE_WIDTH} color={cells.labelColor} bold>
 				{facts.name}
 			</FixedText>
-			<MultiLineFixedText width={layout.packageIdWidth} color="white" lines={[facts.packageId]} />
+			<FixedText width={layout.packageIdWidth} color="white">
+				{facts.packageId}
+			</FixedText>
 			{layout.showMvr && (
 				<MultiLineFixedText width={layout.mvrWidth} color="white" lines={[facts.mvr]} />
 			)}
@@ -408,7 +412,9 @@ const AccountRecordRow = ({
 			<FixedText width={ACCOUNT_WIDTH} color="magenta" bold>
 				{facts.name}
 			</FixedText>
-			<MultiLineFixedText width={layout.addressWidth} color="white" lines={[facts.address]} />
+			<FixedText width={layout.addressWidth} color="white">
+				{facts.address}
+			</FixedText>
 			{layout.showMeta && (
 				<>
 					<FixedText width={SCHEME_WIDTH} color="white">
@@ -449,7 +455,9 @@ const PackageRecordRow = ({
 			<FixedText width={PACKAGE_WIDTH} color="magenta" bold>
 				{facts.name}
 			</FixedText>
-			<MultiLineFixedText width={layout.packageIdWidth} color="white" lines={[facts.packageId]} />
+			<FixedText width={layout.packageIdWidth} color="white">
+				{facts.packageId}
+			</FixedText>
 			{layout.showMvr && (
 				<MultiLineFixedText width={layout.mvrWidth} color="white" lines={[facts.mvr]} />
 			)}

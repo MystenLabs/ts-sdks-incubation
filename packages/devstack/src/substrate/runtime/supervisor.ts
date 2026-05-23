@@ -847,7 +847,7 @@ interface CommandLoopDeps {
 	readonly registry: PluginRegistry;
 	readonly ref: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly hub: Queue.Enqueue<EngineEvent>;
-	readonly commands: Queue.Dequeue<EngineCommand>;
+	readonly queuedCommands: Queue.Dequeue<QueuedCommand>;
 	readonly snapshotCaptureTask: Ref.Ref<SnapshotCaptureTaskState>;
 	readonly snapshotCaptureSeq: Ref.Ref<number>;
 	readonly shutdownLatch: Ref.Ref<boolean>;
@@ -860,6 +860,11 @@ interface CommandLoopDeps {
 	readonly parentScope: Scope.Scope;
 	readonly commandHandler?: SupervisorCommandHandler;
 	readonly postAcquireHook?: SupervisorPostAcquireHook;
+}
+
+interface CommandSubmission {
+	readonly command: EngineCommand;
+	readonly completion: Deferred.Deferred<Exit.Exit<void, unknown>>;
 }
 
 type SnapshotCaptureTaskState =
@@ -1071,7 +1076,8 @@ const allReadyOrTerminal = (
 const handleCommand = (
 	deps: CommandLoopDeps,
 	cmd: EngineCommand,
-): Effect.Effect<void, never, never> =>
+	options: { readonly failOnPostAcquireHook?: boolean } = {},
+): Effect.Effect<void, SupervisorPostAcquireFailed, never> =>
 	Effect.gen(function* () {
 		const {
 			graph,
@@ -1139,7 +1145,11 @@ const handleCommand = (
 					Effect.catch(() => Effect.succeed(false)),
 				);
 				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-					yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					if (options.failOnPostAcquireHook === true) {
+						yield* runPostAcquireHook(deps);
+					} else {
+						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					}
 				}
 				return;
 			}
@@ -1161,7 +1171,11 @@ const handleCommand = (
 					Effect.catch(() => Effect.succeed(false)),
 				);
 				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-					yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					if (options.failOnPostAcquireHook === true) {
+						yield* runPostAcquireHook(deps);
+					} else {
+						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					}
 				}
 				return;
 			}
@@ -1187,18 +1201,30 @@ const handleCommand = (
 						Effect.catch(() => Effect.succeed(false)),
 					);
 					if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+						if (options.failOnPostAcquireHook === true) {
+							yield* runPostAcquireHook(deps);
+						} else {
+							yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+						}
 					}
 					return;
 				}
 				if (yield* allReadyOrTerminal(graph, registry)) {
-					yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					if (options.failOnPostAcquireHook === true) {
+						yield* runPostAcquireHook(deps);
+					} else {
+						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					}
 				}
 				return;
 			}
 			case 'codegen.requested': {
 				if (yield* allReadyOrTerminal(graph, registry)) {
-					yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					if (options.failOnPostAcquireHook === true) {
+						yield* runPostAcquireHook(deps);
+					} else {
+						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
+					}
 				}
 				return;
 			}
@@ -1221,11 +1247,22 @@ const handleCommand = (
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.handleCommand'));
 
+type QueuedCommand =
+	| { readonly kind: 'fire-and-forget'; readonly command: EngineCommand }
+	| { readonly kind: 'submitted'; readonly submission: CommandSubmission };
+
 const commandLoop = (deps: CommandLoopDeps): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		while (true) {
-			const cmd = yield* Queue.take(deps.commands);
-			yield* handleCommand(deps, cmd);
+			const next = yield* Queue.take(deps.queuedCommands);
+			if (next.kind === 'submitted') {
+				const exit = yield* Effect.exit(
+					handleCommand(deps, next.submission.command, { failOnPostAcquireHook: true }),
+				);
+				yield* Deferred.succeed(next.submission.completion, exit).pipe(Effect.ignore);
+			} else {
+				yield* handleCommand(deps, next.command).pipe(Effect.catch(() => Effect.void));
+			}
 			const drained = yield* Ref.get(deps.shutdownLatch);
 			if (drained) return;
 		}
@@ -1241,6 +1278,7 @@ export interface SupervisorHandle {
 	readonly registry: PluginRegistry;
 	readonly events: Queue.Dequeue<EngineEvent>;
 	readonly commands: Queue.Enqueue<EngineCommand>;
+	readonly runCommand: (command: EngineCommand) => Effect.Effect<void, unknown>;
 	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly watchIndex: ReadonlyArray<WatchEntry>;
 	/** Fire a watch event for the given path. Substrate-level glue:
@@ -1357,6 +1395,7 @@ export const startSupervisor = (
 		// Event hub + command channel.
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
+		const queuedCommands = yield* Queue.unbounded<QueuedCommand>();
 		const snapshotCaptureTask = yield* Ref.make<SnapshotCaptureTaskState>({ tag: 'idle' });
 		const snapshotCaptureSeq = yield* Ref.make(0);
 		const shutdownLatch = yield* Ref.make(false);
@@ -1448,6 +1487,14 @@ export const startSupervisor = (
 		const enableCommandLoop = options.commandLoop !== false;
 		if (enableCommandLoop) {
 			yield* Effect.forkScoped(installSignalHandler(commands));
+			yield* Effect.forkScoped(
+				Effect.gen(function* () {
+					while (true) {
+						const command = yield* Queue.take(commands);
+						yield* Queue.offer(queuedCommands, { kind: 'fire-and-forget', command });
+					}
+				}),
+			);
 		}
 
 		const commandLoopDeps: CommandLoopDeps = {
@@ -1455,7 +1502,7 @@ export const startSupervisor = (
 			registry,
 			ref: state,
 			hub,
-			commands,
+			queuedCommands,
 			snapshotCaptureTask,
 			snapshotCaptureSeq,
 			shutdownLatch,
@@ -1555,12 +1602,26 @@ export const startSupervisor = (
 			Effect.withSpan('lifecycle.supervisor.awaitShutdown'),
 		);
 
+		const runCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
+			Effect.gen(function* () {
+				const completion = yield* Deferred.make<Exit.Exit<void, unknown>>();
+				yield* Queue.offer(queuedCommands, {
+					kind: 'submitted',
+					submission: { command, completion },
+				});
+				const exit = yield* Deferred.await(completion);
+				if (Exit.isFailure(exit)) {
+					return yield* Effect.failCause(exit.cause);
+				}
+			}).pipe(Effect.withSpan('lifecycle.supervisor.runCommand'));
+
 		const handle = {
 			identity,
 			graph,
 			registry,
 			events: hub,
 			commands,
+			runCommand,
 			state,
 			watchIndex,
 			notifyWatchFire,

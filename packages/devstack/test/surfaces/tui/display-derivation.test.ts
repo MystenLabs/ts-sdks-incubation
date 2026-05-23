@@ -367,13 +367,13 @@ describe('display-derivation', () => {
 				sourcePath: 'move/vault',
 				updatedAt: 0,
 			};
-			expect(packageLine(pkg)).toBe('Vault  0x123  @local/vault  local  upgrade 0xcap');
+			expect(packageLine(pkg)).toBe('Vault  0x123  @local/vault  local');
 			expect(packageCells(pkg)).toEqual({
 				name: 'Vault',
 				packageId: '0x123',
 				mvr: '@local/vault',
 				kind: 'local',
-				detail: 'local; upgrade 0xcap',
+				detail: 'local',
 			});
 		});
 	});

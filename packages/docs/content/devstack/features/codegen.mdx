@@ -54,8 +54,11 @@ import { suiNetwork } from './generated/sui/network.js';
 import { dappKitConfig } from './generated/dapp-kit/config.js';
 ```
 
-To force a re-emit, run the one-shot apply flow:
+To force a re-emit, run apply:
 
 ```bash
 devstack apply
 ```
+
+When a matching `devstack up` supervisor is live, `apply` asks it to emit from the current runtime
+state. Otherwise, `apply` boots the stack once, emits, and exits.

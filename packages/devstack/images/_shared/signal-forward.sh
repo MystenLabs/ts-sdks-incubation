@@ -3,15 +3,13 @@
 # foreground binary as a non-PID-1 child.
 #
 # Why: several upstream Rust binaries shipped in the devstack images
-# (sui validator, seal key-server) don't register a tokio SIGINT
-# handler when run as PID 1, so `docker stop`'s SIGTERM is ignored and
-# the grace timeout always expires → SIGKILL → exit 137 → the next
-# `up` cycle trips "UNCLEAN PRIOR SHUTDOWN" with a forced recreate.
-# Workaround: keep the shell as PID 1 and run the binary as a child;
-# the kernel applies SIGINT's default-action terminate to non-PID-1
-# children that don't trap it, and the shell can also explicitly
-# forward when the binary DOES handle SIGINT (sui without
-# --with-faucet, sui-fork) so RocksDB/checkpoint drain runs.
+# (sui validator, seal key-server) need PID-1 signal adaptation. Keep
+# the shell as PID 1 and run the binary as a child, then forward Docker's
+# stop signal to the child. SIGINT remains the default because Sui's
+# clean shutdown path is ctrl_c-driven. Services without a SIGINT handler
+# can register with TERM instead; non-interactive POSIX shells may start
+# background children with SIGINT ignored, so "no handler" does not make
+# SIGINT a reliable default-terminate signal.
 #
 # Usage (POSIX-sh / dash compatible):
 #
@@ -25,37 +23,42 @@
 #
 # For an additional sibling child (e.g. sui-faucet alongside sui) call
 # `register_signal_forward "$SECONDARY_PID"` again — multiple PIDs are
-# tracked and each gets SIGINT on shell signal delivery.
+# tracked and each gets its registered signal on shell signal delivery.
 
-# Newline-separated PID list. POSIX sh has no arrays.
+# Newline-separated "PID SIGNAL" list. POSIX sh has no arrays.
 _DEVSTACK_FORWARD_PIDS=""
 _DEVSTACK_FORWARD_NL='
 '
 
 # Add a PID to the forward list and (idempotently) install the trap.
+# The optional second argument is the signal delivered to the child;
+# default SIGINT preserves the Sui entrypoint's existing behavior.
 register_signal_forward() {
 	pid="$1"
+	signal="${2:-INT}"
+	entry="$pid $signal"
 	if [ -z "$_DEVSTACK_FORWARD_PIDS" ]; then
-		_DEVSTACK_FORWARD_PIDS="$pid"
+		_DEVSTACK_FORWARD_PIDS="$entry"
 		# shellcheck disable=SC2064
 		trap _devstack_forward_int INT TERM
 	else
-		_DEVSTACK_FORWARD_PIDS="$_DEVSTACK_FORWARD_PIDS$_DEVSTACK_FORWARD_NL$pid"
+		_DEVSTACK_FORWARD_PIDS="$_DEVSTACK_FORWARD_PIDS$_DEVSTACK_FORWARD_NL$entry"
 	fi
 }
 
-# Trap body. Delivers SIGINT to every registered PID; suppresses
-# already-exited children. Not exported as -f (POSIX sh doesn't have
-# function export); sourced into the calling shell so the trap can
-# resolve it.
+# Trap body. Delivers each registered child signal; suppresses already-exited
+# children. Not exported as -f (POSIX sh doesn't have function export);
+# sourced into the calling shell so the trap can resolve it.
 _devstack_forward_int() {
 	_saved_ifs=$IFS
 	IFS=$_DEVSTACK_FORWARD_NL
 	# shellcheck disable=SC2086
 	set -- $_DEVSTACK_FORWARD_PIDS
 	IFS=$_saved_ifs
-	for _pid in "$@"; do
-		kill -INT "$_pid" 2>/dev/null || true
+	for _entry in "$@"; do
+		_pid=${_entry%% *}
+		_signal=${_entry#* }
+		kill "-$_signal" "$_pid" 2>/dev/null || true
 	done
 }
 

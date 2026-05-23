@@ -63,11 +63,14 @@ Run the stack during development:
 pnpm devstack up
 ```
 
-Run one-shot setup before typechecking, building, or tests:
+Reconcile from another shell, CI, or before typechecking, building, or tests:
 
 ```bash
 pnpm devstack apply
 ```
+
+If `pnpm devstack up` is already live for this stack, `apply` asks that supervisor to reconcile and
+waits for completion. Without a live supervisor, it runs one-shot setup and exits.
 
 Generated files are written under `src/generated` by default. Runtime state, manifests, snapshots,
 and logs stay under `.devstack/`.

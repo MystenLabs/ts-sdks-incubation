@@ -9,7 +9,8 @@ checks. The runtime path starts when a surface consumes that handle.
 Runtime surfaces:
 
 - `devstack up` starts a supervisor and stays attached.
-- `devstack apply` starts the same supervisor path in one-shot mode.
+- `devstack apply` publishes `apply.requested` to the live supervisor when this stack is already
+  attached; otherwise it starts the same supervisor path in one-shot mode.
 - `runStack(stack, opts)` embeds the supervisor in another TypeScript program.
 
 ```ts
@@ -32,6 +33,7 @@ resource, so the stack includes one concrete `sui(...)` provider. `wallet({ acco
 expanded after the full member list is known, so it depends on every account member in the final
 stack.
 
-The supervisor publishes typed events, maintains a live projection, writes the manifest, emits
-generated files, and serves commands from the attached TUI. Shutdown is attached to the running
-process: quit the TUI or interrupt `devstack up`, then scope finalizers run.
+The supervisor claims `roster.json` while attached, publishes typed events, maintains a live
+projection, writes the manifest, emits generated files, and serves commands from the attached TUI
+and filesystem command channel. Shutdown is attached to the running process: quit the TUI or
+interrupt `devstack up`, then scope finalizers run and the roster claim is released.

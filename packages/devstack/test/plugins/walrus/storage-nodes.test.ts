@@ -4,7 +4,12 @@
 // is a load-bearing bug. Tests pin the shape.
 
 import { describe, expect, it } from 'vitest';
+import { Effect, Stream } from 'effect';
 
+import type {
+	ContainerRuntime,
+	EnsureContainerSpec,
+} from '../../../src/contracts/container-runtime.ts';
 import {
 	deriveWalrusSubnetPrefix,
 	walrusNetworkCreateSpec,
@@ -12,12 +17,49 @@ import {
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
+	DEFAULT_NODE_STOP_GRACE_SECONDS,
 	WALRUS_NODE_IP_BASE,
 	WALRUS_ROUTER_PORT,
 	buildWalrusNetworkName,
 	computePublicHostname,
+	startStorageNodes,
 	storageNodeConfigHash,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
+
+const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
+	ensureImage: () => Effect.die('ensureImage not used'),
+	ensureNetwork: () => Effect.die('ensureNetwork not used'),
+	ensureContainer: (spec) =>
+		Effect.sync(() => {
+			specs.push(spec);
+			return {
+				id: `container-${spec.name}`,
+				name: spec.name,
+				imageName: spec.image.tag ?? spec.image.digest,
+				status: 'running' as const,
+				ips: [],
+				labels: spec.labels,
+			};
+		}),
+	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
+	runOneShot: () => Effect.die('runOneShot not used'),
+	inspectByLabels: () => Effect.die('inspectByLabels not used'),
+	followLogs: () => Stream.empty,
+	pause: () => Effect.die('pause not used'),
+	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
+	saveImage: () => Stream.empty,
+	saveImages: () => Stream.empty,
+	loadImage: () => Effect.die('loadImage not used'),
+	tagImage: () => Effect.die('tagImage not used'),
+	removeImage: () => Effect.die('removeImage not used'),
+	unpause: () => Effect.die('unpause not used'),
+	stop: () => Effect.die('stop not used'),
+	sweepOrphans: () => Effect.die('sweepOrphans not used'),
+	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
+	removeManagedImages: () => Effect.die('removeManagedImages not used'),
+	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
+	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
+});
 
 describe('computePublicHostname', () => {
 	it('main stack omits the stack segment', () => {
@@ -108,6 +150,53 @@ describe('walrus storage-node constants', () => {
 
 	it('allows callers to override the storage-node ready timeout centrally', () => {
 		expect(resolveLocalClusterOptions({ readyTimeoutMs: 45_000 }).readyTimeoutMs).toBe(45_000);
+	});
+
+	it('threads the storage-node stop grace into each Docker container spec', async () => {
+		const specs: EnsureContainerSpec[] = [];
+		await Effect.runPromise(
+			Effect.scoped(
+				startStorageNodes(runtimeCapturingStorageNodeSpecs(specs), {
+					app: 'private-content',
+					stack: 'main',
+					walrusName: 'walrus',
+					image: { digest: 'sha256:walrus', tag: 'devstack-walrus:test' },
+					nodeCount: 2,
+					subnetPrefix: '10.64.1',
+					containerApiPort: WALRUS_ROUTER_PORT,
+					walrusNetworkName: 'walrus-net',
+					suiNetworkName: 'sui-net',
+					deployHostMountPath: '/tmp/devstack/walrus-deploy',
+					deployConfigHash: 'deploy-hash',
+					stopGraceSeconds: 37,
+				}),
+			),
+		);
+
+		expect(specs.map((spec) => spec.stopGraceSeconds)).toEqual([37, 37]);
+	});
+
+	it('defaults the storage-node Docker stop grace to the storage-node budget', async () => {
+		const specs: EnsureContainerSpec[] = [];
+		await Effect.runPromise(
+			Effect.scoped(
+				startStorageNodes(runtimeCapturingStorageNodeSpecs(specs), {
+					app: 'private-content',
+					stack: 'main',
+					walrusName: 'walrus',
+					image: { digest: 'sha256:walrus', tag: 'devstack-walrus:test' },
+					nodeCount: 1,
+					subnetPrefix: '10.64.1',
+					containerApiPort: WALRUS_ROUTER_PORT,
+					walrusNetworkName: 'walrus-net',
+					suiNetworkName: 'sui-net',
+					deployHostMountPath: '/tmp/devstack/walrus-deploy',
+					deployConfigHash: 'deploy-hash',
+				}),
+			),
+		);
+
+		expect(specs[0]?.stopGraceSeconds).toBe(DEFAULT_NODE_STOP_GRACE_SECONDS);
 	});
 
 	it('folds bind-mount and network inputs into the recreate fingerprint', () => {

@@ -1,7 +1,7 @@
 import { ENV_VARS } from './flags.ts';
 import { exitCodeTable } from './sysexits.ts';
 
-export type CommandLifecycle = 'attached' | 'one-shot' | 'offline';
+export type CommandLifecycle = 'attached' | 'live-aware' | 'one-shot' | 'offline';
 
 export interface CommandOption {
 	readonly name: string;
@@ -68,9 +68,9 @@ const commands = [
 	},
 	{
 		name: 'apply',
-		summary: 'Boot, reconcile, emit generated files, and exit.',
+		summary: 'Reconcile through a live supervisor when present; otherwise run one-shot setup.',
 		usage: 'devstack apply [options]',
-		lifecycle: 'one-shot',
+		lifecycle: 'live-aware',
 		sideEffects: 'write',
 		requiresDocker: true,
 		options: configOptions,

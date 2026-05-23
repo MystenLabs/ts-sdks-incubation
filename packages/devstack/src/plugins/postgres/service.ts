@@ -31,11 +31,9 @@
 //     requirements: "no migrations, no init SQL, no schema
 //     management").
 //   - Register the stop finalizer — `ContainerRuntime.ensureContainer`
-//     owns the container's scope finalizer (10s grace today). The
-//     20s WAL-flush grace exposed via `stopGrace` is the duration the
-//     substrate's scope finalizer plumbing should apply once the
-//     runtime exposes a typed `stopGraceSeconds` knob; until then the
-//     runtime's default applies.
+//     owns the container's scope finalizer. The 20s WAL-flush grace is
+//     threaded into the container spec so Docker does not escalate busy
+//     databases at the runtime default.
 
 import { Duration, Effect, type Scope } from 'effect';
 
@@ -312,6 +310,7 @@ export const bootPostgresService = (
 					resolved.hostPort !== undefined
 						? [{ containerPort: POSTGRES_PORT, hostPort: resolved.hostPort }]
 						: undefined,
+				stopGraceSeconds: resolved.stopGraceSeconds,
 				networkAttach: [containerNetwork, ...resolved.extraNetworks],
 			},
 			mapError: (cause) =>

@@ -188,7 +188,7 @@ export const startStorageNodes = (
 		const outerScope = yield* Effect.scope;
 		const nodeStopScope = yield* Scope.fork(outerScope, 'parallel');
 
-		const stopGrace = Duration.seconds(spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS);
+		const stopGraceSeconds = spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS;
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS);
 		const deployMount = walrusDeployMountPaths(spec.deployHostMountPath, '/opt/walrus/runtime');
 
@@ -227,6 +227,7 @@ export const startStorageNodes = (
 								HOSTNAME: nodeHostname,
 								DEPLOY_OUTPUT_DIR: deployMount.outputDirInContainer,
 							},
+							stopGraceSeconds,
 							// Primary network owns the pinned `--ip`; the
 							// secondary attach gives docker DNS for the sui
 							// network. The adapter treats [0] as primary.
@@ -329,10 +330,6 @@ export const startStorageNodes = (
 		const nodes = yield* Effect.all(indices.map(bootOne), {
 			concurrency: 'unbounded',
 		});
-
-		// Stop-grace is plumbed through `stopGraceSeconds` for future
-		// adapter use; the current Docker adapter applies its default.
-		void stopGrace;
 
 		return { nodes };
 	}).pipe(

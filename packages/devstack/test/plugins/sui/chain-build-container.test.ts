@@ -50,6 +50,15 @@ const runtimeFromExec = (exec: ContainerRuntime['exec']): ContainerRuntime => ({
 	removeManagedVolumes: unusedRuntimeMethod,
 });
 
+const runtimeCapturingEnsureSpec = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
+	...runtimeFromExec(() => Effect.succeed(okExecResult)),
+	ensureContainer: (spec) =>
+		Effect.sync(() => {
+			specs.push(spec);
+			return handleFor(spec);
+		}),
+});
+
 const makeFixture = () => {
 	const root = mkdtempSync(join(tmpdir(), 'chain-build-container-test-'));
 	const appDir = join(root, 'app');
@@ -73,6 +82,24 @@ const makeFixture = () => {
 const okExecResult = { exitCode: 0, stdout: '{}', stderr: '' };
 
 describe('chain build container move-build lock', () => {
+	it.effect('uses a TERM-aware sleeper for fast scope shutdown', () =>
+		Effect.gen(function* () {
+			const fixture = makeFixture();
+			try {
+				const specs: EnsureContainerSpec[] = [];
+				yield* Effect.scoped(acquireChainBuildContainer(runtimeCapturingEnsureSpec(specs), fixture.spec));
+
+				expect(specs[0]?.entrypoint).toBe('sh');
+				expect(specs[0]?.command?.[0]).toBe('-c');
+				expect(specs[0]?.command?.[1]).toContain('trap');
+				expect(specs[0]?.command?.[1]).toContain('TERM');
+				expect(specs[0]?.stopGraceSeconds).toBe(2);
+			} finally {
+				rmSync(fixture.root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect('runBuild holds the host-wide move-build lock around docker exec', () =>
 		Effect.gen(function* () {
 			const fixture = makeFixture();

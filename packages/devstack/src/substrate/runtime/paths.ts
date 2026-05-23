@@ -55,8 +55,8 @@ export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> 
 /**
  * Closed bundle the resolver returns. Three groups of paths:
  *
- *   - `stackRoot` and the three cross-process artifacts (lock,
- *     roster, snapshot reservation) live directly under the stack
+ *   - `stackRoot` and the cross-process artifacts (lock, roster,
+ *     command channel, snapshot reservation) live directly under the stack
  *     directory. Cross-process safety lives here.
  *   - `stateFile` is the per-stack state-store JSON. ONE file per
  *     stack — schema-validated on read.

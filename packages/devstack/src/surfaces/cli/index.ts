@@ -1,9 +1,8 @@
 // CLI surface — top-level entry point.
 //
 // The public CLI is intentionally small: `up` is the attached operator
-// surface, `apply` is the one-shot CI path, and every other command is
-// offline/direct. There is no public peer-command model for talking to
-// an already-running `up` process.
+// surface, `apply` is live-aware reconcile (publish to `up` when it is
+// running, one-shot otherwise), and every other command is offline/direct.
 
 import {
 	buildApplication,
@@ -432,7 +431,7 @@ const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
 const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 	parameters: { flags: configFlagParams },
 	docs: {
-		brief: 'Boot, reconcile, emit generated files, and exit',
+		brief: 'Reconcile a live stack or run one-shot setup',
 	},
 	func: function (flags) {
 		return runWithFlags(this, 'apply', flags, [], (global) => this.deps.apply.run(global));

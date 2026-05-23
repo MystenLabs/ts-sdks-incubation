@@ -17,9 +17,9 @@ Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app
 
 ### `devstack apply [options]`
 
-Boot, reconcile, emit generated files, and exit.
+Reconcile through a live supervisor when present; otherwise run one-shot setup.
 
-Lifecycle: one-shot. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
+Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`.
 
 ### `devstack status [options]`
@@ -109,7 +109,9 @@ devstack apply
 ```
 
 `up` boots the stack and stays attached until you quit the TUI or interrupt the process. `apply`
-boots, reconciles, emits generated files, and exits for CI or one-shot local workflows.
+checks the selected stack first: if `devstack up` is live, it asks that supervisor to reconcile and
+waits for completion; if no supervisor is live, it boots the stack in one-shot mode, reconciles,
+emits generated files, and exits.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
 `--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`.

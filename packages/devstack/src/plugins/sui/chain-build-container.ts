@@ -40,6 +40,14 @@ import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } fr
  *  body only; long-running stages never share it. */
 export const MOVE_BUILD_LOCK_TIMEOUT_MS = 5 * 60_000;
 
+const BUILD_CONTAINER_STOP_GRACE_SECONDS = 2;
+const BUILD_CONTAINER_KEEPALIVE_COMMAND = [
+	'child=;',
+	'trap \'[ -z "$child" ] || kill "$child" 2>/dev/null || true; exit 0\' INT TERM;',
+	'sleep infinity & child=$!;',
+	'wait "$child"',
+].join(' ');
+
 /** Per-app container name. The substrate's `pluginKey('sui-build')`
  *  + the app discriminator combine to a stable name; the container
  *  intentionally omits the stack/network suffix so two stacks of
@@ -112,9 +120,11 @@ export const acquireChainBuildContainer = (
 	spec: ChainBuildContainerSpec,
 ): Effect.Effect<ChainBuildContainer, ContainerRuntimeError | SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		// The sleeper is `sh -c 'sleep infinity'` — overriding the sui
-		// image's default `start --with-faucet=...` entrypoint so the
-		// validator binary doesn't run genesis inside a build container.
+		// The sleeper shell traps Docker's stop signal so scope-close
+		// does not wait for Docker's default SIGKILL escalation path.
+		// This also overrides the sui image's default `start
+		// --with-faucet=...` entrypoint so the validator binary doesn't
+		// run genesis inside a build container.
 		// The appDir is bind-mounted at `/workspace`, with the user's
 		// `~/.move` bind-mounted at `/root/.move` so the content-addressed
 		// dep cache (`~/.move/git/<repo>@<sha>/…`) persists across builds.
@@ -131,7 +141,8 @@ export const acquireChainBuildContainer = (
 			},
 			recreate: 'never',
 			entrypoint: 'sh',
-			command: ['-c', 'sleep infinity'],
+			command: ['-c', BUILD_CONTAINER_KEEPALIVE_COMMAND],
+			stopGraceSeconds: BUILD_CONTAINER_STOP_GRACE_SECONDS,
 			mounts: [
 				{ source: spec.appDir, target: '/workspace' },
 				{ source: spec.moveHome, target: '/root/.move' },

@@ -198,9 +198,10 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(first.configHash).not.toBe(second.configHash);
 	});
 
-	it('signal-forwarding stop grace is 15s (invariant #7 — daemon needs SIGINT-forward window)', () => {
+	it('threads signal-forwarding stop grace into the Docker container spec', () => {
 		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
 		expect(spec.stopGraceSeconds).toBe(15);
+		expect(buildKeyServerEnsureContainerSpec(spec).stopGraceSeconds).toBe(15);
 	});
 
 	it('container port matches the well-known seal key-server port', () => {
