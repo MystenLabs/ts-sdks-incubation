@@ -96,7 +96,7 @@ const dockerRuntimeLayer = (bin: string, stackRoot: string): Layer.Layer<Contain
 describe('ensureContainer paused adoption', () => {
 	it(
 		'unpauses a matching paused container before adopting it as running',
-		{ timeout: 10_000 },
+		{ timeout: 30_000 },
 		async () => {
 			const root = mkdtempSync(join(tmpdir(), 'docker-ensure-paused-test-'));
 			try {

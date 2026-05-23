@@ -50,6 +50,7 @@ import { CORS_MIDDLEWARE_FILENAME, renderCorsMiddlewareYaml } from './cors.ts';
 import { EntrypointRegistry, type EntrypointRegistryShape } from './entrypoints.ts';
 import {
 	DispatchWriteFailed,
+	RouteCollision,
 	RouteReadinessProbeFailed,
 	RouterBootFailed,
 	RouterDisabledRouteUnsupported,
@@ -318,6 +319,7 @@ const readDispatchRouteScan = (
 	});
 
 type DispatchLeaseStatus = 'live' | 'stale' | 'unknown-owner';
+type RoutePublishOwnership = 'direct' | 'owned' | 'reused-live';
 
 const classifyDispatchLease = (
 	route: DispatchRouteMetadata,
@@ -366,6 +368,29 @@ const makeRouteLease = (profile: RouterProfile, identity: Identity): RouteLeaseM
 	stack: String(identity.stack),
 	owner: ownHolder(),
 });
+
+const sameRouteSurface = (
+	a: Pick<DispatchRouteMetadata, 'hostname' | 'entrypointName' | 'entrypointPort' | 'wireProtocol'>,
+	b: Pick<ResolvedRoute, 'hostname' | 'entrypointName' | 'entrypointPort' | 'wireProtocol'>,
+): boolean =>
+	a.hostname === b.hostname &&
+	a.entrypointName === b.entrypointName &&
+	a.entrypointPort === b.entrypointPort &&
+	a.wireProtocol === b.wireProtocol;
+
+const liveRouteLeaseMismatch = (
+	existing: DispatchRouteMetadata,
+	resolved: ResolvedRoute,
+): RouteCollision =>
+	new RouteCollision({
+		message:
+			`router route ${resolved.dispatchFileId} is already leased by a live process ` +
+			`with a different public route (existing ${existing.entrypointName}/` +
+			`${existing.hostname}, attempted ${resolved.entrypointName}/${resolved.hostname})`,
+		hostname: resolved.hostname,
+		entrypoint: resolved.entrypointName,
+		dispatchIds: [existing.dispatchFileId, resolved.dispatchFileId],
+	});
 
 const resolvedWireProtocolFor = (decl: RoutableDecl): ResolvedWireProtocol =>
 	decl.wireProtocol === 'tcp' ? 'tcp' : decl.wireProtocol === 'h2c' ? 'h2c' : 'http';
@@ -668,11 +693,15 @@ export const layerRouterService: Layer.Layer<
 					: yield* resolveRoute(identity, decl, registry, upstreams);
 				const lease = makeRouteLease(profile, identity);
 				const endpoint = endpointFromResolvedRoute(decl, resolved);
-				const publishRouteFile = Effect.gen(function* () {
+				const publishRouteFile: Effect.Effect<
+					RoutePublishOwnership,
+					DispatchWriteFailed | RouteCollision
+				> = Effect.gen(function* () {
 					// Collision check against this process's applied set
 					// plus files already present in the shared dispatch
 					// directory. The dispatch lock makes the scan + write a
 					// cross-process critical section.
+					if (cfg.disabled) return 'direct';
 					if (!cfg.disabled) {
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
 							Effect.mapError(
@@ -688,17 +717,39 @@ export const layerRouterService: Layer.Layer<
 					}
 					const currentApplied = yield* SubscriptionRef.get(applied);
 					const currentIds = new Set(currentApplied.map((route) => route.dispatchFileId));
-					const readScan = cfg.disabled
-						? { routes: [], unknownRouteFileIds: [], diagnostics: [] }
-						: yield* readDispatchRouteScan(fs, profile.dispatchDir, resolved.dispatchFileId);
-					const existingDispatchRoutes = cfg.disabled
-						? []
-						: (yield* sweepStaleDispatchRoutes(
-								fs,
-								profile,
-								readScan.routes,
-								resolved.dispatchFileId,
-							)).filter((route) => !currentIds.has(route.dispatchFileId));
+					const readScan = yield* readDispatchRouteScan(
+						fs,
+						profile.dispatchDir,
+						resolved.dispatchFileId,
+					);
+					const activeDispatchRoutes = yield* sweepStaleDispatchRoutes(
+						fs,
+						profile,
+						readScan.routes,
+						resolved.dispatchFileId,
+					);
+					const existingSameDispatchRoute = activeDispatchRoutes.find(
+						(route) => route.dispatchFileId === resolved.dispatchFileId,
+					);
+					if (
+						existingSameDispatchRoute !== undefined &&
+						!currentIds.has(existingSameDispatchRoute.dispatchFileId)
+					) {
+						const status = yield* classifyDispatchLease(existingSameDispatchRoute);
+						if (status === 'live') {
+							if (!sameRouteSurface(existingSameDispatchRoute, resolved)) {
+								return yield* Effect.fail(
+									liveRouteLeaseMismatch(existingSameDispatchRoute, resolved),
+								);
+							}
+							return 'reused-live';
+						}
+					}
+					const existingDispatchRoutes = activeDispatchRoutes.filter(
+						(route) =>
+							!currentIds.has(route.dispatchFileId) &&
+							route.dispatchFileId !== resolved.dispatchFileId,
+					);
 					const collision = detectCollisions([
 						...existingDispatchRoutes,
 						...currentApplied,
@@ -706,39 +757,39 @@ export const layerRouterService: Layer.Layer<
 					]);
 					if (collision) return yield* Effect.fail(collision);
 
-					if (!cfg.disabled) {
-						// Atomic write — invariant #5. tmp + rename via the
-						// substrate's `atomicWriteFile` helper; Traefik's
-						// watcher tolerates rename atomically.
-						const filePath = path.join(
-							profile.dispatchDir,
-							dispatchFilename(resolved.dispatchFileId),
-						);
-						yield* atomicWriteFile(
-							filePath,
-							new TextEncoder().encode(renderRouteYaml(resolved, lease)),
-							{
-								mode: 0o644,
-							},
-						).pipe(
-							Effect.mapError(
-								(cause): DispatchWriteFailed =>
-									new DispatchWriteFailed({
-										dispatchFileId: resolved.dispatchFileId,
-										path: filePath,
-										detail: `atomicWriteFile failed at stage ${cause.stage}`,
-										cause,
-									}),
-							),
-							Effect.provideService(FileSystem.FileSystem, fs),
-						);
-					}
+					// Atomic write — invariant #5. tmp + rename via the
+					// substrate's `atomicWriteFile` helper; Traefik's
+					// watcher tolerates rename atomically.
+					const filePath = path.join(
+						profile.dispatchDir,
+						dispatchFilename(resolved.dispatchFileId),
+					);
+					yield* atomicWriteFile(
+						filePath,
+						new TextEncoder().encode(renderRouteYaml(resolved, lease)),
+						{
+							mode: 0o644,
+						},
+					).pipe(
+						Effect.mapError(
+							(cause): DispatchWriteFailed =>
+								new DispatchWriteFailed({
+									dispatchFileId: resolved.dispatchFileId,
+									path: filePath,
+									detail: `atomicWriteFile failed at stage ${cause.stage}`,
+									cause,
+								}),
+						),
+						Effect.provideService(FileSystem.FileSystem, fs),
+					);
+					return 'owned';
 				});
 
+				let publishOwnership: RoutePublishOwnership;
 				if (cfg.disabled) {
-					yield* publishRouteFile;
+					publishOwnership = yield* publishRouteFile;
 				} else {
-					yield* Effect.scoped(
+					publishOwnership = yield* Effect.scoped(
 						Effect.gen(function* () {
 							yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 								Effect.mapError(
@@ -751,14 +802,14 @@ export const layerRouterService: Layer.Layer<
 										}),
 								),
 							);
-							yield* publishRouteFile;
+							return yield* publishRouteFile;
 						}),
 					);
 				}
 
 				yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
 					Effect.onError(() =>
-						cfg.disabled
+						cfg.disabled || publishOwnership !== 'owned'
 							? Effect.void
 							: Effect.scoped(
 									Effect.gen(function* () {
@@ -771,26 +822,28 @@ export const layerRouterService: Layer.Layer<
 								),
 					),
 				);
-				yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
+				if (publishOwnership !== 'reused-live') {
+					yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
 
-				// Scope finalizer — remove the file + drop from applied
-				// when the caller's scope closes. Best-effort: "already
-				// gone" is fine per distilled-doc.
-				yield* Effect.addFinalizer(() =>
-					Effect.gen(function* () {
-						if (!cfg.disabled) {
-							yield* Effect.scoped(
-								Effect.gen(function* () {
-									yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS);
-									yield* removeDispatchFile(fs, profile, resolved);
-								}),
-							).pipe(Effect.ignore);
-						}
-						yield* SubscriptionRef.update(applied, (arr) =>
-							arr.filter((r) => r.dispatchFileId !== resolved.dispatchFileId),
-						);
-					}),
-				);
+					// Scope finalizer — remove the file + drop from applied
+					// when the caller's scope closes. Best-effort: "already
+					// gone" is fine per distilled-doc.
+					yield* Effect.addFinalizer(() =>
+						Effect.gen(function* () {
+							if (publishOwnership === 'owned') {
+								yield* Effect.scoped(
+									Effect.gen(function* () {
+										yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS);
+										yield* removeDispatchFile(fs, profile, resolved);
+									}),
+								).pipe(Effect.ignore);
+							}
+							yield* SubscriptionRef.update(applied, (arr) =>
+								arr.filter((r) => r.dispatchFileId !== resolved.dispatchFileId),
+							);
+						}),
+					);
+				}
 
 				return endpoint;
 			}).pipe(Effect.withSpan('orchestrator.router.contributeRoute'));

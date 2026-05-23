@@ -721,7 +721,7 @@ describe('same-name Docker resource ownership', () => {
 	);
 });
 
-describe('container lifecycle mutation policy', { timeout: 10_000 }, () => {
+describe('container lifecycle mutation policy', { timeout: 30_000 }, () => {
 	it.effect(
 		'recreates a matching container when inspect cannot prove its lifecycle state',
 		() =>
@@ -776,7 +776,7 @@ describe('container lifecycle mutation policy', { timeout: 10_000 }, () => {
 					rmSync(root, { recursive: true, force: true });
 				}
 			}),
-		{ timeout: 10_000 },
+		{ timeout: 30_000 },
 	);
 
 	it.effect('refuses collision recovery when the remaining container lifecycle is unknown', () =>

@@ -346,6 +346,10 @@ describe('detectCollisions', () => {
 		expect(collision?.dispatchIds.length).toBe(2);
 	});
 
+	it('allows the same dispatch file id to be seen through an existing route lease', () => {
+		expect(detectCollisions([base, { ...base, upstreamUrl: 'http://127.0.0.1:6174' }])).toBeNull();
+	});
+
 	it('detects two TCP routes on the same entrypoint (port-exclusive)', () => {
 		const tcpA: ResolvedRoute = {
 			dispatchFileId: 'pg-stack-a',

@@ -3,7 +3,7 @@
 	"private": true,
 	"license": "Apache-2.0",
 	"scripts": {
-		"test": "turbo run test --concurrency=1",
+		"test": "turbo run test --filter \"./packages/*\" --filter \"./apps/*\" --concurrency=1",
 		"test:e2e": "turbo run test:e2e --concurrency=1",
 		"changeset-version": "pnpm changeset version",
 		"setup:repos": "bash scripts/setup-repos.sh",
@@ -13,8 +13,9 @@
 		"oxlint:fix": "oxlint --fix --ignore-pattern='repos/**' .",
 		"lint": "pnpm run oxlint:check && pnpm run prettier:check",
 		"lint:fix": "pnpm run oxlint:fix && pnpm run prettier:fix",
-		"build": "turbo run build --concurrency=1",
-		"typecheck": "turbo run typecheck",
+		"build": "turbo run build --filter \"./packages/*\" --filter \"./apps/*\" --concurrency=1",
+		"build:examples": "turbo run build --filter \"./examples/*\" --concurrency=1",
+		"typecheck": "turbo run typecheck --filter \"./packages/*\" --filter \"./apps/*\"",
 		"release": "pnpm turbo run build --filter \"./packages/*\" && pnpm changeset publish"
 	},
 	"packageManager": "pnpm@10.17.0",

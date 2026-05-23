@@ -559,8 +559,8 @@ export const detectCollisions = (
 		else seen.set(key, [r]);
 	}
 	for (const [key, colliding] of seen) {
-		if (colliding.length > 1) {
-			const ids = colliding.map((route) => route.dispatchFileId);
+		const ids = [...new Set(colliding.map((route) => route.dispatchFileId))];
+		if (ids.length > 1) {
 			const first = colliding[0];
 			if (key.startsWith('tcp@')) {
 				return new RouteCollision({

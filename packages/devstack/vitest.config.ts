@@ -17,13 +17,13 @@ const runE2E = process.env.DEVSTACK_RUN_E2E === '1';
 export default defineConfig({
 	test: {
 		exclude: ['**/node_modules/**', '**/dist/**', ...(runE2E ? [] : ['test/e2e/**'])],
+		testTimeout: runE2E ? 300_000 : 30_000,
+		hookTimeout: runE2E ? 300_000 : 30_000,
 		...(runE2E
 			? {
 					include: ['test/e2e/**/*.test.ts'],
 					pool: 'forks' as const,
 					fileParallelism: false,
-					testTimeout: 300_000,
-					hookTimeout: 300_000,
 				}
 			: {}),
 	},

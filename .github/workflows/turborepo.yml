@@ -50,6 +50,10 @@ jobs:
       - name: Lint
         run: pnpm turbo lint
       - name: Build
-        run: pnpm turbo build --concurrency=1
+        # Worked examples intentionally boot/apply local devstacks from
+        # their own build scripts. Keep the fast package/app CI leg off
+        # that runtime path; example runtime coverage lives in
+        # devstack-e2e.yml and explicit build:examples runs.
+        run: pnpm turbo build --filter "./packages/*" --filter "./apps/*" --concurrency=1
       - name: Test
-        run: pnpm turbo test --concurrency=1
+        run: pnpm turbo test --filter "./packages/*" --filter "./apps/*" --concurrency=1

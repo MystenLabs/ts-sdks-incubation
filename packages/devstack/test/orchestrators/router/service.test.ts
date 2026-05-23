@@ -506,6 +506,48 @@ describe('RouterService.contributeRoute', () => {
 		}),
 	);
 
+	it.effect('reuses a live dispatch file for the same route without taking its lease', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+			const existingRoute: ResolvedRoute = {
+				dispatchFileId: fileId,
+				hostname: 'api.my-app.localhost',
+				entrypointName: 'wallet-app',
+				entrypointPort: 6173,
+				upstreamUrl: 'http://127.0.0.1:6173',
+				cors: true,
+				wireProtocol: 'http',
+			};
+			const body = renderRouteYaml(existingRoute, makeLease(profile));
+			writeFileSync(join(dir, dispatchFilename(fileId)), body);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					const endpoint = yield* Effect.scoped(
+						router.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: walletApiDispatch,
+							upstream: { type: 'host-loopback', port: 6173 },
+							cors: true,
+							wireProtocol: 'http',
+						}),
+					);
+
+					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+					expect(readFileSync(join(dir, dispatchFilename(fileId)), 'utf8')).toBe(body);
+					const applied = yield* SubscriptionRef.get(router.applied);
+					expect(applied).toHaveLength(0);
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+			expect(readFileSync(join(dir, dispatchFilename(fileId)), 'utf8')).toBe(body);
+		}),
+	);
+
 	it.live('waits for the public route readiness header before returning an HTTP endpoint', () =>
 		Effect.gen(function* () {
 			const dir = makeTmpDir();

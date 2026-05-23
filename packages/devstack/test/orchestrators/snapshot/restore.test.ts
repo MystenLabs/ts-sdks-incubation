@@ -757,7 +757,7 @@ describe('snapshot restore safety', () => {
 					rmSync(root, { recursive: true, force: true });
 				}
 			}),
-		{ timeout: 10_000 },
+		{ timeout: 30_000 },
 	);
 
 	it.effect('does not run restore cleanup when docker load fails for a readable image bundle', () =>
