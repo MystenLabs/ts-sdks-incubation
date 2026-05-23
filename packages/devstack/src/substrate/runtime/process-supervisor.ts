@@ -27,6 +27,7 @@ export interface ManagedProcessSpawnOptions {
 	readonly cwd: string;
 	readonly env: NodeJS.ProcessEnv;
 	readonly stdio: 'pipe';
+	readonly detached?: boolean;
 }
 
 export type ManagedProcessSpawner = (
@@ -40,6 +41,7 @@ export const nodeProcessSpawner: ManagedProcessSpawner = (command, args, options
 		cwd: options.cwd,
 		env: options.env,
 		stdio: options.stdio,
+		detached: options.detached,
 	}) as ManagedProcessChild;
 
 export const describeProcessExitStatus = (status: ManagedProcessExitStatus): string => {
@@ -85,8 +87,26 @@ export const waitForProcessExitOrTimeout = (
 export interface TerminateManagedProcessOptions {
 	readonly graceMs: number;
 	readonly killTimeoutMs?: number;
+	readonly processGroup?: boolean;
 	readonly onEscalate?: () => Effect.Effect<void>;
 }
+
+const signalManagedProcess = (
+	child: ManagedProcessChild,
+	signal: NodeJS.Signals,
+	processGroup: boolean,
+): void => {
+	if (processGroup && process.platform !== 'win32' && child.pid !== undefined) {
+		try {
+			process.kill(-child.pid, signal);
+			return;
+		} catch {
+			// Fall back to the direct child signal below. This covers races
+			// where the group has already exited and tests with fake pids.
+		}
+	}
+	child.kill(signal);
+};
 
 export const terminateManagedProcess = (
 	child: ManagedProcessChild,
@@ -95,7 +115,7 @@ export const terminateManagedProcess = (
 	Effect.gen(function* () {
 		const exited = waitForProcessExitOrTimeout(child, options.graceMs);
 		yield* Effect.sync(() => {
-			child.kill('SIGTERM');
+			signalManagedProcess(child, 'SIGTERM', options.processGroup === true);
 		});
 		const first = yield* Effect.promise(() => exited);
 		if (first !== null) return;
@@ -104,7 +124,7 @@ export const terminateManagedProcess = (
 		}
 		const killed = waitForProcessExitOrTimeout(child, options.killTimeoutMs ?? 1_000);
 		yield* Effect.sync(() => {
-			child.kill('SIGKILL');
+			signalManagedProcess(child, 'SIGKILL', options.processGroup === true);
 		});
 		yield* Effect.promise(() => killed);
 	});

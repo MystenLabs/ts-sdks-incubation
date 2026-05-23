@@ -271,6 +271,7 @@ const terminateChild = (
 ): Effect.Effect<void> =>
 	terminateManagedProcess(child, {
 		graceMs: timeoutMs,
+		processGroup: true,
 		onEscalate: () =>
 			logger.log(tag, pluginKey, {
 				level: 'warn',
@@ -433,6 +434,7 @@ const startHostProcess = (
 					cwd: options.cwd,
 					env,
 					stdio: 'pipe',
+					detached: process.platform !== 'win32',
 				}),
 			catch: (cause) =>
 				new HostServiceAcquireError({

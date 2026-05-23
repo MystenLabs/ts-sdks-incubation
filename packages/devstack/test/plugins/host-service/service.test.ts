@@ -197,6 +197,7 @@ describe('acquireHostService', () => {
 		expect(call.options.env.PATH).toBe('/usr/bin');
 		expect(call.options.env.VITE_PUBLIC_URL).toBe('http://127.0.0.1:6173');
 		expect(call.options.env.PORT).toBe('6173');
+		expect(call.options.detached).toBe(process.platform !== 'win32');
 		expect(child.signals).toEqual(['SIGTERM']);
 		await new Promise((resolveLogged) => setTimeout(resolveLogged, 0));
 		expect(loggerLines).toContainEqual({
@@ -233,6 +234,7 @@ describe('acquireHostService', () => {
 			expect(call.command).toBe('/bin/sh');
 			expect(call.args).toEqual(['-c', 'pnpm exec vite --host 127.0.0.1 --strictPort --port 6173']);
 		}
+		expect(call.options.detached).toBe(process.platform !== 'win32');
 	});
 
 	it('can use stderr as the readiness log stream', async () => {

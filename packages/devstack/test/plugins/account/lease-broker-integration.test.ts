@@ -225,8 +225,8 @@ describe('account plugin — LeaseBrokerService integration', () => {
 
 			const signer1 = makeStubSigner(address, openGate, calls, 'first-sign');
 			const signer2 = makeStubSigner(address, openGate, calls, 'second-sign');
-			const a1 = yield* acquire('publisher-a', signer1);
-			const a2 = yield* acquire('publisher-b', signer2);
+			const a1 = yield* acquire('publisher_a', signer1);
+			const a2 = yield* acquire('publisher_b', signer2);
 
 			const fiber1 = yield* Effect.forkChild(
 				a1.withTransactionSigner((locked) =>

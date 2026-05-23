@@ -86,4 +86,37 @@ describe('process supervisor helpers', () => {
 		expect(escalated).toBe(true);
 		expect(child.signals).toEqual(['SIGTERM', 'SIGKILL']);
 	});
+
+	it('can signal a POSIX process group instead of only the direct child', async () => {
+		if (process.platform === 'win32') return;
+
+		const child = new FakeChild();
+		Object.defineProperty(child, 'pid', { value: 12_345 });
+		const originalKill = process.kill;
+		const signals: Array<{ readonly pid: number; readonly signal: NodeJS.Signals }> = [];
+		process.kill = ((pid: number, signal?: NodeJS.Signals | number) => {
+			signals.push({ pid, signal: signal as NodeJS.Signals });
+			if (signal === 'SIGKILL') {
+				setTimeout(() => child.emit('exit', null, signal), 0);
+			}
+			return true;
+		}) as typeof process.kill;
+
+		try {
+			await Effect.runPromise(
+				terminateManagedProcess(child, {
+					graceMs: 1,
+					processGroup: true,
+				}),
+			);
+		} finally {
+			process.kill = originalKill;
+		}
+
+		expect(signals).toEqual([
+			{ pid: -12_345, signal: 'SIGTERM' },
+			{ pid: -12_345, signal: 'SIGKILL' },
+		]);
+		expect(child.signals).toEqual([]);
+	});
 });
