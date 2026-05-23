@@ -1,8 +1,13 @@
 {
 	"name": "@mysten-incubation/devstack",
-	"version": "0.0.0",
+	"version": "0.0.1",
 	"description": "Next-generation Sui devstack package.",
-	"keywords": ["sui", "devstack", "effect", "developer-experience"],
+	"keywords": [
+		"sui",
+		"devstack",
+		"effect",
+		"developer-experience"
+	],
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
