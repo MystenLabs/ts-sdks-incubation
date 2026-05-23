@@ -223,7 +223,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const alice = account('alice');
 		const Alice = account('Alice');
 
-		expect(() => defineDevstack({ members: [alice, Alice] })).toThrow(
+		expect(() => defineDevstack({ members: [sui(), alice, Alice] })).toThrow(
 			/Duplicate devstack account name 'Alice' differs only by casing from 'alice'/,
 		);
 	});
