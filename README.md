@@ -1,18 +1,18 @@
 # ts-sdks-incubation
 
 Incubation TypeScript packages for the [Sui](https://sui.io) blockchain ecosystem. Some
-packages are published to npm under the `@mysten-incubation` scope; **devstack and the
-related packages are still prototypes — they live in this monorepo only and are not
-published to npm yet, with no near-term plan to publish.** The public surface of the
-prototype packages breaks freely as we iterate; pin nothing from outside this monorepo.
+packages are published to npm under the `@mysten-incubation` scope. Devstack is installable
+from npm, but it is still prototype-stage: the public surface can break freely as we
+iterate toward a stable release.
 
 ## Packages
 
-| Package                                                                  | Description                                                                                   | Status                                                                                                                            |
-| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                       | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet) |
-| [`@mysten-incubation/devstack`](packages/devstack)                       | Effect v4 devstack for local Sui app development, seeded services, codegen, and product tests | Prototype — actively developed                                                                                                    |
-| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                       | Prototype — not published to npm                                                                                                  |
+| Package                                                                  | Description                                                                                   | Status                                                                                                                                              |
+| ------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`@mysten-incubation/dev-wallet`](packages/dev-wallet)                   | Modular dev wallet for Sui dApp development and testing                                       | [![npm](https://img.shields.io/npm/v/@mysten-incubation/dev-wallet)](https://www.npmjs.com/package/@mysten-incubation/dev-wallet)                   |
+| [`@mysten-incubation/devstack`](packages/devstack)                       | Effect v4 devstack for local Sui app development, seeded services, codegen, and product tests | [![npm](https://img.shields.io/npm/v/@mysten-incubation/devstack)](https://www.npmjs.com/package/@mysten-incubation/devstack)                       |
+| [`@mysten-incubation/create-devstack-app`](packages/create-devstack-app) | Scaffolder for new devstack-backed apps                                                       | [![npm](https://img.shields.io/npm/v/@mysten-incubation/create-devstack-app)](https://www.npmjs.com/package/@mysten-incubation/create-devstack-app) |
+| [`@mysten-incubation/tsconfig`](packages/tsconfig)                       | Shared TypeScript configuration for the published packages and scaffolded apps                | [![npm](https://img.shields.io/npm/v/@mysten-incubation/tsconfig)](https://www.npmjs.com/package/@mysten-incubation/tsconfig)                       |
 
 ## Examples
 
@@ -24,7 +24,16 @@ See [`examples/README.md`](examples/README.md) for the curated tour.
 Fastest way in:
 
 ```bash
-pnpm --filter @mysten-incubation/wallet dev
+pnpm create @mysten-incubation/devstack-app my-app
+cd my-app
+pnpm dev
+```
+
+Add devstack to an existing app:
+
+```bash
+pnpm add @mysten-incubation/devstack @mysten-incubation/dev-wallet @mysten/signers
+pnpm add -D @mysten-incubation/tsconfig
 ```
 
 ## Documentation
@@ -74,10 +83,10 @@ Use these to try a change in a downstream app before it lands on `main`.
 
 ## Contributing
 
-For published packages (dev-wallet), changes require [changesets](https://github.com/changesets/changesets)
-for version management — run `pnpm changeset` to create one. Prototype packages
-(devstack and friends) don't use changesets day-to-day; breaking changes go in directly
-without deprecation cycles.
+Packages that go through normal versioned releases require
+[changesets](https://github.com/changesets/changesets) for version management — run
+`pnpm changeset` to create one. Prototype packages may still ship manually while APIs churn;
+breaking changes go in directly without deprecation cycles.
 
 See [AGENTS.md](AGENTS.md) for repo-wide development guidance.
 

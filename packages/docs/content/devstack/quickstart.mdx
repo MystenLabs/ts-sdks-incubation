@@ -1,9 +1,25 @@
 ---
 title: Quickstart
-description: Create a current devstack config with a supervised dev server.
+description: Scaffold a devstack app or install the packages in an existing app.
 ---
 
-Start with a `devstack.config.ts` at the app root:
+The fastest path is the scaffolded app:
+
+```bash
+pnpm create @mysten-incubation/devstack-app my-app
+cd my-app
+pnpm dev
+```
+
+For an existing app, install the devstack package, the dev wallet used by the generated browser
+bindings, and the shared tsconfig package:
+
+```bash
+pnpm add @mysten-incubation/devstack @mysten-incubation/dev-wallet @mysten/signers
+pnpm add -D @mysten-incubation/tsconfig
+```
+
+Then add a `devstack.config.ts` at the app root:
 
 ```ts title="devstack.config.ts"
 import { dirname, resolve } from 'node:path';

@@ -1,0 +1,16 @@
+{
+	"publishedPackages": [
+		{
+			"name": "@mysten-incubation/tsconfig",
+			"version": "0.0.0"
+		},
+		{
+			"name": "@mysten-incubation/devstack",
+			"version": "0.0.0"
+		},
+		{
+			"name": "@mysten-incubation/create-devstack-app",
+			"version": "0.1.0"
+		}
+	]
+}

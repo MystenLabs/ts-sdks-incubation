@@ -4,12 +4,26 @@ Devstack composes a local Sui development environment from one TypeScript config
 fund accounts, publish Move packages, run the dev wallet, start app servers, wire services such as
 Walrus, Seal, and DeepBook, and generate typed files for app and test code.
 
-This package is still prototype-stage inside the monorepo and is not published to npm yet. The
-current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
+The current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
 
 ## Quick Start
 
-Create a `devstack.config.ts` in your app:
+Scaffold a new app from the canonical template:
+
+```bash
+pnpm create @mysten-incubation/devstack-app my-app
+cd my-app
+pnpm dev
+```
+
+Or add devstack to an existing app:
+
+```bash
+pnpm add @mysten-incubation/devstack @mysten-incubation/dev-wallet @mysten/signers
+pnpm add -D @mysten-incubation/tsconfig
+```
+
+Then create a `devstack.config.ts` in your app:
 
 ```ts
 import { dirname, resolve } from 'node:path';

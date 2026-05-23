@@ -18,6 +18,7 @@ const snapshotDecl: SnapshotableDecl = {
 	kind: 'snapshotable',
 	subtrees: [],
 	managedContainers: [],
+	preRestore: Effect.succeed({ kind: 'snapshot-smoke' as const }),
 	missingTolerance: 'fine',
 };
 

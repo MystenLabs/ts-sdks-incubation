@@ -7,6 +7,23 @@ Devstack composes a local Sui development stack from one TypeScript config. A st
 members such as `sui()`, `account()`, `localPackage()`, `wallet()`, `walrus()`, `seal()`,
 `deepbook()`, and `action()`.
 
+## Install
+
+Start a new app with the create tool:
+
+```bash
+pnpm create @mysten-incubation/devstack-app my-app
+cd my-app
+pnpm dev
+```
+
+Add devstack to an existing app:
+
+```bash
+pnpm add @mysten-incubation/devstack @mysten-incubation/dev-wallet @mysten/signers
+pnpm add -D @mysten-incubation/tsconfig
+```
+
 ```ts title="devstack.config.ts"
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

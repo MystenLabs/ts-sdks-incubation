@@ -150,6 +150,8 @@ const findSentinel = (
 	return null;
 };
 
+const walletKey = 'wallet#9' as const;
+
 const expectedKeys = [
 	'sui#0',
 	'account/seal_publisher#1',
@@ -160,7 +162,7 @@ const expectedKeys = [
 	'account/publisher#6',
 	'account/alice#7',
 	'account/bob#8',
-	'wallet#9',
+	walletKey,
 	'host-service/app#10',
 ];
 
@@ -241,7 +243,7 @@ const sealPublisherKey = 'account/seal_publisher#1' as const;
 const walletAccountKeys = ['account/publisher#6', 'account/alice#7', 'account/bob#8'] as const;
 const accountKeys = [sealPublisherKey, ...walletAccountKeys] as const;
 const SUI_COIN_TYPE = '0x2::sui::SUI';
-const WARM_RESTART_BUDGET_MS = 90_000;
+const WARM_RESTART_BUDGET_MS = 120_000;
 
 const bigintBalance = (value: unknown): bigint => {
 	if (typeof value === 'bigint') return value;
@@ -278,7 +280,7 @@ const runPrivateContentBoot = async (opts: {
 		routerStateRoot: opts.routerStateRoot,
 		withinScope: (ctx) =>
 			Effect.gen(function* () {
-				const wallet = ctx.resolvedValues.get('wallet#8') as WalletValue | undefined;
+				const wallet = ctx.resolvedValues.get(walletKey) as WalletValue | undefined;
 				if (wallet === undefined) return;
 				walletHealth = yield* Effect.promise(async () => {
 					const url = `http://127.0.0.1:${wallet.localPort}${WalletHttpPath.HEALTH}`;

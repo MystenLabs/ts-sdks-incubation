@@ -19,6 +19,7 @@
 		"@mysten-incubation/devstack": "workspace:*",
 		"@mysten/dapp-kit-core": "catalog:",
 		"@mysten/dapp-kit-react": "catalog:",
+		"@mysten/signers": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@mysten/wallet-standard": "catalog:",
 		"@tanstack/react-query": "catalog:",
@@ -37,7 +38,7 @@
 		"tailwindcss": "catalog:",
 		"typescript": "catalog:",
 		"vite": "catalog:",
-		"vitest": "catalog:"
+		"vitest": "^4.1.6"
 	},
 	"engines": {
 		"node": ">=24"
