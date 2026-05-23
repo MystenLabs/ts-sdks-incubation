@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useCurrentAccount, useCurrentClient } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import {
@@ -14,15 +14,14 @@ import { coins } from './generated/coins.js';
 import { deepbookBindings } from './generated/deepbook/deepbook.js';
 import { suiNetwork } from './generated/sui/network.js';
 import { formatCoinAmount, shortId } from './lib/format.js';
-import { useCoinBalance, useSignAndExecute } from './lib/queries.js';
+import { useCoinBalance, useFirstCoinObject, useSignAndExecute } from './lib/queries.js';
 
-const SUI_COIN_TYPE = '0x2::sui::SUI';
 const SUI_SCALAR = 1_000_000_000;
 const DEEP_SCALAR = 1_000_000;
 const USDC_SCALAR = 1_000_000;
+const DBTC_SCALAR = 100_000_000;
+const DETH_SCALAR = 100_000_000;
 const DEFAULT_POOL = 'DEEP_SUI';
-const SWAP_QUOTE_AMOUNT_MIST = 20_000_000n;
-const SWAP_QUOTE_AMOUNT = Number(SWAP_QUOTE_AMOUNT_MIST) / SUI_SCALAR;
 const configuredPoolCount: number = deepbookBindings.pools.length;
 const coinBindings = coins as Record<string, CoinBinding>;
 const deepCoin = requireCoinBinding('DEEP', coinBindings.deep ?? coinBindings.DEEP);
@@ -30,14 +29,67 @@ const usdcCoin = requireCoinBinding(
 	'USDC',
 	coinBindings.dusdc ?? coinBindings.usdc ?? coinBindings.USDC,
 );
+const dbtcCoin = requireCoinBinding('DBTC', coinBindings.dbtc ?? coinBindings.DBTC);
+const dethCoin = requireCoinBinding('DETH', coinBindings.deth ?? coinBindings.DETH);
 const pythBindings = deepbookBindings.pyth as PythBinding | null;
+
+type DemoCoinKey = 'SUI' | 'DEEP' | 'USDC' | 'DBTC' | 'DETH';
+
+const COIN_SCALARS: Record<DemoCoinKey, number> = {
+	SUI: SUI_SCALAR,
+	DEEP: DEEP_SCALAR,
+	USDC: USDC_SCALAR,
+	DBTC: DBTC_SCALAR,
+	DETH: DETH_SCALAR,
+};
+
+const demoCoinBindings: Record<DemoCoinKey, CoinBinding> = {
+	SUI: coins.sui,
+	DEEP: deepCoin,
+	USDC: usdcCoin,
+	DBTC: dbtcCoin,
+	DETH: dethCoin,
+};
+
+interface DemoMarket {
+	readonly pool: string;
+	readonly base: DemoCoinKey;
+	readonly quote: DemoCoinKey;
+	readonly quoteAmountRaw: bigint;
+}
+
+const DEFAULT_MARKET: DemoMarket = {
+	pool: DEFAULT_POOL,
+	base: 'DEEP',
+	quote: 'SUI',
+	quoteAmountRaw: 20_000_000n,
+};
+
+const DEMO_MARKETS: ReadonlyArray<DemoMarket> = [
+	DEFAULT_MARKET,
+	{ pool: 'SUI_USDC', base: 'SUI', quote: 'USDC', quoteAmountRaw: 10_000_000n },
+	{ pool: 'DBTC_USDC', base: 'DBTC', quote: 'USDC', quoteAmountRaw: 50_000_000n },
+	{ pool: 'DETH_USDC', base: 'DETH', quote: 'USDC', quoteAmountRaw: 25_000_000n },
+];
 
 export function App() {
 	const currentAccount = useCurrentAccount();
 	const suiClient = useCurrentClient();
-	const suiBalance = useCoinBalance(currentAccount?.address, SUI_COIN_TYPE);
-	const deepBalance = useCoinBalance(currentAccount?.address, deepCoin.fullCoinType);
-	const usdcBalance = useCoinBalance(currentAccount?.address, usdcCoin.fullCoinType);
+	const availableMarkets = useMemo(() => configuredDemoMarkets(), []);
+	const [selectedPool, setSelectedPool] = useState(DEFAULT_POOL);
+	const selectedMarket =
+		availableMarkets.find((market) => market.pool === selectedPool) ??
+		availableMarkets[0] ??
+		DEFAULT_MARKET;
+	const suiBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.SUI.fullCoinType);
+	const deepBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.DEEP.fullCoinType);
+	const usdcBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.USDC.fullCoinType);
+	const dbtcBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.DBTC.fullCoinType);
+	const dethBalance = useCoinBalance(currentAccount?.address, demoCoinBindings.DETH.fullCoinType);
+	const selectedQuoteObject = useFirstCoinObject(
+		currentAccount?.address,
+		demoCoinBindings[selectedMarket.quote].fullCoinType,
+	);
 	const trade = useSignAndExecute({ invalidateKeys: [['balance'], ['coin-object']] });
 	const deepbookClient = useMemo(() => {
 		if (!currentAccount?.address || configuredPoolCount === 0) return null;
@@ -50,25 +102,43 @@ export function App() {
 			}),
 		);
 	}, [suiClient, currentAccount?.address]);
-	const suiBalanceRaw = readBalanceRaw(suiBalance.data);
-	const deepBalanceRaw = readBalanceRaw(deepBalance.data);
-	const usdcBalanceRaw = readBalanceRaw(usdcBalance.data);
-	const canSwap = Boolean(currentAccount && deepbookClient && !trade.isPending);
+	const balances = {
+		SUI: readBalanceRaw(suiBalance.data),
+		DEEP: readBalanceRaw(deepBalance.data),
+		USDC: readBalanceRaw(usdcBalance.data),
+		DBTC: readBalanceRaw(dbtcBalance.data),
+		DETH: readBalanceRaw(dethBalance.data),
+	} satisfies Record<DemoCoinKey, bigint>;
+	const needsQuoteCoinObject = selectedMarket.quote !== 'SUI';
+	const canSwap = Boolean(
+		currentAccount &&
+		deepbookClient &&
+		!trade.isPending &&
+		(!needsQuoteCoinObject || selectedQuoteObject.data),
+	);
 
 	const submitSwap = () => {
 		if (!currentAccount || !deepbookClient) return;
 		const tx = new Transaction();
-		const [quoteCoinInput] = tx.splitCoins(tx.gas, [tx.pure.u64(SWAP_QUOTE_AMOUNT_MIST)]);
-		const [baseCoin, quoteCoin, deepCoin] = tx.add(
+		const [quoteCoinInput] =
+			selectedMarket.quote === 'SUI'
+				? tx.splitCoins(tx.gas, [tx.pure.u64(selectedMarket.quoteAmountRaw)])
+				: selectedQuoteObject.data
+					? tx.splitCoins(tx.object(selectedQuoteObject.data.objectId), [
+							tx.pure.u64(selectedMarket.quoteAmountRaw),
+						])
+					: [];
+		if (quoteCoinInput === undefined) return;
+		const [baseCoin, quoteCoin, returnedDeepCoin] = tx.add(
 			deepbookClient.deepbook.deepBook.swapExactQuoteForBase({
-				poolKey: DEFAULT_POOL,
-				amount: SWAP_QUOTE_AMOUNT,
+				poolKey: selectedMarket.pool,
+				amount: quoteAmount(selectedMarket),
 				deepAmount: 0,
 				minOut: 0,
 				quoteCoin: quoteCoinInput,
 			}),
 		);
-		tx.transferObjects([baseCoin, quoteCoin, deepCoin], currentAccount.address);
+		tx.transferObjects([baseCoin, quoteCoin, returnedDeepCoin], currentAccount.address);
 		trade.mutate(tx);
 	};
 
@@ -115,10 +185,15 @@ export function App() {
 					<LocalnetPanel />
 					<WalletPanel
 						connectedAddress={currentAccount?.address}
-						suiBalanceRaw={suiBalanceRaw}
-						deepBalanceRaw={deepBalanceRaw}
-						usdcBalanceRaw={usdcBalanceRaw}
-						loading={suiBalance.isLoading || deepBalance.isLoading || usdcBalance.isLoading}
+						balances={balances}
+						selectedPool={selectedMarket.pool}
+						loading={
+							suiBalance.isLoading ||
+							deepBalance.isLoading ||
+							usdcBalance.isLoading ||
+							dbtcBalance.isLoading ||
+							dethBalance.isLoading
+						}
 					/>
 				</aside>
 
@@ -126,6 +201,9 @@ export function App() {
 					<DeepBookStatus />
 					<PricePanel />
 					<TradePanel
+						markets={availableMarkets}
+						selectedMarket={selectedMarket}
+						onSelectMarket={setSelectedPool}
 						connected={Boolean(currentAccount)}
 						canSwap={canSwap}
 						pending={trade.isPending}
@@ -150,19 +228,33 @@ function buildPackageIds(): DeepbookPackageIds {
 function buildCoinMap(): CoinMap {
 	return {
 		DEEP: {
-			address: deepCoin.packageId ?? addressFromCoinType(deepCoin.fullCoinType),
-			type: deepCoin.fullCoinType,
+			address:
+				demoCoinBindings.DEEP.packageId ?? addressFromCoinType(demoCoinBindings.DEEP.fullCoinType),
+			type: demoCoinBindings.DEEP.fullCoinType,
 			scalar: DEEP_SCALAR,
 		},
 		SUI: {
-			address: addressFromCoinType(coins.sui.fullCoinType),
-			type: coins.sui.fullCoinType,
+			address: addressFromCoinType(demoCoinBindings.SUI.fullCoinType),
+			type: demoCoinBindings.SUI.fullCoinType,
 			scalar: SUI_SCALAR,
 		},
 		USDC: {
-			address: usdcCoin.packageId ?? addressFromCoinType(usdcCoin.fullCoinType),
-			type: usdcCoin.fullCoinType,
+			address:
+				demoCoinBindings.USDC.packageId ?? addressFromCoinType(demoCoinBindings.USDC.fullCoinType),
+			type: demoCoinBindings.USDC.fullCoinType,
 			scalar: USDC_SCALAR,
+		},
+		DBTC: {
+			address:
+				demoCoinBindings.DBTC.packageId ?? addressFromCoinType(demoCoinBindings.DBTC.fullCoinType),
+			type: demoCoinBindings.DBTC.fullCoinType,
+			scalar: DBTC_SCALAR,
+		},
+		DETH: {
+			address:
+				demoCoinBindings.DETH.packageId ?? addressFromCoinType(demoCoinBindings.DETH.fullCoinType),
+			type: demoCoinBindings.DETH.fullCoinType,
+			scalar: DETH_SCALAR,
 		},
 	};
 }
@@ -174,6 +266,19 @@ function buildPoolMap(): PoolMap {
 			{ address: pool.poolId, baseCoin: pool.base, quoteCoin: pool.quote },
 		]),
 	);
+}
+
+function configuredDemoMarkets(): ReadonlyArray<DemoMarket> {
+	const poolNames: ReadonlySet<string> = new Set(deepbookBindings.pools.map((pool) => pool.name));
+	return DEMO_MARKETS.filter((market) => poolNames.has(market.pool));
+}
+
+function marketLabel(market: DemoMarket): string {
+	return `${market.quote} -> ${market.base}`;
+}
+
+function quoteAmount(market: DemoMarket): number {
+	return Number(market.quoteAmountRaw) / COIN_SCALARS[market.quote];
 }
 
 function addressFromCoinType(coinType: string): string {
@@ -204,15 +309,13 @@ function LocalnetPanel() {
 
 function WalletPanel({
 	connectedAddress,
-	suiBalanceRaw,
-	deepBalanceRaw,
-	usdcBalanceRaw,
+	balances,
+	selectedPool,
 	loading,
 }: {
 	connectedAddress: string | undefined;
-	suiBalanceRaw: bigint;
-	deepBalanceRaw: bigint;
-	usdcBalanceRaw: bigint;
+	balances: Record<DemoCoinKey, bigint>;
+	selectedPool: string;
 	loading: boolean;
 }) {
 	return (
@@ -238,20 +341,30 @@ function WalletPanel({
 				/>
 				<KeyValue
 					label="SUI"
-					value={loading ? 'loading' : formatCoinAmount(suiBalanceRaw, SUI_SCALAR, 4)}
+					value={loading ? 'loading' : formatCoinAmount(balances.SUI, SUI_SCALAR, 4)}
 					testId="sui-balance"
 				/>
 				<KeyValue
+					label="USDC"
+					value={loading ? 'loading' : formatCoinAmount(balances.USDC, USDC_SCALAR, 4)}
+					testId="usdc-balance"
+				/>
+				<KeyValue
 					label="DEEP"
-					value={loading ? 'loading' : formatCoinAmount(deepBalanceRaw, DEEP_SCALAR, 4)}
+					value={loading ? 'loading' : formatCoinAmount(balances.DEEP, DEEP_SCALAR, 4)}
 					testId="deep-balance"
 				/>
 				<KeyValue
-					label="USDC"
-					value={loading ? 'loading' : formatCoinAmount(usdcBalanceRaw, USDC_SCALAR, 4)}
-					testId="usdc-balance"
+					label="DBTC"
+					value={loading ? 'loading' : formatCoinAmount(balances.DBTC, DBTC_SCALAR, 4)}
+					testId="dbtc-balance"
 				/>
-				<KeyValue label="Pool" value={DEFAULT_POOL} testId="deepbook-pool" />
+				<KeyValue
+					label="DETH"
+					value={loading ? 'loading' : formatCoinAmount(balances.DETH, DETH_SCALAR, 4)}
+					testId="deth-balance"
+				/>
+				<KeyValue label="Pool" value={selectedPool} testId="deepbook-pool" />
 			</div>
 		</section>
 	);
@@ -323,6 +436,9 @@ function PricePanel() {
 }
 
 function TradePanel({
+	markets,
+	selectedMarket,
+	onSelectMarket,
 	connected,
 	canSwap,
 	pending,
@@ -330,6 +446,9 @@ function TradePanel({
 	digest,
 	onSwap,
 }: {
+	markets: ReadonlyArray<DemoMarket>;
+	selectedMarket: DemoMarket;
+	onSelectMarket: (pool: string) => void;
 	connected: boolean;
 	canSwap: boolean;
 	pending: boolean;
@@ -343,29 +462,66 @@ function TradePanel({
 				<div>
 					<h2 className="text-sm font-semibold">Trade ticket</h2>
 					<p className="mt-1 text-xs text-neutral-500 dark:text-neutral-400">
-						{connected ? 'Swap SUI for local DEEP' : 'Connect a dev wallet account on localnet'}
+						{connected
+							? `Swap ${selectedMarket.quote} for local ${selectedMarket.base}`
+							: 'Connect a dev wallet account on localnet'}
 					</p>
 				</div>
-				<span className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400">
-					{DEFAULT_POOL}
+				<span
+					className="rounded-md border border-neutral-200 px-2 py-1 text-xs text-neutral-500 dark:border-neutral-800 dark:text-neutral-400"
+					data-testid="selected-market"
+				>
+					{selectedMarket.pool}
 				</span>
+			</div>
+			<div className="mb-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+				{markets.map((market) => {
+					const active = market.pool === selectedMarket.pool;
+					return (
+						<button
+							key={market.pool}
+							type="button"
+							aria-pressed={active}
+							data-testid={`market-option-${market.pool}`}
+							onClick={() => onSelectMarket(market.pool)}
+							className={`min-h-16 rounded-md border px-3 py-2 text-left transition ${
+								active
+									? 'border-emerald-500 bg-emerald-50 text-emerald-950 dark:bg-emerald-950 dark:text-emerald-100'
+									: 'border-neutral-200 bg-white text-neutral-800 hover:border-neutral-300 dark:border-neutral-800 dark:bg-neutral-950 dark:text-neutral-100 dark:hover:border-neutral-700'
+							}`}
+						>
+							<span className="block truncate font-mono text-xs">{market.pool}</span>
+							<span className="mt-1 block text-xs text-neutral-500 dark:text-neutral-400">
+								{marketLabel(market)}
+							</span>
+						</button>
+					);
+				})}
 			</div>
 			<div className="grid gap-3 lg:grid-cols-[1fr_120px_160px]">
 				<label className="block">
 					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">Market</span>
 					<input
 						type="text"
-						value="SUI -> DEEP"
+						value={marketLabel(selectedMarket)}
 						disabled
+						data-testid="trade-market"
 						className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 					/>
 				</label>
 				<label className="block">
-					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">SUI</span>
+					<span className="text-xs uppercase text-neutral-500 dark:text-neutral-400">
+						{selectedMarket.quote}
+					</span>
 					<input
 						type="text"
-						value={String(SWAP_QUOTE_AMOUNT)}
+						value={formatCoinAmount(
+							selectedMarket.quoteAmountRaw,
+							COIN_SCALARS[selectedMarket.quote],
+							4,
+						)}
 						disabled
+						data-testid="trade-quote-amount"
 						className="mt-1 h-10 w-full rounded-md border border-neutral-300 bg-neutral-100 px-3 font-mono text-sm text-neutral-700 dark:border-neutral-700 dark:bg-neutral-900 dark:text-neutral-200"
 					/>
 				</label>
@@ -376,7 +532,7 @@ function TradePanel({
 					onClick={onSwap}
 					className="mt-5 h-10 rounded-md bg-emerald-600 px-4 text-sm font-semibold text-white disabled:bg-neutral-400 lg:mt-auto"
 				>
-					{pending ? 'Swapping' : 'Swap'}
+					{pending ? 'Swapping' : `Swap ${selectedMarket.quote}`}
 				</button>
 			</div>
 			{digest ? (

@@ -188,21 +188,85 @@ export interface AccountTransactionSigner extends TransactionSignerScope<Account
 // -----------------------------------------------------------------------------
 
 /** Architecture-distilled invariant: name flows into the resource id, an
- *  on-disk path, a manifest key, and container labels. Strict
- *  alphanumeric + `._-`; leading alphanumeric; length-bounded.
- *  Broader charsets would let typos traverse directories or break
- *  label parsing. */
-const ACCOUNT_NAME_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+ *  on-disk path, a manifest key, container labels, and generated
+ *  TypeScript exports. Keep the public name identifier-safe instead
+ *  of accepting path-safe spellings that codegen later rejects. */
+const ACCOUNT_NAME_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+const ACCOUNT_NAME_HINT =
+	'letters, digits, and underscores; must start with a letter; max 64 chars; cannot be a TypeScript reserved word';
+const TS_RESERVED_BINDING_NAMES = new Set([
+	'as',
+	'async',
+	'await',
+	'break',
+	'case',
+	'catch',
+	'class',
+	'const',
+	'continue',
+	'debugger',
+	'default',
+	'delete',
+	'do',
+	'else',
+	'enum',
+	'export',
+	'extends',
+	'false',
+	'finally',
+	'for',
+	'from',
+	'function',
+	'if',
+	'import',
+	'in',
+	'instanceof',
+	'let',
+	'new',
+	'null',
+	'of',
+	'return',
+	'super',
+	'switch',
+	'this',
+	'throw',
+	'true',
+	'try',
+	'typeof',
+	'var',
+	'void',
+	'while',
+	'with',
+	'yield',
+]);
+
+const accountNameInvalidReason = (name: string): string | null => {
+	if (!ACCOUNT_NAME_RE.test(name)) {
+		return `must match ${ACCOUNT_NAME_RE.source}`;
+	}
+	if (TS_RESERVED_BINDING_NAMES.has(name)) {
+		return 'cannot be a TypeScript reserved word';
+	}
+	return null;
+};
+
+export const assertAccountName = (name: string): void => {
+	const reason = accountNameInvalidReason(name);
+	if (reason !== null) {
+		throw new TypeError(`Account name '${name}' is invalid — ${reason}. ${ACCOUNT_NAME_HINT}`);
+	}
+};
 
 export const validateAccountName = (name: string): Effect.Effect<void, AccountAcquireError> => {
-	if (!ACCOUNT_NAME_RE.test(name)) {
+	const reason = accountNameInvalidReason(name);
+	if (reason !== null) {
 		return Effect.fail(
 			accountAcquireError({
 				phase: 'validate-name',
 				accountName: name,
 				variant: 'ephemeral',
-				message: `Account name '${name}' is invalid — must match ${ACCOUNT_NAME_RE.source}.`,
-				hint: 'lowercase alphanumeric + ._- ; must start with a letter or digit; max 64 chars',
+				message: `Account name '${name}' is invalid — ${reason}.`,
+				hint: ACCOUNT_NAME_HINT,
 			}),
 		);
 	}

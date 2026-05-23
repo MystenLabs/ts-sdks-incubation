@@ -11,6 +11,7 @@ import {
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
 	localPackage,
+	pythPriceFeedId,
 	SUI_PRICE_FEED_ID,
 	sui,
 	type Stack,
@@ -21,6 +22,14 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5182;
 const TRADER_USDC_STAKE = 5_000_000_000n;
+const TRADER_DBTC_STAKE = 100_000_000n;
+const TRADER_DETH_STAKE = 10_000_000_000n;
+const DBTC_PRICE_FEED_ID = pythPriceFeedId(
+	'c8e0d8e7f2a5b6c7d8e9f00112233445566778899aabbccddeeff00112233440',
+);
+const DETH_PRICE_FEED_ID = pythPriceFeedId(
+	'd1e2f3a40516273849a5b6c7d8e9f00112233445566778899aabbccddeeff000',
+);
 const VENDORED_DEEPBOOK_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbookv3');
 const VENDORED_SANDBOX_SOURCE_ROOT = resolve(HERE, 'move/vendor/deepbook-sandbox');
 
@@ -46,6 +55,28 @@ const SUI_USDC_POOL = {
 	stablePool: false,
 } as const;
 
+const DBTC_USDC_POOL = {
+	name: 'DBTC_USDC',
+	tickSize: 1_000_000n,
+	lotSize: 10_000n,
+	minSize: 10_000n,
+	seedPrice: 65_000_000_000n,
+	seedBaseAmount: 200_000_000n,
+	whitelisted: true,
+	stablePool: false,
+} as const;
+
+const DETH_USDC_POOL = {
+	name: 'DETH_USDC',
+	tickSize: 100_000n,
+	lotSize: 100_000n,
+	minSize: 100_000n,
+	seedPrice: 3_200_000_000n,
+	seedBaseAmount: 1_000_000_000n,
+	whitelisted: true,
+	stablePool: false,
+} as const;
+
 function requirePackage(sourcePath: string, packageName: string) {
 	if (!existsSync(resolve(sourcePath, 'Move.toml'))) {
 		throw new Error(`Missing vendored ${packageName} Move package at ${sourcePath}`);
@@ -55,6 +86,7 @@ function requirePackage(sourcePath: string, packageName: string) {
 }
 
 const deepbookSources = {
+	demoCoins: requirePackage(resolve(HERE, 'move/demo_coins'), 'demo coins'),
 	token: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'token'), 'DeepBook token'),
 	deepbook: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'deepbook'), 'DeepBook'),
 	dusdc: requirePackage(resolve(VENDORED_DEEPBOOK_SOURCE_ROOT, 'dusdc'), 'DUSDC'),
@@ -66,17 +98,37 @@ const publisher = account('publisher', {
 	kind: 'ephemeral',
 	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
 });
+const usdcPublisher = account('usdcPublisher', {
+	kind: 'ephemeral',
+	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
+});
+const demoCoinPublisher = account('demoCoinPublisher', {
+	kind: 'ephemeral',
+	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
+});
+const pythPublisher = account('pythPublisher', {
+	kind: 'ephemeral',
+	funding: [{ coin: 'sui', amount: 1_000_000_000_000n }],
+});
 const suiCoin = coin.builtin('sui');
 const usdcPackage = localPackage('dusdc', {
 	sourcePath: deepbookSources.dusdc,
-	publisher,
+	publisher: usdcPublisher,
 });
 const usdc = coin.fromPackage(usdcPackage, 'DUSDC');
+const demoCoinsPackage = localPackage('demo_coins', {
+	sourcePath: deepbookSources.demoCoins,
+	publisher: demoCoinPublisher,
+});
+const dbtc = coin.fromPackage(demoCoinsPackage, 'DBTC');
+const deth = coin.fromPackage(demoCoinsPackage, 'DETH');
 const trader = account('trader', {
 	kind: 'ephemeral',
 	funding: [
 		{ coin: 'sui', amount: 1_000_000_000_000n },
 		{ coin: usdc, amount: TRADER_USDC_STAKE },
+		{ coin: dbtc, amount: TRADER_DBTC_STAKE },
+		{ coin: deth, amount: TRADER_DETH_STAKE },
 	],
 });
 const deepbookPackage = localPackage('deepbook', {
@@ -90,7 +142,7 @@ const deepbookPackage = localPackage('deepbook', {
 });
 const pythPackage = localPackage('pyth', {
 	sourcePath: deepbookSources.pyth,
-	publisher,
+	publisher: pythPublisher,
 });
 const deep = coin.fromPackage(deepbookPackage, 'DEEP');
 const dex = deepbook({
@@ -100,7 +152,7 @@ const dex = deepbook({
 	deepTreasuryIdKey: 'deepTreasuryId',
 	pyth: {
 		package: pythPackage,
-		pusher: publisher,
+		pusher: pythPublisher,
 		feeds: [
 			{
 				symbol: 'DEEP',
@@ -118,6 +170,18 @@ const dex = deepbook({
 				symbol: 'USDC',
 				feedId: USDC_PRICE_FEED_ID,
 				initialPrice: 100_000_000n,
+				expo: -8,
+			},
+			{
+				symbol: 'DBTC',
+				feedId: DBTC_PRICE_FEED_ID,
+				initialPrice: 6_500_000_000_000n,
+				expo: -8,
+			},
+			{
+				symbol: 'DETH',
+				feedId: DETH_PRICE_FEED_ID,
+				initialPrice: 320_000_000_000n,
 				expo: -8,
 			},
 		],
@@ -149,6 +213,36 @@ const dex = deepbook({
 						side: 'ask',
 						price: SUI_USDC_POOL.seedPrice,
 						quantity: SUI_USDC_POOL.seedBaseAmount,
+					},
+				],
+			},
+		},
+		{
+			...DBTC_USDC_POOL,
+			base: { key: 'DBTC', coin: dbtc },
+			quote: { key: 'USDC', coin: usdc },
+			seed: {
+				baseAmount: DBTC_USDC_POOL.seedBaseAmount,
+				orders: [
+					{
+						side: 'ask',
+						price: DBTC_USDC_POOL.seedPrice,
+						quantity: DBTC_USDC_POOL.seedBaseAmount,
+					},
+				],
+			},
+		},
+		{
+			...DETH_USDC_POOL,
+			base: { key: 'DETH', coin: deth },
+			quote: { key: 'USDC', coin: usdc },
+			seed: {
+				baseAmount: DETH_USDC_POOL.seedBaseAmount,
+				orders: [
+					{
+						side: 'ask',
+						price: DETH_USDC_POOL.seedPrice,
+						quantity: DETH_USDC_POOL.seedBaseAmount,
 					},
 				],
 			},

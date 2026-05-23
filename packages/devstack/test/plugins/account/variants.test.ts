@@ -13,6 +13,7 @@ import {
 	acquireAccount,
 	type AccountAcquireContext,
 	type AccountValue,
+	validateAccountName,
 } from '../../../src/plugins/account/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { AcquireContext } from '../../../src/substrate/plugin.ts';
@@ -66,6 +67,39 @@ const registryFundingFor = (
 	if (registry.kind !== 'strategy-contributor') throw new Error('missing account strategy');
 	return registry.strategy.funding;
 };
+
+describe('account name validation', () => {
+	it('accepts generated TypeScript identifier-safe names, including camelCase', () => {
+		expect(Effect.runSync(validateAccountName('pythPublisher'))).toBeUndefined();
+		expect(Effect.runSync(validateAccountName('seal_publisher'))).toBeUndefined();
+	});
+
+	it('rejects names that are path-safe but not generated export-safe', async () => {
+		const exit = await Effect.runPromiseExit(validateAccountName('pyth-publisher'));
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(Option.isSome(err)).toBe(true);
+		if (Option.isSome(err)) {
+			expect(err.value.message).toContain('pyth-publisher');
+			expect(err.value.hint).toContain('underscores');
+		}
+		expect(() => account('pyth-publisher')).toThrow(TypeError);
+		expect(() => account('pyth.publisher')).toThrow(TypeError);
+	});
+
+	it('rejects generated export reserved words', async () => {
+		const exit = await Effect.runPromiseExit(validateAccountName('class'));
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(Option.isSome(err)).toBe(true);
+		if (Option.isSome(err)) {
+			expect(err.value.message).toContain('reserved word');
+		}
+		expect(() => account('class')).toThrow(TypeError);
+	});
+});
 
 describe('account env and private-key variant surface', () => {
 	it('env variant reads the public `key` option as the process env var name', async () => {

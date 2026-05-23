@@ -219,6 +219,15 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		);
 	});
 
+	it('throws on account names that differ only by casing', () => {
+		const alice = account('alice');
+		const Alice = account('Alice');
+
+		expect(() => defineDevstack({ members: [alice, Alice] })).toThrow(
+			/Duplicate devstack account name 'Alice' differs only by casing from 'alice'/,
+		);
+	});
+
 	it('throws on circular plugin-valued dependency expansion', () => {
 		const depsForA = [] as ReturnType<typeof resource>[];
 		const a = definePlugin({
@@ -321,8 +330,9 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 	});
 });
 
+// oxlint-disable-next-line no-constant-condition
 if (false) {
-	const needsSui = account('needs-sui');
+	const needsSui = account('needsSui');
 	// @ts-expect-error missing provider: sui
 	defineDevstack({ members: [needsSui] });
 

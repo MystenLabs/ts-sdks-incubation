@@ -9,15 +9,23 @@ test('renders localnet trader shell and generated coin proof', async ({ page }) 
 	await expect(page.getByTestId('localnet-rpc')).toContainText('localhost');
 	await expect(page.getByTestId('deepbook-local-status')).toHaveText('configured');
 	await expect(page.getByTestId('deepbook-pool')).toHaveText('DEEP_SUI');
-	await expect(page.getByTestId('deepbook-pool-count')).toHaveText('2');
-	await expect(page.getByTestId('pyth-feed-count')).toHaveText('3 feeds');
+	await expect(page.getByTestId('deepbook-pool-count')).toHaveText('4');
+	await expect(page.getByTestId('pyth-feed-count')).toHaveText('5 feeds');
 	await expect(page.getByTestId('pyth-price-SUI')).toContainText('$3.45');
 	await expect(page.getByTestId('pyth-price-USDC')).toContainText('$1.00');
+	await expect(page.getByTestId('pyth-price-DBTC')).toContainText('$65,000.00');
+	await expect(page.getByTestId('pyth-price-DETH')).toContainText('$3,200.00');
+	await expect(page.getByTestId('market-option-SUI_USDC')).toBeVisible();
+	await expect(page.getByTestId('market-option-DBTC_USDC')).toBeVisible();
+	await expect(page.getByTestId('market-option-DETH_USDC')).toBeVisible();
+	await page.getByTestId('market-option-DBTC_USDC').click();
+	await expect(page.getByTestId('deepbook-pool')).toHaveText('DBTC_USDC');
+	await expect(page.getByTestId('trade-market')).toHaveValue('USDC -> DBTC');
 	await expect(page.getByRole('heading', { name: 'Trade ticket' })).toBeVisible();
 	await expect(page.getByTestId('trade-submit')).toBeDisabled();
 });
 
-test('connects the dev wallet account and shows faucet-funded local SUI and USDC', async ({
+test('connects the dev wallet account and shows faucet-funded local demo balances', async ({
 	page,
 }) => {
 	await page.goto('/');
@@ -37,6 +45,16 @@ test('connects the dev wallet account and shows faucet-funded local SUI and USDC
 	await expect
 		.poll(() => readDisplayedBalance(page.getByTestId('usdc-balance')), {
 			message: 'Trader owns local USDC from generic coin funding',
+		})
+		.toBeGreaterThan(0);
+	await expect
+		.poll(() => readDisplayedBalance(page.getByTestId('dbtc-balance')), {
+			message: 'Trader owns local DBTC from generic coin funding',
+		})
+		.toBeGreaterThan(0);
+	await expect
+		.poll(() => readDisplayedBalance(page.getByTestId('deth-balance')), {
+			message: 'Trader owns local DETH from generic coin funding',
 		})
 		.toBeGreaterThan(0);
 	await expect(page.getByTestId('trade-submit')).toBeVisible();

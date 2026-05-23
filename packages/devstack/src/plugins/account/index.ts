@@ -67,6 +67,7 @@ import {
 import { makeAccountSnapshotable } from './snapshot.ts';
 import {
 	acquireAccount,
+	assertAccountName,
 	type AccountAcquireContext,
 	type AccountOptions,
 	type ResolvedAccountOptions,
@@ -85,8 +86,9 @@ const accountErrorContributions = pluginErrorContributions(ACCOUNT_ERROR_TAGS);
  *  at the `defineDevstack` call site.
  *
  *  Distilled-doc invariant: resource id flows into the on-disk path, the
- *  manifest key, and container labels — the strict-charset name
- *  validation (in `service.ts`) protects all four call sites. */
+ *  manifest key, container labels, and generated TypeScript exports —
+ *  the identifier-safe name validation (in `service.ts`) protects
+ *  those call sites. */
 export type AccountResourceId<Name extends string> = `account/${Name}`;
 
 const accountResource = <Name extends string>(name: Name) =>
@@ -177,6 +179,8 @@ export const account = <const N extends string, const Funding extends AccountFun
 	name: N,
 	opts?: AccountOptions<Funding>,
 ) => {
+	assertAccountName(name);
+
 	// Normalize bare-form to ephemeral default. The user-facing
 	// `AccountOptions` union does not include "kind absent" — we
 	// inject the default here so the rest of the body sees a

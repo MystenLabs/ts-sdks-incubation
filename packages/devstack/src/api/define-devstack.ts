@@ -47,6 +47,8 @@ export interface DevstackConfig<Members extends ReadonlyArray<AnyPlugin>> extend
 	readonly members: Members;
 }
 
+const ACCOUNT_RESOURCE_PREFIX = 'account/';
+
 // --- Stack handle -------------------------------------------------------
 
 /**
@@ -164,6 +166,7 @@ export const expandPluginDependencies = (
 ): ReadonlyArray<AnyPlugin> => {
 	const expanded: AnyPlugin[] = [];
 	const seen = new Map<string, AnyPlugin>();
+	const accountNameByCaseFold = new Map<string, string>();
 	const visiting = new Set<string>();
 
 	const visit = (member: AnyPlugin) => {
@@ -177,6 +180,17 @@ export const expandPluginDependencies = (
 				return;
 			}
 			throw new Error(`Duplicate devstack provider for ${id}`);
+		}
+		const accountName = accountNameFromResourceId(id);
+		if (accountName !== null) {
+			const caseFoldedName = accountName.toLowerCase();
+			const previousAccountName = accountNameByCaseFold.get(caseFoldedName);
+			if (previousAccountName !== undefined && previousAccountName !== accountName) {
+				throw new Error(
+					`Duplicate devstack account name '${accountName}' differs only by casing from '${previousAccountName}'`,
+				);
+			}
+			accountNameByCaseFold.set(caseFoldedName, accountName);
 		}
 		if (visiting.has(id)) {
 			throw new Error(`Circular devstack dependency through ${id}`);
@@ -205,6 +219,11 @@ export const expandPluginDependencies = (
 const isExpandedWalletAlias = (a: AnyPlugin, b: AnyPlugin): boolean =>
 	a.id === b.id && (readExpandHook(a) !== undefined || readExpandHook(b) !== undefined);
 
+const accountNameFromResourceId = (id: string): string | null => {
+	if (!id.startsWith(ACCOUNT_RESOURCE_PREFIX)) return null;
+	return id.slice(ACCOUNT_RESOURCE_PREFIX.length);
+};
+
 // --- wallet `accounts: 'all'` expansion (D6, api-surface-design.md §4) --
 //
 // The wallet factory returns a placeholder member with a symbol-keyed
@@ -221,8 +240,6 @@ function readExpandHook(m: AnyPlugin): WalletExpandAccountsAllExpander | undefin
 	const slot = (m as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
 	return typeof slot === 'function' ? (slot as WalletExpandAccountsAllExpander) : undefined;
 }
-
-const ACCOUNT_RESOURCE_PREFIX = 'account/';
 
 /** Expand any `wallet({ accounts: 'all' })` placeholder plugin into a
  *  real wallet plugin whose dependencies include every account plugin.
