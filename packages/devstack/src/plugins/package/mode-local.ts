@@ -24,7 +24,7 @@
 // The publish output is exposed on the resolved value and emitted as a
 // package-owned extension contribution for sibling folds.
 
-import { Effect, Schema, type Scope } from 'effect';
+import { Duration, Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
 import {
@@ -143,6 +143,8 @@ export interface LocalModeOutputs {
  * 4: "Signer MUST be an explicit upstream").
  */
 const LOCAL_PACKAGE_CACHE_SCHEMA_VERSION = 'v3';
+const PACKAGE_CACHE_VERIFY_MAX_ATTEMPTS = 20;
+const PACKAGE_CACHE_VERIFY_DELAY_MS = 250;
 
 const combineInputsHash = (sourceHash: string, publisherAddress: string) =>
 	brandContentHash(
@@ -165,25 +167,37 @@ const combineInputsHash = (sourceHash: string, publisherAddress: string) =>
  * Mirrors `coin/mint.ts::buildVerifyProbe` exactly so the two artifact publisher
  * consumers stay shape-aligned.
  */
-const buildVerifyProbe = (
+export const buildVerifyProbe = (
 	probe: ChainProbe<SuiProbeKey>,
 	cachedPackageIdHint: string | null,
+	opts?: { readonly maxAttempts?: number; readonly delayMs?: number },
 ): Effect.Effect<typeof PackageVerifyShape.Type | null, never> =>
 	Effect.gen(function* () {
 		if (cachedPackageIdHint === null) return null;
-		// Lenient mode in the underlying probe already coerces
-		// not-found AND transient → null. We just forward.
-		const result: typeof PackageVerifyShape.Type | null = yield* probe
-			.get({ kind: 'object', objectId: cachedPackageIdHint }, PackageVerifyShape, 'lenient')
-			.pipe(
-				// The probe's own error channel is `ChainProbeError`; under
-				// lenient mode only `decode-failed` surfaces (not-found +
-				// transient already coerce to null). A decode failure on
-				// verify is treated as "stale shape" — null so the substrate
-				// re-publishes rather than carry forward a mismatch.
-				Effect.catch(() => Effect.succeed(null as typeof PackageVerifyShape.Type | null)),
-			);
-		return result;
+		const maxAttempts = opts?.maxAttempts ?? PACKAGE_CACHE_VERIFY_MAX_ATTEMPTS;
+		const delayMs = opts?.delayMs ?? PACKAGE_CACHE_VERIFY_DELAY_MS;
+		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+			// Lenient mode in the underlying probe already coerces
+			// not-found AND transient → null. We retry nulls briefly
+			// because local Sui restart can report ready before package
+			// objects are immediately queryable, and a false cache miss
+			// turns a warm restart into an unnecessary publish.
+			const result: typeof PackageVerifyShape.Type | null = yield* probe
+				.get({ kind: 'object', objectId: cachedPackageIdHint }, PackageVerifyShape, 'lenient')
+				.pipe(
+					// The probe's own error channel is `ChainProbeError`; under
+					// lenient mode only `decode-failed` surfaces (not-found +
+					// transient already coerce to null). A decode failure on
+					// verify is treated as "stale shape" — null so the substrate
+					// re-publishes rather than carry forward a mismatch.
+					Effect.catch(() => Effect.succeed(null as typeof PackageVerifyShape.Type | null)),
+				);
+			if (result !== null) return result;
+			if (attempt < maxAttempts && delayMs > 0) {
+				yield* Effect.sleep(Duration.millis(delayMs));
+			}
+		}
+		return null;
 	});
 
 /**

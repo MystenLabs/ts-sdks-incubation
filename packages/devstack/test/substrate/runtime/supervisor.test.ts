@@ -659,6 +659,59 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('manual stack restart does not block shutdown commands', () =>
+		Effect.gen(function* () {
+			const restartStarted = yield* Deferred.make<void>();
+			const starts = yield* Ref.make(0);
+			const finalizers = yield* Ref.make(0);
+			const pluginRestarting = definePlugin({
+				id: 'test:restarting',
+				role: 'service' as const,
+				start: () =>
+					Effect.gen(function* () {
+						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
+						yield* Effect.addFinalizer(() => Ref.update(finalizers, (n) => n + 1));
+						if (run === 2) {
+							yield* Deferred.succeed(restartStarted, void 0).pipe(Effect.ignore);
+							yield* Effect.never;
+						}
+						return { run };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestarting], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					yield* startup.runInitialAcquire;
+					yield* startup.handle.registry.awaitReady(pluginKey('test:restarting#0'));
+
+					yield* Queue.offer(startup.handle.commands, { tag: 'stack.restart' });
+					yield* Deferred.await(restartStarted);
+					yield* Queue.offer(startup.handle.commands, { tag: 'stack.restart' });
+					yield* Queue.offer(startup.handle.commands, { tag: 'stack.restart' });
+					for (let i = 0; i < 10; i++) {
+						yield* Effect.yieldNow;
+					}
+					expect(yield* Ref.get(starts)).toBe(2);
+
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					for (let i = 0; i < 10; i++) {
+						const snapshot = yield* SubscriptionRef.get(state);
+						if (snapshot.cycle.phase === 'shutting-down') break;
+						yield* Effect.yieldNow;
+					}
+
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.cycle.phase).toBe('shutting-down');
+					yield* startup.handle.awaitShutdown;
+					expect(yield* Ref.get(finalizers)).toBeGreaterThanOrEqual(1);
+				}),
+			);
+		}),
+	);
+
 	it.effect('second snapshot keypress is skipped while capture is running', () =>
 		Effect.gen(function* () {
 			const captureStarted = yield* Deferred.make<void>();

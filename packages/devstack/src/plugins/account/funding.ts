@@ -27,7 +27,7 @@
 // is non-reentrant by design, so a hypothetical loop holding a single
 // lease across iterations would deadlock the second one.
 
-import { Effect } from 'effect';
+import { Duration, Effect } from 'effect';
 
 import type { FaucetStrategy } from '../faucet/strategies/sui-local.ts';
 import {
@@ -159,6 +159,9 @@ export const SUI_FULL_COIN_TYPE = '0x2::sui::SUI' as const;
  *  is predictable. */
 export const DEFAULT_EPHEMERAL_FUND_MIST = 1_000_000_000n;
 
+const FUNDING_SETTLEMENT_INTERVAL_MS = 250;
+const FUNDING_SETTLEMENT_TIMEOUT_MS = 30_000;
+
 /** Inputs the default-funding pass needs from the per-acquire ctx. */
 export interface FundEphemeralDefaultArgs {
 	readonly accountName: string;
@@ -279,6 +282,17 @@ export const fundEphemeralDefault = (
 				}),
 			),
 		);
+		yield* setCurrentPluginPhase('waiting for SUI funding settlement');
+		yield* waitForBalanceAtLeast({
+			balanceReader: parts.balanceReader,
+			accountName: parts.accountName,
+			variant: 'ephemeral',
+			phase: 'fund-default',
+			owner: parts.address,
+			coinType: SUI_FULL_COIN_TYPE,
+			coinLabel: 'SUI',
+			amount: parts.amountMist,
+		});
 
 		yield* Effect.annotateCurrentSpan({
 			'account.name': parts.accountName,
@@ -429,6 +443,17 @@ export const applyCrossCuttingFunding = (
 			yield* strategy.usesAccountSigner === true
 				? request
 				: withAddressLease(parts.broker, parts.accountName, parts.address, request);
+			yield* setCurrentPluginPhase(`waiting for ${entry.coin} funding settlement`);
+			yield* waitForBalanceAtLeast({
+				balanceReader: parts.balanceReader,
+				accountName: parts.accountName,
+				variant: parts.variant,
+				phase: 'fund-cross-cutting',
+				owner: parts.address,
+				coinType: entry.fullCoinType,
+				coinLabel: entry.coin,
+				amount: entry.amount,
+			});
 			applied.push(entry);
 		}
 
@@ -457,3 +482,48 @@ const readExistingBalance = (
 	},
 ): Effect.Effect<bigint | null> =>
 	balanceReader === undefined ? Effect.succeed(null) : balanceReader.readBalance(args);
+
+const waitForBalanceAtLeast = (parts: {
+	readonly balanceReader: FundingBalanceReader | undefined;
+	readonly accountName: string;
+	readonly variant: AccountVariantKind;
+	readonly phase: 'fund-default' | 'fund-cross-cutting';
+	readonly owner: string;
+	readonly coinType: string;
+	readonly coinLabel: string;
+	readonly amount: bigint;
+}): Effect.Effect<void, AccountAcquireError> => {
+	if (parts.balanceReader === undefined) {
+		return Effect.void;
+	}
+	return Effect.gen(function* () {
+		const startedAt = Date.now();
+		let lastBalance: bigint | null = null;
+		for (;;) {
+			lastBalance = yield* readExistingBalance(parts.balanceReader, {
+				owner: parts.owner,
+				coinType: parts.coinType,
+			});
+			if (lastBalance !== null && lastBalance >= parts.amount) {
+				return;
+			}
+			if (Date.now() - startedAt >= FUNDING_SETTLEMENT_TIMEOUT_MS) {
+				return yield* Effect.fail(
+					accountAcquireError({
+						phase: parts.phase,
+						accountName: parts.accountName,
+						variant: parts.variant,
+						message:
+							`Account '${parts.accountName}': funding for ${parts.coinLabel} was accepted ` +
+							`but balance did not reach ${parts.amount} before the settlement timeout ` +
+							`(last=${lastBalance === null ? '<unavailable>' : lastBalance}).`,
+						hint:
+							'The faucet or funding strategy returned before the funded coin became spendable. ' +
+							'Check the funding strategy finality gate and Sui RPC health.',
+					}),
+				);
+			}
+			yield* Effect.sleep(Duration.millis(FUNDING_SETTLEMENT_INTERVAL_MS));
+		}
+	});
+};

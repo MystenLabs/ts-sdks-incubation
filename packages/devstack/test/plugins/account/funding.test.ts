@@ -12,6 +12,7 @@ import {
 } from '../../../src/substrate/runtime/lease-broker/index.ts';
 import {
 	applyCrossCuttingFunding,
+	fundEphemeralDefault,
 	SUI_FULL_COIN_TYPE,
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
@@ -128,6 +129,79 @@ describe('account cross-cutting funding dispatch', () => {
 
 					expect(applied).toEqual([sui]);
 					expect(requests.map((request) => request.amount)).toEqual([1_000_000n]);
+				}),
+			),
+		),
+	);
+
+	it.effect('waits for default SUI funding to become balance-visible before returning', () =>
+		withFundingLayers(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const registry = yield* StrategyRegistryService;
+					const broker = yield* LeaseBrokerService;
+					const events: string[] = [];
+					yield* registry.register('faucet:request:sui:localnet', {
+						request: () =>
+							Effect.sync(() => {
+								events.push('request');
+							}),
+					} satisfies AccountFundingStrategy);
+
+					let reads = 0;
+					const balanceReader: FundingBalanceReader = {
+						readBalance: () =>
+							Effect.sync(() => {
+								reads += 1;
+								const balance = reads === 1 ? 0n : 1_000_000n;
+								events.push(`balance:${balance}`);
+								return balance;
+							}),
+					};
+
+					yield* fundEphemeralDefault({
+						accountName: 'alice',
+						address: '0xalice',
+						amountMist: 1_000_000n,
+						suiMode: 'local',
+						chainId: chainId('sui:localnet'),
+						emitAutoPromotionEvent: () => Effect.void,
+						broker,
+						balanceReader,
+					});
+
+					expect(events).toEqual(['balance:0', 'request', 'balance:1000000']);
+				}),
+			),
+		),
+	);
+
+	it.effect('waits for cross-cutting funding to become balance-visible before applying it', () =>
+		withFundingLayers(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const registry = yield* StrategyRegistryService;
+					const events: string[] = [];
+					yield* registry.register('coinType:0xfeed::wal::WAL', {
+						request: () =>
+							Effect.sync(() => {
+								events.push('request');
+							}),
+					} satisfies AccountFundingStrategy);
+
+					let reads = 0;
+					const applied = yield* applyFunding([fundingEntry()], {
+						readBalance: () =>
+							Effect.sync(() => {
+								reads += 1;
+								const balance = reads === 1 ? 0n : 123n;
+								events.push(`balance:${balance}`);
+								return balance;
+							}),
+					});
+
+					expect(applied).toEqual([fundingEntry()]);
+					expect(events).toEqual(['balance:0', 'request', 'balance:123']);
 				}),
 			),
 		),

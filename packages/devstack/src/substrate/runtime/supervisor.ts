@@ -848,6 +848,8 @@ interface CommandLoopDeps {
 	readonly ref: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly hub: Queue.Enqueue<EngineEvent>;
 	readonly queuedCommands: Queue.Dequeue<QueuedCommand>;
+	readonly stackRestartTask: Ref.Ref<StackRestartTaskState>;
+	readonly stackRestartSeq: Ref.Ref<number>;
 	readonly snapshotCaptureTask: Ref.Ref<SnapshotCaptureTaskState>;
 	readonly snapshotCaptureSeq: Ref.Ref<number>;
 	readonly shutdownLatch: Ref.Ref<boolean>;
@@ -866,6 +868,11 @@ interface CommandSubmission {
 	readonly command: EngineCommand;
 	readonly completion: Deferred.Deferred<Exit.Exit<void, unknown>>;
 }
+
+type StackRestartTaskState =
+	| { readonly tag: 'idle' }
+	| { readonly tag: 'starting'; readonly token: number }
+	| { readonly tag: 'running'; readonly token: number; readonly fiber: Fiber.Fiber<void, never> };
 
 type SnapshotCaptureTaskState =
 	| { readonly tag: 'idle' }
@@ -994,6 +1001,58 @@ const requestBackgroundSnapshotInterrupt = (
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'));
 
+const startBackgroundStackRestart = (
+	deps: CommandLoopDeps,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const token = yield* Ref.updateAndGet(deps.stackRestartSeq, (n) => n + 1);
+		const started = yield* Ref.modify(deps.stackRestartTask, (state) =>
+			state.tag === 'idle'
+				? [true, { tag: 'starting' as const, token }]
+				: [false, state],
+		);
+
+		if (!started) {
+			yield* deps.logger.log('supervisor', null, {
+				level: 'debug',
+				message: 'stack restart skipped because one is already running',
+			});
+			return;
+		}
+
+		const fiber = yield* handleCommand(deps, { tag: 'stack.restart' }).pipe(
+			Effect.catch(() => Effect.void),
+			Effect.ensuring(
+				Ref.update(deps.stackRestartTask, (state) =>
+					state.tag !== 'idle' && state.token === token
+						? ({ tag: 'idle' } satisfies StackRestartTaskState)
+						: state,
+				),
+			),
+			Effect.forkIn(deps.parentScope),
+		);
+
+		yield* Ref.update(deps.stackRestartTask, (state) =>
+			state.tag === 'starting' && state.token === token
+				? ({ tag: 'running', token, fiber } satisfies StackRestartTaskState)
+				: state,
+		);
+	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundStackRestart'));
+
+const requestBackgroundStackRestartInterrupt = (
+	deps: Pick<CommandLoopDeps, 'stackRestartTask'>,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const fiber = yield* Ref.modify(deps.stackRestartTask, (state) =>
+			state.tag === 'running'
+				? [state.fiber, { tag: 'idle' } as StackRestartTaskState]
+				: [null, state],
+		);
+		if (fiber !== null) {
+			yield* Fiber.interrupt(fiber);
+		}
+	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptStackRestart'));
+
 const publishHookFailure = (
 	deps: CommandLoopDeps,
 	cause: Cause.Cause<unknown>,
@@ -1102,6 +1161,8 @@ const handleCommand = (
 					level: 'info',
 					message: 'shutdown requested',
 				});
+				yield* requestBackgroundStackRestartInterrupt(deps);
+				yield* setCyclePhase(ref, 'shutting-down');
 				const plan = planFullDrain(graph);
 				yield* teardownKeys(graph, registry, plan.teardownOrder);
 				yield* Effect.yieldNow;
@@ -1118,6 +1179,8 @@ const handleCommand = (
 				});
 				yield* setCyclePhase(ref, 'shutting-down');
 				yield* Ref.set(shutdownLatch, true);
+				yield* requestBackgroundStackRestartInterrupt(deps);
+				yield* setCyclePhase(ref, 'shutting-down');
 				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
 				yield* logger.log('supervisor', null, {
 					level: 'fatal',
@@ -1260,6 +1323,8 @@ const commandLoop = (deps: CommandLoopDeps): Effect.Effect<void, never, never> =
 					handleCommand(deps, next.submission.command, { failOnPostAcquireHook: true }),
 				);
 				yield* Deferred.succeed(next.submission.completion, exit).pipe(Effect.ignore);
+			} else if (next.command.tag === 'stack.restart') {
+				yield* startBackgroundStackRestart(deps);
 			} else {
 				yield* handleCommand(deps, next.command).pipe(Effect.catch(() => Effect.void));
 			}
@@ -1396,6 +1461,8 @@ export const startSupervisor = (
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const queuedCommands = yield* Queue.unbounded<QueuedCommand>();
+		const stackRestartTask = yield* Ref.make<StackRestartTaskState>({ tag: 'idle' });
+		const stackRestartSeq = yield* Ref.make(0);
 		const snapshotCaptureTask = yield* Ref.make<SnapshotCaptureTaskState>({ tag: 'idle' });
 		const snapshotCaptureSeq = yield* Ref.make(0);
 		const shutdownLatch = yield* Ref.make(false);
@@ -1503,6 +1570,8 @@ export const startSupervisor = (
 			ref: state,
 			hub,
 			queuedCommands,
+			stackRestartTask,
+			stackRestartSeq,
 			snapshotCaptureTask,
 			snapshotCaptureSeq,
 			shutdownLatch,
