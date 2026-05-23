@@ -717,6 +717,7 @@ export const layerRouterService: Layer.Layer<
 					}
 					const currentApplied = yield* SubscriptionRef.get(applied);
 					const currentIds = new Set(currentApplied.map((route) => route.dispatchFileId));
+					let reuseLiveRoute = false;
 					const readScan = yield* readDispatchRouteScan(
 						fs,
 						profile.dispatchDir,
@@ -742,7 +743,7 @@ export const layerRouterService: Layer.Layer<
 									liveRouteLeaseMismatch(existingSameDispatchRoute, resolved),
 								);
 							}
-							return 'reused-live';
+							reuseLiveRoute = true;
 						}
 					}
 					const existingDispatchRoutes = activeDispatchRoutes.filter(
@@ -756,6 +757,7 @@ export const layerRouterService: Layer.Layer<
 						resolved,
 					]);
 					if (collision) return yield* Effect.fail(collision);
+					if (reuseLiveRoute) return 'reused-live';
 
 					// Atomic write — invariant #5. tmp + rename via the
 					// substrate's `atomicWriteFile` helper; Traefik's

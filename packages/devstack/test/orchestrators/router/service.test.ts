@@ -548,6 +548,55 @@ describe('RouterService.contributeRoute', () => {
 		}),
 	);
 
+	it.effect('checks current-process collisions before reusing a live dispatch file', () =>
+		Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+			const existingRoute: ResolvedRoute = {
+				dispatchFileId: fileId,
+				hostname: 'api.my-app.localhost',
+				entrypointName: 'wallet-app',
+				entrypointPort: 6173,
+				upstreamUrl: 'http://127.0.0.1:6173',
+				cors: true,
+				wireProtocol: 'http',
+			};
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					yield* router.contributeRoute({
+						kind: 'routable',
+						endpointName: 'wallet-app',
+						dispatchId: { serviceKey: 'already-applied', role: 'api' },
+						upstream: { type: 'host-loopback', port: 6174 },
+						cors: true,
+						wireProtocol: 'http',
+					});
+					writeFileSync(
+						join(dir, dispatchFilename(fileId)),
+						renderRouteYaml(existingRoute, makeLease(profile)),
+					);
+
+					const err = yield* router
+						.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: walletApiDispatch,
+							upstream: { type: 'host-loopback', port: 6173 },
+							cors: true,
+							wireProtocol: 'http',
+						})
+						.pipe(Effect.flip);
+
+					expect(err._tag).toBe('RouteCollision');
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+		}),
+	);
+
 	it.live('waits for the public route readiness header before returning an HTTP endpoint', () =>
 		Effect.gen(function* () {
 			const dir = makeTmpDir();
