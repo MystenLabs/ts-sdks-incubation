@@ -36,6 +36,7 @@
 //     architecture invariant #5.
 
 import { Context, Effect, FileSystem, Layer, Ref, Stream, SubscriptionRef } from 'effect';
+import { request as httpRequest } from 'node:http';
 import * as path from 'node:path';
 
 import type { RoutableDecl } from '../../contracts/routable.ts';
@@ -424,6 +425,77 @@ const responseHasReadyRoute = (response: Response, resolved: ResolvedRoute): boo
 	response.headers.get(ROUTE_READINESS_HEADER) === resolved.dispatchFileId &&
 	!proxyGatewayStatuses.has(response.status);
 
+const fetchHttpRouteViaLoopback: HttpProbeFetch = (input, init) =>
+	new Promise<Response>((resolveResponse, rejectResponse) => {
+		const url = new URL(String(input));
+		const headers = new Headers(init?.headers);
+		const signal = init?.signal ?? undefined;
+		const hostHeader = headers.get('host') ?? headers.get('Host') ?? url.host;
+		headers.delete('host');
+		headers.delete('Host');
+		const requestHeaders: Record<string, string> = {};
+		headers.forEach((value, key) => {
+			requestHeaders[key] = value;
+		});
+		requestHeaders.host = hostHeader;
+		let settled = false;
+		let req: ReturnType<typeof httpRequest> | null = null;
+		function onAbort(): void {
+			const cause = new Error('route readiness probe aborted');
+			req?.destroy(cause);
+			settle(rejectResponse, cause);
+		}
+		const settle = <T>(fn: (value: T) => void, value: T): void => {
+			if (settled) return;
+			settled = true;
+			if (signal !== undefined) {
+				signal.removeEventListener('abort', onAbort);
+			}
+			fn(value);
+		};
+		req = httpRequest(
+			{
+				hostname: directLoopbackHost,
+				port: url.port === '' ? 80 : Number(url.port),
+				path: `${url.pathname}${url.search}`,
+				method: init?.method ?? 'GET',
+				headers: requestHeaders,
+			},
+			(res) => {
+				const chunks: Uint8Array[] = [];
+				res.on('data', (chunk: Buffer | string) => {
+					chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+				});
+				res.on('end', () => {
+					const responseHeaders = new Headers();
+					for (const [key, value] of Object.entries(res.headers)) {
+						if (value === undefined) continue;
+						if (Array.isArray(value)) {
+							for (const item of value) responseHeaders.append(key, item);
+						} else {
+							responseHeaders.set(key, value);
+						}
+					}
+					settle(
+						resolveResponse,
+						new Response(new Uint8Array(Buffer.concat(chunks)), {
+							status: res.statusCode ?? 599,
+							statusText: res.statusMessage,
+							headers: responseHeaders,
+						}),
+					);
+				});
+			},
+		);
+		if (signal?.aborted === true) {
+			onAbort();
+			return;
+		}
+		signal?.addEventListener('abort', onAbort, { once: true });
+		req.on('error', (cause) => settle(rejectResponse, cause));
+		req.end();
+	});
+
 const resolveDisabledDirectRoute = (
 	identity: Identity,
 	decl: RoutableDecl,
@@ -506,12 +578,14 @@ const waitForPublicRouteReadiness = (
 	const timeoutMs = options.timeoutMs ?? DEFAULT_ROUTE_READINESS_TIMEOUT_MS;
 	const intervalMs = options.intervalMs ?? DEFAULT_ROUTE_READINESS_INTERVAL_MS;
 	const requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_ROUTE_READINESS_REQUEST_TIMEOUT_MS;
+	const probeUrl = `http://${directLoopbackHost}:${resolved.entrypointPort}`;
 	return waitForHttpEndpoint({
-		endpoint: endpoint.url,
+		endpoint: probeUrl,
 		timeoutMs,
 		intervalMs,
 		requestTimeoutMs,
-		...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+		requestInit: { headers: { host: resolved.hostname } },
+		fetch: options.fetch ?? fetchHttpRouteViaLoopback,
 		validate: (response) => responseHasReadyRoute(response, resolved),
 	}).pipe(
 		Effect.mapError(
@@ -522,7 +596,8 @@ const waitForPublicRouteReadiness = (
 					timeoutMs,
 					detail:
 						`public router endpoint ${endpoint.url} did not serve route ` +
-						`${resolved.dispatchFileId} within ${timeoutMs}ms`,
+						`${resolved.dispatchFileId} within ${timeoutMs}ms ` +
+						`(probeUrl=${probeUrl}, hostHeader=${resolved.hostname})`,
 					cause,
 				}),
 		),

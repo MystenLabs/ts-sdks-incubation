@@ -32,10 +32,15 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   changes:
     name: Detect devstack E2E changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       seed: ${{ steps.filter.outputs.seed }}
       docker: ${{ steps.filter.outputs.docker }}
@@ -116,6 +121,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.seed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -142,8 +148,8 @@ jobs:
           cache: 'pnpm'
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Build devstack
-        run: pnpm turbo build --filter @mysten-incubation/devstack
+      - name: Build devstack runtime packages
+        run: pnpm turbo build --filter @mysten-incubation/devstack --filter @mysten-incubation/dev-wallet
 
       # Invoke the built CLI directly via node so this step doesn't
       # depend on pnpm having created the `devstack` bin symlink in
@@ -154,6 +160,7 @@ jobs:
       # the bin-symlink lookup entirely.
       - name: Apply stack (boot + write state + tear down)
         working-directory: examples/${{ matrix.example }}
+        timeout-minutes: 20
         run: node ../../packages/devstack/dist/cli/main.mjs apply --state-dir .devstack --app ${{ matrix.example }} --stack ${{ matrix.stack }}
 
       # `apply` boots service containers that bind-mount host paths under
@@ -200,11 +207,24 @@ jobs:
           retention-days: 3
           if-no-files-found: error
 
+      - name: Upload devstack state on seed failure
+        if: failure()
+        uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # pin@v4.6.0
+        with:
+          name: devstack-seed-${{ matrix.example }}-failure
+          path: |
+            examples/${{ matrix.example }}/.devstack/
+            examples/${{ matrix.example }}/src/generated/
+          retention-days: 7
+          if-no-files-found: ignore
+          include-hidden-files: true
+
   restore:
     name: Restore snapshot · ${{ matrix.example }}
     needs: [changes, seed]
     if: needs.changes.outputs.seed == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:

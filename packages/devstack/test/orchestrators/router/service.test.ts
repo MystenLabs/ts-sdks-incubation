@@ -601,10 +601,13 @@ describe('RouterService.contributeRoute', () => {
 		Effect.gen(function* () {
 			const dir = makeTmpDir();
 			const profile = makeTestProfile(dir);
-			const calls: string[] = [];
+			const calls: Array<{ readonly url: string; readonly host: string | null }> = [];
 			let readyHeader = '';
-			const fetch: HttpProbeFetch = async (input) => {
-				calls.push(String(input));
+			const fetch: HttpProbeFetch = async (input, init) => {
+				calls.push({
+					url: String(input),
+					host: new Headers(init?.headers).get('host'),
+				});
 				if (calls.length === 1) return new Response('gateway timeout', { status: 504 });
 				return new Response('not found from backend', {
 					status: 404,
@@ -628,8 +631,8 @@ describe('RouterService.contributeRoute', () => {
 
 					expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
 					expect(calls).toEqual([
-						'http://api.my-app.localhost:6173',
-						'http://api.my-app.localhost:6173',
+						{ url: 'http://127.0.0.1:6173', host: 'api.my-app.localhost' },
+						{ url: 'http://127.0.0.1:6173', host: 'api.my-app.localhost' },
 					]);
 					const applied = yield* SubscriptionRef.get(router.applied);
 					expect(applied).toHaveLength(1);
