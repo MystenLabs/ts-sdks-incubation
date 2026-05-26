@@ -17,7 +17,7 @@ the contract.
 
 | Layer                            | What lives here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           | Imports from                                                                                                                                         | NEVER imports from                                                                                                                              |
 | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| **L0 substrate**                 | kernel, branded primitives, scheduler, lifecycle SM, event/command channels, paths, identity, port broker, lease broker, lock broker, atomic-write, cache, state-store, cross-process protocol, runtime decode helpers, retry policy, process supervisor, observability primitives, manifest envelope schema, ArtifactPublisher, strategy-registry, generic scoped-ref-map. **Name-blind post PR1.5** — the `per-stack-registries` Sui/Move-shaped legacy primitive is deleted; plugin-domain shapes live at L2. One documented L1-adjacent exception: `substrate/runtime/sui-execute/` (see § Substrate name-blindness). | external libs only (`effect`, `@effect/*`, Node stdlib)                                                                                              | L1+, named plugins, capability decls (today's supervisor violates capability-decl awareness — see Open slot O6 in STYLE_GUIDE, PR2-A in flight) |
+| **L0 substrate**                 | kernel, branded primitives, scheduler, lifecycle SM, event/command channels, paths, identity, port broker, lease broker, lock broker, atomic-write, cache, state-store, cross-process protocol, runtime decode helpers, retry policy, process supervisor, observability primitives, manifest envelope schema, ArtifactPublisher, strategy-registry, generic scoped-ref-map. **Name-blind post PR1.5** — the `per-stack-registries` Sui/Move-shaped legacy primitive is deleted; plugin-domain shapes live at L2. One documented L1-adjacent exception: `substrate/runtime/sui-execute/` (see § Substrate name-blindness). | external libs only (`effect`, `@effect/*`, Node stdlib)                                                                                              | L1+, named plugins. Capability-decl name-awareness was inverted via `CapabilitySinks` (formerly Open slot O6, now closed); remaining substrate name leaks are tracked at backlog items 32-37 (SpanAttr split, events/projection lift, port-broker `'wallet'`, faucet-capability-for, sui-move-build doc, L1 docker router labels) |
 | **L1 runtime adapters**          | `ContainerRuntime` (Docker reference impl), `InProcessRuntime`, `ReverseProxyRuntime` (Traefik reference impl), image-build primitive, shared per-line streaming sink, signal-forwarding entrypoint shell, network attach + IP-readback                                                                                                                                                                                                                                                                                                                                                                                   | L0                                                                                                                                                   | L2+, named plugins                                                                                                                              |
 | **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook — one folder each exposing `definePlugin({ id, dependsOn, start, capabilities })` factories. Renderer plugins (TUI Ink, plain, silent) also here. Per-plugin tagged errors, Snapshotable / Routable / NetworkResolver-mode / Codegenable / StrategyContributor decls.                                                                                                                                                                                                                                                               | L0, L1, other plugins through public resource/plugin refs at factory boundaries; never internal service modules                                      | other plugin INTERNAL modules. Other services' source.                                                                                          |
 | **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen orchestrator. Each walks a registry of plugin capability contributions; never names services.                                                                                                                                                                                                                                                                                                                                                                                                                      | L0, L1, capability decls from `contracts/`                                                                                                           | L2 plugin INTERNALS, named plugins. Hardcoded paths.                                                                                            |
@@ -154,10 +154,10 @@ Cross-process artifacts share one liveness predicate.
 Predicate: PID + startTime liveness (`substrate/runtime/cross-process/liveness.ts:115-132`).
 Foreign-host PIDs are conservatively-alive (NFS-safe).
 
-ONE atomic-write primitive (today 3 duplicates exist — substrate triage will consolidate; see
-STYLE_GUIDE §17). ONE cross-process lock primitive (the typed `CrossProcessLock` Effect Service —
-but currently the real flock impl lives separately and the typed service has only an in-process
-Layer; substrate triage will wire — see STYLE_GUIDE §18 / Open slot O18 below).
+ONE atomic-write primitive at `substrate/runtime/atomic-write.ts` (consolidation complete; STYLE_GUIDE §17
+documents the dual sync/Effect surfaces). ONE cross-process lock primitive (the typed `CrossProcessLock`
+Effect Service) — `layerCrossProcessLockFlock` adapts the O_EXCL impl onto the typed service; consumers
+yield `CrossProcessLock` and wiring chooses the impl.
 
 ---
 
@@ -227,7 +227,7 @@ factory access failing at compile time.
 
 ## Closed projection field list
 
-`SubscribableState` (`substrate/projection.ts:99-119`) carries exactly:
+`SubscribableState` (`substrate/projection.ts:22-40`) carries exactly:
 
 ```ts
 {
@@ -345,12 +345,12 @@ Current substrate primitives (`src/substrate/runtime/` + `src/primitives/`):
 | Observability — `Logger`                                        | `substrate/runtime/observability/logger.ts`                                                                                       | WIRED               | Buffered plugin log sink. Long-running process output flows through `observeProcessLines(...)`; one-shot capture remains `subprocess-capture.ts`. Plugin log messages are stable event text; dynamic values belong in structured fields / annotations for renderers to present.                               |
 | Observability — process line helpers                            | `substrate/runtime/observability/process-lines.ts`                                                                                | OK                  | Shared UTF-8 line splitting and stdout/stderr observation. L2/L1 callers do not reimplement `decodeText + splitLines` when routing child-process logs.                                                                                                                                                        |
 | Observability — `SpanAttr`                                      | `substrate/runtime/observability/spans.ts`                                                                                        | WIRED               | Canonical key vocabulary for touched span/log annotations. New structured fields go through `SpanAttr`; remaining free-form historical keys migrate on touch.                                                                                                                                                 |
-| Observability — `LifecycleFact`                                 | `substrate/lifecycle.ts`                                                                                                          | IN-FLIGHT (PR2-A)   | Interface declared; zero use sites today. PR2-A wires or drops.                                                                                                                                                                                                                                               |
+| Observability — `LifecycleFact`                                 | `substrate/lifecycle.ts` + `substrate/runtime/lifecycle/lifecycle-fact.ts`                                                        | WIRED               | `applyLifecycleFact(row, fact)` projects lifecycle deltas into row state; consumed by the supervisor's event projection.                                                                                                                                                                                      |
 | Observability — cascade formatter                               | `substrate/runtime/observability/cascade-formatter.ts`                                                                            | OK                  | Walks `Cause` by `_tag`; never imports concrete error classes.                                                                                                                                                                                                                                                |
-| Observability — `PluginErrorContribution` + `FormatterRegistry` | `substrate/plugin.ts` + `substrate/runtime/observability/`                                                                        | IN-FLIGHT (PR2-A)   | `*_ERROR_TAGS` arrays in 10 plugins are the contributors; PR2-A's supervisor harvest loop wires them into the cascade-formatter registry.                                                                                                                                                                     |
-| `CapabilitySinks` kind→sink registry                            | `substrate/runtime/supervisor.ts` (target)                                                                                        | IN-FLIGHT (PR2-A)   | Inverts supervisor's hardcoded contract dispatches (`supervisor.ts:35-40,285-312`).                                                                                                                                                                                                                           |
+| Observability — `PluginErrorContribution` + `FormatterRegistry` | `substrate/plugin.ts` + `substrate/runtime/observability/` + `api/plugin-errors.ts`                                               | WIRED               | `pluginErrorContributions(<PLUGIN>_ERROR_TAGS)` populates each plugin barrel's `errorContributions:` slot; supervisor harvest loop folds them into the cascade-formatter registry.                                                                                                                            |
+| `CapabilitySinks` kind→sink registry                            | `substrate/runtime/capability-sinks/`                                                                                             | WIRED               | `CapabilitySinksService` registers sinks per `kind`; supervisor harvest loop dispatches contributions through it. Plugin-author Layer composition can inject custom sinks (see § Plugin-author surface = user-surface).                                                                                       |
 | Subprocess capture                                              | `substrate/runtime/observability/subprocess-capture.ts`                                                                           | OK                  | `CaptureError` shape aligns with cascade-formatter fields.                                                                                                                                                                                                                                                    |
-| Supervisor                                                      | `substrate/runtime/supervisor.ts`                                                                                                 | LEAKY               | Still imports 6 named capability-decl modules. ~960 LOC — internal sub-module split recommended. PR2-A's `CapabilitySinks` inversion is the unblock.                                                                                                                                                          |
+| Supervisor                                                      | `substrate/runtime/supervisor.ts`                                                                                                 | LEAKY               | Still imports named capability-decl modules. **1789 LOC** — well past the §8 split threshold; sub-module split into `supervisor/{index,command-loop,acquire-node,dispatch-contributions,background-tasks,shutdown,wiring}.ts` is the next dedicated refactor. PR2-A's `CapabilitySinks` inversion is the unblock for the name-blindness leak.                                                                                                                                                          |
 
 **TBD (Open slots):** the following are pending substrate work:
 
@@ -383,34 +383,40 @@ orchestrator remains responsible for registry validation and collision checks.
 
 ---
 
-## Plugin A ↔ Plugin B coupling — known design gap (Open slot O5 still violated)
+## Plugin A ↔ Plugin B coupling — actual shape (the rule needs honest amendment)
 
-The L2 invariant "Plugin A may NOT import from Plugin B" is broken at the Coin↔Package boundary and
-is **MORE visible after PR1.5**:
+The aspirational rule is "Plugin A may NOT import from Plugin B." The actual code has TWO universal
+buses:
 
-- `plugins/package/coin-discovery.ts` owns the `PublishReceipt` + `PublishObjectChange` shapes
-  (PR1.5 moved them out of `package/index.ts`).
-- `plugins/coin/discovery.ts` imports `PublishObjectChange` + `PublishReceipt` from
-  `../package/index.ts` (which re-exports from `coin-discovery.ts`).
-- `plugins/package/index.ts` consumes coin-discovery via its own internal accumulator — the package
-  barrel re-exports `PublishReceipt` / `PublishObjectChange` because external siblings (coin,
-  codegen) read them off the package's surface.
+- **Sui = chain-universal-bus.** Every chain-side plugin (`seal`, `walrus`, `coin`, `package`,
+  `account`, `wallet`, `action`, `deepbook`) imports `SuiClient` / `SuiSdkShim` / `SuiProbeKey` /
+  `suiResource` from `plugins/sui/`. Most imports are TYPE-only.
+- **Account = identity-bus.** Every plugin that signs or funds (`seal`, `walrus`, `coin`, `wallet`,
+  `action`, `package`, `deepbook`) imports `AccountValue` / `AccountResourceId` / `TxResult` /
+  `AccountFundingStrategy` from `plugins/account/`.
 
-The right fix is a substrate-raised **`PublishReceiptEmitted` event** that the coin plugin
-subscribes to — the `PublishReceipt` shape lives at substrate/contracts, package raises the event
-after a successful publish, coin discovers via subscription rather than a direct import.
+These are intentional structural buses and stay. Subject to two refinements:
 
-This is pending either:
+1. **Internal-module reach is still forbidden.** Cross-plugin imports MUST go through the target
+   plugin's `index.ts` barrel — never through `../sui/chain-probe.ts`, `../account/service.ts`,
+   `../account/funding.ts`, etc. The Phase 4 boundary-correction sweep closes the existing
+   internal-reach sites by adding the missing barrel re-exports.
+2. **Other cross-plugin pairs are gaps to close.** Known surviving non-bus coupling:
+   - **Coin↔Package** (Open slot O5). `plugins/package/coin-discovery.ts` owns the `PublishReceipt`
+     + `PublishObjectChange` shapes; `plugins/coin/discovery.ts` imports them through the package
+     barrel. The proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin
+     subscribes to.
+   - **Account↔Coin bidirectional.** `coin/index.ts:38` and `account/funding.ts:32,40` cross-import.
+     Lift `AccountFundingStrategy<E>` to `src/contracts/funding-strategy.ts` (neutral substrate
+     contract) so both plugins reference one shape.
+   - **Sui↔faucet reverse-import.** `sui/index.ts:64-65` reaches into `faucet/dispatcher.ts` +
+     `faucet/strategies/sui-local.ts`. After the faucet dispatcher dead-code purge, the `sui-local`
+     strategy moves into `plugins/sui/` (sui owns the local-faucet endpoint conceptually).
 
-1. **PR2-A's harvest loop** completing (the supervisor's plugin-contribution scan could provide the
-   event seam as a side-effect of broader wiring).
-2. **A future event-bus primitive** at substrate (`substrate/runtime/event-bus/`) generic over event
-   shapes — currently the substrate has command + lifecycle channels but no plugin-author-extensible
-   event seam.
-
-Documented as a known design gap so future agents understand: the Coin/Package cross-import is
-intentional in the interim, NOT a missed cleanup; do NOT add a third plugin's cross-import in the
-same shape.
+Do NOT add a new cross-plugin import outside the two documented buses without either (a) lifting
+the shared shape to `src/contracts/`, or (b) introducing a substrate-raised event the consumer
+subscribes to. Pending event-bus primitive at `substrate/runtime/event-bus/` (generic over event
+shapes) would let coin/package and similar pairs invert their direct imports cleanly.
 
 ---
 
