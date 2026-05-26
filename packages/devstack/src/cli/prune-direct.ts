@@ -23,7 +23,7 @@ import {
 	type PruneOutcome,
 	type PruneSelection,
 } from '../surfaces/cli/commands/index.ts';
-import { selectPruneTargets } from '../surfaces/cli/commands/prune-picker.tsx';
+import { selectPruneTargets } from '../surfaces/cli/commands/prune-picker-entry.ts';
 
 const adaptGroup = (group: LifecyclePruneGroup): PruneGroup => ({
 	key: group.key,

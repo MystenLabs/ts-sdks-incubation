@@ -40,10 +40,22 @@
 // body-Failure detection, per-fetch deadline) and adding the Effect
 // HttpClient layer here would not change behaviour at any of the
 // invariants above.
+//
+// Substrate-helper carve-out (Phase 7B): the substrate's
+// `HttpProbes.waitForHttpEndpoint(...)` is for *readiness probes*
+// (poll a GET until ready), not one-shot POST + body-shape validation.
+// The wire-level contract above (non-2xx raise, body-Failure raise,
+// short per-fetch deadline relative to retry budget) is owned here.
+// The retry SCHEDULE shape, however, IS substrate-supplied — it
+// composes `makeExponentialRetrySchedule` from `retry-policy.ts`
+// and reads its constants from `FAUCET_HTTP_RETRY_PROFILE`.
 
 import { Effect, Ref } from 'effect';
 
-import { makeExponentialRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
+import {
+	FAUCET_HTTP_RETRY_PROFILE,
+	makeExponentialRetrySchedule,
+} from '../../substrate/runtime/retry-policy.ts';
 import {
 	faucetBodyError,
 	faucetExhausted,
@@ -60,19 +72,19 @@ import {
 /** Retry attempts cap. Paired with the wall-clock budget below: at
  *  500ms initial × 1.5 backoff × jitter, 15 attempts saturates well
  *  before 90s, so the wall-clock check is the dominant exit. */
-export const DEFAULT_MAX_ATTEMPTS = 15;
+export const DEFAULT_MAX_ATTEMPTS = FAUCET_HTTP_RETRY_PROFILE.maxAttempts;
 
 /** Initial delay between retries (ms). Subsequent delays grow by
  *  the `BACKOFF_FACTOR`. */
-export const DEFAULT_INITIAL_DELAY_MS = 500;
+export const DEFAULT_INITIAL_DELAY_MS = FAUCET_HTTP_RETRY_PROFILE.initialDelayMs;
 
 /** Wall-clock budget for the WHOLE request including all retries.
  *  Sized for a cold sui-localnet boot — the validator binary needs
  *  ~30–60s after its HTTP socket opens before it can submit txs. */
-export const DEFAULT_TIMEOUT_MS = 90_000;
+export const DEFAULT_TIMEOUT_MS = FAUCET_HTTP_RETRY_PROFILE.wallClockBudgetMs;
 
 /** Exponential growth factor between retries. */
-export const BACKOFF_FACTOR = 1.5;
+export const BACKOFF_FACTOR = FAUCET_HTTP_RETRY_PROFILE.backoffFactor;
 
 /** Per-POST hard deadline. The sui-faucet binary internally retries
  *  the underlying SUI transfer tx twice with ~30s timeouts; a single
@@ -80,7 +92,7 @@ export const BACKOFF_FACTOR = 1.5;
  *  POST at 5s lets the outer retry loop hammer quickly — when the
  *  chain catches up the next attempt lands in <1s. Successful
  *  warm-faucet calls return well under 1s, so 5s is a safe ceiling. */
-export const DEFAULT_FETCH_DEADLINE_MS = 5_000;
+export const DEFAULT_FETCH_DEADLINE_MS = FAUCET_HTTP_RETRY_PROFILE.perRequestDeadlineMs;
 
 // ---------------------------------------------------------------------------
 // Single-shot POST + body parser

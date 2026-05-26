@@ -70,8 +70,10 @@ export interface TestSetupOptions extends LoadStackContextOptions {
 	readonly requireDevstack?: boolean;
 	/** Suppress the stack-name advisory. Default `false`. */
 	readonly silent?: boolean;
-	/** Custom writer for the advisory line. Defaults to `console.warn`.
-	 *  Tests substitute a buffer. */
+	/** Custom writer for the advisory line. Defaults to a stderr
+	 *  writer (`process.stderr.write(line + '\n')`) — matches the
+	 *  build-integration surface IO discipline (no `console.*` in
+	 *  production paths). Tests substitute a buffer. */
 	readonly writeAdvisory?: (line: string) => void;
 }
 
@@ -87,7 +89,8 @@ export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 	const resolved = resolveVitestEnv(env);
 
 	if (!options.silent && !resolved.stackWasExplicit) {
-		const write = options.writeAdvisory ?? ((line: string) => console.warn(line));
+		const write =
+			options.writeAdvisory ?? ((line: string) => void process.stderr.write(`${line}\n`));
 		write(
 			`[devstack/vitest] ${VITEST_ENV_VARS.STACK} is unset; tests will read the '${resolved.stack}' stack. ` +
 				`Set ${VITEST_ENV_VARS.STACK}=${RECOMMENDED_TEST_STACK} in the test script to avoid contention with \`pnpm dev\`.`,

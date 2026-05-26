@@ -171,7 +171,7 @@ describe('release surface static checks', () => {
 			'chainProbeFor',
 			'ERROR_TAGS',
 			'CoinRegistryService',
-			'coinRegistryLayer',
+			'layerCoinRegistry',
 			'discoverCoinsFromPublish',
 			'performMint',
 			'makeWalletRoutable',

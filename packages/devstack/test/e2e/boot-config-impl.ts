@@ -64,7 +64,7 @@ import {
 	layerCodegenOrchestrator,
 	type RunEmitCycleResult,
 } from '../../src/orchestrators/codegen/service.ts';
-import { CoinRegistryService, coinRegistryLayer } from '../../src/plugins/coin/registry.ts';
+import { CoinRegistryService, layerCoinRegistry } from '../../src/plugins/coin/registry.ts';
 import {
 	PackageRegistryService,
 	layerPackageRegistry,
@@ -256,7 +256,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(childProcessSpawnerWired));
 	const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
 	const withArtifactPublisher = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
-	const withCoinRegistry = coinRegistryLayer.pipe(Layer.provideMerge(withArtifactPublisher));
+	const withCoinRegistry = layerCoinRegistry.pipe(Layer.provideMerge(withArtifactPublisher));
 	const withPackageRegistry = layerPackageRegistry.pipe(Layer.provideMerge(withCoinRegistry));
 	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));

@@ -1,20 +1,19 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 
-import { Effect, Schema } from 'effect';
+import { Effect } from 'effect';
 
 import {
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	parseSnapshotId,
 } from '../orchestrators/snapshot/index.ts';
+import { decodeJsonTextSync } from '../substrate/runtime/runtime-decode.ts';
 import type {
 	SnapshotEntry,
 	SnapshotReader,
 	SnapshotResolveResult,
 } from '../surfaces/cli/commands/snapshot.ts';
-
-const decodeSnapshotMetadata = Schema.decodeUnknownSync(SnapshotMetadataSchema);
 
 export interface SnapshotReaderIdentity {
 	readonly stackRoot: string;
@@ -43,8 +42,11 @@ export const makeSnapshotReader = (identity: SnapshotReaderIdentity): SnapshotRe
 					];
 				}
 				try {
-					const parsed = JSON.parse(readFileSync(metaPath, 'utf8')) as unknown;
-					const meta = decodeSnapshotMetadata(parsed);
+					const meta = decodeJsonTextSync(
+						SnapshotMetadataSchema,
+						readFileSync(metaPath, 'utf8'),
+						{ source: metaPath, mkError: (issue) => issue },
+					);
 					return [
 						{
 							snapshotId: parsedEntryId,

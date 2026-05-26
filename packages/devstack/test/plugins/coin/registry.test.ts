@@ -12,7 +12,7 @@ import { Effect } from 'effect';
 
 import {
 	CoinRegistryService,
-	coinRegistryLayer,
+	layerCoinRegistry,
 	type CoinRecord,
 } from '../../../src/plugins/coin/registry.ts';
 
@@ -43,7 +43,7 @@ describe('plugins/coin/registry', () => {
 			expect(found).not.toBeNull();
 			expect(found?.symbol).toBe('USDC');
 			expect(found?.decimals).toBe(6);
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('byType returns null for unknown coin', () =>
@@ -51,7 +51,7 @@ describe('plugins/coin/registry', () => {
 			const registry = yield* CoinRegistryService;
 			const found = yield* registry.byType('0xnope::foo::FOO');
 			expect(found).toBeNull();
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('bySymbol finds matches case-insensitively', () =>
@@ -81,7 +81,7 @@ describe('plugins/coin/registry', () => {
 			expect(upper.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
 			expect(lower.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
 			expect(mixed.map((r) => r.type)).toEqual(['0xabc::usdc::USDC']);
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('bySymbol matches either the registry key or the display symbol', () =>
@@ -103,7 +103,7 @@ describe('plugins/coin/registry', () => {
 			const bySymbolForm = yield* registry.bySymbol('mock_usdc');
 			expect(byWitness.map((r) => r.type)).toEqual(['0xabc::mock_usdc::MOCK_USDC']);
 			expect(bySymbolForm.map((r) => r.type)).toEqual(['0xabc::mock_usdc::MOCK_USDC']);
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('bySymbol returns empty when no record matches', () =>
@@ -119,7 +119,7 @@ describe('plugins/coin/registry', () => {
 			);
 			const none = yield* registry.bySymbol('ghost');
 			expect(none).toEqual([]);
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('byWitness scopes the lookup by publishing package', () =>
@@ -149,7 +149,7 @@ describe('plugins/coin/registry', () => {
 			const inOther = yield* registry.byWitness('other_usdc', 'MOCK_USDC');
 			expect(inMockUsdc?.type).toBe('0xabc::mock_usdc::MOCK_USDC');
 			expect(inOther?.type).toBe('0xdef::other_usdc::MOCK_USDC');
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('byWitness returns null when the witness is absent in the package', () =>
@@ -166,7 +166,7 @@ describe('plugins/coin/registry', () => {
 			const wrongPkg = yield* registry.byWitness('elsewhere', 'MOCK_USDC');
 			expect(miss).toBeNull();
 			expect(wrongPkg).toBeNull();
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('list returns every registered record', () =>
@@ -177,7 +177,7 @@ describe('plugins/coin/registry', () => {
 			yield* registry.register(makeRecord({ type: '0xabc::c::C' }));
 			const all = yield* registry.list();
 			expect(all.map((r) => r.type).sort()).toEqual(['0xabc::a::A', '0xabc::b::B', '0xabc::c::C']);
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('register is last-write-wins on fullCoinType', () =>
@@ -201,7 +201,7 @@ describe('plugins/coin/registry', () => {
 			expect(all).toHaveLength(1);
 			expect(all[0]?.decimals).toBe(6);
 			expect(all[0]?.symbol).toBe('USDC-v2');
-		}).pipe(Effect.provide(coinRegistryLayer)),
+		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 
 	it.effect('scope-bound lifecycle — independent scopes do not share state', () => {
@@ -210,7 +210,7 @@ describe('plugins/coin/registry', () => {
 				const registry = yield* CoinRegistryService;
 				yield* registry.register(record);
 				return yield* registry.list();
-			}).pipe(Effect.provide(coinRegistryLayer));
+			}).pipe(Effect.provide(layerCoinRegistry));
 
 		return Effect.gen(function* () {
 			const first = yield* runInFreshScope(makeRecord({ type: '0xabc::a::A', decimals: 1 }));

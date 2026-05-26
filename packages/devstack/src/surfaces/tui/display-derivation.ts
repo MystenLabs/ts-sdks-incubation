@@ -303,6 +303,40 @@ export const sectionForRow = (
 	return 'other';
 };
 
+/** Pure: key-only section classifier. Used by event-log scope coloring
+ *  where only the `pluginKey` is in hand (no `Row`/`Endpoint` context).
+ *  Falls back to `'other'` when no classifier prefix matches. */
+export const sectionForKey = (key: string): RowSection => {
+	const normalized = normalizeClassificationKey(key).toLowerCase();
+	const classifier = rowSectionClassifierFor(normalized);
+	return classifier === undefined ? 'other' : classifier.section;
+};
+
+/** Pure: section -> scope-chip color token used by the event log /
+ *  activity stream. Coloring is driven by `RowSection` so the renderer
+ *  doesn't pattern-match on plugin names. */
+export const sectionColor = (section: RowSection): ColorToken => {
+	switch (section) {
+		case 'service':
+			return 'cyan';
+		case 'package':
+			return 'blueBright';
+		case 'account':
+			return 'magenta';
+		case 'action':
+			return 'magenta';
+		case 'app':
+			return 'white';
+		case 'other':
+			return 'cyan';
+		default: {
+			const _exhaustive: never = section;
+			void _exhaustive;
+			return 'cyan';
+		}
+	}
+};
+
 export const sectionLabel = (section: RowSection): string => {
 	switch (section) {
 		case 'service':

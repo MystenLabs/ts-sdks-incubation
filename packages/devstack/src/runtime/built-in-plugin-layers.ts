@@ -8,7 +8,7 @@ import { Context, Effect, Layer } from 'effect';
 import { discoverCoinsFromPublish } from '../plugins/coin/discovery.ts';
 import {
 	CoinRegistryService,
-	coinRegistryLayer,
+	layerCoinRegistry,
 	type CoinRecord,
 } from '../plugins/coin/registry.ts';
 import {
@@ -24,7 +24,7 @@ import {
 } from '../substrate/runtime/capability-sinks/index.ts';
 
 export const layerBuiltInPluginServices: Layer.Layer<CoinRegistryService | PackageRegistryService> =
-	Layer.mergeAll(coinRegistryLayer, layerPackageRegistry);
+	Layer.mergeAll(layerCoinRegistry, layerPackageRegistry);
 
 const publishResultSink = (
 	coinRegistry: typeof CoinRegistryService.Service,

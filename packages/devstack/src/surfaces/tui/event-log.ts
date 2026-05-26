@@ -1,5 +1,11 @@
 import type { EngineEvent } from '../../substrate/events.ts';
-import { errorSummaryFor, labelForRow, type ColorToken } from './display-derivation.ts';
+import {
+	errorSummaryFor,
+	labelForRow,
+	sectionColor,
+	sectionForKey,
+	type ColorToken,
+} from './display-derivation.ts';
 
 export interface EventLogLine {
 	readonly id: string;
@@ -24,7 +30,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				level: event.level,
 				scope: labelForRow(event.pluginKey),
-				scopeColor: colorForPluginKey(event.pluginKey),
+				scopeColor: scopeColorForKey(event.pluginKey),
 				message: event.line,
 			});
 		case 'error.reported':
@@ -34,7 +40,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
 				scopeColor:
-					event.error.pluginKey === null ? 'white' : colorForPluginKey(event.error.pluginKey),
+					event.error.pluginKey === null ? 'white' : scopeColorForKey(event.error.pluginKey),
 				message: `failed: ${errorSummaryFor(event.error)}`,
 			});
 		case 'build.statusChanged':
@@ -206,11 +212,8 @@ const isRedundantPluginLog = (message: string): boolean => {
 	);
 };
 
-const colorForPluginKey = (pluginKey: string): ColorToken => {
-	const normalized = pluginKey.toLowerCase();
-	if (normalized.includes('account')) return 'magenta';
-	if (normalized.includes('package')) return 'blueBright';
-	if (normalized.includes('action')) return 'magenta';
-	if (normalized.includes('app') || normalized.includes('frontend')) return 'white';
-	return 'cyan';
-};
+// Scope-chip color is driven by the `RowSection` derived from the
+// plugin key. Keeps the renderer name-blind: it sees only the closed
+// `RowSection` vocabulary (`service` / `package` / `account` / ...),
+// never a substring of a plugin name.
+const scopeColorForKey = (pluginKey: string): ColorToken => sectionColor(sectionForKey(pluginKey));

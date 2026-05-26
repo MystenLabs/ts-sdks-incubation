@@ -27,7 +27,7 @@
 // is non-reentrant by design, so a hypothetical loop holding a single
 // lease across iterations would deadlock the second one.
 
-import { Duration, Effect } from 'effect';
+import { Effect } from 'effect';
 
 import { FAUCET_CAPABILITY_KEY_PREFIX, type FaucetStrategy } from '../faucet/index.ts';
 import {
@@ -42,6 +42,10 @@ import type {
 	AccountFundingStrategy as ContractAccountFundingStrategy,
 } from '../../contracts/funding-strategy.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
+import {
+	BALANCE_POLL_PROFILE,
+	makeBoundedSpacedSchedule,
+} from '../../substrate/runtime/retry-policy.ts';
 
 import {
 	accountAcquireError,
@@ -166,9 +170,6 @@ export const SUI_FULL_COIN_TYPE = '0x2::sui::SUI' as const;
  *  Documented at the user-facing factory so a bare `account('alice')`
  *  is predictable. */
 export const DEFAULT_EPHEMERAL_FUND_MIST = 1_000_000_000n;
-
-const FUNDING_SETTLEMENT_INTERVAL_MS = 250;
-const FUNDING_SETTLEMENT_TIMEOUT_MS = 30_000;
 
 /** Inputs the default-funding pass needs from the per-acquire ctx. */
 export interface FundEphemeralDefaultArgs {
@@ -510,34 +511,37 @@ const waitForBalanceAtLeast = (parts: {
 	if (parts.balanceReader === undefined) {
 		return Effect.void;
 	}
+	const reader = parts.balanceReader;
 	return Effect.gen(function* () {
-		const startedAt = Date.now();
-		let lastBalance: bigint | null = null;
-		for (;;) {
-			lastBalance = yield* readExistingBalance(parts.balanceReader, {
-				owner: parts.owner,
-				coinType: parts.coinType,
-			});
-			if (lastBalance !== null && lastBalance >= parts.amount) {
-				return;
-			}
-			if (Date.now() - startedAt >= FUNDING_SETTLEMENT_TIMEOUT_MS) {
-				return yield* Effect.fail(
-					accountAcquireError({
-						phase: parts.phase,
-						accountName: parts.accountName,
-						variant: parts.variant,
-						message:
-							`Account '${parts.accountName}': funding for ${parts.coinLabel} was accepted ` +
-							`but balance did not reach ${parts.amount} before the settlement timeout ` +
-							`(last=${lastBalance === null ? '<unavailable>' : lastBalance}).`,
-						hint:
-							'The faucet or funding strategy returned before the funded coin became spendable. ' +
-							'Check the funding strategy finality gate and Sui RPC health.',
-					}),
-				);
-			}
-			yield* Effect.sleep(Duration.millis(FUNDING_SETTLEMENT_INTERVAL_MS));
+		const read = readExistingBalance(reader, {
+			owner: parts.owner,
+			coinType: parts.coinType,
+		});
+		const lastBalance = yield* read.pipe(
+			Effect.repeat({
+				schedule: makeBoundedSpacedSchedule(
+					BALANCE_POLL_PROFILE.intervalMs,
+					BALANCE_POLL_PROFILE.timeoutMs,
+				),
+				until: (balance) => balance !== null && balance >= parts.amount,
+			}),
+		);
+		if (lastBalance !== null && lastBalance >= parts.amount) {
+			return;
 		}
+		return yield* Effect.fail(
+			accountAcquireError({
+				phase: parts.phase,
+				accountName: parts.accountName,
+				variant: parts.variant,
+				message:
+					`Account '${parts.accountName}': funding for ${parts.coinLabel} was accepted ` +
+					`but balance did not reach ${parts.amount} before the settlement timeout ` +
+					`(last=${lastBalance === null ? '<unavailable>' : lastBalance}).`,
+				hint:
+					'The faucet or funding strategy returned before the funded coin became spendable. ' +
+					'Check the funding strategy finality gate and Sui RPC health.',
+			}),
+		);
 	});
 };

@@ -53,31 +53,34 @@ Phase 5a closed items 34, 35, 36 (doc-only), 37 on 2026-05-26 (entries in Closed
 
 ## 🟡 Style sweep — Phase 7
 
-### 7A — Free-form span keys (~254 sites)
-41. `walrus/*` (~6 files), `seal/*` (~5), `sui/mode/*` (~5), `package/{mode-local,publish-executor}` (~7), `coin/*` (~4), `account/{service.ts:6 sites, funding.ts:3 sites}`, `postgres/*` (~4), `deepbook/*` (~5), `action/execute.ts` (1).
+### 7A — Free-form span keys (~254 sites) — DEFERRED pairs with backlog #32
+
+41. `walrus/*` (~6 files), `seal/*` (~5), `sui/mode/*` (~5), `package/{mode-local,publish-executor}` (~7), `coin/*` (~4), `account/{service.ts:6 sites, funding.ts:3 sites}`, `postgres/*` (~4), `deepbook/*` (~5), `action/execute.ts` (1). The plugin-side migration shape depends on whether `SpanAttr` stays substrate-canonical (caller imports a single namespace) or becomes plugin-contributed (caller imports its own plugin's `spans.ts`). Land alongside #32 SpanAttr lift.
 
 ### 7B — Bespoke retry / decode / HTTP
-42. `account/funding.ts:486-529` `waitForBalanceAtLeast` → `retry-policy.ts`.
-43. `account/service.ts:315-329` `makeFundingBalanceReader` → `retry-policy.ts`.
-44. `seal/mode/local-keygen.ts:194-198` `JSON.parse + Schema.decodeUnknownEffect` → `decodeJsonText`.
-45. `cli/snapshot-reader.ts:46-65` bare decode → `decodeJsonTextSync`.
-46. `build-integrations/runtime/read-stack-context.ts:62` bare decode → `decodeUnknownSync`.
-47. `sui/mode/shared-boot.ts:191` bespoke `postJsonRpc` → new substrate `json-rpc-client.ts` primitive.
-48. `faucet/http.ts:128-203` bespoke retry — either `HttpProbes` or document carve-out.
-49. `walrus/deploy.ts:130-131` `DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS` → `retry-policy.ts`.
+42. ~~`account/funding.ts:486-529` `waitForBalanceAtLeast`~~ — **shipped Phase 7B**: now consumes `makeBoundedSpacedSchedule` + `BALANCE_POLL_PROFILE` from `retry-policy.ts`. Loop body is `Effect.repeat({ schedule, until })`.
+43. ~~`account/service.ts:315-329` `makeFundingBalanceReader`~~ — **shipped Phase 7B**: `FUNDING_BALANCE_TIMEOUT_MS` constant lifted to `retry-policy.ts` as `FUNDING_BALANCE_READ_TIMEOUT_MS`. Reader still uses `Effect.timeoutOrElse` (the local shape — wraps a `Promise`, returns `null` fallback — is right at this site; only the constant moved).
+44. ~~`seal/mode/local-keygen.ts:194-198`~~ — **shipped Phase 7B**: `JSON.parse + Schema.decodeUnknownEffect` collapsed to `decodeJsonText(schema, raw, { source, mkError: i => i })`; surrounding `.pipe(Effect.catch(() => null))` makes the call-site decision-to-null explicit per task brief.
+45. ~~`cli/snapshot-reader.ts:46-65`~~ — **shipped Phase 7B**: `JSON.parse + Schema.decodeUnknownSync` → `decodeJsonTextSync(SnapshotMetadataSchema, ..., { source, mkError })`. Surrounding try/catch fallback to `null`-named entry stays.
+46. ~~`build-integrations/runtime/read-stack-context.ts:62`~~ — **shipped Phase 7B**: pre-built `Schema.decodeUnknownSync(...)` replaced with `decodeUnknownSync(ManifestEnvelopeSchema, parsed, { source: manifestPath, mkError: i => i })`. Surrounding try/catch + `ManifestShapeError` rewrap stays.
+47. `sui/mode/shared-boot.ts:191` bespoke `postJsonRpc` — **DEFERRED Phase 7B**: in-code header comment at the site documents the deferral; see 47a below for the substrate primitive that closes this.
+47a. **Follow-up to 47 (new)**: lift `substrate/runtime/json-rpc-client.ts` primitive — typed envelope decode (via `runtime-decode.ts`) + per-request timeout + the standard JSON-RPC `{ jsonrpc: '2.0', id, method, params }` send + `{ result, error }` projection. Once landed, `sui/mode/shared-boot.ts:postJsonRpc` (+ `normalizeJsonOwner`/`getObjectViaJsonRpc` projector helpers) consume the primitive. Sized as its own PR — fresh primitive, not a wrapper.
+48. ~~`faucet/http.ts:128-203` bespoke retry~~ — **shipped Phase 7B (carve-out variant)**: header comment at the file documents that one-shot POST + body-shape validation is owned here, not `HttpProbes.waitForHttpEndpoint(...)` (a *readiness probe* primitive). Retry constants lifted to `retry-policy.ts:FAUCET_HTTP_RETRY_PROFILE`; the local `DEFAULT_*` exports forward to the profile so callers see no change.
+49. ~~`walrus/deploy.ts:130-131` `DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS`~~ — **shipped Phase 7B**: profile lifted to `retry-policy.ts:DEPLOY_BIND_SOURCE_RETRY_PROFILE`; the hand-rolled `for(let attempt = 0; ; ...)` loop is now `Effect.repeat({ schedule: makeSpacedRetrySchedule(...), until: r => !isBindSourceMissing(r) })`.
 
-### 7C — `as unknown as` at user-facing surface (~10 sites)
-50. `wallet/index.ts:169`, `account/index.ts:199,210`, `deepbook/index.ts:269,274,290,459`, `host-service/{index.ts:57,service.ts:463,466}`, `api/{define-devstack,define-devstack-with}.ts` (~5).
+### 7C — `as unknown as` at user-facing surface (~10 sites) — DEFERRED
+
+50. `wallet/index.ts:169`, `account/index.ts:199,210`, `deepbook/index.ts:269,274,290,459`, `host-service/{index.ts:57,service.ts:463,466}`, `api/{define-devstack,define-devstack-with}.ts` (~5). Each cast is a type-inference workaround that likely needs a typed substrate seam in `substrate/plugin.ts`. Pairs naturally with future api-side work + the Phase 6 supervisor's typed expander capability; defer.
 
 ### 7D — Misc style
-51. `surfaces/tui/event-log.ts:208-215` substring-match on `pluginKey` for color.
-52. `surfaces/cli/commands/prune-picker.tsx` ink eager-import.
-53. Naming `coinRegistryLayer` vs `layerPackageRegistry`.
-54. `build-integrations/vitest/setup.ts:90` `console.warn` default writer.
-55. `build-integrations/runtime/cold-start-url.ts:156` dead conditional `'h2c' ? 'http' : 'http'`.
-56. `cli/main.ts:120-174` manual `ENGINE_COMMAND_TAGS` tuple.
-57. `cli/main.ts:176-190` redundant `instanceof CliSupervisorLiveError`.
-58. `cli/main.ts:898-900` duplicated `provideFileSystem` helper.
+51. ~~`surfaces/tui/event-log.ts:208-215` substring-match on `pluginKey` for color~~ — shipped 2026-05-26. Lifted to `sectionForKey(key)` + `sectionColor(section)` in `display-derivation.ts`; event-log derives scope-chip color via the closed `RowSection` vocabulary, no plugin-name substring matching.
+52. ~~`surfaces/cli/commands/prune-picker.tsx` ink eager-import~~ — shipped 2026-05-26. Split into `prune-picker-entry.ts` (no ink import) that lazy-imports `prune-picker.tsx` via `Effect.promise(() => import(...))`; `cli/prune-direct.ts` consumes the lazy seam, mirroring `surfaces/tui/index.ts` `mount-ink.tsx` pattern.
+53. ~~Naming `coinRegistryLayer` vs `layerPackageRegistry`~~ — shipped 2026-05-26. Renamed `coinRegistryLayer` → `layerCoinRegistry` (callers updated: `coin/index.ts`, `runtime/built-in-plugin-layers.ts`, two test files, release-surface leak-detector). STYLE_GUIDE §6 codifies `layerXxx` prefix convention.
+54. ~~`build-integrations/vitest/setup.ts:90` `console.warn` default writer~~ — shipped 2026-05-26. Default writer is now `(line) => process.stderr.write(line + '\n')`; zero `console.*` sites remain in `src/`.
+55. ~~`build-integrations/runtime/cold-start-url.ts:156` dead conditional~~ — shipped 2026-05-26. Collapsed to `scheme: 'http'` with a one-line header comment naming the Traefik h2c convention.
+56. ~~`cli/main.ts:120-174` manual `ENGINE_COMMAND_TAGS` tuple~~ — shipped 2026-05-26. Replaced with exhaustive `switch (knownTag)` over `EngineCommand['tag']` + `_exhaustive: never` proof. New `EngineCommand` variants now fail typecheck if not added to the discriminator switch.
+57. ~~`cli/main.ts:176-190` redundant `instanceof CliSupervisorLiveError`~~ — shipped 2026-05-26. Dropped the `instanceof` branch; relies solely on `_tag === 'CliSupervisorLiveError'` (canonical Effect-tag pattern).
+58. ~~`cli/main.ts:898-900` duplicated `provideFileSystem` helper~~ — shipped 2026-05-26. Hoisted the top-level `provideFileSystem(fs, effect)` to one place (near `rosterPathsFor`); `makeSnapshotCommandHandler` calls it directly with `params.fs` instead of carrying a closure variant.
 
 ---
 

@@ -128,7 +128,7 @@ export class CoinRegistryService extends Context.Service<CoinRegistryService, Co
  *  scope. Boot wiring (CLI / e2e) provides this once per stack;
  *  every coin/package/wallet/faucet plugin in the stack yields the
  *  SAME instance via Context. */
-export const coinRegistryLayer: Layer.Layer<CoinRegistryService> = Layer.effect(
+export const layerCoinRegistry: Layer.Layer<CoinRegistryService> = Layer.effect(
 	CoinRegistryService,
 	Effect.gen(function* () {
 		const refMap = yield* CoinRefMap.Service;

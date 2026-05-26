@@ -118,37 +118,34 @@ const rosterPathsFor = (stackRoot: string) => ({
 	rosterFile: resolvePath(stackRoot, 'roster.json'),
 });
 
-const ENGINE_COMMAND_TAGS = new Set<EngineCommand['tag']>([
-	'stack.start',
-	'stack.stop',
-	'stack.restart',
-	'apply.requested',
-	'codegen.requested',
-	'snapshot.capture',
-	'snapshot.restore',
-	'snapshot.list',
-	'snapshot.delete',
-	'wipe.requested',
-	'prune.requested',
-	'advance-clock.requested',
-	'shutdown.requested',
-	'shutdown.hardKillRequested',
-	'selective-restart.requested',
-]);
+const provideFileSystem = <A, E>(
+	fs: FileSystem.FileSystem,
+	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
+): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
 const hasString = (value: Record<string, unknown>, key: string): boolean =>
 	typeof value[key] === 'string';
 
+// Exhaustive switch over `EngineCommand['tag']`. Adding a new
+// command variant to `EngineCommand` without extending this switch
+// will fail typecheck via the `_exhaustive: never` proof — no manual
+// tag tuple to drift.
 const isEngineCommand = (value: unknown): value is EngineCommand => {
 	if (typeof value !== 'object' || value === null) return false;
 	const record = value as Record<string, unknown>;
-	if (
-		typeof record.tag !== 'string' ||
-		!ENGINE_COMMAND_TAGS.has(record.tag as EngineCommand['tag'])
-	) {
-		return false;
-	}
-	switch (record.tag) {
+	const tag = record.tag;
+	if (typeof tag !== 'string') return false;
+	const knownTag = tag as EngineCommand['tag'];
+	switch (knownTag) {
+		case 'stack.start':
+		case 'stack.stop':
+		case 'stack.restart':
+		case 'codegen.requested':
+		case 'snapshot.list':
+		case 'wipe.requested':
+		case 'prune.requested':
+		case 'shutdown.requested':
+			return true;
 		case 'snapshot.restore':
 		case 'snapshot.delete':
 			return hasString(record, 'snapshotId');
@@ -169,8 +166,11 @@ const isEngineCommand = (value: unknown): value is EngineCommand => {
 				(record.snapshotId === undefined || typeof record.snapshotId === 'string') &&
 				(record.name === undefined || typeof record.name === 'string')
 			);
-		default:
-			return true;
+		default: {
+			const _exhaustive: never = knownTag;
+			void _exhaustive;
+			return false;
+		}
 	}
 };
 
@@ -178,7 +178,6 @@ const findCliSupervisorLiveError = (cause: Cause.Cause<unknown>): CliSupervisorL
 	for (const reason of cause.reasons) {
 		if (!Cause.isFailReason(reason)) continue;
 		const error = reason.error;
-		if (error instanceof CliSupervisorLiveError) return error;
 		if (
 			typeof error === 'object' &&
 			error !== null &&
@@ -373,15 +372,11 @@ const makeSnapshotCommandHandler = (params: {
 	readonly snapshot: import('../orchestrators/snapshot/index.ts').SnapshotOrchestrator;
 	readonly fs: FileSystem.FileSystem;
 }): SupervisorCommandHandler => {
-	const provideFileSystem = <A, E>(
-		effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-	): Effect.Effect<A, E, never> =>
-		effect.pipe(Effect.provideService(FileSystem.FileSystem, params.fs));
-
 	return (cmd, handlerCtx) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
 				return provideFileSystem(
+					params.fs,
 					params.snapshot.capture({
 						id: cmd.snapshotId,
 						label: cmd.name,
@@ -412,7 +407,7 @@ const makeSnapshotCommandHandler = (params: {
 					]),
 				);
 			case 'snapshot.restore':
-				return provideFileSystem(params.snapshot.restore({ id: cmd.snapshotId })).pipe(
+				return provideFileSystem(params.fs, params.snapshot.restore({ id: cmd.snapshotId })).pipe(
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.restored',
@@ -422,13 +417,15 @@ const makeSnapshotCommandHandler = (params: {
 					]),
 				);
 			case 'snapshot.list':
-				return provideFileSystem(params.snapshot.list).pipe(Effect.as([]));
+				return provideFileSystem(params.fs, params.snapshot.list).pipe(Effect.as([]));
 			case 'snapshot.delete':
-				return provideFileSystem(params.snapshot.delete(cmd.snapshotId)).pipe(Effect.as([]));
+				return provideFileSystem(params.fs, params.snapshot.delete(cmd.snapshotId)).pipe(
+					Effect.as([]),
+				);
 			case 'wipe.requested':
-				return provideFileSystem(params.snapshot.wipe({})).pipe(Effect.as([]));
+				return provideFileSystem(params.fs, params.snapshot.wipe({})).pipe(Effect.as([]));
 			case 'prune.requested':
-				return provideFileSystem(params.snapshot.prune({})).pipe(Effect.as([]));
+				return provideFileSystem(params.fs, params.snapshot.prune({})).pipe(Effect.as([]));
 			default:
 				return Effect.succeed([]);
 		}
@@ -906,11 +903,6 @@ const directSnapshotLayers = (identity: ResolvedIdentity) =>
 	layerProductionOrchestrators().pipe(
 		Layer.provideMerge(buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot)),
 	);
-
-const provideFileSystem = <A, E>(
-	fs: FileSystem.FileSystem,
-	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
 const ensureNoLiveSupervisor = (
 	identity: ResolvedIdentity,

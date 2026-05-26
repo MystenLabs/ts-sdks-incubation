@@ -153,7 +153,9 @@ export const coldStartUrl = (endpoint: string, opts: ColdStartUrlOptions): strin
 		app,
 		stack,
 		...(opts.hostSuffix !== undefined ? { hostSuffix: opts.hostSuffix } : {}),
-		scheme: route.wireProtocol === 'h2c' ? 'http' : 'http',
+		// h2c shares port 80 with HTTP/1 via Traefik; both wire
+		// protocols expose `http://` URLs at the entrypoint.
+		scheme: 'http',
 	});
 };
 

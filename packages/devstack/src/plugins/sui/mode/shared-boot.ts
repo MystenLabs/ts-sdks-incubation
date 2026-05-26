@@ -179,6 +179,14 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
 
 const SUI_RPC_READ_TIMEOUT_MS = 10_000;
 
+// DEFERRED: substrate JSON-RPC primitive. The bespoke `postJsonRpc`
+// below + per-method projector helpers (`normalizeJsonOwner`,
+// `getObjectViaJsonRpc`) want to live behind a substrate
+// `substrate/runtime/json-rpc-client.ts` primitive: typed envelope
+// decode + per-request timeout + the standard `{ result, error }`
+// projection. That lift is a fresh substrate primitive (not a
+// re-use of `retry-policy` / `runtime-decode` / `http-probe`) and
+// is sized as a separate PR — see backlog item 47a.
 const postJsonRpc = async <A>(
 	rpcUrl: string,
 	method: string,

@@ -42,6 +42,8 @@
 
 import { Effect, FileSystem, Path, Schema, type Scope } from 'effect';
 
+import { decodeJsonText } from '../../../substrate/runtime/runtime-decode.ts';
+
 import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
@@ -186,18 +188,18 @@ const readPersistedLocalKeygenMetadata = (
 ): Effect.Effect<PersistedLocalKeygenMetadata | null, never, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const raw = yield* fs
-			.readFileString(localKeygenMetadataPath(servicePath))
-			.pipe(Effect.catch(() => Effect.succeed(null)));
+		const path = localKeygenMetadataPath(servicePath);
+		const raw = yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(null)));
 		if (raw === null) return null;
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(raw) as unknown,
-			catch: () => null,
+		// Parse + decode failures here mean "no usable persisted metadata"
+		// and the caller treats this as a miss; the typed
+		// `RuntimeDecodeIssue` carries the parse/decode diagnostic for
+		// debugging but is collapsed to `null` so the boot loop falls
+		// through to a fresh keygen.
+		return yield* decodeJsonText(PersistedLocalKeygenMetadataSchema, raw, {
+			source: path,
+			mkError: (issue) => issue,
 		}).pipe(Effect.catch(() => Effect.succeed(null)));
-		if (parsed === null) return null;
-		return yield* Schema.decodeUnknownEffect(PersistedLocalKeygenMetadataSchema)(parsed).pipe(
-			Effect.catch(() => Effect.succeed(null)),
-		);
 	});
 
 const stagePersistedLocalKeygenMetadata = (

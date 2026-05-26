@@ -318,7 +318,7 @@ export type { CoinRecord, CoinRegistry, CoinKey } from './registry.ts';
 export {
 	COIN_REGISTRY_CAPABILITY_KEY,
 	CoinRegistryService,
-	coinRegistryLayer,
+	layerCoinRegistry,
 } from './registry.ts';
 
 export type { CoinBindings } from './codegen.ts';

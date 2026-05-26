@@ -67,6 +67,7 @@ import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
+import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
 import type { ForkAdminSurface, SuiSdkShim } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
 
@@ -309,8 +310,6 @@ export interface AccountAcquireContext {
 	readonly projectedFunding?: ProjectedFunding;
 }
 
-const FUNDING_BALANCE_TIMEOUT_MS = 5_000;
-
 const makeFundingBalanceReader = (sdk: SuiSdkShim): FundingBalanceReader => ({
 	readBalance: ({ owner, coinType }) =>
 		Effect.promise(async () => {
@@ -321,7 +320,7 @@ const makeFundingBalanceReader = (sdk: SuiSdkShim): FundingBalanceReader => ({
 			}
 		}).pipe(
 			Effect.timeoutOrElse({
-				duration: `${FUNDING_BALANCE_TIMEOUT_MS} millis`,
+				duration: `${FUNDING_BALANCE_READ_TIMEOUT_MS} millis`,
 				orElse: () => Effect.succeed(null),
 			}),
 		),

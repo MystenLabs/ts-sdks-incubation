@@ -39,6 +39,10 @@ import type {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import {
+	DEPLOY_BIND_SOURCE_RETRY_PROFILE,
+	makeSpacedRetrySchedule,
+} from '../../substrate/runtime/retry-policy.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
@@ -127,8 +131,6 @@ export interface DeployInputs {
  *  observed wall-clock is 30-60s. 5-minute ceiling absorbs cold-cache
  *  + slow CI runners. */
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
-const DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS = 10;
-const DEPLOY_BIND_SOURCE_RETRY_DELAY_MS = 500;
 
 const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, WalrusPluginError> =>
 	Effect.tryPromise({
@@ -330,13 +332,22 @@ export const runDeployOneShot = (
 					),
 				);
 
-		let result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
-		for (let attempt = 0; ; attempt += 1) {
-			result = yield* runAttempt();
-			if (!isBindSourceMissing(result) || attempt >= DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS) break;
-			yield* ensureDeployOutputDir(inputs);
-			yield* Effect.sleep(Duration.millis(DEPLOY_BIND_SOURCE_RETRY_DELAY_MS));
-		}
+		const attempt = Effect.gen(function* () {
+			const result = yield* runAttempt();
+			if (isBindSourceMissing(result)) {
+				yield* ensureDeployOutputDir(inputs);
+			}
+			return result;
+		});
+		const result = yield* attempt.pipe(
+			Effect.repeat({
+				schedule: makeSpacedRetrySchedule(
+					DEPLOY_BIND_SOURCE_RETRY_PROFILE.delayMs,
+					DEPLOY_BIND_SOURCE_RETRY_PROFILE.attempts,
+				),
+				until: (r) => !isBindSourceMissing(r),
+			}),
+		);
 
 		if (result.exitCode !== 0) {
 			return yield* Effect.fail(

@@ -29,7 +29,6 @@
 // but the API surface is plain TS. Schema is a validation tool here,
 // not an exposed type.
 
-import { Schema } from 'effect';
 import { readFileSync } from 'node:fs';
 
 import {
@@ -37,6 +36,7 @@ import {
 	type ManifestEnvelope,
 	type EndpointEntry,
 } from '../../substrate/manifest.ts';
+import { decodeUnknownSync } from '../../substrate/runtime/runtime-decode.ts';
 import { discoverManifestPath, type DiscoverManifestPathOptions } from './discover.ts';
 import { EndpointRegistry } from './endpoint-registry.ts';
 import { ManifestDiscoveryError, ManifestShapeError } from './errors.ts';
@@ -56,10 +56,6 @@ export interface ReadStackContextOptions extends DiscoverManifestPathOptions {
 	 *  ergonomic parity with the CLI's `--manifest-path` flag. */
 	readonly manifestPath?: string;
 }
-
-// Pre-build the decoder so each read isn't paying the Schema-build
-// cost. `decodeUnknownSync` throws on shape failure; we catch + rewrap.
-const decodeEnvelope = Schema.decodeUnknownSync(ManifestEnvelopeSchema);
 
 const resolveManifestPath = (opts: ReadStackContextOptions): string => {
 	const override = opts.manifestPath ?? opts.override;
@@ -96,7 +92,10 @@ const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => 
 	}
 	let decoded: ManifestEnvelope;
 	try {
-		decoded = decodeEnvelope(parsed);
+		decoded = decodeUnknownSync(ManifestEnvelopeSchema, parsed, {
+			source: manifestPath,
+			mkError: (issue) => issue,
+		});
 	} catch (cause) {
 		throw new ManifestShapeError({
 			phase: 'shape',

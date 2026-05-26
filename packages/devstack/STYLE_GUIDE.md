@@ -236,6 +236,11 @@ edge is documented even though the wallet body doesn't read the resolved value).
   convention; do not "normalize".
 - File names: kebab-case (`stage-and-swap.ts`, `cross-process-lock.ts`). Effect-Service module shape
   commonly: `{ index, layer, service }.ts` when nontrivial.
+- Effect `Layer` exports use the `layerXxx` prefix convention (`layerLogger`,
+  `layerCrossProcessLockFlock`, `layerProductionOrchestrators`, `layerPackageRegistry`,
+  `layerCoinRegistry`). Do NOT use the `xxxLayer` suffix shape — it splits the import surface and
+  forces every consumer to scan the trailing suffix. New code follows the prefix shape; suffix-shape
+  exports are renamed on touch.
 - **`PluginKey` derivation** (substrate `lifecycle/dep-graph.ts:mintKey`):
   - Plugins that need a stable lifecycle key declare `pluginKey: PluginKey | string` in plugin
     metadata; the dep-graph reads it verbatim. Local service factories choose the key shape
@@ -552,6 +557,26 @@ Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
   `Schedule.exponential(...).pipe(Schedule.jittered, Schedule.both(...))` chains in plugins.
 - The `Effect.annotateCurrentSpan` outside `Effect.withSpan` pattern silently drops annotations
   (caught by `runtime-docker.md` review at `container.ts:233`). Wrap in a span first.
+
+**Canonical substrate helpers — the four classes of plugin-side bespoke code that MUST migrate**
+(Phase 7B codification):
+
+| Class                | Canonical substrate helper                                                                            | Plugin-side anti-pattern                                                            |
+| -------------------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| Request retry        | `retry-policy.ts` (`makeExponentialRetrySchedule` / `makeSpacedRetrySchedule` / named profiles)       | Hand-rolled `Schedule.exponential(...).pipe(Schedule.jittered, Schedule.both(...))` |
+| Balance / poll loop  | `retry-policy.ts` (`makeBoundedSpacedSchedule` + `BALANCE_POLL_PROFILE` or sibling named profile)     | `for(;;)` with `Date.now()` + `Effect.sleep` deadline check                         |
+| JSON / Schema decode | `runtime-decode.ts` (`decodeJsonText` / `decodeJsonTextSync` / `decodeUnknown` / `decodeUnknownSync`) | Bare `JSON.parse` + `Schema.decodeUnknown*` with try/catch swallow                  |
+| HTTP readiness probe | `http-probe.ts` (`waitForHttpEndpoint` + `HttpProbes` namespace)                                      | Hand-rolled `fetch` + `AbortSignal.timeout` poll loop                               |
+
+Named retry-policy profiles (consume rather than re-derive constants):
+
+- `BALANCE_POLL_PROFILE` — `{ intervalMs: 250, timeoutMs: 30_000 }` — funding settlement / account-bus poll loops.
+- `FUNDING_BALANCE_READ_TIMEOUT_MS` — `5_000` — per-call balance-reader deadline.
+- `DEPLOY_BIND_SOURCE_RETRY_PROFILE` — `{ attempts: 10, delayMs: 500 }` — Docker Desktop bind-mount visibility race.
+- `FAUCET_HTTP_RETRY_PROFILE` — `{ maxAttempts: 15, initialDelayMs: 500, backoffFactor: 1.5, wallClockBudgetMs: 90_000, perRequestDeadlineMs: 5_000 }` — cold-faucet POST retry.
+
+When a fifth class surfaces (e.g. JSON-RPC client — see backlog 47a), lift a fresh substrate primitive
+before the second plugin-side copy lands.
 
 ---
 
