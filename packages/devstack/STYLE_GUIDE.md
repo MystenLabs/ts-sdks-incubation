@@ -736,21 +736,24 @@ each.
 **Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):
 
 - ~~O1~~: `ChainOperation<Produced>` typed seam landed (PR1-E).
-- ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/mode-errors.ts`
-  (PR1-E); plugin-side duplicates pending PR3 delete.
+- ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/mode-errors.ts` (PR1-E).
+- ~~O6~~: `CapabilitySinks` registry landed at `substrate/runtime/capability-sinks/`; supervisor harvest dispatches through it; plugin-author Layer composition can inject custom sinks (2026-05-26 Phase 0/6).
 - ~~O9~~: `ContainerRuntime.exec` on the contract with `ExecOptions` (PR1-D).
 - ~~O11~~: `LeaseBroker` substrate primitive (PR1-B); `plugins/account/lease.ts` consumes.
-- ~~O14~~: `stage-and-swap` promoted to substrate (PR1-E).
-- ~~O17~~: `runStack(stack, opts?) → RunHandle` lands at `src/api/run-stack.ts` (root-barrel
-  re-exported); shared substrate Layer composition at `src/substrate/runtime/run.ts` consumed by
-  both CLI `runUpLive` and the library surface. `Stack` value stays a struct per
-  api-surface-design.md §3 — runtime execution is a separate seam.
-- ~~O21~~: `host-tree-tar` primitive — host-tree leg filled at `substrate/runtime/host-tree-tar/`
-  (PR1-E).
+- ~~O13~~: substrate observability orphans wired — Logger via `withEventPublishingLogger`; LifecycleFact via `lifecycle-fact.ts`; `*_ERROR_TAGS` arrays via `pluginErrorContributions(...)` in every plugin barrel; SpanAttr at 64 callsites (2026-05-26 Phase 0/6).
+- ~~O14~~: `stage-and-swap` promoted to substrate (PR1-E); codegen orchestrator now also consumes (Phase 2 #8).
+- ~~O17~~: `runStack(stack, opts?) → RunHandle` lands at `src/api/run-stack.ts` (root-barrel re-exported); shared substrate Layer composition at `src/substrate/runtime/run.ts` consumed by both CLI `runUpLive` and the library surface.
+- ~~O21~~: `host-tree-tar` primitive — host-tree leg filled at `substrate/runtime/host-tree-tar/` (PR1-E).
 - ~~O22~~: `ContainerRuntime.{saveImage, loadImage, tagImage}` on the contract (PR1-D).
 
 When a slot is filled by its owning pass, **move it to the Closed list above** (do not delete the ID
 — keep the audit reference) and codify the resulting rule in the appropriate section above.
+
+**Phase-6 supervisor-split related closures** (2026-05-26):
+
+- ~~Supervisor monolith~~: `supervisor.ts` (1815 LOC) split into `supervisor/{index,start-supervisor,command-loop,acquire-node,dispatch-contributions,teardown,background-tasks,shutdown,state,types,errors,wiring}.ts`, each <500 LOC. Re-export shim preserves caller import paths. STYLE_GUIDE §8 codifies the split as the reference shape for >700-LOC monoliths.
+- ~~`ContributionSinkFailed` misattribution~~: `dispatch-contributions.ts` now catches both `UnknownContributionKind` AND `ContributionSinkFailed`; the latter publishes the new typed `engine.orchestrator.dispatchFailed` event and does NOT mark the plugin failed (orchestrator-fault vs plugin-fault).
+- ~~`OptionalService<T>` helper~~: lifted to `supervisor/wiring.ts`; three callsites (Logger, RuntimeRoot, CapabilitySinks) fold into one shape.
 
 ---
 
