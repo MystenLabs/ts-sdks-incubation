@@ -6,14 +6,14 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
 import { afterEach } from 'vitest';
 
-import { makeRouterProfile, type Entrypoint } from '../../../../src/orchestrators/router/index.ts';
-import { ROUTER_CONTAINER_SPEC_VERSION } from '../../../../src/orchestrators/router/traefik-container.ts';
+import { makeRouterProfile, type Entrypoint } from '../../src/orchestrators/router/index.ts';
+import { ROUTER_CONTAINER_SPEC_VERSION } from '../../src/orchestrators/router/traefik-container.ts';
 import {
 	routerProfileProbe,
 	type DoctorCommandRunner,
 	type PortAvailabilityProbe,
-} from '../../../../src/surfaces/cli/commands/doctor-probes.ts';
-import type { ProbeOutcome } from '../../../../src/surfaces/cli/commands/doctor.ts';
+} from '../../src/cli/doctor-probes.ts';
+import type { ProbeOutcome } from '../../src/surfaces/cli/commands/doctor.ts';
 
 const tempRoots: Array<string> = [];
 

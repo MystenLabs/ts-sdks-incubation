@@ -256,6 +256,14 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
 - **Plugin A may NOT import from Plugin B.** Cross-plugin communication goes through explicit
   `dependsOn` resource values, public resource refs, or a higher-level runtime composition layer
   that is allowed to import both plugins. Do not import a sibling plugin's internal modules.
+- **Shared cross-plugin contract types live in `src/contracts/`.** When two plugins need to agree
+  on a TypeScript shape that neither owns (the `AccountFundingStrategy` dispatch surface; future
+  receipt-event shapes; cross-bus value protocols), lift the type to a substrate-neutral file
+  under `src/contracts/`. Plugin barrels MAY re-export those types for ergonomics (often with a
+  narrowed generic — e.g. `plugins/account/index.ts` fixes the substrate's `<A = unknown>` slot
+  to `AccountValue`), but the substrate IS the single source of truth and stays name-blind. The
+  load-bearing fix this rule encodes: lifting `AccountFundingStrategy` killed the
+  Account ↔ Coin / Walrus / Deepbook round-trip cross-import (Phase 4, backlog #24).
 - **Substrate is name-blind:** substrate code MUST NOT mention plugin names. Plugin-domain services
   such as `CoinRegistryService` and `PackageRegistryService` are composed outside
   `substrate/runtime/` and injected through `pluginContext`.
@@ -268,6 +276,14 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
   / decode / cold-start / dapp-kit-slot — must consolidate to `runtime/`. See Open slot O7.
 - **Apps NEVER import devstack.** L5 example apps consume codegen-emitted manifest + L5
   build-integration helpers only.
+- **L4 surfaces vs. `cli/main.ts`-adjacent infrastructure.** `cli/main.ts`-side modules
+  (`cli/prune-direct.ts`, `cli/doctor-probes.ts`, `cli/snapshot-reader.ts`, `cli/up-lifecycle.ts`)
+  are L4-adjacent infrastructure, NOT L4 surfaces — they may import L3 orchestrator / L2 plugin
+  barrels / substrate barrels because they exist to compose those layers for the bin entry. L4
+  surfaces proper (`surfaces/cli/**`, `surfaces/tui/**`) consume only typed event/command channels
+  + cascade-formatter + codegen-emitted helpers; they MUST NOT import `runtime/docker/**`, any
+  `plugins/**` module, or any `orchestrators/**` barrel. The boundary is enforced by
+  `test/style/l4-boundary.test.ts`.
 - Effect imports: bare `import { Effect, ... } from 'effect'` for the main runtime;
   `@effect/platform`, `@effect/platform-node`, `@effect/vitest` from their own subpaths.
 - Cross-package imports inside this monorepo use `@mysten-incubation/devstack/<subpath>` for
@@ -659,7 +675,7 @@ each.
 | **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                            | substrate triage              | boundary readers and plugin config factories                                                 |
 | **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to). Pending a substrate event-bus primitive (`substrate/runtime/event-bus/`) generic over event shapes — neither command nor lifecycle channels fit. Related cross-plugin gap: Account↔Coin bidirectional import (lift `AccountFundingStrategy` to `src/contracts/funding-strategy.ts`) and Sui→faucet reverse-import (sui-owned `sui-local` faucet strategy). | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/account/funding.ts`, `plugins/sui/index.ts:64-65` |
 | ~~**O6**~~  | ~~`CapabilitySinks` registry~~ — landed at `substrate/runtime/capability-sinks/`; supervisor harvest loop dispatches through it; plugin-author Layer composition can inject custom sinks. (Closed)                                                                                                                                                                                                            | closed                        | `substrate/runtime/capability-sinks/`, `supervisor.ts:1383+`                                |
-| **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                        | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
+| **O7**  | Consolidate build-integrations to `runtime/` — **partially closed**: hardcoded route/port table (backlog #30) lifted to `runtime/conventional-routes.ts`; typed Playwright global slot (backlog #31) lifted to `runtime/playwright-stack-context-slot.ts`. Remaining duplication: manifest readers and dapp-kit-slot variants per `vitest/`/`browser/` are still siloed.                                                                                                                                                                                              | build-integrations cleanup    | `vitest/`, `playwright/`, `browser/`                                                |
 | **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                      | substrate triage              | future container-owning plugins                                                              |
 | **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                                                                               | closed                        | `src/substrate/plugin.ts`                                                                    |
 | **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                      | observability cleanup         | older plugin/runtime span sites                                                              |

@@ -30,15 +30,15 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue, TxResult } from '../account/service.ts';
+import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
+import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
 
 const shouldHydrateCreatedObject = (change: PackagePublishObjectChange): boolean =>
 	change.type === 'created' &&

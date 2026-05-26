@@ -44,7 +44,7 @@ import type {
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import type { ActionBuildContext } from './build-context.ts';
 import { actionError, type ActionError } from './errors.ts';
 import {

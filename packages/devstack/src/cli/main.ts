@@ -73,7 +73,8 @@ import {
 	CliSupervisorLiveError,
 	CliUnavailableError,
 } from '../surfaces/cli/index.ts';
-import { defaultProbes, probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
+import { probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
+import { defaultProbes } from './doctor-probes.ts';
 import { nodeConfirmPrompt } from '../surfaces/cli/commands/confirm-node.ts';
 import type { LoadedConfig } from '../surfaces/cli/commands/config-loader.ts';
 import {

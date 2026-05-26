@@ -39,7 +39,7 @@ import type {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 

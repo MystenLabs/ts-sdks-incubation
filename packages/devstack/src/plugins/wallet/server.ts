@@ -34,7 +34,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 import {
 	walletBootError,
 	walletRequestError,

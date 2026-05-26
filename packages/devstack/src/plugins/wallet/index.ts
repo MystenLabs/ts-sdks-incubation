@@ -29,6 +29,7 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
@@ -36,7 +37,7 @@ import { suiResource } from '../sui/index.ts';
 import {
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
-} from '../host-service/routable.ts';
+} from '../host-service/index.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
 import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
@@ -52,36 +53,16 @@ import {
 } from './service.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
 
-/** Composer-side expander hook for `wallet({ accounts: 'all' })`. The
- *  wallet factory cannot know the stack's account members at its own
- *  call site (members are introduced positionally to `defineDevstack`
- *  AFTER the wallet factory has returned). The composer detects this
- *  symbol on a member returned by the wallet factory, collects every
- *  account-providing member from the final stack, and invokes the
- *  hook to produce the real wallet member with a populated dependencies
- *  tuple — keeping the dep-graph edges accurate.
+/** Wallet's expander contributes through the substrate-owned
+ *  `PluginExpander` contract (`contracts/plugin-expander.ts`). The
+ *  composer dispatches every member's expander uniformly — wallet has
+ *  no special-case wiring in `api/define-devstack.ts`.
  *
- *  Symbol-keyed (not a named property) so it cannot collide with any
- *  user-facing member field. Globally registered via `Symbol.for(...)`
- *  so the composer can look it up without importing the wallet
- *  module's symbol-binding (this side-steps a TS2742 inferred-type
- *  portability error: a `unique symbol`-keyed property in the wallet
- *  member's return type would leak the symbol's compile-time identity
- *  into the user's `defineDevstack(...)` inferred Stack type, forcing
- *  every example's default export to carry an explicit annotation). */
-export const WALLET_EXPAND_ACCOUNTS_ALL: symbol = Symbol.for('devstack.wallet.expand-accounts-all');
+ *  Compose-time symmetry: any plugin needing the "rewrite this
+ *  placeholder once the full member tuple is known" rewrite uses the
+ *  same `attachPluginExpander(...)` seam wallet uses below. */
 
-/** Runtime-only expander shape attached to the placeholder wallet
- *  member when the user passes `accounts: 'all'`. The composer reads
- *  `member[WALLET_EXPAND_ACCOUNTS_ALL](accountMembers)` to mint the
- *  resolved-tuple wallet member.
- *
- *  Kept as a value-level shape (not a type-level intersection on the
- *  factory's return signature) so the symbol-keyed property does NOT
- *  leak into the user's inferred Stack type (see TS2742 note above). */
-export type WalletExpandAccountsAllExpander = (
-	accountMembers: ReadonlyArray<WalletAccountMember>,
-) => AnyPlugin;
+const ACCOUNT_RESOURCE_ID_PREFIX = 'account/';
 
 // ----------------------------------------------------------------------
 // Resource identity
@@ -164,9 +145,19 @@ export function wallet(opts?: WalletOptions): AnyPlugin {
 		// to ./node_modules/.../plugins/wallet" at every example's
 		// default export).
 		const placeholder = makeWalletMember(resolvedOpts, [] as const);
-		const expander: WalletExpandAccountsAllExpander = (accountMembers) =>
-			makeWalletMember({ ...resolvedOpts, accounts: accountMembers }, accountMembers);
-		(placeholder as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL] = expander;
+		attachPluginExpander(placeholder, (members) => {
+			// Filter the full composed member tuple to the per-account
+			// resource members the wallet would otherwise have to receive
+			// at factory call. The id-prefix probe is the substrate-owned
+			// convention for account resources.
+			const accountMembers: Array<WalletAccountMember> = [];
+			for (const m of members) {
+				if (m.id.startsWith(ACCOUNT_RESOURCE_ID_PREFIX)) {
+					accountMembers.push(m as unknown as WalletAccountMember);
+				}
+			}
+			return makeWalletMember({ ...resolvedOpts, accounts: accountMembers }, accountMembers);
+		});
 		return placeholder;
 	}
 	return makeWalletMember(resolvedOpts, resolvedOpts.accounts);

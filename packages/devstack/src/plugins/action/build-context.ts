@@ -8,7 +8,7 @@ import type { Effect, Scope } from 'effect';
 
 import type { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 import type { SuiClient } from '../sui/index.ts';
 
 import type { ActionError } from './errors.ts';

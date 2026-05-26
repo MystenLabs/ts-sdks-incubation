@@ -38,7 +38,7 @@ import type {
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';

@@ -42,8 +42,7 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import type { AccountResourceId } from '../account/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';

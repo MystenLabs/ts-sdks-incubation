@@ -61,8 +61,8 @@ import {
 import { bootSuiService } from './service.ts';
 import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
-import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
-import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
+import { faucetCapabilityKey } from '../faucet/index.ts';
+import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
 	SuiForkOptions,
@@ -327,4 +327,24 @@ export {
 	type ForkMeta,
 	type ForkLockHolder,
 } from './fork-orchestration.ts';
-export type { SuiProbeKey } from './chain-probe.ts';
+export type { SuiProbeKey, SuiSdkShim } from './chain-probe.ts';
+// Cross-plugin seams: fork impersonation + chain-build container.
+// Consumed by `action` (Move-call execution against fork) and
+// `package` (publish-to-fork + Move-build orchestration). Wave 2
+// switches consumer plugins from internal-module imports to these
+// barrel entries.
+export {
+	buildForkImpersonationTransactionBytes,
+	prepareForkImpersonationTransaction,
+	verifyForkImpersonationSender,
+	FORK_IMPERSONATION_GAS_BUDGET,
+	FORK_IMPERSONATION_GAS_PRICE,
+} from './fork-transaction.ts';
+export {
+	acquireChainBuildContainer,
+	containerNameForApp,
+	moveBuildLockPathFor,
+	MOVE_BUILD_LOCK_TIMEOUT_MS,
+	type ChainBuildContainer,
+	type ChainBuildContainerSpec,
+} from './chain-build-container.ts';

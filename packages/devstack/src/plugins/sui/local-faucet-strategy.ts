@@ -1,27 +1,30 @@
 // SUI local-faucet HTTP strategy.
 //
-// Wraps the in-stack `sui-faucet` HTTP server hosted by the local
-// (or external) Sui container. The faucet URL comes from Sui's
-// resolver (`ResolvedSuiNetwork.faucet`) at acquire time; the
-// strategy CLOSES OVER the URL at construction, so the dispatch
-// site never sees Sui context.
+// Architecture: the Sui plugin OWNS the local-faucet endpoint
+// conceptually — it spins up the `sui-faucet` container in
+// `mode/local.ts`. The strategy CLOSES OVER the faucet URL at
+// construction so the dispatch site never sees Sui context, and is
+// registered into the `faucet:request:<chainId>` strategy registry
+// via a `StrategyContributor` decl from `sui/index.ts`.
+//
+// `FaucetStrategy` (the dispatch shape) is the faucet plugin's
+// contract surface and is imported from `../faucet/index.ts` — the
+// sui plugin only depends on faucet for the type, not for the
+// implementation. That keeps the dependency direction faucet ← sui,
+// matching the user-facing fact that `sui()` is the owner of the
+// faucet container.
 //
 // Amount semantics: the local faucet returns a fixed-amount grant
 // per request (the binary doesn't honor a variable amount today).
 // We carry `amount` through to error payloads so exhaustion errors
 // match the strategy-native unit (MIST), but the wire request
 // itself does not include it.
-//
-// Distilled-doc opportunity #1 (`Generalize the strategy-registry
-// pattern`): this file is the canonical small example. The whole
-// strategy is 30-ish lines because everything wire-level lives in
-// the shared `http.ts` helper.
 
 import { Effect } from 'effect';
 
-import { leaseKey, type LeaseBroker } from '../../../substrate/runtime/lease-broker/index.ts';
-import { requestFundsWithRetry, type RetryOptions } from '../http.ts';
-import type { FaucetBodyError, FaucetExhausted, FaucetUnreachable } from '../errors.ts';
+import { leaseKey, type LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
+import { requestFundsWithRetry, type RetryOptions } from '../faucet/http.ts';
+import type { FaucetStrategy } from '../faucet/index.ts';
 
 /** Optional serialization for faucet backends that spend a shared funding coin. */
 export interface SuiLocalFaucetSerialization {
@@ -44,23 +47,6 @@ export interface SuiLocalStrategyOptions {
 	readonly maxAttempts?: number;
 	/** Serialize requests when the faucet backend shares one funding coin. */
 	readonly serialization?: SuiLocalFaucetSerialization;
-}
-
-/**
- * Faucet strategy value. The dispatch surface is uniform across
- * strategies — the dispatcher doesn't know how a strategy delivers
- * coins, only how to invoke it.
- *
- * `amount` is in MIST (1 SUI = 10^9 MIST), the chain's smallest unit.
- * The local faucet binary itself ignores this and grants a fixed
- * amount per request; the parameter is here for type uniformity and
- * to land correctly-denominated values in `FaucetExhausted`.
- */
-export interface FaucetStrategy {
-	readonly request: (req: {
-		readonly address: string;
-		readonly amount: bigint;
-	}) => Effect.Effect<void, FaucetExhausted | FaucetUnreachable | FaucetBodyError>;
 }
 
 const withSerialization = <E>(

@@ -54,8 +54,7 @@ import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publi
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import { suiResource } from '../sui/index.ts';
+import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 

@@ -27,12 +27,9 @@ import { defineDevstack, readStackEngine } from '../../../src/api/define-devstac
 import { account } from '../../../src/plugins/account/index.ts';
 import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { sui } from '../../../src/plugins/sui/index.ts';
-import {
-	WALLET_ACCOUNTS_ALL,
-	WALLET_EXPAND_ACCOUNTS_ALL,
-	wallet,
-} from '../../../src/plugins/wallet/index.ts';
+import { WALLET_ACCOUNTS_ALL, wallet } from '../../../src/plugins/wallet/index.ts';
 import { acquireWallet, type WalletAcquireContext } from '../../../src/plugins/wallet/service.ts';
+import { PLUGIN_EXPANDER } from '../../../src/contracts/plugin-expander.ts';
 
 const fakeAccount = {
 	name: 'alice',
@@ -77,7 +74,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		// trigger TS2742 at every example's default export). The slot
 		// is read by the composer at compose time via `Symbol.for(...)`
 		// lookup; tests reach for it through the same untyped path.
-		const slot = (placeholder as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (placeholder as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(typeof slot).toBe('function');
 	});
 
@@ -118,7 +115,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		// `makeWalletMember(opts, accountMembers)` — the hook is
 		// intentionally absent so a re-entered composer pass would be a
 		// no-op rather than a re-expansion.
-		const slot = (walletMember as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (walletMember as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(slot).toBeUndefined();
 	});
 
@@ -246,7 +243,7 @@ describe('wallet({ accounts: [...] }) — explicit-array form (regression)', () 
 		expect(dependencyIds).toEqual(['sui', 'account/alice', 'account/bob']);
 
 		// No expander hook on the explicit-form member.
-		const slot = (w as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (w as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(slot).toBeUndefined();
 	});
 

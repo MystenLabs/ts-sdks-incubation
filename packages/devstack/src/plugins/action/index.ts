@@ -46,8 +46,7 @@ import {
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import { suiResource } from '../sui/index.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import type { ActionBuildContext } from './build-context.ts';
 import { actionError, ACTION_ERROR_TAGS, type ActionError } from './errors.ts';

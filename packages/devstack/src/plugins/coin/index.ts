@@ -35,7 +35,7 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
-import type { AccountFundingStrategy } from '../account/funding.ts';
+import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';

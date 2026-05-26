@@ -1,9 +1,16 @@
 // SUI live-faucet HTTP strategy.
 //
-// Wraps the public testnet/devnet faucet endpoint. Wire shape is the
-// same as `sui-local` — same `/v2/gas` POST, same body-Failure
-// semantics — but the retry profile is sized differently in practice
-// (public faucets are rate-limited, not boot-warming).
+// Architecture: the Sui plugin OWNS the live-faucet endpoint
+// configuration — the public testnet/devnet URLs are part of Sui's
+// network identity. Wire shape is the same as `local-faucet-strategy`
+// — same `/v2/gas` POST, same body-Failure semantics — but the retry
+// profile is sized differently in practice (public faucets are
+// rate-limited, not boot-warming).
+//
+// `FaucetStrategy` (the dispatch shape) is imported from
+// `../faucet/index.ts`; the sui plugin only depends on faucet for the
+// contract type, not for the implementation. Dependency direction:
+// faucet ← sui.
 //
 // Distilled-doc open question §1 ("Does the public testnet faucet
 // honor the same request/response shape?"): assumed YES today; the
@@ -13,14 +20,14 @@
 
 import { Effect } from 'effect';
 
-import { requestFundsWithRetry, type RetryOptions } from '../http.ts';
+import { requestFundsWithRetry, type RetryOptions } from '../faucet/http.ts';
 import {
 	faucetConfigError,
 	type FaucetBodyError,
 	type FaucetExhausted,
 	type FaucetUnreachable,
-} from '../errors.ts';
-import type { FaucetStrategy } from './sui-local.ts';
+} from '../faucet/errors.ts';
+import type { FaucetStrategy } from '../faucet/index.ts';
 
 /** Known live network → default faucet URL mapping. Mainnet is
  *  intentionally absent: there is no mainnet faucet, and the

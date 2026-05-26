@@ -27,6 +27,10 @@
 // preset's `globalTeardown` can call it).
 
 import {
+	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
+	type PlaywrightStackFixture as RuntimePlaywrightStackFixture,
+} from '../runtime/playwright-stack-context-slot.ts';
+import {
 	readStackContext,
 	type ResolveStackContextOptions,
 	type StackContext,
@@ -46,24 +50,18 @@ export type PlaywrightGlobalSetup = () => Promise<void | (() => Promise<void>)>;
 // -----------------------------------------------------------------------------
 
 /**
- * The shape global-setup writes to disk for in-spec tests to read.
- * Tests do NOT re-walk-up to find the manifest at every assertion —
- * they read this prepared fixture, which is faster and avoids a
- * subtle cwd-mismatch class of failure when Playwright runs tests
+ * The shape global-setup writes for in-spec tests to read. Tests do
+ * NOT re-walk-up to find the manifest at every assertion — they read
+ * this prepared fixture from `globalThis`, which is faster and avoids
+ * a subtle cwd-mismatch class of failure when Playwright runs tests
  * from a worker process.
  *
- * The fixture is written to a Playwright-known path (resolved from
- * env Playwright populates) so worker processes pick it up. The
- * setup also stamps `DEVSTACK_MANIFEST_PATH` into the worker env so
- * `wallet-context` can reach the file without re-running discovery.
+ * Re-export of the substrate-owned `runtime/playwright-stack-context-slot`
+ * shape so both consumer surfaces agree on one type. The matching
+ * typed `declare global` block lives next to the slot key so callers
+ * can read/write `globalThis[KEY]` without a cast.
  */
-export interface PlaywrightStackFixture {
-	readonly endpoints: Readonly<Record<string, string>>;
-	readonly walletEndpoint: string | null;
-	readonly manifestPath: string;
-	readonly stack: string;
-	readonly app: string;
-}
+export type PlaywrightStackFixture = RuntimePlaywrightStackFixture;
 
 // -----------------------------------------------------------------------------
 // Configurable factory
@@ -147,12 +145,9 @@ export default buildGlobalSetup();
 
 /** The slot on `globalThis` where the prewarmed stack context lives.
  *  In-spec helpers (`wallet-context.ts`) read from here when present
- *  to avoid a second disk read. */
-export const STACK_CONTEXT_SLOT = '__devstackPlaywrightStackContext__' as const;
-
-interface GlobalSlot {
-	[STACK_CONTEXT_SLOT]?: PlaywrightStackFixture;
-}
+ *  to avoid a second disk read. Re-exported from the runtime slot
+ *  module so consumers can import either side. */
+export const STACK_CONTEXT_SLOT = PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY;
 
 const stashStackContext = (ctx: StackContext): void => {
 	const fixture: PlaywrightStackFixture = {
@@ -162,12 +157,10 @@ const stashStackContext = (ctx: StackContext): void => {
 		stack: ctx.manifest.identity.stack,
 		app: ctx.manifest.identity.app,
 	};
-	(globalThis as unknown as GlobalSlot)[STACK_CONTEXT_SLOT] = fixture;
+	globalThis[PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY] = fixture;
 };
 
 /** Read the slot. Returns `null` if global-setup didn't run (e.g. the
  *  user opted out by passing `globalSetup: null`). */
-export const readStashedFixture = (): PlaywrightStackFixture | null => {
-	const slot = (globalThis as unknown as GlobalSlot)[STACK_CONTEXT_SLOT];
-	return slot ?? null;
-};
+export const readStashedFixture = (): PlaywrightStackFixture | null =>
+	globalThis[PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY] ?? null;

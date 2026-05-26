@@ -27,7 +27,7 @@
 import { Effect } from 'effect';
 import type { FileSystem, Scope } from 'effect';
 
-import type { AccountValue } from '../account/service.ts';
+import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import type { DappKitConfigBindings } from './codegen.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
 import { resolveOriginPolicy } from './origin-policy.ts';
@@ -41,7 +41,6 @@ import { WalletHttpPath } from './protocol.ts';
 
 import type { ResourceRef } from '../../api/define-plugin.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
-import type { AccountResourceId } from '../account/index.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
  *  member in the stack. Expanded by the composer at `defineDevstack`

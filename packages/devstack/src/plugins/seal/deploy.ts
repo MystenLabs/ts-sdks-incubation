@@ -29,7 +29,7 @@ import {
 	type BuildOutput,
 	type MoveBuildError,
 } from '../../substrate/runtime/sui-move-build/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 import { sealError, type SealError } from './errors.ts';
 import { decodeHex } from './keygen.ts';
 

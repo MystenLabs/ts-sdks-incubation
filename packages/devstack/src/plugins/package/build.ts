@@ -13,7 +13,7 @@ import {
 	type ScrubLocksHostOptions,
 	type MoveBuildContainer,
 } from '../../substrate/runtime/sui-move-build/index.ts';
-import type { ChainBuildContainer } from '../sui/chain-build-container.ts';
+import type { ChainBuildContainer } from '../sui/index.ts';
 import { publishError, type PublishError } from './errors.ts';
 
 export {

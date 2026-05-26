@@ -53,6 +53,17 @@ export {
 	type ConventionalRouteUrlInput,
 } from './cold-start-url.ts';
 export {
+	BUILT_IN_CONVENTIONAL_HINTS,
+	BUILT_IN_ENDPOINT_ALIASES,
+	DEFAULT_ROUTER_ENTRYPOINT_PORT,
+	builtInConventionalRoutes,
+	resolveBuiltInEndpointAlias,
+} from './conventional-routes.ts';
+export {
+	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
+	type PlaywrightStackFixture,
+} from './playwright-stack-context-slot.ts';
+export {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	NoConventionalRouteError,

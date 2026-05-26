@@ -42,7 +42,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { suiResource } from '../sui/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 import type { CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 

@@ -74,10 +74,3 @@ export { type ConfigLoader, type LoadedConfig } from './config-loader.ts';
 export { confirmDestructive, type ConfirmPrompt, type ConfirmPromptInput } from './confirm.ts';
 export { runWipe, type WipeDeps } from './wipe.ts';
 export { probeSupervisorPresence, type SupervisorPresence } from './supervisor-presence.ts';
-export {
-	defaultProbes,
-	routerProfileProbe,
-	type DoctorCommandRunner,
-	type PortAvailabilityProbe,
-	type RouterProfileProbeOptions,
-} from './doctor-probes.ts';

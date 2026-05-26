@@ -10,11 +10,7 @@ import {
 	pluginDependencyRefs,
 } from '../substrate/plugin.ts';
 import type { DevstackOptions } from '../substrate/options.ts';
-import {
-	WALLET_EXPAND_ACCOUNTS_ALL,
-	type WalletExpandAccountsAllExpander,
-} from '../plugins/wallet/index.ts';
-import type { WalletAccountMember } from '../plugins/wallet/index.ts';
+import { isPluginExpanderPair, runPluginExpanders } from '../contracts/plugin-expander.ts';
 import { isPlugin, type AnyResourceRef } from './define-plugin.ts';
 
 // --- Type-level helpers -------------------------------------------------
@@ -137,8 +133,8 @@ export function defineDevstack<const Members extends ReadonlyArray<AnyPlugin>>(
 	config: DevstackConfig<Members> & ValidateArgs<Members>,
 ): Stack<ComposedMembers<Members>> {
 	const roots = expandPluginDependencies(config.members);
-	const expandedWallet = expandWalletAccountsAll(roots);
-	const members = expandPluginDependencies(expandedWallet);
+	const expanded = runPluginExpanders(roots);
+	const members = expanded === roots ? roots : expandPluginDependencies(expanded);
 	const { members: _members, ...options } = config;
 	void _members;
 
@@ -176,7 +172,7 @@ export const expandPluginDependencies = (
 			return;
 		}
 		if (previous !== undefined) {
-			if (isExpandedWalletAlias(previous, member)) {
+			if (isPluginExpanderPair(previous, member)) {
 				return;
 			}
 			throw new Error(`Duplicate devstack provider for ${id}`);
@@ -216,56 +212,7 @@ export const expandPluginDependencies = (
 	return expanded;
 };
 
-const isExpandedWalletAlias = (a: AnyPlugin, b: AnyPlugin): boolean =>
-	a.id === b.id && (readExpandHook(a) !== undefined || readExpandHook(b) !== undefined);
-
 const accountNameFromResourceId = (id: string): string | null => {
 	if (!id.startsWith(ACCOUNT_RESOURCE_PREFIX)) return null;
 	return id.slice(ACCOUNT_RESOURCE_PREFIX.length);
 };
-
-// --- wallet `accounts: 'all'` expansion (D6, api-surface-design.md §4) --
-//
-// The wallet factory returns a placeholder member with a symbol-keyed
-// expander hook when the user passes `accounts: 'all'`. The composer
-// is the only place that knows the FULL stack member tuple at compose
-// time, so the expansion runs here before the runtime member array is
-// handed to the supervisor.
-//
-// Without expansion, the wallet's dependencies would stay `[suiResource]` and
-// the supervisor's topological scheduler would race account funding
-// against `signTransaction`.
-
-function readExpandHook(m: AnyPlugin): WalletExpandAccountsAllExpander | undefined {
-	const slot = (m as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
-	return typeof slot === 'function' ? (slot as WalletExpandAccountsAllExpander) : undefined;
-}
-
-/** Expand any `wallet({ accounts: 'all' })` placeholder plugin into a
- *  real wallet plugin whose dependencies include every account plugin.
- *  Returns the input array verbatim when no expansion is
- *  needed (zero allocation on the common explicit-tuple path). */
-export function expandWalletAccountsAll(
-	members: ReadonlyArray<AnyPlugin>,
-): ReadonlyArray<AnyPlugin> {
-	let needsExpansion = false;
-	for (const m of members) {
-		if (readExpandHook(m) !== undefined) {
-			needsExpansion = true;
-			break;
-		}
-	}
-	if (!needsExpansion) return members;
-
-	const accountMembers: Array<WalletAccountMember> = [];
-	for (const m of members) {
-		if (m.id.startsWith(ACCOUNT_RESOURCE_PREFIX)) {
-			accountMembers.push(m as unknown as WalletAccountMember);
-		}
-	}
-
-	return members.map((m) => {
-		const expand = readExpandHook(m);
-		return expand === undefined ? m : expand(accountMembers);
-	});
-}

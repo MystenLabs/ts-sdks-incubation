@@ -60,7 +60,6 @@ import { resolveEnvVariant } from './variants/env.ts';
 import { resolveInlineVariant } from './variants/inline.ts';
 import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import type { TransactionSignerScope } from '../../substrate/runtime/sui-execute/index.ts';
@@ -68,7 +67,7 @@ import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
-import type { ForkAdminSurface } from '../sui/index.ts';
+import type { ForkAdminSurface, SuiSdkShim } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
 
 // -----------------------------------------------------------------------------

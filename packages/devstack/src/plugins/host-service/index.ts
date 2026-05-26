@@ -36,7 +36,11 @@ import {
 	type HostProcessSpawnOptions,
 	type HostServiceAcquireContext,
 } from './service.ts';
-import { HOST_SERVICE_DEFAULT_ENDPOINT_NAME, makeHostServiceRoutable } from './routable.ts';
+import {
+	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
+	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
+	makeHostServiceRoutable,
+} from './routable.ts';
 
 export const hostServiceResourceId = <Name extends string>(name: Name): `host-service/${Name}` =>
 	`host-service/${name}`;
@@ -110,6 +114,7 @@ export {
 	acquireHostService,
 	prepareHostService,
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
+	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
 	HOST_SERVICE_ERROR_TAGS,
 	HOST_SERVICE_PORT_TOKEN,
 	HostServiceAcquireError,

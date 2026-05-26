@@ -20,7 +20,7 @@ import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
 import type { CoinValue } from '../coin/index.ts';
 import type {
 	ResolvedSigner,

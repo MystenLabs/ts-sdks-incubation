@@ -9,9 +9,11 @@
 // endpoint-name accessors in-spec helpers use.
 
 import {
+	BUILT_IN_ENDPOINT_ALIASES,
+	DEFAULT_ROUTER_ENTRYPOINT_PORT,
+	builtInConventionalRoutes,
 	discoverManifestPath as runtimeDiscoverManifestPath,
 	coldStartUrl as runtimeColdStartUrl,
-	conventionalRoutesFromHints,
 	EndpointRegistry,
 	manifestEnvelopeFromStackContext,
 	ManifestDiscoveryError,
@@ -69,20 +71,13 @@ export interface ResolvedEndpoint {
 	readonly endpointName: string;
 }
 
-const PLAYWRIGHT_ENDPOINT_ALIASES: Readonly<Record<string, string>> = {
-	app: 'dev',
-	wallet: 'wallet-app',
-};
-
-const PLAYWRIGHT_DEFAULT_ROUTER_PORTS: Readonly<Record<string, number>> = {
-	app: 5175,
-	dev: 5175,
-	wallet: 5175,
-	'wallet-app': 5175,
-};
+// Endpoint aliases + default port live in `runtime/conventional-routes.ts`
+// so vitest / Playwright / any future build integration share one table.
+// Playwright contributes nothing of its own here — every per-endpoint
+// fact is substrate-supplied.
 
 export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string =>
-	PLAYWRIGHT_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
+	BUILT_IN_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
 
 const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegistry => {
 	const entries: RuntimeResolvedEndpoint[] = [];
@@ -213,27 +208,13 @@ export const conventionalUrlFor = (
 	const resolvedPort =
 		opts.port ??
 		(Number.isFinite(envPort) && envPort > 0 ? envPort : undefined) ??
-		PLAYWRIGHT_DEFAULT_ROUTER_PORTS[endpointKey];
+		DEFAULT_ROUTER_ENTRYPOINT_PORT;
 
-	if (resolvedPort === undefined || !Number.isFinite(resolvedPort) || resolvedPort <= 0) {
+	if (!Number.isFinite(resolvedPort) || resolvedPort <= 0) {
 		return null;
 	}
-	const port = resolvedPort;
 
-	const routes = conventionalRoutesFromHints(
-		[
-			{ endpoint: 'app', service: 'dev' },
-			{ endpoint: 'dev', service: 'dev' },
-			{ endpoint: 'sui-rpc', service: 'sui-rpc' },
-			{ endpoint: 'sui-faucet', service: 'sui-faucet' },
-			{ endpoint: 'walrus-aggregator', service: 'walrus-aggregator' },
-			{ endpoint: 'walrus-publisher', service: 'walrus-publisher' },
-			{ endpoint: 'seal', service: 'seal' },
-			{ endpoint: 'wallet', service: 'api' },
-			{ endpoint: 'wallet-app', service: 'api' },
-		],
-		port,
-	);
+	const routes = builtInConventionalRoutes(resolvedPort);
 	if (!routes.has(endpointKey)) return null;
 
 	return runtimeColdStartUrl(endpointKey, {

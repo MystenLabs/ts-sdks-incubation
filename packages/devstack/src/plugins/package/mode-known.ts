@@ -24,7 +24,7 @@
 import { Effect, Schema, type Scope } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedKnownPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';

@@ -1,18 +1,19 @@
-// Built-in doctor probes.
+// L4-adjacent CLI infrastructure: doctor probe definitions.
 //
-// Architecture: `doctor` owns cheap preflight checks for the public CLI
-// surface: env, ports, locks, Docker/Sui availability, router profile,
-// and fork cache state. Each probe is a thin, self-contained `Probe`
-// value that the dispatcher composes into the deps bundle.
+// Per STYLE_GUIDE §7: `cli/*.ts` modules sit alongside the bin entry
+// (`cli/main.ts`) and may import L3 orchestrator + L2 plugin barrels —
+// they are NOT L4 surfaces proper. The router-profile probe needs
+// both the L3 router orchestrator helpers (parsing dispatch files,
+// matching profile labels, sorting entrypoint ports) and the built-in
+// L2 router entrypoint composition; that wiring lives here.
 //
-// Probes follow a discipline:
-//   - Pure Effect — no implicit Layer dependencies. Probes shell out
-//     directly via `execFileSync` so the doctor verb stays cheap to
-//     boot (no substrate Layer composition).
-//   - Each returns `ProbeOutcome` — never throws.
-//   - `required: true` means a `fail | unavailable` projects to
-//     `CliUnavailableError` and exits 69; non-required probes are
-//     informational.
+// The probes themselves are read-only diagnostics: Docker reachable,
+// `sui` CLI on PATH, state-dir writable, router profile state +
+// dispatch leases + entrypoint listeners, orphan cross-process locks,
+// fork-cache health. Each returns a typed `ProbeOutcome` and never
+// throws. `required: true` means a `fail | unavailable` projects to
+// `CliUnavailableError` and exits 69; non-required probes are
+// informational.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
@@ -30,20 +31,22 @@ import {
 	uniqueSortedEntrypointPorts,
 	type Entrypoint,
 	type RouterProfile,
-} from '../../../orchestrators/router/index.ts';
-import { BUILT_IN_ENTRYPOINTS } from '../../../plugins/router-entrypoints.ts';
-import { checkHolderLiveness, readRoster } from '../../../substrate/runtime/cross-process/index.ts';
-import type { RosterHolder } from '../../../substrate/cross-process.ts';
-import type { Probe, ProbeOutcome } from './doctor.ts';
+} from '../orchestrators/router/index.ts';
+import { BUILT_IN_ENTRYPOINTS } from '../plugins/router-entrypoints.ts';
+import { checkHolderLiveness, readRoster } from '../substrate/runtime/cross-process/index.ts';
+import type { RosterHolder } from '../substrate/cross-process.ts';
+import type { Probe, ProbeOutcome } from '../surfaces/cli/commands/doctor.ts';
 
 const okOutcome = (detail?: string): ProbeOutcome =>
 	detail !== undefined ? { status: 'ok', detail } : { status: 'ok' };
+
+type CommandResult = { ok: true; out: string } | { ok: false; err: string };
 
 const captureCommand = (
 	cmd: string,
 	args: ReadonlyArray<string>,
 	timeoutMs = 3000,
-): { ok: true; out: string } | { ok: false; err: string } => {
+): CommandResult => {
 	try {
 		const out = execFileSync(cmd, args as string[], {
 			encoding: 'utf8',
@@ -94,8 +97,7 @@ export const suiCliProbe: Probe = {
 		}),
 };
 
-/** Probe: a TCP port is reachable on localhost. Used to verify the
- *  user's reverse-proxy entrypoint isn't squatting the Traefik port. */
+/** Probe: a TCP port is reachable on localhost. */
 const probePortFree = (port: number, timeoutMs = 500): Promise<boolean> =>
 	new Promise((resolve) => {
 		const socket = createConnection({ host: '127.0.0.1', port });
@@ -200,10 +202,10 @@ const fieldRecord = (
 ): Record<string, unknown> | null => unknownRecord(record[key]);
 
 const fieldString = (record: Record<string, unknown>, key: string): string | null =>
-	typeof record[key] === 'string' ? record[key] : null;
+	typeof record[key] === 'string' ? (record[key] as string) : null;
 
 const fieldBoolean = (record: Record<string, unknown>, key: string): boolean | null =>
-	typeof record[key] === 'boolean' ? record[key] : null;
+	typeof record[key] === 'boolean' ? (record[key] as boolean) : null;
 
 const parseDockerInspectFirst = (out: string): Record<string, unknown> | null => {
 	try {
@@ -543,7 +545,6 @@ export const stateDirProbe = (stateDir: string): Probe => ({
 	run: () =>
 		Effect.sync(() => {
 			if (!existsSync(stateDir)) {
-				// Not present yet — ok; devstack creates it on first claim.
 				return okOutcome(`${stateDir} (will be created)`);
 			}
 			try {
@@ -554,8 +555,6 @@ export const stateDirProbe = (stateDir: string): Probe => ({
 						detail: `${stateDir} is not a directory`,
 					};
 				}
-				// Sanity: a malformed state dir would surface here. We don't
-				// try to read inside — that's per-stack.
 				return okOutcome(stateDir);
 			} catch (cause) {
 				return {
@@ -601,7 +600,7 @@ const countTreeSize = (dir: string, depth = 0): number => {
 	return n;
 };
 
-/** Default probe set. The dispatcher composes this with the resolved
+/** Default probe set. `cli/main.ts` composes this with the resolved
  *  app root, runtime state dir, router profile, and router entrypoints. */
 export const defaultProbes = (params: {
 	readonly stateDir: string;

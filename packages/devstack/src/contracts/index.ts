@@ -20,4 +20,6 @@ export * from './projection.ts';
 export * from './network-resolver.ts';
 export * from './chain-probe.ts';
 export * from './strategy-contributor.ts';
+export * from './funding-strategy.ts';
+export * from './plugin-expander.ts';
 export * from './renderer.ts';

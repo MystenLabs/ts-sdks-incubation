@@ -30,7 +30,7 @@ import type {
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { acquireKnown, type KnownModeInputs } from './mode-known.ts';
 import { acquireLocal, type LocalModeInputs } from './mode-local.ts';
 import type {

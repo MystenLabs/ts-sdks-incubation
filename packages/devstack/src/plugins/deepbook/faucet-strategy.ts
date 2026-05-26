@@ -13,8 +13,8 @@ import { DeepBookClient, type DeepBookCompatibleClient } from '@mysten/deepbook-
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { AccountFundingRequest, AccountFundingStrategy } from '../account/funding.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import type { AccountFundingRequest, AccountFundingStrategy } from '../account/index.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 

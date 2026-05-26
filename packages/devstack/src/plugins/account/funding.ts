@@ -29,7 +29,7 @@
 
 import { Duration, Effect } from 'effect';
 
-import type { FaucetStrategy } from '../faucet/strategies/sui-local.ts';
+import type { FaucetStrategy } from '../faucet/index.ts';
 import {
 	faucetCapabilityFor,
 	StrategyRegistryService,
@@ -37,7 +37,10 @@ import {
 import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { CoinResourceId } from '../coin/index.ts';
+import type {
+	AccountFundingRequest as ContractAccountFundingRequest,
+	AccountFundingStrategy as ContractAccountFundingStrategy,
+} from '../../contracts/funding-strategy.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 
 import {
@@ -47,6 +50,16 @@ import {
 } from './errors.ts';
 import { withAddressLease } from './lease.ts';
 import type { AccountValue } from './service.ts';
+
+// `CoinResourceId` is the literal-typed resource id the coin plugin
+// publishes. Inlined here as `coin:${Sym}` so this file does NOT
+// cross-import the coin plugin — the substrate's compose-time dedup
+// works by string equality on the resource id, and the coin plugin's
+// `coinResourceId` constructor produces the same shape. This is the
+// per-Task-A "inline the literal type alias" decision (the literal
+// pattern is the contract; promoting it to a substrate type would
+// be more ceremony than the single string template warrants).
+type CoinResourceId<Sym extends string> = `coin:${Sym}`;
 
 /** Direct resource ref shape for a coin upstream. The user passes the
  *  result of `coin.fromPackage(...)` / `coin.known(...)` /
@@ -122,23 +135,18 @@ export interface AccountFundingResult {
 	readonly applied: ProjectedFunding;
 }
 
-/** Request passed to account funding strategies. `amount` uses the
- *  funded coin's smallest unit. The resolved account handle is present
- *  so strategies without an admin signer can perform account-owned
- *  swaps while still sharing the central funding dispatcher. */
-export interface AccountFundingRequest {
-	readonly address: string;
-	readonly amount: bigint;
-	readonly account: AccountValue;
-}
+/** Account-bus projection of the substrate funding-request contract
+ *  (`contracts/funding-strategy.ts`). Narrows the contract's generic
+ *  account-handle slot to the concrete `AccountValue` this plugin
+ *  publishes; strategies inside account or in sibling plugins
+ *  (coin/walrus/deepbook) see the real handle type without re-stating
+ *  the substrate shape. */
+export type AccountFundingRequest = ContractAccountFundingRequest<AccountValue>;
 
-export interface AccountFundingStrategy<E = unknown> {
-	readonly request: (req: AccountFundingRequest) => Effect.Effect<void, E>;
-	/** True when the strategy calls `account.withTransactionSigner`.
-	 *  The dispatcher must not acquire the same non-reentrant
-	 *  per-address lease outside the strategy. */
-	readonly usesAccountSigner?: boolean;
-}
+/** Account-bus projection of the substrate strategy contract. The
+ *  generic account-handle slot is fixed to `AccountValue` so
+ *  contributing plugins receive a typed account handle. */
+export type AccountFundingStrategy<E = unknown> = ContractAccountFundingStrategy<E, AccountValue>;
 
 export interface FundingBalanceReader {
 	readonly readBalance: (args: {

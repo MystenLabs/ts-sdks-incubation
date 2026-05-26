@@ -174,8 +174,13 @@ describe('conventionalUrlFor', () => {
 		expect(conventionalUrlFor('unknown-thing', { port: 80 })).toBeNull();
 	});
 
-	it('returns null when no port is resolvable', () => {
-		expect(conventionalUrlFor('sui-rpc', {})).toBeNull();
+	it('uses DEFAULT_ROUTER_ENTRYPOINT_PORT for every built-in endpoint when no port is specified', () => {
+		// Post backlog #30 lift: the conventional route table is owned by
+		// `runtime/conventional-routes.ts` and the default port applies
+		// uniformly to every built-in endpoint (the router's single
+		// Traefik entrypoint dispatches by Host header).
+		const url = conventionalUrlFor('sui-rpc', { stack: 'main', app: 'wallet' });
+		expect(url).toBe('http://sui-rpc.wallet.localhost:5175');
 	});
 });
 

@@ -1,7 +1,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { suiLocalStrategy } from '../../../src/plugins/faucet/strategies/sui-local.ts';
+import { suiLocalStrategy } from '../../../src/plugins/sui/local-faucet-strategy.ts';
 import {
 	LeaseBrokerService,
 	layerLeaseBroker,

@@ -26,14 +26,14 @@
 
 ## 🟠 Major — Phase 4 (boundary corrections)
 
-24. Account ↔ Coin bidirectional cross-import — `coin/index.ts:38` ↔ `account/funding.ts:32,40`. Lift `AccountFundingStrategy` to `src/contracts/funding-strategy.ts`.
-25. Sui ↔ faucet reverse-import — `sui/index.ts:64-65` reaches `faucet/dispatcher.ts` + `faucet/strategies/sui-local.ts`. Sui-owned strategy.
-26. Plugin barrel imports — ~25 sites across `plugins/{seal,wallet,walrus,coin,action,package,deepbook}` reach internal modules instead of `index.ts` barrels.
-27. L4 surfaces reaching L1/L2 — `cli/prune-direct.ts:11-25` → `runtime/docker/*`; `surfaces/cli/commands/doctor-probes.ts:33-34` → `orchestrators/router/index.ts` + `plugins/router-entrypoints.ts`.
-28. `api/define-devstack.ts:16-17` special-cases wallet via `WALLET_EXPAND_ACCOUNTS_ALL`. Lift to substrate expander capability.
-29. Action duplicates sign/execute pipeline — `action/execute.ts:172-355` vs `account/service.ts:666-704`. Three SDK-envelope projectors collapse to one helper.
-30. Playwright hardcoded route/port table — `playwright/stack-context.ts:77-82,225-235`. Lift to `runtime/conventional-routes.ts`.
-31. Playwright second global slot via `as unknown as GlobalSlot` — `playwright/global-setup.ts:151-171`. Add typed `declare global`.
+~~Items 24, 25, 26, 27, 28, 30, 31 all shipped 2026-05-26; entries moved to the Closed section below. Item 29 partially shipped (action sign/execute dedup done; `package/publish-executor.ts:101-146` SDK-envelope projector consolidation remains).~~
+
+29a. **Follow-up to partially-closed #29**: collapse `package/publish-executor.ts:101-146` SDK-envelope projector onto `substrate/runtime/sui-execute/executeSuiTx`. Also: `account/service.ts`'s `AccountSignError{phase:'submit'}` overloads "no-digest" + "transport failure" + "FailedTransaction"; clean fix is splitting into `'submit' | 'no-digest' | 'failed-transaction'` phases so consumers don't keyword-match on messages.
+27. ~~L4 surfaces reaching L1/L2~~ — shipped 2026-05-26. `cli/prune-direct.ts` now consumes the new `orchestrators/lifecycle-prune/` L3 surface; doctor probes moved to `cli/doctor-probes.ts` (L4-adjacent CLI infrastructure); `surfaces/cli/commands/prune.ts` reads a precomputed `PruneGroup.autoPrunable` field instead of importing router constants. STYLE_GUIDE §7 codifies the L4-vs-L4-adjacent split and `test/style/l4-boundary.test.ts` pins the boundary.
+28. ~~`api/define-devstack.ts:16-17` special-cases wallet via `WALLET_EXPAND_ACCOUNTS_ALL`.~~ **Shipped (Phase 4 Wave 2C)** — lifted to substrate-owned `src/contracts/plugin-expander.ts` (`PLUGIN_EXPANDER` symbol + `attachPluginExpander`/`runPluginExpanders`/`isPluginExpanderPair`). Wallet contributes through `attachPluginExpander`; `define-devstack.ts` no longer imports any plugin. Compose-time hook (NOT routed through `CapabilitySinks`, which is the runtime-harvest path); the expander symbol writes a value-level property only so it doesn't leak into inferred Stack types (TS2742 invariant preserved).
+29. Action duplicates sign/execute pipeline — **partially shipped (Phase 4 Wave 2C)**: `plugins/action/execute.ts` now delegates the sign+execute+wait+project pipeline to `account.withTransactionSigner(...).signAndExecute(txBytes)`; the inline `sdkClient.executeTransaction` path and the `RawExecuteEnvelope` projector are gone. **Still remaining**: collapsing the SDK-envelope projector at `package/publish-executor.ts:101-146` onto the substrate helper at `substrate/runtime/sui-execute/`. That lift can adopt `executeSuiTx` directly (already substrate-blessed Sui-aware module). Also remaining (style-sweep follow-up): account's `AccountSignError{phase:'submit'}` overloads "no-digest" and "transport failure"; the action mapping discriminates by message keyword. A clean fix is a distinct `'no-digest'` phase on `AccountSignError`.
+30. ~~Playwright hardcoded route/port table — `playwright/stack-context.ts:77-82,225-235`.~~ **Shipped (Phase 4 Wave 2C)** — lifted to `build-integrations/runtime/conventional-routes.ts` (`BUILT_IN_CONVENTIONAL_HINTS`, `BUILT_IN_ENDPOINT_ALIASES`, `DEFAULT_ROUTER_ENTRYPOINT_PORT`, `builtInConventionalRoutes()`). Playwright consumes through the lifted table. Backlog'd follow-up: any future Vitest cold-start helper consumes the same source.
+31. ~~Playwright second global slot via `as unknown as GlobalSlot`.~~ **Shipped (Phase 4 Wave 2C)** — typed slot block lives at `build-integrations/runtime/playwright-stack-context-slot.ts` alongside `dapp-kit-slot.ts`; `playwright/global-setup.ts` reads/writes the slot directly through the typed `declare global` block. Cast removed.
 
 ## 🟠 Major — Phase 5 (substrate name-blindness)
 
@@ -84,6 +84,16 @@
 ---
 
 ## ⚪ Closed
+
+### Phase 4 (shipped 2026-05-26)
+
+24. ~~Account ↔ Coin bidirectional cross-import~~ — `AccountFundingStrategy<E, A>` lifted to substrate-neutral `src/contracts/funding-strategy.ts`; account narrows generics to `AccountValue`; coin imports the contract directly; `CoinResourceId` literal alias inlined at `account/funding.ts` (the cross-direction reach is gone). STYLE_GUIDE §7 adds the rule.
+25. ~~Sui ↔ faucet reverse-import~~ — `faucet/strategies/{sui-local,sui-live}.ts` moved into `plugins/sui/{local-faucet-strategy,live-faucet-strategy}.ts`; `faucet/strategies/` deleted; sui imports `faucetCapabilityKey` / `FaucetStrategy` from `faucet/index.ts` barrel.
+26. ~~Plugin barrel imports~~ — Wave 2A swept 18 files / 23 internal-module imports / 6 import-block consolidations across `plugins/{seal,wallet,walrus,deepbook,action,package,account}`; every cross-plugin import now goes through `index.ts`.
+27. ~~L4 surfaces reaching L1/L2~~ — `cli/prune-direct.ts` consumes new `orchestrators/lifecycle-prune/`; doctor probes moved to `cli/doctor-probes.ts` (L4-adjacent CLI infrastructure). STYLE_GUIDE §7 codifies the L4-vs-L4-adjacent split; `test/style/l4-boundary.test.ts` pins the invariant.
+28. ~~`api/define-devstack.ts` special-cases wallet~~ — lifted to substrate-owned `src/contracts/plugin-expander.ts` (`PLUGIN_EXPANDER` symbol + `attachPluginExpander` / `runPluginExpanders` / `isPluginExpanderPair`); wallet contributes through the contract; composer no longer imports any plugin.
+30. ~~Playwright hardcoded route/port table~~ — lifted to `build-integrations/runtime/conventional-routes.ts` (`BUILT_IN_CONVENTIONAL_HINTS`, `BUILT_IN_ENDPOINT_ALIASES`, `DEFAULT_ROUTER_ENTRYPOINT_PORT`, `builtInConventionalRoutes()`); Playwright consumes the lifted table.
+31. ~~Playwright second global slot via `as unknown as GlobalSlot`~~ — typed slot at `build-integrations/runtime/playwright-stack-context-slot.ts` mirrors `dapp-kit-slot.ts` pattern; cast removed.
 
 ### Phase 3 (shipped 2026-05-26)
 

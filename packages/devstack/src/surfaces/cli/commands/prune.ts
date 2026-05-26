@@ -9,10 +9,6 @@
 import { Effect } from 'effect';
 
 import {
-	ROUTER_CONTAINER_NAME_PREFIX,
-	ROUTER_SHARED_APP,
-} from '../../../orchestrators/router/cleanup.ts';
-import {
 	type CliError,
 	CliConfirmRequiredError,
 	CliInternalError,
@@ -29,6 +25,11 @@ export interface PruneGroup {
 	readonly live: boolean;
 	readonly livePids: ReadonlyArray<number>;
 	readonly shared: boolean;
+	/** True when the group represents a router-shared resource set that
+	 *  is auto-prunable in non-interactive flows (`devstack prune --all`).
+	 *  Computed by the lifecycle-prune orchestrator; surfaces never
+	 *  recompute the router-stack naming predicate. */
+	readonly autoPrunable: boolean;
 	readonly containers: number;
 	readonly runningContainers: number;
 	readonly networks: number;
@@ -158,9 +159,6 @@ export const groupResourceCountForResources = (
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
 
-const isAutoPrunableSharedGroup = (group: PruneGroup): boolean =>
-	group.app === ROUTER_SHARED_APP && group.stack.startsWith(ROUTER_CONTAINER_NAME_PREFIX);
-
 export const defaultPruneSelection = (
 	inventory: PruneInventory,
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
@@ -169,7 +167,7 @@ export const defaultPruneSelection = (
 		.filter(
 			(group) =>
 				!group.live &&
-				(!group.shared || isAutoPrunableSharedGroup(group)) &&
+				(!group.shared || group.autoPrunable) &&
 				groupResourceCountForResources(group, resources) > 0,
 		)
 		.map((group) => group.key);
