@@ -12,9 +12,11 @@
 //   3. Otherwise atomic-write via the substrate's `atomicWriteFile`
 //      primitive: tempfile + fsync + rename. Apply mode.
 //
-// There is no cycle-level staging directory today. Each generated
-// file is promoted independently through the substrate atomic-write
-// primitive.
+// Cycle-level atomicity lives in `service.ts.runEmitCycle`, which
+// wraps the entire pipeline in substrate `stageAndSwap`. `emitOne`
+// remains per-file atomic so the inner staging-directory writes
+// stay crash-safe, but the user-visible output dir is replaced as
+// one rename — a half-cycle never reaches consumers.
 
 import { Effect, FileSystem } from 'effect';
 import { dirname } from 'node:path';

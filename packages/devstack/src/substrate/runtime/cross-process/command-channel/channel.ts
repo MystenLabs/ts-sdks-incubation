@@ -127,7 +127,7 @@ export const makeCommandChannelPublisher = (
 		const events: Stream.Stream<EventRecord, CommandChannelError, Scope.Scope> = tailRecords(
 			paths.eventsFile,
 			(raw) => decodeEvent(raw),
-			{ fromOffset: 'current' },
+			{ fromOffset: 'current', onDecodeError: 'skip' },
 		);
 
 		const findReply = (
@@ -140,9 +140,13 @@ export const makeCommandChannelPublisher = (
 			// Start at 'start' so awaitCompletion picks up an ack that
 			// landed before the await call attached. The filter by id is
 			// the actual correlation; replaying old records is cheap.
+			// `onDecodeError: 'skip'` keeps the tail alive across truncated /
+			// corrupt lines from a peer's mid-flight atomic append, per
+			// STYLE_GUIDE §20 NDJSON tolerance rule.
 			Stream.runHead(
 				tailRecords(paths.eventsFile, (raw) => decodeEvent(raw), {
 					fromOffset: 'start',
+					onDecodeError: 'skip',
 				}).pipe(
 					Stream.filter(
 						(rec): rec is Extract<EventRecord, { kind: 'ack' | 'error' }> =>

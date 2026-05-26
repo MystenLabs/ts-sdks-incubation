@@ -950,6 +950,8 @@ const startBackgroundSnapshotCapture = (
 			yield* publish(deps.ref, deps.hub, {
 				tag: 'snapshot.captureSkipped',
 				reason: 'already-running',
+				...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+				...(cmd.name === undefined ? {} : { name: cmd.name }),
 				at: Date.now(),
 			});
 			return;
@@ -1160,9 +1162,22 @@ const handleCommand = (
 				yield* requestBackgroundStackRestartInterrupt(deps);
 				yield* setCyclePhase(ref, 'shutting-down');
 				const plan = planFullDrain(graph);
-				yield* teardownKeys(graph, registry, plan.teardownOrder);
-				yield* Effect.yieldNow;
-				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
+				// Uninterruptible covers the Effect-level interrupt a second
+				// SIGINT would inject between teardownKeys and the
+				// shutdownComplete signal — scope close racing the in-loop
+				// teardown leaks Docker containers. The deferred resolution
+				// lives in the same block so callers blocked on
+				// `awaitShutdown` only release AFTER teardown has run.
+				// The signal handler's `process.exit` (signals.ts:75-102) is
+				// still a hard kill — that's intentional; double-Ctrl-C is
+				// the operator asking for abort.
+				yield* Effect.uninterruptible(
+					Effect.gen(function* () {
+						yield* teardownKeys(graph, registry, plan.teardownOrder);
+						yield* Effect.yieldNow;
+						yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
+					}),
+				);
 				return;
 			}
 			case 'shutdown.hardKillRequested': {
@@ -1177,12 +1192,23 @@ const handleCommand = (
 				yield* Ref.set(shutdownLatch, true);
 				yield* requestBackgroundStackRestartInterrupt(deps);
 				yield* setCyclePhase(ref, 'shutting-down');
-				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
-				yield* logger.log('supervisor', null, {
-					level: 'fatal',
-					message: `shutdown escalated by ${cmd.signal}`,
-					fields: { signal: cmd.signal, exitCode: cmd.exitCode },
-				});
+				// Hard-kill path: graceful teardown is owned by the
+				// scope-close finalizer (supervisor.ts:1657) which already
+				// runs uninterruptibly. We only need to atomically signal
+				// `shutdownComplete` + emit the fatal log so a third SIGINT
+				// can't slip an Effect-level interrupt between the two.
+				// `process.exit` from signals.ts:75-102 IS still the hard
+				// kill — that escape hatch is intentional.
+				yield* Effect.uninterruptible(
+					Effect.gen(function* () {
+						yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
+						yield* logger.log('supervisor', null, {
+							level: 'fatal',
+							message: `shutdown escalated by ${cmd.signal}`,
+							fields: { signal: cmd.signal, exitCode: cmd.exitCode },
+						});
+					}),
+				);
 				return;
 			}
 			case 'stack.restart': {

@@ -12,9 +12,50 @@ import {
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
 
-const fail = (detail: string): Effect.Effect<never, Error> => Effect.fail(new Error(detail));
+/** Tagged failure raised by snapshot integrity helpers. `kind`
+ *  discriminates the failure class so downstream phase classifiers can
+ *  branch by tag, not by message substring. */
+export class SnapshotIntegrityError extends Schema.TaggedErrorClass<SnapshotIntegrityError>()(
+	'SnapshotIntegrityError',
+	{
+		/**
+		 * - `'missing'` — `integrity.json` file absent.
+		 * - `'corrupt'` — present but unparseable / schema-decode failure.
+		 * - `'mismatch'` — present, parses, but a file's hash does not
+		 *   match its recorded value (or the file list disagrees).
+		 * - `'walk-failed'` — directory walk failure (filesystem error
+		 *   during enumeration, hashing, or write of the integrity doc).
+		 */
+		kind: Schema.Literals(['missing', 'corrupt', 'mismatch', 'walk-failed']),
+		detail: Schema.String,
+		path: Schema.optional(Schema.String),
+		cause: Schema.optional(Schema.Defect),
+	},
+) {}
 
-const hashFile = (path: string): Effect.Effect<string, Error, FileSystem.FileSystem> =>
+const failWalk = (
+	detail: string,
+	path?: string,
+	cause?: unknown,
+): Effect.Effect<never, SnapshotIntegrityError> =>
+	Effect.fail(new SnapshotIntegrityError({ kind: 'walk-failed', detail, path, cause }));
+
+const failCorrupt = (
+	detail: string,
+	path?: string,
+	cause?: unknown,
+): Effect.Effect<never, SnapshotIntegrityError> =>
+	Effect.fail(new SnapshotIntegrityError({ kind: 'corrupt', detail, path, cause }));
+
+const failMismatch = (
+	detail: string,
+	path?: string,
+): Effect.Effect<never, SnapshotIntegrityError> =>
+	Effect.fail(new SnapshotIntegrityError({ kind: 'mismatch', detail, path }));
+
+const hashFile = (
+	path: string,
+): Effect.Effect<string, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const hash = createHash('sha256');
@@ -22,30 +63,30 @@ const hashFile = (path: string): Effect.Effect<string, Error, FileSystem.FileSys
 			Effect.sync(() => {
 				hash.update(chunk);
 			}),
-		).pipe(Effect.catch((cause) => fail(`hash ${path} failed: ${String(cause)}`)));
+		).pipe(Effect.catch((cause) => failWalk(`hash ${path} failed`, path, cause)));
 		return hash.digest('hex');
 	});
 
 const collectArtifactFiles = (
 	root: string,
-): Effect.Effect<ReadonlyArray<string>, Error, FileSystem.FileSystem> =>
+): Effect.Effect<ReadonlyArray<string>, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const files: string[] = [];
-		const walk = (dir: string, prefix: string): Effect.Effect<void, Error> =>
+		const walk = (dir: string, prefix: string): Effect.Effect<void, SnapshotIntegrityError> =>
 			Effect.gen(function* () {
 				const names = yield* fs
 					.readDirectory(dir)
-					.pipe(Effect.catch((cause) => fail(`readDirectory(${dir}) failed: ${String(cause)}`)));
+					.pipe(Effect.catch((cause) => failWalk(`readDirectory(${dir}) failed`, dir, cause)));
 				for (const name of names) {
 					const relPath = prefix === '' ? name : `${prefix}/${name}`;
 					if (!isSafeSnapshotRelativePath(relPath)) {
-						return yield* fail(`unsafe artifact relative path: ${relPath}`);
+						return yield* failWalk(`unsafe artifact relative path: ${relPath}`, relPath);
 					}
 					const absPath = `${dir}/${name}`;
 					const stat = yield* fs
 						.stat(absPath)
-						.pipe(Effect.catch((cause) => fail(`stat(${absPath}) failed: ${String(cause)}`)));
+						.pipe(Effect.catch((cause) => failWalk(`stat(${absPath}) failed`, absPath, cause)));
 					if (stat.type === 'Directory') {
 						yield* walk(absPath, relPath);
 					} else if (stat.type === 'File') {
@@ -53,7 +94,10 @@ const collectArtifactFiles = (
 							files.push(relPath);
 						}
 					} else {
-						return yield* fail(`snapshot artifact path is not a regular file: ${relPath}`);
+						return yield* failWalk(
+							`snapshot artifact path is not a regular file: ${relPath}`,
+							absPath,
+						);
 					}
 				}
 			});
@@ -63,7 +107,7 @@ const collectArtifactFiles = (
 
 export const computeArtifactIntegrity = (
 	root: string,
-): Effect.Effect<IntegrityFile, Error, FileSystem.FileSystem> =>
+): Effect.Effect<IntegrityFile, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const hashes: Record<string, string> = {};
 		for (const relPath of yield* collectArtifactFiles(root)) {
@@ -74,43 +118,59 @@ export const computeArtifactIntegrity = (
 
 export const writeArtifactIntegrity = (
 	root: string,
-): Effect.Effect<IntegrityFile, Error, FileSystem.FileSystem> =>
+): Effect.Effect<IntegrityFile, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const integrity = yield* computeArtifactIntegrity(root);
+		const path = `${root}/${SnapshotLayout.integrityFile}`;
 		yield* fs
-			.writeFileString(
-				`${root}/${SnapshotLayout.integrityFile}`,
-				JSON.stringify(integrity, null, 2),
-			)
+			.writeFileString(path, JSON.stringify(integrity, null, 2))
 			.pipe(
 				Effect.catch((cause) =>
-					fail(`write ${SnapshotLayout.integrityFile} failed: ${String(cause)}`),
+					failWalk(`write ${SnapshotLayout.integrityFile} failed`, path, cause),
 				),
 			);
 		return integrity;
 	});
 
-const readIntegrity = (root: string): Effect.Effect<IntegrityFile, Error, FileSystem.FileSystem> =>
+const readIntegrity = (
+	root: string,
+): Effect.Effect<IntegrityFile, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const path = `${root}/${SnapshotLayout.integrityFile}`;
+		const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
+		if (!exists) {
+			return yield* Effect.fail(
+				new SnapshotIntegrityError({
+					kind: 'missing',
+					detail: `snapshot integrity file absent at ${path}`,
+					path,
+				}),
+			);
+		}
 		const text = yield* fs
 			.readFileString(path)
-			.pipe(Effect.catch((cause) => fail(`read ${path} failed: ${String(cause)}`)));
+			.pipe(Effect.catch((cause) => failWalk(`read ${path} failed`, path, cause)));
 		const raw = yield* Effect.try({
 			try: () => JSON.parse(text) as unknown,
-			catch: (cause) => new Error(`${path} is not valid JSON: ${String(cause)}`),
+			catch: (cause) =>
+				new SnapshotIntegrityError({
+					kind: 'corrupt',
+					detail: `${path} is not valid JSON`,
+					path,
+					cause,
+				}),
 		});
 		const decoded = yield* Schema.decodeUnknownEffect(IntegrityFileSchema)(raw).pipe(
-			Effect.catch((cause) => fail(`${path} failed schema decode: ${String(cause)}`)),
+			Effect.catch((cause) => failCorrupt(`${path} failed schema decode`, path, cause)),
 		);
 		for (const [relPath, digest] of Object.entries(decoded.hashes)) {
 			if (!isSafeSnapshotRelativePath(relPath) || relPath === SnapshotLayout.integrityFile) {
-				return yield* fail(`unsafe integrity path: ${relPath}`);
+				return yield* failCorrupt(`unsafe integrity path: ${relPath}`, path);
 			}
 			if (!SHA256_HEX.test(digest)) {
-				return yield* fail(`invalid sha256 digest for ${relPath}`);
+				return yield* failCorrupt(`invalid sha256 digest for ${relPath}`, path);
 			}
 		}
 		return decoded;
@@ -118,18 +178,18 @@ const readIntegrity = (root: string): Effect.Effect<IntegrityFile, Error, FileSy
 
 export const verifyArtifactIntegrity = (
 	root: string,
-): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+): Effect.Effect<void, SnapshotIntegrityError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const expected = yield* readIntegrity(root);
 		const actual = yield* computeArtifactIntegrity(root);
 		const expectedPaths = Object.keys(expected.hashes).sort((a, b) => a.localeCompare(b));
 		const actualPaths = Object.keys(actual.hashes).sort((a, b) => a.localeCompare(b));
 		if (expectedPaths.join('\n') !== actualPaths.join('\n')) {
-			return yield* fail('snapshot integrity file list does not match artifact contents');
+			return yield* failMismatch('snapshot integrity file list does not match artifact contents');
 		}
 		for (const relPath of expectedPaths) {
 			if (expected.hashes[relPath] !== actual.hashes[relPath]) {
-				return yield* fail(`snapshot integrity mismatch for ${relPath}`);
+				return yield* failMismatch(`snapshot integrity mismatch for ${relPath}`, relPath);
 			}
 		}
 	});

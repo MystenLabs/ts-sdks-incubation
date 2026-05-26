@@ -45,7 +45,11 @@ import {
 	parseSnapshotId,
 } from './descriptor.ts';
 import { verifyArtifactIntegrity } from './integrity.ts';
-import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
+import {
+	readSnapshotStateDocument,
+	writeSnapshotStateDocument,
+	type SnapshotStateDocumentError,
+} from './state-document.ts';
 import {
 	mergeContributions,
 	runIdentityGuard,
@@ -127,6 +131,25 @@ const failImageBundleTagScan =
 	(phase: RestorePhaseError['phase'], plugin?: string) =>
 	(cause: ImageBundleTagScanError): Effect.Effect<never, RestorePhaseError> =>
 		Effect.fail(new RestorePhaseError({ phase, plugin, detail: cause.detail, cause }));
+
+/** Project a `SnapshotStateDocumentError` onto a `RestorePhaseError`,
+ *  branching by `kind` so a phase classifier never inspects message
+ *  substrings. */
+const failStateDocument =
+	(
+		readPhase: RestorePhaseError['phase'],
+		writePhase: RestorePhaseError['phase'],
+		plugin?: string,
+	) =>
+	(err: SnapshotStateDocumentError): Effect.Effect<never, RestorePhaseError> =>
+		Effect.fail(
+			new RestorePhaseError({
+				phase: err.kind === 'write' ? writePhase : readPhase,
+				plugin,
+				detail: err.detail,
+				cause: err.cause,
+			}),
+		);
 
 // -----------------------------------------------------------------------------
 // Participants — what restore needs from each plugin
@@ -210,15 +233,12 @@ const verifyIntegrity = (
 	artifactDir: string,
 ): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
 	verifyArtifactIntegrity(artifactDir).pipe(
-		Effect.catch((cause) =>
+		Effect.catchTag('SnapshotIntegrityError', (err) =>
 			Effect.fail(
 				new RestorePhaseError({
-					phase:
-						cause instanceof Error && cause.message.includes(SnapshotLayout.integrityFile)
-							? 'read-integrity'
-							: 'verify-integrity',
-					detail: cause instanceof Error ? cause.message : `snapshot integrity failed`,
-					cause,
+					phase: err.kind === 'missing' ? 'read-integrity' : 'verify-integrity',
+					detail: err.detail,
+					cause: err.cause,
 				}),
 			),
 		),
@@ -497,7 +517,10 @@ const preflightArtifact = (
 		const stateExists = yield* fs.exists(statePath).pipe(Effect.catch(() => Effect.succeed(false)));
 		if (stateExists) {
 			yield* readSnapshotStateDocument(statePath).pipe(
-				Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
+				Effect.catchTag(
+					'SnapshotStateDocumentError',
+					failStateDocument('read-state', 'expand-state'),
+				),
 			);
 		}
 		if (meta.hostTreeIncluded) {
@@ -820,12 +843,20 @@ export const runRestore = (
 							.pipe(Effect.catch(() => Effect.succeed(false)));
 						if (stateExists) {
 							const stateDoc = yield* readSnapshotStateDocument(srcState).pipe(
-								Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
+								Effect.catchTag(
+									'SnapshotStateDocumentError',
+									failStateDocument('read-state', 'expand-state'),
+								),
 							);
 							yield* writeSnapshotStateDocument(
 								`${inputs.runtimeStagingPath}/${SnapshotLayout.stateFile}`,
 								stateDoc,
-							).pipe(Effect.catch(failPhase('expand-state', `write state.json failed`)));
+							).pipe(
+								Effect.catchTag(
+									'SnapshotStateDocumentError',
+									failStateDocument('expand-state', 'expand-state'),
+								),
+							);
 						}
 						// 4c. Read each contribution doc — the participants'
 						//      post-restore hooks may want this; we surface it

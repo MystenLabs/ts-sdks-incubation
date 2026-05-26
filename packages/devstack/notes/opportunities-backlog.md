@@ -14,14 +14,9 @@
 
 ## 🔴 Critical — Phase 2 (orchestrator / CLI / supervisor correctness)
 
-7. Snapshot restore brittle string-sniff + plain-Error orchestrator failures — `src/orchestrators/snapshot/{restore.ts:213-225,integrity.ts:15,state-document.ts:15+}`.
-8. Codegen has no per-cycle outer stage-and-swap — `src/orchestrators/codegen/{service.ts,emit.ts}`.
-9. Codegen watcher claims debounce but doesn't — `src/orchestrators/codegen/watcher.ts:53-73`.
-10. Router dispatch lock released before readiness probe — `src/orchestrators/router/service.ts:763-926`.
-11. CLI snapshot completion misattributes peer's `captureSkipped` — `src/cli/main.ts:768-799`.
-12. CLI event-stream decoder uncaught on truncated `events.ndjson` — `src/cli/main.ts:715`.
-13. Supervisor hard-shutdown teardown not `Effect.uninterruptible` on in-loop path — `src/substrate/runtime/supervisor.ts:1150-1180`.
-14. Docker `loadImage` fiber leak via `Effect.forkChild` instead of `forkScoped` — `src/runtime/docker/image.ts:266-313`.
+~~All Phase 2 items shipped 2026-05-26; entries moved to the Closed section below.~~
+
+10a. **Follow-up to closed #10**: a deterministic regression test for "router dispatch lock held across readiness probe" should land alongside the Phase 6 supervisor split. The original `concurrent-contribute-route.test.ts` was flaky under vitest 4's parallel worker scheduling (`it.live` + forks + Promise gates starved sibling test workers). A lock-state-instrumentation harness (no real-time fiber scheduling) would let this land without flakiness.
 
 ---
 
@@ -97,6 +92,17 @@
 ---
 
 ## ⚪ Closed
+
+### Phase 2 (shipped 2026-05-26)
+
+7. ~~Snapshot restore brittle string-sniff + plain-Error orchestrator failures~~ — `snapshot/integrity.ts` + `snapshot/state-document.ts` now use `Schema.TaggedErrorClass` with discriminated `kind` field (`missing`/`corrupt`/`mismatch`/`walk-failed` and `read`/`parse`/`decode`/`write`); `restore.ts` consumes via `Effect.catchTag`. STYLE_GUIDE §2 sub-rule codifies the orchestrator-tagged-error pattern.
+8. ~~Codegen has no per-cycle outer stage-and-swap~~ — `runEmitCycle` now wraps writes in `substrate/runtime/stage-and-swap`; pre-seeds the staging dir from the current output so emit idempotency reads the right baseline; `StageAndSwapError` maps to `CodegenWriteFailed{ stage:'rename' }`.
+9. ~~Codegen watcher claims debounce but doesn't~~ — `Ref<latest>` + tap replaced with `Stream.debounce(150ms) → Stream.mapEffect(runEmitCycle)`. Window exported for tests.
+10. ~~Router dispatch lock released before readiness probe~~ — lock now wraps `publishRouteFile + waitForPublicRouteReadiness` inside one `Effect.scoped`. Codified in STYLE_GUIDE §18. (Regression test deletion + follow-up tracked at item 10a above.)
+11. ~~CLI snapshot completion misattributes peer's `captureSkipped`~~ — extended `EngineEvent.snapshot.captureSkipped` with `snapshotId?`/`name?`; CLI matcher requires `snapshotId === snapshotId`. Test: `test/cli/snapshot-completion.test.ts`.
+12. ~~CLI event-stream decoder uncaught on truncated `events.ndjson`~~ — `tailRecords` gained `onDecodeError: 'skip'` option (Effect.option swallow + logDebug); CLI passes it; subscriber's `events` stream + `awaitCompletion`'s `findReply` also opt in so truncation tolerance applies uniformly. STYLE_GUIDE §20 codifies the rule.
+13. ~~Supervisor hard-shutdown teardown not `Effect.uninterruptible` on in-loop path~~ — both `shutdown.requested`/`stack.stop` and `shutdown.hardKillRequested` branches now wrap teardown + `Deferred.succeed(shutdownComplete)` in `Effect.uninterruptible`. Header comments document why `process.exit` from signals.ts is still a hard kill.
+14. ~~Docker `loadImage` fiber leak via `Effect.forkChild`~~ — actually `saveImages`'s `stderrFiber`/`exitFiber`; switched to `Effect.forkScoped` so they ride the `Stream.unwrap` scope. STYLE_GUIDE §1 reference uses cited.
 
 ### Phase 1 (shipped 2026-05-26)
 

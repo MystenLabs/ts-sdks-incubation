@@ -263,7 +263,14 @@ export const saveImages = (
 			const spawner = yield* DockerSpawner;
 			const cmd = dockerCommand(host, 'save', refs);
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnError));
-			const stderrFiber = yield* Effect.forkChild(
+			// `Stream.unwrap` IS scope-binding in v4 (STYLE_GUIDE §1): the
+			// surrounding Effect.gen runs under the consuming stream's
+			// scope, so `forkScoped` ties these helper fibers to that
+			// scope. With `forkChild` (unscoped) a caller that errors
+			// before draining the returned stream would leak the
+			// stderr/exit fibers — `Stream.ensuring(cleanup)` only runs
+			// once the stream is actually consumed.
+			const stderrFiber = yield* Effect.forkScoped(
 				Stream.mkString(Stream.decodeText(handle.stderr)).pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>
@@ -275,7 +282,7 @@ export const saveImages = (
 					),
 				),
 			);
-			const exitFiber = yield* Effect.forkChild(
+			const exitFiber = yield* Effect.forkScoped(
 				handle.exitCode.pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>

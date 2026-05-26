@@ -33,7 +33,6 @@ import {
 	Logger,
 	Option,
 	Queue,
-	Schema,
 	Scope,
 	Stream,
 	SubscriptionRef,
@@ -44,6 +43,7 @@ import type { Identity } from '../substrate/identity.ts';
 import type { EngineCommand, EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
+import { decodeUnknownSync } from '../substrate/runtime/runtime-decode.ts';
 import {
 	makeProjectionRef,
 	persistProjectionChanges,
@@ -704,7 +704,11 @@ const snapshotCaptureCompletionEvent = (
 		case 'snapshot.captureFailed':
 			return record.snapshotId === snapshotId ? (record as SnapshotCaptureCompletionEvent) : null;
 		case 'snapshot.captureSkipped':
-			return record.reason === 'already-running'
+			// A peer CLI's skipped event must not terminate THIS invocation. Only the
+			// supervisor's skip for our own snapshotId is a completion. If the supervisor
+			// emitted a skip without a snapshotId (legacy publishers), fall through to
+			// non-match so we don't misattribute.
+			return record.reason === 'already-running' && record.snapshotId === snapshotId
 				? (record as SnapshotCaptureCompletionEvent)
 				: null;
 		default:
@@ -712,7 +716,11 @@ const snapshotCaptureCompletionEvent = (
 	}
 };
 
-const decodeEventRecord = Schema.decodeUnknownSync(EventRecordSchema);
+const decodeEventRecord = (raw: unknown): EventRecord =>
+	decodeUnknownSync(EventRecordSchema, raw, {
+		source: 'cli/snapshot/event-tail',
+		mkError: (issue) => issue,
+	});
 
 const runSnapshotCaptureAgainstLiveSupervisor = (
 	identity: ResolvedIdentity,
@@ -730,10 +738,14 @@ const runSnapshotCaptureAgainstLiveSupervisor = (
 				const paths = commandChannelPaths(identity.stackRoot);
 				const publisher = yield* makeCommandChannelPublisher(paths);
 				const eventsOffset = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
+				// `onDecodeError: 'skip'` keeps the event tail alive when the supervisor's
+				// atomic append races our poll loop and we observe a truncated/corrupt
+				// line — per STYLE_GUIDE §20, decode failure becomes "skip + logDebug",
+				// never a stream death that would hang the completion await.
 				const completionFiber = yield* tailRecords<EventRecord>(
 					paths.eventsFile,
-					(raw) => decodeEventRecord(raw),
-					{ fromOffset: eventsOffset },
+					decodeEventRecord,
+					{ fromOffset: eventsOffset, onDecodeError: 'skip' },
 				).pipe(
 					Stream.map((record) =>
 						record.kind === 'engine'

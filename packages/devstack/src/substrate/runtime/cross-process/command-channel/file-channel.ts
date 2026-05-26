@@ -195,8 +195,12 @@ const drainNewLines = (
  *  - `fromOffset === 'start'` replays every existing record then tails.
  *  - `fromOffset === number` resumes from a known byte offset.
  *
- *  Decode errors are surfaced as Stream failures with the offending
- *  line attached so the consumer can pick a retry / skip policy.
+ *  By default decode errors are surfaced as Stream failures with the
+ *  offending line attached so the consumer can pick a retry / skip
+ *  policy. Pass `onDecodeError: 'skip'` to drop the bad line instead —
+ *  required for NDJSON readers that race atomic-append writers (a
+ *  truncated/corrupt mid-flight line is normal and MUST NOT kill the
+ *  stream; see STYLE_GUIDE §20).
  *
  *  The poll loop uses `Effect.sleep` between iterations, so cooperative
  *  scheduling is preserved (no busy loop).
@@ -207,11 +211,13 @@ export const tailRecords = <A>(
 	options: {
 		readonly fromOffset?: 'start' | 'current' | number;
 		readonly pollMillis?: number;
+		readonly onDecodeError?: 'fail' | 'skip';
 	} = {},
 ): Stream.Stream<A, CommandChannelError, Scope.Scope> =>
 	Stream.unwrap(
 		Effect.gen(function* () {
 			const pollMillis = options.pollMillis ?? DEFAULT_TAIL_POLL_MILLIS;
+			const onDecodeError = options.onDecodeError ?? 'fail';
 			yield* ensureFile(path);
 			const initialOffset = yield* Effect.try({
 				try: () => {
@@ -235,7 +241,21 @@ export const tailRecords = <A>(
 					}
 					const decoded: A[] = [];
 					for (const line of lines) {
-						decoded.push(yield* decodeLine(path, line, decode));
+						if (onDecodeError === 'skip') {
+							const result = yield* decodeLine(path, line, decode).pipe(
+								Effect.tapError((cause) =>
+									Effect.logDebug(`tail-records: skipped malformed line at ${path}`).pipe(
+										Effect.annotateLogs({ line: cause.line, cause: String(cause.cause) }),
+									),
+								),
+								Effect.option,
+							);
+							if (result._tag === 'Some') {
+								decoded.push(result.value);
+							}
+						} else {
+							decoded.push(yield* decodeLine(path, line, decode));
+						}
 					}
 					return decoded as ReadonlyArray<A>;
 				},

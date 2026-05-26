@@ -22,9 +22,24 @@
 //     observes a contribution stream and calls `runEmitCycle()` on
 //     change.
 
-import { Effect, Ref, Stream } from 'effect';
+import { Effect, Stream } from 'effect';
 
 import type { Codegenable } from './service.ts';
+
+/**
+ * Coalescing window for the contribution stream. Acquire-side
+ * supervisor restarts can republish a contribution set several times
+ * in quick succession (one event per plugin that re-acquires); a
+ * trailing-edge debounce collapses that burst into ONE emit cycle.
+ *
+ * 150ms is a typical HMR-friendly window — small enough that a
+ * single human-typed save still feels instant, large enough to swallow
+ * the multi-event acquire fan-out. The previous `Ref<latest>` + tap
+ * pattern claimed to coalesce but actually ran one full emit cycle
+ * per source emission (each cycle is a stage-and-swap, so bursts
+ * produced HMR storms — opportunities-backlog #9).
+ */
+export const CONTRIBUTION_DEBOUNCE_MS = 150;
 
 /**
  * Declare the output dir as excluded from the substrate's thick
@@ -42,32 +57,25 @@ export const excludeFromWatcher = (outputDir: string): { readonly excludeGlob: s
 
 /**
  * Spawn a re-emit fiber that re-runs the codegen cycle whenever
- * `contributions` (a Stream of `ReadonlyArray<Codegenable>`)
- * emits a new value.
+ * `contributions` (a Stream of `ReadonlyArray<Codegenable>`) emits
+ * a new value.
+ *
+ * Coalescing: `Stream.debounce` keeps only the LAST emission inside
+ * each `CONTRIBUTION_DEBOUNCE_MS` window, then runs the cycle once.
+ * Without it, an acquire-side burst of N plugin restarts would
+ * trigger N stage-and-swap cycles back-to-back (HMR storm).
  *
  * Architecture posture: codegen is NOT a long-running service. The
  * fiber is bound to the supervisor's scope; when the stack scope
- * closes, the fiber dies. We use a `Ref<latest>` so the most
- * recent contribution set always wins on a coalesced burst.
+ * closes, the stream finalizes and the fiber dies.
  */
 export const watchContributions = <E, R>(
 	contributions: Stream.Stream<ReadonlyArray<Codegenable>, E, R>,
 	runEmitCycle: (decls: ReadonlyArray<Codegenable>) => Effect.Effect<void, E, R>,
 ): Effect.Effect<void, E, R> =>
-	Effect.gen(function* () {
-		const latest = yield* Ref.make<ReadonlyArray<Codegenable> | null>(null);
-		// Run a side-effecting tap on the contribution stream. The tap
-		// stores the latest set and triggers the emit cycle. If two
-		// updates arrive while a cycle is in-flight, the next cycle
-		// sees only the latest — coalescing avoids HMR storms.
-		yield* contributions.pipe(
-			Stream.tap((decls) => Ref.set(latest, decls)),
-			Stream.tap(() =>
-				Effect.gen(function* () {
-					const decls = yield* Ref.get(latest);
-					if (decls !== null) yield* runEmitCycle(decls);
-				}),
-			),
-			Stream.runDrain,
-		);
-	}).pipe(Effect.withSpan('codegen.watchContributions'));
+	contributions.pipe(
+		Stream.debounce(`${CONTRIBUTION_DEBOUNCE_MS} millis`),
+		Stream.mapEffect((decls) => runEmitCycle(decls)),
+		Stream.runDrain,
+		Effect.withSpan('codegen.watchContributions'),
+	);

@@ -12,7 +12,10 @@
 //
 // Lifecycle (distilled-doc §"Lifecycle states"):
 //   - at-up:       per supervisor cycle, run all emitters serially,
-//                  with per-file atomic/idempotent writes.
+//                  with per-file atomic/idempotent writes inside a
+//                  cycle-level stage-and-swap (rollback on any
+//                  per-file failure leaves the user-visible tree
+//                  unchanged).
 //   - on-change:   re-run as part of the new cycle when the
 //                  supervisor restarts.
 //   - on-demand:   same emit pipeline for snapshot resume.
@@ -40,6 +43,7 @@
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
+import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
 import type {
@@ -47,6 +51,7 @@ import type {
 	CodegenEmitDone,
 	CodegenEmitContext,
 } from '../../contracts/codegenable.ts';
+import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
 
 import {
 	emitBindings,
@@ -60,11 +65,12 @@ import {
 	CodegenEmitFailed,
 	CodegenEmitterCollision,
 	CodegenPathConflict,
+	CodegenWriteFailed,
 	type CodegenError,
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import { CodegenPathsService } from './paths.ts';
+import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
@@ -125,25 +131,187 @@ export const runEmitCycle = (
 > =>
 	Effect.gen(function* () {
 		const paths = yield* CodegenPathsService;
+		const fs = yield* FileSystem.FileSystem;
+		// Yield the Move-codegen services here (outside the
+		// stage-and-swap build) so the build's R-channel collapses to
+		// just `FileSystem.FileSystem`. The substrate `stageAndSwap`
+		// primitive constrains build's requirements to
+		// `FileSystem.FileSystem` (snapshot's only consumer needs
+		// exactly that); rather than extend the primitive's
+		// signature here (out-of-scope edit for this PR), close over
+		// the services and re-provide them to the inner cycle.
+		const moveRunner = yield* MoveSummaryRunnerService;
+		const moveCodegen = yield* MoveCodegenService;
 
-		// 1. All contributions go through the generic file emit path.
-		//    Package outputs are collected for the bindings emitter
-		//    from the same single evaluated result used to render the
-		//    package pointer file.
-		const fileEmitters: Array<Codegenable> = [];
-		for (const decl of input.contributions) {
-			fileEmitters.push(decl);
-		}
+		// Pre-flight contribution-set validation. Detected BEFORE the
+		// stage-and-swap so a programming-bug rejection (duplicate
+		// emitterName / outputPath collision) never opens an empty
+		// staging dir on disk. `package` is the one exception:
+		// multiple instances (one per Package) legitimately share the
+		// `emitterName` literal by design.
+		yield* validateUniqueness(input.contributions);
+		yield* validateAggregatePathAvailability(input.contributions);
 
-		// 2. Validate uniqueness — both `emitterName` and `outputPath`.
-		//    Detected BEFORE write so the user-visible tree is
-		//    never half-written. `package` is the one exception:
-		//    multiple instances (one per Package) share the same
-		//    `emitterName` literal by design.
-		yield* validateUniqueness(fileEmitters);
-		yield* validateAggregatePathAvailability(fileEmitters);
+		// Cycle-level atomicity: substrate stage-and-swap. The build
+		// effect populates `<outputDir>.staging.<cycleId>/`; on success
+		// the substrate renames it into place; on any failure the
+		// previous tree (if any) is restored byte-for-byte. Without
+		// this wrapper a mid-cycle emit failure would leave
+		// `src/generated/` half-rewritten — see opportunities-backlog
+		// #8 and STYLE_GUIDE §19.
+		//
+		// Cycle id is a short random suffix (STYLE_GUIDE §17 random-id
+		// rule). The full UUID is overkill for a sibling directory
+		// name; 8 hex chars is enough to disambiguate concurrent
+		// crashed-cycle leftovers.
+		const cycleId = randomUUID().slice(0, 8);
+		const stagingDir = `${paths.outputDir}.staging.${cycleId}`;
+		const backupDir = `${paths.outputDir}.bak.${cycleId}`;
 
-		// 3-5. Run + render + emit each non-bindings contribution.
+		// Pre-seed staging with the current target's contents so the
+		// per-file no-touch idempotency (and gitignore user-block
+		// preservation) sees the right baseline. Files this cycle
+		// rewrites are overwritten in staging; files this cycle does
+		// NOT touch survive into the next target verbatim. After the
+		// atomic swap the rebuilt tree is identical to the previous
+		// tree merged with this cycle's writes.
+		const targetExists = yield* fs
+			.exists(paths.outputDir)
+			.pipe(Effect.match({ onSuccess: (v) => v, onFailure: () => false }));
+
+		return yield* stageAndSwap({
+			targetPath: paths.outputDir,
+			stagingPath: stagingDir,
+			backupPath: backupDir,
+			build: Effect.gen(function* () {
+				if (targetExists) {
+					// `preserveTimestamps: true` keeps the pre-seeded files'
+					// mtimes intact. Files NOT rewritten this cycle land in
+					// the next target with their original mtimes, so HMR
+					// watchers (Vite/Turbopack — they trigger on mtime, not
+					// content) stay quiet for unchanged outputs.
+					yield* fs
+						.copy(paths.outputDir, stagingDir, {
+							overwrite: true,
+							preserveTimestamps: true,
+						})
+						.pipe(
+							Effect.mapError(
+								(cause) =>
+									new CodegenWriteFailed({
+										outputPath: stagingDir,
+										stage: 'write',
+										cause,
+									}),
+							),
+						);
+				}
+				const stagingPaths = rebasePaths(paths, stagingDir);
+				const inner = yield* runEmitCycleInner(input, stagingPaths).pipe(
+					Effect.provideService(MoveSummaryRunnerService, moveRunner),
+					Effect.provideService(MoveCodegenService, moveCodegen),
+				);
+				// Rewrite paths so callers see the final user-visible
+				// `outputDir` location, not the staging directory that
+				// only exists for the duration of the build.
+				return rewriteResultPaths(inner, stagingDir, paths.outputDir);
+			}),
+		}).pipe(
+			Effect.mapError((e): CodegenError => {
+				if (e instanceof StageAndSwapError) {
+					return new CodegenWriteFailed({
+						outputPath: paths.outputDir,
+						stage: 'rename',
+						cause: e,
+					});
+				}
+				return e;
+			}),
+			Effect.withSpan('codegen.runEmitCycle', {
+				attributes: {
+					'codegen.contributions': input.contributions.length,
+					'codegen.cycleId': cycleId,
+					'codegen.stagingDir': stagingDir,
+				},
+			}),
+		);
+	});
+
+/**
+ * Re-derive a `CodegenPaths` rooted at `stagingDir`. Preserves the
+ * original `bindingsDir` subpath relationship and the `..`-rejecting
+ * `resolve` discipline — only the root prefix changes.
+ */
+const rebasePaths = (original: CodegenPaths, stagingDir: string): CodegenPaths => {
+	const sep = '/';
+	const stripped = stagingDir.replace(/\/+$/, '');
+	// The original `bindingsDir` is `${outputDir}/bindings` (see
+	// `layerCodegenPaths`); preserve that relative shape by replacing
+	// the prefix. `gitignoreFile` is similarly under `outputDir`.
+	const rebase = (abs: string): string =>
+		abs === original.outputDir ? stripped : `${stripped}${abs.slice(original.outputDir.length)}`;
+	return {
+		outputDir: stripped,
+		gitignoreFile: rebase(original.gitignoreFile),
+		bindingsDir: rebase(original.bindingsDir),
+		resolve: (outputPath) => {
+			if (outputPath.includes('..') || outputPath.startsWith('/')) {
+				throw new Error(
+					`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
+				);
+			}
+			return `${stripped}${sep}${outputPath}`;
+		},
+		resolveBindingsPackage: (packageName) => `${rebase(original.bindingsDir)}${sep}${packageName}`,
+	};
+};
+
+/**
+ * Project a staging-rooted `RunEmitCycleResult` back into the user-
+ * visible `outputDir` namespace. The build effect writes through
+ * `stagingDir` paths; callers (and tests) expect to see the final
+ * post-rename locations.
+ */
+const rewriteResultPaths = (
+	result: RunEmitCycleResult,
+	stagingDir: string,
+	outputDir: string,
+): RunEmitCycleResult => {
+	const stripped = stagingDir.replace(/\/+$/, '');
+	const target = outputDir.replace(/\/+$/, '');
+	const rewrite = (p: string): string =>
+		p.startsWith(stripped) ? `${target}${p.slice(stripped.length)}` : p;
+	return {
+		filesWritten: result.filesWritten.map(rewrite),
+		filesUnchanged: result.filesUnchanged.map(rewrite),
+		filesChmod: result.filesChmod.map(rewrite),
+		bindings:
+			result.bindings === null
+				? null
+				: {
+						...result.bindings,
+						filesWritten: result.bindings.filesWritten.map(rewrite),
+					},
+	};
+};
+
+/**
+ * The body of one emit cycle. Pulled out of `runEmitCycle` so the
+ * stage-and-swap wrapper can drive it against a redirected
+ * `CodegenPathsService` (the staging tree). Validation runs BEFORE
+ * this function so callers know the contribution set is well-formed.
+ */
+const runEmitCycleInner = (
+	input: RunEmitCycleInput,
+	paths: CodegenPaths,
+): Effect.Effect<
+	RunEmitCycleResult,
+	CodegenError,
+	FileSystem.FileSystem | MoveSummaryRunnerService | MoveCodegenService
+> =>
+	Effect.gen(function* () {
+		const fileEmitters: Array<Codegenable> = [...input.contributions];
+
 		const filesWritten: Array<string> = [];
 		const filesUnchanged: Array<string> = [];
 		const filesChmod: Array<string> = [];
@@ -171,9 +339,6 @@ export const runEmitCycle = (
 				imports: emission.imports,
 			});
 			if (rendered instanceof Error) {
-				// `renderFile` returns either a string or a
-				// `CodegenRenderError` (extends Error). Yield the
-				// tagged form.
 				return yield* Effect.fail(rendered as CodegenError);
 			}
 			const abs = paths.resolve(decl.outputPath);
@@ -226,9 +391,6 @@ export const runEmitCycle = (
 			}
 		}
 
-		// 6. Bindings emitter. Skipped when there are no local
-		//    packages (distilled-doc § "Skip-emit is explicit and
-		//    logged").
 		let bindings: EmitBindingsResult | null = null;
 		if (packageContribs.length > 0) {
 			bindings = yield* emitBindings({
@@ -242,7 +404,6 @@ export const runEmitCycle = (
 			);
 		}
 
-		// 7. Gitignore. Sensitive paths get an explicit mention.
 		const sensitivePaths = fileEmitters
 			.filter((d) => d.sensitive === true)
 			.map((d) => d.outputPath);
@@ -258,13 +419,7 @@ export const runEmitCycle = (
 			filesChmod,
 			bindings,
 		};
-	}).pipe(
-		Effect.withSpan('codegen.runEmitCycle', {
-			attributes: {
-				'codegen.contributions': input.contributions.length,
-			},
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Internals

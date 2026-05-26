@@ -96,6 +96,13 @@ export {
 
 export {
 	computeArtifactIntegrity,
+	SnapshotIntegrityError,
 	verifyArtifactIntegrity,
 	writeArtifactIntegrity,
 } from './integrity.ts';
+
+export {
+	readSnapshotStateDocument,
+	SnapshotStateDocumentError,
+	writeSnapshotStateDocument,
+} from './state-document.ts';

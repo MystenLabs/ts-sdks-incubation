@@ -112,6 +112,13 @@ that owns the value:
    `Data.TaggedError`.
 4. `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses; Vitest,
    Playwright, and Browser integration-specific errors may use `Data.TaggedError`.
+5. Orchestrator failures NEVER raise plain `new Error(...)`; downstream phase classifiers MUST
+   pattern-match by tag, not by message substring. Reference: `snapshot/integrity.ts` +
+   `snapshot/state-document.ts` use `Schema.TaggedErrorClass` with a discriminated `kind` field;
+   `snapshot/restore.ts` consumes via `Effect.catchTag('SnapshotIntegrityError', ...)` /
+   `Effect.catchTag('SnapshotStateDocumentError', ...)`. Any
+   `cause instanceof Error && cause.message.includes(...)` check in an orchestrator is a violation —
+   add a `kind` to the upstream tagged error and switch on it.
 
 Rules that apply across all four styles:
 
@@ -539,6 +546,15 @@ Rules:
 - Cross-process modules use sync `node:fs` (substrate-fix-plan #11 tracks unification onto Effect
   `FileSystem`); the canonical atomic-write primitive exposes both surfaces (§17) so duplication
   does not creep back in during the interim.
+- **Router `contributeRoute` MUST hold the dispatch-file lock across both the file write AND the
+  readiness probe** so a sibling contributor cannot publish over a half-staged dispatch file and
+  cause Traefik to serve stale content under the same `dispatchFileId`. The probe runs INSIDE the
+  surrounding `Effect.scoped(acquireStackLock(...))` block; releasing the lock between write and
+  probe is a regression. Reference: `orchestrators/router/service.ts:contributeRoute`.
+- Lock-acquire failures during scope-close cleanup MUST surface via `Effect.logWarning` (with the
+  error annotated). `.pipe(Effect.ignore)` on `acquireStackLock(...)` silently swallows contention
+  and IO errors and is a forbidden pattern — best-effort cleanup is fine, but the leak must be
+  visible.
 
 ---
 
@@ -572,6 +588,12 @@ Three patterns exist; ONE is canonical:
   a miss or typed error.
 - **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely. Known
   offenders must be migrated on touch.
+
+NDJSON tail-decoders MUST treat per-line decode failure as "skip row + `logDebug`" — a truncated
+line during atomic append (the writer is partway through `events.ndjson` when the tail polls) is
+normal and MUST NOT kill the surrounding stream. Wrap the per-line decode in a `try`/`catch` that
+returns `null` (or a sentinel), filter the sentinel out downstream, and emit `Effect.logDebug` for
+diagnostic visibility. Reference: `cli/main.ts:tryDecodeEventRecord`.
 
 ---
 

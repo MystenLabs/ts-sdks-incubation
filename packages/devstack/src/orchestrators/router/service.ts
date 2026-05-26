@@ -865,7 +865,14 @@ export const layerRouterService: Layer.Layer<
 				let publishOwnership: RoutePublishOwnership;
 				if (cfg.disabled) {
 					publishOwnership = yield* publishRouteFile;
+					yield* waitForPublicRouteReadiness(cfg, endpoint, resolved);
 				} else {
+					// The dispatch lock MUST be held across both the file write
+					// AND the readiness probe — releasing between the two lets
+					// a sibling contributor publish over the half-staged file
+					// and Traefik serves stale content under the same
+					// dispatchFileId. See STYLE_GUIDE §18 cross-process
+					// protocol — router contributeRoute serialization rule.
 					publishOwnership = yield* Effect.scoped(
 						Effect.gen(function* () {
 							yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
@@ -879,26 +886,18 @@ export const layerRouterService: Layer.Layer<
 										}),
 								),
 							);
-							return yield* publishRouteFile;
+							const ownership = yield* publishRouteFile;
+							yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
+								Effect.onError(() =>
+									ownership !== 'owned'
+										? Effect.void
+										: removeDispatchFile(fs, profile, resolved),
+								),
+							);
+							return ownership;
 						}),
 					);
 				}
-
-				yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
-					Effect.onError(() =>
-						cfg.disabled || publishOwnership !== 'owned'
-							? Effect.void
-							: Effect.scoped(
-									Effect.gen(function* () {
-										yield* acquireStackLock(
-											profile.dispatchLockFile,
-											ROUTER_LOCK_TIMEOUT_MILLIS,
-										).pipe(Effect.ignore);
-										yield* removeDispatchFile(fs, profile, resolved);
-									}),
-								),
-					),
-				);
 				if (publishOwnership !== 'reused-live') {
 					yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
 
