@@ -129,6 +129,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
+		case 'engine.orchestrator.dispatchFailed':
 			return null;
 		default: {
 			const _exhaustive: never = event;

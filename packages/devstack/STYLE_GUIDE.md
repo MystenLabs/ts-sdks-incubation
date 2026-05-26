@@ -311,9 +311,27 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
 - Renderer modules use `.tsx` only when JSX is used (`surfaces/tui/*.tsx`); everything else stays
   `.ts`. Ink dependencies must be lazy-imported (see
   `surfaces/tui/index.ts:dynamic import('./mount-ink.tsx')`).
-- File length: no hard limit, but `substrate/runtime/supervisor.ts` at 962 lines is the upper bound
-  that has been accepted with a clear sub-module split path. New monoliths above ~700 lines invite a
-  "factor by responsibility" review.
+- File length: no hard limit, but modules above ~700 lines invite a "factor by responsibility"
+  review. **Reference shape**: `substrate/runtime/supervisor/` is the canonical split of a
+  formerly-1815-LOC monolith into per-concern modules each under 500 LOC, with a thin
+  `supervisor.ts` re-export shim preserving caller import paths. Layout:
+  ```
+  supervisor/
+  ├── index.ts                  — public surface re-exports
+  ├── start-supervisor.ts       — orchestrating boot body
+  ├── command-loop.ts           — handleCommand + commandLoop
+  ├── acquire-node.ts           — per-plugin acquire pipeline + buildRegistry
+  ├── dispatch-contributions.ts — capability harvest + sink dispatch
+  ├── teardown.ts               — slice teardown + selective restart
+  ├── background-tasks.ts       — snapshot/restart/post-acquire fork helpers
+  ├── shutdown.ts               — shutdown.requested / hardKillRequested branches
+  ├── state.ts                  — shared-state record (one bag threaded everywhere)
+  ├── types.ts                  — boundary-shape types
+  ├── errors.ts                 — typed error surface
+  └── wiring.ts                 — substrate-wiring helpers + `OptionalService<T>`
+  ```
+  When splitting a monolith, group locals into a typed shared-state record (see `state.ts`'s
+  `SupervisorState`) rather than threading every closure capture through helper signatures.
 
 ---
 

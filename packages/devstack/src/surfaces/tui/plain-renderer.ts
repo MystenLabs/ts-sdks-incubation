@@ -198,6 +198,12 @@ const payloadFor = (event: EngineEvent): string => {
 			return kv({ version: event.manifestVersion });
 		case 'codegen.emitted':
 			return kv({ files: event.files.length });
+		case 'engine.orchestrator.dispatchFailed':
+			return kv({
+				key: event.pluginKey,
+				kind: event.kind,
+				summary: event.message,
+			});
 		case 'error.reported':
 			return kv({
 				key: event.error.pluginKey ?? '',

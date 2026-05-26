@@ -45,9 +45,9 @@ Phase 5a closed items 34, 35, 36 (doc-only), 37 on 2026-05-26 (entries in Closed
 
 ## 🟠 Major — Phase 6 (supervisor split)
 
-38. `src/substrate/runtime/supervisor.ts` 1789 LOC — split into `supervisor/{index,command-loop,acquire-node,dispatch-contributions,background-tasks,shutdown,wiring}.ts`.
-39. `dispatchContributions` catches only `UnknownContributionKind`, misattributes `ContributionSinkFailed` to plugin — fix during split.
-40. `getOrDefault[Effect]` "smoke-test no-op fallback" endemic — lift to one `OptionalService<T>` helper during the split.
+38. ~~`src/substrate/runtime/supervisor.ts` 1815 LOC~~ — **shipped 2026-05-26**: split into `supervisor/{index,start-supervisor,command-loop,acquire-node,dispatch-contributions,teardown,background-tasks,shutdown,state,types,errors,wiring}.ts`; each module <500 LOC. `supervisor.ts` is now a one-line `export * from './supervisor/index.ts'` shim preserving caller import paths. ARCHITECTURE.md primitives row + STYLE_GUIDE §8 reference-shape codified.
+39. ~~`dispatchContributions` catches only `UnknownContributionKind`, misattributes `ContributionSinkFailed`~~ — **shipped 2026-05-26**: `dispatchContributions` now catches BOTH tags via `Effect.catchTags`. `UnknownContributionKind` stays a no-op (substrate-open-by-default). `ContributionSinkFailed` publishes the new typed `engine.orchestrator.dispatchFailed` event + logs a warning; plugin lifecycle remains `ready`. Regression test at `test/substrate/runtime/supervisor-contribution-sink-fail.test.ts`.
+40. ~~`getOrDefault[Effect]` "smoke-test no-op fallback" endemic~~ — **shipped 2026-05-26**: lifted to `OptionalService<T>` in `supervisor/wiring.ts`. Three callsites (Logger, RuntimeRoot, CapabilitySinks) fold into one shape; `OptionalService(tag).read(ctx, fallback)` / `.readEffect(ctx, fallback)`.
 
 ---
 

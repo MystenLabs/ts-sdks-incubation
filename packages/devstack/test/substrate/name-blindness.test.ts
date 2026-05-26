@@ -152,14 +152,14 @@ const ALLOWED_FILES: ReadonlyArray<{
 			'TODO Phase 5b: faucetUrl operational-endpoint name leaks faucet plugin; lifts with projection.',
 	},
 	{
-		// TODO(Phase 6 supervisor split): supervisor.ts still contains
-		// account/package literal handling and named capability decl imports;
-		// the planned split into supervisor/{index,command-loop,acquire-node,
-		// dispatch-contributions,background-tasks,shutdown,wiring}.ts will
-		// lift these out.
-		path: 'src/substrate/runtime/supervisor.ts',
+		// Phase 6 split shipped: `pendingAccountProjection` still
+		// inspects the branded `account/<name>` resource-id literal to
+		// seed the AccountProjection row. Tracked at backlog item 33
+		// (Phase 5b projection lift); the substrate `projection.updated`
+		// event + L3 projection orchestrator will absorb this.
+		path: 'src/substrate/runtime/supervisor/start-supervisor.ts',
 		reason:
-			'TODO Phase 6: supervisor split lifts account/package literal handling + named capability imports.',
+			'TODO backlog #33: pendingAccountProjection inspects account/<name> literal; lifts with projection orchestrator.',
 	},
 ];
 

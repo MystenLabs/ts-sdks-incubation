@@ -1393,10 +1393,17 @@ describe('supervisor harvest loop', () => {
 
 			const snap = yield* SubscriptionRef.get(state);
 			const row = snap.rows.find((r) => r.key === 'test:route#0');
-			expect(row?.status).toBe('failed');
-			expect(row?.lastError?.pluginKey).toBe('test:route#0');
-			expect(row?.lastError?.chain.join('\n')).toContain('route dispatch boom');
-			expect(snap.errors.at(-1)?.pluginKey).toBe('test:route#0');
+			// Sink failure is orchestrator-fault, NOT plugin-fault (Phase 6 #39
+			// fix): the plugin's acquire ran cleanly, the sink that received
+			// the contribution failed. Plugin status stays ready; the row's
+			// lastError carries no entry attributed to this plugin.
+			// `supervise(...)` runs to shutdown, so the plugin's post-supervise
+			// status is `'stopped'` (clean lifecycle exit), NOT `'failed'`.
+			expect(row?.status).toBe('stopped');
+			expect(row?.lastError ?? undefined).toBeUndefined();
+			// The sink failure surfaces via the new orchestrator-event path —
+			// `engine.orchestrator.dispatchFailed` (covered by the dedicated
+			// regression at test/substrate/runtime/supervisor-contribution-sink-fail.test.ts).
 			expect(snap.cycle.phase).toBe('running');
 		}),
 	);

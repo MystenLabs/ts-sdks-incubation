@@ -155,6 +155,13 @@ export type EngineEvent =
 			readonly tag: 'snapshot.restored';
 			readonly snapshotId: string;
 			readonly at: number;
+	  }
+	| {
+			readonly tag: 'engine.orchestrator.dispatchFailed';
+			readonly pluginKey: PluginKey;
+			readonly kind: string;
+			readonly message: string;
+			readonly at: number;
 	  };
 
 /** Closed event-tag union — used by lint to assert exhaustiveness. */

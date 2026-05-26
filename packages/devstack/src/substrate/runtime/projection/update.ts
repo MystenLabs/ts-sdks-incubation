@@ -174,6 +174,13 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 				rows: state.rows.map((r) => ({ ...r, selectiveRestartHighlight: false })),
 			});
 
+		case 'engine.orchestrator.dispatchFailed':
+			// Orchestrator-side dispatch failure surfaced for renderers /
+			// log consumers; carries no projection slice (the originating
+			// plugin remains in its current lifecycle state — sink failure
+			// is orchestrator-fault, not plugin-fault).
+			return withTouched({});
+
 		default: {
 			const _exhaustive: never = event;
 			void _exhaustive;
