@@ -37,7 +37,7 @@ const base64Encode = (bytes: Uint8Array): string => Buffer.from(bytes).toString(
 const base64Decode = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'base64'));
 
 export class CacheService extends Context.Service<CacheService, Cache>()(
-	'@devstack-rewrite/substrate/Cache',
+	'@devstack/substrate/Cache',
 ) {}
 
 /**

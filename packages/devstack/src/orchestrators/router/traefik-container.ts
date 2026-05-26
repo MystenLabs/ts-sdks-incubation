@@ -134,7 +134,7 @@ export interface TraefikContainerOps {
 export class TraefikContainerOpsService extends Context.Service<
 	TraefikContainerOpsService,
 	TraefikContainerOps
->()('@devstack-rewrite/orchestrators/router/TraefikContainerOps') {}
+>()('@devstack/orchestrators/router/TraefikContainerOps') {}
 
 // ---------------------------------------------------------------------------
 // Bootstrap — decides + executes

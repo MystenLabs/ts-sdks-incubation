@@ -40,7 +40,7 @@ export interface DockerHostShape {
 }
 
 export class DockerHost extends Context.Service<DockerHost, DockerHostShape>()(
-	'@devstack-rewrite/runtime-docker/DockerHost',
+	'@devstack/runtime-docker/DockerHost',
 ) {}
 
 export const layerDockerHostDefault: Layer.Layer<DockerHost> = Layer.succeed(DockerHost)({});
@@ -58,7 +58,7 @@ export const layerDockerHost = (shape: DockerHostShape): Layer.Layer<DockerHost>
 export class DockerSpawner extends Context.Service<
 	DockerSpawner,
 	ReturnType<typeof ChildProcessSpawner.make>
->()('@devstack-rewrite/runtime-docker/DockerSpawner') {}
+>()('@devstack/runtime-docker/DockerSpawner') {}
 
 // -----------------------------------------------------------------------------
 // Argv construction

@@ -19,7 +19,7 @@ export interface RedactorShape {
 }
 
 export class Redactor extends Context.Service<Redactor, RedactorShape>()(
-	'@devstack-rewrite/substrate/Redactor',
+	'@devstack/substrate/Redactor',
 ) {}
 
 const DEFAULT_REPLACEMENT = '<redacted>';

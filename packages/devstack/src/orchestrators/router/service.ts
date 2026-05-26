@@ -120,7 +120,7 @@ export interface RouteReadinessProbeConfig {
 }
 
 export class RouterConfig extends Context.Service<RouterConfig, RouterConfigShape>()(
-	'@devstack-rewrite/orchestrators/router/RouterConfig',
+	'@devstack/orchestrators/router/RouterConfig',
 ) {}
 
 /** Default-config layer for tests. Production wires this from
@@ -135,7 +135,7 @@ export const layerRouterConfigLiteral = (cfg: RouterConfigShape): Layer.Layer<Ro
 export class UpstreamResolverService extends Context.Service<
 	UpstreamResolverService,
 	UpstreamResolver
->()('@devstack-rewrite/orchestrators/router/UpstreamResolver') {}
+>()('@devstack/orchestrators/router/UpstreamResolver') {}
 
 export const layerDockerUpstreamResolver = (
 	profile: RouterProfile,
@@ -217,7 +217,7 @@ export interface EndpointUrl {
 }
 
 export class RouterService extends Context.Service<RouterService, RouterServiceShape>()(
-	'@devstack-rewrite/orchestrators/router/Router',
+	'@devstack/orchestrators/router/Router',
 ) {}
 
 interface DispatchRouteScanDiagnostic extends DispatchRouteDecodeDiagnostic {

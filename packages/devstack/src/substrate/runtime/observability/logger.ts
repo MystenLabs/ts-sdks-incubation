@@ -19,27 +19,10 @@
 // `../cross-process-lock.ts`.
 
 import { Context, Effect, Layer, Ref } from 'effect';
-import { Data } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import { Redactor, redactValue } from './redaction.ts';
 import { SpanAttr } from './spans.ts';
-
-// -----------------------------------------------------------------------------
-// Errors
-// -----------------------------------------------------------------------------
-
-/** Single tagged error class for every logger failure mode.
- *
- *  The architecture says service-specific errors do NOT live in L0
- *  (§ L0). `LoggerError` is engine-level — the only failure modes are
- *  buffer-write contention (defected up) and over-large lines that
- *  the bounded buffer refused to truncate. */
-export class LoggerError extends Data.TaggedError('LoggerError')<{
-	readonly reason: 'buffer-write-failed' | 'line-too-large';
-	readonly tag: string;
-	readonly cause?: unknown;
-}> {}
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -121,7 +104,7 @@ export interface LoggerShape {
 }
 
 export class Logger extends Context.Service<Logger, LoggerShape>()(
-	'@devstack-rewrite/substrate/Logger',
+	'@devstack/substrate/Logger',
 ) {}
 
 /** Layer that constructs the per-stack Logger. Stateful (holds the

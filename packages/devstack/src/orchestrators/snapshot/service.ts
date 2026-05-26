@@ -185,7 +185,7 @@ export interface SnapshotOrchestrator {
 export class SnapshotOrchestratorService extends Context.Service<
 	SnapshotOrchestratorService,
 	SnapshotOrchestrator
->()('@devstack-rewrite/orchestrators/Snapshot') {}
+>()('@devstack/orchestrators/Snapshot') {}
 
 // -----------------------------------------------------------------------------
 // Helpers

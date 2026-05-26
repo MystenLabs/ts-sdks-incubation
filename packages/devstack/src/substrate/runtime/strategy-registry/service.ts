@@ -38,7 +38,7 @@ type State = ReadonlyMap<string, ReadonlyArray<Entry>>;
 export class StrategyRegistryService extends Context.Service<
 	StrategyRegistryService,
 	StrategyRegistry
->()('@devstack-rewrite/substrate/StrategyRegistry') {}
+>()('@devstack/substrate/StrategyRegistry') {}
 
 /**
  * Layer. Constructed per-scope; the orchestrator hands the registry

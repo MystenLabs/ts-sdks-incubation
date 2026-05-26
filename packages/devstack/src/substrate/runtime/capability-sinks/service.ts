@@ -131,7 +131,7 @@ export interface CapabilitySinksShape {
 export class CapabilitySinksService extends Context.Service<
 	CapabilitySinksService,
 	CapabilitySinksShape
->()('@devstack-rewrite/substrate/CapabilitySinks') {}
+>()('@devstack/substrate/CapabilitySinks') {}
 
 // -----------------------------------------------------------------------------
 // Implementation helper — kind extraction

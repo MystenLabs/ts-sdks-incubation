@@ -30,7 +30,7 @@ export interface CodegenRootShape {
 }
 
 export class CodegenRoot extends Context.Service<CodegenRoot, CodegenRootShape>()(
-	'@devstack-rewrite/orchestrator/CodegenRoot',
+	'@devstack/orchestrator/CodegenRoot',
 ) {}
 
 /** Build a `CodegenRoot` layer pinned to a literal path. */
@@ -56,7 +56,7 @@ export interface CodegenPaths {
 }
 
 export class CodegenPathsService extends Context.Service<CodegenPathsService, CodegenPaths>()(
-	'@devstack-rewrite/orchestrator/CodegenPaths',
+	'@devstack/orchestrator/CodegenPaths',
 ) {}
 
 /**

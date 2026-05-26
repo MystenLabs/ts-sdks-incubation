@@ -80,7 +80,7 @@ export interface MoveSummaryRunner {
 export class MoveSummaryRunnerService extends Context.Service<
 	MoveSummaryRunnerService,
 	MoveSummaryRunner
->()('@devstack-rewrite/orchestrator/MoveSummaryRunner') {}
+>()('@devstack/orchestrator/MoveSummaryRunner') {}
 
 /** Shape of the `@mysten/codegen` invocation. Returns the rendered
  *  TS files (path → content) for one package. */
@@ -98,7 +98,7 @@ export interface MoveCodegen {
 }
 
 export class MoveCodegenService extends Context.Service<MoveCodegenService, MoveCodegen>()(
-	'@devstack-rewrite/orchestrator/MoveCodegen',
+	'@devstack/orchestrator/MoveCodegen',
 ) {}
 
 // -----------------------------------------------------------------------------

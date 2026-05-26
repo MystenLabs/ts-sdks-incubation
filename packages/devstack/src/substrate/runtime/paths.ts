@@ -30,7 +30,7 @@ export interface RuntimeRootShape {
 }
 
 export class RuntimeRoot extends Context.Service<RuntimeRoot, RuntimeRootShape>()(
-	'@devstack-rewrite/substrate/RuntimeRoot',
+	'@devstack/substrate/RuntimeRoot',
 ) {}
 
 /** Build a `RuntimeRoot` layer pinned to a literal path. */
@@ -46,7 +46,7 @@ export const layerRuntimeRoot = (root: string): Layer.Layer<RuntimeRoot> =>
  * resolver and every consumer reads from this single source.
  */
 export class IdentityContext extends Context.Service<IdentityContext, Identity>()(
-	'@devstack-rewrite/substrate/Identity',
+	'@devstack/substrate/Identity',
 ) {}
 
 export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> =>
@@ -98,7 +98,7 @@ export interface StackPaths {
  * boot-immutable.
  */
 export class StackPathsService extends Context.Service<StackPathsService, StackPaths>()(
-	'@devstack-rewrite/substrate/StackPaths',
+	'@devstack/substrate/StackPaths',
 ) {}
 
 /**

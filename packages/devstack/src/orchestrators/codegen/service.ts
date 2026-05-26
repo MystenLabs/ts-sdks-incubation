@@ -679,7 +679,7 @@ export interface CodegenOrchestrator {
 export class CodegenOrchestratorService extends Context.Service<
 	CodegenOrchestratorService,
 	CodegenOrchestrator
->()('@devstack-rewrite/orchestrators/Codegen') {}
+>()('@devstack/orchestrators/Codegen') {}
 
 interface RegisteredCodegenEntry {
 	readonly pluginKey: string;

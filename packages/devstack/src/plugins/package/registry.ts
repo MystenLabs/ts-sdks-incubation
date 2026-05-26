@@ -84,7 +84,7 @@ const wrapRefMap = (refMap: ScopedRefMap<PackageKey, ResolvedPackage>): PackageR
 export class PackageRegistryService extends Context.Service<
 	PackageRegistryService,
 	PackageRegistry
->()('@devstack-rewrite/plugins/package/PackageRegistry') {}
+>()('@devstack/plugins/package/PackageRegistry') {}
 
 /** Scope-bound Layer materializing one `PackageRegistry` per stack
  *  scope. Boot wiring (CLI / e2e) provides this once per stack;

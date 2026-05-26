@@ -71,7 +71,7 @@ export {
 export class ArtifactPublisherService extends Context.Service<
 	ArtifactPublisherService,
 	ArtifactPublisher
->()('@devstack-rewrite/substrate/ArtifactPublisher') {}
+>()('@devstack/substrate/ArtifactPublisher') {}
 
 // ---------------------------------------------------------------------------
 // Encode / decode the cached payload

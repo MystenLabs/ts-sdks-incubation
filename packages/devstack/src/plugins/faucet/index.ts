@@ -59,10 +59,23 @@ export function defineFaucetStrategy<ChainId extends string>(decl: {
 }
 
 // ---------------------------------------------------------------------------
-// Re-exports
+// Public types
 // ---------------------------------------------------------------------------
 
-export type { FaucetStrategyContribution } from './service.ts';
+/** A registered strategy contribution. Plugin authors that batch
+ *  multiple per-chain strategies (custom fork admins, alt-network
+ *  faucets) shape their config arrays around this; the underlying
+ *  registration mechanic is `defineFaucetStrategy`. */
+export interface FaucetStrategyContribution {
+	/** Capability-key chain id (`'sui:localnet'`, `'sui:testnet'`, etc.). */
+	readonly chainId: string;
+	/** The strategy value — closes over its own dependencies. */
+	readonly strategy: FaucetStrategy;
+	/** Optional priority. Defaults to `1` so user strategies win over
+	 *  the built-in's `0`. */
+	readonly priority?: number;
+}
+
 export type {
 	FaucetError,
 	FaucetUnreachable,

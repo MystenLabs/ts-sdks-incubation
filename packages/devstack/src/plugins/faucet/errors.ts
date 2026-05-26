@@ -135,12 +135,3 @@ export type FaucetError =
 	| FaucetStrategyMissing
 	| FaucetConfigError;
 
-/** Error tags this plugin contributes — surfaced to the substrate's
- *  cause walker via `PluginErrorContribution`. */
-export const FAUCET_ERROR_TAGS: ReadonlyArray<FaucetError['_tag']> = [
-	'FaucetUnreachable',
-	'FaucetExhausted',
-	'FaucetBodyError',
-	'FaucetStrategyMissing',
-	'FaucetConfigError',
-] as const;

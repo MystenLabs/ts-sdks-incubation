@@ -18,7 +18,7 @@ interface NameShape {
 	readonly name: string;
 }
 
-class NameTag extends Context.Service<NameTag, NameShape>()('@devstack-rewrite/test/NameTag') {}
+class NameTag extends Context.Service<NameTag, NameShape>()('@devstack/test/NameTag') {}
 
 describe('getOrDefault', () => {
 	it('returns the service when layered into context', () => {

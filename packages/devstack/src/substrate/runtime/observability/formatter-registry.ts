@@ -48,7 +48,7 @@ export interface FormatterRegistryShape {
 export class FormatterRegistryService extends Context.Service<
 	FormatterRegistryService,
 	FormatterRegistryShape
->()('@devstack-rewrite/substrate/FormatterRegistry') {}
+>()('@devstack/substrate/FormatterRegistry') {}
 
 /** Per-tag entry. The registry may track a tag with no formatter
  *  (default rendering is enough) — that's why `formatter` is

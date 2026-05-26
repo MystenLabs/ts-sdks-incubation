@@ -136,7 +136,7 @@ type State = ReadonlyMap<LeaseKey, KeyEntry>;
 // ----------------------------------------------------------------------
 
 export class LeaseBrokerService extends Context.Service<LeaseBrokerService, LeaseBroker>()(
-	'@devstack-rewrite/substrate/LeaseBroker',
+	'@devstack/substrate/LeaseBroker',
 ) {}
 
 /**

@@ -200,6 +200,8 @@ Per memory `feedback_no_compat_for_never_cases`:
 
 As of 2026-05-26 the phase-marker sweep is complete: `grep -rE 'Phase [0-9]+|<unresolved-|// future|will replace once|TBD pending' src/` returns ZERO hits. New code MUST NOT introduce any.
 
+**Effect Service tag identifiers MUST use the current package namespace** (`'@devstack/...'`). The historical `'@devstack-rewrite/...'` tag is a forbidden ghost (the rewrite IS the only devstack — see memory `devstack_v4_replacement`); reintroducing it splits the per-stack identity space and breaks state-store round-trips written under the old namespace. As of 2026-05-26 zero hits remain in `src/` and `test/`.
+
 **Sentinel literals at resolved-value surfaces** — sentinel literal strings (`'<...>'`, `'<TODO-fill-me>'`, `'<cache-hit-not-rehydrated>'`, `'<bls-pubkey-storage-node-${i}>'`) at any surface a user might read are scaffold debt. Fail at the factory (typed error or `Effect.fail`) or omit the field entirely instead — never ship a placeholder string that downstream consumers can mistake for real data. Substrate `ArtifactPublisher.publish` returns `Produced` on every path (the historical `Produced | Verified` discriminator union was collapsed 2026-05-26); plugin callers therefore project the cached payload directly without `'in artifact'` discrimination or synthetic-placeholder branches.
 
 **`noUnusedLocals` quirk** — TypeScript's `noUnusedLocals` (enabled package-wide) is strict: an

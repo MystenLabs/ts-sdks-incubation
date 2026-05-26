@@ -32,7 +32,7 @@ import type {
 } from '../../contracts/container-runtime.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
-import { containerInnerScript } from './cli-driver.ts';
+import { containerInnerScript } from '../../substrate/runtime/sui-move-build/index.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
 
 /** Default move-build lock timeout — five minutes, matching the

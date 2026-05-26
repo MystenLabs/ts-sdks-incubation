@@ -70,7 +70,7 @@ export interface CrossProcessLockShape {
 }
 
 export class CrossProcessLock extends Context.Service<CrossProcessLock, CrossProcessLockShape>()(
-	'@devstack-rewrite/substrate/CrossProcessLock',
+	'@devstack/substrate/CrossProcessLock',
 ) {}
 
 /**

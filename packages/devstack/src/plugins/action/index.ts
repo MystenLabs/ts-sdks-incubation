@@ -248,7 +248,6 @@ export const action = <const Name extends string, const DependsOn extends Action
 export type { ActionBuildContext } from './build-context.ts';
 export type { ActionError, ActionPhase } from './errors.ts';
 export { ACTION_ERROR_TAGS } from './errors.ts';
-export type { ActionLifecyclePhase } from './lifecycle.ts';
 export type { DynamicDiscriminator, StaticDiscriminator } from './discriminator.ts';
 export type { ActionReceipt } from './service.ts';
 export { ActionReceiptSchema } from './service.ts';

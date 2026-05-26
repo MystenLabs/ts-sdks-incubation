@@ -40,7 +40,7 @@ import { emptyDocument, StateDocument, type StateEntry } from './schema.ts';
  * is the user-facing shape; this is the wired-up implementation.
  */
 export class StateStoreService extends Context.Service<StateStoreService, StateStore>()(
-	'@devstack-rewrite/substrate/StateStore',
+	'@devstack/substrate/StateStore',
 ) {}
 
 /**

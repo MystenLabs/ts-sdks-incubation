@@ -22,15 +22,7 @@
 
 ## 🟠 Major — Phase 3 (dead code purge + namespace rename)
 
-15. `src/plugins/faucet/service.ts` whole file dead (`acquireFaucetService`, `FaucetService`).
-16. `src/plugins/faucet/dispatcher.ts` (`FaucetDispatcher`, `makeDispatcher`).
-17. `src/plugins/faucet/errors.ts:140-146` `FAUCET_ERROR_TAGS` orphan.
-18. `src/plugins/action/lifecycle.ts` whole file (`ActionLifecyclePhase` no consumer).
-19. `src/plugins/sui/{move-lock-scrub,cli-driver}.ts` 1-line re-export shims.
-20. `src/substrate/runtime/observability/logger.ts:38-42` `LoggerError` defined, never caught.
-21. `src/substrate/runtime/lifted-sibling-registry/` empty dir.
-22. `src/build-integrations/{vite,browser}/` empty dirs (phantom O7).
-23. `@devstack-rewrite/` namespace tag persists in 5 service ids — `coin/registry.ts:124,142`, `package/registry.ts:87,104`, `orchestrators/snapshot/service.ts:188`, `orchestrators/codegen/{service.ts:527,paths.ts:34,60}`.
+~~All Phase 3 items shipped 2026-05-26; entries moved to the Closed section below.~~
 
 ## 🟠 Major — Phase 4 (boundary corrections)
 
@@ -92,6 +84,18 @@
 ---
 
 ## ⚪ Closed
+
+### Phase 3 (shipped 2026-05-26)
+
+15. ~~`plugins/faucet/service.ts` deleted~~ (`acquireFaucetService` + `FaucetService` had zero callers).
+16. ~~`plugins/faucet/dispatcher.ts` trimmed~~ — `FaucetDispatcher` interface + `makeDispatcher` factory deleted; `FAUCET_CAPABILITY_KEY_PREFIX` + `faucetCapabilityKey` retained (sui plugin still consumes the key helper pending Phase 4 #25).
+17. ~~`FAUCET_ERROR_TAGS` orphan~~ deleted from `faucet/errors.ts`.
+18. ~~`plugins/action/lifecycle.ts` deleted~~; root re-export and release-surface leak entry dropped.
+19. ~~`plugins/sui/{move-lock-scrub,cli-driver}.ts` deleted~~; `chain-build-container.ts` now imports `containerInnerScript` directly from `substrate/runtime/sui-move-build`.
+20. ~~`LoggerError` deleted~~ from `substrate/runtime/observability/logger.ts` plus the unused `Data` import.
+21. (`lifted-sibling-registry/` did not exist on this branch — no action needed; backlog item was stale.)
+22. ~~`build-integrations/{vite,browser}/` empty dirs deleted~~.
+23. ~~`@devstack-rewrite/` namespace tag eradicated~~ — sed-swept 35 src/ + 1 test/ sites to `@devstack/`. STYLE_GUIDE §5 codifies the rule (Effect Service tag identifiers MUST use the current package namespace).
 
 ### Phase 2 (shipped 2026-05-26)
 

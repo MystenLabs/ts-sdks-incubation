@@ -121,7 +121,7 @@ const wrapRefMap = (refMap: ScopedRefMap<CoinKey, CoinRecord>): CoinRegistry => 
 /** Context.Service tag for the per-stack `CoinRegistry`. Plugins
  *  yield this in their acquire body. */
 export class CoinRegistryService extends Context.Service<CoinRegistryService, CoinRegistry>()(
-	'@devstack-rewrite/plugins/coin/CoinRegistry',
+	'@devstack/plugins/coin/CoinRegistry',
 ) {}
 
 /** Scope-bound Layer materializing one `CoinRegistry` per stack

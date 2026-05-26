@@ -74,14 +74,14 @@ import {
 export class ContainerRuntimeService extends Context.Service<
 	ContainerRuntimeService,
 	ContainerRuntime
->()('@devstack-rewrite/runtime-docker/ContainerRuntime') {}
+>()('@devstack/runtime-docker/ContainerRuntime') {}
 
 // -----------------------------------------------------------------------------
 // Cycle counter — stamped on container labels at create time
 // -----------------------------------------------------------------------------
 
 export class DockerCycle extends Context.Service<DockerCycle, Ref.Ref<number>>()(
-	'@devstack-rewrite/runtime-docker/Cycle',
+	'@devstack/runtime-docker/Cycle',
 ) {}
 
 export const layerDockerCycleInitial: Layer.Layer<DockerCycle> = Layer.effect(

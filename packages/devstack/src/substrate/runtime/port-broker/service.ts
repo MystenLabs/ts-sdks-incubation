@@ -313,7 +313,7 @@ const acquirePortReservation = (
 // ----------------------------------------------------------------------
 
 export class PortBrokerService extends Context.Service<PortBrokerService, PortBroker>()(
-	'@devstack-rewrite/substrate/PortBroker',
+	'@devstack/substrate/PortBroker',
 ) {}
 
 /**
