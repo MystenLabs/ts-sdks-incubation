@@ -56,8 +56,11 @@ export interface ArtifactSpec<Produced, Verified> {
 	readonly verifySchema: Schema.Schema<Verified>;
 	/** Produce procedure — runs on cache miss OR verify-fail. */
 	readonly produce: Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
-	/** Register procedure — fires on EVERY cycle (hit AND miss). */
-	readonly register: (artifact: Produced | Verified) => Effect.Effect<void, never>;
+	/** Register procedure — fires on EVERY cycle (hit AND miss). The
+	 *  substrate always hands back the decoded `Produced` payload (on
+	 *  cache hit) or the freshly produced one (on miss); the verify
+	 *  shape is a probe-only signal, never surfaced to callers. */
+	readonly register: (artifact: Produced) => Effect.Effect<void, never>;
 }
 
 /** Tagged error from a publish round. */
@@ -68,9 +71,18 @@ export interface ArtifactPublishError {
 }
 
 /** The publisher service. Plugins call `publish`; substrate handles
- *  cache lookup, verify, produce-on-miss, idempotent register. */
+ *  cache lookup, verify, produce-on-miss, idempotent register.
+ *
+ *  Returns the `Produced` payload on EVERY path:
+ *  - cache hit + verify succeeds → the decoded cached `Produced`,
+ *  - cache miss or verify-fail → the freshly produced `Produced`.
+ *
+ *  The `Verified` shape is a probe-only signal (drives the lenient
+ *  null/non-null decision inside the substrate); it is never returned
+ *  to plugin callers. Callers therefore type-narrow trivially against
+ *  `Produced` and avoid the `'<sentinel>'` projection dance. */
 export interface ArtifactPublisher {
 	readonly publish: <Produced, Verified>(
 		spec: ArtifactSpec<Produced, Verified>,
-	) => Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope>;
+	) => Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
 }

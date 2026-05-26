@@ -30,17 +30,25 @@ import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.
 // ---------------------------------------------------------------------------
 
 /** Closed set of known deployments. `mainnet` + `devnet` intentionally
- *  null (distilled-doc cross-ref). v2 plans should canonicalize this
- *  table — for now we mirror v3's structure. */
-export const KNOWN_DEPLOYMENTS = {
+ *  null (no public default key server). `testnet` carries the public
+ *  key-server URL but `keyServerObjectId` is `null` until a real id is
+ *  sourced — `validateLiveInputs` forces the caller to supply
+ *  `objectId` explicitly in that case. */
+export const KNOWN_DEPLOYMENTS: {
+	readonly testnet: {
+		readonly keyServerObjectId: string | null;
+		readonly keyServerUrl: string;
+	};
+	readonly mainnet: null;
+	readonly devnet: null;
+} = {
 	testnet: {
-		keyServerObjectId:
-			'0x000000000000000000000000000000000000000000000000000000000000mysten' as string,
+		keyServerObjectId: null,
 		keyServerUrl: 'https://seal-keyserver.testnet.mystenlabs.com',
 	},
 	mainnet: null,
 	devnet: null,
-} as const;
+};
 
 export type KnownNetwork = keyof typeof KNOWN_DEPLOYMENTS;
 

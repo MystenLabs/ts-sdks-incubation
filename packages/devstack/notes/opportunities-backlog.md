@@ -10,12 +10,7 @@
 
 ## 🔴 Critical — Phase 1 (user-visible regressions)
 
-1. Walrus deploy cache-hit emits `'<cache-hit-not-rehydrated>'` sentinel — `src/plugins/walrus/deploy.ts:454-471`.
-2. Walrus storage-node BLS pubkey is `'<bls-pubkey-storage-node-${i}>'` — `src/plugins/walrus/storage-nodes.ts:318`.
-3. Seal testnet `keyServerObjectId` literal `'0x…mysten'` — `src/plugins/seal/mode/live.ts:37-38`.
-4. Seal default version is the sentinel string `'<default-seal-version>'` — `src/plugins/seal/index.ts:177`.
-5. Postgres codegen `host` is the `networkAlias` Docker DNS won't answer — `src/plugins/postgres/index.ts:140` vs `service.ts:289-364`.
-6. Coin mint cache key omits `signer.address` — `src/plugins/coin/mint.ts:82-87`.
+~~All Phase 1 items shipped 2026-05-26; entries moved to the Closed section below.~~
 
 ## 🔴 Critical — Phase 2 (orchestrator / CLI / supervisor correctness)
 
@@ -61,6 +56,7 @@
 35. `strategy-registry/faucet-capability-for.ts:22-39` names faucet + hardcodes `'faucet:request'` prefix.
 36. `substrate/runtime/sui-move-build/` (~480 LOC) Sui-aware substrate helper not documented as exception.
 37. L1 Docker labels carry router-named slots — `runtime/docker/labels.ts:42-44`, `sweep.ts:147-320` router variants.
+37a. `EnsureContainerSpec.networkAttach` is name-blind — accepts network names but no `--network-alias` plumbing, so plugins exposing a `networkAlias` field on their handle (postgres, future siblings) cannot have Docker register an alternate DNS name. Phase 1 bug #5 worked around this in `plugins/postgres/index.ts` by routing codegen at the container DNS name (`${app}-${stack}-${name}`) instead. Long-term: extend `EnsureContainerSpec` to accept per-network aliases (e.g. `networkAttach: ReadonlyArray<string | { name: string; aliases?: string[] }>`), thread through the runtime adapter's `docker network connect --alias`, then flip the postgres codegen back to `value.networkAlias` and let parallel stacks dial by the alias rather than the per-stack container name.
 
 ## 🟠 Major — Phase 6 (supervisor split)
 
@@ -102,4 +98,11 @@
 
 ## ⚪ Closed
 
-(Populated as items ship.)
+### Phase 1 (shipped 2026-05-26)
+
+1. ~~Walrus deploy cache-hit sentinel~~ — substrate `ArtifactPublisher.publish` simplified to return `Produced` only; walrus discriminator dance + sentinel deleted; same simplification applied to package/coin/action/seal callers.
+2. ~~Walrus storage-node BLS pubkey placeholder~~ — `publicKey` field dropped from `WalrusStorageNode` (SDK reads it from `packageConfig`).
+3. ~~Seal testnet `keyServerObjectId` placeholder~~ — set to `null` (typed `string | null`); `validateLiveInputs` rejects with `SealConfigError` when no override is supplied.
+4. ~~Seal default version sentinel~~ — replaced with `DEFAULT_SEAL_VERSION` from `bootstrap-assets/source-fetch.ts`.
+5. ~~Postgres codegen host~~ — codegen now emits `value.host` (container DNS name); substrate `networkAlias` plumbing tracked at Phase 5 item 37a.
+6. ~~Coin mint cache key~~ — `signer.address` folded into `buildMintContentHash` (mirrors `package/mode-local.ts:149-152`).

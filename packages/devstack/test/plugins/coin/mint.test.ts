@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@effect/vitest';
 
-import { pickCreatedCoin } from '../../../src/plugins/coin/mint.ts';
+import { buildMintContentHash, pickCreatedCoin } from '../../../src/plugins/coin/mint.ts';
 
 const SUI_FRAMEWORK_PADDED = '0x0000000000000000000000000000000000000000000000000000000000000002';
 
@@ -33,5 +33,46 @@ describe('plugins/coin/mint', () => {
 		);
 
 		expect(minted).toBe('0xcoin');
+	});
+
+	describe('buildMintContentHash', () => {
+		const baseParts = {
+			treasuryCapId: '0xcap',
+			recipient: '0xalice',
+			amount: 100n,
+		};
+
+		it('folds signerAddress into the cache key (backlog #6)', () => {
+			// Regression: the original key omitted the signer, so re-running
+			// `(treasuryCap, recipient, amount)` under a NEW signer would
+			// hit the prior cache entry and short-circuit the mint with a
+			// stale digest. The signer is part of the cache identity —
+			// distinct signers MUST produce distinct content hashes.
+			const a = buildMintContentHash({ ...baseParts, signerAddress: '0xsignerA' });
+			const b = buildMintContentHash({ ...baseParts, signerAddress: '0xsignerB' });
+
+			expect(a).not.toBe(b);
+		});
+
+		it('is stable for identical inputs (idempotent)', () => {
+			const a = buildMintContentHash({ ...baseParts, signerAddress: '0xsigner' });
+			const b = buildMintContentHash({ ...baseParts, signerAddress: '0xsigner' });
+
+			expect(a).toBe(b);
+		});
+
+		it('still distinguishes treasuryCapId / recipient / amount columns', () => {
+			const baseline = buildMintContentHash({ ...baseParts, signerAddress: '0xsigner' });
+
+			expect(
+				buildMintContentHash({ ...baseParts, treasuryCapId: '0xother', signerAddress: '0xsigner' }),
+			).not.toBe(baseline);
+			expect(
+				buildMintContentHash({ ...baseParts, recipient: '0xbob', signerAddress: '0xsigner' }),
+			).not.toBe(baseline);
+			expect(
+				buildMintContentHash({ ...baseParts, amount: 101n, signerAddress: '0xsigner' }),
+			).not.toBe(baseline);
+		});
 	});
 });

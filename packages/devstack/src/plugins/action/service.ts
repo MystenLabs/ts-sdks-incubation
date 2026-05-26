@@ -187,7 +187,10 @@ export const bootActionService = (
 		// pull the digest off the cached payload directly. No
 		// in-process registry-hop required (mirrors the seam pattern
 		// the package plugin's mode-local TODO calls out).
-		const produced = yield* publisher.publish<ActionReceipt, typeof VerifyTxShape.Type>({
+		const receipt: ActionReceipt = yield* publisher.publish<
+			ActionReceipt,
+			typeof VerifyTxShape.Type
+		>({
 			namespace: 'action',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
@@ -234,24 +237,7 @@ export const bootActionService = (
 				Effect.void,
 		});
 
-		// The publisher returns `Produced | Verified`. Both shapes
-		// carry `digest`; the action's resolved value is the cached
-		// receipt (full `ActionReceipt` on produce/decoded-hit, or a
-		// projected `{digest}` on bare-verify-hit). Callers expect the
-		// wider shape — surface defensively.
-		if ('digest' in produced && typeof produced.digest === 'string') {
-			// Already-`ActionReceipt`-shaped. Cast through to recover
-			// the optional change arrays if present.
-			return produced as ActionReceipt;
-		}
-		// Defensive: unreachable under the current substrate (verify
-		// returns the bare `{digest}` shape; the substrate falls back
-		// to it ONLY when the cached payload failed to decode, which
-		// we treat as miss elsewhere). Surface a parse-phase error.
-		return yield* Effect.fail(
-			actionError('parse', {
-				actionName: inputs.actionName,
-				message: `Action '${inputs.actionName}': cached payload missing digest.`,
-			}),
-		);
+		// The substrate hands back the decoded `ActionReceipt` on every
+		// path (decoded cached payload on hit, fresh produce on miss).
+		return receipt;
 	});

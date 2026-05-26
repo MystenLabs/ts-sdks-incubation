@@ -76,15 +76,25 @@ export const MintedCoinVerifyShape = Schema.Struct({
 
 /** Build the cache-key content hash. Distilled-doc 13-coin.md
  *  §"Persistence model": key shape is
- *  `coin/mint/<chainId>/<treasuryCapId>/<recipient>/<amount>`. The
- *  substrate's artifact publisher folds in chainId via the `chain` parameter; we
- *  fold the remaining columns into `contentHash`. */
-const buildMintContentHash = (parts: {
+ *  `coin/mint/<chainId>/<treasuryCapId>/<signerAddress>/<recipient>/<amount>`.
+ *  The substrate's artifact publisher folds in chainId via the
+ *  `chain` parameter; we fold the remaining columns into `contentHash`.
+ *
+ *  `signerAddress` is folded in because the producing signer is part
+ *  of the cache identity — reusing the same `(treasuryCap, recipient,
+ *  amount)` under a different signer MUST miss the cache so the new
+ *  signer actually re-executes the mint. Mirrors the symmetric
+ *  `publisherAddress` fold in `plugins/package/mode-local.ts:149-152`.
+ *  Backlog #6. */
+export const buildMintContentHash = (parts: {
 	readonly treasuryCapId: string;
 	readonly recipient: string;
 	readonly amount: bigint;
+	readonly signerAddress: string;
 }): ContentHash =>
-	brandContentHash(`mint/${parts.treasuryCapId}/${parts.recipient}/${parts.amount.toString()}`);
+	brandContentHash(
+		`mint/${parts.treasuryCapId}/${parts.signerAddress}/${parts.recipient}/${parts.amount.toString()}`,
+	);
 
 export interface MintInputs {
 	readonly fullCoinType: string;
@@ -95,11 +105,10 @@ export interface MintInputs {
 }
 
 export interface MintResult {
-	/** Tx digest of the producing mint. `null` on the verify-hit path:
-	 *  the artifact publisher's cache-hit verify returns the decoded probe shape
-	 *  (which doesn't carry the digest); callers that need the digest
-	 *  on cache hit consult the artifact publisher cache directly. */
-	readonly digest: string | null;
+	/** Tx digest of the producing mint. Surfaces the cached digest on
+	 *  verify-hit (the substrate hands back the decoded `CachedMint`
+	 *  payload, which carries it). */
+	readonly digest: string;
 	readonly mintedCoinId: string;
 	readonly recipient: string;
 	readonly amount: bigint;
@@ -220,9 +229,9 @@ const isCreatedObjectChange = (raw: unknown): raw is CreatedObjectChange => {
  *  procedures; the substrate handles best-effort cache writes per
  *  Invariant 2.
  *
- *  Note on the `Produced | Verified` union: the artifact publisher's `publish`
- *  returns one OR the other shape; both are `CachedMint`-compatible
- *  for our purposes, so we collapse downstream. */
+ *  The substrate's `publish` returns the `CachedMint` payload on every
+ *  path (decoded cached payload on verify-hit, fresh produce on miss);
+ *  we project it directly to `MintResult`. */
 export const performMint = (
 	publisher: ArtifactPublisher,
 	chain: ChainId,
@@ -231,151 +240,144 @@ export const performMint = (
 	inputs: MintInputs,
 ): Effect.Effect<MintResult, CoinError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const cacheHash = buildMintContentHash(inputs);
+		const cacheHash = buildMintContentHash({
+			treasuryCapId: inputs.treasuryCapId,
+			recipient: inputs.recipient,
+			amount: inputs.amount,
+			signerAddress: signer.address,
+		});
 
-		const verified: CachedMint | { readonly objectId: string; readonly type: string } =
-			yield* publisher.publish<CachedMint, typeof MintedCoinVerifyShape.Type>({
-				namespace: 'coin-mint',
-				chain,
-				contentHash: cacheHash,
-				verifySchema: MintedCoinVerifyShape,
-				// Verify probe runs on cache hit. The artifact publisher threads the
-				// cached payload through to its internal probe — our
-				// closure here just hands back a "null = miss" signal
-				// when the cached id has vanished on chain.
-				//
-				// The artifact publisher substrate now threads the decoded
-				// `CachedMint` into `verify(cached)`; we pull
-				// `mintedCoinId` off it and probe the chain. Lenient
-				// mode masks transient + not-found → null → substrate
-				// re-mints rather than carry a stale digest forward.
-				verify: (cached) => buildVerifyProbe(sdk, cached.mintedCoinId),
-				produce: Effect.gen(function* () {
-					yield* Effect.annotateCurrentSpan({
-						'coin.mint.recipient': inputs.recipient,
-						'coin.mint.fullCoinType': inputs.fullCoinType,
-						'coin.mint.amount': inputs.amount.toString(),
-					});
+		const cached: CachedMint = yield* publisher.publish<
+			CachedMint,
+			typeof MintedCoinVerifyShape.Type
+		>({
+			namespace: 'coin-mint',
+			chain,
+			contentHash: cacheHash,
+			verifySchema: MintedCoinVerifyShape,
+			// Verify probe runs on cache hit. The artifact publisher threads the
+			// cached payload through to its internal probe — our
+			// closure here just hands back a "null = miss" signal
+			// when the cached id has vanished on chain.
+			//
+			// The artifact publisher substrate now threads the decoded
+			// `CachedMint` into `verify(cached)`; we pull
+			// `mintedCoinId` off it and probe the chain. Lenient
+			// mode masks transient + not-found → null → substrate
+			// re-mints rather than carry a stale digest forward.
+			verify: (cached) => buildVerifyProbe(sdk, cached.mintedCoinId),
+			produce: Effect.gen(function* () {
+				yield* Effect.annotateCurrentSpan({
+					'coin.mint.recipient': inputs.recipient,
+					'coin.mint.fullCoinType': inputs.fullCoinType,
+					'coin.mint.amount': inputs.amount.toString(),
+				});
 
-					const result = yield* signer.withTransactionSigner((lockedSigner) =>
-						Effect.gen(function* () {
-							// 1. Build the Move tx — distilled-doc 13-coin.md
-							//    Invariant 9 pins the call shape:
-							//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
-							const tx = new Transaction();
-							if (inputs.gasBudget !== undefined) {
-								tx.setGasBudget(inputs.gasBudget);
-							}
-							tx.setSender(signer.address);
-							tx.moveCall({
-								target: '0x2::coin::mint_and_transfer',
-								typeArguments: [inputs.fullCoinType],
-								arguments: [
-									tx.object(inputs.treasuryCapId),
-									tx.pure.u64(inputs.amount),
-									tx.pure.address(inputs.recipient),
-								],
-							});
+				const result = yield* signer.withTransactionSigner((lockedSigner) =>
+					Effect.gen(function* () {
+						// 1. Build the Move tx — distilled-doc 13-coin.md
+						//    Invariant 9 pins the call shape:
+						//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
+						const tx = new Transaction();
+						if (inputs.gasBudget !== undefined) {
+							tx.setGasBudget(inputs.gasBudget);
+						}
+						tx.setSender(signer.address);
+						tx.moveCall({
+							target: '0x2::coin::mint_and_transfer',
+							typeArguments: [inputs.fullCoinType],
+							arguments: [
+								tx.object(inputs.treasuryCapId),
+								tx.pure.u64(inputs.amount),
+								tx.pure.address(inputs.recipient),
+							],
+						});
 
-							// 2. Serialize the tx to BCS bytes while the account lease
-							//    is held. `Transaction.build` resolves gas + object-version
-							//    placeholders via the client.
-							const txBytes = yield* Effect.tryPromise({
-								try: () =>
-									tx.build({
-										// The shim exposes the client opaquely; @mysten/sui
-										// validates the shape at runtime.
-										client: sdk.client as Parameters<typeof tx.build>[0] extends
-											| { client?: infer C }
-											| undefined
-											? C
-											: never,
-									}),
-								catch: (cause): ArtifactPublishError => ({
+						// 2. Serialize the tx to BCS bytes while the account lease
+						//    is held. `Transaction.build` resolves gas + object-version
+						//    placeholders via the client.
+						const txBytes = yield* Effect.tryPromise({
+							try: () =>
+								tx.build({
+									// The shim exposes the client opaquely; @mysten/sui
+									// validates the shape at runtime.
+									client: sdk.client as Parameters<typeof tx.build>[0] extends
+										| { client?: infer C }
+										| undefined
+										? C
+										: never,
+								}),
+							catch: (cause): ArtifactPublishError => ({
+								_tag: 'ArtifactPublishError',
+								reason: 'produce-failed',
+								detail:
+									`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
+									`${cause instanceof Error ? cause.message : String(cause)}`,
+							}),
+						});
+
+						// 3. Sign + execute via the Account-supplied signer. Map
+						//    `AccountSignError` → `ArtifactPublishError`. The
+						//    Account plugin's signer handles waitForTransaction internally.
+						return yield* lockedSigner.signAndExecute(txBytes).pipe(
+							Effect.mapError(
+								(cause): ArtifactPublishError => ({
 									_tag: 'ArtifactPublishError',
 									reason: 'produce-failed',
 									detail:
-										`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
-										`${cause instanceof Error ? cause.message : String(cause)}`,
+										`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
 								}),
-							});
+							),
+						);
+					}),
+				);
 
-							// 3. Sign + execute via the Account-supplied signer. Map
-							//    `AccountSignError` → `ArtifactPublishError`. The
-							//    Account plugin's signer handles waitForTransaction internally.
-							return yield* lockedSigner.signAndExecute(txBytes).pipe(
-								Effect.mapError(
-									(cause): ArtifactPublishError => ({
-										_tag: 'ArtifactPublishError',
-										reason: 'produce-failed',
-										detail:
-											`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
-									}),
-								),
-							);
-						}),
-					);
+				// 4. Find the minted `Coin<T>` in objectChanges via the
+				//    inner-generic match (distilled-doc Invariant 9).
+				//    `mint_and_transfer` emits a fresh `Coin<T>` owned by
+				//    the recipient; look it up by the
+				//    `0x2::coin::Coin<${fullCoinType}>` substring.
+				const mintedCoinId = pickCreatedCoin(result.objectChanges, inputs.fullCoinType);
+				if (mintedCoinId === null) {
+					return yield* Effect.fail({
+						_tag: 'ArtifactPublishError' as const,
+						reason: 'produce-failed' as const,
+						detail:
+							`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
+							`objectChanges (digest=${result.digest}). ` +
+							mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
+								.message,
+					} satisfies ArtifactPublishError);
+				}
 
-					// 4. Find the minted `Coin<T>` in objectChanges via the
-					//    inner-generic match (distilled-doc Invariant 9).
-					//    `mint_and_transfer` emits a fresh `Coin<T>` owned by
-					//    the recipient; look it up by the
-					//    `0x2::coin::Coin<${fullCoinType}>` substring.
-					const mintedCoinId = pickCreatedCoin(result.objectChanges, inputs.fullCoinType);
-					if (mintedCoinId === null) {
-						return yield* Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
-								`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
-								`objectChanges (digest=${result.digest}). ` +
-								mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
-									.message,
-						} satisfies ArtifactPublishError);
-					}
+				yield* Effect.annotateCurrentSpan({
+					'coin.mint.digest': result.digest,
+					'coin.mint.mintedCoinId': mintedCoinId,
+				});
 
-					yield* Effect.annotateCurrentSpan({
-						'coin.mint.digest': result.digest,
-						'coin.mint.mintedCoinId': mintedCoinId,
-					});
+				// 5. Return the cached payload. The artifact publisher caches it under
+				//    the content hash; the next cycle's verify probe (on
+				//    cache hit) will lenient-probe `mintedCoinId`.
+				return {
+					digest: result.digest,
+					mintedCoinId,
+					recipient: inputs.recipient,
+					amount: inputs.amount.toString(),
+				} satisfies CachedMint;
+			}),
+			// Register on EVERY cycle (hit AND miss). Distilled-doc
+			// Invariant 6. Coin mint has no global registry to feed —
+			// the resolved-value carries everything; this is a no-op.
+			register: () => Effect.void,
+		});
 
-					// 5. Return the cached payload. The artifact publisher caches it under
-					//    the content hash; the next cycle's verify probe (on
-					//    cache hit) will lenient-probe `mintedCoinId`.
-					return {
-						digest: result.digest,
-						mintedCoinId,
-						recipient: inputs.recipient,
-						amount: inputs.amount.toString(),
-					} satisfies CachedMint;
-				}),
-				// Register on EVERY cycle (hit AND miss). Distilled-doc
-				// Invariant 6. Coin mint has no global registry to feed —
-				// the resolved-value carries everything; this is a no-op.
-				register: () => Effect.void,
-			});
-
-		// Project the union back to MintResult. Both arms carry enough
-		// to reconstruct: produce returns CachedMint; verify returns
-		// the decoded `{ objectId, type }`.
-		if ('mintedCoinId' in verified) {
-			return {
-				digest: verified.digest,
-				mintedCoinId: verified.mintedCoinId,
-				recipient: verified.recipient,
-				amount: BigInt(verified.amount),
-				fullCoinType: inputs.fullCoinType,
-			};
-		}
-		// Verify-hit path — the artifact publisher returned the decoded probe shape.
-		// The producing-tx digest lives only in the artifact publisher cache layer (not on
-		// the probe response), so we surface `null` here. Callers that need
-		// the producing digest on a cache hit consult the artifact publisher cache directly.
+		// Project the cached payload to MintResult. The substrate
+		// hands back the decoded `CachedMint` on every path.
 		return {
-			digest: null,
-			mintedCoinId: verified.objectId,
-			recipient: inputs.recipient,
-			amount: inputs.amount,
+			digest: cached.digest,
+			mintedCoinId: cached.mintedCoinId,
+			recipient: cached.recipient,
+			amount: BigInt(cached.amount),
 			fullCoinType: inputs.fullCoinType,
 		};
 	}).pipe(

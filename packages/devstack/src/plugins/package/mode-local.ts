@@ -226,19 +226,17 @@ export const acquireLocal = (
 
 		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
 
-		// The in-process registry is consulted on the `register`
-		// callback (verify-hit path) to recover `mvrPlaceholder` +
-		// `captured` columns when the substrate hands back the bare
-		// `{objectId, type}` verify shape; see the register body below.
-		const priorEntry = yield* registry.find(inputs.packageName);
-
 		// We capture the produce-side output out-of-band so the
-		// returned `LocalModeOutputs.output` can expose it; the artifact publisher
-		// substrate's `Produced | Verified` discrimination collapses
-		// the output away.
+		// returned `LocalModeOutputs.output` can expose it. The
+		// substrate hands back the decoded `CachedPackageEntry` on
+		// every path; `producedOutput` is the freshly-emitted output
+		// from THIS cycle (cache miss only).
 		let producedOutput: LocalPackagePublishOutput | null = null;
 
-		const resolved = yield* publisher.publish<CachedPackageEntry, typeof PackageVerifyShape.Type>({
+		const entry: CachedPackageEntry = yield* publisher.publish<
+			CachedPackageEntry,
+			typeof PackageVerifyShape.Type
+		>({
 			namespace: 'package',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
@@ -375,69 +373,41 @@ export const acquireLocal = (
 					}),
 				),
 			),
-			// Register: on EVERY cycle. Distilled doc Invariant 6.
-			// The publisher hands us either `Produced` (CachedPackageEntry)
-			// or `Verified` (`{ objectId, type }` from the verifySchema).
-			// On verify-hit we project to a synthesized entry; on produce
-			// we already have the full shape. The cache-hit path needs
-			// to thread through the cached mvrPlaceholder + output. Recompute
-			// `captured` from the current capture spec when cached output is
-			// present so changing capture keys does not require a republish.
+			// Register: on EVERY cycle. Distilled doc Invariant 6. The
+			// substrate hands the decoded `CachedPackageEntry` payload
+			// here on both verify-hit and freshly-produced paths.
+			// Recompute `captured` from the current capture spec when
+			// cached output is present so changing capture keys does not
+			// require a republish.
 			register: (artifact) =>
 				Effect.gen(function* () {
-					const entry: CachedPackageEntry =
-						'packageId' in artifact
-							? {
-									...artifact,
-									captured:
-										inputs.capture !== undefined && artifact.output !== undefined
-											? (() => {
-													try {
-														return inputs.capture(artifact.output);
-													} catch {
-														return artifact.captured;
-													}
-												})()
-											: artifact.captured,
-								}
-							: {
-									// Verify-hit path: project from the bare
-									// `{ objectId, type }` probe shape using the
-									// previously-resolved registry entry to recover
-									// `mvrPlaceholder` + `captured`. If no prior
-									// entry exists (first cold-boot verify hit —
-									// unusual; implies a different process wrote
-									// the cache), we fall back to safe defaults.
-									packageId: artifact.objectId,
-									publisher: inputs.publisherAddress,
-									mvrPlaceholder:
-										priorEntry && priorEntry.kind === 'local'
-											? priorEntry.mvrPlaceholder
-											: mvrPlaceholder,
-									captured: priorEntry && priorEntry.kind === 'local' ? priorEntry.captured : {},
-									upgradeCapId:
-										priorEntry && priorEntry.kind === 'local' ? priorEntry.upgradeCapId : undefined,
-								};
+					const captured: Readonly<Record<string, string>> =
+						inputs.capture !== undefined && artifact.output !== undefined
+							? (() => {
+									try {
+										return inputs.capture(artifact.output);
+									} catch {
+										return artifact.captured;
+									}
+								})()
+							: artifact.captured;
 					const r: ResolvedLocalPackage = {
 						kind: 'local',
 						name: inputs.packageName,
-						packageId: entry.packageId,
-						upgradeCapId: entry.upgradeCapId,
+						packageId: artifact.packageId,
+						upgradeCapId: artifact.upgradeCapId,
 						sourcePath: inputs.sourcePath,
-						mvrPlaceholder: entry.mvrPlaceholder,
-						captured: entry.captured,
+						mvrPlaceholder: artifact.mvrPlaceholder,
+						captured,
 					};
 					yield* registry.set(r.name, r);
 				}),
 		});
 
-		// Project the cached/verified entry back to the resolved shape.
-		// The publisher's `Produced | Verified` union — Produced is
-		// CachedPackageEntry (full); Verified is `{ objectId, type }`
-		// from the verify schema. Both collapse onto the registry's
-		// projected `ResolvedLocalPackage` — and `register` already
-		// performed that projection. Re-read the registry to recover
-		// the unified shape regardless of which arm fired.
+		// Project the cached entry back to the resolved shape. The
+		// publisher returned the decoded `CachedPackageEntry`; re-read
+		// the registry to recover the canonical `ResolvedLocalPackage`
+		// shape (`register` ran on every cycle and wrote it).
 		const final = yield* registry.find(inputs.packageName);
 		if (!final || final.kind !== 'local') {
 			// Defensive — register fires unconditionally; missing entry
@@ -455,16 +425,8 @@ export const acquireLocal = (
 			);
 		}
 
-		// Silence the unused-binding lint for the artifact publisher `resolved` — the
-		// substrate's `Produced | Verified` return is informational
-		// here (we project through the registry instead).
-		void resolved;
-
-		const cachedOutput =
-			'packageId' in resolved && 'output' in resolved ? (resolved.output ?? null) : null;
-
 		return {
 			resolved: final,
-			output: producedOutput ?? cachedOutput,
+			output: producedOutput ?? entry.output ?? null,
 		};
 	});

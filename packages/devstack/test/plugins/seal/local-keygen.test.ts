@@ -92,13 +92,13 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 
 const publisherStub = (events: string[]): ArtifactPublisher => ({
 	publish: <Produced, Verified>(spec: ArtifactSpec<Produced, Verified>) =>
-		Effect.sync((): Produced | Verified => {
+		Effect.sync((): Produced => {
 			events.push(`publish:${spec.namespace}`);
 			if (spec.namespace === SEAL_PACKAGE_NAMESPACE) {
-				return { packageId: '0xnewpackage' } as Produced | Verified;
+				return { packageId: '0xnewpackage' } as Produced;
 			}
 			if (spec.namespace === SEAL_KEY_SERVER_NAMESPACE) {
-				return { objectId: '0xnewkeyserver' } as Produced | Verified;
+				return { objectId: '0xnewkeyserver' } as Produced;
 			}
 			throw new Error(`unexpected namespace ${spec.namespace}`);
 		}),

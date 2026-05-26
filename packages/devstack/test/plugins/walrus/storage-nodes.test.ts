@@ -24,6 +24,7 @@ import {
 	computePublicHostname,
 	startStorageNodes,
 	storageNodeConfigHash,
+	type WalrusStorageNode,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
 const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
@@ -197,6 +198,27 @@ describe('walrus storage-node constants', () => {
 		);
 
 		expect(specs[0]?.stopGraceSeconds).toBe(DEFAULT_NODE_STOP_GRACE_SECONDS);
+	});
+
+	it('WalrusStorageNode shape does NOT carry a publicKey field (backlog #2)', () => {
+		// Regression: the per-node descriptor used to carry a placeholder
+		// `publicKey: '<bls-pubkey-storage-node-${i}>'` sentinel that
+		// shipped to user code on every cycle. Per the storage-nodes
+		// inline doc the SDK consumer reads the public key off
+		// `packageConfig`, NOT this routing-handle descriptor — so the
+		// field is dropped entirely. Compile-time check: a structurally
+		// well-formed descriptor type-narrows without referencing
+		// `publicKey`, and the runtime shape's keyset MUST NOT include it.
+		const node: WalrusStorageNode = {
+			nodeIndex: 0,
+			nodeId: 'walrus-node-0',
+			publicHostname: 'walrus-node-0.app.localhost',
+			rpcUrl: 'http://walrus-node-0.app.localhost:9185',
+		};
+		expect(Object.keys(node)).not.toContain('publicKey');
+		// Defensive — guard against the field reappearing as an optional
+		// `undefined` accessor in the type.
+		expect('publicKey' in node).toBe(false);
 	});
 
 	it('folds bind-mount and network inputs into the recreate fingerprint', () => {

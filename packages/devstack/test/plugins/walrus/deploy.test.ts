@@ -371,7 +371,7 @@ describe('parseDeployOutput', () => {
 			const publisher: ArtifactPublisher = {
 				publish: <Produced, Verified>(
 					spec: ArtifactSpec<Produced, Verified>,
-				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+				): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 					Effect.gen(function* () {
 						const verified = yield* spec.verify(cached as unknown as Produced);
 						if (verified !== null) return cached as unknown as Produced;
@@ -386,7 +386,14 @@ describe('parseDeployOutput', () => {
 				deployWalrusContracts(publisher, probe, runtime, deployInputs(outputDir)),
 			);
 
+			// Regression: backlog #1. The substrate now hands back the
+			// decoded `CachedDeployState` on verify-hit. The walrus
+			// caller MUST surface the originally-produced packageId
+			// verbatim — NOT the historical `'<cache-hit-not-rehydrated>'`
+			// sentinel string.
 			expect(result.state).toEqual(cached);
+			expect(result.state.walrusPackageId).toBe(cached.walrusPackageId);
+			expect(result.state.walrusPackageId).not.toMatch(/^</);
 			expect(requestedObjects).toEqual([cached.systemObject, cached.stakingObject]);
 		}),
 	);
@@ -414,7 +421,7 @@ describe('parseDeployOutput', () => {
 			const publisher: ArtifactPublisher = {
 				publish: <Produced, Verified>(
 					spec: ArtifactSpec<Produced, Verified>,
-				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+				): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 					Effect.gen(function* () {
 						const verified = yield* spec.verify(cached as unknown as Produced);
 						if (verified !== null) return cached as unknown as Produced;

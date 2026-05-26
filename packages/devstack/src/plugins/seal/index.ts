@@ -73,6 +73,7 @@ import {
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
 import { bootSealService, type SealMode } from './service.ts';
+import { DEFAULT_SEAL_VERSION } from './bootstrap-assets/source-fetch.ts';
 
 const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
 
@@ -174,7 +175,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 	// Synchronous factory-time defaults. Localnet-signer-required is
 	// enforced by the typed `signer:` field on
 	// SealLocalKeygenOptions.
-	const resolved = resolveLocalKeygenOptions(opts, '<default-seal-version>');
+	const resolved = resolveLocalKeygenOptions(opts, DEFAULT_SEAL_VERSION);
 
 	const sealResource = makeSealResource(resolved.name);
 

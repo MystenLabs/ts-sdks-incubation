@@ -391,9 +391,9 @@ export interface DeployOutputs {
  *  Produce: real wiring — `runDeployOneShot` runs
  *  `docker run --rm walrusImage deploy …` and parses the deploy stdout.
  *
- *  Verify-hit projection: the artifact publisher primitive returns the cached
- *  `Produced` payload after verify succeeds, so callers keep the full
- *  `CachedDeployState` shape across warm restarts. */
+ *  The substrate's `ArtifactPublisher.publish` returns the full
+ *  `CachedDeployState` on EVERY path (decoded cached payload on hit,
+ *  fresh produce on miss) — no projection dance required. */
 export const deployWalrusContracts = (
 	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
@@ -401,7 +401,7 @@ export const deployWalrusContracts = (
 	inputs: DeployInputs,
 ): Effect.Effect<DeployOutputs, WalrusPluginError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const verified = yield* publisher.publish<CachedDeployState, WalrusDeployVerified>({
+		const state = yield* publisher.publish<CachedDeployState, WalrusDeployVerified>({
 			namespace: 'walrus-deploy',
 			chain: inputs.chainId,
 			contentHash: inputs.contentHash,
@@ -450,25 +450,6 @@ export const deployWalrusContracts = (
 			// satisfies its Invariant-6 contract.
 			register: () => Effect.void,
 		});
-
-		// Project Produced ∪ Verified onto CachedDeployState. artifact publisher returns
-		// the cached Produced payload on verify-hit, but keep a defensive
-		// projection for custom publisher implementations in tests.
-		const state: CachedDeployState =
-			'walrusPackageId' in verified
-				? verified
-				: {
-						// Verify-hit path: synthesize from the cached id's.
-						// The richer fields (packageId, exchange etc.) live
-						// in the on-disk artifact publisher cache; downstream consumers
-						// surface them through the in-process registry. The
-						// artifact publisher primitive's next API revision will hand the
-						// full Produced payload back here directly —
-						// architecture revision tracked in the file header.
-						walrusPackageId: '<cache-hit-not-rehydrated>',
-						systemObject: verified.systemObjectId,
-						stakingObject: verified.stakingObjectId,
-					};
 
 		return { state };
 	}).pipe(

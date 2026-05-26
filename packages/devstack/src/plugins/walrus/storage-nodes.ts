@@ -58,11 +58,15 @@ export const WALRUS_ROUTER_PORT = 9185;
 export const DEFAULT_CONTAINER_API_PORT = WALRUS_ROUTER_PORT;
 
 /** Per-node descriptor — what the plugin resolved value surfaces
- *  for downstream consumers (the `@mysten/walrus` SDK reads this). */
+ *  for downstream consumers (the `@mysten/walrus` SDK reads this).
+ *
+ *  Note: no `publicKey` field. The per-node BLS12-381 keypair lives
+ *  inside the per-node keystore the deploy one-shot emitted; the SDK
+ *  consumer reads the public key off `packageConfig` rather than this
+ *  routing-handle descriptor. */
 export interface WalrusStorageNode {
 	readonly nodeIndex: number;
 	readonly nodeId: string;
-	readonly publicKey: string;
 	readonly publicHostname: string;
 	readonly rpcUrl: string;
 }
@@ -315,7 +319,6 @@ export const startStorageNodes = (
 					// public key off `packageConfig` rather than this
 					// per-node descriptor.
 					nodeId: `walrus-node-${i}`,
-					publicKey: `<bls-pubkey-storage-node-${i}>`,
 					publicHostname,
 					// Router-fronted URL on the well-known walrus
 					// entrypoint port — Traefik routes by Host: header.

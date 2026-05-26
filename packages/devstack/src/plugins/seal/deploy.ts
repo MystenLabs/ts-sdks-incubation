@@ -236,7 +236,10 @@ export const publishSealPackage = (
 		);
 		const inputsHash = sealPackageInputsHash(sourceHash, inputs.signer.address);
 
-		const result = yield* publisher.publish<SealPackageCached, SealPackageVerified>({
+		const cached: SealPackageCached = yield* publisher.publish<
+			SealPackageCached,
+			SealPackageVerified
+		>({
 			namespace: SEAL_PACKAGE_NAMESPACE,
 			chain: inputs.chain,
 			contentHash: inputsHash,
@@ -249,16 +252,7 @@ export const publishSealPackage = (
 			register: () => Effect.void,
 		});
 
-		const packageId = 'packageId' in result ? result.packageId : result.objectId;
-		if (!packageId) {
-			return yield* Effect.fail(
-				sealError('publish', {
-					name: inputs.name,
-					message: 'seal.deploy.publishSealPackage: publisher returned no package id',
-				}),
-			);
-		}
-		return { packageId };
+		return { packageId: cached.packageId };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.publish', {
 			attributes: { 'seal.name': inputs.name, 'seal.chain': inputs.chain },
@@ -444,7 +438,10 @@ export const registerKeyServer = (
 ): Effect.Effect<{ readonly objectId: string }, ArtifactPublishError | SealError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const inputsHash = sealRegisterInputsHash(inputs, inputs.signer.address);
-		const result = yield* publisher.publish<SealKeyServerCached, SealKeyServerVerified>({
+		const cached: SealKeyServerCached = yield* publisher.publish<
+			SealKeyServerCached,
+			SealKeyServerVerified
+		>({
 			namespace: SEAL_KEY_SERVER_NAMESPACE,
 			chain: inputs.chain,
 			contentHash: inputsHash,
@@ -457,16 +454,7 @@ export const registerKeyServer = (
 			register: () => Effect.void,
 		});
 
-		const objectId = 'objectId' in result ? result.objectId : undefined;
-		if (!objectId) {
-			return yield* Effect.fail(
-				sealError('register', {
-					name: inputs.name,
-					message: 'seal.deploy.registerKeyServer: publisher returned no objectId',
-				}),
-			);
-		}
-		return { objectId };
+		return { objectId: cached.objectId };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.register', {
 			attributes: { 'seal.name': inputs.name, 'seal.url': inputs.keyServerUrl },

@@ -122,10 +122,21 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 		// Dynamic capability factory: receives the resolved
 		// `Postgres` handle + acquire context. Stamps the REAL
 		// app/stack into the snapshot decl and the REAL
-		// networkAlias + derived password into the codegen
-		// bindings — the static-form placeholders (`<app>`,
-		// `<stack>`, `<network-alias>`, `<derived-at-acquire>`)
-		// are gone.
+		// container DNS name + derived password into the codegen
+		// bindings.
+		//
+		// Codegen `host` is the container name
+		// (`${app}-${stack}-${name}`, surfaced on the resolved
+		// handle as `value.host`), NOT `value.networkAlias`.
+		// Docker DNS answers for the container name on every
+		// attached network; the in-network alias is not yet
+		// threaded through `--network-alias` by the runtime
+		// adapter, so dialing it would not resolve. The
+		// substrate-level fix — plumbing `networkAlias` through
+		// `EnsureContainerSpec.networkAttach` so Docker registers
+		// the alias as a DNS entry — is tracked as a Phase 5
+		// substrate name-blindness followup (see
+		// `notes/opportunities-backlog.md`).
 		capabilities: ({ value, runtime }): PostgresCapabilities => {
 			const snap = makeSnapshotable({
 				app: runtime.identity.app,
@@ -137,7 +148,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				name,
 				user: value.user,
 				password: value.password,
-				host: value.networkAlias,
+				host: value.host,
 				port: value.port,
 				databases: value.databases,
 			});

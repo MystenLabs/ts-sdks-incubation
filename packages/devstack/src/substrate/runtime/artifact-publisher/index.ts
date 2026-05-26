@@ -97,7 +97,7 @@ const decode = <Produced>(bytes: Uint8Array): Produced | null => {
 const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher => ({
 	publish: <Produced, Verified>(
 		spec: ArtifactSpec<Produced, Verified>,
-	): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+	): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({
 				'artifactPublisher.namespace': spec.namespace,
@@ -131,10 +131,13 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 					//    verify-on-hit covers chain-state drift.
 					const verified = yield* spec.verify(cached);
 					if (verified !== null) {
-						const payload: Produced | Verified = cached;
-						yield* spec.register(payload);
+						// The substrate always returns the decoded
+						// `Produced` payload — the `Verified` shape is a
+						// probe-only signal that never escapes. Callers
+						// therefore type-narrow trivially against `Produced`.
+						yield* spec.register(cached);
 						yield* Effect.annotateCurrentSpan({ 'artifactPublisher.path': 'hit' });
-						return payload;
+						return cached;
 					}
 				}
 			}
