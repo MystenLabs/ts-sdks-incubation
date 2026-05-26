@@ -251,7 +251,11 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					allocatePort: (preferred, probeHost) =>
 						portBroker
 							.allocate({
-								kind: 'wallet',
+								owner: 'wallet',
+								// Pin the wallet's UX-meaningful range so the dev wallet
+								// adapter's auto-connect-port heuristic (39200..40200)
+								// keeps working even after a fallback scan.
+								windowHint: { start: 39200, size: 1000 },
 								preferredPort: preferred,
 								...(probeHost === undefined ? {} : { probeHost }),
 							})
@@ -265,7 +269,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 											err.reason === 'preferred-busy'
 												? 'another plugin in this stack is using your preferred port; omit `port` to let the broker pick.'
 												: err.reason === 'no-free-port'
-													? 'the wallet kind-window is exhausted; check for stray devstack supervisors holding ports.'
+													? 'the wallet port window is exhausted; check for stray devstack supervisors holding ports.'
 													: 'bind-probe failed — likely a privileged port or jail restriction.',
 										cause: err,
 									}),

@@ -31,14 +31,14 @@ import {
 	LabelKey,
 	layerDockerHostDefault,
 	listDevstackContainers,
+	listDevstackContainersByKind,
 	listDevstackImages,
 	listDevstackNetworks,
-	listDevstackRouterContainers,
 	listDevstackVolumes,
 	removeDevstackContainers,
+	removeDevstackContainersByKindAndName,
 	removeDevstackImages,
 	removeDevstackNetworksBestEffort,
-	removeDevstackRouterContainers,
 	removeDevstackVolumes,
 } from '../../runtime/docker/index.ts';
 import { checkHolderLiveness, readRoster } from '../../substrate/runtime/cross-process/index.ts';
@@ -46,6 +46,7 @@ import {
 	ROUTER_SHARED_APP,
 	removeRouterProfileStateForDockerStack,
 } from '../router/cleanup.ts';
+import { ROUTER_KIND_LABEL_VALUE } from '../router/traefik-container.ts';
 
 // -----------------------------------------------------------------------------
 // Public shapes — mirror `surfaces/cli/commands/prune.ts` field-for-field so
@@ -211,7 +212,7 @@ export const collectLifecyclePruneInventory = (
 		const [containers, routerContainers, networks, volumes, images] = yield* Effect.all(
 			[
 				listDevstackContainers(),
-				listDevstackRouterContainers(),
+				listDevstackContainersByKind(ROUTER_KIND_LABEL_VALUE),
 				listDevstackNetworks(),
 				listDevstackVolumes(),
 				listDevstackImages(),
@@ -319,9 +320,10 @@ export const runLifecyclePrune = (
 		if (!selection.dryRun && selection.resources.containers) {
 			for (const group of prunableGroups) {
 				if (isRouterGroup(group)) {
-					containersRemoved += yield* removeDevstackRouterContainers(group.stack).pipe(
-						Effect.provide(dockerLayer),
-					);
+					containersRemoved += yield* removeDevstackContainersByKindAndName(
+						ROUTER_KIND_LABEL_VALUE,
+						group.stack,
+					).pipe(Effect.provide(dockerLayer));
 				} else {
 					const match = { app: group.app, stack: group.stack };
 					containersRemoved += yield* removeDevstackContainers(match).pipe(

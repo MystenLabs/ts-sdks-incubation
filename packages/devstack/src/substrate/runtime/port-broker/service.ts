@@ -2,9 +2,8 @@
 //
 // Architecture (`notes/redesign/architecture.md` § "What's collapsed"):
 // resource broker for host ports. Plugins that need to bind a host
-// HTTP server (wallet) or publish a container port on the host (Sui)
-// yield this service and call
-// `allocate({...})`. The broker:
+// HTTP server or publish a container port on the host yield this
+// service and call `allocate({...})`. The broker:
 //
 //   1. Tracks in-process allocations in a `Ref<Map<port, Holder>>` so
 //      two sibling plugins in the same stack don't both pick the same
@@ -24,10 +23,13 @@
 //      construction (the Layer is scope-local, the entries die with
 //      the scope).
 //
-// "Kind-window" sequential search: each `kind` has its own starting
-// port and window size (`PORT_RANGES`). The broker scans forward from
-// `start` up to `start + window` (and from `preferredPort` if
-// supplied) until a probe succeeds.
+// Sequential search: callers may pass `preferredPort` (tried first) and
+// an optional `windowHint: { start, size }` (the scan window if
+// preferred is busy or absent). The default window —
+// `DEFAULT_PORT_WINDOW` below — is intentionally wide enough for any
+// realistic in-process devstack; plugins do NOT freelance per-kind
+// window starts. The substrate stays name-blind: there is no `PortKind`
+// literal; plugins are opaque port-holders from the broker's view.
 //
 // Cross-process safety: the reservation file is scoped to the runtime
 // root, not the stack root, because host ports are machine-global. The
@@ -56,50 +58,34 @@ import { decodeJsonTextSync } from '../runtime-decode.ts';
 // Public shape
 // ----------------------------------------------------------------------
 
-/** Allocation kind — drives the search-window starting port. Plugins
- *  pass a literal so a `wallet` allocation and a `rpc` allocation
- *  never collide on the same starting point.
- *
- *  Extend `PORT_RANGES` below to add a new kind. The literal type is
- *  closed deliberately — agnostic-naming would invite plugins to
- *  freelance kinds (and overlap window starts unintentionally).
- *
- *  Today's windows are sized for "tens of plugins per stack" with
- *  parallel-stack overhead headroom. Each window is 1000 ports; that's
- *  more than enough for any realistic in-process devstack, and the
- *  forward-scan only ever crosses a window boundary if EVERY port in
- *  the window is taken (effectively never on dev machines). */
-const PORT_KINDS = ['wallet', 'http', 'rpc', 'misc'] as const;
-
-export type PortKind = (typeof PORT_KINDS)[number];
-
 /** Host interface used by the transient bind probe. Callers binding a
  *  real server on loopback should use the default. Callers that hand
  *  the port to Docker's all-interface publish path should pass
  *  `'0.0.0.0'` so the probe asks the same kernel question. */
 export type PortProbeHost = '127.0.0.1' | '0.0.0.0';
 
-/** Sequential search window per kind. The broker tries `preferredPort`
- *  first (if given), then `[start, start + window)` in order. */
-const PORT_RANGES: Readonly<Record<PortKind, { readonly start: number; readonly window: number }>> =
-	{
-		// 39200 — chosen to land between the wallet's legacy 39082 default
-		// (still functional via `preferredPort`) and the high ephemeral
-		// range. Stays clear of common dev-server defaults (3000-5173, 8000-
-		// 8080) so a sibling Vite / Next.js process on the host doesn't
-		// accidentally collide on the first probe.
-		wallet: { start: 39200, window: 1000 },
-		// 50000 — well clear of postgres (5432), redis (6379), and the
-		// Vite/Next dev-server cluster. Used by any plugin that just wants
-		// "a free HTTP port".
-		http: { start: 50000, window: 1000 },
-		// 51000 — reserved for RPC-shaped servers (graphql, custom RPC).
-		// Kept distinct from `http` so the kind-window discrimination
-		// surfaces in `ss -ltnp` listings during diagnosis.
-		rpc: { start: 51000, window: 1000 },
-		// 52000 — escape hatch for plugins that don't fit the typed kinds.
-		misc: { start: 52000, window: 1000 },
-	};
+/** Optional per-call window override. The broker scans
+ *  `[start, start + size)` in order when `preferredPort` is busy or
+ *  absent. Plugins with UX-pinned ports (e.g. a dev wallet whose
+ *  legacy adapters auto-connect to a specific range) pass this so the
+ *  fall-back range stays predictable; everyone else gets the default. */
+export interface PortAllocationWindow {
+	readonly start: number;
+	readonly size?: number;
+}
+
+/** Default scan window. Sized for "tens of plugins per stack" with
+ *  parallel-stack overhead headroom. 1000 ports is more than enough for
+ *  any realistic in-process devstack; the forward-scan only ever
+ *  reaches the end if EVERY port in the window is taken (effectively
+ *  never on dev machines). Start chosen to land between common dev
+ *  defaults (3000-5173, 8000-8080) and the ephemeral range so a
+ *  sibling Vite/Next process doesn't accidentally collide on the
+ *  first probe. */
+export const DEFAULT_PORT_WINDOW: Required<PortAllocationWindow> = {
+	start: 39200,
+	size: 1000,
+};
 
 /** Input to `allocate`. */
 export interface AllocateOptions {
@@ -107,18 +93,22 @@ export interface AllocateOptions {
 	 *  already held in-process the call FAILS with
 	 *  `reason: 'preferred-busy'` (the caller asked specifically for
 	 *  this port and got an obvious collision). If the bind-probe fails
-	 *  with EADDRINUSE the broker falls through to the kind-window
-	 *  scan — preferred is a HINT for the kernel-collision case, but a
-	 *  HARD CHOICE against in-process collision. */
+	 *  with EADDRINUSE the broker falls through to the window scan —
+	 *  preferred is a HINT for the kernel-collision case, but a HARD
+	 *  CHOICE against in-process collision. */
 	readonly preferredPort?: number;
 	/** Interface to bind during the kernel probe. Defaults to
-	 *  `127.0.0.1`, matching host-loopback servers such as the wallet.
-	 *  Docker `-p host:container` publishes on all interfaces, so
-	 *  Docker-backed callers pass `0.0.0.0`. */
+	 *  `127.0.0.1`, matching host-loopback servers. Docker
+	 *  `-p host:container` publishes on all interfaces, so Docker-backed
+	 *  callers pass `0.0.0.0`. */
 	readonly probeHost?: PortProbeHost;
-	/** Allocation kind — drives the search window when no preferred is
-	 *  supplied (or when preferred is taken at the kernel level). */
-	readonly kind: PortKind;
+	/** Optional per-call window override; defaults to
+	 *  `DEFAULT_PORT_WINDOW`. */
+	readonly windowHint?: PortAllocationWindow;
+	/** Optional free-form owner label for diagnostics (`no-free-port`
+	 *  error detail). The broker treats this as opaque; pass something
+	 *  short and human-readable like `'wallet'` or `'sui:rpc'`. */
+	readonly owner?: string;
 }
 
 /** Successful allocation. `release` is provided in addition to the
@@ -127,18 +117,16 @@ export interface AllocateOptions {
  *  twice is a no-op. */
 export interface AllocatedPort {
 	readonly port: number;
-	readonly kind: PortKind;
 	readonly release: Effect.Effect<void>;
 }
 
 /** Service shape — what plugins yield from Context. */
 export interface PortBroker {
 	/**
-	 * Allocate a port for `kind`. The returned port is exclusive within
-	 * THIS process (the broker's `Ref` map) and best-effort-exclusive
-	 * across devstack processes that share a runtime root (port
-	 * reservation file), then verified against the kernel bind table
-	 * on `probeHost`.
+	 * Allocate a port. The returned port is exclusive within THIS
+	 * process (the broker's `Ref` map) and best-effort-exclusive across
+	 * devstack processes that share a runtime root (port reservation
+	 * file), then verified against the kernel bind table on `probeHost`.
 	 *
 	 * Scope-bound release: the broker installs a finalizer on the
 	 * surrounding scope; callers can additionally invoke
@@ -147,14 +135,14 @@ export interface PortBroker {
 	 * Failures (`PortBrokerError`):
 	 *   - `preferred-busy` — caller's `preferredPort` is held by another
 	 *     in-process allocation on the same stack.
-	 *   - `no-free-port` — the kind window was exhausted without a
+	 *   - `no-free-port` — the scan window was exhausted without a
 	 *     probe-pass candidate.
 	 *   - `bind-probe-failed` — non-EADDRINUSE error from the OS bind
 	 *     probe (EACCES on a privileged port etc.).
 	 *   - `reservation-failed` — port reservation file IO failed.
 	 */
 	readonly allocate: (
-		opts: AllocateOptions,
+		opts?: AllocateOptions,
 	) => Effect.Effect<AllocatedPort, PortBrokerError, Scope.Scope>;
 }
 
@@ -162,12 +150,11 @@ export interface PortBroker {
 // Internal state
 // ----------------------------------------------------------------------
 
-/** In-process holder for a port. Carries the kind for diagnostics
- *  (e.g. surfaced in `no-free-port` errors). The `owner` is a
- *  free-form caller string used for log lines and the future cause
- *  walker; today every caller passes the literal `kind`. */
+const DEFAULT_OWNER = 'unknown';
+
+/** In-process holder for a port. Carries the owner string for
+ *  diagnostics (e.g. surfaced in `no-free-port` errors). */
 interface Holder {
-	readonly kind: PortKind;
 	readonly owner: string;
 }
 
@@ -178,7 +165,7 @@ const PORT_RESERVATION_VERSION = 1 as const;
 const PortReservationDocSchema = Schema.Struct({
 	version: Schema.Literal(PORT_RESERVATION_VERSION),
 	port: Schema.Number,
-	kind: Schema.Literals(PORT_KINDS),
+	owner: Schema.String,
 	ownerId: Schema.String,
 	holder: RosterHolderSchema,
 });
@@ -262,7 +249,7 @@ const reclaimReservationIfOwnerSync = (path: string, ownerId: string): boolean =
 const acquirePortReservation = (
 	root: string,
 	port: number,
-	kind: PortKind,
+	owner: string,
 ): Effect.Effect<ReservationAttempt> =>
 	Effect.gen(function* () {
 		const path = portReservationPath(root, port);
@@ -271,7 +258,7 @@ const acquirePortReservation = (
 		const doc: PortReservationDoc = {
 			version: PORT_RESERVATION_VERSION,
 			port,
-			kind,
+			owner,
 			ownerId,
 			holder,
 		};
@@ -332,11 +319,11 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 		const reservationRoot = runtimeRoot.root;
 		const state = yield* Ref.make<State>(new Map());
 
-		const tryReserve = (port: number, kind: PortKind, owner: string): Effect.Effect<boolean> =>
+		const tryReserve = (port: number, owner: string): Effect.Effect<boolean> =>
 			Ref.modify<State, boolean>(state, (current) => {
 				if (current.has(port)) return [false, current];
 				const next = new Map(current);
-				next.set(port, { kind, owner });
+				next.set(port, { owner });
 				return [true, next];
 			});
 
@@ -348,35 +335,36 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 				return next;
 			});
 
-		const allocate: PortBroker['allocate'] = (opts) =>
+		const allocate: PortBroker['allocate'] = (opts = {}) =>
 			Effect.gen(function* () {
-				const range = PORT_RANGES[opts.kind];
-				const owner = opts.kind;
+				const owner = opts.owner ?? DEFAULT_OWNER;
 				const probeHost = opts.probeHost ?? '127.0.0.1';
+				const windowStart = opts.windowHint?.start ?? DEFAULT_PORT_WINDOW.start;
+				const windowSize = opts.windowHint?.size ?? DEFAULT_PORT_WINDOW.size;
 
 				// 1. Preferred-port path. The broker honours `preferredPort`
 				//    as a strong hint, but refuses in-process collisions
 				//    (architecture §6: same-stack siblings MUST NOT trample).
 				if (opts.preferredPort !== undefined) {
-					const reserved = yield* tryReserve(opts.preferredPort, opts.kind, owner);
+					const reserved = yield* tryReserve(opts.preferredPort, owner);
 					if (!reserved) {
 						return yield* Effect.fail(
 							new PortBrokerError({
 								reason: 'preferred-busy',
 								detail:
-									`preferred port ${opts.preferredPort} (${opts.kind}) is ` +
+									`preferred port ${opts.preferredPort} (owner=${owner}) is ` +
 									`already held by another allocation in this stack`,
 							}),
 						);
 					}
 					// Kernel-level probe. If a foreign process holds the
 					// port, drop our reservation and FALL THROUGH to the
-					// kind-window scan — the caller's preferred was a HINT
+					// window scan — the caller's preferred was a HINT
 					// for cross-process collisions.
 					const reservation = yield* acquirePortReservation(
 						reservationRoot,
 						opts.preferredPort,
-						opts.kind,
+						owner,
 					);
 					if (reservation._tag === 'busy') {
 						yield* drop(opts.preferredPort);
@@ -394,7 +382,7 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 						if (ok._tag === 'ok') {
 							return yield* finishAllocation(
 								opts.preferredPort,
-								opts.kind,
+								owner,
 								drop,
 								reservation.reservation,
 							);
@@ -407,7 +395,7 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 									reason: 'bind-probe-failed',
 									detail:
 										`bind probe on preferred port ${opts.preferredPort} ` +
-										`(${opts.kind}, host=${probeHost}) failed with non-EADDRINUSE error`,
+										`(owner=${owner}, host=${probeHost}) failed with non-EADDRINUSE error`,
 									cause: ok.cause,
 								}),
 							);
@@ -416,11 +404,11 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					}
 				}
 
-				// 2. Forward-scan the kind window.
-				for (let p = range.start; p < range.start + range.window; p++) {
-					const reserved = yield* tryReserve(p, opts.kind, owner);
+				// 2. Forward-scan the window.
+				for (let p = windowStart; p < windowStart + windowSize; p++) {
+					const reserved = yield* tryReserve(p, owner);
 					if (!reserved) continue;
-					const reservation = yield* acquirePortReservation(reservationRoot, p, opts.kind);
+					const reservation = yield* acquirePortReservation(reservationRoot, p, owner);
 					if (reservation._tag === 'busy') {
 						yield* drop(p);
 						continue;
@@ -437,19 +425,19 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					}
 					const ok = yield* probePort(p, probeHost);
 					if (ok._tag === 'ok') {
-						return yield* finishAllocation(p, opts.kind, drop, reservation.reservation);
+						return yield* finishAllocation(p, owner, drop, reservation.reservation);
 					}
 					yield* reservation.reservation.release;
 					yield* drop(p);
 					if (ok._tag === 'probe-failed') {
 						// A privileged port (EACCES) in the middle of the
-						// window is unrecoverable for this kind. Surface
+						// window is unrecoverable for this scan. Surface
 						// immediately rather than thrash the whole window.
 						return yield* Effect.fail(
 							new PortBrokerError({
 								reason: 'bind-probe-failed',
 								detail:
-									`bind probe on port ${p} (${opts.kind}, host=${probeHost}) failed ` +
+									`bind probe on port ${p} (owner=${owner}, host=${probeHost}) failed ` +
 									`with non-EADDRINUSE error`,
 								cause: ok.cause,
 							}),
@@ -462,23 +450,25 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					new PortBrokerError({
 						reason: 'no-free-port',
 						detail:
-							`no free port found in [${range.start}, ` +
-							`${range.start + range.window}) for kind '${opts.kind}'`,
+							`no free port found in [${windowStart}, ` +
+							`${windowStart + windowSize}) for owner '${owner}'`,
 					}),
 				);
 			}).pipe(
 				Effect.withSpan('substrate.portBroker.allocate', {
 					attributes: {
-						kind: opts.kind,
+						owner: opts.owner ?? DEFAULT_OWNER,
 						preferredPort: opts.preferredPort ?? -1,
 						probeHost: opts.probeHost ?? '127.0.0.1',
+						windowStart: opts.windowHint?.start ?? DEFAULT_PORT_WINDOW.start,
+						windowSize: opts.windowHint?.size ?? DEFAULT_PORT_WINDOW.size,
 					},
 				}),
 			);
 
 		const finishAllocation = (
 			port: number,
-			kind: PortKind,
+			owner: string,
 			dropFn: (p: number) => Effect.Effect<void>,
 			reservation: PortReservation,
 		): Effect.Effect<AllocatedPort, never, Scope.Scope> =>
@@ -492,12 +482,11 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 				yield* Effect.addFinalizer(() => release.pipe(Effect.uninterruptible));
 				yield* Effect.annotateCurrentSpan({
 					'portBroker.port': port,
-					'portBroker.kind': kind,
+					'portBroker.owner': owner,
 				});
-				yield* Effect.logDebug(`port-broker allocated ${port} (kind=${kind})`);
+				yield* Effect.logDebug(`port-broker allocated ${port} (owner=${owner})`);
 				return {
 					port,
-					kind,
 					release,
 				} satisfies AllocatedPort;
 			});
@@ -523,7 +512,7 @@ type ProbeResult =
  * The OS atomically rejects with `EADDRINUSE` if another process
  * already holds the port — that's our cross-process collision check.
  *
- * The default probe is loopback-only because the wallet binds
+ * The default probe is loopback-only because most servers bind
  * loopback. Docker-backed callers pass `0.0.0.0`; on Docker Desktop,
  * binding a transient Node server on `0.0.0.0` does not always reject
  * ports already held on `127.0.0.1`, even though Docker's publish step
@@ -560,8 +549,8 @@ const probeSinglePort = (port: number, host: PortProbeHost): Effect.Effect<Probe
 				const code = err.code ?? '';
 				if (code === 'EADDRINUSE' || code === 'EACCES') {
 					// EACCES on these hosts is exotic but treat as in-use
-					// for non-privileged ports (our windows start at
-					// 39200, well above 1024). Surfaces as probe-failed
+					// for non-privileged ports (our default window starts
+					// at 39200, well above 1024). Surfaces as probe-failed
 					// only if it persists for every port in the window.
 					settle({ _tag: 'in-use' });
 				} else {

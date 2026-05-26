@@ -73,7 +73,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					allocatePort: (preferredPort) =>
 						portBroker
 							.allocate({
-								kind: 'http',
+								owner: `host-service:${normalized.serviceName}`,
 								probeHost: HOST_SERVICE_PORT_PROBE_HOST,
 								...(preferredPort === undefined ? {} : { preferredPort }),
 							})

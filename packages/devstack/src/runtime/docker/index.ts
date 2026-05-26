@@ -81,9 +81,9 @@ export {
 	type ContainerSummary,
 	type ImageSummary,
 	listDevstackContainers,
+	listDevstackContainersByKind,
 	listDevstackImages,
 	listDevstackNetworks,
-	listDevstackRouterContainers,
 	listDevstackVolumes,
 	listContainers,
 	listImages,
@@ -108,10 +108,10 @@ export {
 
 export {
 	removeDevstackContainers,
+	removeDevstackContainersByKindAndName,
 	removeDevstackImages,
 	removeDevstackNetworks,
 	removeDevstackNetworksBestEffort,
-	removeDevstackRouterContainers,
 	removeDevstackVolumes,
 	removeManagedContainers,
 	removeManagedImages,

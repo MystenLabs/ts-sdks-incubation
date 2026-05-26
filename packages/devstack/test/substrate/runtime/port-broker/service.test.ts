@@ -67,14 +67,13 @@ describe('PortBrokerService', () => {
 						const preferred = serverPort(server);
 						const allocated = yield* Effect.scoped(
 							broker.allocate({
-								kind: 'rpc',
+								owner: 'test-rpc',
 								preferredPort: preferred,
 								probeHost: '0.0.0.0',
 							}),
 						);
 
 						expect(allocated.port).not.toBe(preferred);
-						expect(allocated.kind).toBe('rpc');
 					} finally {
 						rmSync(root, { recursive: true, force: true });
 					}
@@ -94,14 +93,13 @@ describe('PortBrokerService', () => {
 						const preferred = serverPort(server);
 						const allocated = yield* Effect.scoped(
 							broker.allocate({
-								kind: 'rpc',
+								owner: 'test-rpc',
 								preferredPort: preferred,
 								probeHost: '0.0.0.0',
 							}),
 						);
 
 						expect(allocated.port).not.toBe(preferred);
-						expect(allocated.kind).toBe('rpc');
 					} finally {
 						rmSync(root, { recursive: true, force: true });
 					}
@@ -129,7 +127,7 @@ describe('PortBrokerService', () => {
 					`${JSON.stringify({
 						version: 1,
 						port: preferred,
-						kind: 'wallet',
+						owner: 'peer-process-owner',
 						ownerId: 'peer-process',
 						holder: ownHolder(),
 					})}\n`,
@@ -139,7 +137,7 @@ describe('PortBrokerService', () => {
 				const broker = yield* PortBrokerService;
 				const allocated = yield* Effect.scoped(
 					broker.allocate({
-						kind: 'wallet',
+						owner: 'test-wallet',
 						preferredPort: preferred,
 					}),
 				);

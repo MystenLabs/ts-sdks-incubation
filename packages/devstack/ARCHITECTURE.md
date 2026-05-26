@@ -44,6 +44,12 @@ substrate-L1-adjacent):
   envelope project) is mechanical enough that two plugin authors copied 80% of the same body, and
   the helper is plugin-agnostic at the API surface even though it names Sui in the type signatures.
   New L1-adjacent exceptions need explicit justification in this section.
+- `substrate/runtime/sui-move-build/` — Sui Move build helper consumed by `plugins/package/build.ts`
+  + `plugins/package/publish-executor.ts`. Same L1-adjacent rationale as `sui-execute/`: the Sui CLI
+  shim (move build + summary projection) is mechanical enough that two plugin authors copied 80% of
+  the same body, and the helper is plugin-agnostic at the API surface even though it names Sui in
+  the type signatures. Alternative (move into `plugins/sui/`) was rejected because the helper is
+  consumed by `plugins/package/` and that would create a fresh Plugin A→B internals reach.
 
 ---
 

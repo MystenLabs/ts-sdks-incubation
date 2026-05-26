@@ -31,9 +31,9 @@ import {
 import {
 	listContainers,
 	listDevstackContainers,
+	listDevstackContainersByKind,
 	listDevstackImages,
 	listDevstackNetworks,
-	listDevstackRouterContainers,
 	listDevstackVolumes,
 	listImages,
 	listNetworks,
@@ -158,11 +158,15 @@ export const removeDevstackContainers = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainers'));
 
-export const removeDevstackRouterContainers = (
+/** Remove devstack-managed containers whose generic `kind` label matches
+ *  AND whose name matches. The L1 helper is plugin-blind: orchestrators
+ *  pass the kind value they themselves stamp at create time. */
+export const removeDevstackContainersByKindAndName = (
+	kind: string,
 	containerName: string,
 ): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const containers = yield* listDevstackRouterContainers();
+		const containers = yield* listDevstackContainersByKind(kind);
 		let removed = 0;
 		for (const c of containers) {
 			if (c.name !== containerName) continue;
@@ -170,7 +174,7 @@ export const removeDevstackRouterContainers = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackRouterContainers'));
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainersByKindAndName'));
 
 const isMissingImageStderr = (stderr: string): boolean =>
 	/no such image|not found|reference does not exist/i.test(stderr);

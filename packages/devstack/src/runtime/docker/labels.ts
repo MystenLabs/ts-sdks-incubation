@@ -24,7 +24,15 @@
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 
-/** Canonical label keys. Single source of truth. */
+/** Canonical label keys. Single source of truth.
+ *
+ *  L1 is plugin-blind: it carries the four canonical engine dimensions
+ *  (`app`/`stack`/`plugin`/`role`) plus generic resource-kind slots
+ *  (`kind`/`subkind`/`specVersion`). Orchestrators stamp their own
+ *  values into the generic slots — e.g. the router orchestrator stamps
+ *  `kind=router`, `subkind=<profile-id>`, `specVersion=<version>` —
+ *  those become orchestrator-side conventions rather than L1 vocabulary.
+ *  Per STYLE_GUIDE §7, L1 MUST NOT add orchestrator-named label keys. */
 export const LabelKey = {
 	app: 'devstack.app',
 	stack: 'devstack.stack',
@@ -37,11 +45,11 @@ export const LabelKey = {
 	// for inventory walks.
 	networkMarker: 'devstack.network',
 	volumeMarker: 'devstack.volume',
-	// Reverse-proxy / routable. Router itself is built outside this
-	// package, but if it stamps a label, this is the key it uses.
-	routerMarker: 'devstack.router',
-	routerProfile: 'devstack.router.profile',
-	routerSpecVersion: 'devstack.router.spec-version',
+	// Generic kind/subkind slots — orchestrators stamp their own values
+	// (e.g. router stamps `kind=router`, `subkind=<profile-id>`).
+	kind: 'devstack.kind',
+	subkind: 'devstack.subkind',
+	specVersion: 'devstack.spec-version',
 } as const;
 
 export type LabelKey = (typeof LabelKey)[keyof typeof LabelKey];

@@ -35,14 +35,12 @@
 30. ~~Playwright hardcoded route/port table — `playwright/stack-context.ts:77-82,225-235`.~~ **Shipped (Phase 4 Wave 2C)** — lifted to `build-integrations/runtime/conventional-routes.ts` (`BUILT_IN_CONVENTIONAL_HINTS`, `BUILT_IN_ENDPOINT_ALIASES`, `DEFAULT_ROUTER_ENTRYPOINT_PORT`, `builtInConventionalRoutes()`). Playwright consumes through the lifted table. Backlog'd follow-up: any future Vitest cold-start helper consumes the same source.
 31. ~~Playwright second global slot via `as unknown as GlobalSlot`.~~ **Shipped (Phase 4 Wave 2C)** — typed slot block lives at `build-integrations/runtime/playwright-stack-context-slot.ts` alongside `dapp-kit-slot.ts`; `playwright/global-setup.ts` reads/writes the slot directly through the typed `declare global` block. Cast removed.
 
-## 🟠 Major — Phase 5 (substrate name-blindness)
+## 🟠 Major — Phase 5b (deferred substrate lifts)
 
-32. `SpanAttr` carries 12 plugin-domain keys — `src/substrate/runtime/observability/spans.ts:20-60`.
-33. Substrate `EngineEvent`/`projection.ts` carry `account.updated`/`package.updated` + branded `account/${string}`/`package/${string}`/`coin: string` keys.
-34. `port-broker/service.ts:72,91,115-116,526` `PORT_KINDS` includes `'wallet'`.
-35. `strategy-registry/faucet-capability-for.ts:22-39` names faucet + hardcodes `'faucet:request'` prefix.
-36. `substrate/runtime/sui-move-build/` (~480 LOC) Sui-aware substrate helper not documented as exception.
-37. L1 Docker labels carry router-named slots — `runtime/docker/labels.ts:42-44`, `sweep.ts:147-320` router variants.
+Phase 5a closed items 34, 35, 36 (doc-only), 37 on 2026-05-26 (entries in Closed below). Items 32 and 33 are deferred to a follow-up phase that pairs naturally with the Phase 6 supervisor split, where the projection emit-paths get split out of the supervisor monolith and can adopt the new opaque event/projection shapes cleanly.
+
+32. `SpanAttr` carries 12 plugin-domain keys — `src/substrate/runtime/observability/spans.ts:20-60`. Lift via a substrate `SpanVocabDecl` capability + per-plugin spans.ts contributions; harvest through the existing `CapabilitySinks` Layer composition.
+33. Substrate `EngineEvent`/`projection.ts` carry `account.updated`/`package.updated` + branded `account/${string}`/`package/${string}`/`coin: string` keys. Introduce a name-blind `projection.updated` event `{ kind: string, key: string, payload: unknown }` and lift account-/package-specific projection handling to a new L3 orchestrator (`src/orchestrators/projection/`) that knows the typed payload shapes. Land alongside the supervisor split so the publisher path moves out cleanly.
 37a. `EnsureContainerSpec.networkAttach` is name-blind — accepts network names but no `--network-alias` plumbing, so plugins exposing a `networkAlias` field on their handle (postgres, future siblings) cannot have Docker register an alternate DNS name. Phase 1 bug #5 worked around this in `plugins/postgres/index.ts` by routing codegen at the container DNS name (`${app}-${stack}-${name}`) instead. Long-term: extend `EnsureContainerSpec` to accept per-network aliases (e.g. `networkAttach: ReadonlyArray<string | { name: string; aliases?: string[] }>`), thread through the runtime adapter's `docker network connect --alias`, then flip the postgres codegen back to `value.networkAlias` and let parallel stacks dial by the alias rather than the per-stack container name.
 
 ## 🟠 Major — Phase 6 (supervisor split)
@@ -84,6 +82,15 @@
 ---
 
 ## ⚪ Closed
+
+### Phase 5a (shipped 2026-05-26)
+
+34. ~~`port-broker/service.ts` `PORT_KINDS` includes `'wallet'`~~ — collapsed `PortKind` entirely; allocator now takes opaque `owner?` diagnostic string + per-call `windowHint?`. Default window covers every caller; wallet passes `windowHint: { start: 39200, size: 1000 }` to preserve its dapp-kit autoconnect port range.
+35. ~~`strategy-registry/faucet-capability-for.ts` names faucet~~ — file `git mv`'d to `chain-keyed-strategy-for.ts`; signature is now `chainKeyedStrategyFor<P>(prefix, chainId)` (prefix is a parameter); substrate-side `FAUCET_CAPABILITY_KEY_PREFIX` constant + `faucetCapabilityKey` helper deleted. Account's three call sites import the prefix from `plugins/faucet/index.ts`.
+36. ~~`substrate/runtime/sui-move-build/` undocumented~~ — added to ARCHITECTURE.md §"Substrate name-blindness" exceptions list alongside `sui-execute/`; module header points at the doc section.
+37. ~~L1 Docker router-named labels~~ — `labels.ts` now carries generic `kind`/`subkind`/`specVersion`; `runtime/docker/sweep.ts` + `inventory.ts` expose generic `listDevstackContainersByKind` / `removeDevstackContainersByKindAndName`; router orchestrator stamps `kind='router'` + `subkind=<profile.id>`. STYLE_GUIDE §7 codifies the L1-labels-are-generic rule.
+
+Also landed: `test/substrate/name-blindness.test.ts` — CI invariant that walks `src/substrate/` and grep-fails on plugin names outside an allowlist. The allowlist documents 15 outstanding entries (SpanAttr, events.ts, projection.ts, projection/*, supervisor.ts, plus substrate-host primitives) each with a TODO pointing at the Phase 5b/6 item that will close it.
 
 ### Phase 4 (shipped 2026-05-26)
 

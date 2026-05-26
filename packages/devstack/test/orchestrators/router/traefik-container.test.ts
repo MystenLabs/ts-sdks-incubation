@@ -11,6 +11,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 import {
 	ROUTER_CONTAINER_SPEC_VERSION,
+	ROUTER_KIND_LABEL_VALUE,
 	ROUTER_PROFILE_LABEL,
 	TRAEFIK_DISPATCH_MOUNT_TARGET,
 	layerTraefikContainerOpsDocker,
@@ -122,9 +123,9 @@ const matchingDockerInspectJson = (
 				Cmd: traefikExpectedCommand(entrypoints),
 				Labels: {
 					[LabelKey.managed]: 'true',
-					[LabelKey.routerMarker]: 'true',
+					[LabelKey.kind]: ROUTER_KIND_LABEL_VALUE,
 					[ROUTER_PROFILE_LABEL]: profile.id,
-					[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
+					[LabelKey.specVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 				},
 			},
 			NetworkSettings: {
@@ -165,9 +166,9 @@ const matchingExisting = (
 	networks: [profile.networkName],
 	labels: {
 		[LabelKey.managed]: 'true',
-		[LabelKey.routerMarker]: 'true',
+		[LabelKey.kind]: ROUTER_KIND_LABEL_VALUE,
 		[ROUTER_PROFILE_LABEL]: profile.id,
-		[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
+		[LabelKey.specVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 	},
 	...overrides,
 });
@@ -207,9 +208,9 @@ describe('bootstrap dispatch bind mount adoption', () => {
 			routerProfileLabelsMatch(
 				{
 					[LabelKey.managed]: 'true',
-					[LabelKey.routerMarker]: 'true',
+					[LabelKey.kind]: ROUTER_KIND_LABEL_VALUE,
 					[ROUTER_PROFILE_LABEL]: profile.id,
-					[LabelKey.routerSpecVersion]: ROUTER_CONTAINER_SPEC_VERSION,
+					[LabelKey.specVersion]: ROUTER_CONTAINER_SPEC_VERSION,
 					[ComposeLabelKey.project]: 'example-main',
 					[ComposeLabelKey.service]: 'router.traefik',
 				},
@@ -223,7 +224,7 @@ describe('bootstrap dispatch bind mount adoption', () => {
 			routerProfileLabelsMatch(
 				{
 					[LabelKey.managed]: 'true',
-					[LabelKey.routerMarker]: 'true',
+					[LabelKey.kind]: ROUTER_KIND_LABEL_VALUE,
 					[ROUTER_PROFILE_LABEL]: profile.id,
 				},
 				profile,

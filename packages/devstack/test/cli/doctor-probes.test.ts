@@ -114,9 +114,9 @@ describe('routerProfileProbe', () => {
 								Config: {
 									Labels: {
 										'devstack.managed': 'true',
-										'devstack.router': 'true',
-										'devstack.router.profile': profile.id,
-										'devstack.router.spec-version': ROUTER_CONTAINER_SPEC_VERSION,
+										'devstack.kind': 'router',
+										'devstack.subkind': profile.id,
+										'devstack.spec-version': ROUTER_CONTAINER_SPEC_VERSION,
 									},
 								},
 								NetworkSettings: {

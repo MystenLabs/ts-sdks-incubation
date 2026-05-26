@@ -32,10 +32,9 @@ import {
 } from '../../../src/plugins/sui/mode/local.ts';
 
 const fakeBroker = (allocate: (opts: AllocateOptions) => number): PortBroker => ({
-	allocate: (opts) =>
+	allocate: (opts = {}) =>
 		Effect.succeed({
 			port: allocate(opts),
-			kind: opts.kind,
 			release: Effect.void,
 		} satisfies AllocatedPort),
 });
@@ -43,20 +42,19 @@ const fakeBroker = (allocate: (opts: AllocateOptions) => number): PortBroker => 
 const strictStatefulBroker = (): PortBroker => {
 	const held = new Set<number>();
 	return {
-		allocate: (opts) => {
-			const port = opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000);
+		allocate: (opts = {}) => {
+			const port = opts.preferredPort ?? (opts.owner === 'sui:faucet' ? 50000 : 51000);
 			if (held.has(port)) {
 				return Effect.fail(
 					new PortBrokerError({
 						reason: 'preferred-busy',
-						detail: `preferred port ${port} (${opts.kind}) is already held by another allocation in this stack`,
+						detail: `preferred port ${port} (owner=${opts.owner ?? 'unknown'}) is already held by another allocation in this stack`,
 					}),
 				);
 			}
 			held.add(port);
 			return Effect.succeed({
 				port,
-				kind: opts.kind,
 				release: Effect.sync(() => {
 					held.delete(port);
 				}),
@@ -105,24 +103,24 @@ describe('Sui local port mapping', () => {
 				const calls: AllocateOptions[] = [];
 				const broker = fakeBroker((opts) => {
 					calls.push(opts);
-					return opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000);
+					return opts.preferredPort ?? (opts.owner === 'sui:faucet' ? 50000 : 51000);
 				});
 
 				const ports = yield* resolvePortMapping(broker, undefined);
 
 				expect(calls).toEqual([
 					{
-						kind: 'rpc',
+						owner: 'sui:rpc',
 						preferredPort: DEFAULT_HOST_RPC_PORT,
 						probeHost: '0.0.0.0',
 					},
 					{
-						kind: 'http',
+						owner: 'sui:faucet',
 						preferredPort: DEFAULT_HOST_FAUCET_PORT,
 						probeHost: '0.0.0.0',
 					},
 					{
-						kind: 'rpc',
+						owner: 'sui:graphql',
 						preferredPort: DEFAULT_HOST_GRAPHQL_PORT,
 						probeHost: '0.0.0.0',
 					},
@@ -141,12 +139,11 @@ describe('Sui local port mapping', () => {
 			Effect.gen(function* () {
 				const calls: AllocateOptions[] = [];
 				const broker: PortBroker = {
-					allocate: (opts) => {
+					allocate: (opts = {}) => {
 						calls.push(opts);
 						if (opts.preferredPort === DEFAULT_HOST_RPC_PORT) {
 							return Effect.succeed({
 								port: DEFAULT_HOST_GRAPHQL_PORT,
-								kind: opts.kind,
 								release: Effect.void,
 							} satisfies AllocatedPort);
 						}
@@ -154,13 +151,13 @@ describe('Sui local port mapping', () => {
 							return Effect.fail(
 								new PortBrokerError({
 									reason: 'preferred-busy',
-									detail: `preferred port ${DEFAULT_HOST_GRAPHQL_PORT} (${opts.kind}) is already held by another allocation in this stack`,
+									detail: `preferred port ${DEFAULT_HOST_GRAPHQL_PORT} (owner=${opts.owner ?? 'unknown'}) is already held by another allocation in this stack`,
 								}),
 							);
 						}
 						return Effect.succeed({
-							port: opts.preferredPort ?? (opts.kind === 'rpc' ? 51002 : DEFAULT_HOST_FAUCET_PORT),
-							kind: opts.kind,
+							port:
+								opts.preferredPort ?? (opts.owner === 'sui:faucet' ? DEFAULT_HOST_FAUCET_PORT : 51002),
 							release: Effect.void,
 						} satisfies AllocatedPort);
 					},
@@ -170,22 +167,22 @@ describe('Sui local port mapping', () => {
 
 				expect(calls).toEqual([
 					{
-						kind: 'rpc',
+						owner: 'sui:rpc',
 						preferredPort: DEFAULT_HOST_RPC_PORT,
 						probeHost: '0.0.0.0',
 					},
 					{
-						kind: 'http',
+						owner: 'sui:faucet',
 						preferredPort: DEFAULT_HOST_FAUCET_PORT,
 						probeHost: '0.0.0.0',
 					},
 					{
-						kind: 'rpc',
+						owner: 'sui:graphql',
 						preferredPort: DEFAULT_HOST_GRAPHQL_PORT,
 						probeHost: '0.0.0.0',
 					},
 					{
-						kind: 'rpc',
+						owner: 'sui:graphql',
 						probeHost: '0.0.0.0',
 					},
 				]);
@@ -271,7 +268,7 @@ describe('Sui local port mapping', () => {
 			Effect.gen(function* () {
 				const specs: EnsureContainerSpec[] = [];
 				const broker = fakeBroker(
-					(opts) => opts.preferredPort ?? (opts.kind === 'rpc' ? 51000 : 50000),
+					(opts) => opts.preferredPort ?? (opts.owner === 'sui:faucet' ? 50000 : 51000),
 				);
 				const runtime = unusedRuntime((spec) => {
 					specs.push(spec);
@@ -383,7 +380,7 @@ describe('Sui local port mapping', () => {
 	it.effect('releases abandoned default allocations before publish-conflict retry', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
-				const calls: AllocateOptions[] = [];
+				const calls: Array<AllocateOptions | undefined> = [];
 				const specs: EnsureContainerSpec[] = [];
 				const broker = strictStatefulBroker();
 				const recordingBroker: PortBroker = {

@@ -267,6 +267,13 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
 - **Substrate is name-blind:** substrate code MUST NOT mention plugin names. Plugin-domain services
   such as `CoinRegistryService` and `PackageRegistryService` are composed outside
   `substrate/runtime/` and injected through `pluginContext`.
+- **L1 (`runtime/docker/*`) labels carry generic `kind` / `subkind` / `specVersion` slots; the
+  router (or any other orchestrator) stamps its own values.** NEVER add orchestrator-named label
+  keys (`routerMarker`, `routerProfile`, `routerSpecVersion`) or orchestrator-named sweep helpers
+  (`listDevstackRouterContainers`, `removeDevstackRouterContainers`) to L1. The router orchestrator
+  owns the literal `'router'` it stamps into `LabelKey.kind`; the generic
+  `listDevstackContainersByKind('router')` / `removeDevstackContainersByKindAndName('router', name)`
+  L1 helpers stay plugin-blind.
 - **Substrate must not depend on contract NAMES either.** `substrate/runtime/supervisor.ts:35-40`
   imports six named capability-decl modules; the substrate is name-blind only at the plugin level,
   but capability awareness is also a coupling. Pending inversion via a `CapabilitySinks` registry —

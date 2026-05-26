@@ -60,7 +60,6 @@ import type { Identity } from '../../../substrate/identity.ts';
 import type {
 	AllocatedPort,
 	PortBroker,
-	PortKind,
 } from '../../../substrate/runtime/port-broker/index.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
@@ -455,9 +454,14 @@ const resolvePortMappingWithRelease = (
 		});
 	}
 	return Effect.gen(function* () {
-		const rpc = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
-		const faucet = yield* allocatePort(portBroker, 'http', DEFAULT_HOST_FAUCET_PORT, 'faucet');
-		const graphql = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_GRAPHQL_PORT, 'graphql');
+		const rpc = yield* allocatePort(portBroker, 'sui:rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
+		const faucet = yield* allocatePort(portBroker, 'sui:faucet', DEFAULT_HOST_FAUCET_PORT, 'faucet');
+		const graphql = yield* allocatePort(
+			portBroker,
+			'sui:graphql',
+			DEFAULT_HOST_GRAPHQL_PORT,
+			'graphql',
+		);
 		return {
 			ports: [
 				portPublish(CONTAINER_RPC_PORT, rpc.port),
@@ -529,7 +533,7 @@ const portPublish = (containerPort: number, hostPort: number): ContainerPortPubl
 
 const allocatePort = (
 	portBroker: PortBroker,
-	kind: PortKind,
+	owner: string,
 	preferredPort: number | undefined,
 	label: 'rpc' | 'faucet' | 'graphql',
 ): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> => {
@@ -538,14 +542,14 @@ const allocatePort = (
 	): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
 		portBroker
 			.allocate({
-				kind,
+				owner,
 				...(hint === undefined ? {} : { preferredPort: hint }),
 				probeHost: DOCKER_PUBLISH_HOST,
 			})
 			.pipe(
 				Effect.catchTag('PortBrokerError', (cause) =>
 					hint !== undefined && cause.reason === 'preferred-busy'
-						? portBroker.allocate({ kind, probeHost: DOCKER_PUBLISH_HOST })
+						? portBroker.allocate({ owner, probeHost: DOCKER_PUBLISH_HOST })
 						: Effect.fail(cause),
 				),
 				Effect.mapError((cause) =>

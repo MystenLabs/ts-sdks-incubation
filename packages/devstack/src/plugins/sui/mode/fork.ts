@@ -316,14 +316,14 @@ const allocateForkRpcPort = (
 	}
 	return portBroker
 		.allocate({
-			kind: 'rpc',
+			owner: 'sui:fork-rpc',
 			preferredPort: DEFAULT_FORK_HOST_RPC_PORT,
 			probeHost: DOCKER_PUBLISH_HOST,
 		})
 		.pipe(
 			Effect.catchTag('PortBrokerError', (cause) =>
 				cause.reason === 'preferred-busy'
-					? portBroker.allocate({ kind: 'rpc', probeHost: DOCKER_PUBLISH_HOST })
+					? portBroker.allocate({ owner: 'sui:fork-rpc', probeHost: DOCKER_PUBLISH_HOST })
 					: Effect.fail(cause),
 			),
 			Effect.map((allocated: AllocatedPort) => portPublish(CONTAINER_RPC_PORT, allocated.port)),

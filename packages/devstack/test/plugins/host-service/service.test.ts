@@ -324,11 +324,10 @@ describe('acquireHostService', () => {
 		loggerLines.length = 0;
 		const allocations: AllocateOptions[] = [];
 		const broker: PortBroker = {
-			allocate: (opts) => {
+			allocate: (opts = {}) => {
 				allocations.push(opts);
 				return Effect.succeed({
 					port: 6173,
-					kind: 'http',
 					release: Effect.void,
 				});
 			},
@@ -353,7 +352,9 @@ describe('acquireHostService', () => {
 					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
 				expect(value.url).toBe('http://127.0.0.1:6173');
-				expect(allocations).toEqual([{ kind: 'http', preferredPort: 5170, probeHost: '0.0.0.0' }]);
+				expect(allocations).toEqual([
+					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
+				]);
 				yield* Effect.promise<void>(
 					() => new Promise((resolveReady) => setTimeout(resolveReady, 0)),
 				);

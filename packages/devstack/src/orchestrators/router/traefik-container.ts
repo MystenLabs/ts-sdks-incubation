@@ -42,7 +42,11 @@ import { dockerRun, dockerRunOk } from '../../runtime/docker/client.ts';
 import type { RouterProfile } from './profile.ts';
 
 export const TRAEFIK_DISPATCH_MOUNT_TARGET = '/etc/traefik/dispatch';
-export const ROUTER_PROFILE_LABEL = LabelKey.routerProfile;
+/** Value stamped into the L1 generic `LabelKey.kind` slot for router
+ *  containers. L1 is plugin-blind: the router orchestrator owns this
+ *  literal. */
+export const ROUTER_KIND_LABEL_VALUE = 'router';
+export const ROUTER_PROFILE_LABEL = LabelKey.subkind;
 export const ROUTER_CONTAINER_SPEC_VERSION = '3';
 export const HOST_GATEWAY_ALIAS = 'host.docker.internal:host-gateway';
 
@@ -233,9 +237,9 @@ export const routerProfileLabelsMatch = (
 	profile: RouterProfile,
 ): boolean => {
 	if (labels[LabelKey.managed] !== 'true') return false;
-	if (labels[LabelKey.routerMarker] !== 'true') return false;
+	if (labels[LabelKey.kind] !== ROUTER_KIND_LABEL_VALUE) return false;
 	if (labels[ROUTER_PROFILE_LABEL] !== profile.id) return false;
-	if (labels[LabelKey.routerSpecVersion] !== ROUTER_CONTAINER_SPEC_VERSION) return false;
+	if (labels[LabelKey.specVersion] !== ROUTER_CONTAINER_SPEC_VERSION) return false;
 	for (const forbidden of [
 		LabelKey.app,
 		LabelKey.stack,
@@ -435,11 +439,11 @@ const traefikRunArgs = (args: {
 		'--label',
 		`${LabelKey.managed}=true`,
 		'--label',
-		`${LabelKey.routerMarker}=true`,
+		`${LabelKey.kind}=${ROUTER_KIND_LABEL_VALUE}`,
 		'--label',
 		`${ROUTER_PROFILE_LABEL}=${args.routerProfileId}`,
 		'--label',
-		`${LabelKey.routerSpecVersion}=${ROUTER_CONTAINER_SPEC_VERSION}`,
+		`${LabelKey.specVersion}=${ROUTER_CONTAINER_SPEC_VERSION}`,
 		'--add-host',
 		HOST_GATEWAY_ALIAS,
 	];

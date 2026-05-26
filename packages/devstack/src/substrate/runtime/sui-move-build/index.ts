@@ -5,6 +5,10 @@
 // Like `sui-execute/`, this is an L1-adjacent Sui-aware helper. It owns
 // the mechanical "scrub Move.lock → run sui move build → parse bytecode"
 // path so Move-publishing plugins do not import each other's internals.
+// Listed as a documented exception in `ARCHITECTURE.md` §"Substrate
+// name-blindness" alongside `sui-execute/`. Rationale + alternative-
+// rejection are recorded there; new substrate-side Sui-aware exceptions
+// need explicit justification in that section before landing.
 
 import { createHash } from 'node:crypto';
 import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';

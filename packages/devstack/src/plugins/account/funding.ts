@@ -29,9 +29,9 @@
 
 import { Duration, Effect } from 'effect';
 
-import type { FaucetStrategy } from '../faucet/index.ts';
+import { FAUCET_CAPABILITY_KEY_PREFIX, type FaucetStrategy } from '../faucet/index.ts';
 import {
-	faucetCapabilityFor,
+	chainKeyedStrategyFor,
 	StrategyRegistryService,
 } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
@@ -234,7 +234,10 @@ export const fundEphemeralDefault = (
 		// nothing is registered we surface a typed, actionable error
 		// pointing at the architecture's contract: ephemeral-on-non-
 		// fork without a Faucet MUST fail at acquire time.
-		const strategy = yield* faucetCapabilityFor<FaucetStrategy>(parts.chainId).pipe(
+		const strategy = yield* chainKeyedStrategyFor<FaucetStrategy>(
+			FAUCET_CAPABILITY_KEY_PREFIX,
+			parts.chainId,
+		).pipe(
 			Effect.catchTag('StrategyNotFoundError', (err) =>
 				Effect.fail(
 					accountAcquireError({
@@ -395,7 +398,10 @@ export const applyCrossCuttingFunding = (
 			const isSui = entry.fullCoinType === SUI_FULL_COIN_TYPE;
 			const coinKey = `coinType:${entry.fullCoinType}` as const;
 			const lookup = isSui
-				? faucetCapabilityFor<AccountFundingStrategy>(parts.chainId)
+				? chainKeyedStrategyFor<AccountFundingStrategy>(
+						FAUCET_CAPABILITY_KEY_PREFIX,
+						parts.chainId,
+					)
 				: registry.get<typeof coinKey, AccountFundingStrategy>(coinKey);
 
 			// Architecture-distilled: optional-faucet-is-noop for
