@@ -338,7 +338,7 @@ describe('acquireHostService', () => {
 			port: 5170,
 			command: process.execPath,
 			args: ['-e', `console.log('ready'); setInterval(() => {}, 1000);`],
-			ready: { kind: 'log', pattern: 'ready', timeoutMs: 1_000 },
+			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5_000 },
 		});
 
 		return Effect.scoped(

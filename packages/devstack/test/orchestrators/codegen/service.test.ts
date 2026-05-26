@@ -7,6 +7,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Layer } from 'effect';
 import { FileSystem } from 'effect';
+import { chmodSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
@@ -226,6 +227,38 @@ describe('codegen.runEmitCycle', () => {
 			// emit reports unchanged.
 			expect(r2.filesWritten.length).toBe(0);
 			expect(r2.filesUnchanged.length).toBeGreaterThan(0);
+			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
+		}).pipe(Effect.provide(baseLayer(root)));
+	});
+
+	it.effect('applies parent directory modes from sensitivity policy', () => {
+		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
+		const publicDir = `${root}/public`;
+		const secretDir = `${root}/secrets`;
+		const modeOf = (path: string): number => statSync(path).mode & 0o777;
+		const contributions = [
+			fakeDecl({
+				emitterName: 'public',
+				outputPath: 'public/value.ts',
+				sensitive: false,
+				exports: { value: 'public' },
+			}),
+			fakeDecl({
+				emitterName: 'secret',
+				outputPath: 'secrets/value.ts',
+				sensitive: true,
+				exports: { value: 'secret' },
+			}),
+		];
+		return Effect.gen(function* () {
+			const fs = yield* FileSystem.FileSystem;
+			yield* runEmitCycle({ contributions });
+			expect(modeOf(publicDir)).toBe(0o755);
+			expect(modeOf(secretDir)).toBe(0o700);
+
+			chmodSync(secretDir, 0o755);
+			yield* runEmitCycle({ contributions });
+			expect(modeOf(secretDir)).toBe(0o700);
 			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
 		}).pipe(Effect.provide(baseLayer(root)));
 	});

@@ -15,6 +15,7 @@ import {
 	type StricliProcess,
 } from '@stricli/core';
 import { Effect } from 'effect';
+import { readFileSync } from 'node:fs';
 
 import { commandSchema } from './command-tree.ts';
 import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
@@ -37,6 +38,15 @@ import {
 	runStatus,
 	runWipe,
 } from './commands/index.ts';
+
+const readPackageVersion = (): string => {
+	const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
+	const pkg = JSON.parse(raw) as { readonly version?: unknown };
+	if (typeof pkg.version !== 'string') {
+		throw new Error('devstack package.json is missing a string version');
+	}
+	return pkg.version;
+};
 
 // -----------------------------------------------------------------------------
 // Deps bundle
@@ -604,7 +614,7 @@ const root = buildRouteMap({
 
 const app = buildApplication(root, {
 	name: 'devstack',
-	versionInfo: { currentVersion: '0.0.0' },
+	versionInfo: { currentVersion: readPackageVersion() },
 	scanner: { caseStyle: 'allow-kebab-for-camel' },
 	documentation: {
 		caseStyle: 'convert-camel-to-kebab',

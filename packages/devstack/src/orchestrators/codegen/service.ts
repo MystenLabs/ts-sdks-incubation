@@ -40,6 +40,7 @@
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
+import { dirname } from 'node:path';
 
 import type {
 	CodegenableDecl,
@@ -64,7 +65,7 @@ import {
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
 import { CodegenPathsService } from './paths.ts';
-import { modeFor } from './permissions.ts';
+import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -89,6 +90,27 @@ export interface RunEmitCycleResult {
 	readonly filesChmod: ReadonlyArray<string>;
 	readonly bindings: EmitBindingsResult | null;
 }
+
+const buildParentModeResolver = (
+	paths: { readonly resolve: (outputPath: string) => string },
+	decls: ReadonlyArray<Codegenable>,
+): ((absolutePath: string) => number) => {
+	const byParent = new Map<string, Array<Pick<Codegenable, 'sensitive'>>>();
+	for (const decl of decls) {
+		const parent = dirname(paths.resolve(decl.outputPath));
+		const current = byParent.get(parent);
+		if (current === undefined) {
+			byParent.set(parent, [decl]);
+		} else {
+			current.push(decl);
+		}
+	}
+	const modes = new Map<string, number>();
+	for (const [parent, parentDecls] of byParent) {
+		modes.set(parent, dirModeFor(parentDecls));
+	}
+	return (absolutePath) => modes.get(dirname(absolutePath)) ?? NON_SENSITIVE_DIR_MODE;
+};
 
 // -----------------------------------------------------------------------------
 // Main entry — one cycle of the codegen pipeline
@@ -130,6 +152,7 @@ export const runEmitCycle = (
 		const sortedDecls = [...fileEmitters].sort(
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
+		const parentModeFor = buildParentModeResolver(paths, fileEmitters);
 		for (const decl of sortedDecls) {
 			const emission = yield* runEmitter(decl);
 			const exported = emission.exports;
@@ -158,6 +181,7 @@ export const runEmitCycle = (
 				path: abs,
 				content: rendered,
 				mode: modeFor(decl),
+				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
 				case 'wrote':
@@ -187,6 +211,7 @@ export const runEmitCycle = (
 				path: abs,
 				content: rendered,
 				mode: 0o644,
+				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
 				case 'wrote':
@@ -224,6 +249,7 @@ export const runEmitCycle = (
 		yield* writeGitignore({
 			path: paths.gitignoreFile,
 			sensitivePaths,
+			parentMode: parentModeFor(paths.gitignoreFile),
 		});
 
 		return {

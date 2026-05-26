@@ -44,7 +44,7 @@ import {
 
 import { emitOne } from './emit.ts';
 import { CodegenBindingsFailed } from './errors.ts';
-import { NON_SENSITIVE_FILE_MODE } from './permissions.ts';
+import { NON_SENSITIVE_DIR_MODE, NON_SENSITIVE_FILE_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
 // Service seam — Move summary + codegen invocation
@@ -222,6 +222,7 @@ export const emitBindings = (
 					path: abs,
 					content: stabilizeGeneratedBindingContent(f.content),
 					mode: NON_SENSITIVE_FILE_MODE,
+					parentMode: NON_SENSITIVE_DIR_MODE,
 				}).pipe(
 					Effect.mapError(
 						(cause) =>

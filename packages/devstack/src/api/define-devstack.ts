@@ -99,7 +99,7 @@ export const readStackEngine = <Members extends ReadonlyArray<AnyPlugin>>(
  *  otherwise (not assignable, surfacing the field name in the IDE).
  *  UNCONSTRAINED Members — every helper sidesteps constraint widening
  *  via an internal `Members extends ReadonlyArray<unknown> ? ... : never`
- *  shape (Phase-3 finding).
+ *  shape.
  *
  *  IMPORTANT: validation runs against the recursively expanded member
  *  tuple (`ComposedMembers<Members>`). Bare resource dependencies must

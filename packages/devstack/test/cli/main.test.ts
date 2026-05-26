@@ -195,7 +195,9 @@ const writeLiveRoster = (stackRoot: string): void => {
 
 const readCommandLog = (
 	stackRoot: string,
-): ReadonlyArray<{ readonly command: { readonly tag: string; readonly snapshotId?: string } }> =>
+): ReadonlyArray<{
+	readonly command: { readonly tag: string; readonly snapshotId?: string; readonly name?: string };
+}> =>
 	readFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'utf8')
 		.trim()
 		.split('\n')
@@ -204,7 +206,11 @@ const readCommandLog = (
 				? []
 				: [
 						JSON.parse(line) as {
-							readonly command: { readonly tag: string; readonly snapshotId?: string };
+							readonly command: {
+								readonly tag: string;
+								readonly snapshotId?: string;
+								readonly name?: string;
+							};
 						},
 					],
 		);
@@ -358,6 +364,175 @@ describe('cli/main', () => {
 					process.env[key] = value;
 				}
 			}
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
+	it('status defaults runtime state to cwd-local .devstack', async () => {
+		const appRoot = makeTempRoot('cli-default-state-app');
+		const homeRoot = makeTempRoot('cli-default-state-home');
+		const stackRoot = join(appRoot, '.devstack', 'stacks', 'main');
+		const previousExitCode = process.exitCode;
+		const previousCwd = process.cwd();
+		const previousEnv = {
+			DEVSTACK_APP: process.env.DEVSTACK_APP,
+			DEVSTACK_STACK: process.env.DEVSTACK_STACK,
+			DEVSTACK_NETWORK: process.env.DEVSTACK_NETWORK,
+			DEVSTACK_STATE_DIR: process.env.DEVSTACK_STATE_DIR,
+			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
+			HOME: process.env.HOME,
+		};
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_APP;
+			delete process.env.DEVSTACK_STACK;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_STATE_DIR;
+			delete process.env.DEVSTACK_CONFIG;
+			process.env.HOME = homeRoot;
+			process.chdir(appRoot);
+			await Effect.runPromise(
+				writeProjectionSnapshot(
+					stackRoot,
+					makeProjectionState({
+						app: 'local-app',
+						stack: 'main',
+						network: 'sui:local',
+					}),
+				),
+			);
+
+			await runCli(['status', '--app', 'local-app', '--stack', 'main', '--json']);
+
+			expect(stderr.join('')).toBe('');
+			expect(process.exitCode).toBe(0);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly present: boolean; readonly identity: unknown };
+			};
+			expect(envelope.data.present).toBe(true);
+			expect(envelope.data.identity).toEqual({
+				app: 'local-app',
+				stack: 'main',
+				network: 'sui:local',
+			});
+			expect(existsSync(join(homeRoot, '.devstack', 'stacks', 'main'))).toBe(false);
+		} finally {
+			process.chdir(previousCwd);
+			process.exitCode = previousExitCode;
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot save publishes to a live supervisor and waits for capture result', async () => {
+		const stateRoot = makeTempRoot('cli-live-snapshot-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const observed: Array<{
+			readonly tag?: string;
+			readonly snapshotId?: string;
+			readonly name?: string;
+		}> = [];
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		writeLiveRoster(stackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(stackRoot), {
+						fromOffset: 'start',
+						pollMillis: 20,
+					});
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								const command = record.command as {
+									readonly tag?: string;
+									readonly snapshotId?: string;
+									readonly name?: string;
+								};
+								yield* Effect.sync(() => {
+									observed.push(command);
+								});
+								if (command.snapshotId !== undefined) {
+									yield* subscriber.publishEvent({
+										tag: 'snapshot.captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+										at: Date.now(),
+									});
+								}
+								yield* subscriber.ack(record.id, 'captured');
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'snapshot',
+				'save',
+				'seeded',
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(observed).toHaveLength(1);
+			expect(observed[0]?.tag).toBe('snapshot.capture');
+			expect(observed[0]?.name).toBe('seeded');
+			expect(observed[0]?.snapshotId).toMatch(/^snap-\d+-[0-9a-f]{8}$/);
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'snapshot.capture',
+			]);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly snapshotId: string; readonly name: string };
+			};
+			expect(envelope.data).toEqual({
+				snapshotId: observed[0]?.snapshotId,
+				name: 'seeded',
+			});
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
 			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
 		}
 	}, 60_000);

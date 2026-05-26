@@ -22,7 +22,7 @@ import { Effect, FileSystem } from 'effect';
 
 import { emitOne } from './emit.ts';
 import { CodegenWriteFailed } from './errors.ts';
-import { NON_SENSITIVE_FILE_MODE } from './permissions.ts';
+import { NON_SENSITIVE_DIR_MODE, NON_SENSITIVE_FILE_MODE } from './permissions.ts';
 
 const USER_BLOCK_START = '# user: customisations below preserved across re-emits';
 const USER_BLOCK_END = '# /user: do not edit below this line';
@@ -39,6 +39,7 @@ const HEADER = [
 
 export interface GitignoreInput {
 	readonly path: string;
+	readonly parentMode?: number;
 	/** Relative paths inside the output dir that are sensitive — get
 	 *  an explicit gitignore line. Sorted lexicographically. */
 	readonly sensitivePaths: ReadonlyArray<string>;
@@ -87,6 +88,7 @@ export const writeGitignore = (
 			path: input.path,
 			content,
 			mode: NON_SENSITIVE_FILE_MODE,
+			parentMode: input.parentMode ?? NON_SENSITIVE_DIR_MODE,
 		}).pipe(
 			Effect.mapError(
 				(e) =>

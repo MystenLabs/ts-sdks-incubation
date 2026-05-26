@@ -92,8 +92,8 @@ const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegis
 			url: raw.url,
 			displayUrl: raw.displayUrl,
 			wireProtocol: raw.wireProtocol,
-			pluginKey: raw.pluginKey as string,
-			endpointKey: raw.endpointKey as string,
+			pluginKey: raw.pluginKey,
+			endpointKey: raw.endpointKey,
 		});
 	}
 	return new EndpointRegistry(entries);
@@ -316,7 +316,7 @@ export const makeStackContext = (
 		const byMapKey = envelope.endpoints[resolved.endpointKey];
 		if (byMapKey !== undefined) return byMapKey;
 		const byEntryKey = Object.values(envelope.endpoints).find(
-			(entry) => (entry.endpointKey as string) === resolved.endpointKey,
+			(entry) => entry.endpointKey === resolved.endpointKey,
 		);
 		if (byEntryKey !== undefined) return byEntryKey;
 		return {
@@ -324,8 +324,8 @@ export const makeStackContext = (
 			url: resolved.url,
 			displayUrl: resolved.displayUrl,
 			wireProtocol: resolved.wireProtocol,
-			pluginKey: resolved.pluginKey as never,
-			endpointKey: resolved.endpointKey as never,
+			pluginKey: resolved.pluginKey,
+			endpointKey: resolved.endpointKey,
 		};
 	};
 

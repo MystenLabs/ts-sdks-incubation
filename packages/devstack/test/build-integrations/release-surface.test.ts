@@ -235,7 +235,8 @@ describe('release surface static checks', () => {
 
 		expect(writerVersion?.[1]).toBeDefined();
 		expect(readerVersion?.[1]).toBe(writerVersion?.[1]);
-		expect(reader).toContain('ManifestEnvelopeSchema, type ManifestEnvelope');
+		expect(reader).toContain('ManifestEnvelopeSchema');
+		expect(reader).toContain('type ManifestEnvelope');
 		expect(reader).toContain('../../substrate/manifest.ts');
 	});
 });

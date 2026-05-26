@@ -1,4 +1,4 @@
-// Package plugin compatibility wrapper for shared Sui Move build helpers.
+// Package plugin bridge for shared Sui Move build helpers.
 
 import { Effect, type Scope } from 'effect';
 

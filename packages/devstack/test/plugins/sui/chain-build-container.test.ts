@@ -87,7 +87,9 @@ describe('chain build container move-build lock', () => {
 			const fixture = makeFixture();
 			try {
 				const specs: EnsureContainerSpec[] = [];
-				yield* Effect.scoped(acquireChainBuildContainer(runtimeCapturingEnsureSpec(specs), fixture.spec));
+				yield* Effect.scoped(
+					acquireChainBuildContainer(runtimeCapturingEnsureSpec(specs), fixture.spec),
+				);
 
 				expect(specs[0]?.entrypoint).toBe('sh');
 				expect(specs[0]?.command?.[0]).toBe('-c');

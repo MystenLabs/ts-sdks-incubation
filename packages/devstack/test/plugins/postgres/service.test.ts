@@ -59,7 +59,8 @@ describe('bootPostgresService', () => {
 
 				expect(specs[0]?.stopGraceSeconds).toBe(20);
 			}),
-		));
+		),
+	);
 
 	it.effect('threads caller stop-grace overrides into the Docker container spec', () =>
 		Effect.scoped(
@@ -71,5 +72,6 @@ describe('bootPostgresService', () => {
 
 				expect(specs[0]?.stopGraceSeconds).toBe(45);
 			}),
-		));
+		),
+	);
 });

@@ -184,7 +184,7 @@ export const devstackPlaywrightUse = (
 	baseURL: resolveDevstackPlaywrightBaseURL(options),
 	trace: options.trace ?? 'on-first-retry',
 	screenshot: options.screenshot ?? 'only-on-failure',
-	...(options.use ?? {}),
+	...options.use,
 });
 
 export const devstackPlaywrightProjects = (

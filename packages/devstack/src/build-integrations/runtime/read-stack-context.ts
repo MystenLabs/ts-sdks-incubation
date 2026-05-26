@@ -32,7 +32,11 @@
 import { Schema } from 'effect';
 import { readFileSync } from 'node:fs';
 
-import { ManifestEnvelopeSchema, type ManifestEnvelope } from '../../substrate/manifest.ts';
+import {
+	ManifestEnvelopeSchema,
+	type ManifestEnvelope,
+	type EndpointEntry,
+} from '../../substrate/manifest.ts';
 import { discoverManifestPath, type DiscoverManifestPathOptions } from './discover.ts';
 import { EndpointRegistry } from './endpoint-registry.ts';
 import { ManifestDiscoveryError, ManifestShapeError } from './errors.ts';
@@ -92,7 +96,7 @@ const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => 
 	}
 	let decoded: ManifestEnvelope;
 	try {
-		decoded = decodeEnvelope(parsed) as ManifestEnvelope;
+		decoded = decodeEnvelope(parsed);
 	} catch (cause) {
 		throw new ManifestShapeError({
 			phase: 'shape',
@@ -127,8 +131,8 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 			url: raw.url,
 			displayUrl: raw.displayUrl,
 			wireProtocol: raw.wireProtocol,
-			pluginKey: raw.pluginKey as string,
-			endpointKey: raw.endpointKey as string,
+			pluginKey: raw.pluginKey,
+			endpointKey: raw.endpointKey,
 		});
 	}
 	return {
@@ -150,22 +154,22 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
  *  surfaces use this instead of duplicating endpoint-registry
  *  projection logic. */
 export const manifestEnvelopeFromStackContext = (ctx: StackContext): ManifestEnvelope => ({
-	identity: ctx.identity as ManifestEnvelope['identity'],
+	identity: ctx.identity,
 	manifestVersion: ctx.manifestVersion,
 	services: ctx.services,
 	endpoints: Object.fromEntries(
-		ctx.endpoints.all().map((e) => [
+		ctx.endpoints.all().map((e): [string, EndpointEntry] => [
 			e.endpointKey,
 			{
 				name: e.name,
 				url: e.url,
 				displayUrl: e.displayUrl,
 				wireProtocol: e.wireProtocol,
-				pluginKey: e.pluginKey as never,
-				endpointKey: e.endpointKey as never,
+				pluginKey: e.pluginKey,
+				endpointKey: e.endpointKey,
 			},
 		]),
-	) as ManifestEnvelope['endpoints'],
+	),
 	extras: ctx.extras,
 });
 

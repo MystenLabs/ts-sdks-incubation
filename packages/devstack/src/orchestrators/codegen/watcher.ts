@@ -17,7 +17,7 @@
 //
 // This module ships:
 //   - `excludeFromWatcher(outputDir)` — declarative path the
-//     substrate's L0 thick watcher (Phase-4 sibling) consults.
+//     substrate watcher consults.
 //   - `watchContributions(...)` — composes a re-emit fiber that
 //     observes a contribution stream and calls `runEmitCycle()` on
 //     change.
@@ -28,8 +28,8 @@ import type { Codegenable } from './service.ts';
 
 /**
  * Declare the output dir as excluded from the substrate's thick
- * file watcher. The watcher implementation (sibling Phase-5
- * deliverable) reads this list to skip path-prefix matches.
+ * file watcher. The watcher implementation reads this list to skip
+ * path-prefix matches.
  *
  * Pure helper — returns the literal exclusion pattern. Wired into
  * the supervisor by the orchestrator's boot Layer.

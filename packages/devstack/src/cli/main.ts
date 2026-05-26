@@ -15,10 +15,11 @@
 //      reach scope finalizers.
 //   3. `apply` is live-aware: publish to an attached supervisor when
 //      one owns the selected stack; otherwise run the one-shot path.
-//   4. Offline/direct commands read or mutate the selected stack root
-//      without publishing peer commands to a live supervisor.
+//   4. Maintenance commands either publish to the attached supervisor
+//      or refuse/directly mutate only after a live-supervisor check.
 
-import { existsSync, realpathSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -26,10 +27,13 @@ import {
 	Cause,
 	Effect,
 	Exit,
+	Fiber,
 	FileSystem,
 	Layer,
 	Logger,
+	Option,
 	Queue,
+	Schema,
 	Scope,
 	Stream,
 	SubscriptionRef,
@@ -46,10 +50,13 @@ import {
 	readProjectionSnapshot,
 	claim,
 	commandChannelPaths,
+	EventRecordSchema,
 	heartbeatFiber,
 	makeCommandChannelPublisher,
 	makeCommandChannelSubscriber,
 	release,
+	tailRecords,
+	type EventRecord,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
 	type SupervisorHandle,
@@ -62,7 +69,9 @@ import {
 	type CliDeps,
 	CliConfigInvalidError,
 	CliConfigNotFoundError,
+	CliInternalError,
 	CliSupervisorLiveError,
+	CliUnavailableError,
 } from '../surfaces/cli/index.ts';
 import { defaultProbes, probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
 import { nodeConfirmPrompt } from '../surfaces/cli/commands/confirm-node.ts';
@@ -98,6 +107,7 @@ import { removeRouterDispatchFilesForStack } from '../orchestrators/router/clean
 
 const DEFAULT_CONFIG_PATH = './devstack.config.ts';
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
+const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
 
 const stackRootFor = (runtimeRoot: string, stack: string): string =>
 	resolvePath(runtimeRoot, 'stacks', stack);
@@ -290,9 +300,7 @@ const resolveIdentity = (params: {
 		cwd,
 	});
 	const stateDir =
-		params.stateDir ??
-		process.env.DEVSTACK_STATE_DIR ??
-		resolvePath(process.env.HOME ?? process.cwd(), '.devstack');
+		params.stateDir ?? process.env.DEVSTACK_STATE_DIR ?? resolvePath(cwd, '.devstack');
 	const runtimeRoot = resolvePath(stateDir);
 	const stacksRoot = resolvePath(runtimeRoot, 'stacks');
 	const stack = resolveStackName({
@@ -340,7 +348,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 				runApplyLive(flags.configPath, identity).pipe(Effect.map(() => commandResultFromProcess())),
 		},
 		status: { reader: projectionStatusReader(identity) },
-		snapshot: makeDirectSnapshotDeps(identity),
+		snapshot: makeSnapshotDeps(identity),
 		prune: makeDirectPruneDeps({ runtimeRoot: identity.runtimeRoot }),
 		doctor: {
 			probes: defaultProbes({
@@ -676,6 +684,123 @@ const runApplyAgainstLiveSupervisor = (
 		return true;
 	});
 
+type SnapshotCaptureCompletionEvent = Extract<
+	EngineEvent,
+	{ readonly tag: 'snapshot.captured' | 'snapshot.captureFailed' | 'snapshot.captureSkipped' }
+>;
+
+const mintCliSnapshotId = (): string =>
+	`snap-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+
+const snapshotCaptureCompletionEvent = (
+	event: unknown,
+	snapshotId: string,
+): SnapshotCaptureCompletionEvent | null => {
+	if (typeof event !== 'object' || event === null) return null;
+	const record = event as Partial<SnapshotCaptureCompletionEvent>;
+	switch (record.tag) {
+		case 'snapshot.captured':
+			return record.snapshotId === snapshotId ? (record as SnapshotCaptureCompletionEvent) : null;
+		case 'snapshot.captureFailed':
+			return record.snapshotId === snapshotId ? (record as SnapshotCaptureCompletionEvent) : null;
+		case 'snapshot.captureSkipped':
+			return record.reason === 'already-running'
+				? (record as SnapshotCaptureCompletionEvent)
+				: null;
+		default:
+			return null;
+	}
+};
+
+const decodeEventRecord = Schema.decodeUnknownSync(EventRecordSchema);
+
+const runSnapshotCaptureAgainstLiveSupervisor = (
+	identity: ResolvedIdentity,
+	args: { readonly snapshotId?: string; readonly name?: string },
+): Effect.Effect<{ readonly snapshotId: string; readonly name: string } | null, unknown> =>
+	Effect.gen(function* () {
+		const presence = yield* probeSupervisorPresence(identity.rosterFile).pipe(
+			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
+		);
+		if (!presence.live) return null;
+
+		const snapshotId = args.snapshotId ?? mintCliSnapshotId();
+		return yield* Effect.scoped(
+			Effect.gen(function* () {
+				const paths = commandChannelPaths(identity.stackRoot);
+				const publisher = yield* makeCommandChannelPublisher(paths);
+				const eventsOffset = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
+				const completionFiber = yield* tailRecords<EventRecord>(
+					paths.eventsFile,
+					(raw) => decodeEventRecord(raw),
+					{ fromOffset: eventsOffset },
+				).pipe(
+					Stream.map((record) =>
+						record.kind === 'engine'
+							? snapshotCaptureCompletionEvent(record.event, snapshotId)
+							: null,
+					),
+					Stream.filter((event): event is SnapshotCaptureCompletionEvent => event !== null),
+					Stream.runHead,
+					Effect.timeoutOption(`${LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS} millis`),
+					Effect.map((outer) => Option.getOrNull(Option.flatten(outer))),
+					Effect.forkScoped,
+				);
+
+				const published = yield* publisher.publish({
+					tag: 'snapshot.capture',
+					snapshotId,
+					...(args.name === undefined ? {} : { name: args.name }),
+				});
+				const reply = yield* publisher.awaitCompletion(published.id, {
+					timeoutMillis: LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS,
+				});
+				if (!reply.ok) {
+					return yield* Effect.fail(
+						new CliUnavailableError({
+							service: 'devstack supervisor',
+							message: reply.message,
+							hint: 'check the attached `devstack up` session and try again',
+						}),
+					);
+				}
+
+				const completion = yield* Fiber.join(completionFiber);
+				if (completion === null) {
+					return yield* Effect.fail(
+						new CliUnavailableError({
+							service: 'devstack supervisor',
+							message: 'timed out waiting for snapshot capture result',
+							hint: 'check the attached `devstack up` session and try again',
+						}),
+					);
+				}
+
+				switch (completion.tag) {
+					case 'snapshot.captured':
+						return {
+							snapshotId: completion.snapshotId,
+							name: completion.name ?? args.name ?? completion.snapshotId,
+						};
+					case 'snapshot.captureFailed':
+						return yield* Effect.fail(
+							new CliInternalError({
+								message: `snapshot capture failed: ${completion.summary}`,
+							}),
+						);
+					case 'snapshot.captureSkipped':
+						return yield* Effect.fail(
+							new CliUnavailableError({
+								service: 'snapshot capture',
+								message: 'another snapshot capture is already running',
+								hint: 'wait for the current snapshot to finish and try again',
+							}),
+						);
+				}
+			}),
+		);
+	});
+
 const runApplyLive = (
 	configPath: string | undefined,
 	identity: ResolvedIdentity,
@@ -904,9 +1029,19 @@ const runSnapshotCaptureDirect = (
 	});
 };
 
-const makeDirectSnapshotDeps = (identity: ResolvedIdentity): CliDeps['snapshot'] => ({
+const runSnapshotCaptureLiveAware = (
+	identity: ResolvedIdentity,
+	args: { readonly snapshotId?: string; readonly name?: string; readonly configPath?: string },
+): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> =>
+	Effect.gen(function* () {
+		const live = yield* runSnapshotCaptureAgainstLiveSupervisor(identity, args);
+		if (live !== null) return live;
+		return yield* runSnapshotCaptureDirect(identity, args);
+	});
+
+const makeSnapshotDeps = (identity: ResolvedIdentity): CliDeps['snapshot'] => ({
 	reader: makeSnapshotReader(identity),
-	capture: (args) => runSnapshotCaptureDirect(identity, args),
+	capture: (args) => runSnapshotCaptureLiveAware(identity, args),
 	restore: (snapshotId) => runSnapshotRestoreDirect(identity, snapshotId),
 	delete: (snapshotId) => runSnapshotDeleteDirect(identity, snapshotId),
 	confirm: nodeConfirmPrompt,

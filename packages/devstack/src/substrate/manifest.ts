@@ -13,8 +13,6 @@
 
 import { Effect, Schema } from 'effect';
 
-import type { EndpointKey, PluginKey } from './brand.ts';
-
 /** Manifest envelope. The `services` slot is open (`unknown`) at
  *  the envelope level; each plugin's Codegenable contribution
  *  emits a typed file the consumer imports for the typed shape.
@@ -77,8 +75,8 @@ export interface EndpointEntry {
 	readonly url: string;
 	readonly displayUrl: string | null;
 	readonly wireProtocol: 'http' | 'h2c' | string;
-	readonly pluginKey: PluginKey;
-	readonly endpointKey: EndpointKey;
+	readonly pluginKey: string;
+	readonly endpointKey: string;
 }
 
 /** Schema for runtime validation of an on-disk manifest. Build

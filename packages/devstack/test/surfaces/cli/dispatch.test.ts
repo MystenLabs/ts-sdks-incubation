@@ -4,7 +4,7 @@
 // attached lifecycle commands, direct/offline maintenance commands,
 // command-scoped flags, and no public peer-command verbs.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -58,6 +58,15 @@ interface HarnessOptions {
 }
 
 const tempRoots: Array<string> = [];
+
+const packageVersion = (): string => {
+	const pkg = JSON.parse(
+		readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+	) as {
+		readonly version: string;
+	};
+	return pkg.version;
+};
 
 const makeHarness = (
 	options: HarnessOptions = {},
@@ -314,6 +323,15 @@ describe('dispatch', () => {
 		const h = read();
 		expect(h.exitCode).toBe(64);
 		expect(h.stderr.join('\n')).toMatch(/No command registered/);
+	});
+
+	it('reports the package version', async () => {
+		const { deps, read } = makeHarness();
+		await run(['--version'], deps, { io: read().io });
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		expect(h.stdout.join('\n')).toContain(packageVersion());
+		expect(h.stderr).toHaveLength(0);
 	});
 
 	it('unknown verb honors json output when requested before the verb', async () => {

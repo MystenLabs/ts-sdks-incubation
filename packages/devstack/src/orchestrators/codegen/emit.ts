@@ -17,6 +17,7 @@
 // primitive.
 
 import { Effect, FileSystem } from 'effect';
+import { dirname } from 'node:path';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 
@@ -26,6 +27,7 @@ export interface EmitOneInput {
 	readonly path: string;
 	readonly content: string;
 	readonly mode: number;
+	readonly parentMode?: number;
 }
 
 export interface EmitOneResult {
@@ -48,6 +50,9 @@ export const emitOne = (
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		const bytes = new TextEncoder().encode(input.content);
+		if (input.parentMode !== undefined) {
+			yield* ensureParentDirectory(input.path, input.parentMode);
+		}
 
 		// 1. Best-effort read of existing content for the no-touch
 		//    short-circuit. A missing file collapses to "no existing
@@ -75,7 +80,10 @@ export const emitOne = (
 		//    substrate's `atomicWriteFile` owns mkdir-parent +
 		//    tempfile + fsync + rename. Mode is applied at create
 		//    time via the `mode` open flag.
-		yield* atomicWriteFile(input.path, bytes, { mode: input.mode }).pipe(
+		yield* atomicWriteFile(input.path, bytes, {
+			mode: input.mode,
+			...(input.parentMode === undefined ? {} : { parentMode: input.parentMode }),
+		}).pipe(
 			Effect.mapError(
 				(cause) =>
 					new CodegenWriteFailed({
@@ -124,4 +132,24 @@ const checkAndRestoreMode = (
 			),
 		);
 		return true;
+	});
+
+const ensureParentDirectory = (
+	path: string,
+	parentMode: number,
+): Effect.Effect<void, CodegenWriteFailed, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const parent = dirname(path);
+		yield* fs.makeDirectory(parent, { recursive: true, mode: parentMode }).pipe(
+			Effect.mapError(
+				(cause) =>
+					new CodegenWriteFailed({
+						outputPath: parent,
+						stage: 'mkdir-parent',
+						cause,
+					}),
+			),
+		);
+		yield* checkAndRestoreMode(parent, parentMode).pipe(Effect.asVoid);
 	});

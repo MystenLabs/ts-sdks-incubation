@@ -158,7 +158,7 @@ export const discoverCoinsFromPublish = (
 		if (metaInner !== null && change.objectId !== undefined) {
 			metadata.set(metaInner, {
 				id: change.objectId,
-				...(pickMetadata(change) ?? {}),
+				...pickMetadata(change),
 			});
 			continue;
 		}
@@ -170,7 +170,7 @@ export const discoverCoinsFromPublish = (
 		if (currencyInner !== null && change.objectId !== undefined) {
 			metadata.set(currencyInner, {
 				id: change.objectId,
-				...(pickMetadata(change) ?? {}),
+				...pickMetadata(change),
 			});
 		}
 	}

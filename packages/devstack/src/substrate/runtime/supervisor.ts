@@ -1001,15 +1001,11 @@ const requestBackgroundSnapshotInterrupt = (
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'));
 
-const startBackgroundStackRestart = (
-	deps: CommandLoopDeps,
-): Effect.Effect<void, never, never> =>
+const startBackgroundStackRestart = (deps: CommandLoopDeps): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const token = yield* Ref.updateAndGet(deps.stackRestartSeq, (n) => n + 1);
 		const started = yield* Ref.modify(deps.stackRestartTask, (state) =>
-			state.tag === 'idle'
-				? [true, { tag: 'starting' as const, token }]
-				: [false, state],
+			state.tag === 'idle' ? [true, { tag: 'starting' as const, token }] : [false, state],
 		);
 
 		if (!started) {
