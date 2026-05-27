@@ -138,6 +138,7 @@ import { defineDevstack, definePlugin } from '@mysten-incubation/devstack';
 const installedConsumerSmokePlugin = definePlugin({
 \tid: 'installed-consumer/smoke',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () =>
 \t\tEffect.sync(() => {
 \t\t\twriteFileSync(new URL('./installed-consumer-smoke.marker', import.meta.url), 'acquired\\n');
