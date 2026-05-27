@@ -268,6 +268,7 @@ export const bootPostgresService = (
 				contextPath: resolveImageContextPath(),
 				dockerfile: 'Dockerfile',
 				buildArgs: { POSTGRES_VERSION: resolved.version },
+				owner: { app: identity.app, stack: identity.stack, plugin: 'postgres', role: 'db' },
 			})
 			.pipe(
 				Effect.catch((cause) =>

@@ -151,7 +151,7 @@ export const bootLocalMode = (
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
 		yield* setCurrentPluginPhase('resolving Sui local image');
-		const image = yield* resolveImage(runtime, opts);
+		const image = yield* resolveImage(runtime, identity, opts);
 
 		// ----- 2. Allocate ports + ensure container --------------------------
 		yield* setCurrentPluginPhase('creating Sui validator container');
@@ -250,6 +250,7 @@ export const bootLocalMode = (
 
 export const resolveImage = (
 	runtime: ContainerRuntime,
+	identity: Identity,
 	opts: SuiLocalOptions,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
@@ -276,14 +277,21 @@ export const resolveImage = (
 				);
 		}
 		const version = opts.version ?? DEFAULT_SUI_VERSION;
+		const owner = {
+			app: identity.app,
+			stack: identity.stack,
+			plugin: 'sui',
+			role: 'validator',
+		} as const;
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {
 						contextPath: opts.image.build.context,
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
 						buildArgs: { SUI_VERSION: version },
+						owner,
 					}
-				: suiCliImageBuildContext(version);
+				: { ...suiCliImageBuildContext(version), owner };
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(

@@ -28,6 +28,7 @@ import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner
 import {
 	DockerHost,
 	DockerSpawner,
+	type ForeignNetworkHolder,
 	LabelKey,
 	layerDockerHostDefault,
 	listDevstackContainers,
@@ -102,6 +103,9 @@ export interface LifecyclePruneSummary {
 	readonly networksSkipped: number;
 	readonly volumesRemoved: number;
 	readonly imagesRemoved: number;
+	/** Non-devstack containers still holding networks that prune could
+	 *  not remove. Empty when every network came down cleanly. */
+	readonly foreignNetworkHolders: ReadonlyArray<ForeignNetworkHolder>;
 }
 
 // -----------------------------------------------------------------------------
@@ -347,6 +351,7 @@ export const runLifecyclePrune = (
 			}
 		}
 
+		const foreignNetworkHolders: Array<ForeignNetworkHolder> = [];
 		if (!selection.dryRun && selection.resources.networks) {
 			for (const group of prunableGroups) {
 				const match = { app: group.app, stack: group.stack };
@@ -355,6 +360,7 @@ export const runLifecyclePrune = (
 				);
 				networksRemoved += result.removed;
 				networksSkipped += result.skippedInUse;
+				for (const holder of result.foreignHolders) foreignNetworkHolders.push(holder);
 			}
 		}
 
@@ -391,5 +397,6 @@ export const runLifecyclePrune = (
 			networksSkipped,
 			volumesRemoved,
 			imagesRemoved,
+			foreignNetworkHolders,
 		};
 	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.run'));

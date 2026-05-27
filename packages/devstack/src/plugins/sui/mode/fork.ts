@@ -81,7 +81,7 @@ export const bootForkMode = (
 ): Effect.Effect<ForkModeBootResult, SuiPluginError | SeedManifestMismatchError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const autoTickIntervalMs = resolveAutoTickIntervalMs(opts.autoTick);
-		const image = yield* resolveForkImage(runtime, opts);
+		const image = yield* resolveForkImage(runtime, identity, opts);
 		const dataDir = yield* ensureForkDataDir(paths, opts);
 
 		const labels: ContainerLabelTuple = {
@@ -161,6 +161,7 @@ export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
 
 export const resolveForkImage = (
 	runtime: ContainerRuntime,
+	identity: Identity,
 	opts: SuiForkOptions,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
@@ -187,14 +188,21 @@ export const resolveForkImage = (
 				);
 		}
 		const rev = opts.version ?? DEFAULT_SUI_FORK_REV;
+		const owner = {
+			app: identity.app,
+			stack: identity.stack,
+			plugin: 'sui',
+			role: 'validator',
+		} as const;
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {
 						contextPath: opts.image.build.context,
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
 						buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
+						owner,
 					}
-				: suiForkImageBuildContext(rev);
+				: { ...suiForkImageBuildContext(rev), owner };
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(

@@ -100,6 +100,9 @@ export {
 	disconnect,
 	ensureNetwork,
 	type EnsureNetworkOptions,
+	forceDisconnect,
+	listAttachedContainers,
+	type NetworkAttachedEndpoint,
 	readIps,
 	SHARED_NETWORK_NAME,
 	waitForIp,
@@ -119,6 +122,7 @@ export {
 	removeManagedVolumes,
 	sweepOrphans,
 	type DevstackNetworkRemovalSummary,
+	type ForeignNetworkHolder,
 } from './sweep.ts';
 
 export { ensureVolume, removeVolume } from './volume.ts';
@@ -135,6 +139,7 @@ export {
 	renderComposeNetworkLabels,
 	renderComposeVolumeLabels,
 	expectedContainerOwnershipLabels,
+	expectedImageOwnershipLabels,
 	expectedNetworkOwnershipLabels,
 	expectedVolumeOwnershipLabels,
 	ownershipMismatchDetail,

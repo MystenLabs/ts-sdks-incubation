@@ -76,7 +76,27 @@ const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
 const NetworkInspectSchema = Schema.Struct({
 	Id: Schema.String,
 	Labels: Schema.optional(Schema.Unknown),
+	Containers: Schema.optional(Schema.Unknown),
 });
+
+/** One endpoint attached to a network, as reported by `docker network
+ *  inspect`. `name` is the container name; `id` is the container id. */
+export interface NetworkAttachedEndpoint {
+	readonly id: string;
+	readonly name: string;
+}
+
+const readContainers = (raw: unknown): ReadonlyArray<NetworkAttachedEndpoint> => {
+	if (raw === null || typeof raw !== 'object') return [];
+	const out: Array<NetworkAttachedEndpoint> = [];
+	for (const [id, value] of Object.entries(raw)) {
+		if (value === null || typeof value !== 'object') continue;
+		const name = (value as { Name?: unknown }).Name;
+		if (typeof name !== 'string' || name.length === 0) continue;
+		out.push({ id, name });
+	}
+	return out;
+};
 
 const inspectNetwork = (
 	name: string,
@@ -227,6 +247,79 @@ export const disconnect = (
 			);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.network.disconnect'));
+
+/** Force-disconnect — `docker network disconnect -f`. Used by prune
+ *  to evict our own endpoints from an in-use network before retrying
+ *  `network rm`. Idempotent against "not connected". */
+export const forceDisconnect = (
+	containerNameOrId: string,
+	network: string,
+): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', [
+			'disconnect',
+			'-f',
+			network,
+			containerNameOrId,
+		]).pipe(Effect.mapError(wrapNetworkError('disconnect', network)));
+		if (res.exitCode !== 0 && !/is not connected/i.test(res.stderr)) {
+			return yield* Effect.fail(
+				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
+			);
+		}
+	}).pipe(Effect.withSpan('runtime.docker.network.forceDisconnect'));
+
+/** List the endpoints currently attached to a network. Returns an
+ *  empty list when the network is missing. Used by prune to decide
+ *  whether to force-disconnect own endpoints or report foreign
+ *  holders. */
+export const listAttachedContainers = (
+	name: string,
+): Effect.Effect<
+	ReadonlyArray<NetworkAttachedEndpoint>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', ['inspect', name]).pipe(
+			Effect.mapError(wrapNetworkError('inspect', name)),
+		);
+		if (res.exitCode !== 0) {
+			if (isMissingNetworkStderr(res.stderr)) return [];
+			if (isDaemonUnreachableStderr(res.stderr)) {
+				return yield* Effect.fail(
+					new DaemonUnreachable({
+						op: 'docker.network.inspect',
+						detail: 'docker daemon unreachable',
+					}),
+				);
+			}
+			return yield* Effect.fail(
+				new DockerInspectFailed({
+					resource: 'network',
+					name,
+					stderr: res.stderr,
+					exitCode: res.exitCode,
+				}),
+			);
+		}
+		try {
+			const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
+				source: `docker network inspect ${name}`,
+				missingMessage: 'inspect returned an empty result',
+				mkError: (issue) =>
+					new DockerInspectDecodeFailed({
+						resource: 'network',
+						name,
+						detail: 'inspect returned malformed network JSON',
+						cause: issue.cause,
+					}),
+			});
+			return readContainers(decoded.Containers);
+		} catch (cause) {
+			return yield* Effect.fail(cause as DockerRuntimeError);
+		}
+	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
 
 // -----------------------------------------------------------------------------
 // IP readback

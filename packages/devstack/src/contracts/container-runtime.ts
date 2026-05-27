@@ -51,6 +51,16 @@ export interface ContainerBuildContext {
 	 *  Omitted means Docker uses the host/default platform. */
 	readonly platform?: string;
 	readonly buildArgs?: Readonly<Record<string, string>>;
+	/** Optional owner identity. When set, the runtime stamps
+	 *  `{managed:'true', app, stack, plugin?, role?}` as `--label` flags
+	 *  on `docker build`, making the resulting image visible to
+	 *  label-driven prune. Without it the image lands unlabelled. */
+	readonly owner?: {
+		readonly app: string;
+		readonly stack: string;
+		readonly plugin?: string;
+		readonly role?: string;
+	};
 }
 
 export interface ContainerPortPublish {

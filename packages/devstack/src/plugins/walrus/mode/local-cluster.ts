@@ -247,6 +247,7 @@ export const bootLocalCluster = (
 		const walrusImage = yield* resolveCargoImage(deps.runtime, {
 			walrusRef: opts.version,
 			suiVersion: opts.suiVersion,
+			owner: { app: deps.app, stack: deps.stack },
 		});
 
 		// ---- docker network ensure ------------------------------

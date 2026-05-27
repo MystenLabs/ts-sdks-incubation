@@ -57,6 +57,7 @@ import {
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
+import { expectedImageOwnershipLabels } from './labels.ts';
 import { followLogs as followLogsStream } from './logs.ts';
 import { ensureNetwork as ensureNetworkImpl } from './network.ts';
 import {
@@ -304,6 +305,15 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// collide on the sanitized contextPath form.
 				const hash = buildContentHash(effectiveCtx);
 				const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
+				// Owner identity flows through as `--label` flags on
+				// `docker build`, making the resulting image visible to
+				// label-driven prune. Labels are metadata, NOT part of
+				// the cache key — a previously-unlabelled cached image
+				// stays a cache hit (the legacy cleanup script reaps it).
+				const ownerLabels =
+					effectiveCtx.owner !== undefined
+						? expectedImageOwnershipLabels(effectiveCtx.owner)
+						: undefined;
 				return yield* ensureImageCached(
 					{
 						contextPath: effectiveCtx.contextPath,
@@ -311,6 +321,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 						platform: effectiveCtx.platform,
 						buildArgs: effectiveCtx.buildArgs,
 						tag,
+						...(ownerLabels !== undefined && { labels: ownerLabels }),
 					},
 					{
 						namespace: 'runtime-docker-build',

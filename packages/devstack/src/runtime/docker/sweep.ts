@@ -40,6 +40,11 @@ import {
 	listVolumes,
 } from './inventory.ts';
 import { LabelKey } from './labels.ts';
+import {
+	forceDisconnect,
+	listAttachedContainers,
+	type NetworkAttachedEndpoint,
+} from './network.ts';
 import { removeVolume } from './volume.ts';
 import {
 	isMissingImageStderr,
@@ -269,11 +274,24 @@ export const removeManagedNetworks = (
 const isNetworkInUseStderr = (stderr: string): boolean =>
 	/active endpoints|has active endpoint|network .* is in use/i.test(stderr);
 
-type NetworkRemoveOutcome = 'removed' | 'missing' | 'in-use';
+/** One foreign endpoint preventing a network from being removed —
+ *  surfaced in the prune summary so the operator can investigate. */
+export interface ForeignNetworkHolder {
+	readonly network: string;
+	readonly container: NetworkAttachedEndpoint;
+}
+
+type NetworkRemoveStep = 'removed' | 'missing' | 'in-use';
+
+type NetworkRemoveOutcome =
+	| { readonly kind: 'removed' }
+	| { readonly kind: 'missing' }
+	| { readonly kind: 'in-use'; readonly foreignHolders: ReadonlyArray<NetworkAttachedEndpoint> };
 
 export interface DevstackNetworkRemovalSummary {
 	readonly removed: number;
 	readonly skippedInUse: number;
+	readonly foreignHolders: ReadonlyArray<ForeignNetworkHolder>;
 }
 
 interface DevstackNetworkRemovalOptions {
@@ -283,7 +301,7 @@ interface DevstackNetworkRemovalOptions {
 
 const removeManagedNetworkOnce = (
 	name: string,
-): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
+): Effect.Effect<NetworkRemoveStep, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		const res = yield* dockerRunOk('network', ['rm', name]).pipe(
 			Effect.mapError(wrapGeneric('docker.network.rm')),
@@ -296,19 +314,70 @@ const removeManagedNetworkOnce = (
 		);
 	});
 
+/** Best-effort network removal that actively evicts our own endpoints
+ *  before declaring "in-use". Strategy on first in-use response:
+ *    1. inspect the network for attached endpoints
+ *    2. for each endpoint we own (`devstack.managed=true`), force-
+ *       disconnect it
+ *    3. retry `network rm`
+ *  Anything still holding the network after that is reported as a
+ *  foreign holder — typically a non-devstack container, a test fixture,
+ *  or a sibling stack we deliberately left alone. */
 const removeManagedNetworkBestEffort = (
 	name: string,
 	options: Required<DevstackNetworkRemovalOptions>,
 ): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
+		const first = yield* removeManagedNetworkOnce(name);
+		if (first === 'removed') return { kind: 'removed' as const };
+		if (first === 'missing') return { kind: 'missing' as const };
+		// `first === 'in-use'`: investigate, evict, retry.
+		const attachments = yield* listAttachedContainers(name).pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<NetworkAttachedEndpoint>)),
+		);
+		if (attachments.length === 0) {
+			// Docker said in-use but inspect shows no endpoints — likely
+			// a stale endpoint that needs a quiescence window. Fall
+			// through to the retry loop.
+		} else {
+			const ownedNames = new Set<string>();
+			const all = yield* listDevstackContainers().pipe(
+				Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly name: string }>)),
+			);
+			for (const c of all) ownedNames.add(c.name);
+			for (const attached of attachments) {
+				if (!ownedNames.has(attached.name)) continue;
+				yield* forceDisconnect(attached.name, name).pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('prune: force-disconnect failed; will retry rm anyway', {
+							network: name,
+							container: attached.name,
+							cause,
+						}),
+					),
+					Effect.catch(() => Effect.void),
+				);
+			}
+		}
 		for (let attempt = 0; attempt < options.retryAttempts; attempt += 1) {
 			const outcome = yield* removeManagedNetworkOnce(name);
-			if (outcome !== 'in-use') return outcome;
+			if (outcome === 'removed') return { kind: 'removed' as const };
+			if (outcome === 'missing') return { kind: 'missing' as const };
 			if (attempt < options.retryAttempts - 1) {
 				yield* Effect.sleep(`${options.retryDelayMillis} millis`);
 			}
 		}
-		return 'in-use' as const;
+		// Still in-use after our best effort — diagnose the holders.
+		const finalAttachments = yield* listAttachedContainers(name).pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<NetworkAttachedEndpoint>)),
+		);
+		const ownedNames = new Set<string>();
+		const all = yield* listDevstackContainers().pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly name: string }>)),
+		);
+		for (const c of all) ownedNames.add(c.name);
+		const foreign = finalAttachments.filter((a) => !ownedNames.has(a.name));
+		return { kind: 'in-use' as const, foreignHolders: foreign };
 	});
 
 export const removeDevstackNetworks = (
@@ -337,13 +406,19 @@ export const removeDevstackNetworksBestEffort = (
 		};
 		let removed = 0;
 		let skippedInUse = 0;
+		const foreignHolders: Array<ForeignNetworkHolder> = [];
 		for (const network of networks) {
 			if (!labelsMatchAppStack(network.labels, labelMatch)) continue;
 			const outcome = yield* removeManagedNetworkBestEffort(network.name, retryOptions);
-			if (outcome === 'removed') removed += 1;
-			if (outcome === 'in-use') skippedInUse += 1;
+			if (outcome.kind === 'removed') removed += 1;
+			else if (outcome.kind === 'in-use') {
+				skippedInUse += 1;
+				for (const container of outcome.foreignHolders) {
+					foreignHolders.push({ network: network.name, container });
+				}
+			}
 		}
-		return { removed, skippedInUse };
+		return { removed, skippedInUse, foreignHolders };
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworksBestEffort'));
 
 export const removeManagedVolumes = (

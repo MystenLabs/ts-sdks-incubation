@@ -69,6 +69,15 @@ export interface PruneSelection extends PruneTargetSelection {
 	readonly dryRun: boolean;
 }
 
+/** One non-devstack container still holding a network that prune
+ *  could not remove. Surfaced so the operator can investigate the
+ *  external holder (typically a test fixture, a sibling project's
+ *  container, or a manually-attached debugging container). */
+export interface PruneForeignNetworkHolder {
+	readonly network: string;
+	readonly container: { readonly id: string; readonly name: string };
+}
+
 export interface PruneSummary {
 	readonly inspectedGroups: number;
 	readonly selectedGroups: number;
@@ -78,6 +87,9 @@ export interface PruneSummary {
 	readonly networksSkipped: number;
 	readonly volumesRemoved: number;
 	readonly imagesRemoved: number;
+	/** Foreign holders surviving network removal. Empty when every
+	 *  network came down cleanly or no network removal was attempted. */
+	readonly foreignNetworkHolders: ReadonlyArray<PruneForeignNetworkHolder>;
 }
 
 export type PruneOutcome = { readonly kind: 'completed'; readonly summary: PruneSummary };
@@ -159,18 +171,38 @@ export const groupResourceCountForResources = (
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
 
+/** Sentinel that marks a shared group as per-app (versus per-host).
+ *  Mirrors the L1 vocabulary at `plugins/sui/chain-build-container.ts`
+ *  — the only current producer of this sentinel. */
+const PER_APP_SHARED_STACK = '_per-app_';
+
+/** Apps with at least one live non-shared group — their `_per-app_`
+ *  shared resources stay pinned because something under the app is
+ *  still running. */
+const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> => {
+	const apps = new Set<string>();
+	for (const group of inventory.groups) {
+		if (!group.shared && group.live) apps.add(group.app);
+	}
+	return apps;
+};
+
 export const defaultPruneSelection = (
 	inventory: PruneInventory,
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
-): ReadonlyArray<string> =>
-	inventory.groups
+): ReadonlyArray<string> => {
+	const pinned = appsWithLiveSiblings(inventory);
+	return inventory.groups
 		.filter(
 			(group) =>
 				!group.live &&
-				(!group.shared || group.autoPrunable) &&
+				(!group.shared ||
+					group.autoPrunable ||
+					(group.stack === PER_APP_SHARED_STACK && !pinned.has(group.app))) &&
 				groupResourceCountForResources(group, resources) > 0,
 		)
 		.map((group) => group.key);
+};
 
 const requireBulkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
 	if (ctx.flags.dryRun) return Effect.void;
@@ -193,15 +225,21 @@ const requireInteractive = (ctx: CommandContext): Effect.Effect<void, CliError> 
 	);
 };
 
-const formatGroupLine = (group: PruneGroup): string => {
+const formatGroupLine = (group: PruneGroup, pinnedApps: ReadonlySet<string>): string => {
 	const state =
 		group.live && group.livePids.length > 0
 			? `live pid ${group.livePids.join(',')}`
 			: group.live
 				? 'live'
-				: group.shared
-					? 'shared'
-					: 'idle';
+				: group.shared && group.stack === PER_APP_SHARED_STACK
+					? pinnedApps.has(group.app)
+						? 'shared (pinned by live sibling)'
+						: 'shared (auto)'
+					: group.shared
+						? group.autoPrunable
+							? 'shared (auto)'
+							: 'shared'
+						: 'idle';
 	const running = group.runningContainers > 0 ? `, ${group.runningContainers} running` : '';
 	const images = group.images > 0 ? `, ${group.images} image(s)` : '';
 	return `  ${group.app}/${group.stack}  ${state}  ${group.containers} container(s)${running}, ${group.networks} network(s), ${group.volumes} volume(s)${images}`;
@@ -209,17 +247,23 @@ const formatGroupLine = (group: PruneGroup): string => {
 
 const inventoryLines = (inventory: PruneInventory): ReadonlyArray<string> => {
 	if (inventory.groups.length === 0) return ['(no devstack-labelled Docker resources)'];
+	const pinned = appsWithLiveSiblings(inventory);
 	return [
 		`devstack prune inventory: ${inventory.totals.groups} group(s), ${inventory.totals.containers} container(s), ${inventory.totals.networks} network(s), ${inventory.totals.volumes} volume(s), ${inventory.totals.images} image(s)`,
-		...inventory.groups.map(formatGroupLine),
+		...inventory.groups.map((g) => formatGroupLine(g, pinned)),
 	];
 };
 
-const completedLine = (summary: PruneSummary, dryRun: boolean): string => {
+const completedLines = (summary: PruneSummary, dryRun: boolean): ReadonlyArray<string> => {
 	const prefix = dryRun ? '[dry-run] would prune' : 'prune completed';
 	const skippedNetworks =
 		summary.networksSkipped > 0 ? `, ${summary.networksSkipped} network(s) still in use` : '';
-	return `${prefix}: ${summary.selectedGroups} group(s), ${summary.containersRemoved} container(s), ${summary.networksRemoved} network(s), ${summary.volumesRemoved} volume(s), ${summary.imagesRemoved} image(s), ${summary.skippedLiveGroups} live group(s) skipped${skippedNetworks}`;
+	const head = `${prefix}: ${summary.selectedGroups} group(s), ${summary.containersRemoved} container(s), ${summary.networksRemoved} network(s), ${summary.volumesRemoved} volume(s), ${summary.imagesRemoved} image(s), ${summary.skippedLiveGroups} live group(s) skipped${skippedNetworks}`;
+	if (summary.foreignNetworkHolders.length === 0) return [head];
+	const holders = summary.foreignNetworkHolders.map(
+		(h) => `  ${h.network} held by ${h.container.name} (${h.container.id.slice(0, 12)})`,
+	);
+	return [head, 'foreign network holders:', ...holders];
 };
 
 const mapUnknownPruneError = (cause: unknown): Effect.Effect<never, CliError> =>
@@ -300,6 +344,7 @@ export const runPrune = (
 							networksSkipped: 0,
 							volumesRemoved: 0,
 							imagesRemoved: 0,
+							foreignNetworkHolders: [],
 						},
 					},
 				},
@@ -327,7 +372,7 @@ export const runPrune = (
 				selection: selected,
 				outcome,
 			},
-			humanLines: [completedLine(outcome.summary, ctx.flags.dryRun)],
+			humanLines: completedLines(outcome.summary, ctx.flags.dryRun),
 		});
 		return { exitCode: 0 } as CommandResult;
 	}).pipe(Effect.withSpan('cli.prune'));

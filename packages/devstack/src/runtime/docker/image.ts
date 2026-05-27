@@ -152,6 +152,9 @@ export interface BuildOptions {
 	readonly platform?: string;
 	readonly buildArgs?: Readonly<Record<string, string>>;
 	readonly tag: string;
+	/** Image labels rendered as `--label key=value` flags. Stamped onto
+	 *  the resulting image so label-driven prune can find it. */
+	readonly labels?: Readonly<Record<string, string>>;
 	readonly onLine?: (line: string) => Effect.Effect<void>;
 }
 
@@ -186,6 +189,11 @@ export const build = (
 		if (opts.buildArgs) {
 			for (const [k, v] of Object.entries(opts.buildArgs)) {
 				args.push('--build-arg', `${k}=${v}`);
+			}
+		}
+		if (opts.labels) {
+			for (const [k, v] of Object.entries(opts.labels)) {
+				args.push('--label', `${k}=${v}`);
 			}
 		}
 		args.push(opts.contextPath);

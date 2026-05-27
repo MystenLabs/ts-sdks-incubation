@@ -45,6 +45,12 @@ export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0' as const;
 export interface WalrusCargoImageInputs<Ref extends string = string, SuiV extends string = string> {
 	readonly walrusRef: Ref;
 	readonly suiVersion: SuiV;
+	/** Owner identity stamped on the built image so label-driven prune
+	 *  finds it. */
+	readonly owner: {
+		readonly app: string;
+		readonly stack: string;
+	};
 }
 
 /** Resolved value — the content-addressed image ref. */
@@ -84,6 +90,12 @@ export const resolveCargoImage = (
 			buildArgs: {
 				WALRUS_VERSION: inputs.walrusRef,
 				SUI_VERSION: inputs.suiVersion,
+			},
+			owner: {
+				app: inputs.owner.app,
+				stack: inputs.owner.stack,
+				plugin: 'walrus',
+				role: 'cluster',
 			},
 		};
 

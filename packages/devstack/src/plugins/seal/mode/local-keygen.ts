@@ -409,7 +409,10 @@ export const bootLocalKeygen = (
 		// The cargo image's resolver honors `SEAL_CARGO_IMAGE_OVERRIDE`
 		// for the pre-baked path; falls back to a documented seam error
 		// pointing at the override hatch.
-		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime);
+		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime, {
+			app: deps.labels.app,
+			stack: deps.labels.stack,
+		});
 
 		const persisted = yield* readPersistedLocalKeygenState(deps.servicePath);
 		if (persisted !== null) {

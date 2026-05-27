@@ -368,7 +368,12 @@ describe('removeManagedContainers', () => {
 				).pipe(Effect.provide(fakeDockerLayer(bin)));
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 
-				expect(result).toEqual({ removed: 0, skippedInUse: 1 });
+				expect(result.removed).toBe(0);
+				expect(result.skippedInUse).toBe(1);
+				// Foreign holders depend on what the shim reports for
+				// `network inspect`. This shim doesn't expose attachments,
+				// so the holder list should be empty.
+				expect(result.foreignHolders).toEqual([]);
 				expect(lines).toContain('network rm seal-seal-net');
 			} finally {
 				rmSync(root, { recursive: true, force: true });

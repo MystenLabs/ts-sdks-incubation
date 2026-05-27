@@ -144,6 +144,25 @@ export const expectedVolumeOwnershipLabels = (
 	[LabelKey.role]: tuple.role,
 });
 
+/** Labels stamped on `docker build` outputs so label-driven prune can
+ *  find the image. `plugin` / `role` are optional — the runtime
+ *  contract only requires `app` / `stack`. */
+export const expectedImageOwnershipLabels = (owner: {
+	readonly app: string;
+	readonly stack: string;
+	readonly plugin?: string;
+	readonly role?: string;
+}): ExpectedOwnershipLabels => {
+	const out: Record<string, string> = {
+		[LabelKey.managed]: 'true',
+		[LabelKey.app]: owner.app,
+		[LabelKey.stack]: owner.stack,
+	};
+	if (owner.plugin !== undefined) out[LabelKey.plugin] = owner.plugin;
+	if (owner.role !== undefined) out[LabelKey.role] = owner.role;
+	return out;
+};
+
 export const ownershipMismatchDetail = (
 	expected: ExpectedOwnershipLabels,
 	actual: Readonly<Record<string, string>>,

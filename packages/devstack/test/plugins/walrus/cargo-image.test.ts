@@ -87,7 +87,11 @@ describe('walrus cargo image resolver', () => {
 });
 
 describe('resolveCargoImage — native release-binary policy (default inputs)', () => {
-	const defaultInputs = { walrusRef: DEFAULT_WALRUS_REF, suiVersion: DEFAULT_SUI_VERSION };
+	const defaultInputs = {
+		walrusRef: DEFAULT_WALRUS_REF,
+		suiVersion: DEFAULT_SUI_VERSION,
+		owner: { app: 'test-app', stack: 'test-stack' },
+	};
 
 	it.effect('uses the native Docker build path without a platform override', () =>
 		Effect.gen(function* () {
@@ -108,6 +112,12 @@ describe('resolveCargoImage — native release-binary policy (default inputs)', 
 			expect(captured!.buildArgs).toEqual({
 				WALRUS_VERSION: DEFAULT_WALRUS_REF,
 				SUI_VERSION: DEFAULT_SUI_VERSION,
+			});
+			expect(captured!.owner).toEqual({
+				app: 'test-app',
+				stack: 'test-stack',
+				plugin: 'walrus',
+				role: 'cluster',
 			});
 		}),
 	);

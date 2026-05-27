@@ -64,6 +64,7 @@ const makeHarness = () => {
 						networksSkipped: 0,
 						volumesRemoved: 0,
 						imagesRemoved: 0,
+						foreignNetworkHolders: [],
 					},
 				}),
 			select: (_inventory, resources) => Effect.succeed({ groupKeys: [], resources }),

@@ -39,6 +39,12 @@ export interface SealCargoImageInputs<Ref extends string = string, RustV extends
 	readonly sealRepo: typeof DEFAULT_SEAL_REPO;
 	readonly sealRef: Ref;
 	readonly rustToolchain: RustV;
+	/** Owner identity stamped on the built image so label-driven prune
+	 *  finds it. */
+	readonly owner: {
+		readonly app: string;
+		readonly stack: string;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +94,7 @@ export const resolveSealCargoImage = (
 			dockerfile: 'seal/Dockerfile',
 			fingerprintPaths: ['seal/Dockerfile', 'seal/entrypoint.sh', '_shared/signal-forward.sh'],
 			buildArgs: { SEAL_VERSION: inputs.sealRef },
+			owner: { app: inputs.owner.app, stack: inputs.owner.stack, plugin: 'seal', role: 'key-server' },
 		};
 		return yield* runtime.ensureImage(buildCtx).pipe(
 			Effect.mapError((cause) =>
@@ -113,9 +120,11 @@ export const resolveSealCargoImage = (
 /** Convenience: resolve via the default inputs. */
 export const resolveDefaultSealCargoImage = (
 	runtime: ContainerRuntime,
+	owner: SealCargoImageInputs['owner'],
 ): Effect.Effect<ImageRef, SealError, Scope.Scope> =>
 	resolveSealCargoImage(runtime, {
 		sealRepo: DEFAULT_SEAL_REPO,
 		sealRef: DEFAULT_SEAL_VERSION,
 		rustToolchain: DEFAULT_SEAL_RUST_TOOLCHAIN,
+		owner,
 	});
