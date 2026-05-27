@@ -38,8 +38,11 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -130,9 +133,11 @@ export const bootLiveMode = (
 		const endpoints = yield* resolveEndpoints(opts);
 
 		yield* Effect.annotateCurrentSpan({
-			'sui.live.network': opts.network,
-			'sui.live.rpcUrl': endpoints.rpcUrl,
-			'sui.live.faucetUrl': endpoints.faucetUrl ?? '<none>',
+			[SuiSpans.liveNetwork]: opts.network,
+			[SuiSpans.liveRpcUrl]: endpoints.rpcUrl,
+			...(endpoints.faucetUrl !== undefined
+				? { [SuiSpans.liveFaucetUrl]: endpoints.faucetUrl }
+				: {}),
 		});
 
 		// ----- 2. Construct the grpc client ----------------------------------
@@ -195,16 +200,7 @@ export const bootLiveMode = (
 		return { resolved, client };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.sui.live.boot', {
-			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'live' },
+			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'live' },
 		}),
 	);
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

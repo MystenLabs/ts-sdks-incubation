@@ -110,25 +110,13 @@ const makeGate = (): Gate => {
 	return { wait, release };
 };
 
-const stubSuiSdk = (): SuiSdkShim => ({
-	core: {
-		getObject: () => Promise.reject(new Error('stub getObject')),
-		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
-		getBalance: () => Promise.reject(new Error('stub getBalance')),
-		listCoins: () => Promise.reject(new Error('stub listCoins')),
-		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
-		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
-	},
-	client: null,
-});
-
-const accountCtx: AccountAcquireContext = {
-	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk: stubSuiSdk() },
+const makeAccountCtx = (sdk: SuiSdkShim): AccountAcquireContext => ({
+	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk },
 	runtimeRoot: '/tmp/devstack-publish-executor-test',
 	app: 'test-app',
 	stack: 'test-stack',
 	emitAutoPromotionEvent: () => Effect.void,
-};
+});
 
 const accountOpts: ResolvedAccountOptions = {
 	kind: 'signer',
@@ -147,47 +135,53 @@ const makePublishSdk = (
 	waitGates: ReadonlyMap<string, Gate>,
 	opts: { readonly failedLabels?: ReadonlySet<number> } = {},
 ): SuiSdkShim => {
-	const client = {
-		executeTransaction: async (args: { readonly transaction: Uint8Array }) => {
-			const label = args.transaction[0] ?? 0;
-			txHarness.events.push(`${label}:execute`);
-			if (opts.failedLabels?.has(label) === true) {
-				return {
-					$kind: 'FailedTransaction',
-					FailedTransaction: {
-						digest: `digest-${label}`,
-						status: { error: 'MoveAbort' },
-					},
-				};
-			}
+	const executeTransaction = async (args: { readonly transaction: Uint8Array }) => {
+		const label = args.transaction[0] ?? 0;
+		txHarness.events.push(`${label}:execute`);
+		if (opts.failedLabels?.has(label) === true) {
 			return {
-				$kind: 'Transaction',
-				Transaction: {
+				$kind: 'FailedTransaction',
+				FailedTransaction: {
 					digest: `digest-${label}`,
-					effects: {
-						changedObjects: [
-							{
-								objectId: `0xpkg${label}`,
-								outputState: 'PackageWrite',
-								idOperation: 'Created',
-							},
-							{
-								objectId: `0xcap${label}`,
-								outputState: 'ObjectWrite',
-								idOperation: 'Created',
-							},
-						],
-					},
-					objectTypes: {
-						[`0xcap${label}`]: '0x2::package::UpgradeCap',
-					},
+					status: { error: 'MoveAbort' },
 				},
 			};
-		},
-		waitForTransaction: async (args: { readonly digest: string }) => {
-			txHarness.events.push(`${args.digest.replace('digest-', '')}:wait`);
-			await waitGates.get(args.digest)?.wait;
-		},
+		}
+		return {
+			$kind: 'Transaction',
+			Transaction: {
+				digest: `digest-${label}`,
+				effects: {
+					changedObjects: [
+						{
+							objectId: `0xpkg${label}`,
+							outputState: 'PackageWrite',
+							idOperation: 'Created',
+						},
+						{
+							objectId: `0xcap${label}`,
+							outputState: 'ObjectWrite',
+							idOperation: 'Created',
+						},
+					],
+				},
+				objectTypes: {
+					[`0xcap${label}`]: '0x2::package::UpgradeCap',
+				},
+				objectChanges: [
+					{ type: 'published', objectId: `0xpkg${label}` },
+					{
+						type: 'created',
+						objectId: `0xcap${label}`,
+						objectType: '0x2::package::UpgradeCap',
+					},
+				],
+			},
+		};
+	};
+	const waitForTransaction = async (args: { readonly digest: string }) => {
+		txHarness.events.push(`${args.digest.replace('digest-', '')}:wait`);
+		await waitGates.get(args.digest)?.wait;
 	};
 	return {
 		core: {
@@ -207,10 +201,12 @@ const makePublishSdk = (
 					hasNextPage: false,
 					cursor: null,
 				}),
-			executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
-			waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
+			executeTransaction,
+			waitForTransaction,
 		},
-		client,
+		// Tests don't reach the publish-side client surface — the unified
+		// signAndExecute path goes through account.sdk.core.* exclusively.
+		client: null as never,
 	};
 };
 
@@ -218,21 +214,19 @@ describe('package publish executor', () => {
 	it.effect('keeps Transaction.build through waitForTransaction inside the publisher lease', () =>
 		Effect.gen(function* () {
 			txHarness.events.length = 0;
-			const account = yield* acquireAccount(accountOpts, accountCtx).pipe(
+			const waitOne = makeGate();
+			const waitTwo = makeGate();
+			const sharedSdk = makePublishSdk(
+				new Map([
+					['digest-1', waitOne],
+					['digest-2', waitTwo],
+				]),
+			);
+			const account = yield* acquireAccount(accountOpts, makeAccountCtx(sharedSdk)).pipe(
 				Effect.provide(layerStrategyRegistry),
 				Effect.orDie,
 			);
-			const waitOne = makeGate();
-			const waitTwo = makeGate();
-			const executor = makePublishExecutor({
-				sdk: makePublishSdk(
-					new Map([
-						['digest-1', waitOne],
-						['digest-2', waitTwo],
-					]),
-				),
-				account,
-			});
+			const executor = makePublishExecutor({ sdk: sharedSdk, account });
 
 			const first = yield* Effect.forkChild(
 				executor.publishTx({
@@ -281,22 +275,20 @@ describe('package publish executor', () => {
 	it.effect('waits for FailedTransaction digests before releasing the publisher lease', () =>
 		Effect.gen(function* () {
 			txHarness.events.length = 0;
-			const account = yield* acquireAccount(accountOpts, accountCtx).pipe(
+			const waitOne = makeGate();
+			const waitTwo = makeGate();
+			const sharedSdk = makePublishSdk(
+				new Map([
+					['digest-1', waitOne],
+					['digest-2', waitTwo],
+				]),
+				{ failedLabels: new Set([1]) },
+			);
+			const account = yield* acquireAccount(accountOpts, makeAccountCtx(sharedSdk)).pipe(
 				Effect.provide(layerStrategyRegistry),
 				Effect.orDie,
 			);
-			const waitOne = makeGate();
-			const waitTwo = makeGate();
-			const executor = makePublishExecutor({
-				sdk: makePublishSdk(
-					new Map([
-						['digest-1', waitOne],
-						['digest-2', waitTwo],
-					]),
-					{ failedLabels: new Set([1]) },
-				),
-				account,
-			});
+			const executor = makePublishExecutor({ sdk: sharedSdk, account });
 
 			const failedFirst = yield* Effect.forkChild(
 				Effect.exit(
@@ -354,21 +346,24 @@ describe('package publish executor', () => {
 					const label = tx[0] ?? 0;
 					txHarness.events.push(`${label}:impersonate`);
 					return {
-						digest: `digest-${label}`,
-						effects: {},
-						objectChanges: [
-							{
-								type: 'published',
-								objectId: `0xpkg${label}`,
-								objectType: `0xpkg${label}::published::Package`,
-							},
-							{
-								type: 'created',
-								objectId: `0xcap${label}`,
-								objectType: '0x2::package::UpgradeCap',
-							},
-						],
-						balanceChanges: [],
+						$kind: 'Transaction',
+						Transaction: {
+							digest: `digest-${label}`,
+							effects: {},
+							objectChanges: [
+								{
+									type: 'published',
+									objectId: `0xpkg${label}`,
+									objectType: `0xpkg${label}::published::Package`,
+								},
+								{
+									type: 'created',
+									objectId: `0xcap${label}`,
+									objectType: '0x2::package::UpgradeCap',
+								},
+							],
+							balanceChanges: [],
+						},
 					};
 				});
 			const account: AccountValue = {

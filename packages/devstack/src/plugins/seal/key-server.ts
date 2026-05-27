@@ -56,6 +56,7 @@ import { ensureManagedContainer } from '../../substrate/runtime/managed-containe
 import { sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
+import { SealSpans } from './spans.ts';
 
 export { DEFAULT_KEY_SERVER_PORT } from './routable.ts';
 
@@ -371,9 +372,9 @@ export const startKeyServer = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.keyServer.start', {
 			attributes: {
-				'seal.name': name,
-				'seal.containerName': spec.containerName,
-				'seal.routedUrl': spec.routedUrl,
+				[SealSpans.name]: name,
+				[SealSpans.containerName]: spec.containerName,
+				[SealSpans.routedUrl]: spec.routedUrl,
 			},
 		}),
 	);

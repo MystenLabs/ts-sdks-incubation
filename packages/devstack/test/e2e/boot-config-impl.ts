@@ -89,6 +89,7 @@ import {
 import {
 	bootRouterOrchestrator,
 	buildProductionOrchestratorSinks,
+	layerManifestEndpointRegistry,
 	productionRouterProfile,
 } from '../../src/orchestrators/runtime-composition.ts';
 import {
@@ -317,6 +318,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		withSnapshotOrchestrator,
 		withRouter,
 		withCodegen,
+		layerManifestEndpointRegistry,
 		withPostAcquireTasks,
 	);
 

@@ -5,7 +5,7 @@
 // implementations (Traefik ops, upstream resolver, codegen paths), but
 // the sink registrations and router boot step stay shared.
 
-import { Effect, FileSystem, Layer, Scope } from 'effect';
+import { Context, Data, Effect, FileSystem, Layer, Ref, Scope } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -52,7 +52,12 @@ import {
 	writeManifest,
 } from '../substrate/runtime/manifest/index.ts';
 import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
-import { resolveManifestExtras, type ManifestExtrasInput } from '../substrate/manifest.ts';
+import { operationalEndpointEventsFromResolvedValue } from '../substrate/runtime/projection/operational-endpoints.ts';
+import {
+	resolveManifestExtras,
+	type EndpointEntry,
+	type ManifestExtrasInput,
+} from '../substrate/manifest.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import { PostAcquireTasksService } from '../substrate/runtime/post-acquire-tasks.ts';
 import type {
@@ -64,7 +69,7 @@ import type {
 import type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
-} from '../substrate/runtime/supervisor.ts';
+} from '../substrate/runtime/supervisor/index.ts';
 
 export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
@@ -82,6 +87,51 @@ export interface ProductionRouterOptions {
 export interface ProductionPostAcquireOptions {
 	readonly extras?: ManifestExtrasInput;
 }
+
+export interface ManifestEndpointRegistry {
+	readonly register: (entry: EndpointEntry) => Effect.Effect<void, never, Scope.Scope>;
+	readonly entries: Effect.Effect<ReadonlyArray<EndpointEntry>>;
+}
+
+export class ManifestEndpointRegistryService extends Context.Service<
+	ManifestEndpointRegistryService,
+	ManifestEndpointRegistry
+>()('@devstack/orchestrators/ManifestEndpointRegistry') {}
+
+export const layerManifestEndpointRegistry: Layer.Layer<ManifestEndpointRegistryService> =
+	Layer.effect(
+		ManifestEndpointRegistryService,
+		Effect.gen(function* () {
+			const entriesRef = yield* Ref.make<ReadonlyArray<EndpointEntry & { readonly seq: number }>>(
+				[],
+			);
+			const seqRef = yield* Ref.make(0);
+
+			const register = (entry: EndpointEntry): Effect.Effect<void, never, Scope.Scope> =>
+				Effect.gen(function* () {
+					const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
+					yield* Ref.update(entriesRef, (entries) => [...entries, { ...entry, seq }]);
+					yield* Effect.addFinalizer(() =>
+						Ref.update(entriesRef, (entries) =>
+							entries.filter((candidate) => candidate.seq !== seq),
+						),
+					);
+				});
+
+			return ManifestEndpointRegistryService.of({
+				register,
+				entries: Ref.get(entriesRef).pipe(
+					Effect.map((entries) =>
+						entries.map((entryWithSeq) => {
+							const { seq, ...entry } = entryWithSeq;
+							void seq;
+							return entry;
+						}),
+					),
+				),
+			});
+		}),
+	);
 
 export interface CapabilityDeliveryObservers {
 	readonly routable?: (
@@ -107,6 +157,7 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 	const profile = router.profile ?? productionRouterProfile();
 	return Layer.mergeAll(
 		layerSnapshotOrchestrator,
+		layerManifestEndpointRegistry,
 		layerRouterService.pipe(
 			Layer.provideMerge(
 				Layer.mergeAll(
@@ -156,12 +207,36 @@ export const endpointEventFromRoutable = (
 	tag: 'endpoint.registered',
 	endpoint: {
 		endpointKey: endpointKey(`${pluginKey}:${endpoint.endpointName}`),
+		pluginKey,
 		name: endpoint.endpointName,
 		url: endpoint.url,
 		displayUrl: null,
 		wireProtocol: endpoint.wireProtocol,
 		registeredAt,
 	},
+});
+
+export const manifestEndpointEntryFromRoutable = (
+	pluginKey: PluginKey,
+	endpoint: EndpointUrl,
+): EndpointEntry => ({
+	endpointKey: `${pluginKey}:${endpoint.endpointName}`,
+	name: endpoint.endpointName,
+	url: endpoint.url,
+	displayUrl: null,
+	wireProtocol: endpoint.wireProtocol,
+	pluginKey: String(pluginKey),
+});
+
+const manifestEndpointEntryFromOperationalEndpoint = (
+	endpoint: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>['endpoint'],
+): EndpointEntry => ({
+	endpointKey: String(endpoint.endpointKey),
+	name: endpoint.name,
+	url: endpoint.url,
+	displayUrl: endpoint.displayUrl,
+	wireProtocol: endpoint.wireProtocol,
+	pluginKey: String(endpoint.pluginKey),
 });
 
 const orchestratorSink = <K extends ContributionKind, TDecl>(
@@ -173,23 +248,22 @@ export const makeProjectionCapabilitySink = (): OrchestratorSinks[number] =>
 		kind: 'projection',
 		accept: (decl, ctx) =>
 			Effect.gen(function* () {
-				const event =
-					decl.event.tag === 'account.updated'
-						? {
-								...decl.event,
-								account: {
-									...decl.event.account,
-									rowKey: decl.event.account.rowKey ?? ctx.pluginKey,
-								},
-							}
-						: {
-								...decl.event,
-								package: {
-									...decl.event.package,
-									rowKey: decl.event.package.rowKey ?? ctx.pluginKey,
-								},
-							};
-				yield* ctx.publish(event);
+				// Stamp `rowKey` (when absent) so projection consumers can
+				// attribute the row to the contributing plugin. The payload
+				// stays opaque from the substrate's POV; we project just
+				// enough to set the row-key field if the payload exposes it.
+				const payload = decl.event.payload;
+				const payloadWithRowKey =
+					payload !== null &&
+					typeof payload === 'object' &&
+					'rowKey' in payload &&
+					(payload as { rowKey: unknown }).rowKey === null
+						? { ...payload, rowKey: ctx.pluginKey }
+						: payload;
+				yield* ctx.publish({
+					...decl.event,
+					payload: payloadWithRowKey,
+				});
 			}),
 	});
 
@@ -221,12 +295,16 @@ export const buildProductionOrchestratorSinks = (
 ): Effect.Effect<
 	OrchestratorSinks,
 	never,
-	SnapshotOrchestratorService | RouterService | CodegenOrchestratorService
+	| SnapshotOrchestratorService
+	| RouterService
+	| CodegenOrchestratorService
+	| ManifestEndpointRegistryService
 > =>
 	Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
+		const manifestEndpoints = yield* ManifestEndpointRegistryService;
 		return [
 			orchestratorSink<'snapshotable', SnapshotableDecl>({
 				kind: 'snapshotable',
@@ -243,9 +321,11 @@ export const buildProductionOrchestratorSinks = (
 						Effect.andThen(router.contributeRoute(decl)),
 						Effect.flatMap((endpoint) => {
 							const event = endpointEventFromRoutable(ctx.pluginKey, endpoint);
-							return ctx
-								.publish(event)
+							const manifestEntry = manifestEndpointEntryFromRoutable(ctx.pluginKey, endpoint);
+							return manifestEndpoints
+								.register(manifestEntry)
 								.pipe(
+									Effect.andThen(ctx.publish(event)),
 									Effect.andThen(
 										observers.routable
 											? observers.routable(ctx.pluginKey, endpoint, event)
@@ -279,17 +359,54 @@ const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
 	const lookup = (resourceId: string): unknown => {
 		const key = resourceIdToKey.get(resourceId);
 		if (key === undefined) {
-			throw new Error(`manifest extras requested unknown resource '${resourceId}'`);
+			throw new ManifestExtrasLookupError({
+				kind: 'unknown-resource',
+				resourceId,
+			});
 		}
 		const resolved = readResolvedSync(ctx.registry, key);
 		if (resolved === undefined) {
-			throw new Error(`manifest extras requested unresolved resource '${resourceId}'`);
+			throw new ManifestExtrasLookupError({
+				kind: 'unresolved-resource',
+				resourceId,
+			});
 		}
 		return resolved;
 	};
 	return {
 		value: (resource: { readonly id: string }) => lookup(resource.id),
 	};
+};
+
+/** Failure surfaced when `extras` references a resource the supervisor
+ *  doesn't know about, or one that hasn't resolved yet. Thrown
+ *  synchronously from inside the `ManifestExtrasContext.value` closure
+ *  (the user-supplied `extras` factory invokes it synchronously); the
+ *  Effect runtime captures it as a tagged defect that the
+ *  cascade-formatter projects via `_tag`. */
+export class ManifestExtrasLookupError extends Data.TaggedError(
+	'ManifestExtrasLookupError',
+)<{
+	readonly kind: 'unknown-resource' | 'unresolved-resource';
+	readonly resourceId: string;
+}> {}
+
+const operationalManifestEndpointEntries = (
+	ctx: SupervisorPostAcquireContext,
+	routableEntries: ReadonlyArray<EndpointEntry>,
+): ReadonlyArray<EndpointEntry> => {
+	const routablePluginKeys = new Set(routableEntries.map((entry) => entry.pluginKey));
+	const registeredAt = Date.now();
+	const entries: EndpointEntry[] = [];
+	for (const [key] of ctx.graph.nodes) {
+		if (routablePluginKeys.has(String(key))) continue;
+		const resolved = readResolvedSync(ctx.registry, key);
+		if (resolved === undefined) continue;
+		for (const event of operationalEndpointEventsFromResolvedValue(key, resolved, registeredAt)) {
+			entries.push(manifestEndpointEntryFromOperationalEndpoint(event.endpoint));
+		}
+	}
+	return entries;
 };
 
 export const buildProductionPostAcquireHook = (
@@ -304,6 +421,7 @@ export const buildProductionPostAcquireHook = (
 	| FileSystem.FileSystem
 	| StackPathsService
 	| PostAcquireTasksService
+	| ManifestEndpointRegistryService
 > =>
 	Effect.gen(function* () {
 		const codegen = yield* CodegenOrchestratorService;
@@ -313,9 +431,15 @@ export const buildProductionPostAcquireHook = (
 		const fs = yield* FileSystem.FileSystem;
 		const stackPaths = yield* StackPathsService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
+		const manifestEndpoints = yield* ManifestEndpointRegistryService;
 		return (ctx) =>
 			Effect.gen(function* () {
 				const extras = yield* resolveManifestExtras(options.extras, makeManifestExtrasContext(ctx));
+				const routableEndpoints = yield* manifestEndpoints.entries;
+				const endpoints = [
+					...routableEndpoints,
+					...operationalManifestEndpointEntries(ctx, routableEndpoints),
+				];
 				const envelope = yield* buildEnvelope({
 					identity: {
 						app: ctx.identity.app,
@@ -323,6 +447,7 @@ export const buildProductionPostAcquireHook = (
 						chain: ctx.identity.chain,
 					},
 					contributions: [],
+					endpoints,
 					extras,
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');

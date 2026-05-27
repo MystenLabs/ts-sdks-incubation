@@ -8,7 +8,7 @@ import { endpointKey, pluginKey } from '../../brand.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
-export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v3.json';
+export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v4.json';
 
 export const projectionSnapshotPath = (stackRoot: string): string =>
 	`${stackRoot}/${PROJECTION_SNAPSHOT_FILE_NAME}`;
@@ -38,6 +38,7 @@ const StructuredErrorSchema = Schema.Struct({
 
 const EndpointSchema = Schema.Struct({
 	endpointKey: Schema.String,
+	pluginKey: Schema.String,
 	name: Schema.String,
 	url: Schema.String,
 	displayUrl: Schema.NullOr(Schema.String),
@@ -129,7 +130,7 @@ const SubscribableStateSchema = Schema.Struct({
 });
 
 export const ProjectionSnapshotSchema = Schema.Struct({
-	version: Schema.Literal(3),
+	version: Schema.Literal(4),
 	state: SubscribableStateSchema,
 });
 
@@ -152,6 +153,7 @@ const rebrandPersistedState = (state: PersistedSubscribableState): SubscribableS
 	endpoints: state.endpoints.map((endpoint) => ({
 		...endpoint,
 		endpointKey: endpointKey(endpoint.endpointKey),
+		pluginKey: pluginKey(endpoint.pluginKey),
 	})),
 	accounts: state.accounts.map((account) => ({
 		...account,
@@ -175,7 +177,7 @@ export const writeProjectionSnapshot = (
 	state: SubscribableState,
 ): Effect.Effect<void> =>
 	atomicWriteJson(projectionSnapshotPath(stackRoot), ProjectionSnapshotSchema, {
-		version: 3 as const,
+		version: 4 as const,
 		state,
 	}).pipe(
 		Effect.provide(NodeFileSystem.layer),

@@ -1,21 +1,16 @@
-// Regression test for Phase 1 bug #5 (opportunities-backlog.md):
-// the postgres codegen `host` must be the container DNS name that
-// Docker actually answers for on the attached network, NOT the
-// in-network alias (which the runtime adapter does not yet thread
-// through `--network-alias`, so Docker has no DNS entry for it).
+// Postgres codegen `host` must emit the per-stack network alias
+// (`<name>-<stack>`) — the alias Docker registers via
+// `--network-alias` on the primary attach. The alias is parallel-
+// stack-portable; the per-stack container name resolves too but
+// would burn the stack name into committed codegen output.
 //
 // Architecture parallel:
-//  - service.ts:342 sets `dnsName = ${app}-${stack}-${name}` and
-//    surfaces it on the resolved `Postgres` handle as `host`.
-//  - The capability factory in index.ts must forward `value.host`
-//    (the container DNS name) into the codegen bindings — not
-//    `value.networkAlias`, which is a string without a DNS entry.
-//
-// When the substrate-level fix lands (Phase 5: thread `networkAlias`
-// through `EnsureContainerSpec.networkAttach`), this test stays
-// honest because the container-name path will still resolve and the
-// invariant we encode here (codegen never emits a name Docker can't
-// resolve) is unchanged.
+//  - service.ts:314 passes `{ name: containerNetwork, aliases:
+//    [networkAlias] }` as the first `networkAttach` entry, so
+//    Docker registers the alias as a DNS entry on the attached
+//    network (see runtime/docker/container.ts:451+).
+//  - index.ts capability factory forwards `value.networkAlias` into
+//    the codegen bindings.
 
 import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
@@ -95,7 +90,7 @@ const findCodegen = (
 };
 
 describe('postgres codegen host', () => {
-	it('emits the container DNS name (host), not the bare networkAlias', async () => {
+	it('emits the per-stack network alias (not the per-stack container name)', async () => {
 		const plugin = postgres();
 		const handle = makePostgresHandle({});
 
@@ -117,19 +112,18 @@ describe('postgres codegen host', () => {
 			readonly plainUrl: string;
 		};
 
-		// Container name MUST equal the resolved handle's `host` field
-		// (which the runtime sets to `${app}-${stack}-${name}`). Anything
-		// derived from `networkAlias` would resolve to `${name}-${stack}`
-		// — a name Docker DNS will NOT answer for.
-		expect(bindings.host).toBe(`${APP}-${STACK}-postgres`);
-		expect(bindings.host).toBe(handle.host);
-		expect(bindings.host).not.toBe(handle.networkAlias);
+		// Host MUST equal the resolved handle's `networkAlias`
+		// (`<name>-<stack>`). The per-stack container name resolves
+		// too, but committing it burns the stack name into codegen.
+		expect(bindings.host).toBe(`postgres-${STACK}`);
+		expect(bindings.host).toBe(handle.networkAlias);
+		expect(bindings.host).not.toBe(handle.host);
 
-		// URLs derived from the same host must also use the DNS-resolvable
-		// name (catches the case where someone fixes `host` but leaves
-		// `url`/`plainUrl` dialing the alias).
-		expect(bindings.url).toContain(`@${APP}-${STACK}-postgres:5432`);
-		expect(bindings.plainUrl).toBe(`postgres://${APP}-${STACK}-postgres:5432`);
+		// URLs derived from the same host must also use the alias
+		// (catches the case where someone fixes `host` but leaves
+		// `url`/`plainUrl` dialing the container name).
+		expect(bindings.url).toContain(`@postgres-${STACK}:5432`);
+		expect(bindings.plainUrl).toBe(`postgres://postgres-${STACK}:5432`);
 	});
 
 	it('honours a custom postgres name when emitting host', async () => {
@@ -147,7 +141,7 @@ describe('postgres codegen host', () => {
 		const exported = await Effect.runPromise(captureExports(codegen));
 		const bindings = exported['postgresConnection'] as { readonly host: string };
 
-		expect(bindings.host).toBe(`${APP}-${STACK}-orders`);
-		expect(bindings.host).not.toBe(`orders-${STACK}`);
+		expect(bindings.host).toBe(`orders-${STACK}`);
+		expect(bindings.host).not.toBe(`${APP}-${STACK}-orders`);
 	});
 });

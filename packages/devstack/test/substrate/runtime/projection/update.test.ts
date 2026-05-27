@@ -22,6 +22,7 @@ const makeState = (): SubscribableState => ({
 	endpoints: [
 		{
 			endpointKey: endpointKey('wallet#0:wallet-app'),
+			pluginKey: pluginKey('wallet#0'),
 			name: 'wallet-app',
 			url: 'http://127.0.0.1:39200',
 			displayUrl: null,
@@ -50,10 +51,12 @@ describe('projection endpoint history', () => {
 		expect(after.lastEvent.at).toBe(2);
 	});
 
-	it('projects package.updated into the package table slice', () => {
+	it('projects projection.updated[package] into the package table slice', () => {
 		const after = applyEvent(makeState(), {
-			tag: 'package.updated',
-			package: {
+			tag: 'projection.updated',
+			kind: 'package',
+			key: 'package/vault',
+			payload: {
 				key: 'package/vault',
 				rowKey: pluginKey('package/vault#1'),
 				name: 'vault',
@@ -81,5 +84,50 @@ describe('projection endpoint history', () => {
 			},
 		]);
 		expect(after.lastEvent.at).toBe(3);
+	});
+
+	it('attaches endpoints by exact pluginKey instead of endpointKey prefix', () => {
+		const before: SubscribableState = {
+			...makeState(),
+			rows: [
+				{
+					key: pluginKey('service#1'),
+					role: 'service',
+					status: 'ready',
+					phase: null,
+					lastError: null,
+					logTail: { lines: [], level: 'info', truncated: false },
+					endpoints: [],
+					selectiveRestartHighlight: false,
+				},
+				{
+					key: pluginKey('service#10'),
+					role: 'service',
+					status: 'ready',
+					phase: null,
+					lastError: null,
+					logTail: { lines: [], level: 'info', truncated: false },
+					endpoints: [],
+					selectiveRestartHighlight: false,
+				},
+			],
+			endpoints: [],
+		};
+
+		const after = applyEvent(before, {
+			tag: 'endpoint.registered',
+			endpoint: {
+				endpointKey: endpointKey('service#10:http'),
+				pluginKey: pluginKey('service#10'),
+				name: 'http',
+				url: 'http://service.localhost',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 4,
+			},
+		});
+
+		expect(after.rows[0]?.endpoints).toEqual([]);
+		expect(after.rows[1]?.endpoints).toEqual([endpointKey('service#10:http')]);
 	});
 });

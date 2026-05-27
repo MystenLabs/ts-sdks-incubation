@@ -28,6 +28,7 @@ import type {
 	ContainerHandle,
 	ContainerPortPublish,
 	EnsureContainerSpec,
+	NetworkAttachment,
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
@@ -93,12 +94,18 @@ export interface InspectFacts {
 	readonly command?: ReadonlyArray<string>;
 	readonly labels?: Readonly<Record<string, string>>;
 	readonly networks?: ReadonlyArray<string>;
+	readonly networkAttachments?: ReadonlyArray<InspectNetworkAttachment>;
 }
 
 export interface InspectMount {
 	readonly source: string;
 	readonly target: string;
 	readonly readOnly?: boolean;
+}
+
+export interface InspectNetworkAttachment {
+	readonly name: string;
+	readonly aliases: ReadonlyArray<string>;
 }
 
 /** The closed set of actions the state machine can decide. */
@@ -130,6 +137,7 @@ export const decideRunAction = (
 	portBindingReconciliation: PortBindingReconciliation = 'exact',
 	desiredConfigHash?: string,
 	desiredImageDigest?: string,
+	desiredNetworkAttachments: ReadonlyArray<string | NetworkAttachment> = [],
 ): RunAction => {
 	if (facts === null) return { kind: 'fresh' };
 	const imageMatches =
@@ -141,8 +149,13 @@ export const decideRunAction = (
 		portsMatch ||
 		(portBindingReconciliation === 'adopt-existing' &&
 			sameBindingContainerPorts(facts.portBindings ?? [], desiredPortBindings));
+	const networksCompatible = desiredNetworkAttachmentsCompatible(
+		facts.networkAttachments ?? [],
+		desiredNetworkAttachments,
+	);
 	const configMatches =
-		desiredConfigHash === undefined || facts.labels?.[LabelKey.configHash] === desiredConfigHash;
+		networksCompatible &&
+		(desiredConfigHash === undefined || facts.labels?.[LabelKey.configHash] === desiredConfigHash);
 	if (facts.lifecycle.kind === 'unknown') {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'unknown-state' }, policy);
 	}
@@ -229,6 +242,23 @@ const bindingContainerKey = (binding: string): string => binding.split('=')[0] ?
 const normalizeHostIp = (hostIp: string | undefined): string =>
 	hostIp === undefined || hostIp === '' ? '0.0.0.0' : hostIp;
 
+const desiredNetworkAttachmentsCompatible = (
+	actual: ReadonlyArray<InspectNetworkAttachment>,
+	desired: ReadonlyArray<string | NetworkAttachment>,
+): boolean => {
+	const actualByName = new Map(actual.map((network) => [network.name, network]));
+	return desired.every((entry, index) => {
+		const normalized = normalizeNetworkAttachment(entry);
+		const actualNetwork = actualByName.get(normalized.name);
+		if (actualNetwork === undefined) {
+			return index !== 0;
+		}
+		if (normalized.aliases === undefined || normalized.aliases.length === 0) return true;
+		const actualAliases = new Set(actualNetwork.aliases);
+		return normalized.aliases.every((alias) => actualAliases.has(alias));
+	});
+};
+
 const readPublishedPorts = (raw: unknown): ReadonlyArray<ContainerPortPublish> => {
 	if (raw === null || typeof raw !== 'object') return [];
 	const out: ContainerPortPublish[] = [];
@@ -292,6 +322,24 @@ const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
 const readNetworks = (raw: unknown): ReadonlyArray<string> => {
 	if (raw === null || typeof raw !== 'object') return [];
 	return Object.keys(raw).sort();
+};
+
+const readNetworkAttachments = (raw: unknown): ReadonlyArray<InspectNetworkAttachment> => {
+	if (raw === null || typeof raw !== 'object') return [];
+	return Object.entries(raw)
+		.map(([name, value]): InspectNetworkAttachment => {
+			const aliases =
+				value !== null && typeof value === 'object'
+					? ((value as { Aliases?: unknown }).Aliases ?? [])
+					: [];
+			return {
+				name,
+				aliases: Array.isArray(aliases)
+					? aliases.filter((alias): alias is string => typeof alias === 'string').sort()
+					: [],
+			};
+		})
+		.sort((a, b) => a.name.localeCompare(b.name));
 };
 
 const readLifecycleState = (
@@ -391,6 +439,7 @@ export const inspectContainer = (
 			const command = readStringArray(decoded.Config.Cmd);
 			const labels = readLabels(decoded.Config.Labels);
 			const networks = readNetworks(decoded.NetworkSettings.Networks);
+			const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
 			return {
 				id: decoded.Id,
 				lifecycle,
@@ -410,6 +459,7 @@ export const inspectContainer = (
 				command,
 				labels,
 				networks,
+				networkAttachments,
 			};
 		} catch (cause) {
 			return yield* Effect.fail(cause as DockerRuntimeError);
@@ -419,6 +469,15 @@ export const inspectContainer = (
 // -----------------------------------------------------------------------------
 // Argv construction
 // -----------------------------------------------------------------------------
+
+const normalizeNetworkAttachment = (
+	entry: string | NetworkAttachment,
+): { readonly name: string; readonly aliases?: ReadonlyArray<string> } =>
+	typeof entry === 'string'
+		? { name: entry }
+		: entry.aliases === undefined || entry.aliases.length === 0
+			? { name: entry.name }
+			: { name: entry.name, aliases: entry.aliases };
 
 const createArgv = (
 	spec: EnsureContainerSpec,
@@ -451,7 +510,12 @@ const createArgv = (
 	if (spec.networkAttach && spec.networkAttach.length > 0) {
 		// First attach goes via --network; subsequent attaches via
 		// post-start `network connect` so we can wait for IP readback.
-		args.push('--network', spec.networkAttach[0]!);
+		// Per-network aliases (if any) become `--network-alias` flags.
+		const first = normalizeNetworkAttachment(spec.networkAttach[0]!);
+		args.push('--network', first.name);
+		for (const alias of first.aliases ?? []) {
+			args.push('--network-alias', alias);
+		}
 	}
 	if (spec.extraHosts) {
 		for (const [host, ip] of Object.entries(spec.extraHosts)) {
@@ -747,6 +811,9 @@ const stopWithGrace = (
 		args.push('--time', String(Math.max(0, Math.floor(graceSeconds))));
 		args.push(name);
 		yield* dockerRunOk('stop', args).pipe(
+			Effect.tapCause((cause) =>
+				Effect.logDebug('docker stop failed; container may already be gone', { name, cause }),
+			),
 			Effect.catch(() => Effect.void),
 			Effect.asVoid,
 		);
@@ -883,6 +950,7 @@ export const ensureContainer = (
 						spec.portBindingReconciliation ?? 'exact',
 						spec.configHash,
 						spec.image.digest,
+						spec.networkAttach,
 					);
 					const id = yield* applyAction(action, spec, deps);
 					return yield* ensureEffectivePublishedPorts(id, spec, deps);
@@ -901,10 +969,10 @@ export const ensureContainer = (
 		// Architecture §5 — secondary network attaches (any beyond the
 		// first, which is wired in via `--network` on create) must wait
 		// for IP allocation before we declare ready.
-		const secondaries = (spec.networkAttach ?? []).slice(1);
+		const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
 		for (const net of secondaries) {
-			yield* connect(spec.name, net);
-			yield* waitForIp(spec.name, net);
+			yield* connect(spec.name, net.name, net.aliases);
+			yield* waitForIp(spec.name, net.name);
 		}
 
 		const ips = yield* readIps(spec.name);
@@ -932,6 +1000,12 @@ export const ensureContainer = (
 		yield* Effect.addFinalizer(() =>
 			Effect.gen(function* () {
 				const current = yield* inspectContainer(spec.name).pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('container inspect during scope-close failed', {
+							name: spec.name,
+							cause,
+						}),
+					),
 					Effect.catch(() => Effect.succeed(null)),
 				);
 				if (current?.id === id) {
@@ -940,7 +1014,15 @@ export const ensureContainer = (
 				yield* removeClaim(
 					{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
 					spec.name,
-				).pipe(Effect.catch(() => Effect.succeed({ lastClaimReleased: false })));
+				).pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('removeClaim during scope-close failed', {
+							name: spec.name,
+							cause,
+						}),
+					),
+					Effect.catch(() => Effect.succeed({ lastClaimReleased: false })),
+				);
 			}).pipe(Effect.uninterruptible),
 		);
 

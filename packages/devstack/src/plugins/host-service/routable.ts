@@ -25,4 +25,5 @@ export const makeHostServiceRoutable = (parts: {
 	upstream: { type: 'host-loopback', port: parts.port },
 	cors: true,
 	wireProtocol: 'http',
+	readiness: 'deferred',
 });

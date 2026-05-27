@@ -21,6 +21,7 @@ import type {
 	LivenessHints,
 } from '../../contracts/liveness-classifier.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { SnapshotMetadataSchema, type SnapshotMetadata } from './descriptor.ts';
 import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
@@ -100,14 +101,10 @@ const readMetaOpt = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch(failPhase('read-meta', `read ${path} failed`)));
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: () => null,
+		return yield* decodeJsonText(SnapshotMetadataSchema, text, {
+			source: path,
+			mkError: () => null,
 		}).pipe(Effect.catch(() => Effect.succeed(null)));
-		if (raw === null) return null;
-		return yield* Schema.decodeUnknownEffect(SnapshotMetadataSchema)(raw).pipe(
-			Effect.catch(() => Effect.succeed(null)),
-		);
 	});
 
 /** Build the hints document a classifier consumes. Snapshot prune is

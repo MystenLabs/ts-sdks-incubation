@@ -56,6 +56,7 @@ import {
 	type PostgresConnectionTimeout,
 	type PostgresPluginError,
 } from './errors.ts';
+import { PostgresSpans } from './spans.ts';
 
 /** Resolved Postgres handle — the tag's resolved value.
  *
@@ -283,15 +284,11 @@ export const bootPostgresService = (
 		// 3. Start container. `networkAttach`'s first entry becomes the
 		//    `--network` flag on `docker run -d`; subsequent entries
 		//    are attached post-start with IP-readback (runtime owns
-		//    that detail).
-		//
-		//    The runtime adapter does NOT yet thread the in-network
-		//    alias through `--network-alias`; the network alias the
-		//    handle exposes is the architecture-mandated value, but
-		//    siblings should dial by `name` (the container name)
-		//    which docker also publishes under the network. The
-		//    architecture revision to add `networkAlias` to
-		//    EnsureContainerSpec is flagged in `index.ts`.
+		//    that detail). The first attach carries the per-network
+		//    DNS alias (`networkAlias`) — Docker registers it as a
+		//    secondary DNS name on the per-stack network so siblings
+		//    can dial by the parallel-stack-stable alias rather than
+		//    the per-stack container name.
 		const containerHandle = yield* ensureManagedContainer({
 			runtime,
 			identity,
@@ -311,7 +308,10 @@ export const bootPostgresService = (
 						? [{ containerPort: POSTGRES_PORT, hostPort: resolved.hostPort }]
 						: undefined,
 				stopGraceSeconds: resolved.stopGraceSeconds,
-				networkAttach: [containerNetwork, ...resolved.extraNetworks],
+				networkAttach: [
+					{ name: containerNetwork, aliases: [networkAlias] },
+					...resolved.extraNetworks,
+				],
 			},
 			mapError: (cause) =>
 				postgresPluginError(
@@ -335,10 +335,11 @@ export const bootPostgresService = (
 		yield* ensureDatabases(exec, resolved.user, resolved.databases);
 
 		// 6. Resolve the handle. Host for in-stack siblings is the
-		//    container name (which docker registers as a DNS entry on
-		//    the attached network). When the substrate's
-		//    `networkAlias` plumbing lands we'll swap to that; until
-		//    then the container name is the stable in-network handle.
+		//    container DNS name (always resolves on the attached
+		//    network). The per-stack `networkAlias` is registered via
+		//    `--network-alias` on the primary attach (see step 3) and
+		//    is the parallel-stack-portable DNS name; codegen consumes
+		//    it through `index.ts`.
 		const dnsName = `${identity.app}-${identity.stack}-${resolved.name}`;
 		const parts: PostgresConnectionParts = {
 			user: resolved.user,
@@ -367,8 +368,8 @@ export const bootPostgresService = (
 	}).pipe(
 		Effect.withSpan('postgres.boot', {
 			attributes: {
-				'postgres.name': opts.name ?? 'postgres',
-				'postgres.version': opts.version ?? DEFAULT_VERSION,
+				[PostgresSpans.name]: opts.name ?? 'postgres',
+				[PostgresSpans.version]: opts.version ?? DEFAULT_VERSION,
 			},
 		}),
 	);

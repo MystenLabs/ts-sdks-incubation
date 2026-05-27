@@ -5,25 +5,24 @@
 // vocabulary — OTEL consumers can filter by `devstack.app`,
 // `devstack.stack`, `devstack.plugin`, `devstack.role` reliably.
 //
-// Discipline: no service names appear anywhere; only the four
-// engine-level dimensions. Plugins call `withPluginSpan` and pass
-// their `pluginKey` + `role`.
+// Discipline: substrate-owned vocabulary carries ONLY engine-dimensional
+// keys (`devstack.*`, `error.*`, `process.exit.*`, `container.*`) plus
+// HTTP-generic keys (`http.*`, `server.*`). Plugin-domain keys
+// (`wallet.token`, `sui.mode`, `account.name`, etc.) live in
+// `src/plugins/<name>/spans.ts` next to the plugin that owns them; see
+// STYLE_GUIDE §16.
 
 import { Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { PluginRole } from '../../lifecycle.ts';
 
-/** Canonical span-attribute keys. Single source of truth for the
- *  observability vocabulary. */
+/** Canonical span-attribute keys. Engine-dimensional + http/process
+ *  generic only. Plugin-domain keys belong on per-plugin `spans.ts`. */
 export const SpanAttr = {
-	accountFundingFrom: 'account.funding.from',
-	accountFundingTo: 'account.funding.to',
-	accountName: 'account.name',
 	app: 'devstack.app',
 	stack: 'devstack.stack',
 	network: 'devstack.network',
-	coinType: 'coin.type',
 	plugin: 'devstack.plugin',
 	role: 'devstack.role',
 	phase: 'devstack.phase',
@@ -50,14 +49,6 @@ export const SpanAttr = {
 	serviceName: 'devstack.service.name',
 	stageAndSwapStagingPath: 'stageAndSwap.stagingPath',
 	stageAndSwapTargetPath: 'stageAndSwap.targetPath',
-	suiAutoTickIntervalMs: 'sui.autoTick.intervalMs',
-	suiMode: 'sui.mode',
-	walletToken: 'wallet.token',
-	walletBearerValid: 'wallet.auth.bearerValid',
-	walletLocalhostViteEnabled: 'wallet.localhostViteEnabled',
-	walletOrigin: 'wallet.origin',
-	walletTokenFile: 'wallet.tokenFile',
-	walletUrl: 'wallet.url',
 } as const;
 
 export interface StackSpanContext {

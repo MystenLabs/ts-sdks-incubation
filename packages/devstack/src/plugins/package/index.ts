@@ -94,6 +94,7 @@ export type { PublishError } from './errors.ts';
 export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
+export { PackageSpans } from './spans.ts';
 
 /** Resolved value carried by the package resource. Local packages also
  *  expose the publish output so manifest emitters and capture-spec
@@ -182,12 +183,15 @@ const makePackageProjectionContribution = (
 	projection: PackageRegistryProjectionContribution,
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
+	const key = `package/${projection.name}` as `package/${string}`;
 	return {
 		kind: 'projection',
 		event: {
-			tag: 'package.updated',
-			package: {
-				key: `package/${projection.name}` as `package/${string}`,
+			tag: 'projection.updated',
+			kind: 'package',
+			key,
+			payload: {
+				key,
 				rowKey: null,
 				name: projection.name,
 				kind: projection.kind,

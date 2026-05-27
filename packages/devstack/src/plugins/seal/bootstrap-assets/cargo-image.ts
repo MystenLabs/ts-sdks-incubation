@@ -25,6 +25,7 @@ import type {
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
 import { DEFAULT_SEAL_REPO, DEFAULT_SEAL_VERSION } from './source-fetch.ts';
 
 // ---------------------------------------------------------------------------
@@ -103,8 +104,8 @@ export const resolveSealCargoImage = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.cargoImage.resolve', {
 			attributes: {
-				'seal.ref': inputs.sealRef,
-				'seal.rustToolchain': inputs.rustToolchain,
+				[SealSpans.ref]: inputs.sealRef,
+				[SealSpans.rustToolchain]: inputs.rustToolchain,
 			},
 		}),
 	);

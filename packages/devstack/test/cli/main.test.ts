@@ -36,7 +36,7 @@ const makeTempRoot = (prefix: string): string => {
 	return root;
 };
 
-const writeCodegenConfig = (appRoot: string): string => {
+const writeCodegenConfig = (appRoot: string, stackName = 'main'): string => {
 	const configPath = join(appRoot, 'devstack.config.ts');
 	writeFileSync(
 		configPath,
@@ -66,7 +66,7 @@ const cliApplyCodegenPlugin = definePlugin({
 \t],
 });
 
-export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });
+export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: '${stackName}' });
 `.trimStart(),
 	);
 	return configPath;
@@ -529,6 +529,102 @@ describe('cli/main', () => {
 				snapshotId: observed[0]?.snapshotId,
 				name: 'seeded',
 			});
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
+	it('snapshot save targets the live stack named by config stackName', async () => {
+		const appRoot = makeTempRoot('cli-live-snapshot-config-app');
+		const stateRoot = makeTempRoot('cli-live-snapshot-config-state');
+		const configPath = writeCodegenConfig(appRoot, 'config-stack');
+		const cliStackRoot = join(stateRoot, 'stacks', 'cli-stack');
+		const configStackRoot = join(stateRoot, 'stacks', 'config-stack');
+		const observed: Array<{
+			readonly tag?: string;
+			readonly snapshotId?: string;
+			readonly name?: string;
+		}> = [];
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		writeLiveRoster(configStackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(
+						commandChannelPaths(configStackRoot),
+						{
+							fromOffset: 'start',
+							pollMillis: 20,
+						},
+					);
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								const command = record.command as {
+									readonly tag?: string;
+									readonly snapshotId?: string;
+									readonly name?: string;
+								};
+								yield* Effect.sync(() => {
+									observed.push(command);
+								});
+								if (command.snapshotId !== undefined) {
+									yield* subscriber.publishEvent({
+										tag: 'snapshot.captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+										at: Date.now(),
+									});
+								}
+								yield* subscriber.ack(record.id, 'captured');
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'snapshot',
+				'save',
+				'seeded',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'cli-stack',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(observed).toHaveLength(1);
+			expect(observed[0]?.tag).toBe('snapshot.capture');
+			expect(observed[0]?.name).toBe('seeded');
+			expect(readCommandLog(configStackRoot).map((record) => record.command.tag)).toEqual([
+				'snapshot.capture',
+			]);
+			expect(existsSync(join(cliStackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();

@@ -12,18 +12,16 @@ import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64, fromHex, toHex } from '@mysten/sui/utils';
 
 import type { ArtifactPublisher } from '../../../primitives/artifact-publisher.ts';
-import type {
-	ResolvedSigner,
-	SuiExecuteClient,
-} from '../../../substrate/runtime/sui-execute/index.ts';
+import type { ResolvedSigner } from '../../../substrate/runtime/sui-execute/index.ts';
 import { executeSuiTx } from '../../../substrate/runtime/sui-execute/index.ts';
 import {
 	chainId as brandChainId,
 	contentHash as brandContentHash,
 	type ContentHash,
 } from '../../../substrate/brand.ts';
-import type { SuiSdkShim } from '../../sui/chain-probe.ts';
+import type { SuiSdkShim } from '../../sui/index.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
+import { DeepbookSpans } from '../spans.ts';
 import type { PythFeed, PythHandle, PythPriceFeedId } from '../types.ts';
 
 export interface PythDeployment {
@@ -127,15 +125,6 @@ const buildVerifyProbe = (
 		return cached;
 	});
 
-type SuiTransactionBuildClient = Parameters<Transaction['build']>[0] extends
-	| { readonly client?: infer C }
-	| undefined
-	? C
-	: never;
-
-const transactionBuildClient = (sdk: SuiSdkShim): SuiTransactionBuildClient =>
-	sdk.client as SuiTransactionBuildClient;
-
 const addI64 = (tx: Transaction, packageId: string, value: bigint | number) => {
 	const raw = BigInt(value);
 	const negative = raw < 0n;
@@ -178,37 +167,6 @@ const addPriceInfo = (tx: Transaction, packageId: string, feed: PythFeed, timest
 	});
 };
 
-const priceObjectClient = (
-	sdk: SuiSdkShim,
-): {
-	readonly getObjects: (args: {
-		readonly objectIds: ReadonlyArray<string>;
-		readonly include: { readonly json: boolean };
-	}) => Promise<{
-		readonly objects: ReadonlyArray<
-			| Error
-			| {
-					readonly objectId: string;
-					readonly json?: unknown;
-			  }
-		>;
-	}>;
-} =>
-	sdk.client as {
-		readonly getObjects: (args: {
-			readonly objectIds: ReadonlyArray<string>;
-			readonly include: { readonly json: boolean };
-		}) => Promise<{
-			readonly objects: ReadonlyArray<
-				| Error
-				| {
-						readonly objectId: string;
-						readonly json?: unknown;
-				  }
-			>;
-		}>;
-	};
-
 const feedIdBytesFromJson = (bytes: unknown): Uint8Array | null => {
 	if (typeof bytes === 'string' && bytes.length > 0) {
 		try {
@@ -242,8 +200,8 @@ const mapCreatedPriceObjects = async (
 	sdk: SuiSdkShim,
 	objectIds: ReadonlyArray<string>,
 ): Promise<ReadonlyMap<string, string>> => {
-	const objects = await priceObjectClient(sdk).getObjects({
-		objectIds,
+	const objects = await sdk.client.core.getObjects({
+		objectIds: [...objectIds],
 		include: { json: true },
 	});
 	const result = new Map<string, string>();
@@ -291,7 +249,7 @@ export const initLocalPythFeeds = (
 				verify: (entry) => buildVerifyProbe(sdk, entry),
 				produce: Effect.gen(function* () {
 					const receipt = yield* executeSuiTx({
-						client: sdk.client as SuiExecuteClient,
+						client: sdk.client,
 						signer,
 						build: async () => {
 							const tx = new Transaction();
@@ -310,7 +268,7 @@ export const initLocalPythFeeds = (
 									}),
 								],
 							});
-							return tx.build({ client: transactionBuildClient(sdk) });
+							return tx.build({ client: sdk.client });
 						},
 					}).pipe(
 						Effect.mapError(
@@ -374,8 +332,8 @@ export const initLocalPythFeeds = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.deepbook.pyth.initFeeds', {
 			attributes: {
-				'pyth.packageId': pkg.packageId,
-				'pyth.feed.count': feeds.length,
+				[DeepbookSpans.pyth.packageId]: pkg.packageId,
+				[DeepbookSpans.pyth.feedCount]: feeds.length,
 			},
 		}),
 	);

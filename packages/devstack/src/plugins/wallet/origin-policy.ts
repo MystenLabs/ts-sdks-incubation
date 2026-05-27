@@ -30,6 +30,7 @@ import { Effect } from 'effect';
 
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import type { WalletBootError } from './errors.ts';
+import { WalletSpans } from './spans.ts';
 
 // ----------------------------------------------------------------------
 // Policy shape
@@ -118,7 +119,7 @@ export const resolveOriginPolicy = (
 				Effect.annotateLogs({
 					[SpanAttr.app]: inputs.app,
 					[SpanAttr.stack]: inputs.stack,
-					[SpanAttr.walletLocalhostViteEnabled]: inputs.allowLocalhostVite,
+					[WalletSpans.localhostViteEnabled]: inputs.allowLocalhostVite,
 				}),
 			);
 		}

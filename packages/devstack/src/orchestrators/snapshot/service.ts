@@ -28,6 +28,7 @@ import type { LivenessClassifierDecl } from '../../contracts/liveness-classifier
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/index.ts';
+import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
 import {
 	acquireReservation,
@@ -510,17 +511,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					entries.push({ id, directory: dir, metadata: null });
 					continue;
 				}
-				const raw = yield* Effect.try({
-					try: () => JSON.parse(text) as unknown,
-					catch: () => null,
+				const decoded = yield* decodeJsonText(SnapshotMetadataSchema, text, {
+					source: metaPath,
+					mkError: () => null,
 				}).pipe(Effect.catch(() => Effect.succeed(null)));
-				if (raw === null) {
-					entries.push({ id, directory: dir, metadata: null });
-					continue;
-				}
-				const decoded = yield* Schema.decodeUnknownEffect(SnapshotMetadataSchema)(raw).pipe(
-					Effect.catch(() => Effect.succeed(null)),
-				);
 				if (decoded !== null && parseSnapshotId(decoded.id) === null) {
 					yield* Effect.logWarning(`ignoring snapshot metadata with unsafe id: ${decoded.id}`);
 					entries.push({ id, directory: dir, metadata: null });

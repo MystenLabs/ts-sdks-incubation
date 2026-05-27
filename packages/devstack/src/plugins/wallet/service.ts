@@ -40,7 +40,7 @@ import { WalletHttpPath } from './protocol.ts';
 // ----------------------------------------------------------------------
 
 import type { ResourceRef } from '../../api/define-plugin.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { WalletSpans } from './spans.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
  *  member in the stack. Expanded by the composer at `defineDevstack`
@@ -189,9 +189,9 @@ export const acquireWallet = (
 ): Effect.Effect<WalletValue, WalletBootError, Scope.Scope | FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'wallet.app': ctx.app,
-			'wallet.stack': ctx.stack,
-			'wallet.chain': ctx.chain,
+			[WalletSpans.app]: ctx.app,
+			[WalletSpans.stack]: ctx.stack,
+			[WalletSpans.chain]: ctx.chain,
 		});
 
 		// 1. Resolve the dependency account values. The barrel sets up
@@ -202,7 +202,7 @@ export const acquireWallet = (
 		//    resolved-array length is the load-bearing value.
 		const accounts = yield* ctx.resolveAccounts();
 		yield* Effect.annotateCurrentSpan({
-			'wallet.accountCount': accounts.length,
+			[WalletSpans.accountCount]: accounts.length,
 		});
 		if (accounts.length === 0) {
 			return yield* Effect.fail(
@@ -270,20 +270,19 @@ export const acquireWallet = (
 				accounts: WalletHttpPath.ACCOUNTS,
 				signTransaction: WalletHttpPath.SIGN_TRANSACTION,
 				signPersonalMessage: WalletHttpPath.SIGN_PERSONAL_MESSAGE,
-				execute: WalletHttpPath.EXECUTE,
 			},
 		};
 
 		yield* Effect.annotateCurrentSpan({
-			'wallet.url': walletUrl,
-			'wallet.localPort': port,
+			[WalletSpans.url]: walletUrl,
+			[WalletSpans.localPort]: port,
 		});
 
 		// Defensive: NEVER log `pairUrl` directly. It carries the token.
 		yield* Effect.logInfo('wallet ready').pipe(
 			Effect.annotateLogs({
-				[SpanAttr.walletUrl]: walletUrl,
-				[SpanAttr.walletToken]: 'redacted-fragment',
+				[WalletSpans.url]: walletUrl,
+				[WalletSpans.token]: 'redacted-fragment',
 			}),
 		);
 

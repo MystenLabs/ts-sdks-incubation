@@ -269,9 +269,19 @@ export const startSupervisor = (
 
 		// Extract `RuntimeRoot` from the plugin context — needed to
 		// build the `AcquireContext` handed to dynamic capability
-		// factories. Fallback to '' if the caller didn't add `RuntimeRoot`
-		// to the plugin context (bare smoke tests).
-		const runtimeRoot = runtimeRootAccess.read(pluginContext, { root: '' }).root;
+		// factories. Fallback to '' for bare smoke tests that don't
+		// wire RuntimeRoot; emit a logWarning when that path fires so
+		// production-style misconfigurations are visible (plugins
+		// computing `${runtimeRoot}/foo` would otherwise silently
+		// resolve to host-filesystem root).
+		const runtimeRootResolved = runtimeRootAccess.read(pluginContext, { root: '' });
+		if (runtimeRootResolved.root === '') {
+			yield* Effect.logWarning(
+				'supervisor: RuntimeRoot missing from pluginContext; falling back to empty root. ' +
+					'Production wiring must layer `layerRuntimeRoot(...)` into pluginContext.',
+			);
+		}
+		const runtimeRoot = runtimeRootResolved.root;
 
 		// Resolve the CapabilitySinks registry for this stack. Two paths:
 		//

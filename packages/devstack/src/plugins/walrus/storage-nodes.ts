@@ -35,8 +35,10 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { WalrusSpans } from './spans.ts';
 
 /** Default per-node grace window. Storage nodes maintain RocksDB-
  *  backed state; need >10s to flush and checkpoint on `docker stop`.
@@ -326,7 +328,7 @@ export const startStorageNodes = (
 				} satisfies WalrusStorageNode;
 			}).pipe(
 				Effect.withSpan(`devstack.plugin.walrus.storage-node-${i}.boot`, {
-					attributes: { 'devstack.plugin': 'walrus', 'walrus.node': i },
+					attributes: { [SpanAttr.plugin]: 'walrus', [WalrusSpans.node]: i },
 				}),
 			);
 
@@ -337,6 +339,6 @@ export const startStorageNodes = (
 		return { nodes };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.storage-nodes.boot', {
-			attributes: { 'devstack.plugin': 'walrus' },
+			attributes: { [SpanAttr.plugin]: 'walrus' },
 		}),
 	);

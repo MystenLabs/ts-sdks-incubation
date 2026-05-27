@@ -47,8 +47,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 		case 'lifecycle.statusChanged':
 		case 'lifecycle.phaseSet':
 		case 'endpoint.registered':
-		case 'account.updated':
-		case 'package.updated':
+		case 'projection.updated':
 			return null;
 		case 'restart.requested':
 			return line({

@@ -29,6 +29,7 @@ import {
 	untarHostTree,
 	validateHostTreeTarEntries,
 } from '../../substrate/runtime/host-tree-tar/index.ts';
+import { decodeUnknown, parseJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import {
 	ContributionDocSchema,
 	containerImagesBundlePath,
@@ -193,26 +194,24 @@ const readMeta = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch(failPhase('read-meta', `read meta.json failed at ${path}`)));
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: (cause) =>
+		const raw = yield* parseJsonText(text, {
+			source: path,
+			mkError: (issue) =>
 				new RestorePhaseError({
 					phase: 'meta-corrupt',
 					detail: `meta.json is not valid JSON at ${path}`,
-					cause,
+					cause: issue.cause,
 				}),
 		});
-		const meta = yield* Schema.decodeUnknownEffect(SnapshotMetadataSchema)(raw).pipe(
-			Effect.catch((cause) =>
-				Effect.fail(
-					new RestorePhaseError({
-						phase: 'meta-corrupt',
-						detail: `meta.json failed schema decode at ${path}`,
-						cause,
-					}),
-				),
-			),
-		);
+		const meta = yield* decodeUnknown(SnapshotMetadataSchema, raw, {
+			source: path,
+			mkError: (issue) =>
+				new RestorePhaseError({
+					phase: 'meta-corrupt',
+					detail: `meta.json failed schema decode at ${path}`,
+					cause: issue.cause,
+				}),
+		});
 		const parsedId = parseSnapshotId(meta.id);
 		if (parsedId === null) {
 			return yield* failRestore(
@@ -460,28 +459,26 @@ const preflightContributionDoc = (
 					failPhase('read-contribution', `read contribution doc failed at ${path}`, pluginKey),
 				),
 			);
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: (cause) =>
+		const raw = yield* parseJsonText(text, {
+			source: path,
+			mkError: (issue) =>
 				new RestorePhaseError({
 					phase: 'read-contribution',
 					plugin: pluginKey,
 					detail: `contribution doc is not valid JSON at ${path}`,
-					cause,
+					cause: issue.cause,
 				}),
 		});
-		const decoded = yield* Schema.decodeUnknownEffect(ContributionDocSchema)(raw).pipe(
-			Effect.catch((cause) =>
-				Effect.fail(
-					new RestorePhaseError({
-						phase: 'read-contribution',
-						plugin: pluginKey,
-						detail: `contribution doc failed schema decode at ${path}`,
-						cause,
-					}),
-				),
-			),
-		);
+		const decoded = yield* decodeUnknown(ContributionDocSchema, raw, {
+			source: path,
+			mkError: (issue) =>
+				new RestorePhaseError({
+					phase: 'read-contribution',
+					plugin: pluginKey,
+					detail: `contribution doc failed schema decode at ${path}`,
+					cause: issue.cause,
+				}),
+		});
 		if (decoded.plugin !== pluginKey) {
 			return yield* failRestore(
 				'read-contribution',

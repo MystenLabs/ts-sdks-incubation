@@ -57,6 +57,7 @@ const state = (): SubscribableState => ({
 	endpoints: [
 		{
 			endpointKey: endpointKey('sui#0:rpc'),
+			pluginKey: pluginKey('sui#0'),
 			name: 'rpc',
 			url: 'http://127.0.0.1:9000',
 			displayUrl: 'http://sui.wallet.localhost:9000',
@@ -115,6 +116,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 		endpoints: [
 			{
 				endpointKey: endpointKeys[0]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'rpc',
 				url: 'http://127.0.0.1:51001',
 				displayUrl: 'http://rpc.private-content.private-content.localhost:9000',
@@ -123,6 +125,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 			},
 			{
 				endpointKey: endpointKeys[1]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'faucet',
 				url: 'http://127.0.0.1:50001',
 				displayUrl: 'http://faucet.private-content.private-content.localhost:9123',
@@ -131,6 +134,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 			},
 			{
 				endpointKey: endpointKeys[2]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'graphql',
 				url: 'http://127.0.0.1:51002',
 				displayUrl: 'http://graphql.private-content.private-content.localhost:9125',

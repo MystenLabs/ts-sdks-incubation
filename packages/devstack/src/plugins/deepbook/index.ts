@@ -47,6 +47,7 @@ import type { CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
+import { DeepbookSpans } from './spans.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
@@ -467,9 +468,9 @@ const buildLocalPlugin = <
 				const coinValues = extraValues.slice(pythValueCount) as CoinValue[];
 
 				yield* Effect.annotateCurrentSpan({
-					'deepbook.name': name,
-					'deepbook.chain': sui.chain,
-					'deepbook.publisher': publisher.address,
+					[DeepbookSpans.name]: name,
+					[DeepbookSpans.chain]: sui.chain,
+					[DeepbookSpans.publisher]: publisher.address,
 				});
 				yield* setCurrentPluginPhase('reading deployment captures');
 
@@ -556,11 +557,14 @@ const buildLocalPlugin = <
 				};
 				return resolved;
 			}).pipe(
+				// The body's aggregate E channel includes substrate Effects
+				// whose error shape is unknown to TS (ArtifactPublisher
+				// produce bodies, dependency reads). `Effect.catchTags` would
+				// need a statically-known tagged union; here we runtime-check
+				// the `_tag` discriminator to pass typed deepbook errors
+				// through untouched and wrap everything else under `'publish'`
+				// so cascade attribution stays with the plugin.
 				Effect.catch((err: unknown) => {
-					// Typed plugin errors flow through; other errors
-					// (substrate primitives) are wrapped under a
-					// `'publish'` phase tag so the cascade walker keeps
-					// the plugin attribution.
 					if (
 						typeof err === 'object' &&
 						err !== null &&
@@ -572,18 +576,14 @@ const buildLocalPlugin = <
 						return Effect.fail(err as DeepbookError);
 					}
 					return Effect.fail(
-						deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`),
+						deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`, {
+							cause: err,
+						}),
 					);
 				}),
 			),
-		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
-			const snap: SnapshotableDecl = makeLocalSnapshotable({
-				name,
-				app: acquireCtx.identity.app,
-				stack: acquireCtx.identity.stack,
-				indexerEnabled: false,
-				serverEnabled: false,
-			});
+		capabilities: ({ value: resolved }) => {
+			const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
 			const bindings: DeepbookBindings = {
 				name,
 				chain: resolved.chain,
@@ -923,3 +923,4 @@ export {
 	SUI_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './types.ts';
+export { DeepbookSpans } from './spans.ts';

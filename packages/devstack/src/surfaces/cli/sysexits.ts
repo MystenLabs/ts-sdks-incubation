@@ -42,7 +42,7 @@ export const ExitCode = {
 	/** Cannot open input (config not found, snapshot file missing). */
 	NO_INPUT: 66,
 	/** Internal software error / unhandled defect. Default for
-	 *  defects that escape Effect.catchAll. */
+	 *  defects that escape Effect.catch. */
 	SOFTWARE: 70,
 	/** Service required by the CLI is unavailable (Docker daemon
 	 *  unreachable, network down). */

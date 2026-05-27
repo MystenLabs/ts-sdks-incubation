@@ -35,6 +35,7 @@ const state = (): SubscribableState => ({
 	endpoints: [
 		{
 			endpointKey: endpointKey('sui#0:rpc'),
+			pluginKey: pluginKey('sui#0'),
 			name: 'rpc',
 			url: 'http://127.0.0.1:9000',
 			displayUrl: 'http://sui.wallet.localhost:9000',

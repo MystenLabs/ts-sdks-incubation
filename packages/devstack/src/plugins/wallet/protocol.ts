@@ -52,7 +52,6 @@ export const WalletHttpPath = {
 	ACCOUNTS: '/api/v1/devstack/accounts',
 	SIGN_TRANSACTION: '/api/v1/devstack/sign-transaction',
 	SIGN_PERSONAL_MESSAGE: '/api/v1/devstack/sign-personal-message',
-	EXECUTE: '/api/v1/devstack/execute',
 } as const;
 
 export type WalletHttpPathValue = (typeof WalletHttpPath)[keyof typeof WalletHttpPath];
@@ -88,9 +87,9 @@ export const SignatureSchemeSchema = Schema.Union([
 ]);
 
 /** Account-source discriminator. `'impersonate'` accounts cannot
- *  satisfy `signTransaction` / `signPersonalMessage` — only
- *  `/execute` (which routes through the fork-admin surface) makes
- *  sense for them. */
+ *  satisfy `signTransaction` / `signPersonalMessage` — fork-admin
+ *  surfaces (not part of this protocol today) are the only sensible
+ *  consumers. */
 export const AccountSourceSchema = Schema.Union([
 	Schema.Literal('real'),
 	Schema.Literal('impersonate'),
@@ -143,31 +142,6 @@ export const SignResponseSchema = Schema.Struct({
 	signature: Schema.String,
 });
 export type SignResponse = Schema.Schema.Type<typeof SignResponseSchema>;
-
-// ----------------------------------------------------------------------
-// Execute endpoint — request + response
-// ----------------------------------------------------------------------
-
-/** Execute request — `bytes` is the BCS-serialized transaction.
- *  Impersonation accounts route through fork-admin (no signature
- *  needed); real accounts route through `signAndExecute`. */
-export const ExecuteRequestSchema = Schema.Struct({
-	address: SuiAddressSchema,
-	bytes: Base64Schema,
-});
-export type ExecuteRequest = Schema.Schema.Type<typeof ExecuteRequestSchema>;
-
-/** Execute response — the narrow `TxResult` projection the account
- *  plugin already publishes. The `effects` / `objectChanges` /
- *  `balanceChanges` fields cross the wire as opaque JSON; downstream
- *  consumers do their own parsing. */
-export const ExecuteResponseSchema = Schema.Struct({
-	digest: Schema.String,
-	effects: Schema.Unknown,
-	objectChanges: Schema.Array(Schema.Unknown),
-	balanceChanges: Schema.Array(Schema.Unknown),
-});
-export type ExecuteResponse = Schema.Schema.Type<typeof ExecuteResponseSchema>;
 
 // ----------------------------------------------------------------------
 // Error envelope

@@ -87,17 +87,24 @@ export const layerCache: Layer.Layer<
 				// Corruption = miss. The cache contract is
 				// best-effort; surfacing decode failures would force
 				// every caller to handle a recovery path that's
-				// already implicit (re-produce). We do annotate the
-				// span so the substrate's observability still
-				// surfaces the rare corruption.
-				const annotateCorruption = Effect.annotateCurrentSpan({
-					'cache.corruption': true,
-				});
+				// already implicit (re-produce). We annotate the span
+				// AND emit a `logDebug` so the rare corruption is
+				// visible in the log stream, not only via span backend.
 				const doc = yield* decodeJsonText(CacheEntryDoc, text, {
 					source: file,
 					mkError: (issue) => issue,
 				}).pipe(
-					Effect.catch(() => annotateCorruption.pipe(Effect.as(null as CacheEntryDoc | null))),
+					Effect.tapCause((cause) =>
+						Effect.logDebug('cache entry decode failed; treating as miss', {
+							file,
+							cause,
+						}),
+					),
+					Effect.catch(() =>
+						Effect.annotateCurrentSpan({ 'cache.corruption': true }).pipe(
+							Effect.as(null as CacheEntryDoc | null),
+						),
+					),
 				);
 				if (doc === null) return null;
 				return {

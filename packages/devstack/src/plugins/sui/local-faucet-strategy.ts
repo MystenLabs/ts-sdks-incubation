@@ -23,8 +23,9 @@
 import { Effect } from 'effect';
 
 import { leaseKey, type LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
-import { requestFundsWithRetry, type RetryOptions } from '../faucet/http.ts';
-import type { FaucetStrategy } from '../faucet/index.ts';
+import { requestFundsWithRetry, type FaucetStrategy, type RetryOptions } from '../faucet/index.ts';
+
+import { SuiSpans } from './spans.ts';
 
 /** Optional serialization for faucet backends that spend a shared funding coin. */
 export interface SuiLocalFaucetSerialization {
@@ -64,8 +65,8 @@ const withSerialization = <E>(
 	).pipe(
 		Effect.withSpan('faucet.suiLocal.serializedRequest', {
 			attributes: {
-				'faucet.lease.key': serialization.key,
-				'faucet.lease.owner': serialization.owner,
+				[SuiSpans.localFaucetLeaseKey]: serialization.key,
+				[SuiSpans.localFaucetLeaseOwner]: serialization.owner,
 			},
 		}),
 	);

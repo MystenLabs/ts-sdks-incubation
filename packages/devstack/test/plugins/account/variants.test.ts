@@ -253,7 +253,7 @@ describe('account impersonation variant', () => {
 							return {};
 						},
 					},
-					client: null,
+					client: null as never,
 				},
 				fork: {
 					status: Effect.succeed({ checkpoint: '1', clock: 1 }),
@@ -282,8 +282,10 @@ describe('account impersonation variant', () => {
 		const result = await Effect.runPromise(accountValue.signAndExecute(new Uint8Array([7])));
 		const signExit = await Effect.runPromiseExit(accountValue.signTransaction(new Uint8Array([7])));
 
-		expect(result.digest).toBe('fork-digest');
-		expect(result.objectChanges).toEqual([
+		expect(result.$kind).toBe('Transaction');
+		if (result.$kind !== 'Transaction') throw new Error('expected Transaction variant');
+		expect(result.Transaction.digest).toBe('fork-digest');
+		expect(result.Transaction.objectChanges).toEqual([
 			{
 				type: 'created',
 				objectId: '0xcreated',

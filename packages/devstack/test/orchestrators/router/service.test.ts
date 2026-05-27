@@ -690,6 +690,50 @@ describe('RouterService.contributeRoute', () => {
 		}),
 	);
 
+	it.live(
+		'publishes deferred-readiness routes without probing the upstream during contribution',
+		() =>
+			Effect.gen(function* () {
+				const dir = makeTmpDir();
+				const profile = makeTestProfile(dir);
+				let calls = 0;
+				const fetch: HttpProbeFetch = async () => {
+					calls += 1;
+					return new Response('not ready', { status: 503 });
+				};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const router = yield* RouterService;
+						yield* router.boot();
+						const endpoint = yield* router.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: walletApiDispatch,
+							upstream: { type: 'host-loopback', port: 6173 },
+							cors: true,
+							wireProtocol: 'http',
+							readiness: 'deferred',
+						});
+
+						expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+						expect(calls).toBe(0);
+						expect(readdirSync(dir).filter((name) => name.startsWith('10-'))).toHaveLength(1);
+						const applied = yield* SubscriptionRef.get(router.applied);
+						expect(applied).toHaveLength(1);
+					}).pipe(
+						Effect.provide(
+							makeStackLayerWithRouteReadinessProbe(profile, fetch, {
+								timeoutMs: 20,
+								intervalMs: 5,
+								requestTimeoutMs: 5,
+							}),
+						),
+					),
+				);
+			}),
+	);
+
 	it.live('removes the dispatch file when public route readiness never arrives', () =>
 		Effect.gen(function* () {
 			const dir = makeTmpDir();

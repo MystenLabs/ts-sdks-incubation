@@ -29,7 +29,10 @@ import {
 	type HostServiceResolvedOptions,
 	type HostServiceValue,
 } from '../../../src/plugins/host-service/index.ts';
-import { layerPostAcquireTasks } from '../../../src/substrate/runtime/post-acquire-tasks.ts';
+import {
+	layerPostAcquireTasks,
+	PostAcquireTasksService,
+} from '../../../src/substrate/runtime/post-acquire-tasks.ts';
 
 class FakeChild extends EventEmitter implements HostProcessChild {
 	readonly stdout = new PassThrough();
@@ -348,13 +351,14 @@ describe('acquireHostService', () => {
 						Effect.provideService(PortBrokerService, broker),
 						Effect.provideService(Logger, fakeLogger),
 						Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
-						Effect.provide(layerPostAcquireTasks),
 					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
 				expect(value.url).toBe('http://127.0.0.1:6173');
 				expect(allocations).toEqual([
 					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
 				]);
+				const postAcquireTasks = yield* PostAcquireTasksService;
+				yield* postAcquireTasks.runAll;
 				yield* Effect.promise<void>(
 					() => new Promise((resolveReady) => setTimeout(resolveReady, 0)),
 				);
@@ -363,7 +367,7 @@ describe('acquireHostService', () => {
 					pluginKey: 'host-service-test#0',
 				});
 			}),
-		);
+		).pipe(Effect.provide(layerPostAcquireTasks));
 	});
 
 	it.effect('starts a prepared process once', () => {
@@ -508,6 +512,7 @@ describe('host service routable capability', () => {
 			upstream: { type: 'host-loopback', port: 6173 },
 			cors: true,
 			wireProtocol: 'http',
+			readiness: 'deferred',
 		});
 	});
 });

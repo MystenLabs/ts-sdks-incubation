@@ -1,9 +1,11 @@
 import { Effect, Schema } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { AccountValue } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { WalrusSpans } from './spans.ts';
 
 export interface WalExchangeHandle {
 	readonly objectId: string;
@@ -13,7 +15,7 @@ export interface WalExchangeHandle {
 export type WalExchangeProbeKey = { readonly kind: 'object'; readonly objectId: string };
 
 export interface WalSwapSdk {
-	readonly client: unknown;
+	readonly client: ClientWithCoreApi;
 }
 
 export interface WalAccountSwapRequest {
@@ -80,12 +82,6 @@ export const buildWalSwapTransaction = (args: {
 	return tx;
 };
 
-type TransactionBuildClient = Parameters<Transaction['build']>[0] extends
-	| { readonly client?: infer Client }
-	| undefined
-	? Client
-	: never;
-
 export const swapAccountSuiForWal = (
 	args: WalAccountSwapRequest,
 ): Effect.Effect<{ readonly digest: string }, WalrusPluginError> =>
@@ -99,10 +95,7 @@ export const swapAccountSuiForWal = (
 					paymentMist: args.paymentMist,
 				});
 				const txBytes = yield* Effect.tryPromise({
-					try: () =>
-						tx.build({
-							client: args.sdk.client as TransactionBuildClient,
-						}),
+					try: () => tx.build({ client: args.sdk.client }),
 					catch: (cause): WalrusPluginError =>
 						walrusPluginError(
 							'fund-wal',
@@ -110,7 +103,7 @@ export const swapAccountSuiForWal = (
 							{ cause },
 						),
 				});
-				const receipt = yield* lockedSigner
+				const result = yield* lockedSigner
 					.signAndExecute(txBytes)
 					.pipe(
 						Effect.mapError(
@@ -124,15 +117,26 @@ export const swapAccountSuiForWal = (
 								),
 						),
 					);
-				return { digest: receipt.digest };
+				if (result.$kind === 'FailedTransaction') {
+					return yield* Effect.fail(
+						walrusPluginError(
+							'fund-wal',
+							`walrus.fundWal: SUI -> WAL swap failed on-chain ` +
+								`(digest=${result.FailedTransaction.digest}, ` +
+								`exchange=${args.exchange.objectId}): ` +
+								result.FailedTransaction.executionError,
+						),
+					);
+				}
+				return { digest: result.Transaction.digest };
 			}),
 		)
 		.pipe(
 			Effect.withSpan('devstack.plugin.walrus.fundWal', {
 				attributes: {
-					'walrus.fund.account': args.account.name,
-					'walrus.fund.address': args.recipientAddress,
-					'walrus.fund.exchange': args.exchange.objectId,
+					[WalrusSpans.fundAccount]: args.account.name,
+					[WalrusSpans.fundAddress]: args.recipientAddress,
+					[WalrusSpans.fundExchange]: args.exchange.objectId,
 				},
 			}),
 		);

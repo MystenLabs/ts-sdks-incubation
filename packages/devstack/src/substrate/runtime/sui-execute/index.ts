@@ -29,10 +29,10 @@
 //     domain shape (PublishReceipt, ActionReceipt, MintReceipt, …).
 //   - Failures route through `SuiExecuteError` whose `phase`
 //     discriminates the failing step. Callers map to their plugin's
-//     phase taxonomy in the executor closure passed to
-//     `compileChainOperation` (see `artifact-publisher/chain-operation.ts`).
+//     phase taxonomy in their produce body's `mapError` closure.
 
 import { Effect, Schema, Scope } from 'effect';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 // ---------------------------------------------------------------------------
 // Errors — substrate-style Schema.TaggedErrorClass
@@ -64,24 +64,11 @@ export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()(
 // Inputs / outputs — opaque at the substrate boundary
 // ---------------------------------------------------------------------------
 
-/** The narrow slice of the SDK client this helper drives. Mirrors the
- *  shape cast verbatim in `plugins/package/publish-executor.ts` and
- *  `plugins/action/execute.ts`. */
-export interface SuiExecuteClient {
-	readonly executeTransaction: (args: {
-		readonly transaction: Uint8Array;
-		readonly signatures: ReadonlyArray<string>;
-		readonly include?: {
-			readonly effects?: boolean;
-			readonly objectTypes?: boolean;
-		};
-	}) => Promise<unknown>;
-	readonly waitForTransaction: (args: {
-		readonly digest: string;
-		readonly include?: { readonly effects?: boolean };
-		readonly timeout?: number;
-	}) => Promise<unknown>;
-}
+/** The SDK client this helper drives. Accepts any `ClientWithCoreApi`
+ *  (the published cross-transport surface from `@mysten/sui/client`).
+ *  `executeSuiTx` calls `client.core.executeTransaction` /
+ *  `client.core.waitForTransaction` per STYLE_GUIDE §16. */
+export type SuiExecuteClient = ClientWithCoreApi;
 
 /** Serialised transaction-build callback. Returns the BCS bytes ready
  *  for signing. The caller owns the `Transaction` construction — the
@@ -95,8 +82,7 @@ export interface TransactionSignerScope<SignError = unknown> {
 	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, SignError>;
 }
 
-/** Resolved signer — narrow slice of `AccountValue` (see
- *  `artifact-publisher/chain-operation.ts::ResolvedSigner`). */
+/** Resolved signer — narrow slice of `AccountValue`. */
 export interface ResolvedSigner {
 	readonly name: string;
 	readonly address: string;
@@ -227,7 +213,7 @@ export const executeSuiTx = (params: {
 				//    `changedObjects` + types to project to its domain shape.
 				const raw = yield* Effect.tryPromise({
 					try: () =>
-						client.executeTransaction({
+						client.core.executeTransaction({
 							transaction: txBytes,
 							signatures: [signed.signature],
 							include: { effects: true, objectTypes: true },
@@ -252,7 +238,7 @@ export const executeSuiTx = (params: {
 					const failedDigest = env.FailedTransaction?.digest;
 					if (awaitFinality && failedDigest !== undefined) {
 						yield* Effect.tryPromise({
-							try: () => client.waitForTransaction({ digest: failedDigest }),
+							try: () => client.core.waitForTransaction({ digest: failedDigest }),
 							catch: (cause) =>
 								new SuiExecuteError({
 									phase: 'wait-for-finality',
@@ -292,7 +278,7 @@ export const executeSuiTx = (params: {
 				// 5. Wait for finality (opt-out — some callers wait separately).
 				if (awaitFinality) {
 					yield* Effect.tryPromise({
-						try: () => client.waitForTransaction({ digest: txOk.digest! }),
+						try: () => client.core.waitForTransaction({ digest: txOk.digest! }),
 						catch: (cause) =>
 							new SuiExecuteError({
 								phase: 'wait-for-finality',
@@ -333,3 +319,27 @@ export const executeSuiTx = (params: {
 				},
 			}),
 		);
+
+/** Decode a possibly URI-encoded SDK error message. The Sui SDK
+ *  emits `decodeURIComponent`-able strings for some error paths
+ *  (notably stale-object-version reports). Falls back to the raw
+ *  message on decode failure. */
+const decodeMessage = (message: string): string => {
+	try {
+		return decodeURIComponent(message);
+	} catch {
+		return message;
+	}
+};
+
+/** Typed predicate for the SDK's "stale object version" transient
+ *  failure — the Move VM refuses a transaction that references an
+ *  object reference older than the current chain version. Consumers
+ *  retry with fresh refs; pair with `STALE_OBJECT_VERSION_RETRY_PROFILE`
+ *  from `retry-policy.ts`. Detection sniffs the SDK message because the
+ *  underlying gRPC error class doesn't expose a structured discriminator
+ *  for this case. */
+export const isSuiStaleObjectVersionError = (err: SuiExecuteError): boolean => {
+	const message = decodeMessage(err.message);
+	return message.includes('needs to be rebuilt because object') && message.includes('current version');
+};

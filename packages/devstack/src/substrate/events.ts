@@ -7,13 +7,7 @@
 
 import type { EndpointKey, PluginKey } from './brand.ts';
 import type { LifecycleStatus, PhaseNarration } from './lifecycle.ts';
-import type {
-	AccountProjection,
-	BuildEntry,
-	Endpoint,
-	PackageProjection,
-	StructuredError,
-} from './projection.ts';
+import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
 
 export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -56,13 +50,16 @@ export type EngineEvent =
 			readonly endpoint: Endpoint;
 	  }
 	| {
-			readonly tag: 'account.updated';
-			readonly account: AccountProjection;
-			readonly at: number;
-	  }
-	| {
-			readonly tag: 'package.updated';
-			readonly package: PackageProjection;
+			/** Name-blind projection update. Plugins emit this with a
+			 *  `kind` discriminator the L3 projection orchestrator (today:
+			 *  the reducer in `runtime/projection/update.ts`) decodes
+			 *  per-kind. Substrate stays unaware of which plugins produce
+			 *  which projection shapes — the kind→decoder mapping is owned
+			 *  by the consuming orchestrator. */
+			readonly tag: 'projection.updated';
+			readonly kind: string;
+			readonly key: string;
+			readonly payload: unknown;
 			readonly at: number;
 	  }
 	| {

@@ -52,7 +52,7 @@ import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
 } from '../../../primitives/artifact-publisher.ts';
-import type { AccountValue } from '../../account/service.ts';
+import type { AccountValue } from '../../account/index.ts';
 import {
 	parseMasterKeyEnvFile,
 	renderSealKeyServerConfig,
@@ -65,8 +65,10 @@ import {
 	type SealSuiSdk,
 } from '../deploy.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { MASTER_KEY_ENVFILE_BASENAME, runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
-import { makeKeyManager, stubRotate } from '../key-manager.ts';
+import { makeKeyManager } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
 import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-publish.ts';
 import { resolveDefaultSealCargoImage } from '../bootstrap-assets/cargo-image.ts';
@@ -369,9 +371,7 @@ const startLocalKeygenContainer = (
 			{ objectId: state.keyServerObjectId, weight: 1 },
 		];
 		const keyManager = makeKeyManager({
-			name: opts.name,
 			masterKeyEnvFile: state.masterKeyEnvFile,
-			rotateImpl: stubRotate(opts.name),
 		});
 		return {
 			keyServer: {
@@ -444,9 +444,9 @@ export const bootLocalKeygen = (
 		),
 		Effect.withSpan('devstack.plugin.seal.localKeygen.boot', {
 			attributes: {
-				'devstack.plugin': 'seal',
-				'seal.name': opts.name,
-				'seal.version': opts.version,
+				[SpanAttr.plugin]: 'seal',
+				[SealSpans.name]: opts.name,
+				[SealSpans.version]: opts.version,
 			},
 		}),
 	);

@@ -100,15 +100,23 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 				rows: attachEndpoint(state.rows, event.endpoint),
 			});
 
-		case 'account.updated':
-			return withTouched({
-				accounts: upsertAccount(state.accounts, event.account),
-			});
-
-		case 'package.updated':
-			return withTouched({
-				packages: upsertPackage(state.packages, event.package),
-			});
+		case 'projection.updated':
+			// Substrate stays name-blind on the event vocabulary; the
+			// reducer is the projection orchestrator and owns the per-
+			// `kind` decode. New plugin-author projection kinds slot in
+			// here without a new event variant — extending this switch
+			// is the load-bearing knob.
+			if (event.kind === 'account') {
+				return withTouched({
+					accounts: upsertAccount(state.accounts, event.payload as AccountProjection),
+				});
+			}
+			if (event.kind === 'package') {
+				return withTouched({
+					packages: upsertPackage(state.packages, event.payload as PackageProjection),
+				});
+			}
+			return withTouched({});
 
 		case 'endpoint.released':
 			// Renderer projection keeps endpoint history as last-known
@@ -384,17 +392,11 @@ const upsertPackage = (
 };
 
 const attachEndpoint = (rows: ReadonlyArray<Row>, endpoint: Endpoint): ReadonlyArray<Row> => {
-	// Endpoint -> Row link is `endpointKey` derived from `pluginKey` + dispatchId.
-	// The plugin that owns the endpoint must have a row; we look it up by
-	// the endpoint's pluginKey via a structured field. The current
-	// `Endpoint` shape (from projection.ts) doesn't carry pluginKey in
-	// the projection slice — it's derivable from `endpointKey` (prefix match).
-	const probableKey = endpoint.endpointKey;
 	return rows.map((row) =>
-		probableKey.startsWith(row.key)
-			? row.endpoints.includes(probableKey)
+		endpoint.pluginKey === row.key
+			? row.endpoints.includes(endpoint.endpointKey)
 				? row
-				: { ...row, endpoints: [...row.endpoints, probableKey] }
+				: { ...row, endpoints: [...row.endpoints, endpoint.endpointKey] }
 			: row,
 	);
 };

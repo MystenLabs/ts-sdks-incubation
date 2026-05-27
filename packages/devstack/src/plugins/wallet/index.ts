@@ -8,7 +8,7 @@
 //
 //     1. The IN-PROCESS HTTP server. Owned here. Boot at acquire,
 //        serve `/api/v1/devstack/*` routes (health, accounts,
-//        sign-transaction, sign-personal-message, execute).
+//        sign-transaction, sign-personal-message).
 //
 //     2. The BROWSER-SIDE ADAPTER. Owned by `dev-wallet`. Reads the
 //        codegen-emitted `dapp-kit/config.ts`, constructs a
@@ -323,8 +323,6 @@ export {
 	WALLET_TOKEN_HEX_LENGTH,
 	SignRequestSchema,
 	SignResponseSchema,
-	ExecuteRequestSchema,
-	ExecuteResponseSchema,
 	HealthResponseSchema,
 	AccountsResponseSchema,
 	AccountSummarySchema,
@@ -336,8 +334,6 @@ export {
 	type WalletHttpPathValue,
 	type SignRequest,
 	type SignResponse,
-	type ExecuteRequest,
-	type ExecuteResponse,
 	type HealthResponse,
 	type AccountsResponse,
 	type AccountSummary,
@@ -365,6 +361,7 @@ export {
 	redactToken,
 } from './pairing.ts';
 export { WALLET_ENDPOINT_NAME, makeWalletRoutable } from './routable.ts';
+export { WalletSpans } from './spans.ts';
 export {
 	dispatch,
 	startHttpServer,

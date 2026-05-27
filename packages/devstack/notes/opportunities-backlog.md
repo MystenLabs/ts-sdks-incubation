@@ -8,6 +8,43 @@
 
 ---
 
+## 2026-05-27 — doc-refinement pass (Phase D)
+
+Second thorough review surfaced findings that were "real per the docs" but where the docs
+themselves were over-rigid. Closed-by-rule-relaxation rather than by implementation:
+
+- ~~`ChainOperation<Produced>` typed seam adoption~~ — REJECTED. Substrate primitive deleted
+  (`git rm src/substrate/runtime/artifact-publisher/chain-operation.ts` + test); zero plugin
+  consumers six months after landing was the signal that the abstraction wasn't load-bearing.
+  STYLE_GUIDE §11 relaxed: produce body shape is plugin-owned.
+- ~~`makeRegistry<T>()` substrate helper for 3 orchestrator register-with-finalizer patterns~~ —
+  REJECTED. Three copies of ~30 lines is cheaper than one substrate primitive parameterized 3
+  ways. STYLE_GUIDE §23 pruned to reflect.
+- ~~snapshot's four `failPhase` helpers → one~~ — REJECTED. Four copies of ~8 lines, each
+  locally readable. Same reasoning as above; STYLE_GUIDE §23 pruned.
+- ~~L2 wrapper-service required for every `defineScopedRefMap` consumer~~ — RELAXED. When the
+  surface is a 1:1 re-projection (Move-package's PackageRegistry), consume the factory directly;
+  add the wrapper when the first plugin-specific method lands. STYLE_GUIDE §10b updated.
+- ~~File-LOC threshold at ~700~~ — DROPPED. LOC is a smell, not a threshold. `cli/main.ts` and
+  `deepbook/{index,deploy}.ts` stay coherent; split only when readability genuinely suffers.
+  STYLE_GUIDE §8 updated.
+- ~~Named retry profile required for every retry~~ — RELAXED. One-off retries with no sibling
+  reuse can stay inline. STYLE_GUIDE §16 updated.
+- ~~Wallet↔host-service coupling as undocumented finding~~ — ACCEPTED as third sanctioned bus
+  (endpoint-defaults). ARCHITECTURE.md updated.
+- ~~Router orchestrator bypasses `ContainerRuntime.ensureContainer`~~ — ACCEPTED as documented
+  carve-out (router stamps `kind`/`subkind`/`specVersion` labels). ARCHITECTURE.md updated;
+  widening the L1 contract for one consumer was rejected.
+- ~~`substrate/runtime/run.ts` L0→L1 import boundary violation~~ — REPAIR planned (Phase A #5):
+  move file to `orchestrators/runtime-composition/run.ts`. ARCHITECTURE.md updated to clarify
+  Layer-composition belongs at L3/L4 not L0.
+- ~~Substrate name-blindness allowlist "TODO Phase 5b" markers~~ — DEMOTED to permanent design
+  notes. Projection field set + supervisor's branded resource-id literal are substrate field
+  shapes that name plugin-domain values by design; no further lift planned.
+- ~~Wallet /execute endpoint shape~~ — DELETED 2026-05-27. Zero consumers, wire bug, dapp-kit/dev-wallet bypass. When a concrete consumer materializes (likely fork-impersonation UI), reintroduce matching the Sui Wallet Standard wire shape: flat `{bytes, signature, digest, effects (base64 BCS)}` on 200, transport/lifecycle errors via the existing `ErrorResponseSchema`. `account.signAndExecute` will need a sibling closure that surfaces BCS effects instead of the parsed `TxResult.effects: unknown` projection.
+
+---
+
 ## 🔴 Critical — Phase 1 (user-visible regressions)
 
 ~~All Phase 1 items shipped 2026-05-26; entries moved to the Closed section below.~~
@@ -16,7 +53,7 @@
 
 ~~All Phase 2 items shipped 2026-05-26; entries moved to the Closed section below.~~
 
-10a. **Follow-up to closed #10**: a deterministic regression test for "router dispatch lock held across readiness probe" should land alongside the Phase 6 supervisor split. The original `concurrent-contribute-route.test.ts` was flaky under vitest 4's parallel worker scheduling (`it.live` + forks + Promise gates starved sibling test workers). A lock-state-instrumentation harness (no real-time fiber scheduling) would let this land without flakiness.
+10a. ~~Follow-up to closed #10: deterministic regression test for "router dispatch lock held across readiness probe"~~ — **shipped (structural variant)**: `test/orchestrators/router/lock-state-instrumentation.test.ts` walks `src/orchestrators/router/service.ts`, locates the `Effect.scoped(...)` block containing `acquireStackLock`, and asserts both `publishRouteFile` and `waitForPublicRouteReadiness` live inside it (with publish before probe). Effect's Scope semantics carry the rest — the lock finalizer cannot fire until the scoped block closes, which is after the probe completes. Deterministic, no fibers, no real timing. STYLE_GUIDE §3 codifies the "no `it.live` fiber races for lock-ordering" rule + names the `Effect.Service` refactor as the escape hatch for lock-state questions that exceed structural checks.
 
 ---
 
@@ -28,7 +65,7 @@
 
 ~~Items 24, 25, 26, 27, 28, 30, 31 all shipped 2026-05-26; entries moved to the Closed section below. Item 29 partially shipped (action sign/execute dedup done; `package/publish-executor.ts:101-146` SDK-envelope projector consolidation remains).~~
 
-29a. **Follow-up to partially-closed #29**: collapse `package/publish-executor.ts:101-146` SDK-envelope projector onto `substrate/runtime/sui-execute/executeSuiTx`. Also: `account/service.ts`'s `AccountSignError{phase:'submit'}` overloads "no-digest" + "transport failure" + "FailedTransaction"; clean fix is splitting into `'submit' | 'no-digest' | 'failed-transaction'` phases so consumers don't keyword-match on messages.
+29a. ~~Follow-up to partially-closed #29: collapse `package/publish-executor.ts:101-146` SDK-envelope projector + `AccountSignError{phase:'submit'}` overload~~ — **shipped (sign-flow redesign)**: rather than splitting `phase` into more sub-discriminators, the account's `signAndExecute` was reshaped to mirror the SDK's discriminated-union return (`SuiClientTypes.TransactionResult`-style: `{$kind: 'Transaction' | 'FailedTransaction', ...}`). On-chain failures are now a RETURN VARIANT, not an error — callers dispatch on `$kind`. `AccountSignError.phase` carries only transport/lifecycle failures (`'build-tx' | 'sign' | 'submit' | 'await-finality' | 'dependent-package-not-found' | 'lease-acquire' | 'impersonation-bypass-attempt'`); the previously-overloaded "submit + no-digest + on-chain" set is gone. Action plugin gained `phase: 'execute-failed'` for the FailedTransaction variant mapping. `package/publish-executor.ts:rawEnvelopeFromAccountTx` deleted; impersonate path consumes `SignAndExecuteResult` directly via `publishChangesFromTxResult`. Walrus / coin / action / wallet all dispatch on `$kind` and surface their own plugin-shaped on-chain failure. STYLE_GUIDE §2 codifies "failed conditions as return-channel discriminated unions; phases describe steps, not failure kinds".
 27. ~~L4 surfaces reaching L1/L2~~ — shipped 2026-05-26. `cli/prune-direct.ts` now consumes the new `orchestrators/lifecycle-prune/` L3 surface; doctor probes moved to `cli/doctor-probes.ts` (L4-adjacent CLI infrastructure); `surfaces/cli/commands/prune.ts` reads a precomputed `PruneGroup.autoPrunable` field instead of importing router constants. STYLE_GUIDE §7 codifies the L4-vs-L4-adjacent split and `test/style/l4-boundary.test.ts` pins the boundary.
 28. ~~`api/define-devstack.ts:16-17` special-cases wallet via `WALLET_EXPAND_ACCOUNTS_ALL`.~~ **Shipped (Phase 4 Wave 2C)** — lifted to substrate-owned `src/contracts/plugin-expander.ts` (`PLUGIN_EXPANDER` symbol + `attachPluginExpander`/`runPluginExpanders`/`isPluginExpanderPair`). Wallet contributes through `attachPluginExpander`; `define-devstack.ts` no longer imports any plugin. Compose-time hook (NOT routed through `CapabilitySinks`, which is the runtime-harvest path); the expander symbol writes a value-level property only so it doesn't leak into inferred Stack types (TS2742 invariant preserved).
 29. Action duplicates sign/execute pipeline — **partially shipped (Phase 4 Wave 2C)**: `plugins/action/execute.ts` now delegates the sign+execute+wait+project pipeline to `account.withTransactionSigner(...).signAndExecute(txBytes)`; the inline `sdkClient.executeTransaction` path and the `RawExecuteEnvelope` projector are gone. **Still remaining**: collapsing the SDK-envelope projector at `package/publish-executor.ts:101-146` onto the substrate helper at `substrate/runtime/sui-execute/`. That lift can adopt `executeSuiTx` directly (already substrate-blessed Sui-aware module). Also remaining (style-sweep follow-up): account's `AccountSignError{phase:'submit'}` overloads "no-digest" and "transport failure"; the action mapping discriminates by message keyword. A clean fix is a distinct `'no-digest'` phase on `AccountSignError`.
@@ -39,9 +76,9 @@
 
 Phase 5a closed items 34, 35, 36 (doc-only), 37 on 2026-05-26 (entries in Closed below). Items 32 and 33 are deferred to a follow-up phase that pairs naturally with the Phase 6 supervisor split, where the projection emit-paths get split out of the supervisor monolith and can adopt the new opaque event/projection shapes cleanly.
 
-32. `SpanAttr` carries 12 plugin-domain keys — `src/substrate/runtime/observability/spans.ts:20-60`. Lift via a substrate `SpanVocabDecl` capability + per-plugin spans.ts contributions; harvest through the existing `CapabilitySinks` Layer composition.
-33. Substrate `EngineEvent`/`projection.ts` carry `account.updated`/`package.updated` + branded `account/${string}`/`package/${string}`/`coin: string` keys. Introduce a name-blind `projection.updated` event `{ kind: string, key: string, payload: unknown }` and lift account-/package-specific projection handling to a new L3 orchestrator (`src/orchestrators/projection/`) that knows the typed payload shapes. Land alongside the supervisor split so the publisher path moves out cleanly.
-37a. `EnsureContainerSpec.networkAttach` is name-blind — accepts network names but no `--network-alias` plumbing, so plugins exposing a `networkAlias` field on their handle (postgres, future siblings) cannot have Docker register an alternate DNS name. Phase 1 bug #5 worked around this in `plugins/postgres/index.ts` by routing codegen at the container DNS name (`${app}-${stack}-${name}`) instead. Long-term: extend `EnsureContainerSpec` to accept per-network aliases (e.g. `networkAttach: ReadonlyArray<string | { name: string; aliases?: string[] }>`), thread through the runtime adapter's `docker network connect --alias`, then flip the postgres codegen back to `value.networkAlias` and let parallel stacks dial by the alias rather than the per-stack container name.
+32. ~~`SpanAttr` carries 12 plugin-domain keys~~ — **shipped (simpler variant)**: keys lifted to per-plugin `spans.ts` files (`src/plugins/wallet/spans.ts:WalletSpans`, `src/plugins/account/spans.ts:AccountSpans`, `src/plugins/coin/spans.ts:CoinSpans`, `src/plugins/sui/spans.ts:SuiSpans`). Substrate `SpanAttr` now carries engine-dimensional + http/process generic keys only. The originally-spec'd runtime `SpanVocabDecl` capability was dropped per user direction — no runtime consumer exists (substrate logger only reads engine-dimensional keys), so the per-plugin const-export pattern is the simplest correct answer. Style discipline pinned by STYLE_GUIDE §16 + the Wave 3B sweep + style test. Allowlist shrunk one entry (`spans.ts` no longer mentions plugin names; the surviving allowlist entry is for `host: 'server.address'` OTEL convention which the regex flags as "host").
+33. ~~Substrate `EngineEvent` carries `account.updated`/`package.updated` event variants~~ — **shipped (event-layer variant)**: collapsed both into a single name-blind `projection.updated` carrying `{kind, key, payload, at}`. `substrate/events.ts` no longer mentions plugin names; the allowlist entry shrunk. Reducer (`substrate/runtime/projection/update.ts`) dispatches on `event.kind` and decodes `payload` per kind ('account' / 'package' today; new kinds slot in by extending the switch). Plugins (`account/registry.ts`, `package/index.ts`) emit the new envelope; orchestrator capability sink (`orchestrators/runtime-composition.ts:makeProjectionCapabilitySink`) stamps `rowKey` on the opaque payload via a single structural check. TUI consumers (`surfaces/tui/event-log.ts`, `surfaces/tui/plain-renderer.ts`) dispatch on the new variant. STYLE_GUIDE §21 codifies the discipline. **Deferred**: the branded keys (`account/${string}`, `package/${string}`) + the `SubscribableState.{accounts, packages}` field list stay (would cascade into projection persistence + the closed-field-list invariant); the L3 lift to `src/orchestrators/projection/` with a kind→decoder registry is a separate follow-up.
+37a. ~~`EnsureContainerSpec.networkAttach` is name-blind — accepts network names but no `--network-alias` plumbing~~ — **shipped**: contract widened to `ReadonlyArray<string | { name: string; aliases?: ReadonlyArray<string> }>` (`src/contracts/container-runtime.ts`); Docker reference impl emits `--network-alias` on `docker run` for the primary attach and `--alias` on `docker network connect` for subsequent attaches (`src/runtime/docker/container.ts`, `src/runtime/docker/network.ts`). Postgres now passes `{ name: containerNetwork, aliases: [networkAlias] }` and the codegen is flipped back to `value.networkAlias` — parallel stacks dial by the per-stack alias rather than the container name. Test cover: `test/runtime/docker/network-alias.test.ts` (new) + `test/plugins/postgres/codegen-host.test.ts` (flipped expectations).
 
 ## 🟠 Major — Phase 6 (supervisor split)
 
@@ -63,14 +100,14 @@ Phase 5a closed items 34, 35, 36 (doc-only), 37 on 2026-05-26 (entries in Closed
 44. ~~`seal/mode/local-keygen.ts:194-198`~~ — **shipped Phase 7B**: `JSON.parse + Schema.decodeUnknownEffect` collapsed to `decodeJsonText(schema, raw, { source, mkError: i => i })`; surrounding `.pipe(Effect.catch(() => null))` makes the call-site decision-to-null explicit per task brief.
 45. ~~`cli/snapshot-reader.ts:46-65`~~ — **shipped Phase 7B**: `JSON.parse + Schema.decodeUnknownSync` → `decodeJsonTextSync(SnapshotMetadataSchema, ..., { source, mkError })`. Surrounding try/catch fallback to `null`-named entry stays.
 46. ~~`build-integrations/runtime/read-stack-context.ts:62`~~ — **shipped Phase 7B**: pre-built `Schema.decodeUnknownSync(...)` replaced with `decodeUnknownSync(ManifestEnvelopeSchema, parsed, { source: manifestPath, mkError: i => i })`. Surrounding try/catch + `ManifestShapeError` rewrap stays.
-47. `sui/mode/shared-boot.ts:191` bespoke `postJsonRpc` — **DEFERRED Phase 7B**: in-code header comment at the site documents the deferral; see 47a below for the substrate primitive that closes this.
-47a. **Follow-up to 47 (new)**: lift `substrate/runtime/json-rpc-client.ts` primitive — typed envelope decode (via `runtime-decode.ts`) + per-request timeout + the standard JSON-RPC `{ jsonrpc: '2.0', id, method, params }` send + `{ result, error }` projection. Once landed, `sui/mode/shared-boot.ts:postJsonRpc` (+ `normalizeJsonOwner`/`getObjectViaJsonRpc` projector helpers) consume the primitive. Sized as its own PR — fresh primitive, not a wrapper.
+47. ~~`sui/mode/shared-boot.ts:191` bespoke `postJsonRpc` + `normalizeJsonOwner` + `getObjectViaJsonRpc`~~ — **shipped (gRPC pivot)**: JSON-RPC is deprecated upstream; the helpers were deleted in favor of `sdkClient.core.getObject(...)` (the gRPC core API already returns the `{object: {...}}` envelope and the native `SuiClientTypes.ObjectOwner` discriminants). `chain-probe.ts:ObjectOwnerSchema` now mirrors the SDK shape (`AddressOwner` / `ObjectOwner` / `Shared` / `Immutable` / `ConsensusAddressOwner` / `Unknown`); the `Parent` rename is gone. `assembleSuiClient`'s `sdkRpcUrl` parameter dropped (only consumed by the JSON-RPC plumbing). STYLE_GUIDE §16 codifies "Sui chain access goes through gRPC `core`; do not hand-roll JSON-RPC".
+47a. ~~lift `substrate/runtime/json-rpc-client.ts` primitive~~ — **superseded by 47** (gRPC pivot makes a JSON-RPC primitive unnecessary).
 48. ~~`faucet/http.ts:128-203` bespoke retry~~ — **shipped Phase 7B (carve-out variant)**: header comment at the file documents that one-shot POST + body-shape validation is owned here, not `HttpProbes.waitForHttpEndpoint(...)` (a *readiness probe* primitive). Retry constants lifted to `retry-policy.ts:FAUCET_HTTP_RETRY_PROFILE`; the local `DEFAULT_*` exports forward to the profile so callers see no change.
 49. ~~`walrus/deploy.ts:130-131` `DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS`~~ — **shipped Phase 7B**: profile lifted to `retry-policy.ts:DEPLOY_BIND_SOURCE_RETRY_PROFILE`; the hand-rolled `for(let attempt = 0; ; ...)` loop is now `Effect.repeat({ schedule: makeSpacedRetrySchedule(...), until: r => !isBindSourceMissing(r) })`.
 
 ### 7C — `as unknown as` at user-facing surface (~10 sites) — DEFERRED
 
-50. `wallet/index.ts:169`, `account/index.ts:199,210`, `deepbook/index.ts:269,274,290,459`, `host-service/{index.ts:57,service.ts:463,466}`, `api/{define-devstack,define-devstack-with}.ts` (~5). Each cast is a type-inference workaround that likely needs a typed substrate seam in `substrate/plugin.ts`. Pairs naturally with future api-side work + the Phase 6 supervisor's typed expander capability; defer.
+50. ~~`as unknown as` audit at user-facing surface (~10 sites)~~ — **shipped (manifest variant)**: triage found every cast is a genuine TS inference limit (dependent-tuple narrowing, symbol-keyed property reads, generic-default widening, Node child_process iterable bridges); no architectural lift removes them today. `test/style/no-unknown-as.test.ts` pins the sanctioned-cast manifest with per-file counts + reasons; new casts at `src/api/`, `src/plugins/<name>/index.ts`, or `src/plugins/host-service/service.ts` fail CI, and so do removed casts (forcing the cleanup to update the manifest, surfacing the lift that closed it). STYLE_GUIDE §5 references the manifest as the source-of-truth for what's sanctioned at user-facing surfaces.
 
 ### 7D — Misc style
 51. ~~`surfaces/tui/event-log.ts:208-215` substring-match on `pluginKey` for color~~ — shipped 2026-05-26. Lifted to `sectionForKey(key)` + `sectionColor(section)` in `display-derivation.ts`; event-log derives scope-chip color via the closed `RowSection` vocabulary, no plugin-name substring matching.

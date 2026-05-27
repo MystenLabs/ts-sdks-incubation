@@ -26,8 +26,9 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { ContainerRuntime, ImageRef } from '../../../contracts/container-runtime.ts';
+import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
+import { WalrusSpans } from '../spans.ts';
 
 const WALRUS_CARGO_IMAGE_OVERRIDE_ENV = 'WALRUS_CARGO_IMAGE_OVERRIDE' as const;
 
@@ -101,17 +102,9 @@ export const resolveCargoImage = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.cargoImage.resolve', {
 			attributes: {
-				'walrus.ref': inputs.walrusRef,
-				'walrus.suiVersion': inputs.suiVersion,
+				[WalrusSpans.ref]: inputs.walrusRef,
+				[WalrusSpans.suiVersion]: inputs.suiVersion,
 			},
 		}),
 	);
 
-/** Convenience: resolve via the default inputs. */
-export const resolveDefaultCargoImage = (
-	runtime: ContainerRuntime,
-): Effect.Effect<ImageRef, WalrusPluginError, Scope.Scope> =>
-	resolveCargoImage(runtime, {
-		walrusRef: DEFAULT_WALRUS_REF,
-		suiVersion: DEFAULT_SUI_VERSION,
-	});

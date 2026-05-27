@@ -1,18 +1,20 @@
-// Shared substrate-Layer composition + supervise() entrypoint.
+// Default-stack Layer composition + supervise() entrypoint.
 //
 // Single seam consumed by both the CLI bin entry (`cli/main.ts`) and the
 // library-facing programmatic surface (`api/run-stack.ts`). Composes the
-// substrate Layer stack, yields the substrate services into a
-// `Context.Context<never>` pluginContext, builds the projection ref,
-// and runs `supervise()` inside a scope.
+// substrate Layer stack (L0) + the Docker `ContainerRuntime` adapter
+// (L1), yields the substrate services into a `Context.Context<never>`
+// pluginContext, builds the projection ref, and runs `supervise()`
+// inside a scope.
 //
 // The CLI augments the supervised body with cross-process command
 // channel forwarding; the library surface passes a no-op augmentation
 // and exposes the handle's events / state / awaitShutdown directly.
 //
-// Architecture: this is L0 substrate. It names no plugin and no
-// capability declaration. Built-in plugin services are composed by the
-// higher-level runtime composition layer before the supervisor starts.
+// Architecture: this is L3 (orchestrator-level). Layer composition that
+// assembles L0+L1 stacks belongs at L3/L4 — it can't live in `substrate/`
+// because it imports a concrete L1 adapter (Docker) by definition. See
+// ARCHITECTURE.md § "Layer composition belongs at L3/L4, not L0".
 
 import { Context, Effect, Layer, Logger as EffectLogger, Scope, SubscriptionRef } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -20,10 +22,13 @@ import * as NodePath from '@effect/platform-node/NodePath';
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
-import type { Identity } from '../identity.ts';
-import { CacheService, layerCache } from './cache/index.ts';
-import { LeaseBrokerService, layerLeaseBroker } from './lease-broker/index.ts';
-import { ArtifactPublisherService, layerArtifactPublisher } from './artifact-publisher/index.ts';
+import type { Identity } from '../substrate/identity.ts';
+import { CacheService, layerCache } from '../substrate/runtime/cache/index.ts';
+import { LeaseBrokerService, layerLeaseBroker } from '../substrate/runtime/lease-broker/index.ts';
+import {
+	ArtifactPublisherService,
+	layerArtifactPublisher,
+} from '../substrate/runtime/artifact-publisher/index.ts';
 import {
 	IdentityContext,
 	RuntimeRoot,
@@ -31,20 +36,31 @@ import {
 	layerIdentity,
 	layerRuntimeRoot,
 	layerStackPaths,
-} from './paths.ts';
-import { PortBrokerService, layerPortBroker } from './port-broker/index.ts';
-import { StrategyRegistryService, layerStrategyRegistry } from './strategy-registry/index.ts';
+} from '../substrate/runtime/paths.ts';
+import { PortBrokerService, layerPortBroker } from '../substrate/runtime/port-broker/index.ts';
+import {
+	StrategyRegistryService,
+	layerStrategyRegistry,
+} from '../substrate/runtime/strategy-registry/index.ts';
 import {
 	ContainerRuntimeService,
 	DockerSpawner,
 	layerContainerRuntimeDocker,
 	layerDockerCycleInitial,
 	layerDockerHostDefault,
-} from '../../runtime/docker/index.ts';
-import { awaitAll } from './lifecycle/index.ts';
-import { makeProjectionRef } from './projection/index.ts';
-import { Logger, Redactor, layerLogger, layerRedactor } from './observability/index.ts';
-import { PostAcquireTasksService, layerPostAcquireTasks } from './post-acquire-tasks.ts';
+} from '../runtime/docker/index.ts';
+import { awaitAll } from '../substrate/runtime/lifecycle/index.ts';
+import { makeProjectionRef } from '../substrate/runtime/projection/index.ts';
+import {
+	Logger,
+	Redactor,
+	layerLogger,
+	layerRedactor,
+} from '../substrate/runtime/observability/index.ts';
+import {
+	PostAcquireTasksService,
+	layerPostAcquireTasks,
+} from '../substrate/runtime/post-acquire-tasks.ts';
 import {
 	startSupervisor,
 	type OrchestratorSinks,
@@ -52,7 +68,7 @@ import {
 	type SupervisorCommandHandler,
 	type SupervisorHandle,
 	type SupervisorPostAcquireHook,
-} from './supervisor.ts';
+} from '../substrate/runtime/supervisor/index.ts';
 
 /** Substrate Layer stack for a single supervised run. Composes every L0
  *  service the supervisor yields from its R-channel, plus the L1 Docker
@@ -182,16 +198,16 @@ export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never, HookE =
 export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = never>(
 	stack: SupervisedStack,
 	identity: Identity,
-	state: SubscriptionRef.SubscriptionRef<import('../projection.ts').SubscribableState>,
+	state: SubscriptionRef.SubscriptionRef<import('../substrate/projection.ts').SubscribableState>,
 	opts: SuperviseStackOptions<R, ExtendR, HookE> = {},
 ) =>
 	Effect.gen(function* () {
-		const baseContext = yield* buildPluginContext();
-		const pluginContext =
-			opts.extendContext === undefined ? baseContext : yield* opts.extendContext(baseContext);
-
 		return yield* Effect.scoped(
 			Effect.gen(function* () {
+				const baseContext = yield* buildPluginContext();
+				const pluginContext =
+					opts.extendContext === undefined ? baseContext : yield* opts.extendContext(baseContext);
+
 				const startup = yield* startSupervisor(
 					stack,
 					identity,

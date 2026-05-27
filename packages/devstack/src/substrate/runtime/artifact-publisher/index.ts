@@ -38,22 +38,6 @@ import type {
 import { CacheService } from '../cache/index.ts';
 import { parseJsonTextSync } from '../runtime-decode.ts';
 
-// Re-export the ChainOperation typed seam — plugin authors compose
-// produce bodies via `compileChainOperation({...})` rather than
-// hand-rolling the `Effect<Produced, ArtifactPublishError, Scope>`.
-//
-// `ResolvedSigner` is intentionally NOT re-exported here — it is
-// owned by `sui-execute/` and reached via that module's barrel; both
-// modules share the single canonical shape.
-export {
-	compileChainOperation,
-	type ChainOperation,
-	type OneShotRunner,
-	type OneShotSpec,
-	type SuiEffects,
-	type SuiTxBuilder,
-} from './chain-operation.ts';
-
 // ---------------------------------------------------------------------------
 // Service tag
 // ---------------------------------------------------------------------------

@@ -246,6 +246,7 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e1'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'gql',
 					url: 'http://localhost:9000',
 					displayUrl: 'https://devstack.local/gql',
@@ -258,6 +259,7 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e2'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'rpc',
 					url: 'http://localhost:9001',
 					displayUrl: null,
@@ -270,6 +272,7 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e3'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'grpc',
 					url: 'http://127.0.0.1:9184',
 					displayUrl: 'http://sui-rpc.wallet.localhost:9184',
@@ -381,6 +384,7 @@ describe('display-derivation', () => {
 	describe('row endpoints and grouping', () => {
 		const endpoint = {
 			endpointKey: endpointKey('sui:rpc'),
+			pluginKey: pluginKey('sui'),
 			name: 'rpc',
 			url: 'http://localhost:9000',
 			displayUrl: null,
@@ -393,9 +397,25 @@ describe('display-derivation', () => {
 			expect(endpointsForRow(row, [endpoint])).toEqual([endpoint]);
 		});
 
+		it('does not select endpoints from plugin keys with matching prefixes', () => {
+			const row = fakeRow({ key: pluginKey('service#1') });
+			const endpoint = {
+				endpointKey: endpointKey('service#10:http'),
+				pluginKey: pluginKey('service#10'),
+				name: 'http',
+				url: 'http://service.localhost',
+				displayUrl: null,
+				wireProtocol: 'http',
+				registeredAt: 0,
+			};
+
+			expect(endpointsForRow(row, [endpoint])).toEqual([]);
+		});
+
 		it('summarizes row endpoints inline for table rendering', () => {
 			const walletEndpoint = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://wallet.demo.localhost:5175',
 				displayUrl: null,
@@ -412,6 +432,7 @@ describe('display-derivation', () => {
 			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
 			const operational = {
 				endpointKey: endpointKey('wallet#0:url'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
@@ -420,6 +441,7 @@ describe('display-derivation', () => {
 			};
 			const routed = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://api.wallet.arena.localhost:6173',
 				displayUrl: null,
@@ -446,6 +468,7 @@ describe('display-derivation', () => {
 		it('summarizes central projection slices for the header panel', () => {
 			const rawEndpoint: Endpoint = {
 				endpointKey: endpointKey('wallet#0:url'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
@@ -454,6 +477,7 @@ describe('display-derivation', () => {
 			};
 			const routedEndpoint: Endpoint = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://api.arena.arena.localhost:6173',
 				displayUrl: null,

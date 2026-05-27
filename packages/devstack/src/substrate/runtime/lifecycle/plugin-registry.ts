@@ -260,17 +260,32 @@ export const buildDependencyReaderFor = (
 			// Programmer error: the plugin reached outside its declared
 			// dependencies. The type system normally rules this out — defending
 			// here keeps the runtime honest in the face of cast escapes.
-			throw new Error(
-				`DependencyReader: resource '${resource.id}' not in this plugin's declared dependencies`,
-			);
+			throw new DependencyReaderViolation({
+				kind: 'undeclared-dependency',
+				target: resource.id,
+			});
 		}
 		const value = readResolvedSync(registry, key);
 		if (value === undefined) {
-			throw new Error(
-				`DependencyReader: upstream '${key}' has no resolved value yet — ` +
-					'supervisor must mark the entry ready before downstream acquire.',
-			);
+			throw new DependencyReaderViolation({
+				kind: 'unresolved-upstream',
+				target: key,
+			});
 		}
 		return value;
 	};
 };
+
+/** Tagged defect surfaced when a plugin's `start` callback reads a
+ *  dependency outside its declared `dependsOn` set, or an upstream
+ *  that hasn't been marked ready yet. Throws synchronously inside the
+ *  dependency-reader closure; the Effect runtime captures it as a
+ *  defect the cascade-formatter projects via `_tag`. The `kind`
+ *  discriminator and `target` carry the offending name; consumers
+ *  read both. */
+export class DependencyReaderViolation extends Data.TaggedError(
+	'DependencyReaderViolation',
+)<{
+	readonly kind: 'undeclared-dependency' | 'unresolved-upstream';
+	readonly target: string;
+}> {}

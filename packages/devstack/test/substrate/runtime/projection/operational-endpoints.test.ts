@@ -20,6 +20,7 @@ describe('operationalEndpointEventsFromResolvedValue', () => {
 				tag: 'endpoint.registered',
 				endpoint: {
 					endpointKey: 'sui#0:rpcUrl',
+					pluginKey: 'sui#0',
 					name: 'rpc',
 					url: 'http://127.0.0.1:51001',
 					displayUrl: null,
@@ -31,6 +32,7 @@ describe('operationalEndpointEventsFromResolvedValue', () => {
 				tag: 'endpoint.registered',
 				endpoint: {
 					endpointKey: 'sui#0:faucetUrl',
+					pluginKey: 'sui#0',
 					name: 'faucet',
 					url: 'http://127.0.0.1:50001',
 					displayUrl: null,
@@ -54,6 +56,7 @@ describe('operationalEndpointEventsFromResolvedValue', () => {
 		expect(events).toHaveLength(1);
 		expect(events[0]?.endpoint).toMatchObject({
 			endpointKey: 'wallet#6:url',
+			pluginKey: 'wallet#6',
 			name: 'http',
 			url: 'http://127.0.0.1:39200',
 		});

@@ -19,6 +19,7 @@ import { Effect, FileSystem, Path, type Scope } from 'effect';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
 
 // ---------------------------------------------------------------------------
 // Constants — distilled-doc §"External / upstream sources"
@@ -87,7 +88,7 @@ const nextScratchPaths = (
 
 export const sealSourceCacheDir = (ref: string): string => {
 	const home = env().HOME ?? '/tmp';
-	return `${home}/.cache/devstack-rewrite/seal-src/${encodeURIComponent(ref)}`;
+	return `${home}/.cache/devstack/seal-src/${encodeURIComponent(ref)}`;
 };
 
 export const sealSourcePublishLockPath = (ref: string): string =>
@@ -219,9 +220,9 @@ export const resolveSealSource = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.moveSource.resolve', {
 			attributes: {
-				'seal.repo': inputs.repo,
-				'seal.ref': inputs.ref,
-				'seal.subdir': inputs.subdir,
+				[SealSpans.repo]: inputs.repo,
+				[SealSpans.ref]: inputs.ref,
+				[SealSpans.subdir]: inputs.subdir,
 			},
 		}),
 	);

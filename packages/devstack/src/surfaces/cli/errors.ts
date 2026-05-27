@@ -103,7 +103,7 @@ export class CliInternalError extends Data.TaggedError('CliInternalError')<{
  *
  *  Architecture § Learnings: "Already-reported sentinel pattern" — the
  *  marker traverses the cause structure used by the Effect runtime, so
- *  the top-level `Effect.catchAll` sees it. */
+ *  the top-level `Effect.catch` sees it. */
 export class CliAlreadyReportedError extends Data.TaggedError('CliAlreadyReportedError')<{
 	readonly exitCode: ExitCode;
 }> {}

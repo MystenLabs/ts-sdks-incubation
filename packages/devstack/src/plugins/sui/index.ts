@@ -45,10 +45,7 @@ import type { AcquireContext } from '../../substrate/plugin.ts';
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import {
-	LeaseBrokerService,
-	type LeaseBroker,
-} from '../../substrate/runtime/lease-broker/index.ts';
+import { LeaseBrokerService } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
@@ -81,12 +78,15 @@ type SuiResolved = SuiClient & {
 	readonly seedObjects: SeedObjectsAccumulator;
 };
 
-const fundingFaucetLeaseBrokerSymbol: unique symbol = Symbol(
-	'@mysten-incubation/devstack/sui/fundingFaucetLeaseBroker',
-);
-
+/** Internal extension of `SuiResolved` carrying the
+ *  pre-built local-faucet strategy. `start` owns the
+ *  `LeaseBrokerService` instance for serialization; building the
+ *  strategy at start-time (where the broker is reachable) lets the
+ *  capabilities factory consume a flat value without threading the
+ *  broker through a side channel. `null` on networks without a
+ *  faucet (live, fork, external-rpc-without-faucet). */
 type SuiResolvedRuntime = SuiResolved & {
-	readonly [fundingFaucetLeaseBrokerSymbol]: LeaseBroker;
+	readonly fundingFaucetStrategy: ReturnType<typeof suiLocalStrategy> | null;
 };
 
 /** The Sui plugin's resource identity. The id is `'sui'` (singular). */
@@ -114,11 +114,22 @@ const buildPlugin = (opts: SuiOptions) => {
 				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
 
 				const seedObjects = yield* makeSeedObjectsAccumulator();
+				const fundingFaucetStrategy =
+					client.fundingFaucetUrl === null
+						? null
+						: suiLocalStrategy({
+								faucetUrl: client.fundingFaucetUrl,
+								serialization: {
+									broker: fundingFaucetLeaseBroker,
+									key: `sui-faucet:${client.chain}`,
+									owner: `sui-faucet:${client.chain}`,
+								},
+							});
 				return {
 					...client,
 					mode: opts.mode,
 					seedObjects,
-					[fundingFaucetLeaseBrokerSymbol]: fundingFaucetLeaseBroker,
+					fundingFaucetStrategy,
 				} satisfies SuiResolvedRuntime;
 			}),
 		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
@@ -188,20 +199,13 @@ const makePluginCapabilities = (
 	};
 
 	const faucetContribution =
-		resolved.fundingFaucetUrl === null
+		resolvedRuntime.fundingFaucetStrategy === null
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: suiLocalStrategy({
-							faucetUrl: resolved.fundingFaucetUrl,
-							serialization: {
-								broker: resolvedRuntime[fundingFaucetLeaseBrokerSymbol],
-								key: `sui-faucet:${realChain}`,
-								owner: `sui-faucet:${realChain}`,
-							},
-						}),
+						strategy: resolvedRuntime.fundingFaucetStrategy,
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<
 						`faucet:request:${string}`,
@@ -328,6 +332,13 @@ export {
 	type ForkLockHolder,
 } from './fork-orchestration.ts';
 export type { SuiProbeKey, SuiSdkShim } from './chain-probe.ts';
+export { SuiSpans } from './spans.ts';
+
+/** The shape `Transaction.build({ client })` and every `sdk.core.*` call
+ *  accepts. Re-exported from `@mysten/sui/client` so callers cast
+ *  `sui.sdk.client as ClientWithCoreApi` without each having to know the
+ *  SDK subpath. */
+export type { ClientWithCoreApi } from '@mysten/sui/client';
 // Cross-plugin seams: fork impersonation + chain-build container.
 // Consumed by `action` (Move-call execution against fork) and
 // `package` (publish-to-fork + Move-build orchestration). Wave 2

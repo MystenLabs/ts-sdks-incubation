@@ -62,7 +62,7 @@ import {
 	type SupervisorHandle,
 	writeProjectionSnapshot,
 } from '../substrate/runtime/index.ts';
-import { buildSubstrateLayers, superviseStackEffect } from '../substrate/runtime/run.ts';
+import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 
 import {
 	dispatch,
@@ -899,6 +899,20 @@ const identityValueFor = (identity: ResolvedIdentity, stack?: SupervisedStack): 
 	chain: chainId(identity.network),
 });
 
+const resolvedIdentityForStack = (
+	identity: ResolvedIdentity,
+	stack: SupervisedStack,
+): ResolvedIdentity => {
+	const stackValue = stack.options.stackName ?? identity.stack;
+	const stackRoot = stackRootFor(identity.runtimeRoot, stackValue);
+	return {
+		...identity,
+		stack: stackValue,
+		stackRoot,
+		rosterFile: resolvePath(stackRoot, 'roster.json'),
+	};
+};
+
 const directSnapshotLayers = (identity: ResolvedIdentity) =>
 	layerProductionOrchestrators().pipe(
 		Layer.provideMerge(buildSubstrateLayers(identityValueFor(identity), identity.runtimeRoot)),
@@ -967,8 +981,19 @@ const runSnapshotCaptureDirect = (
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
 		const loaded = yield* loader.load(args.configPath);
+		return yield* runSnapshotCaptureDirectLoaded(identity, loaded, args);
+	});
+};
+
+const runSnapshotCaptureDirectLoaded = (
+	identity: ResolvedIdentity,
+	loaded: LoadedConfig,
+	args: { readonly snapshotId?: string; readonly name?: string },
+): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> =>
+	Effect.gen(function* () {
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
-		const identityValue = identityValueFor(identity, stack);
+		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
+		const identityValue = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
 		const substrateLayers = layerProductionOrchestrators({
 			codegen: {
@@ -976,7 +1001,7 @@ const runSnapshotCaptureDirect = (
 				outputDir: stack.options.codegen?.outputDir,
 				stackSubdir: stack.options.codegen?.stackSubdir ?? null,
 			},
-		}).pipe(Layer.provideMerge(buildSubstrateLayers(identityValue, identity.runtimeRoot)));
+		}).pipe(Layer.provideMerge(buildSubstrateLayers(identityValue, effectiveIdentity.runtimeRoot)));
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
@@ -1027,21 +1052,35 @@ const runSnapshotCaptureDirect = (
 			return { snapshotId: meta.id, name: meta.label ?? meta.id };
 		});
 
-		return yield* program.pipe(
-			Effect.provide(substrateLayers),
-			Effect.provide(Logger.layer([Logger.consolePretty()])),
+		return yield* ensureNoLiveSupervisor(
+			effectiveIdentity,
+			'shut down the attached `devstack up` session before saving a snapshot',
+		).pipe(
+			Effect.andThen(
+				program.pipe(
+					Effect.provide(substrateLayers),
+					Effect.provide(Logger.layer([Logger.consolePretty()])),
+				),
+			),
 		);
 	});
-};
 
 const runSnapshotCaptureLiveAware = (
 	identity: ResolvedIdentity,
 	args: { readonly snapshotId?: string; readonly name?: string; readonly configPath?: string },
 ): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> =>
 	Effect.gen(function* () {
-		const live = yield* runSnapshotCaptureAgainstLiveSupervisor(identity, args);
+		if (args.configPath === undefined && resolveConfigPath(undefined) === null) {
+			const live = yield* runSnapshotCaptureAgainstLiveSupervisor(identity, args);
+			if (live !== null) return live;
+			return yield* runSnapshotCaptureDirect(identity, args);
+		}
+		const loaded = yield* makeConfigLoader().load(args.configPath);
+		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
+		const live = yield* runSnapshotCaptureAgainstLiveSupervisor(effectiveIdentity, args);
 		if (live !== null) return live;
-		return yield* runSnapshotCaptureDirect(identity, args);
+		return yield* runSnapshotCaptureDirectLoaded(effectiveIdentity, loaded, args);
 	});
 
 const makeSnapshotDeps = (identity: ResolvedIdentity): CliDeps['snapshot'] => ({

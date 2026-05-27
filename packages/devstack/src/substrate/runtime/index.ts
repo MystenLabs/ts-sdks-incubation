@@ -33,7 +33,7 @@ export * from './post-acquire-tasks.ts';
 // Lifecycle + supervisor + cross-process protocol.
 export * from './lifecycle/index.ts';
 export * from './cross-process/index.ts';
-export * from './supervisor.ts';
+export * from './supervisor/index.ts';
 
 // L0 observability primitives + manifest emitter + renderer
 // projection ref.

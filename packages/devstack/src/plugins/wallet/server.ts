@@ -5,8 +5,7 @@
 //   1. Bind a `node:http` server on a substrate-allocated port (the
 //      port broker hands the port in; we don't pick it here).
 //   2. Dispatch by `(METHOD, path)` to the four handlers below
-//      (health, accounts, sign-transaction, sign-personal-message,
-//      execute).
+//      (health, accounts, sign-transaction, sign-personal-message).
 //   3. Enforce the auth gate: mandatory Origin in policy.allowed +
 //      constant-time bearer compare.
 //   4. Body-cap enforcement: 64 KiB before buffering — protects the
@@ -34,6 +33,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
+import { WalletSpans } from './spans.ts';
 import type { AccountValue } from '../account/index.ts';
 import {
 	walletBootError,
@@ -45,7 +45,6 @@ import { checkOrigin, corsHeadersFor, type OriginPolicy } from './origin-policy.
 import { parseBearerHeader, safeBearerEquals, type PairingToken } from './pairing.ts';
 import {
 	AccountsResponseSchema,
-	ExecuteRequestSchema,
 	HealthResponseSchema,
 	SignRequestSchema,
 	SignResponseSchema,
@@ -358,9 +357,9 @@ export const dispatch = (
 	Effect.gen(function* () {
 		const requestId = randomUUID();
 		yield* Effect.annotateCurrentSpan({
-			'wallet.request.id': requestId,
-			'wallet.request.method': req.method,
-			'wallet.request.url': req.url,
+			[WalletSpans.requestId]: requestId,
+			[WalletSpans.requestMethod]: req.method,
+			[WalletSpans.requestUrl]: req.url,
 		});
 
 		// 1. OPTIONS preflight — no auth check, but the origin still has
@@ -397,7 +396,7 @@ export const dispatch = (
 			yield* Effect.logWarning('wallet origin forbidden').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[SpanAttr.walletOrigin]: req.headers.origin ?? '(missing)',
+					[WalletSpans.origin]: req.headers.origin ?? '(missing)',
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),
@@ -410,12 +409,12 @@ export const dispatch = (
 		//    boolean validity.
 		const bearer = parseBearerHeader(req.headers[WALLET_AUTH_HEADER]);
 		const bearerValid = bearer !== null && safeBearerEquals(bearer, config.token);
-		yield* Effect.annotateCurrentSpan({ [SpanAttr.walletBearerValid]: bearerValid });
+		yield* Effect.annotateCurrentSpan({ [WalletSpans.bearerValid]: bearerValid });
 		if (!bearerValid) {
 			yield* Effect.logWarning('wallet bearer check failed').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[SpanAttr.walletBearerValid]: bearerValid,
+					[WalletSpans.bearerValid]: bearerValid,
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),
@@ -460,9 +459,6 @@ const routeRequest = (
 	}
 	if (req.method === 'POST' && path === WalletHttpPath.SIGN_PERSONAL_MESSAGE) {
 		return handleSign(config, req, 'personal-message', corsHdr);
-	}
-	if (req.method === 'POST' && path === WalletHttpPath.EXECUTE) {
-		return handleExecute(config, req, corsHdr);
 	}
 	return Effect.fail(
 		walletRequestError({
@@ -560,37 +556,6 @@ const handleSign = (
 		);
 		const resp: Schema.Schema.Type<typeof SignResponseSchema> = signed;
 		return json(200, resp, corsHdr);
-	});
-
-const handleExecute = (
-	config: WalletServerConfig,
-	req: WalletRequest,
-	corsHdr: Readonly<Record<string, string>>,
-): Effect.Effect<WalletResponse, WalletRequestError> =>
-	Effect.gen(function* () {
-		const body = yield* decodeJsonBody(ExecuteRequestSchema, req.body);
-		const account = config.accountsByAddress.get(body.address);
-		if (account === undefined) {
-			return yield* Effect.fail(
-				walletRequestError({
-					phase: 'address-not-found',
-					httpStatus: 404,
-					message: `no account for address '${body.address}'`,
-				}),
-			);
-		}
-		const bytes = Buffer.from(body.bytes, 'base64');
-		const result = yield* account.signAndExecute(bytes).pipe(
-			Effect.mapError((cause) =>
-				walletRequestError({
-					phase: 'sign-route-failed',
-					httpStatus: 500,
-					message: 'signAndExecute failed',
-					cause,
-				}),
-			),
-		);
-		return json(200, result, corsHdr);
 	});
 
 // ----------------------------------------------------------------------

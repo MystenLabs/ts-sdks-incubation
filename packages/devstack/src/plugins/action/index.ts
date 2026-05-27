@@ -252,3 +252,5 @@ export type { ActionReceipt } from './service.ts';
 export { ActionReceiptSchema } from './service.ts';
 export type { ActionObjectChange } from './execute.ts';
 export { signAndExecute } from './execute.ts';
+
+export { ActionSpans } from './spans.ts';

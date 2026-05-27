@@ -22,15 +22,19 @@ import type {
 } from '../../primitives/artifact-publisher.ts';
 import type { SuiSdkShim } from '../sui/index.ts';
 import type { CoinValue } from '../coin/index.ts';
-import type {
-	ResolvedSigner,
-	SuiExecuteError,
-	SuiExecuteClient,
+import type { ResolvedSigner } from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	executeSuiTx,
+	isSuiStaleObjectVersionError,
 } from '../../substrate/runtime/sui-execute/index.ts';
-import { executeSuiTx } from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	makeSpacedRetrySchedule,
+	STALE_OBJECT_VERSION_RETRY_PROFILE,
+} from '../../substrate/runtime/retry-policy.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import type { DeepbookPhase } from './errors.ts';
+import { DeepbookSpans } from './spans.ts';
 import type { DeepbookPool, DeepbookPoolSeedLiquidity } from './types.ts';
 
 // ---------------------------------------------------------------------------
@@ -92,14 +96,6 @@ interface CachedDeepbookSeedResult {
 	readonly poolName: string;
 	readonly balanceManagerId: string;
 	readonly digest: string;
-}
-
-interface SimulateResult {
-	readonly commandResults?: ReadonlyArray<{
-		readonly returnValues?: ReadonlyArray<{
-			readonly bcs?: Uint8Array;
-		}>;
-	}>;
 }
 
 const CachedDeepbookPoolSchema = Schema.Struct({
@@ -241,25 +237,6 @@ const buildSeedVerifyProbe = (
 		return cached;
 	});
 
-const simulateClient = (
-	sdk: SuiSdkShim,
-): {
-	readonly core: {
-		readonly simulateTransaction: (args: {
-			readonly transaction: Transaction;
-			readonly include: { readonly commandResults: boolean; readonly effects: boolean };
-		}) => Promise<SimulateResult>;
-	};
-} =>
-	sdk.client as {
-		readonly core: {
-			readonly simulateTransaction: (args: {
-				readonly transaction: Transaction;
-				readonly include: { readonly commandResults: boolean; readonly effects: boolean };
-			}) => Promise<SimulateResult>;
-		};
-	};
-
 const findExistingPoolId = (
 	sdk: SuiSdkShim,
 	signer: ResolvedSigner,
@@ -275,7 +252,7 @@ const findExistingPoolId = (
 				typeArguments: [spec.baseCoinType, spec.quoteCoinType],
 				arguments: [tx.object(pkg.registryId)],
 			});
-			const result = await simulateClient(sdk).core.simulateTransaction({
+			const result = await sdk.client.core.simulateTransaction({
 				transaction: tx,
 				include: { commandResults: true, effects: true },
 			});
@@ -327,51 +304,28 @@ const pickCreatedPool = (
 const mapArtifactError = (phase: DeepbookPhase, err: ArtifactPublishError): DeepbookPluginError =>
 	deepbookPluginError(phase, err._tag === 'ArtifactPublishError' ? err.detail : String(err));
 
-type SuiTransactionBuildClient = Parameters<Transaction['build']>[0] extends
-	| { readonly client?: infer C }
-	| undefined
-	? C
-	: never;
-
-const transactionBuildClient = (sdk: SuiSdkShim): SuiTransactionBuildClient =>
-	sdk.client as SuiTransactionBuildClient;
-
 const ORDER_TYPE_POST_ONLY = 3;
 const SELF_MATCHING_CANCEL_TAKER = 1;
 const MAX_TIMESTAMP = 18_446_744_073_709_551_615n;
 const SUI_TYPE = normalizeStructTag('0x2::sui::SUI');
 const SEED_GAS_BUDGET = 500_000_000n;
 const LOCALNET_REFERENCE_GAS_PRICE = 1000n;
-const STALE_OBJECT_RETRY_DELAY_MS = 500;
-const STALE_OBJECT_MAX_RETRIES = 20;
-
-const decodeErrorMessage = (message: string) => {
-	try {
-		return decodeURIComponent(message);
-	} catch {
-		return message;
-	}
-};
-
-const isStaleObjectVersionError = (err: { readonly message: string }) => {
-	const message = decodeErrorMessage(err.message);
-	return (
-		message.includes('needs to be rebuilt because object') && message.includes('current version')
-	);
-};
-
+/** Retry `executeSuiTx` when the SDK reports a stale object version
+ *  (concurrent re-versioning of a shared registry / pool object). The
+ *  build closure rebuilds the transaction with fresh refs each attempt;
+ *  caps at `STALE_OBJECT_VERSION_RETRY_PROFILE.attempts` so a true
+ *  failure surfaces instead of looping forever. */
 const executeSuiTxWithStaleObjectRetry = (
 	params: Parameters<typeof executeSuiTx>[0],
-	attempt = 0,
 ): ReturnType<typeof executeSuiTx> =>
 	executeSuiTx(params).pipe(
-		Effect.catch((err: SuiExecuteError) =>
-			isStaleObjectVersionError(err) && attempt < STALE_OBJECT_MAX_RETRIES
-				? Effect.sleep(`${STALE_OBJECT_RETRY_DELAY_MS} millis`).pipe(
-						Effect.andThen(executeSuiTxWithStaleObjectRetry(params, attempt + 1)),
-					)
-				: Effect.fail(err),
-		),
+		Effect.retry({
+			schedule: makeSpacedRetrySchedule(
+				STALE_OBJECT_VERSION_RETRY_PROFILE.delayMs,
+				STALE_OBJECT_VERSION_RETRY_PROFILE.attempts,
+			),
+			while: isSuiStaleObjectVersionError,
+		}),
 	);
 
 // ---------------------------------------------------------------------------
@@ -403,7 +357,7 @@ export const createDeepbookPools = (
 					const cachedPools: CachedDeepbookPool[] = [];
 					if (missingPools.length > 0) {
 						const receipt = yield* executeSuiTx({
-							client: sdk.client as SuiExecuteClient,
+							client: sdk.client,
 							signer,
 							build: async () => {
 								const tx = new Transaction();
@@ -429,7 +383,7 @@ export const createDeepbookPools = (
 									});
 								}
 								return tx.build({
-									client: transactionBuildClient(sdk),
+									client: sdk.client,
 								});
 							},
 						}).pipe(
@@ -484,8 +438,8 @@ export const createDeepbookPools = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.deepbook.createPools', {
 			attributes: {
-				'deepbook.packageId': pkg.packageId,
-				'deepbook.pool.count': pools.length,
+				[DeepbookSpans.packageId]: pkg.packageId,
+				[DeepbookSpans.poolCount]: pools.length,
 			},
 		}),
 	);
@@ -563,47 +517,6 @@ const requestSeedFunding = (
 	);
 };
 
-const coinListClient = (
-	sdk: SuiSdkShim,
-): {
-	readonly core: {
-		readonly listCoins: (args: {
-			readonly owner: string;
-			readonly coinType: string;
-			readonly cursor?: string | null;
-			readonly limit?: number;
-		}) => Promise<{
-			readonly objects: ReadonlyArray<{
-				readonly objectId: string;
-				readonly version: string | number;
-				readonly digest: string;
-				readonly balance: string | number | bigint;
-			}>;
-			readonly hasNextPage: boolean;
-			readonly cursor: string | null;
-		}>;
-	};
-} =>
-	sdk.client as {
-		readonly core: {
-			readonly listCoins: (args: {
-				readonly owner: string;
-				readonly coinType: string;
-				readonly cursor?: string | null;
-				readonly limit?: number;
-			}) => Promise<{
-				readonly objects: ReadonlyArray<{
-					readonly objectId: string;
-					readonly version: string | number;
-					readonly digest: string;
-					readonly balance: string | number | bigint;
-				}>;
-				readonly hasNextPage: boolean;
-				readonly cursor: string | null;
-			}>;
-		};
-	};
-
 interface OwnedCoin {
 	readonly objectId: string;
 	readonly version: string | number;
@@ -625,7 +538,7 @@ export const selectOwnedCoinsForBalance = async (
 	let selectedBalance = 0n;
 	let cursor: string | null = null;
 	do {
-		const page = await coinListClient(sdk).core.listCoins({
+		const page = await sdk.client.core.listCoins({
 			owner: signer.address,
 			coinType,
 			cursor,
@@ -651,6 +564,14 @@ export const selectOwnedCoinsForBalance = async (
 	return { selected, selectedBalance };
 };
 
+// SuiGrpcClient-only surface — `ledgerService.getObject` is NOT on
+// `ClientWithCoreApi['core']` (which has `getObject`/`getObjects` with
+// a simpler include-options shape). The gRPC-level call returns the
+// BCS-encoded object envelope with version + digest in the readMask
+// projection, which the `core` surface hides. See @mysten/sui
+// `docs/clients/grpc.md` § Ledger service. The `as unknown` is the
+// sanctioned escape hatch — `ClientWithCoreApi` doesn't structurally
+// overlap with the `{ledgerService}` shape so a direct cast fails.
 const ledgerObjectClient = (
 	sdk: SuiSdkShim,
 ): {
@@ -669,7 +590,7 @@ const ledgerObjectClient = (
 		}>;
 	};
 } =>
-	sdk.client as {
+	sdk.client as unknown as {
 		readonly ledgerService: {
 			readonly getObject: (args: {
 				readonly objectId: string;
@@ -854,7 +775,7 @@ export const seedDeepbookPools = (
 						);
 
 						const receipt = yield* executeSuiTxWithStaleObjectRetry({
-							client: sdk.client as SuiExecuteClient,
+							client: sdk.client,
 							signer,
 							build: async () => {
 								const tx = new Transaction();
@@ -914,7 +835,7 @@ export const seedDeepbookPools = (
 									});
 								}
 								tx.transferObjects([balanceManager], signer.address);
-								return tx.build({ client: transactionBuildClient(sdk) });
+								return tx.build({ client: sdk.client });
 							},
 						}).pipe(
 							Effect.mapError(
@@ -948,8 +869,8 @@ export const seedDeepbookPools = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.deepbook.seedPools', {
 			attributes: {
-				'deepbook.packageId': pkg.packageId,
-				'deepbook.pool.count': specs.filter((spec) => spec.seed !== undefined).length,
+				[DeepbookSpans.packageId]: pkg.packageId,
+				[DeepbookSpans.poolCount]: specs.filter((spec) => spec.seed !== undefined).length,
 			},
 		}),
 	);

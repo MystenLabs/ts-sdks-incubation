@@ -30,8 +30,8 @@ import { join as joinPath } from 'node:path';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import { redactText, type RedactionRule } from '../../substrate/runtime/observability/index.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
+import { WalletSpans } from './spans.ts';
 import {
 	WALLET_BEARER_PREFIX,
 	WALLET_TOKEN_FRAGMENT_KEY,
@@ -111,7 +111,7 @@ export const acquirePairingToken = (
 			// Malformed — fall through to mint + overwrite.
 			yield* Effect.logWarning('wallet token file is malformed; re-minting').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.walletTokenFile]: path,
+					[WalletSpans.tokenFile]: path,
 				}),
 			);
 		}

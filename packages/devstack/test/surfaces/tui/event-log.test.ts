@@ -64,6 +64,7 @@ describe('event log derivation', () => {
 					tag: 'endpoint.registered',
 					endpoint: {
 						endpointKey: endpointKey('sui:rpc'),
+						pluginKey: pluginKey('sui'),
 						name: 'rpc',
 						url: 'http://localhost:9000',
 						displayUrl: null,
@@ -119,12 +120,14 @@ describe('event log derivation', () => {
 		});
 	});
 
-	it('suppresses account updates because account state is table state', () => {
+	it('suppresses projection updates because projection state is table state', () => {
 		expect(
 			eventLogLineFromEvent(
 				{
-					tag: 'account.updated',
-					account: {
+					tag: 'projection.updated',
+					kind: 'account',
+					key: 'account/alice',
+					payload: {
 						key: 'account/alice',
 						rowKey: pluginKey('account/alice#1'),
 						name: 'alice',

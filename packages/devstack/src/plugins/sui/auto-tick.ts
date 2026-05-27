@@ -17,6 +17,7 @@ import { expectPositiveFiniteNumber } from '../../substrate/runtime/config-valid
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { suiConfigError } from './errors.ts';
 import type { SuiPluginError } from './errors.ts';
+import { SuiSpans } from './spans.ts';
 
 /** Public knob shape mirroring the user-facing API. */
 export type AutoTickOption = boolean | { readonly intervalMs: number };
@@ -68,7 +69,7 @@ export const runAutoTickClock = (
 			Effect.catch((err) =>
 				Effect.logWarning('sui auto-tick advance failed; next tick will retry').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.suiAutoTickIntervalMs]: intervalMs,
+						[SuiSpans.autoTickIntervalMs]: intervalMs,
 						[SpanAttr.phase]: err.phase,
 						[SpanAttr.errorMessage]: err.message,
 					}),

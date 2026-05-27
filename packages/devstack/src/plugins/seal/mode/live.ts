@@ -22,7 +22,7 @@
 import { Effect } from 'effect';
 
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
-import { sealConfigError, sealError, type SealAnyError } from '../errors.ts';
+import { sealConfigError } from '../errors.ts';
 import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
@@ -106,45 +106,23 @@ export const validateLiveInputs = (
 // Mode acquire
 // ---------------------------------------------------------------------------
 
-/** Acquire body for the live mode. Returns the read-side handle
- *  ONLY (no manager tag — distilled-doc invariant #15). */
-export const acquireLive = (
-	inputs: LiveModeInputs,
-): Effect.Effect<SealKnownResolved, SealAnyError> =>
-	Effect.gen(function* () {
-		// Validation runs at the factory layer; here we trust the
-		// validated fields. The substrate's registry publishes happen
-		// at the orchestrator layer (manifest emitter walks the
-		// codegen contributions); this body just returns the resolved
-		// value.
-		let resolved: { readonly objectId: string; readonly keyServerUrl: string };
-		try {
-			resolved = validateLiveInputs(inputs);
-		} catch (err) {
-			if (
-				typeof err === 'object' &&
-				err !== null &&
-				'_tag' in err &&
-				err._tag === 'SealConfigError'
-			) {
-				return yield* Effect.fail(err as SealAnyError);
-			}
-			return yield* Effect.fail(
-				sealError('seal', {
-					name: inputs.name,
-					message: err instanceof Error ? err.message : String(err),
-					cause: err,
-				}),
-			);
-		}
+/** Acquire body for the live mode. Validation already ran at the
+ *  factory boundary (see `index.ts:buildLivePlugin`); this projects
+ *  the validated bundle into the resolved shape. Returns the
+ *  read-side handle ONLY (no manager tag — distilled-doc invariant #15). */
+export const acquireLive = (inputs: {
+	readonly name: string;
+	readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+}): Effect.Effect<SealKnownResolved> =>
+	Effect.sync(() => {
 		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
-			{ objectId: resolved.objectId, weight: 1 },
+			{ objectId: inputs.resolved.objectId, weight: 1 },
 		];
 		return {
 			keyServer: {
 				serverConfigs,
-				keyServerUrl: resolved.keyServerUrl,
-				objectId: resolved.objectId,
+				keyServerUrl: inputs.resolved.keyServerUrl,
+				objectId: inputs.resolved.objectId,
 			},
 		} satisfies SealKnownResolved;
 	});

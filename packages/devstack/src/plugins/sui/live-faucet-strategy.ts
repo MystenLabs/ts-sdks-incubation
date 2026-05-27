@@ -20,14 +20,15 @@
 
 import { Effect } from 'effect';
 
-import { requestFundsWithRetry, type RetryOptions } from '../faucet/http.ts';
 import {
 	faucetConfigError,
 	type FaucetBodyError,
 	type FaucetExhausted,
+	type FaucetStrategy,
 	type FaucetUnreachable,
-} from '../faucet/errors.ts';
-import type { FaucetStrategy } from '../faucet/index.ts';
+	requestFundsWithRetry,
+	type RetryOptions,
+} from '../faucet/index.ts';
 
 /** Known live network → default faucet URL mapping. Mainnet is
  *  intentionally absent: there is no mainnet faucet, and the

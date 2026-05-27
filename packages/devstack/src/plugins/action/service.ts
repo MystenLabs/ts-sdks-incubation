@@ -52,6 +52,7 @@ import {
 	type DynamicDiscriminator,
 	type StaticDiscriminator,
 } from './discriminator.ts';
+import { ActionSpans } from './spans.ts';
 
 /** Action receipt — the cached value. Minimal shape: digest is the
  *  load-bearing identifier (drives verify probe + downstream
@@ -166,8 +167,8 @@ export const bootActionService = (
 ): Effect.Effect<ActionReceipt, ActionError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'action.name': inputs.actionName,
-			'action.chain': inputs.chainId,
+			[ActionSpans.name]: inputs.actionName,
+			[ActionSpans.chain]: inputs.chainId,
 		});
 
 		// --- Pull the pre-projected dynamic-discriminator material
@@ -198,7 +199,7 @@ export const bootActionService = (
 			verify: (cached) => buildVerifyProbe(probe, cached.digest),
 			produce: Effect.gen(function* () {
 				yield* Effect.annotateCurrentSpan({
-					'action.phase': 'building',
+					[ActionSpans.phase]: 'building',
 				});
 				const receipt: ActionReceipt = yield* inputs.body.pipe(
 					Effect.catch(
@@ -215,8 +216,8 @@ export const bootActionService = (
 					),
 				);
 				yield* Effect.annotateCurrentSpan({
-					'action.phase': 'parsing',
-					'action.digest': receipt.digest,
+					[ActionSpans.phase]: 'parsing',
+					[ActionSpans.digest]: receipt.digest,
 				});
 				return receipt;
 			}).pipe(

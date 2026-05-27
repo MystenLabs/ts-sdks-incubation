@@ -68,8 +68,9 @@ import {
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
-import type { ForkAdminSurface, SuiSdkShim } from '../sui/index.ts';
+import { type ForkAdminSurface, type SuiSdkShim, SuiSpans } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
+import { AccountSpans } from './spans.ts';
 
 // -----------------------------------------------------------------------------
 // User-facing options shape
@@ -151,7 +152,9 @@ export interface AccountValue {
 	 *  For impersonation accounts, routes through Sui's fork
 	 *  admin `impersonate` surface; for real signers, routes
 	 *  through the SDK's executeTransaction surface. */
-	readonly signAndExecute: (tx: Uint8Array) => Effect.Effect<TxResult, AccountSignError>;
+	readonly signAndExecute: (
+		tx: Uint8Array,
+	) => Effect.Effect<SignAndExecuteResult, AccountSignError>;
 	/** Run a full account-bound transaction critical section.
 	 *  Callers that must serialize `Transaction.build({ client })`
 	 *  together with signing/execution use the signer passed to this
@@ -171,13 +174,34 @@ export interface AccountValue {
 }
 
 /** Submit result projection — kept narrow so downstream consumers
- *  don't depend on the full @mysten/sui execute envelope. */
+ *  don't depend on the full @mysten/sui execute envelope. Populated
+ *  only when the on-chain execution succeeded (the `'Transaction'`
+ *  variant of `SignAndExecuteResult`). */
 export interface TxResult {
 	readonly digest: string;
 	readonly effects: unknown;
 	readonly objectChanges: ReadonlyArray<unknown>;
 	readonly balanceChanges: ReadonlyArray<unknown>;
 }
+
+/** On-chain failure projection. Mirrors the `'FailedTransaction'`
+ *  variant of the SDK's `SuiClientTypes.TransactionResult` — the
+ *  transaction was delivered and executed by the validator but the
+ *  on-chain execution failed. Carries the digest (for log
+ *  correlation) plus the validator's stringified error. */
+export interface FailedTxResult {
+	readonly digest: string;
+	readonly executionError: string;
+}
+
+/** Outcome of `signAndExecute`. Mirrors the SDK's discriminated
+ *  `SuiClientTypes.TransactionResult` shape — on-chain failures are
+ *  a RETURN VALUE (callers dispatch on `$kind`), NOT an error. Only
+ *  transport / lifecycle failures (sign refused, RPC unreachable,
+ *  finality wait broke) surface through `AccountSignError`. */
+export type SignAndExecuteResult =
+	| { readonly $kind: 'Transaction'; readonly Transaction: TxResult }
+	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: FailedTxResult };
 
 export interface AccountTransactionSigner extends TransactionSignerScope<AccountSignError> {
 	readonly signAndExecute: AccountValue['signAndExecute'];
@@ -446,51 +470,68 @@ const projectTxResult = (
 	raw: unknown,
 	accountName: string,
 	address: string,
-): Effect.Effect<TxResult, AccountSignError> => {
-	// Defensive shape: the SDK's TransactionResult is
-	// `{$kind, Transaction?, FailedTransaction?}` — `Transaction.digest`
-	// is the canonical id we need. We do best-effort projection here
-	// rather than schema-decode (the shape is wide + the SDK pins it).
-	const r = raw as {
-		$kind?: 'Transaction' | 'FailedTransaction';
-		Transaction?: {
-			digest?: string;
-			effects?: unknown;
-			objectTypes?: Readonly<Record<string, string>>;
-			balanceChanges?: ReadonlyArray<unknown>;
+): Effect.Effect<SignAndExecuteResult, AccountSignError> =>
+	Effect.gen(function* () {
+		// The SDK's `SuiClientTypes.TransactionResult` is a discriminated
+		// union — `{$kind: 'Transaction', Transaction: {...}}` or
+		// `{$kind: 'FailedTransaction', FailedTransaction: {...}}` —
+		// where each variant carries a non-optional `digest`. Mirror the
+		// shape on-channel so callers dispatch on `$kind`; on-chain
+		// failures are a RETURN VALUE, not an error.
+		const r = raw as {
+			$kind?: 'Transaction' | 'FailedTransaction';
+			Transaction?: {
+				digest?: string;
+				effects?: unknown;
+				objectTypes?: Readonly<Record<string, string>>;
+				balanceChanges?: ReadonlyArray<unknown>;
+			};
+			FailedTransaction?: {
+				digest?: string;
+				status?: { readonly error?: string | { readonly message?: string } };
+			};
 		};
-		FailedTransaction?: {
-			digest?: string;
+		if (r.$kind === 'FailedTransaction') {
+			const failed = r.FailedTransaction ?? {};
+			const errorRaw = failed.status?.error;
+			const executionError =
+				typeof errorRaw === 'string'
+					? errorRaw
+					: typeof errorRaw === 'object' && errorRaw !== null && 'message' in errorRaw
+						? String(errorRaw.message ?? '<no error>')
+						: '<no error>';
+			return {
+				$kind: 'FailedTransaction',
+				FailedTransaction: {
+					digest: failed.digest ?? '<unknown>',
+					executionError,
+				},
+			};
+		}
+		const tx = r.Transaction;
+		if (tx?.digest === undefined) {
+			return yield* Effect.fail(
+				accountSignError({
+					phase: 'submit',
+					accountName,
+					address,
+					message:
+						`Account '${accountName}': executeTransaction returned a malformed envelope — ` +
+						`expected $kind:'Transaction'|'FailedTransaction' with a digest, got ` +
+						`${JSON.stringify(r).slice(0, 200)}`,
+				}),
+			);
+		}
+		return {
+			$kind: 'Transaction',
+			Transaction: {
+				digest: tx.digest,
+				effects: tx.effects ?? null,
+				objectChanges: projectObjectChanges(tx.effects, tx.objectTypes ?? {}),
+				balanceChanges: tx.balanceChanges ?? [],
+			},
 		};
-	};
-	if (r.$kind === 'FailedTransaction') {
-		return Effect.fail(
-			accountSignError({
-				phase: 'submit',
-				accountName,
-				address,
-				message: `Account '${accountName}': transaction execution failed on-chain (digest=${r.FailedTransaction?.digest ?? '<unknown>'}).`,
-			}),
-		);
-	}
-	const tx = r.Transaction;
-	if (tx?.digest === undefined) {
-		return Effect.fail(
-			accountSignError({
-				phase: 'submit',
-				accountName,
-				address,
-				message: `Account '${accountName}': executeTransaction returned no digest. Raw shape=${JSON.stringify(r).slice(0, 200)}.`,
-			}),
-		);
-	}
-	return Effect.succeed({
-		digest: tx.digest,
-		effects: tx.effects ?? null,
-		objectChanges: projectObjectChanges(tx.effects, tx.objectTypes ?? {}),
-		balanceChanges: tx.balanceChanges ?? [],
 	});
-};
 
 const extractExecuteDigest = (raw: unknown): string | undefined => {
 	const r = raw as {
@@ -637,14 +678,20 @@ const buildClosures = (
 				}),
 			).pipe(
 				Effect.withSpan('devstack.plugin.account.transactionSigner', {
-					attributes: { 'account.name': accountName, 'account.address': resolved.address },
+					attributes: {
+						[AccountSpans.name]: accountName,
+						[AccountSpans.address]: resolved.address,
+					},
 				}),
 			);
 		return {
 			signAndExecute: (tx) =>
 				withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
 					Effect.withSpan('devstack.plugin.account.signAndExecute', {
-						attributes: { 'account.name': accountName, 'account.address': resolved.address },
+						attributes: {
+							[AccountSpans.name]: accountName,
+							[AccountSpans.address]: resolved.address,
+						},
 					}),
 				),
 			withTransactionSigner,
@@ -697,8 +744,7 @@ const buildClosures = (
 						}),
 				});
 			}
-			const result = yield* projectTxResult(raw, accountName, resolved.address);
-			return result;
+			return yield* projectTxResult(raw, accountName, resolved.address);
 		});
 
 	const transactionSigner: AccountTransactionSigner = {
@@ -716,14 +762,20 @@ const buildClosures = (
 			}),
 		).pipe(
 			Effect.withSpan('devstack.plugin.account.transactionSigner', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
 	const signTransaction: AccountValue['signTransaction'] = (tx) =>
 		withTransactionSigner((locked) => locked.signTransaction(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signTransaction', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
@@ -735,14 +787,20 @@ const buildClosures = (
 			signPersonalWith(signer, msg, accountName, resolved.address),
 		).pipe(
 			Effect.withSpan('devstack.plugin.account.signPersonalMessage', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
 	const signAndExecute: AccountValue['signAndExecute'] = (tx) =>
 		withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signAndExecute', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
@@ -763,17 +821,17 @@ export const acquireAccount = (
 		yield* validateAccountName(opts.name);
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': opts.name,
-			'account.variant': opts.kind,
-			'sui.mode': ctx.sui.mode,
+			[AccountSpans.name]: opts.name,
+			[AccountSpans.variant]: opts.kind,
+			[SuiSpans.mode]: ctx.sui.mode,
 		});
 
 		// --- variant dispatch ----------------------------------------
 		const resolved = yield* resolveVariant(opts, ctx);
 
 		yield* Effect.annotateCurrentSpan({
-			'account.address': resolved.address,
-			'account.scheme': resolved.scheme,
+			[AccountSpans.address]: resolved.address,
+			[AccountSpans.scheme]: resolved.scheme,
 		});
 
 		// --- lease broker handle (captured once; both funding and the

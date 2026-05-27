@@ -16,6 +16,7 @@
 // reachable" callers (the doctor command, debugging).
 
 import { Effect, Schema } from 'effect';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type {
 	ChainProbe,
@@ -24,6 +25,7 @@ import type {
 	ChainProbeSchema,
 } from '../../contracts/chain-probe.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
+import { stringifyCause } from './stringify-cause.ts';
 
 /**
  * Sui's chain-key shape — discriminated so the probe can dispatch
@@ -37,11 +39,16 @@ export type SuiProbeKey =
 /** Validated subset of `client.core.getObject(...).object`. We
  *  narrow to the fields verify probes actually consult — the SDK
  *  exposes more (digest, content, json, display) but those are
- *  out of scope here. */
+ *  out of scope here. Variants mirror `SuiClientTypes.ObjectOwner`
+ *  from `@mysten/sui/client`. */
 const ObjectOwnerSchema = Schema.Union([
 	Schema.Struct({
 		$kind: Schema.Literal('AddressOwner'),
 		AddressOwner: Schema.String,
+	}),
+	Schema.Struct({
+		$kind: Schema.Literal('ObjectOwner'),
+		ObjectOwner: Schema.String,
 	}),
 	Schema.Struct({
 		$kind: Schema.Literal('Shared'),
@@ -56,12 +63,7 @@ const ObjectOwnerSchema = Schema.Union([
 		ConsensusAddressOwner: Schema.Unknown,
 	}),
 	Schema.Struct({
-		$kind: Schema.Literal('Parent'),
-		Parent: Schema.Unknown,
-	}),
-	Schema.Struct({
 		$kind: Schema.Literal('Unknown'),
-		Unknown: Schema.Unknown,
 	}),
 ]);
 
@@ -140,10 +142,10 @@ export interface SuiSdkShim {
 			readonly timeout?: number;
 		}) => Promise<unknown>;
 	};
-	/** Opaque client reference for `Transaction.build({ client })`.
-	 *  The Sui barrel wires the resolved `SuiGrpcClient` through; the
-	 *  shim layer doesn't type-narrow it (mirrors `MintSdkShim.client`). */
-	readonly client: unknown;
+	/** Client reference for `Transaction.build({ client })` and every
+	 *  `client.core.*` call. The Sui barrel wires the resolved
+	 *  `SuiGrpcClient` through; consumers cast no further. */
+	readonly client: ClientWithCoreApi;
 }
 
 /** Construct the chain-probe instance for a resolved Sui client +
@@ -231,12 +233,3 @@ const isNotFound = (cause: unknown): boolean => {
 	);
 };
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

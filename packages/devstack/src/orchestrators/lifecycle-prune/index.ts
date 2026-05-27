@@ -182,11 +182,25 @@ const livePidsForStack = (
 	const rosterFile = joinPath(runtimeRoot, 'stacks', stack, 'roster.json');
 	if (!existsSync(rosterFile)) return Effect.succeed([]);
 	return Effect.gen(function* () {
-		const doc = yield* readRoster(rosterFile).pipe(Effect.catch(() => Effect.succeed(null)));
+		const doc = yield* readRoster(rosterFile).pipe(
+			Effect.tapCause((cause) =>
+				Effect.logDebug('lifecycle-prune: roster read failed; treating as empty', {
+					rosterFile,
+					cause,
+				}),
+			),
+			Effect.catch(() => Effect.succeed(null)),
+		);
 		if (doc === null) return [];
 		const pids: Array<number> = [];
 		for (const holder of doc.holders) {
 			const live = yield* checkHolderLiveness(holder).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logDebug('lifecycle-prune: liveness check failed; assuming alive', {
+						pid: holder.pid,
+						cause,
+					}),
+				),
 				Effect.catch(() => Effect.succeed('alive' as const)),
 			);
 			if (live === 'alive') pids.push(holder.pid);

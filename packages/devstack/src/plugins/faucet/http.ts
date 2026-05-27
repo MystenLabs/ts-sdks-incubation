@@ -41,8 +41,7 @@
 // HttpClient layer here would not change behaviour at any of the
 // invariants above.
 //
-// Substrate-helper carve-out (Phase 7B): the substrate's
-// `HttpProbes.waitForHttpEndpoint(...)` is for *readiness probes*
+// The substrate's `HttpProbes.waitForHttpEndpoint(...)` is for *readiness probes*
 // (poll a GET until ready), not one-shot POST + body-shape validation.
 // The wire-level contract above (non-2xx raise, body-Failure raise,
 // short per-fetch deadline relative to retry budget) is owned here.
@@ -64,6 +63,7 @@ import {
 	type FaucetExhausted,
 	type FaucetUnreachable,
 } from './errors.ts';
+import { FaucetSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Default retry profile
@@ -256,11 +256,11 @@ export const requestFundsWithRetry = (
 		const initialDelayMs = opts.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
 
 		yield* Effect.annotateCurrentSpan({
-			'faucet.url': opts.faucetUrl,
-			'faucet.address': opts.address,
-			'faucet.amount': opts.amount.toString(),
-			'faucet.budget_ms': timeoutMs,
-			'faucet.max_attempts': maxAttempts,
+			[FaucetSpans.url]: opts.faucetUrl,
+			[FaucetSpans.address]: opts.address,
+			[FaucetSpans.amount]: opts.amount.toString(),
+			[FaucetSpans.budgetMs]: timeoutMs,
+			[FaucetSpans.maxAttempts]: maxAttempts,
 		});
 
 		const attempts = yield* Ref.make(0);

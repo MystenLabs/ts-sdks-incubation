@@ -59,6 +59,7 @@ export interface LogTail {
 
 export interface Endpoint {
 	readonly endpointKey: EndpointKey;
+	readonly pluginKey: PluginKey;
 	readonly name: string;
 	readonly url: string;
 	readonly displayUrl: string | null;

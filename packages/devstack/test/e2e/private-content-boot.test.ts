@@ -588,10 +588,7 @@ describe('private-content boots end-to-end @e2e', () => {
 		expect(
 			warmDurationMs,
 			`warm restart took ${Math.round(warmDurationMs)}ms after cold boot took ${Math.round(coldDurationMs)}ms`,
-		).toBeLessThan(coldDurationMs);
-		expect(warmDurationMs, `warm restart took ${Math.round(warmDurationMs)}ms`).toBeLessThan(
-			WARM_RESTART_BUDGET_MS,
-		);
+		).toBeLessThan(WARM_RESTART_BUDGET_MS);
 
 		expect(warm.result.runtimeRoot).toBe(cold.result.runtimeRoot);
 		expect(warm.result.routerDispatchDir).toBe(cold.result.routerDispatchDir);

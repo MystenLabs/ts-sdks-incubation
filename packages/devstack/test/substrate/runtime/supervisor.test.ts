@@ -235,8 +235,10 @@ const packageStrategyDecl: StrategyContributorDecl<
 const accountProjectionDecl: ProjectionDecl = {
 	kind: 'projection',
 	event: {
-		tag: 'account.updated',
-		account: {
+		tag: 'projection.updated',
+		kind: 'account',
+		key: 'account/alice',
+		payload: {
 			key: 'account/alice',
 			rowKey: null,
 			name: 'alice',
@@ -266,8 +268,10 @@ const accountProjectionDecl: ProjectionDecl = {
 const packageProjectionDecl: ProjectionDecl = {
 	kind: 'projection',
 	event: {
-		tag: 'package.updated',
-		package: {
+		tag: 'projection.updated',
+		kind: 'package',
+		key: 'package/vault',
+		payload: {
 			key: 'package/vault',
 			rowKey: null,
 			name: 'vault',

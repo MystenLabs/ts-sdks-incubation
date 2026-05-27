@@ -365,7 +365,7 @@ export const endpointsForRow = (
 ): ReadonlyArray<Endpoint> =>
 	endpoints.filter(
 		(endpoint) =>
-			row.endpoints.includes(endpoint.endpointKey) || endpoint.endpointKey.startsWith(row.key),
+			row.endpoints.includes(endpoint.endpointKey) || endpoint.pluginKey === row.key,
 	);
 
 const OPERATIONAL_ENDPOINT_FIELDS = new Set(['url', 'rpcUrl', 'faucetUrl', 'graphqlUrl']);
@@ -721,6 +721,7 @@ const keyMatchesClassifierPrefix = (key: string, prefix: string): boolean => {
 };
 
 const isOperationalEndpoint = (rowKey: Pick<Row, 'key'>['key'], endpoint: Endpoint): boolean => {
+	if (endpoint.pluginKey !== rowKey) return false;
 	const prefix = `${rowKey}:`;
 	if (!endpoint.endpointKey.startsWith(prefix)) return false;
 	const field = endpoint.endpointKey.slice(prefix.length);

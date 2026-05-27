@@ -24,13 +24,17 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountSignError } from '../account/errors.ts';
-import type { AccountValue, TxResult } from '../account/service.ts';
-import type { SuiClient } from '../sui/index.ts';
-import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
+import type {
+	AccountSignError,
+	AccountValue,
+	SignAndExecuteResult,
+	TxResult,
+} from '../account/index.ts';
+import { buildForkImpersonationTransactionBytes, type SuiClient } from '../sui/index.ts';
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
+import { ActionSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Receipt object-change projection
@@ -109,34 +113,21 @@ const receiptFromTxResult = (tx: TxResult): ActionReceipt => ({
 // ---------------------------------------------------------------------------
 
 /**
- * Collapse an `AccountSignError` onto the action's `'sign' | 'parse'`
- * taxonomy. The account's `submit` phase carries both transport
- * failures AND envelope-shape failures (FailedTransaction, no-digest).
- * Action callers historically distinguished "no digest returned" as
- * `parse`; we preserve that distinction by inspecting the account's
- * message text. The account-plugin team would ideally surface this
- * as a `no-digest` phase distinct from `submit` (backlog'd alongside
- * #29's projector lift).
+ * Map an `AccountSignError` onto the action's `'sign'` phase. The
+ * account's `signAndExecute` returns a discriminated `SignAndExecuteResult`
+ * for the on-chain outcome (success vs FailedTransaction); only
+ * transport / lifecycle failures surface here.
  */
-const accountSignErrorToActionError = (actionName: string) =>
-	(cause: AccountSignError): ActionError => {
-		if (cause.phase === 'submit' && cause.message.includes('returned no digest')) {
-			return actionError('parse', {
-				actionName,
-				message:
-					`Action '${actionName}': executeTransaction returned no digest. ` +
-					`(account='${cause.accountName}', address=${cause.address})`,
-				cause,
-			});
-		}
-		return actionError('sign', {
+const accountSignErrorToActionError =
+	(actionName: string) =>
+	(cause: AccountSignError): ActionError =>
+		actionError('sign', {
 			actionName,
 			message:
 				`Action '${actionName}': account sign/execute failed for ` +
 				`'${cause.accountName}' (address=${cause.address}): ${cause.message}`,
 			cause,
 		});
-	};
 
 // ---------------------------------------------------------------------------
 // `signAndExecute` helper
@@ -202,13 +193,7 @@ export const signAndExecute = (params: {
 							)
 						: yield* Effect.tryPromise({
 								try: () =>
-									tx.build({
-										client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
-											| { client?: infer C }
-											| undefined
-											? C
-											: never,
-									}),
+									tx.build({ client: sui.sdk.client }),
 								catch: (cause): ActionError =>
 									actionError('sign', {
 										actionName,
@@ -225,16 +210,35 @@ export const signAndExecute = (params: {
 				// transaction-signer lease scope the outer
 				// `withTransactionSigner` opened, so we keep sequencing for
 				// gas/object-version resolution across the whole roundtrip.
-				const txResult: TxResult = yield* lockedSigner.signAndExecute(txBytes).pipe(
-					Effect.mapError(mapAccountErr),
-				);
+				const result: SignAndExecuteResult = yield* lockedSigner
+					.signAndExecute(txBytes)
+					.pipe(Effect.mapError(mapAccountErr));
 
-				// --- 4. Re-project TxResult → ActionReceipt -----------------
+				// --- 4. Dispatch on the SDK-shaped discriminated result ----
+				// On-chain failures are a return value (not an error);
+				// surface them as `phase: 'execute-failed'` so cause-walker
+				// renders them distinctly from transport-level signing
+				// failures (`phase: 'sign'`).
+				if (result.$kind === 'FailedTransaction') {
+					const failed = result.FailedTransaction;
+					return yield* Effect.fail(
+						actionError('execute-failed', {
+							actionName,
+							message:
+								`Action '${actionName}': transaction execution failed on-chain ` +
+								`(digest=${failed.digest}, account='${account.name}', ` +
+								`address=${account.address}): ${failed.executionError}`,
+						}),
+					);
+				}
+				const txResult: TxResult = result.Transaction;
+
+				// --- 5. Re-project TxResult → ActionReceipt -----------------
 				return receiptFromTxResult(txResult);
 			}),
 		);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.action.signAndExecute', {
-			attributes: { 'action.name': params.actionName },
+			attributes: { [ActionSpans.name]: params.actionName },
 		}),
 	);

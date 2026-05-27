@@ -33,7 +33,10 @@ import { describe, expect, it } from 'vitest';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import { accountSignError } from '../../../src/plugins/account/errors.ts';
-import type { AccountValue, TxResult } from '../../../src/plugins/account/service.ts';
+import type {
+	AccountValue,
+	SignAndExecuteResult,
+} from '../../../src/plugins/account/service.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import type { SuiClient } from '../../../src/plugins/sui/index.ts';
 import { signAndExecute, type ActionObjectChange } from '../../../src/plugins/action/execute.ts';
@@ -47,7 +50,7 @@ interface FakeAccountOpts {
 	readonly events?: string[];
 	readonly signAndExecuteImpl?: (
 		tx: Uint8Array,
-	) => Effect.Effect<TxResult, ReturnType<typeof accountSignError>>;
+	) => Effect.Effect<SignAndExecuteResult, ReturnType<typeof accountSignError>>;
 }
 
 const fakeAccount = (opts: FakeAccountOpts = {}): AccountValue => {
@@ -64,10 +67,13 @@ const fakeAccount = (opts: FakeAccountOpts = {}): AccountValue => {
 		Effect.sync(() => {
 			events?.push('sign+execute');
 			return {
-				digest: 'DEFAULT_DIGEST',
-				effects: {},
-				objectChanges: [],
-				balanceChanges: [],
+				$kind: 'Transaction',
+				Transaction: {
+					digest: 'DEFAULT_DIGEST',
+					effects: {},
+					objectChanges: [],
+					balanceChanges: [],
+				},
 			};
 		});
 	const signAndExecute: AccountValue['signAndExecute'] = signAndExecuteImpl ?? defaultSignAndExecute;
@@ -169,26 +175,29 @@ describe('action signAndExecute helper', () => {
 	it('happy path: projects digest + objectChanges (created + mutated buckets)', async () => {
 		const account = fakeAccount({
 			signAndExecuteImpl: () =>
-				Effect.succeed({
-					digest: '5KqYxFhEWQ6q7ZyKaRYrQX9wYxxYPDLPaGNRpRiKjJ7Y',
-					effects: {},
-					objectChanges: [
-						{
-							type: 'created',
-							objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
-							objectType: '0xpkg::game::Lobby',
-							outputState: 'ObjectWrite',
-							idOperation: 'Created',
+					Effect.succeed({
+						$kind: 'Transaction',
+						Transaction: {
+						digest: '5KqYxFhEWQ6q7ZyKaRYrQX9wYxxYPDLPaGNRpRiKjJ7Y',
+						effects: {},
+						objectChanges: [
+							{
+								type: 'created',
+								objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
+								objectType: '0xpkg::game::Lobby',
+								outputState: 'ObjectWrite',
+								idOperation: 'Created',
+							},
+							{
+								type: 'mutated',
+								objectId: '0xbbbb000000000000000000000000000000000000000000000000000000000002',
+								outputState: 'ObjectWrite',
+								idOperation: 'None',
+							},
+						],
+							balanceChanges: [],
 						},
-						{
-							type: 'mutated',
-							objectId: '0xbbbb000000000000000000000000000000000000000000000000000000000002',
-							outputState: 'ObjectWrite',
-							idOperation: 'None',
-						},
-					],
-					balanceChanges: [],
-				}),
+					} satisfies SignAndExecuteResult),
 		});
 		const sui = makeFakeSui();
 		const exit = await Effect.runPromiseExit(
@@ -227,16 +236,19 @@ describe('action signAndExecute helper', () => {
 			Effect.sync(() => {
 				events.push('impersonate');
 				return {
-					digest: 'IMPERSONATED_DIGEST',
-					effects: {},
-					objectChanges: [
-						{
-							type: 'created',
-							objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
-							objectType: '0xpkg::game::Lobby',
-						},
-					],
-					balanceChanges: [{ owner: base.address }],
+					$kind: 'Transaction',
+					Transaction: {
+						digest: 'IMPERSONATED_DIGEST',
+						effects: {},
+						objectChanges: [
+							{
+								type: 'created',
+								objectId: '0xaaaa000000000000000000000000000000000000000000000000000000000001',
+								objectType: '0xpkg::game::Lobby',
+							},
+						],
+						balanceChanges: [{ owner: base.address }],
+					},
 				};
 			});
 		const account: AccountValue = {
@@ -291,10 +303,13 @@ describe('action signAndExecute helper', () => {
 					`impersonate:${data.sender}:${data.gasData.payment?.[0]?.objectId ?? '<none>'}`,
 				);
 				return {
-					digest: 'IMPERSONATED_DIGEST',
-					effects: {},
-					objectChanges: [],
-					balanceChanges: [],
+					$kind: 'Transaction',
+					Transaction: {
+						digest: 'IMPERSONATED_DIGEST',
+						effects: {},
+						objectChanges: [],
+						balanceChanges: [],
+					},
 				};
 			});
 		const account: AccountValue = {
@@ -328,18 +343,16 @@ describe('action signAndExecute helper', () => {
 		]);
 	});
 
-	it('failed-tx: surfaces ActionError(phase=sign) with SDK error preserved', async () => {
+	it('failed-tx: returns FailedTransaction → ActionError(phase=execute-failed) with executionError preserved', async () => {
 		const account = fakeAccount({
 			signAndExecuteImpl: () =>
-				Effect.fail(
-					accountSignError({
-						phase: 'submit',
-						accountName: 'tester',
-						address: '0x1111111111111111111111111111111111111111111111111111111111111111',
-						message:
-							"Account 'tester': transaction execution failed on-chain (digest=GGGG). InsufficientGas",
-					}),
-				),
+				Effect.succeed({
+					$kind: 'FailedTransaction',
+					FailedTransaction: {
+						digest: 'GGGG',
+						executionError: 'InsufficientGas',
+					},
+				}),
 		});
 		const sui = makeFakeSui();
 		const exit = await Effect.runPromiseExit(
@@ -361,8 +374,9 @@ describe('action signAndExecute helper', () => {
 		const errOpt = Exit.findErrorOption(exit);
 		expect(Option.isSome(errOpt)).toBe(true);
 		const err = (errOpt as Option.Some<{ phase?: string; message?: string }>).value;
-		expect(err.phase).toBe('sign');
+		expect(err.phase).toBe('execute-failed');
 		expect(err.message?.includes('InsufficientGas')).toBe(true);
+		expect(err.message?.includes('digest=GGGG')).toBe(true);
 	});
 
 	it('account scope unwinds AFTER the action body completes (sequencing pin)', async () => {
@@ -371,15 +385,13 @@ describe('action signAndExecute helper', () => {
 			events,
 			signAndExecuteImpl: () => {
 				events.push('sign+execute');
-				return Effect.fail(
-					accountSignError({
-						phase: 'submit',
-						accountName: 'tester',
-						address: '0x1111111111111111111111111111111111111111111111111111111111111111',
-						message:
-							"Account 'tester': transaction execution failed on-chain (digest=FAILED_DIGEST). MoveAbort",
-					}),
-				);
+				return Effect.succeed({
+					$kind: 'FailedTransaction',
+					FailedTransaction: {
+						digest: 'FAILED_DIGEST',
+						executionError: 'MoveAbort',
+					},
+				});
 			},
 		});
 		const sui = makeFakeSui();
@@ -404,41 +416,6 @@ describe('action signAndExecute helper', () => {
 		const err = (errOpt as Option.Some<{ message?: string }>).value;
 		expect(err.message?.includes('MoveAbort')).toBe(true);
 		expect(events).toEqual(['scope:enter', 'sign+execute', 'scope:exit']);
-	});
-
-	it('no-digest: surfaces ActionError(phase=parse)', async () => {
-		const account = fakeAccount({
-			signAndExecuteImpl: () =>
-				Effect.fail(
-					accountSignError({
-						phase: 'submit',
-						accountName: 'tester',
-						address: '0x1111111111111111111111111111111111111111111111111111111111111111',
-						message: "Account 'tester': executeTransaction returned no digest. Raw shape={}",
-					}),
-				),
-		});
-		const sui = makeFakeSui();
-		const exit = await Effect.runPromiseExit(
-			Effect.scoped(
-				signAndExecute({
-					actionName: 'unit.noDigest',
-					sui,
-					account,
-					build: (tx) => {
-						seedTx(tx);
-						tx.moveCall({
-							target: '0x0000000000000000000000000000000000000000000000000000000000000999::m::f',
-						});
-					},
-				}),
-			),
-		);
-		expect(Exit.isFailure(exit)).toBe(true);
-		const errOpt = Exit.findErrorOption(exit);
-		expect(Option.isSome(errOpt)).toBe(true);
-		const err = (errOpt as Option.Some<{ phase?: string }>).value;
-		expect(err.phase).toBe('parse');
 	});
 
 	it('build-throw: surfaces ActionError(phase=sign)', async () => {

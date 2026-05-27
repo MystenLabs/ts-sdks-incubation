@@ -40,8 +40,6 @@ import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/con
  *                        failed (FS perms, disk full).
  *   - `container`      — long-running key-server container start failed.
  *   - `ready`          — /health probe timed out.
- *   - `rotate`         — master-key rotation pipeline failed (sub-phase
- *                        is in the `cause` chain).
  *   - `seal`           — generic catch-all for non-phaseable failures. */
 export type SealPhase =
 	| 'port-alloc'
@@ -52,7 +50,6 @@ export type SealPhase =
 	| 'config-render'
 	| 'container'
 	| 'ready'
-	| 'rotate'
 	| 'seal';
 
 /** Generic Seal plugin error. The structured shape mirrors the v3
@@ -80,19 +77,6 @@ export const sealError = (
 	phase: SealPhase,
 	parts: Omit<SealError, '_tag' | 'phase'>,
 ): SealError => ({ _tag: 'SealError', phase, ...parts });
-
-// ---------------------------------------------------------------------------
-// ForkIncompatibleError — shared shape owned by substrate
-// ---------------------------------------------------------------------------
-
-/** Synchronous refusal raised at factory time when a local-keygen
- *  variant is composed under a fork network. Refusal MUST be a
- *  synchronous throw at the factory call site (NOT a deferred
- *  acquire-time failure) so the user sees the actionable hint before
- *  any other plugin starts work. */
-export const forkIncompatibleError = (
-	parts: ConstructorParameters<typeof ForkIncompatibleError>[0],
-): ForkIncompatibleError => new ForkIncompatibleError(parts);
 
 // ---------------------------------------------------------------------------
 // SealConfigError — synchronous factory-time configuration faults

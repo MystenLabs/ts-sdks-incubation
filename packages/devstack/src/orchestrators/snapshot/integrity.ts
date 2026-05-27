@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 
 import { Effect, FileSystem, Schema, Stream } from 'effect';
 
+import { decodeUnknown, parseJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import {
 	IntegrityFileSchema,
 	SNAPSHOT_INTEGRITY_VERSION,
@@ -152,19 +153,26 @@ const readIntegrity = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch((cause) => failWalk(`read ${path} failed`, path, cause)));
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: (cause) =>
+		const raw = yield* parseJsonText(text, {
+			source: path,
+			mkError: (issue) =>
 				new SnapshotIntegrityError({
 					kind: 'corrupt',
 					detail: `${path} is not valid JSON`,
 					path,
-					cause,
+					cause: issue.cause,
 				}),
 		});
-		const decoded = yield* Schema.decodeUnknownEffect(IntegrityFileSchema)(raw).pipe(
-			Effect.catch((cause) => failCorrupt(`${path} failed schema decode`, path, cause)),
-		);
+		const decoded = yield* decodeUnknown(IntegrityFileSchema, raw, {
+			source: path,
+			mkError: (issue) =>
+				new SnapshotIntegrityError({
+					kind: 'corrupt',
+					detail: `${path} failed schema decode`,
+					path,
+					cause: issue.cause,
+				}),
+		});
 		for (const [relPath, digest] of Object.entries(decoded.hashes)) {
 			if (!isSafeSnapshotRelativePath(relPath) || relPath === SnapshotLayout.integrityFile) {
 				return yield* failCorrupt(`unsafe integrity path: ${relPath}`, path);

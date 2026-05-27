@@ -60,31 +60,6 @@ export const deepbookPluginError = (
 	parts: Omit<DeepbookPluginError, '_tag' | 'phase' | 'message'> = {},
 ): DeepbookPluginError => ({ _tag: 'DeepbookPluginError', phase, message, ...parts });
 
-/**
- * Synchronous factory-time refusal when the user explicitly composes
- * the local deepbook deploy against a fork network.
- *
- * Deepbook's publish path requires the Move SDK JSON-RPC against a
- * read-write chain; sui-fork is read-only over gRPC `simulate`. We
- * refuse synchronously at factory time with an actionable hint
- * pointing at `deepbook.live(...)` (when implemented) or the known
- * canonical deployment branch.
- *
- * Primary refusal is TYPE-LEVEL via the `deepbookFor(network).<mode>`
- * mode-narrowed namespace — fork networks expose no `local` branch.
- * This runtime shape is defense-in-depth for callers that bypass
- * the typed namespace (e.g. via dynamic dispatch).
- */
-export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
-	new ForkIncompatibleError({
-		variant: 'deepbookLocal',
-		network,
-		message: 'deepbook local deploy does not support fork networks.',
-		hint:
-			'deepbook local publish requires JSON-RPC + signing rights; sui-fork only exposes gRPC simulate. ' +
-			'Use deepbookFor(network).known({...}) to wrap an already-deployed deepbook instance.',
-	});
-
 /** Configuration error — synchronous factory-time guards (missing
  *  required fields, conflicting pool ids, ambiguous publisher). */
 export interface DeepbookConfigError extends ConfigIssue {

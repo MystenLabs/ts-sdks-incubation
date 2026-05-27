@@ -39,8 +39,11 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -124,16 +127,7 @@ export const bootLocalRpcMode = (
 		return { resolved, client };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.sui.localRpc.boot', {
-			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'local-rpc' },
+			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'local-rpc' },
 		}),
 	);
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

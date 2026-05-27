@@ -85,9 +85,13 @@ export type {
 	FaucetExhausted,
 	FaucetBodyError,
 	FaucetConfigError,
+	FaucetStrategyMissing,
 } from './errors.ts';
+export { faucetConfigError } from './errors.ts';
+export { requestFundsWithRetry, type RetryOptions } from './http.ts';
 export {
 	FAUCET_CAPABILITY_KEY_PREFIX,
 	faucetCapabilityKey,
 	type FaucetStrategy,
 } from './dispatcher.ts';
+export { FaucetSpans } from './spans.ts';

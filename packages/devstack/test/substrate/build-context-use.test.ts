@@ -121,7 +121,11 @@ describe('registry dependency reader', () => {
 				const read = buildDependencyReaderFor(registry, node);
 
 				expect(() => read(StrangerResource)).toThrow(
-					/resource 'account\/stranger' not in this plugin's declared dependencies/,
+					expect.objectContaining({
+						_tag: 'DependencyReaderViolation',
+						kind: 'undeclared-dependency',
+						target: 'account/stranger',
+					}),
 				);
 			}),
 		),

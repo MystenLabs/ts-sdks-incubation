@@ -9,7 +9,6 @@ export const DEVSTACK_WALLET_HTTP_PATH = {
 	ACCOUNTS: '/api/v1/devstack/accounts',
 	SIGN_TRANSACTION: '/api/v1/devstack/sign-transaction',
 	SIGN_PERSONAL_MESSAGE: '/api/v1/devstack/sign-personal-message',
-	EXECUTE: '/api/v1/devstack/execute',
 } as const;
 
 export type DevstackWalletHttpPathValue =

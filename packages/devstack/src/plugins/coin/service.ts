@@ -39,6 +39,7 @@ import {
 } from './address-resolution.ts';
 import { coinError, type CoinError } from './errors.ts';
 import type { MetadataSdkShim } from './metadata.ts';
+import { CoinSpans } from './spans.ts';
 import {
 	performMint,
 	type MintInputs,
@@ -101,7 +102,7 @@ export const acquireCoin = (
 ): Effect.Effect<CoinValue, CoinError> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'coin.form': form.kind,
+			[CoinSpans.form]: form.kind,
 		});
 
 		const resolved: ResolvedCoin = yield* (() => {
@@ -116,9 +117,9 @@ export const acquireCoin = (
 		})();
 
 		yield* Effect.annotateCurrentSpan({
-			'coin.fullCoinType': resolved.fullCoinType,
-			'coin.decimals': resolved.decimals,
-			'coin.source': resolved.source,
+			[CoinSpans.fullCoinType]: resolved.fullCoinType,
+			[CoinSpans.decimals]: resolved.decimals,
+			[CoinSpans.source]: resolved.source,
 		});
 
 		const mint: CoinValue['mint'] = (signer, opts) => {

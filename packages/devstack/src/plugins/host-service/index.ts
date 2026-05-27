@@ -12,6 +12,7 @@ import {
 	PortBrokerService,
 	type PortProbeHost,
 } from '../../substrate/runtime/port-broker/index.ts';
+import { PostAcquireTasksService } from '../../substrate/runtime/post-acquire-tasks.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
 
@@ -69,6 +70,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 				const portBroker = yield* PortBrokerService;
 				const logger = yield* Logger;
 				const currentPlugin = yield* CurrentPluginKey;
+				const postAcquireTasks = yield* PostAcquireTasksService;
 				const acquireContext = {
 					allocatePort: (preferredPort) =>
 						portBroker
@@ -82,7 +84,11 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					pluginKey: currentPlugin.key,
 				} satisfies HostServiceAcquireContext;
 				const prepared = yield* prepareHostService(normalized, acquireContext);
-				yield* prepared.start;
+				yield* postAcquireTasks.register({
+					pluginKey: currentPlugin.key,
+					label: `host-service:${normalized.serviceName}.start`,
+					run: prepared.start,
+				});
 				return prepared.value;
 			}),
 		errorContributions: hostServiceErrorContributions,

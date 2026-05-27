@@ -54,31 +54,6 @@ export const walrusPluginError = (
 	parts: Omit<WalrusPluginError, '_tag' | 'phase' | 'message'> = {},
 ): WalrusPluginError => ({ _tag: 'WalrusPluginError', phase, message, ...parts });
 
-/**
- * Synchronous factory-time refusal when the user explicitly composes
- * the local-cluster mode against a fork network.
- *
- * sui-fork doesn't expose JSON-RPC; the local cluster's storage
- * nodes need JSON-RPC against the chain. Letting the supervisor
- * partway through the image build before the nodes fail to dial
- * would be confusing — we refuse synchronously at factory time
- * with an actionable hint pointing at `walrusFor(network).known({...})`.
- *
- * Primary refusal is TYPE-LEVEL via the `walrusFor(network).<mode>`
- * mode-narrowed namespace — fork networks expose only `.known`, so
- * calling `.local` is a compile error. This runtime shape is
- * defense-in-depth for callers that sneak through dynamic dispatch.
- */
-export const forkIncompatibleError = (network: string): ForkIncompatibleError =>
-	new ForkIncompatibleError({
-		variant: 'walrusLocalCluster',
-		network,
-		message: `walrus local-cluster does not support fork networks.`,
-		hint:
-			`walrus local-cluster requires JSON-RPC, which sui-fork does not expose. ` +
-			`Use walrusFor(network).known({...}) instead.`,
-	});
-
 /** Configuration error — synchronous factory-time guards
  *  (`nodeCount >= 1`, `shards >= nodeCount`, missing required
  *  fields on `.known(...)`). Surfaces as a thrown `Error` shaped

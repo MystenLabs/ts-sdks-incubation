@@ -98,6 +98,7 @@ export {
 	SEAL_ERROR_TAGS,
 } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
+export { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -341,7 +342,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		role: 'task',
 		start: () =>
 			Effect.gen(function* () {
-				const mode: SealMode = { mode: 'live', name, ...opts };
+				const mode: SealMode = { mode: 'live', name, resolved: validated };
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {

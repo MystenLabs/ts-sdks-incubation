@@ -4,10 +4,11 @@
 // (`src/substrate/**`) to NEVER mention plugin names — `sui`, `walrus`,
 // `seal`, `wallet`, `account`, `coin`, `package`, `faucet`, `deepbook`,
 // `pyth`, `postgres`, `action`, `host`. Two L1-adjacent helpers are
-// documented exceptions (`sui-execute/`, `sui-move-build/`); a few
-// other files are temporarily allowed pending Phase 5b/6 lifts. Every
-// allow-listed file carries a TODO with the backlog item that will
-// close it.
+// documented exceptions (`sui-execute/`, `sui-move-build/`); a small
+// permanent allowlist covers (a) network-host overloads (NOT the
+// plugin-host), (b) substrate field shapes that name plugin-domain
+// values by design (projection field set, supervisor's branded
+// account-resource-id literal). Each entry carries a reason.
 //
 // The check strips line- and block-comments before matching so a
 // documentation-only mention of "the wallet" in a header doesn't trip
@@ -40,11 +41,10 @@ const PLUGIN_NAMES = [
 	'host',
 ] as const;
 
-/** Files allowed to mention plugin names today.
- *
- *  Each entry MUST carry a reason — either a documented L1-adjacent
- *  exception (sui-execute / sui-move-build) or a TODO with the
- *  backlog item that will close it.
+/** Files allowed to mention plugin names. Each entry carries a reason:
+ *  documented L1-adjacent exception, network-host overload (NOT the
+ *  plugin-host), or substrate field shape that names plugin-domain
+ *  values by design.
  *
  *  Note on `host`: the word `host` is overloaded — it appears in
  *  network-positional contexts (`host:port`, `hostname`, `host-gateway`)
@@ -67,14 +67,6 @@ const ALLOWED_FILES: ReadonlyArray<{
 		path: 'src/substrate/runtime/sui-move-build/index.ts',
 		reason:
 			'Documented L1-adjacent Sui Move build helper (ARCHITECTURE.md §Substrate name-blindness).',
-	},
-	{
-		// ChainOperation's `sui-tx` variant + import from `../sui-execute/`
-		// is the substrate seam that consumes the sui-execute exception.
-		// The variant literal IS the typed handshake into that helper.
-		path: 'src/substrate/runtime/artifact-publisher/chain-operation.ts',
-		reason:
-			'Substrate seam consuming the sui-execute exception; `sui-tx` variant literal is the typed handshake.',
 	},
 	{
 		// Barrel re-export of sui-execute + host-tree-tar (network-host, not
@@ -107,59 +99,50 @@ const ALLOWED_FILES: ReadonlyArray<{
 		reason: 'bind-interface host parameter, not host-service plugin.',
 	},
 	{
-		// TODO(Phase 5b SpanAttr lift): split SpanAttr into substrate-owned
-		// generic vocab + plugin-owned domain vocab; today the `SpanAttr`
-		// constants hardcode `sui.*` / `walrus.*` / etc. keys.
+		// `host: 'server.address'` is the OTEL semantic convention
+		// constant, not the host-service plugin name.
 		path: 'src/substrate/runtime/observability/spans.ts',
-		reason: 'TODO Phase 5b: SpanAttr keys carry plugin-named fields; lift to plugin-owned vocab.',
+		reason: 'OTEL "server.address" key alias (network-host), not host-service plugin.',
 	},
 	{
-		// TODO(Phase 5b projection lift): `account.updated` /
-		// `package.updated` event variants name plugins; lift to a generic
-		// `projection.updated` envelope.
+		// `'capturing-host-tree'` is a snapshot-progress phase label that
+		// refers to the host-side filesystem tar (substrate primitive
+		// `host-tree-tar`), not the host-service plugin.
 		path: 'src/substrate/events.ts',
-		reason:
-			'TODO Phase 5b: account.updated / package.updated event names; lift to projection envelope.',
+		reason: 'capturing-host-tree progress phase = host-tree-tar primitive, not host-service plugin.',
 	},
 	{
-		// TODO(Phase 5b projection lift): `accounts: AccountProjection[]`,
-		// `packages: PackageProjection[]`, branded `account/${...}` /
-		// `package/${...}` keys on the projection.
+		// `accounts: AccountProjection[]`, `packages: PackageProjection[]`,
+		// branded `account/${...}` / `package/${...}` keys on the
+		// projection — substrate field shape that names plugin-domain
+		// values by design.
 		path: 'src/substrate/projection.ts',
-		reason:
-			'TODO Phase 5b: projection field set is plugin-aware; lift accounts/packages to neutral shape.',
+		reason: 'Projection field set names account/package plugin-domain shapes by design.',
 	},
 	{
-		// TODO(Phase 5b projection lift): the projection persistence layer
-		// inherits plugin names from `projection.ts`.
+		// Projection persistence inherits plugin-named field shapes from
+		// `projection.ts`.
 		path: 'src/substrate/runtime/projection/persisted.ts',
-		reason:
-			'TODO Phase 5b: projection persistence inherits account/package names from projection.ts.',
+		reason: 'Projection persistence inherits account/package shapes from projection.ts.',
 	},
 	{
-		// TODO(Phase 5b projection lift): the projection update reducer
-		// inherits plugin names from `projection.ts`.
+		// Projection update reducer dispatches on the kind→decoder
+		// registry; `account` and `package` are the two registered kinds
+		// today.
 		path: 'src/substrate/runtime/projection/update.ts',
-		reason:
-			'TODO Phase 5b: projection reducer inherits account/package names from projection.ts.',
+		reason: 'Projection reducer dispatches on registered account/package decoder kinds.',
 	},
 	{
-		// TODO(Phase 5b operational-endpoints lift): `faucetUrl: 'faucet'`
-		// projects a plugin-named operational endpoint; the projection lift
-		// will absorb the operational-endpoint naming alongside the rest.
+		// `faucetUrl: 'faucet'` projects an operational-endpoint name;
+		// the operational-endpoint table names the plugins it surfaces.
 		path: 'src/substrate/runtime/projection/operational-endpoints.ts',
-		reason:
-			'TODO Phase 5b: faucetUrl operational-endpoint name leaks faucet plugin; lifts with projection.',
+		reason: 'Operational-endpoint table surfaces faucetUrl as a named plugin endpoint.',
 	},
 	{
-		// Phase 6 split shipped: `pendingAccountProjection` still
-		// inspects the branded `account/<name>` resource-id literal to
-		// seed the AccountProjection row. Tracked at backlog item 33
-		// (Phase 5b projection lift); the substrate `projection.updated`
-		// event + L3 projection orchestrator will absorb this.
+		// `pendingAccountProjection` inspects the branded `account/<name>`
+		// resource-id literal to seed the AccountProjection row.
 		path: 'src/substrate/runtime/supervisor/start-supervisor.ts',
-		reason:
-			'TODO backlog #33: pendingAccountProjection inspects account/<name> literal; lifts with projection orchestrator.',
+		reason: 'pendingAccountProjection inspects the branded account/<name> resource-id literal.',
 	},
 ];
 

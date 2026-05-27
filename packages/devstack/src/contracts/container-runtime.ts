@@ -61,6 +61,15 @@ export interface ContainerPortPublish {
 
 export type PortBindingReconciliation = 'exact' | 'adopt-existing';
 
+/** Per-network DNS alias plumbing. `aliases` are passed through to
+ *  Docker as `--network-alias` (first attach, baked into
+ *  `docker run`) or `--alias` (subsequent attaches via
+ *  `docker network connect`). */
+export interface NetworkAttachment {
+	readonly name: string;
+	readonly aliases?: ReadonlyArray<string>;
+}
+
 export interface EnsureContainerSpec {
 	readonly name: string;
 	readonly image: ImageRef;
@@ -84,7 +93,14 @@ export interface EnsureContainerSpec {
 	 *  container keep its current published ports; callers must read
 	 *  the returned `ContainerHandle.ports` before constructing URLs. */
 	readonly portBindingReconciliation?: PortBindingReconciliation;
-	readonly networkAttach?: ReadonlyArray<string>;
+	/** Networks to attach. Each entry is either a bare network name
+	 *  (no extra DNS aliases) or `{ name, aliases }` to register
+	 *  per-network DNS aliases via `docker run --network-alias` (for the
+	 *  first attach) or `docker network connect --alias` (for any
+	 *  subsequent attach). Docker registers the container name on every
+	 *  attached network unconditionally; aliases here are *additional*
+	 *  DNS names siblings can dial under the same network. */
+	readonly networkAttach?: ReadonlyArray<string | NetworkAttachment>;
 	/** Bind mounts. The build-container path lives here: source dir →
 	 *  container path. `readonly: true` flips on the docker mount
 	 *  read-only flag. */

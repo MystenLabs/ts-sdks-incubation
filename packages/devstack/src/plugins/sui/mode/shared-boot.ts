@@ -30,7 +30,9 @@ import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';
 
 // ---------------------------------------------------------------------------
@@ -77,7 +79,7 @@ export const fetchChainId = (
 					),
 				),
 		}),
-		Effect.tap((id: string) => Effect.annotateCurrentSpan({ 'sui.chain': id })),
+		Effect.tap((id: string) => Effect.annotateCurrentSpan({ [SuiSpans.chain]: id })),
 		Effect.withSpan(opts?.span ?? 'devstack.plugin.sui.fetchChainId'),
 	);
 };
@@ -177,116 +179,6 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
 	invalidate: Effect.void,
 };
 
-const SUI_RPC_READ_TIMEOUT_MS = 10_000;
-
-// DEFERRED: substrate JSON-RPC primitive. The bespoke `postJsonRpc`
-// below + per-method projector helpers (`normalizeJsonOwner`,
-// `getObjectViaJsonRpc`) want to live behind a substrate
-// `substrate/runtime/json-rpc-client.ts` primitive: typed envelope
-// decode + per-request timeout + the standard `{ result, error }`
-// projection. That lift is a fresh substrate primitive (not a
-// re-use of `retry-policy` / `runtime-decode` / `http-probe`) and
-// is sized as a separate PR — see backlog item 47a.
-const postJsonRpc = async <A>(
-	rpcUrl: string,
-	method: string,
-	params: ReadonlyArray<unknown>,
-): Promise<A> => {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), SUI_RPC_READ_TIMEOUT_MS);
-	timeout.unref?.();
-	try {
-		const response = await fetch(rpcUrl, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-			signal: controller.signal,
-		});
-		if (!response.ok) throw new Error(`Sui RPC HTTP ${response.status}`);
-		const payload = (await response.json()) as {
-			readonly result?: A;
-			readonly error?: { readonly message?: string };
-		};
-		if (payload.error !== undefined) {
-			throw new Error(payload.error.message ?? JSON.stringify(payload.error));
-		}
-		if (payload.result === undefined) throw new Error(`Sui RPC ${method} returned no result`);
-		return payload.result;
-	} finally {
-		clearTimeout(timeout);
-	}
-};
-
-const normalizeJsonOwner = (owner: unknown): unknown => {
-	if (owner === 'Immutable') return { $kind: 'Immutable', Immutable: true };
-	if (typeof owner !== 'object' || owner === null) return { $kind: 'Unknown', Unknown: owner };
-	const record = owner as {
-		readonly AddressOwner?: unknown;
-		readonly ObjectOwner?: unknown;
-		readonly Shared?: {
-			readonly initial_shared_version?: unknown;
-			readonly initialSharedVersion?: unknown;
-		};
-		readonly ConsensusAddressOwner?: unknown;
-	};
-	if (typeof record.AddressOwner === 'string') {
-		return { $kind: 'AddressOwner', AddressOwner: record.AddressOwner };
-	}
-	if (record.ObjectOwner !== undefined) {
-		return { $kind: 'Parent', Parent: record.ObjectOwner };
-	}
-	if (record.Shared !== undefined) {
-		const initialSharedVersion =
-			record.Shared.initialSharedVersion ?? record.Shared.initial_shared_version;
-		return {
-			$kind: 'Shared',
-			Shared: { initialSharedVersion: String(initialSharedVersion) },
-		};
-	}
-	if (record.ConsensusAddressOwner !== undefined) {
-		return { $kind: 'ConsensusAddressOwner', ConsensusAddressOwner: record.ConsensusAddressOwner };
-	}
-	return { $kind: 'Unknown', Unknown: owner };
-};
-
-const getObjectViaJsonRpc = async (
-	rpcUrl: string,
-	args: {
-		readonly objectId: string;
-		readonly include?: {
-			readonly content?: boolean;
-			readonly json?: boolean;
-		};
-	},
-): Promise<unknown> => {
-	const showContent = args.include?.content === true || args.include?.json === true;
-	const result = await postJsonRpc<{
-		readonly data?: {
-			readonly objectId?: string;
-			readonly version?: string | number;
-			readonly type?: string;
-			readonly owner?: unknown;
-			readonly content?: {
-				readonly fields?: unknown;
-			};
-		};
-	}>('' + rpcUrl, 'sui_getObject', [
-		args.objectId,
-		{ showType: true, showOwner: true, showContent },
-	]);
-	const data = result.data;
-	if (data?.objectId === undefined) throw new Error(`object ${args.objectId} not found`);
-	const object = {
-		objectId: data.objectId,
-		version: String(data.version ?? ''),
-		type: data.type ?? 'unknown',
-		owner: normalizeJsonOwner(data.owner),
-		...(args.include?.json === true ? { json: data.content?.fields } : {}),
-		...(args.include?.content === true ? { content: data.content } : {}),
-	};
-	return { ...object, object };
-};
-
 // ---------------------------------------------------------------------------
 // SuiClient assembly — collapses the per-mode boilerplate
 // ---------------------------------------------------------------------------
@@ -294,36 +186,38 @@ const getObjectViaJsonRpc = async (
 /** Build the `SuiSdkShim` over a constructed grpc client.
  *  Account/Coin/Wallet read through this seam, so we expose
  *  `executeTransaction` + `waitForTransaction` in addition to the
- *  read methods needed by the chain probe. */
-export const makeSdkShim = (sdkClient: SuiGrpcClient, rpcUrl: string): SuiSdkShim => ({
+ *  read methods needed by the chain probe.
+ *
+ *  Every read/write goes through `sdkClient.core.*` — the gRPC
+ *  TransportMethods surface from `@mysten/sui`. JSON-RPC is
+ *  deprecated; do not reintroduce it. */
+export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
 	core: {
-		getObject: (args) => getObjectViaJsonRpc(rpcUrl, args),
+		getObject: (args) => sdkClient.core.getObject(args),
 		getTransaction: (args) => sdkClient.core.getTransaction(args),
 		getBalance: (args) => sdkClient.core.getBalance(args),
 		listCoins: (args) => sdkClient.core.listCoins(args),
 		// Extended surfaces — used by the account plugin's sign + execute
-		// closure. Local mode keeps the `sdkClient.executeTransaction` /
-		// `sdkClient.waitForTransaction` instance methods reachable on
-		// the shim so consumers don't have to know about the grpc client
-		// constructor. The SDK accepts a mutable `signatures: string[]`
-		// shape; the shim's readonly signature is widened with a copy at
-		// the boundary.
+		// closure. Routes through `client.core.*` (the cross-transport
+		// canonical surface per STYLE_GUIDE §16). The SDK accepts a
+		// mutable `signatures: string[]`; the shim's readonly signature
+		// is widened with a copy at the boundary.
 		executeTransaction: (args) =>
-			sdkClient.executeTransaction({
+			sdkClient.core.executeTransaction({
 				transaction: args.transaction,
 				signatures: [...args.signatures],
 				...(args.include !== undefined ? { include: args.include } : {}),
 			}),
 		waitForTransaction: (args) =>
-			sdkClient.waitForTransaction({
+			sdkClient.core.waitForTransaction({
 				digest: args.digest,
 				...(args.timeout !== undefined ? { timeout: args.timeout } : {}),
 			}),
 	},
-	// Opaque client passthrough — the Package plugin's publish-tx
-	// builder hands this to `Transaction.build({ client })`. The shim
-	// layer doesn't type-narrow it; downstream consumers cast at the
-	// `tx.build` call site (mirrors coin/mint.ts).
+	// Client passthrough — Package's publish-tx builder hands this to
+	// `Transaction.build({ client })`; sibling plugins reach
+	// `client.core.*` directly through this slot. Typed as
+	// ClientWithCoreApi via SuiSdkShim.client.
 	client: sdkClient,
 });
 
@@ -339,7 +233,6 @@ export const assembleSuiClient = (parts: {
 	readonly sdkClient: SuiGrpcClient;
 	readonly chain: string;
 	readonly rpcUrl: string;
-	readonly sdkRpcUrl?: string;
 	readonly faucetUrl?: string;
 	readonly fundingFaucetUrl?: string;
 	readonly graphqlUrl?: string;
@@ -357,7 +250,7 @@ export const assembleSuiClient = (parts: {
 	readonly sdkShim: SuiSdkShim;
 	readonly chainProbe: ChainProbe<SuiProbeKey>;
 } => {
-	const sdkShim = makeSdkShim(parts.sdkClient, parts.sdkRpcUrl ?? parts.rpcUrl);
+	const sdkShim = makeSdkShim(parts.sdkClient);
 	const chainProbe = makeSuiChainProbe(sdkShim, parts.chain);
 	const client: SuiClient = {
 		sdk: sdkShim,
@@ -404,16 +297,3 @@ export const makeResolvedNetwork = (parts: {
 	...(parts.forkUpstream !== undefined ? { forkUpstream: parts.forkUpstream } : {}),
 });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

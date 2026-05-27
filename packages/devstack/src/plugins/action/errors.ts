@@ -15,19 +15,31 @@
  *  editing this file (and the plugin doc's catalog).
  *
  *  Phase semantics:
- *   - `discriminator` — `opts.discriminator` Effect evaluation failed.
- *                       User-code defect or yielded upstream raised.
- *   - `build`         — `opts.body`'s build phase (the user-supplied
- *                       Effect) failed before producing a transaction.
- *   - `sign`          — `signAndExecute` failed (gas, bytecode
- *                       verification, RPC).
- *   - `parse`         — the action's receipt projection (digest /
- *                       objectChanges) was malformed.
- *   - `verify`        — verify probe authoritatively raised (transient
- *                       is masked by the lenient probe — does NOT raise
- *                       this).
+ *   - `discriminator`   — `opts.discriminator` Effect evaluation failed.
+ *                         User-code defect or yielded upstream raised.
+ *   - `build`           — `opts.body`'s build phase (the user-supplied
+ *                         Effect) failed before producing a transaction.
+ *   - `sign`            — signing / submit transport failed (signer
+ *                         refused, RPC unreachable, finality timeout).
+ *                         This is `account.signAndExecute`'s error
+ *                         channel; it does NOT cover on-chain failures.
+ *   - `execute-failed`  — transaction was delivered + executed by the
+ *                         validator but the on-chain execution failed
+ *                         (the `$kind: 'FailedTransaction'` variant of
+ *                         `account.signAndExecute`'s return value).
+ *   - `parse`           — the action's receipt projection (digest /
+ *                         objectChanges) was malformed.
+ *   - `verify`          — verify probe authoritatively raised (transient
+ *                         is masked by the lenient probe — does NOT raise
+ *                         this).
  */
-export type ActionPhase = 'discriminator' | 'build' | 'sign' | 'parse' | 'verify';
+export type ActionPhase =
+	| 'discriminator'
+	| 'build'
+	| 'sign'
+	| 'execute-failed'
+	| 'parse'
+	| 'verify';
 
 /** Single tagged action error. */
 export interface ActionError {

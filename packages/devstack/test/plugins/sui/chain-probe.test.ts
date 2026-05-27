@@ -30,7 +30,7 @@ const sdkWithCore = (core: Partial<SuiSdkShim['core']>): SuiSdkShim => ({
 		waitForTransaction: async () => ({}),
 		...core,
 	},
-	client: {},
+	client: {} as never,
 });
 
 describe('makeSuiChainProbe', () => {

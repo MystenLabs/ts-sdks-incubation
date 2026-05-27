@@ -122,6 +122,18 @@ that owns the value:
 
 Rules that apply across all four styles:
 
+- **Failed conditions surface as return-channel discriminated unions, NOT as error-channel
+  failures.** Sui `account.signAndExecute` mirrors the SDK's `SuiClientTypes.TransactionResult`
+  shape — on-chain outcomes (`$kind: 'Transaction' | 'FailedTransaction'`) are a RETURN VALUE
+  the caller dispatches on, NOT a thrown error. `AccountSignError` covers only transport /
+  lifecycle failures (sign refused, RPC unreachable, finality timeout). The same shape applies
+  whenever a non-exceptional outcome carries a discriminated success/failure split — keep the
+  error channel for "the operation couldn't proceed" and the return channel for "the operation
+  produced an outcome, here's which".
+- Phase enums on tagged errors describe WHAT STEP failed, not WHAT KIND OF FAILURE happened.
+  Overloading a phase with multiple distinct failure semantics (`'submit'` carrying both
+  transport rejection AND on-chain failure) is a violation — split into discrete phases that
+  each name one step, OR lift the failure-kind discriminator into a return-channel variant.
 - Do NOT introduce a fifth style.
 - `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits it (this is the
   v4-idiomatic shape and round-trips cleanly through the cascade formatter and CLI envelope).
@@ -164,6 +176,16 @@ sync variants) unless the boundary is specifically plugin config, in which case 
 - The "no inline validation in parallel agents" memory directive applies: orchestrators may NOT run
   `pnpm typecheck` / `test` / `build` inside fanned-out agents — see
   `feedback_no_inline_validation_in_parallel_agents`.
+- **Lock-ordering invariants** (e.g. "router dispatch lock held across the readiness probe") are
+  pinned via source-structure tests, never via real-time fiber racing. A regression test that uses
+  `it.live + forks + Promise gates + Effect.forkScoped` to race contributor fibers starves vitest 4's
+  parallel workers and was the reason `test/orchestrators/router/concurrent-contribute-route.test.ts`
+  was deleted. The replacement at `test/orchestrators/router/lock-state-instrumentation.test.ts`
+  walks `src/orchestrators/router/service.ts`, finds the `Effect.scoped(...)` block that contains
+  `acquireStackLock`, and asserts both `publishRouteFile` and `waitForPublicRouteReadiness` sit
+  inside it — Effect's Scope semantics then guarantee the lock spans both calls. If the lock-state
+  question is more complex than a structural check, refactor the locking primitive to an
+  `Effect.Service` and provide a recording test Layer; do NOT reach for `it.live` fiber races.
 
 ---
 
@@ -193,6 +215,14 @@ Per memory `feedback_no_compat_for_never_cases`:
   diagnostic markers of incomplete substrate types and MUST be zero at cutover. Known sites flagged
   for removal: `wallet-rewrite/devstack.config.ts:130`, `deepbook-full-rewrite` chainId placeholder,
   connect-four's `sdkClient as { ... }`.
+- Inside `src/api/` + every `src/plugins/<name>/index.ts` plugin barrel +
+  `src/plugins/host-service/service.ts`, every `as unknown as` is sanctioned by
+  `test/style/no-unknown-as.test.ts`'s `SANCTIONED` manifest. The manifest tracks per-file counts +
+  the reason each cast persists (TS dependent-tuple inference limits, symbol-keyed property reads,
+  generic-default widening, Node child_process stream surface bridges). Adding a new cast at one of
+  those files fails the style test; removing one also fails (so the cleanup must update the
+  manifest). Substrate / runtime / orchestrator code is out of scope for this manifest — those
+  layers have their own decode + typed-error discipline (§2 + §20).
 - Code either WORKS as written or DOESN'T EXIST. Phase markers are dead scaffold — delete.
 - Substrate-side: same rule applies. No `// future` reservations, no orphan exports waiting for a
   wiring layer (`Logger` service, `SpanAttr` helpers, `LifecycleFact`, `PluginErrorContribution`,
@@ -316,10 +346,10 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
 - Renderer modules use `.tsx` only when JSX is used (`surfaces/tui/*.tsx`); everything else stays
   `.ts`. Ink dependencies must be lazy-imported (see
   `surfaces/tui/index.ts:dynamic import('./mount-ink.tsx')`).
-- File length: no hard limit, but modules above ~700 lines invite a "factor by responsibility"
-  review. **Reference shape**: `substrate/runtime/supervisor/` is the canonical split of a
-  formerly-1815-LOC monolith into per-concern modules each under 500 LOC, with a thin
-  `supervisor.ts` re-export shim preserving caller import paths. Layout:
+- File length: LOC is a smell, not a threshold. If a file is hard to navigate, factor by
+  responsibility; if it's coherent, leave it. Don't split a file just because it crossed a number.
+  **Reference shape** for genuine multi-concern decomposition: `substrate/runtime/supervisor/`
+  is the canonical split of a formerly-1815-LOC monolith into per-concern modules. Layout:
   ```
   supervisor/
   ├── index.ts                  — public surface re-exports
@@ -337,6 +367,8 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
   ```
   When splitting a monolith, group locals into a typed shared-state record (see `state.ts`'s
   `SupervisorState`) rather than threading every closure capture through helper signatures.
+  When NOT splitting: large files like `cli/main.ts` are coherent composition surfaces —
+  scattering a wiring function 8 ways scatters the wiring. Coherence beats line count.
 
 ---
 
@@ -376,8 +408,9 @@ local-keygen/live/fork-known, deepbook local/live/fork):
 
 ## 10b. L2 wrapper-service around `defineScopedRefMap`
 
-When an L2 plugin owns a per-stack `K -> V` registry (Sui-coin's `CoinRegistry`, Move-package's
-`PackageRegistry`, future chain-plugin registries), it MUST follow the wrapper-service shape:
+When an L2 plugin owns a per-stack `K -> V` registry **and adds plugin-specific methods**
+(Sui-coin's `CoinRegistry` exposes `bySymbol`/`byWitness`/`byType`), use the wrapper-service
+shape:
 
 ```ts
 const FooRefMap = defineScopedRefMap<FooKey, FooRecord>('FooRegistry'); // module-private inner primitive
@@ -406,22 +439,16 @@ Why:
 - The L2 wrapper is the place plugin-specific lookups land (Sui-coin's `bySymbol` / `byWitness` /
   `byType` go on `CoinRegistry`, NOT on the substrate primitive).
 - Consumers (CLI / e2e / sibling plugins) yield ONE name (`FooRegistryService`) and provide ONE
-  layer (`layerFooRegistry`). They never reach the inner `defineScopedRefMap(...)` factory return.
-- Even when the wrapper's surface is a 1:1 re-projection today (e.g. Move-package's
-  `PackageRegistry` only re-exposes `set/find/has/entries/changes`), the shape MUST be present —
-  it's the L2 plugin's API contract, and future plugin-specific methods land here without forcing
-  every consumer to learn a new shape.
+  layer (`layerFooRegistry`).
 
-Do NOT directly export the `defineScopedRefMap(...)` factory return
-(`export const FooRegistry = defineScopedRefMap(...)`). Consumers reaching `FooRegistry.Service` /
-`FooRegistry.layer` is a stale pattern — refactor to the wrapper-service shape on touch.
+**When the surface is a 1:1 re-projection** of `set/find/has/entries/changes` and no plugin-
+specific methods exist today (Move-package's `PackageRegistry` is the example), consume the
+`defineScopedRefMap(...)` factory return directly. Don't wrap for symmetry. When the first
+plugin-specific method lands, switch to the wrapper shape then.
 
-**Convention rule (PR1.5 retro):** L2 plugins instantiate substrate generic primitives via the
-wrapper-service pattern, not by re-exposing the factory directly. Two PR1.5 agents arrived at the
-migration independently and chose inconsistent shapes (one re-exported the factory return, one
-wrapped); the typecheck sweep caught the mismatch only because the rest of the package consumed the
-wrapper shape. This rule prevents the recurrence — any future generic-primitive consumer
-(chain-plugin registries, future per-stack maps) MUST wrap, not re-export.
+This is a relaxation from an earlier rule that mandated the wrapper even for 1:1 re-projections —
+the wrapper ceremony is real, and forcing it for plugins that don't yet need plugin-specific
+methods is over-engineering.
 
 ---
 
@@ -432,12 +459,16 @@ primitive at `primitives/artifact-publisher.ts` + `substrate/runtime/artifact-pu
 
 - Pattern: `cache → verify(cached) → produce → register`.
 - Use `LENIENT_RETRY_PROFILE` for chain reads (cross-cutting convention).
-- Do NOT write ad-hoc publish paths. Reference impls: `plugins/package/mode-local.ts:255+`,
-  `plugins/coin/mint.ts:223+`.
-- Typed seam for `ChainOperation<Produced>` is at
-  `substrate/runtime/artifact-publisher/chain-operation.ts` (`sui-tx` / `shell-oneshot` /
-  `register-only` variants); O1 closed in PR1-E. New produce bodies MUST express themselves as a
-  `ChainOperation` variant; do NOT re-derive the produce shape per-plugin.
+- The substrate enforces the cache→verify→produce→register pattern. The produce body itself is
+  plugin-owned — write the shape that fits the on-chain operation. Reference impls show typical
+  shapes: `plugins/package/mode-local.ts:255+` and `plugins/coin/mint.ts:223+` for `sui-tx`-style;
+  `plugins/walrus/deploy.ts` for `shell-oneshot`-style. Copy a reference shape when it fits;
+  deviate when it doesn't.
+
+An earlier `ChainOperation<Produced>` typed seam (`sui-tx` / `shell-oneshot` / `register-only`
+variants) was rejected and removed — six months of zero plugin adoption was the signal that the
+abstraction wasn't load-bearing. Don't reintroduce a typed produce-body union without a real
+multi-consumer driver.
 
 ---
 
@@ -533,9 +564,12 @@ Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
 
 - `Effect.withSpan(...)` + `Effect.annotateCurrentSpan(...)` are the only span-instrumentation entry
   points. No `console.log/warn/error` in production code (zero today — preserve this).
-- Span attribute keys MUST flow through `substrate/runtime/observability/spans.ts:SpanAttr`.
-  Free-form strings (`'sui.chain'`, `'walrus.committeeSize'`) are a divergence flagged for cleanup —
-  see Open slot O12.
+- Span attribute keys MUST flow through a namespace constant — substrate-owned engine-dimensional
+  keys live in `substrate/runtime/observability/spans.ts:SpanAttr`; plugin-domain keys live in
+  `src/plugins/<name>/spans.ts` (`WalletSpans`, `AccountSpans`, `CoinSpans`, `SuiSpans`, …). Cross-
+  plugin reads go through the source plugin's barrel (e.g. account's index.ts imports `SuiSpans`
+  from `../sui/index.ts`). Free-form string literals to `Effect.annotateCurrentSpan({...})` or
+  `Effect.annotateLogs({...})` are a violation — pin via the per-plugin namespace.
 - Log-level discipline: `logDebug` per-fetch / per-tick loops; `logInfo` lifecycle transitions;
   `logWarning` retryable failures; `logError` surfacing typed errors. Avoid raw `console.*`.
 - Log messages are stable event text; dynamic values go in fields / log annotations. Do not format
@@ -575,8 +609,32 @@ Named retry-policy profiles (consume rather than re-derive constants):
 - `DEPLOY_BIND_SOURCE_RETRY_PROFILE` — `{ attempts: 10, delayMs: 500 }` — Docker Desktop bind-mount visibility race.
 - `FAUCET_HTTP_RETRY_PROFILE` — `{ maxAttempts: 15, initialDelayMs: 500, backoffFactor: 1.5, wallClockBudgetMs: 90_000, perRequestDeadlineMs: 5_000 }` — cold-faucet POST retry.
 
-When a fifth class surfaces (e.g. JSON-RPC client — see backlog 47a), lift a fresh substrate primitive
-before the second plugin-side copy lands.
+When a fifth class surfaces, lift a fresh substrate primitive before the second plugin-side copy
+lands.
+
+Named retry profiles are for shapes reused across plugins. A one-off retry with no sibling reuse
+can stay inline — don't fabricate a profile name in `retry-policy.ts` for a single consumer.
+Reuse drives the lift, not aesthetic uniformity.
+
+**Sui chain access goes through `@mysten/sui`'s gRPC `core` surface.** Construct a `SuiGrpcClient`
+(see `plugins/sui/mode/local.ts`) and call `core.getObject` / `core.getTransaction` /
+`core.executeTransaction` / etc. Do NOT hand-roll JSON-RPC POSTs (`fetch` + `{ jsonrpc: '2.0', ... }`
+envelope + `{ result, error }` projection) — JSON-RPC is deprecated upstream and the gRPC core API
+already exposes typed `SuiClientTypes` responses. Owner discriminants in plugin-local schemas mirror
+`SuiClientTypes.ObjectOwner` (`AddressOwner` / `ObjectOwner` / `Shared` / `Immutable` /
+`ConsensusAddressOwner` / `Unknown`) — do not invent renamed variants.
+
+**Single sanctioned SDK client cast at plugin boundaries: `ClientWithCoreApi`** (re-exported from
+`plugins/sui/index.ts`; lives at `@mysten/sui/client` in 2.x). `SuiSdkShim.client` is typed as
+`ClientWithCoreApi` already, so passing `sui.sdk.client` to `Transaction.build({ client })` or to
+`client.core.*` calls needs NO cast. Do NOT cast to inline shapes like
+`as { core: { getCoinMetadata: ... } }`, `as { getObjects: ... }`, or
+`as Parameters<Transaction['build']>[0] extends ... ? C : never` — `ClientWithCoreApi` already
+covers them and TypeScript resolves the call through `client.core.*` directly. The lone exception
+is `SuiGrpcClient`-only surfaces (`ledgerService`, `transactionExecutionService`, `stateService`,
+etc.) reachable ONLY off the concrete gRPC class — those use `sdk.client as unknown as { ... }`
+and document inline why the surface isn't on `core` (see
+`plugins/deepbook/deploy.ts:ledgerObjectClient` for the canonical pattern).
 
 ---
 
@@ -668,13 +726,21 @@ diagnostic visibility. Reference: `cli/main.ts:tryDecodeEventRecord`.
 ## 21. Renderer projection — closed-field discipline
 
 `SubscribableState` (substrate/projection.ts:22-40) is a **closed** field set:
-`{ identity, cycle, rows, endpoints, errors, lastEvent, stackBuild }`. Adding a display-vocabulary
-field (`title`, `primary`, `extras`) is a TS error at the wiring site via
+`{ identity, cycle, rows, endpoints, accounts, packages, errors, lastEvent, stackBuild }`. Adding a
+display-vocabulary field (`title`, `primary`, `extras`) is a TS error at the wiring site via
 `__ProjectionFieldsClosed`. The TUI carries a second-layer guard `__TuiDisplayVocabClean`.
 
 - **Single source of truth: the code.** Update both the code AND the corresponding section in
   ARCHITECTURE.md in the same change — they must not split.
 - Logs live INSIDE rows as `row.logTail`, not as a top-level `logs` field.
+- Substrate projection EVENTS are name-blind. The only projection-shaped event is
+  `projection.updated` carrying `{kind: string, key: string, payload: unknown, at: number}`. The
+  reducer (`substrate/runtime/projection/update.ts`) dispatches on `event.kind` and decodes
+  `payload` per kind. New plugin-specific projection shapes contribute a decoder branch to the
+  reducer's `projection.updated` case — they do NOT add a new event variant. (Future lift: split
+  the per-kind decode into a kind→decoder registry so the reducer stays open to plugin-authored
+  contributions without a substrate edit; the closed `SubscribableState.{accounts, packages}`
+  field list rides along that lift.)
 
 ---
 
@@ -697,7 +763,8 @@ substrate):
 ## 23. Closing-the-loop opportunities
 
 Per `feedback_agents_report_cleanup_opportunities`: every dispatched agent ends with
-`## Opportunities noticed`. Existing rules consolidating notes from all 7 reviews:
+`## Opportunities noticed`. Genuine consolidation targets (the duplication is real, the lift
+shrinks total code, the abstraction doesn't cost more than it removes):
 
 - Three duplicate atomic-writes → one (§17).
 - Three duplicate Schema-decode patterns → one canonical (§20).
@@ -705,12 +772,17 @@ Per `feedback_agents_report_cleanup_opportunities`: every dispatched agent ends 
 - Three duplicate cold-start URL synthesisers (build-integrations) → one (§7, Open slot O7).
 - Three duplicate dapp-kit-slot declarations (build-integrations) → one (§7, Open slot O7).
 - Three duplicate `Endpoint` shape definitions → one.
-- Per-orchestrator `failPhase` helpers → one (Snapshot, Router, Codegen each have one).
-- Per-orchestrator "scope-bound register-with-finalizer" pattern (Ref + seqRef + finalizer) → one
-  `makeRegistry<T>()` substrate helper.
 
-When you SEE a duplicate, REPORT in the agent's Opportunities section. When you ADD code, do NOT
-create the N+1th copy.
+**The threshold for "lift to substrate" is:** the duplicate is genuinely the same, the duplication
+hurts readability or correctness, and the lift doesn't introduce more abstraction than it removes.
+Three copies of a 5-line block is cheaper than one substrate primitive with three slightly-
+different consumers. Per-orchestrator `failPhase` closures (snapshot has 4, ~8 LOC each) and
+per-orchestrator "scope-bound register-with-finalizer" patterns (3 sites × ~30 LOC) are
+local-readable; both were flagged historically but the lift would add a substrate primitive that
+each consumer parameterizes — strictly more code and more indirection.
+
+When you SEE a duplicate, REPORT in the agent's Opportunities section. When you ADD code, don't
+create the N+1th copy IF the lift is cheaper than the duplication — judge each case.
 
 ---
 
@@ -735,7 +807,9 @@ each.
 
 **Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):
 
-- ~~O1~~: `ChainOperation<Produced>` typed seam landed (PR1-E).
+- ~~O1~~: `ChainOperation<Produced>` typed seam landed (PR1-E), then REJECTED + deleted
+  2026-05-27 after zero plugin adoption — plugins use whatever produce body shape fits the
+  on-chain operation (STYLE_GUIDE §11 relaxed).
 - ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/mode-errors.ts` (PR1-E).
 - ~~O6~~: `CapabilitySinks` registry landed at `substrate/runtime/capability-sinks/`; supervisor harvest dispatches through it; plugin-author Layer composition can inject custom sinks (2026-05-26 Phase 0/6).
 - ~~O9~~: `ContainerRuntime.exec` on the contract with `ExecOptions` (PR1-D).

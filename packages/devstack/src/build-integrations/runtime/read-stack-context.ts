@@ -36,7 +36,7 @@ import {
 	type ManifestEnvelope,
 	type EndpointEntry,
 } from '../../substrate/manifest.ts';
-import { decodeUnknownSync } from '../../substrate/runtime/runtime-decode.ts';
+import { decodeUnknownSync, parseJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
 import { discoverManifestPath, type DiscoverManifestPathOptions } from './discover.ts';
 import { EndpointRegistry } from './endpoint-registry.ts';
 import { ManifestDiscoveryError, ManifestShapeError } from './errors.ts';
@@ -78,7 +78,10 @@ const resolveManifestPath = (opts: ReadStackContextOptions): string => {
 const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw);
+		parsed = parseJsonTextSync(raw, {
+			source: manifestPath,
+			mkError: (issue) => issue,
+		});
 	} catch (cause) {
 		throw new ManifestShapeError({
 			phase: 'parse',

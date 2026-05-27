@@ -110,7 +110,7 @@ const deps = (root: string, events: string[]): LocalKeygenDeps => ({
 	runtime: runtimeStub(events),
 	publisher: publisherStub(events),
 	signer,
-	sdk: { client: {} },
+	sdk: { client: {} as never },
 	chainProbe: {
 		get: () => Effect.succeed(null),
 	},

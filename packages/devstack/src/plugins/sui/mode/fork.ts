@@ -20,14 +20,17 @@ import type {
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
+import { stringifyCause } from '../stringify-cause.ts';
 import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SeedManifestMismatchError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
+import { SuiSpans } from '../spans.ts';
 import { wrapWithForkGuard } from '../fork-orchestration.ts';
 import { verifyForkImpersonationSender } from '../fork-transaction.ts';
 import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
@@ -105,7 +108,7 @@ export const bootForkMode = (
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_FORK_READY_TIMEOUT;
 
 		const status = yield* waitForForkReady(sdkClient, readyTimeout).pipe(
-			Effect.annotateLogs({ 'sui.container': handle.name }),
+			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
 		const chain = yield* sharedFetchChainId(sdkClient, {
 			span: 'devstack.plugin.sui.fork.fetchChainId',
@@ -147,7 +150,7 @@ export const bootForkMode = (
 			autoTickIntervalMs,
 		};
 	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.fork.boot', { attributes: { 'devstack.plugin': 'sui' } }),
+		Effect.withSpan('devstack.plugin.sui.fork.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
 	);
 
 export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
@@ -475,7 +478,7 @@ const makeForkAdminSurface = (sdkClient: SuiGrpcClient): ForkAdminSurface => ({
 			yield* verifyForkImpersonationSender(sender, tx);
 			const raw = yield* Effect.tryPromise({
 				try: () =>
-					sdkClient.executeTransaction({
+					sdkClient.core.executeTransaction({
 						transaction: tx,
 						signatures: [],
 						include: { effects: true, objectTypes: true },
@@ -547,12 +550,3 @@ const extractExecuteDigest = (raw: unknown): string | undefined => {
 const isFailedTransaction = (raw: unknown): boolean =>
 	(raw as { readonly $kind?: string }).$kind === 'FailedTransaction';
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

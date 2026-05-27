@@ -14,12 +14,16 @@ import type {
 } from '../../primitives/artifact-publisher.ts';
 import type { SealAnyError } from './errors.ts';
 import { acquireForkKnown, type ForkKnownInputs } from './mode/fork-known.ts';
-import { acquireLive, type LiveModeInputs } from './mode/live.ts';
+import { acquireLive } from './mode/live.ts';
 import type { SealKnownResolved } from './registry-publish.ts';
 
 /** Known-mode discriminator — live + fork-known only. */
 export type SealMode =
-	| ({ readonly mode: 'live' } & LiveModeInputs)
+	| {
+			readonly mode: 'live';
+			readonly name: string;
+			readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+		}
 	| ({ readonly mode: 'fork-known' } & ForkKnownInputs);
 
 export type SealKnownBootResult = SealKnownResolved;

@@ -41,6 +41,7 @@ import { Effect } from 'effect';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
 import { redactToken } from './pairing.ts';
+import { WalletSpans } from './spans.ts';
 
 // ----------------------------------------------------------------------
 // Emitted shape
@@ -72,7 +73,6 @@ export interface DappKitConfigBindings {
 		readonly accounts: string;
 		readonly signTransaction: string;
 		readonly signPersonalMessage: string;
-		readonly execute: string;
 	};
 }
 
@@ -107,8 +107,8 @@ export const makeWalletCodegen = (
 			// Span annotation logs ONLY the redacted form — defense-in-
 			// depth so any debug-mode span dump doesn't leak the token.
 			yield* Effect.annotateCurrentSpan({
-				'wallet.codegen.pairUrl': redactToken(resolved.pairUrl),
-				'wallet.codegen.walletUrl': resolved.walletUrl,
+				[WalletSpans.codegenPairUrl]: redactToken(resolved.pairUrl),
+				[WalletSpans.codegenWalletUrl]: resolved.walletUrl,
 			});
 			ctx.exportConst('dappKitConfig', resolved);
 			return ctx.done();

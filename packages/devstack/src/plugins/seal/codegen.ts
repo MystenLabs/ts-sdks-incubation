@@ -29,9 +29,8 @@ export interface SealBindings {
 	readonly objectId: string;
 	readonly keyServerUrl: string;
 	readonly serverConfigs: ReadonlyArray<SealKeyServerEntry>;
-	/** Mode marker so the bindings file knows whether to surface the
-	 *  admin rotate Effect-construction shim (distilled-doc invariant
-	 *  #15 — only local-keygen mode produces a manager). */
+	/** Mode marker for consumers that branch between local-keygen and
+	 *  known-deployment surfaces. */
 	readonly mode: 'local-keygen' | 'live' | 'fork-known';
 }
 

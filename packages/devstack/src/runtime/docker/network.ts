@@ -38,7 +38,12 @@ import {
 	ownershipMismatchDetail,
 	renderNetworkLabels,
 } from './labels.ts';
-import { isAlreadyInNetworkStderr, isDaemonUnreachableStderr, wrapNetworkError } from './wrap.ts';
+import {
+	isAlreadyInNetworkStderr,
+	isDaemonUnreachableStderr,
+	isMissingNetworkStderr,
+	wrapNetworkError,
+} from './wrap.ts';
 
 /** The cross-host shared network name. Architecture-mandated single
  *  bridge per host. Callers can target other networks (per-stack) but
@@ -73,9 +78,6 @@ const NetworkInspectSchema = Schema.Struct({
 	Labels: Schema.optional(Schema.Unknown),
 });
 
-const isNoSuchNetworkStderr = (stderr: string): boolean =>
-	/no such network|network .* not found|not found/i.test(stderr);
-
 const inspectNetwork = (
 	name: string,
 ): Effect.Effect<NetworkInspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -84,7 +86,7 @@ const inspectNetwork = (
 			Effect.mapError(wrapNetworkError('inspect', name)),
 		);
 		if (res.exitCode !== 0) {
-			if (isNoSuchNetworkStderr(res.stderr)) return null;
+			if (isMissingNetworkStderr(res.stderr)) return null;
 			if (isDaemonUnreachableStderr(res.stderr)) {
 				return yield* Effect.fail(
 					new DaemonUnreachable({
@@ -185,14 +187,15 @@ export const ensureNetwork = (
 
 /** Idempotent `docker network connect`. Treats "already exists in
  *  network" stderr as success — architecture mandates idempotency on
- *  this verb. */
+ *  this verb. Multiple `--alias` flags register additional DNS names
+ *  siblings can dial under the network. */
 export const connect = (
 	containerNameOrId: string,
 	network: string,
-	alias?: string,
+	aliases?: ReadonlyArray<string>,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const aliasArgs = alias ? ['--alias', alias] : [];
+		const aliasArgs = (aliases ?? []).flatMap((alias) => ['--alias', alias]);
 		const res = yield* dockerRunOk('network', [
 			'connect',
 			...aliasArgs,

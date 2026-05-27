@@ -70,7 +70,11 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import { CodegenPathsService, type CodegenPaths } from './paths.ts';
+import {
+	CodegenPathsService,
+	assertRelativeCodegenOutputPath,
+	type CodegenPaths,
+} from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
@@ -255,11 +259,7 @@ const rebasePaths = (original: CodegenPaths, stagingDir: string): CodegenPaths =
 		gitignoreFile: rebase(original.gitignoreFile),
 		bindingsDir: rebase(original.bindingsDir),
 		resolve: (outputPath) => {
-			if (outputPath.includes('..') || outputPath.startsWith('/')) {
-				throw new Error(
-					`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
-				);
-			}
+			assertRelativeCodegenOutputPath(outputPath);
 			return `${stripped}${sep}${outputPath}`;
 		},
 		resolveBindingsPackage: (packageName) => `${rebase(original.bindingsDir)}${sep}${packageName}`,
@@ -338,13 +338,13 @@ const runEmitCycleInner = (
 				exports: exported,
 				imports: emission.imports,
 			});
-			if (rendered instanceof Error) {
-				return yield* Effect.fail(rendered as CodegenError);
+			if (!rendered.ok) {
+				return yield* Effect.fail(rendered.error);
 			}
 			const abs = paths.resolve(decl.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
-				content: rendered,
+				content: rendered.text,
 				mode: modeFor(decl),
 				parentMode: parentModeFor(abs),
 			});
@@ -368,13 +368,13 @@ const runEmitCycleInner = (
 				sensitive: false,
 				exports: aggregate.exports,
 			});
-			if (rendered instanceof Error) {
-				return yield* Effect.fail(rendered as CodegenError);
+			if (!rendered.ok) {
+				return yield* Effect.fail(rendered.error);
 			}
 			const abs = paths.resolve(aggregate.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
-				content: rendered,
+				content: rendered.text,
 				mode: 0o644,
 				parentMode: parentModeFor(abs),
 			});

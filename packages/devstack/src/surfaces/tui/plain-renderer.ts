@@ -25,7 +25,11 @@ import { Effect, Stream, SubscriptionRef } from 'effect';
 
 import type { Renderer } from '../../contracts/renderer.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
-import type { SubscribableState } from '../../substrate/projection.ts';
+import type {
+	AccountProjection,
+	PackageProjection,
+	SubscribableState,
+} from '../../substrate/projection.ts';
 import {
 	accountLine,
 	endpointLine,
@@ -160,31 +164,37 @@ const payloadFor = (event: EngineEvent): string => {
 				url: event.endpoint.url,
 				wire: event.endpoint.wireProtocol,
 			});
-		case 'account.updated':
-			return kv({
-				key: event.account.key,
-				row: event.account.rowKey ?? '',
-				name: event.account.name,
-				address: event.account.address ?? '',
-				scheme: event.account.scheme ?? '',
-				source: event.account.source ?? '',
-				funding: event.account.funding.status,
-				fundingEntries: (event.account.funding.entries ?? [])
-					.map((entry) => `${entry.coin}:${entry.amount}:${entry.status}`)
-					.join(','),
-				requestedMist: event.account.funding.requestedMist ?? '',
-				balanceMist: event.account.funding.balanceMist ?? '',
-			});
-		case 'package.updated':
-			return kv({
-				key: event.package.key,
-				row: event.package.rowKey ?? '',
-				name: event.package.name,
-				kind: event.package.kind,
-				packageId: event.package.packageId,
-				upgradeCapId: event.package.upgradeCapId ?? '',
-				mvr: event.package.mvrPlaceholder,
-			});
+		case 'projection.updated':
+			if (event.kind === 'account') {
+				const account = event.payload as AccountProjection;
+				return kv({
+					key: account.key,
+					row: account.rowKey ?? '',
+					name: account.name,
+					address: account.address ?? '',
+					scheme: account.scheme ?? '',
+					source: account.source ?? '',
+					funding: account.funding.status,
+					fundingEntries: (account.funding.entries ?? [])
+						.map((entry) => `${entry.coin}:${entry.amount}:${entry.status}`)
+						.join(','),
+					requestedMist: account.funding.requestedMist ?? '',
+					balanceMist: account.funding.balanceMist ?? '',
+				});
+			}
+			if (event.kind === 'package') {
+				const pkg = event.payload as PackageProjection;
+				return kv({
+					key: pkg.key,
+					row: pkg.rowKey ?? '',
+					name: pkg.name,
+					kind: pkg.kind,
+					packageId: pkg.packageId,
+					upgradeCapId: pkg.upgradeCapId ?? '',
+					mvr: pkg.mvrPlaceholder,
+				});
+			}
+			return kv({ kind: event.kind, key: event.key });
 		case 'endpoint.released':
 			return kv({ key: event.endpointKey });
 		case 'strategy.registered':
@@ -291,12 +301,12 @@ const emitInitialSweep = (state: SubscribableState): Effect.Effect<void> =>
 		}
 		for (const account of state.accounts) {
 			yield* writeStderrLine(
-				`${isoTimestamp(account.updatedAt)} INFO account.updated ${accountLine(account)}`,
+				`${isoTimestamp(account.updatedAt)} INFO projection.updated[account] ${accountLine(account)}`,
 			);
 		}
 		for (const pkg of state.packages) {
 			yield* writeStderrLine(
-				`${isoTimestamp(pkg.updatedAt)} INFO package.updated ${packageLine(pkg)}`,
+				`${isoTimestamp(pkg.updatedAt)} INFO projection.updated[package] ${packageLine(pkg)}`,
 			);
 		}
 	});

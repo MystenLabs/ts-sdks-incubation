@@ -11,6 +11,18 @@
 
 import { Context, Effect, Layer, Path } from 'effect';
 
+/** Guard plugin-authored `CodegenableDecl.outputPath` against `..`
+ *  traversal and absolute paths. Throws on violation — defense-in-depth
+ *  for the file-layout invariants. Shared by `layerCodegenPaths` and
+ *  `rebasePaths` so the two CodegenPaths sites can't drift. */
+export const assertRelativeCodegenOutputPath = (outputPath: string): void => {
+	if (outputPath.includes('..') || outputPath.startsWith('/')) {
+		throw new Error(
+			`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
+		);
+	}
+};
+
 /**
  * Codegen output root — the directory codegen owns and overwrites.
  * Pinned at boot time from the user's `defineDevstack` options
@@ -75,15 +87,7 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 				: root.outputDir;
 			const bindingsDir = path.join(outputDir, 'bindings');
 			const resolve = (outputPath: string): string => {
-				// Defense-in-depth: refuse `..` traversal so an emitter
-				// can't write outside its declared output dir. The
-				// declared `CodegenableDecl.outputPath` is plugin-authored
-				// and trusted but the check costs nothing.
-				if (outputPath.includes('..') || outputPath.startsWith('/')) {
-					throw new Error(
-						`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
-					);
-				}
+				assertRelativeCodegenOutputPath(outputPath);
 				return path.join(outputDir, outputPath);
 			};
 			const resolveBindingsPackage = (packageName: string): string =>

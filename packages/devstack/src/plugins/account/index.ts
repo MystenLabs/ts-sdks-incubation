@@ -42,9 +42,10 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { suiResource } from '../sui/index.ts';
+import { suiResource, SuiSpans } from '../sui/index.ts';
+
+import { AccountSpans } from './spans.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS } from './errors.ts';
@@ -267,10 +268,10 @@ export const account = <const N extends string, const Funding extends AccountFun
 					emitAutoPromotionEvent: () =>
 						Effect.logWarning('account funding auto-promoted for fork mode').pipe(
 							Effect.annotateLogs({
-								[SpanAttr.accountName]: name,
-								[SpanAttr.accountFundingFrom]: 'faucet',
-								[SpanAttr.accountFundingTo]: 'pay-from-seed-via-impersonate',
-								[SpanAttr.suiMode]: 'fork',
+								[AccountSpans.name]: name,
+								[AccountSpans.fundingFrom]: 'faucet',
+								[AccountSpans.fundingTo]: 'pay-from-seed-via-impersonate',
+								[SuiSpans.mode]: 'fork',
 							}),
 						),
 					projectedFunding,
@@ -348,7 +349,14 @@ const fundingEntryKey = (entry: ProjectedFundingEntry): string =>
 // Re-exports for advanced callers (Coin, Wallet, Package)
 // ---------------------------------------------------------------------------
 
-export type { AccountOptions, ResolvedAccountOptions, AccountValue, TxResult } from './service.ts';
+export type {
+	AccountOptions,
+	ResolvedAccountOptions,
+	AccountValue,
+	FailedTxResult,
+	SignAndExecuteResult,
+	TxResult,
+} from './service.ts';
 export type {
 	AccountError,
 	AccountAcquireError,
@@ -382,3 +390,4 @@ export type {
 export { accountRegistryKey } from './registry.ts';
 export type { SyntheticImpersonationSigner } from './variants/impersonate.ts';
 export type { SignatureScheme, ResolvedKeypair } from './keypair.ts';
+export { AccountSpans } from './spans.ts';

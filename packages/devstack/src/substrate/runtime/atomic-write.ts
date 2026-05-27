@@ -84,32 +84,26 @@ export const atomicWriteFile = (
 		yield* fs
 			.makeDirectory(dirname(path), { recursive: true, mode: parentMode })
 			.pipe(Effect.catch(failStage(path, 'mkdir-parent')));
-		// 2-4. Open tempfile with `wx` (O_EXCL), write, fsync, all
-		//      inside a Scope so the file handle closes on any path.
-		yield* Effect.scoped(
-			Effect.gen(function* () {
-				const file = yield* fs
-					.open(tmp, { flag: 'wx', mode })
-					.pipe(Effect.catch(failStage(path, 'open-temp')));
-				yield* file.writeAll(bytes).pipe(Effect.catch(failStage(path, 'write')));
-				// fsync — durability boundary. Without this the
-				// rename can land but bytes can stay in the page
-				// cache through a power loss.
-				yield* file.sync.pipe(Effect.catch(failStage(path, 'fsync')));
-			}),
-		);
-		// 5. Atomic rename. On failure unlink the tempfile so we
-		//    don't leak; unlink failure is ignored (the original
-		//    rename failure is the one that matters).
-		yield* fs
-			.rename(tmp, path)
-			.pipe(
-				Effect.catch((cause) =>
-					fs
-						.remove(tmp, { force: true })
-						.pipe(Effect.ignore, Effect.andThen(failStage(path, 'rename')(cause))),
-				),
+		// 2-5. Write + rename, with unconditional tempfile cleanup on
+		//      ANY failure path (open-temp / write / fsync / rename).
+		//      `force: true` makes the unlink a no-op if the file
+		//      doesn't exist (open-temp failed early, or rename moved
+		//      it to its final home).
+		yield* Effect.gen(function* () {
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const file = yield* fs
+						.open(tmp, { flag: 'wx', mode })
+						.pipe(Effect.catch(failStage(path, 'open-temp')));
+					yield* file.writeAll(bytes).pipe(Effect.catch(failStage(path, 'write')));
+					// fsync — durability boundary. Without this the
+					// rename can land but bytes can stay in the page
+					// cache through a power loss.
+					yield* file.sync.pipe(Effect.catch(failStage(path, 'fsync')));
+				}),
 			);
+			yield* fs.rename(tmp, path).pipe(Effect.catch(failStage(path, 'rename')));
+		}).pipe(Effect.onError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)));
 	}).pipe(Effect.withSpan('substrate.atomicWriteFile', { attributes: { path } }));
 
 /**
@@ -161,26 +155,29 @@ export const atomicWriteFileSync = (
 	// close in one call but does NOT fsync; do it manually so we
 	// preserve the durability boundary the Effect surface has.
 	writeFileSync(tmp, bytes, { flag: 'wx', mode });
-	// fsync — open the file just to fsync the bytes through the page
-	// cache. `writeFileSync` already closed the original fd.
-	let fd: number | null = null;
+	// From here the tempfile EXISTS — every failure path must unlink.
+	// `renamed` lets the finally tell rename-success from any throw
+	// (fsync error, rename error). Best-effort: a tempfile-unlink
+	// failure does NOT mask the original error.
+	let renamed = false;
 	try {
-		fd = openSync(tmp, 'r');
-		fsyncSync(fd);
-	} finally {
-		if (fd !== null) closeSync(fd);
-	}
-	try {
-		renameSync(tmp, path);
-	} catch (cause) {
-		// Best-effort tempfile cleanup; the original rename failure is
-		// the one we re-throw to the caller.
+		let fd: number | null = null;
 		try {
-			unlinkSync(tmp);
-		} catch {
-			// ignore
+			fd = openSync(tmp, 'r');
+			fsyncSync(fd);
+		} finally {
+			if (fd !== null) closeSync(fd);
 		}
-		throw cause;
+		renameSync(tmp, path);
+		renamed = true;
+	} finally {
+		if (!renamed) {
+			try {
+				unlinkSync(tmp);
+			} catch {
+				// ignore
+			}
+		}
 	}
 };
 

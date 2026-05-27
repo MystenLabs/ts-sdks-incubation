@@ -1,5 +1,6 @@
 import { Effect, FileSystem, Schema } from 'effect';
 
+import { decodeUnknown, parseJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import {
 	StateDocument as StateDocumentSchema,
 	type StateDocument,
@@ -41,21 +42,26 @@ export const readSnapshotStateDocument = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch((cause) => fail('read', `read ${path} failed`, path, cause)));
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: (cause) =>
+		const raw = yield* parseJsonText(text, {
+			source: path,
+			mkError: (issue) =>
 				new SnapshotStateDocumentError({
 					kind: 'parse',
 					detail: `${path} is not valid JSON`,
 					path,
-					cause,
+					cause: issue.cause,
 				}),
 		});
-		return yield* Schema.decodeUnknownEffect(StateDocumentSchema)(raw).pipe(
-			Effect.catch((cause) =>
-				fail('decode', `${path} failed StateDocument schema decode`, path, cause),
-			),
-		);
+		return yield* decodeUnknown(StateDocumentSchema, raw, {
+			source: path,
+			mkError: (issue) =>
+				new SnapshotStateDocumentError({
+					kind: 'decode',
+					detail: `${path} failed StateDocument schema decode`,
+					path,
+					cause: issue.cause,
+				}),
+		});
 	});
 
 export const writeSnapshotStateDocument = (

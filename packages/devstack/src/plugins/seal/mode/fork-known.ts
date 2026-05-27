@@ -21,7 +21,7 @@
 
 import { Effect } from 'effect';
 
-import { acquireLive, type KnownNetwork } from './live.ts';
+import { acquireLive, validateLiveInputs, type KnownNetwork } from './live.ts';
 import { sealError, type SealError } from '../errors.ts';
 import type { SealKnownResolved } from '../registry-publish.ts';
 
@@ -53,24 +53,26 @@ export interface ForkKnownInputs {
 // Mode acquire
 // ---------------------------------------------------------------------------
 
-/** Acquire body for the fork-known mode. Delegates to live mode
- *  with the resolved network. */
+/** Acquire body for the fork-known mode. Validates upstream-derived
+ *  inputs and delegates the read-side projection to live mode. */
 export const acquireForkKnown = (
 	inputs: ForkKnownInputs,
 ): Effect.Effect<SealKnownResolved, SealError> =>
-	acquireLive({
-		name: inputs.name,
-		network: resolveDeploymentNetwork(inputs.upstream),
-		objectId: inputs.objectId,
-		keyServerUrl: inputs.keyServerUrl,
-	}).pipe(
-		// Re-tag the error so the cause walker can attribute fork-mode
-		// failures distinctly from live-mode failures.
-		Effect.mapError((err) =>
-			sealError('seal', {
-				name: inputs.name,
-				message: `seal.fork-known (upstream=${inputs.upstream}): ${err.message}`,
-				cause: err,
-			}),
-		),
-	);
+	Effect.gen(function* () {
+		const validated = yield* Effect.try({
+			try: () =>
+				validateLiveInputs({
+					name: inputs.name,
+					network: resolveDeploymentNetwork(inputs.upstream),
+					objectId: inputs.objectId,
+					keyServerUrl: inputs.keyServerUrl,
+				}),
+			catch: (err): SealError =>
+				sealError('seal', {
+					name: inputs.name,
+					message: `seal.fork-known (upstream=${inputs.upstream}): ${err instanceof Error ? err.message : String(err)}`,
+					cause: err,
+				}),
+		});
+		return yield* acquireLive({ name: inputs.name, resolved: validated });
+	});

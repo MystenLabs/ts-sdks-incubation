@@ -39,7 +39,13 @@ import {
 	ImageSaveFailed,
 	ImageTagFailed,
 } from './errors.ts';
-import { isImageNotFoundStderr, wrapBuildError, wrapGeneric, wrapPullError } from './wrap.ts';
+import {
+	isImageNotFoundStderr,
+	isMissingImageStderr,
+	wrapBuildError,
+	wrapGeneric,
+	wrapPullError,
+} from './wrap.ts';
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -54,6 +60,9 @@ const cleanupSnapshotTempTag = (
 ): Effect.Effect<void, never, DockerHost | DockerSpawner> => {
 	if (!isSnapshotTempTag(ref)) return Effect.void;
 	return dockerRunOk('image', ['rm', ref]).pipe(
+		Effect.tapCause((cause) =>
+			Effect.logDebug('docker image rm (snapshot temp tag) failed', { ref, cause }),
+		),
 		Effect.catch(() => Effect.void),
 		Effect.asVoid,
 	);
@@ -214,9 +223,6 @@ export const tagImage = (
 			yield* cleanupSnapshotTempTag(src);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.image.tag'));
-
-const isMissingImageStderr = (stderr: string): boolean =>
-	/no such image|not found|reference does not exist/i.test(stderr);
 
 export const removeImage = (
 	ref: string,
@@ -495,7 +501,11 @@ export const ensureImageCached = (
 			.lookup({ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash })
 			.pipe(
 				// Cache-side failures collapse to MISS — the contract is
-				// best-effort. We still build.
+				// best-effort. We still build, but logDebug so the rare
+				// cache-read failure is visible.
+				Effect.tapCause((cause) =>
+					Effect.logDebug('image cache lookup failed; rebuilding', { key, cause }),
+				),
 				Effect.catch(() => Effect.succeed(null)),
 			);
 		if (hit !== null) {
@@ -517,7 +527,12 @@ export const ensureImageCached = (
 					{ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash },
 					encodeDigest(onHost),
 				)
-				.pipe(Effect.catch(() => Effect.void));
+				.pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('image cache write (on-host hit) failed', { key, cause }),
+					),
+					Effect.catch(() => Effect.void),
+				);
 			return onHost;
 		}
 		const digest = yield* build(opts);
@@ -526,7 +541,12 @@ export const ensureImageCached = (
 				{ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash },
 				encodeDigest(digest),
 			)
-			.pipe(Effect.catch(() => Effect.void));
+			.pipe(
+				Effect.tapCause((cause) =>
+					Effect.logDebug('image cache write (post-build) failed', { key, cause }),
+				),
+				Effect.catch(() => Effect.void),
+			);
 		return digest;
 	}).pipe(Effect.withSpan('runtime.docker.image.ensureCached'));
 

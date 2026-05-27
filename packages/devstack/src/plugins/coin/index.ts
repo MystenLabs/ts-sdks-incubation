@@ -82,27 +82,18 @@ const packageNameFromMember = <Pkg extends PackageMember>(pkg: Pkg): PackageName
 // and the opaque `client` (`Transaction.build({client})` in the mint
 // produce body).
 //
-// `sui.sdk.core.getObject` is on the typed `SuiSdkShim`; `getCoinMetadata`
-// lives on the underlying `SuiGrpcClient` reached via the opaque
-// `sui.sdk.client`. We project both onto a single `MetadataSdkShim &
-// MintSdkShim` here at the boundary — the cast mirrors STYLE_GUIDE §14
-// (localized cast through an opaque SDK surface), kept narrow to one
-// method projection.
+// `sui.sdk.core.getObject` lives on the typed `SuiSdkShim` directly;
+// `getCoinMetadata` lives on the underlying `ClientWithCoreApi['core']`
+// reached via `sui.sdk.client.core`. Project both onto the combined
+// `MetadataSdkShim & MintSdkShim` here at the boundary.
 
-const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => {
-	const grpcClient = sui.sdk.client as {
-		readonly core: {
-			readonly getCoinMetadata: (args: { readonly coinType: string }) => Promise<unknown>;
-		};
-	};
-	return {
-		core: {
-			getObject: sui.sdk.core.getObject,
-			getCoinMetadata: (args) => grpcClient.core.getCoinMetadata(args),
-		},
-		client: sui.sdk.client,
-	};
-};
+const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
+	core: {
+		getObject: sui.sdk.core.getObject,
+		getCoinMetadata: (args) => sui.sdk.client.core.getCoinMetadata(args),
+	},
+	client: sui.sdk.client,
+});
 
 // ---------------------------------------------------------------------------
 // Per-form capability builders — dynamic (POST-acquire). Receive the
@@ -343,3 +334,5 @@ export { performMint, MintedCoinVerifyShape, mintTxError, mintParseError } from 
 
 export type { CoinError, CoinPhase } from './errors.ts';
 export { coinError, COIN_ERROR_TAGS } from './errors.ts';
+
+export { CoinSpans } from './spans.ts';

@@ -64,6 +64,7 @@ import type {
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
 import {
 	DEFAULT_SUI_CLI_VERSION,
@@ -71,7 +72,9 @@ import {
 } from '../../../substrate/runtime/sui-move-build/index.ts';
 import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import {
 	SUI_FAUCET_ENTRYPOINT_PORT,
 	SUI_FAUCET_ENDPOINT_NAME,
@@ -188,7 +191,7 @@ export const bootLocalMode = (
 
 		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
 		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ 'sui.container': handle.name }),
+			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
 
 		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
@@ -213,7 +216,6 @@ export const bootLocalMode = (
 			sdkClient,
 			chain,
 			rpcUrl,
-			sdkRpcUrl: directRpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
 			graphqlUrl,
@@ -239,7 +241,7 @@ export const bootLocalMode = (
 			clockAdvancer: noopClockAdvancer,
 		};
 	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { 'devstack.plugin': 'sui' } }),
+		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
 	);
 
 // ---------------------------------------------------------------------------
@@ -681,12 +683,3 @@ const routedSuiUrl = (
 		),
 	);
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

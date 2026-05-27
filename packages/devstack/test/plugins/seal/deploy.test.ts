@@ -291,7 +291,7 @@ describe('seal deploy publish helpers', () => {
 						chain: chainId('localnet'),
 						movePackagePath: sourcePath,
 						signer: signerNotReached,
-						sdk: { client: {} },
+						sdk: { client: {} as never },
 						runtime,
 						buildImage: { digest: 'sha256:sui' },
 						chainProbe: chainProbeNotReached,

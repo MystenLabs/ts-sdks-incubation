@@ -36,6 +36,7 @@ import {
 	type DatabaseCreateFailed,
 	type PostgresConnectionTimeout,
 } from './errors.ts';
+import { PostgresSpans } from './spans.ts';
 import {
 	ProbeTimeoutError,
 	exitCodeProbeResult,
@@ -101,7 +102,10 @@ export const awaitReady = (
 				}),
 			),
 			Effect.withSpan('postgres.awaitReady', {
-				attributes: { 'postgres.database': database, 'postgres.timeoutMs': timeoutMs },
+				attributes: {
+					[PostgresSpans.database]: database,
+					[PostgresSpans.timeoutMs]: timeoutMs,
+				},
 			}),
 		);
 	});
@@ -165,7 +169,7 @@ export const ensureDatabase = (
 		}
 	}).pipe(
 		Effect.withSpan('postgres.ensureDatabase', {
-			attributes: { 'postgres.database': dbName },
+			attributes: { [PostgresSpans.database]: dbName },
 		}),
 	);
 

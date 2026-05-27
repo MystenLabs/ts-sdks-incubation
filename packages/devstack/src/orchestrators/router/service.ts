@@ -568,11 +568,17 @@ const removeDispatchFile = (
 
 const waitForPublicRouteReadiness = (
 	cfg: RouterConfigShape,
+	decl: RoutableDecl,
 	endpoint: EndpointUrl,
 	resolved: ResolvedRoute,
 ): Effect.Effect<void, RouteReadinessProbeFailed> => {
 	const options = cfg.routeReadinessProbe;
-	if (options?.enabled !== true || cfg.disabled || resolved.wireProtocol === 'tcp') {
+	if (
+		options?.enabled !== true ||
+		cfg.disabled ||
+		resolved.wireProtocol === 'tcp' ||
+		decl.readiness === 'deferred'
+	) {
 		return Effect.void;
 	}
 	const timeoutMs = options.timeoutMs ?? DEFAULT_ROUTE_READINESS_TIMEOUT_MS;
@@ -865,7 +871,7 @@ export const layerRouterService: Layer.Layer<
 				let publishOwnership: RoutePublishOwnership;
 				if (cfg.disabled) {
 					publishOwnership = yield* publishRouteFile;
-					yield* waitForPublicRouteReadiness(cfg, endpoint, resolved);
+					yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved);
 				} else {
 					// The dispatch lock MUST be held across both the file write
 					// AND the readiness probe — releasing between the two lets
@@ -887,11 +893,9 @@ export const layerRouterService: Layer.Layer<
 								),
 							);
 							const ownership = yield* publishRouteFile;
-							yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
+							yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved).pipe(
 								Effect.onError(() =>
-									ownership !== 'owned'
-										? Effect.void
-										: removeDispatchFile(fs, profile, resolved),
+									ownership !== 'owned' ? Effect.void : removeDispatchFile(fs, profile, resolved),
 								),
 							);
 							return ownership;
@@ -903,7 +907,10 @@ export const layerRouterService: Layer.Layer<
 
 					// Scope finalizer — remove the file + drop from applied
 					// when the caller's scope closes. Best-effort: "already
-					// gone" is fine per distilled-doc.
+					// gone" is fine, but lock contention / IO failures surface
+					// via logWarning so leaked dispatch files don't go silent
+					// (STYLE_GUIDE §18 — `Effect.ignore` on `acquireStackLock`
+					// without a tap is forbidden).
 					yield* Effect.addFinalizer(() =>
 						Effect.gen(function* () {
 							if (publishOwnership === 'owned') {
@@ -912,7 +919,15 @@ export const layerRouterService: Layer.Layer<
 										yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS);
 										yield* removeDispatchFile(fs, profile, resolved);
 									}),
-								).pipe(Effect.ignore);
+								).pipe(
+									Effect.tapCause((cause) =>
+										Effect.logWarning('router scope-close cleanup failed', {
+											dispatchFileId: resolved.dispatchFileId,
+											cause,
+										}),
+									),
+									Effect.ignore,
+								);
 							}
 							yield* SubscriptionRef.update(applied, (arr) =>
 								arr.filter((r) => r.dispatchFileId !== resolved.dispatchFileId),

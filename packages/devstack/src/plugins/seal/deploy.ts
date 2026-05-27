@@ -17,11 +17,7 @@ import type {
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
-import {
-	executeSuiTx,
-	type ExecutedReceipt,
-	type SuiExecuteClient,
-} from '../../substrate/runtime/sui-execute/index.ts';
+import { executeSuiTx, type ExecutedReceipt } from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	hashMoveSources,
 	runMoveBuild,
@@ -30,15 +26,17 @@ import {
 	type MoveBuildError,
 } from '../../substrate/runtime/sui-move-build/index.ts';
 import type { AccountValue } from '../account/index.ts';
+import type { ClientWithCoreApi } from '../sui/index.ts';
 import { sealError, type SealError } from './errors.ts';
 import { decodeHex } from './keygen.ts';
+import { SealSpans } from './spans.ts';
 
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
 export type SealObjectProbeKey = { readonly kind: 'object'; readonly objectId: string };
 
 export interface SealSuiSdk {
-	readonly client: unknown;
+	readonly client: ClientWithCoreApi;
 }
 
 const sealProduceFailed = (op: 'publish' | 'register', err: SealError): ArtifactPublishError => ({
@@ -187,7 +185,7 @@ export const runSealPublishTransaction = (
 		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
 
 		const receipt = yield* executeSuiTx({
-			client: inputs.sdk.client as SuiExecuteClient,
+			client: inputs.sdk.client,
 			signer: inputs.signer,
 			build: async () => {
 				const tx = new Transaction();
@@ -196,13 +194,7 @@ export const runSealPublishTransaction = (
 					buildOutput,
 					inputs.signer.address,
 				);
-				return tx.build({
-					client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
-						| { client?: infer C }
-						| undefined
-						? C
-						: never,
-				});
+				return tx.build({ client: inputs.sdk.client });
 			},
 		}).pipe(
 			Effect.mapError((cause) =>
@@ -220,8 +212,8 @@ export const runSealPublishTransaction = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.publish.suiTx', {
 			attributes: {
-				'seal.name': inputs.name,
-				'seal.signer': inputs.signer.address,
+				[SealSpans.name]: inputs.name,
+				[SealSpans.signer]: inputs.signer.address,
 			},
 		}),
 	);
@@ -255,7 +247,7 @@ export const publishSealPackage = (
 		return { packageId: cached.packageId };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.publish', {
-			attributes: { 'seal.name': inputs.name, 'seal.chain': inputs.chain },
+			attributes: { [SealSpans.name]: inputs.name, [SealSpans.chain]: inputs.chain },
 		}),
 	);
 
@@ -400,18 +392,12 @@ export const runRegisterKeyServerTransaction = (
 ): Effect.Effect<SealKeyServerCached, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const receipt = yield* executeSuiTx({
-			client: sdk.client as SuiExecuteClient,
+			client: sdk.client,
 			signer,
 			build: async () => {
 				const tx = new Transaction();
 				buildRegisterKeyServerMoveCall(registerTransactionBuilder(tx), inputs, signer.address);
-				return tx.build({
-					client: sdk.client as Parameters<typeof tx.build>[0] extends
-						| { client?: infer C }
-						| undefined
-						? C
-						: never,
-				});
+				return tx.build({ client: sdk.client });
 			},
 		}).pipe(
 			Effect.mapError((cause) =>
@@ -428,7 +414,7 @@ export const runRegisterKeyServerTransaction = (
 		return yield* projectRegisterKeyServerReceipt(inputs.name, receipt);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.register.suiTx', {
-			attributes: { 'seal.name': inputs.name, 'seal.url': inputs.keyServerUrl },
+			attributes: { [SealSpans.name]: inputs.name, [SealSpans.url]: inputs.keyServerUrl },
 		}),
 	);
 
@@ -457,6 +443,6 @@ export const registerKeyServer = (
 		return { objectId: cached.objectId };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.register', {
-			attributes: { 'seal.name': inputs.name, 'seal.url': inputs.keyServerUrl },
+			attributes: { [SealSpans.name]: inputs.name, [SealSpans.url]: inputs.keyServerUrl },
 		}),
 	);

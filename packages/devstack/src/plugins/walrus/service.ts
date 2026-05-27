@@ -45,7 +45,6 @@ import {
 	type LocalClusterDeps,
 	type ResolvedLocalClusterOptions,
 } from './mode/local-cluster.ts';
-import { refuseLocalClusterOnFork } from './mode/fork-refusal.ts';
 
 /** Mode discriminator. Internal — the barrel constructs ONE of these
  *  per composed walrus instance and dispatches here. */
@@ -79,6 +78,3 @@ export const bootWalrusService = (
 	}
 };
 
-// Re-export so callers (the barrel's `walrus()` factory's fork
-// branch) can invoke the refusal directly without an extra import.
-export { refuseLocalClusterOnFork };

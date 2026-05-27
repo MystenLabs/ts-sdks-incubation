@@ -11,11 +11,10 @@
 //   polls `webServer.url` until reachable.
 //
 // This module is the third hook in that chain (config-load → webServer
-// spawn → globalSetup). By the time it runs, the supervisor IS up and
-// the manifest has been written; globalSetup verifies invariants and
-// populates fixtures the in-spec tests rely on (e.g. preloads the
-// stack context so each test doesn't repeat the disk read; warms the
-// wallet adapter; resolves the test-account list).
+// spawn → globalSetup). The public route can become reachable before
+// post-acquire codegen has finished, so globalSetup waits for the
+// supervisor's `codegen.emitted` event before specs load the app. That
+// keeps apps from importing stale generated package IDs.
 //
 // What it does NOT do:
 //   - Boot the supervisor. (`webServer.command` does that.)
@@ -26,15 +25,20 @@
 // via `globalTeardown` indirection — we return the teardown so the
 // preset's `globalTeardown` can call it).
 
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+
 import {
 	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
 	type PlaywrightStackFixture as RuntimePlaywrightStackFixture,
 } from '../runtime/playwright-stack-context-slot.ts';
 import {
+	PLAYWRIGHT_ENV,
 	readStackContext,
 	type ResolveStackContextOptions,
 	type StackContext,
 } from './stack-context.ts';
+import { PlaywrightManifestDiscoveryError } from './errors.ts';
 
 // -----------------------------------------------------------------------------
 // Public shape Playwright expects
@@ -69,6 +73,18 @@ export type PlaywrightStackFixture = RuntimePlaywrightStackFixture;
 
 export interface DefineGlobalSetupOptions extends ResolveStackContextOptions {
 	/**
+	 * Wait for the supervisor's post-acquire codegen event before the
+	 * browser loads the app. Default: `true`.
+	 */
+	readonly waitForCodegen?: boolean;
+
+	/** Maximum wait for the manifest + codegen-ready event. */
+	readonly readyTimeoutMs?: number;
+
+	/** Poll interval while waiting for the manifest + codegen-ready event. */
+	readonly readyPollIntervalMs?: number;
+
+	/**
 	 * Verify the manifest's `endpoints` has at least one entry. The
 	 * supervisor's manifest writer always emits at least the `app`
 	 * endpoint, so an empty `endpoints` lookup means the supervisor
@@ -92,6 +108,133 @@ export interface DefineGlobalSetupOptions extends ResolveStackContextOptions {
 	readonly preloadContext?: boolean;
 }
 
+const DEFAULT_READY_TIMEOUT_MS = 300_000;
+const DEFAULT_READY_POLL_INTERVAL_MS = 100;
+
+const sleep = (ms: number): Promise<void> =>
+	new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+
+const stackOptionWasExplicit = (options: DefineGlobalSetupOptions): boolean => {
+	const env = options.env ?? (process.env as Record<string, string | undefined>);
+	return (
+		options.stack !== undefined ||
+		options.manifestPath !== undefined ||
+		env[PLAYWRIGHT_ENV.STACK] !== undefined ||
+		env[PLAYWRIGHT_ENV.MANIFEST_PATH] !== undefined
+	);
+};
+
+const findSingleStackManifestPath = (options: DefineGlobalSetupOptions): string | null => {
+	if (stackOptionWasExplicit(options)) return null;
+	const env = options.env ?? (process.env as Record<string, string | undefined>);
+	const cwd = resolve(options.cwd ?? process.cwd());
+	const stateDirName = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR] ?? '.devstack';
+	const startDirs = isAbsolute(stateDirName)
+		? [stateDirName]
+		: (() => {
+				const dirs: string[] = [];
+				let dir = cwd;
+				while (true) {
+					dirs.push(join(dir, stateDirName));
+					const parent = dirname(dir);
+					if (parent === dir) return dirs;
+					dir = parent;
+				}
+			})();
+
+	for (const stateDir of startDirs) {
+		const stacksDir = join(stateDir, 'stacks');
+		if (!existsSync(stacksDir)) continue;
+		const manifests = readdirSync(stacksDir, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => join(stacksDir, entry.name, 'manifest.json'))
+			.filter((path) => existsSync(path))
+			.sort();
+		if (manifests.length === 1) return manifests[0]!;
+		if (manifests.length > 1) return null;
+	}
+	return null;
+};
+
+const readContextForSetup = (options: DefineGlobalSetupOptions): StackContext => {
+	try {
+		return readStackContext(options);
+	} catch (cause) {
+		if (!(cause instanceof PlaywrightManifestDiscoveryError)) throw cause;
+		const inferredManifestPath = findSingleStackManifestPath(options);
+		if (inferredManifestPath === null) throw cause;
+		return readStackContext({ ...options, manifestPath: inferredManifestPath });
+	}
+};
+
+const hasCodegenEmittedEvent = (manifestPath: string): boolean => {
+	const eventsPath = join(dirname(manifestPath), 'events.ndjson');
+	let raw: string;
+	try {
+		raw = readFileSync(eventsPath, 'utf8');
+	} catch {
+		return false;
+	}
+	let latestDevEndpointLine = -1;
+	let latestCodegenLine = -1;
+	let lineIndex = 0;
+	for (const line of raw.split(/\r?\n/)) {
+		if (line.trim().length === 0) continue;
+		lineIndex++;
+		try {
+			const record = JSON.parse(line) as {
+				readonly kind?: unknown;
+				readonly event?: {
+					readonly tag?: unknown;
+					readonly endpoint?: { readonly name?: unknown };
+				};
+			};
+			if (
+				record.kind === 'engine' &&
+				record.event?.tag === 'endpoint.registered' &&
+				record.event.endpoint?.name === 'dev'
+			) {
+				latestDevEndpointLine = lineIndex;
+			}
+			if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
+				latestCodegenLine = lineIndex;
+			}
+		} catch {
+			// Ignore partial trailing lines from a live append.
+		}
+	}
+	if (latestCodegenLine < 0) return false;
+	if (latestDevEndpointLine < 0) return true;
+	return latestCodegenLine > latestDevEndpointLine;
+};
+
+const waitForReadyStackContext = async (
+	options: DefineGlobalSetupOptions,
+): Promise<StackContext> => {
+	const timeoutMs = options.readyTimeoutMs ?? DEFAULT_READY_TIMEOUT_MS;
+	const intervalMs = options.readyPollIntervalMs ?? DEFAULT_READY_POLL_INTERVAL_MS;
+	const deadline = Date.now() + timeoutMs;
+	let lastError: unknown = null;
+
+	while (Date.now() <= deadline) {
+		try {
+			const ctx = readContextForSetup(options);
+			if (hasCodegenEmittedEvent(ctx.manifestPath)) return ctx;
+			lastError = new Error(
+				`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
+			);
+		} catch (cause) {
+			lastError = cause;
+		}
+		await sleep(intervalMs);
+	}
+
+	throw new Error(
+		`devstack did not reach post-acquire codegen within ${timeoutMs}ms` +
+			(lastError instanceof Error ? `: ${lastError.message}` : ''),
+	);
+};
+
 /**
  * Build a Playwright `globalSetup` function. The returned function
  * matches the signature Playwright expects (a default export of a
@@ -99,7 +242,10 @@ export interface DefineGlobalSetupOptions extends ResolveStackContextOptions {
  */
 export const buildGlobalSetup = (options: DefineGlobalSetupOptions = {}): PlaywrightGlobalSetup => {
 	return async () => {
-		const ctx = readStackContext(options);
+		const ctx =
+			(options.waitForCodegen ?? true)
+				? await waitForReadyStackContext(options)
+				: readContextForSetup(options);
 
 		if (options.requireNonEmptyEndpoints === true) {
 			if (ctx.endpointNames.length === 0) {

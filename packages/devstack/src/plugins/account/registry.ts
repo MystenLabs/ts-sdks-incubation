@@ -77,12 +77,15 @@ export const makeAccountProjectionContribution = <Name extends string>(
 	entry: AccountRegistryEntry & { readonly name: Name },
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
+	const key = `account/${entry.name}` as `account/${string}`;
 	return {
 		kind: 'projection',
 		event: {
-			tag: 'account.updated',
-			account: {
-				key: `account/${entry.name}` as `account/${string}`,
+			tag: 'projection.updated',
+			kind: 'account',
+			key,
+			payload: {
+				key,
 				rowKey: null,
 				name: entry.name,
 				address: entry.address,

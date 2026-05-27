@@ -46,6 +46,7 @@ import {
 import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { WalrusSpans } from './spans.ts';
 
 /** Cache-stored payload — what verify re-confirms on every cycle.
  *  Mirrors the v3 `CachedDeployState` shape (06-walrus.md §"State-
@@ -375,7 +376,10 @@ export const runDeployOneShot = (
 		return parsed;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.deploy.oneShot', {
-			attributes: { 'walrus.committeeSize': inputs.committeeSize, 'walrus.shards': inputs.shards },
+			attributes: {
+				[WalrusSpans.committeeSize]: inputs.committeeSize,
+				[WalrusSpans.shards]: inputs.shards,
+			},
 		}),
 		Effect.timeoutOrElse({
 			duration: Duration.millis(DEPLOY_TIMEOUT_MS + 5_000),
@@ -465,6 +469,6 @@ export const deployWalrusContracts = (
 		return { state };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.deploy', {
-			attributes: { 'walrus.name': inputs.walrusName, 'walrus.chain': inputs.chainId },
+			attributes: { [WalrusSpans.name]: inputs.walrusName, [WalrusSpans.chain]: inputs.chainId },
 		}),
 	);

@@ -54,6 +54,8 @@ import {
 } from './errors.ts';
 import { withAddressLease } from './lease.ts';
 import type { AccountValue } from './service.ts';
+import { AccountSpans } from './spans.ts';
+import { SuiSpans } from '../sui/index.ts';
 
 // `CoinResourceId` is the literal-typed resource id the coin plugin
 // publishes. Inlined here as `coin:${Sym}` so this file does NOT
@@ -307,18 +309,18 @@ export const fundEphemeralDefault = (
 		});
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': parts.accountName,
-			'account.address': parts.address,
-			'fund.amount.mist': parts.amountMist.toString(),
-			'sui.chain': parts.chainId,
-			'sui.mode': parts.suiMode,
+			[AccountSpans.name]: parts.accountName,
+			[AccountSpans.address]: parts.address,
+			[AccountSpans.fundAmountMist]: parts.amountMist.toString(),
+			[SuiSpans.chain]: parts.chainId,
+			[SuiSpans.mode]: parts.suiMode,
 		});
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.fundEphemeralDefault', {
 			attributes: {
-				'account.name': parts.accountName,
-				'account.address': parts.address,
-				'sui.mode': parts.suiMode,
+				[AccountSpans.name]: parts.accountName,
+				[AccountSpans.address]: parts.address,
+				[SuiSpans.mode]: parts.suiMode,
 			},
 		}),
 	);
@@ -473,18 +475,18 @@ export const applyCrossCuttingFunding = (
 		}
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': parts.accountName,
-			'account.address': parts.address,
-			'fund.cross-cutting.count': parts.funding.length,
-			'sui.chain': parts.chainId,
+			[AccountSpans.name]: parts.accountName,
+			[AccountSpans.address]: parts.address,
+			[AccountSpans.fundCrossCuttingCount]: parts.funding.length,
+			[SuiSpans.chain]: parts.chainId,
 		});
 		return applied;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.applyCrossCuttingFunding', {
 			attributes: {
-				'account.name': parts.accountName,
-				'account.address': parts.address,
-				'fund.cross-cutting.entries': parts.funding.length,
+				[AccountSpans.name]: parts.accountName,
+				[AccountSpans.address]: parts.address,
+				[AccountSpans.fundCrossCuttingEntries]: parts.funding.length,
 			},
 		}),
 	);

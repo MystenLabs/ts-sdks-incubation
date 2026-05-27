@@ -9,6 +9,7 @@ import {
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 
 import { suiPluginError, type SuiPluginError } from './errors.ts';
+import { stringifyCause } from './stringify-cause.ts';
 
 export const FORK_IMPERSONATION_GAS_BUDGET = 1_000_000_000n;
 export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;
@@ -193,12 +194,3 @@ export const verifyForkImpersonationSender = (
 			),
 	});
 
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

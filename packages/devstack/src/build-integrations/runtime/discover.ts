@@ -28,11 +28,15 @@
 // Playwright config-load, and Playwright's loader API is sync. Cost is
 // a handful of `existsSync` calls — cheap.
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 
 import { ManifestDiscoveryError } from './errors.ts';
-import { DEFAULT_STACK_NAME } from '../../api/inference-network.ts';
+import {
+	DEFAULT_STACK_NAME,
+	inferPackageNameFromCwd,
+	readPackageName,
+} from '../../api/inference-network.ts';
 
 /** Default name of the supervisor's per-user state directory. Mirrors
  *  the L0 path resolver. Held here as a literal so the discover walk
@@ -100,34 +104,13 @@ export interface DiscoverBuildIntegrationIdentityOptions {
 /** Read `name` out of `<dir>/package.json`, strip the `@scope/`
  *  prefix and any leading non-alphanumerics. Returns `undefined`
  *  when the file is missing / unreadable / has no name field. */
-export const readAppName = (dir: string): string | undefined => {
-	try {
-		const pkg = JSON.parse(readFileSync(resolve(dir, 'package.json'), 'utf8')) as {
-			name?: string;
-		};
-		if (typeof pkg.name !== 'string') return undefined;
-		const stripped = pkg.name.replace(/^@[^/]+\//, '').replace(/^[^a-zA-Z0-9]+/, '');
-		return stripped.length > 0 ? stripped : undefined;
-	} catch {
-		return undefined;
-	}
-};
+export const readAppName = readPackageName;
 
 /** Walk up from `cwd` to find the closest `package.json` and return
  *  its un-scoped `name` field. Returns `undefined` if no package.json
  *  is reachable. Bounded to 32 levels — defense against pathological
  *  symlink loops. */
-export const readAppNameWalkup = (cwd: string): string | undefined => {
-	let dir = resolve(cwd);
-	for (let i = 0; i < 32; i += 1) {
-		const name = readAppName(dir);
-		if (name !== undefined) return name;
-		const parent = dirname(dir);
-		if (parent === dir) return undefined;
-		dir = parent;
-	}
-	return undefined;
-};
+export const readAppNameWalkup = inferPackageNameFromCwd;
 
 /** Resolve the framework-neutral identity tuple build integrations
  *  need at config-load time. The manifest path is returned even when

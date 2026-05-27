@@ -105,7 +105,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 	},
-	client: null,
+	client: null as never,
 });
 
 const ctx: AccountAcquireContext = {
@@ -311,7 +311,7 @@ describe('account plugin — LeaseBrokerService integration', () => {
 								await waitGate.wait;
 							},
 						},
-						client: null,
+						client: null as never,
 					},
 				},
 			};
@@ -330,11 +330,62 @@ describe('account plugin — LeaseBrokerService integration', () => {
 
 			waitGate.release();
 			const exit = yield* Fiber.join(fiber);
-			expect(Exit.isFailure(exit)).toBe(true);
-			expect(JSON.stringify(exit)).toContain('failed-digest');
+			// On-chain failures are a SUCCESS variant (SDK-shaped union),
+			// NOT an error — only transport / sign / wait failures live in
+			// the error channel.
+			expect(Exit.isSuccess(exit)).toBe(true);
+			if (Exit.isSuccess(exit)) {
+				expect(exit.value.$kind).toBe('FailedTransaction');
+				if (exit.value.$kind === 'FailedTransaction') {
+					expect(exit.value.FailedTransaction.digest).toBe('failed-digest');
+					expect(exit.value.FailedTransaction.executionError).toContain('MoveAbort');
+				}
+			}
 
 			const afterWait = yield* broker.holders();
 			expect(afterWait.has(leaseKey(`account:${address}`))).toBe(false);
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('signAndExecute maps malformed execute envelopes onto AccountSignError', () =>
+		Effect.gen(function* () {
+			const address = '0xmalformed';
+			const signer = makeStubSigner(
+				address,
+				{ wait: Promise.resolve(), release: () => {} },
+				[],
+				'malformed',
+			);
+			const malformedCtx: AccountAcquireContext = {
+				...ctx,
+				sui: {
+					...ctx.sui,
+					sdk: {
+						core: {
+							getObject: () => Promise.reject(new Error('stub getObject')),
+							getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+							getBalance: () => Promise.reject(new Error('stub getBalance')),
+							listCoins: () => Promise.reject(new Error('stub listCoins')),
+							executeTransaction: () =>
+								Promise.resolve({
+									$kind: 'Transaction',
+									Transaction: {},
+								}),
+							waitForTransaction: () => Promise.reject(new Error('should not wait without digest')),
+						},
+						client: null as never,
+					},
+				},
+			};
+			const acct = yield* acquireAccount(makeOpts('mal', signer), malformedCtx).pipe(
+				Effect.provide(layerStrategyRegistry),
+				Effect.orDie,
+			);
+
+			const err = yield* acct.signAndExecute(new Uint8Array([1])).pipe(Effect.flip);
+			expect(err._tag).toBe('AccountSignError');
+			expect(err.phase).toBe('submit');
+			expect(err.message).toContain('malformed envelope');
 		}).pipe(Effect.provide(layerLeaseBroker)),
 	);
 

@@ -268,10 +268,13 @@ describe('account cross-cutting funding dispatch', () => {
 									signTransaction: () => Effect.succeed({ bytes: 'bytes', signature: 'sig' }),
 									signAndExecute: () =>
 										Effect.succeed({
-											digest: 'digest',
-											effects: {},
-											objectChanges: [],
-											balanceChanges: [],
+											$kind: 'Transaction',
+											Transaction: {
+												digest: 'digest',
+												effects: {},
+												objectChanges: [],
+												balanceChanges: [],
+											},
 										}),
 								}),
 							),

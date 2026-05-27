@@ -511,8 +511,7 @@ export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) =>
  *
  *  Critically, the fork branch exposes ONLY `.known` — calling
  *  `.local` on a fork-mode network is a **compile error** at the
- *  call site (distilled-doc invariant 12 — type-level refusal).
- *  Runtime defense-in-depth: see `mode/fork-refusal.ts`. */
+ *  call site (distilled-doc invariant 12 — type-level refusal). */
 export const walrusFor = defineModeNamespace({
 	local: {
 		local: (opts: WalrusLocalClusterOptions = {}) => buildLocalPlugin(opts),
@@ -537,13 +536,6 @@ export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/kn
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';
 export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } from './errors.ts';
-// `ForkIncompatibleError` is the cross-cutting mode-refusal shape owned
-// by `substrate/runtime/mode-errors.ts`; seal re-exports it
-// under its canonical name from its barrel, so walrus exposes the
-// SAME class under a walrus-namespaced alias to avoid a collision
-// when a downstream consumer imports both plugin barrels in the same
-// scope (STYLE_GUIDE §2 — one `_tag` literal per logical error type).
-export type { ForkIncompatibleError as WalrusForkIncompatible } from './errors.ts';
 export { WALRUS_ERROR_TAGS } from './errors.ts';
 export {
 	walCoinType,
@@ -558,3 +550,4 @@ export {
 	type WalrusKnownStateEntry,
 } from './registry-publish.ts';
 export { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
+export { WalrusSpans } from './spans.ts';

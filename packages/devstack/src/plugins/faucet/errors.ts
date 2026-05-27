@@ -14,9 +14,7 @@
 //     class but carry the discriminating field.
 //
 // Effect v4: tagged errors are plain interfaces; `Effect.catchTag` /
-// `catchTags` match on the `_tag` literal. The error tags this
-// plugin contributes are surfaced via `FAUCET_ERROR_TAGS` for the
-// substrate cause walker.
+// `catchTags` match on the `_tag` literal.
 
 import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 

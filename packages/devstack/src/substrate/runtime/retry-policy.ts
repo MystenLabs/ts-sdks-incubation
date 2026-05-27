@@ -59,3 +59,13 @@ export const FAUCET_HTTP_RETRY_PROFILE = {
 	wallClockBudgetMs: 90_000,
 	perRequestDeadlineMs: 5_000,
 } as const;
+
+/** Sui "stale object version" retry profile — used when a Move call
+ *  references an object that's been mutated by a concurrent transaction
+ *  (deepbook pool seeding hits this when the registry / pool object is
+ *  re-versioned mid-flight). The retry rebuilds the transaction with
+ *  fresh refs each attempt; 20 × 500ms keeps the worst case under 10s. */
+export const STALE_OBJECT_VERSION_RETRY_PROFILE = {
+	attempts: 20,
+	delayMs: 500,
+} as const;

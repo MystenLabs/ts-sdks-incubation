@@ -33,6 +33,7 @@ import {
 	type RouterProfile,
 } from '../orchestrators/router/index.ts';
 import { BUILT_IN_ENTRYPOINTS } from '../plugins/router-entrypoints.ts';
+import { parseJsonTextSync } from '../substrate/runtime/runtime-decode.ts';
 import { checkHolderLiveness, readRoster } from '../substrate/runtime/cross-process/index.ts';
 import type { RosterHolder } from '../substrate/cross-process.ts';
 import type { Probe, ProbeOutcome } from '../surfaces/cli/commands/doctor.ts';
@@ -209,7 +210,10 @@ const fieldBoolean = (record: Record<string, unknown>, key: string): boolean | n
 
 const parseDockerInspectFirst = (out: string): Record<string, unknown> | null => {
 	try {
-		const parsed: unknown = JSON.parse(out);
+		const parsed = parseJsonTextSync(out, {
+			source: 'docker inspect',
+			mkError: (issue) => issue,
+		});
 		if (Array.isArray(parsed)) return unknownRecord(parsed[0]);
 		return unknownRecord(parsed);
 	} catch {

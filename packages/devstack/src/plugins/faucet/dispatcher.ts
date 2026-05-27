@@ -10,8 +10,7 @@
 // `FaucetDispatcher` / `makeDispatcher` shape was a dead acquire-time
 // closure with no callers; the substrate-level
 // `substrate/runtime/strategy-registry/faucet-capability-for.ts` is the
-// canonical lookup helper now (pending the Phase 5 name-blindness
-// generalisation to `chainKeyedStrategyFor(prefix, key)`).
+// canonical lookup helper now.
 //
 // The `FaucetStrategy` interface is the dispatch shape — it lives in
 // the faucet plugin because the faucet plugin OWNS the dispatcher.

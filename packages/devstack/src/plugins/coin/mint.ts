@@ -31,19 +31,34 @@ import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import type { ClientWithCoreApi } from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
+import { CoinSpans } from './spans.ts';
 import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
 
 /** Sign+execute surface narrowed from `AccountValue.signAndExecute`.
  *  We don't import `AccountValue` directly to avoid a layering cycle —
  *  the Account plugin imports nothing from coin, so coin re-publishes
- *  the structural shape. */
+ *  the structural shape. Mirrors the SDK's discriminated
+ *  `TransactionResult` return shape — on-chain failures are a return
+ *  variant (`$kind: 'FailedTransaction'`), not an error. */
+export interface MintSignAndExecuteResult {
+	readonly $kind: 'Transaction' | 'FailedTransaction';
+	readonly Transaction?: {
+		readonly digest: string;
+		readonly objectChanges: ReadonlyArray<unknown>;
+	};
+	readonly FailedTransaction?: {
+		readonly digest: string;
+		readonly executionError: string;
+	};
+}
+
 export interface MintTransactionSigner {
-	readonly signAndExecute: (tx: Uint8Array) => Effect.Effect<
-		{
-			readonly digest: string;
-			readonly objectChanges: ReadonlyArray<unknown>;
-		},
+	readonly signAndExecute: (
+		tx: Uint8Array,
+	) => Effect.Effect<
+		MintSignAndExecuteResult,
 		{ readonly _tag: 'AccountSignError'; readonly message: string }
 	>;
 }
@@ -117,28 +132,16 @@ export interface MintResult {
 
 /** Sui SDK shim for the verify probe + transaction build.
  *
- *  Narrowed-but-not-too-narrow: the produce body needs to serialize a
- *  `Transaction` to BCS bytes, which the Sui SDK's
- *  `Transaction.build({ client })` resolves via the client. We accept
- *  the full client opaquely (typed `unknown` here — the runtime check
- *  is "does `Transaction.build` accept it"). The barrel wires the
- *  resolved `SuiGrpcClient` through.
- *
- *  Why `unknown` rather than `ClientWithCoreApi`: keeps this module
- *  free of a direct `@mysten/sui/client` type import — the produce body
- *  passes it through opaquely to `Transaction.build`, which validates
- *  the shape at runtime.
- *
  *  The `core.getObject` field is the verify-probe surface; the
- *  `client` field is the build-target. */
+ *  `client` field is the build-target the produce body hands to
+ *  `Transaction.build({ client })`. */
 export interface MintSdkShim {
 	readonly core: {
 		readonly getObject: (args: { readonly objectId: string }) => Promise<unknown>;
 	};
-	/** Opaque client reference for `Transaction.build({ client })`. The
-	 *  shim layer doesn't type-narrow this; the Sui barrel hands in the
-	 *  resolved `SuiGrpcClient`. */
-	readonly client: unknown;
+	/** Client reference for `Transaction.build({ client })`. The Sui
+	 *  barrel hands in the resolved `SuiGrpcClient`. */
+	readonly client: ClientWithCoreApi;
 }
 
 /** Verify probe — checks the cached minted-coin still exists. Lenient:
@@ -268,9 +271,9 @@ export const performMint = (
 			verify: (cached) => buildVerifyProbe(sdk, cached.mintedCoinId),
 			produce: Effect.gen(function* () {
 				yield* Effect.annotateCurrentSpan({
-					'coin.mint.recipient': inputs.recipient,
-					'coin.mint.fullCoinType': inputs.fullCoinType,
-					'coin.mint.amount': inputs.amount.toString(),
+					[CoinSpans.mint.recipient]: inputs.recipient,
+					[CoinSpans.mint.fullCoinType]: inputs.fullCoinType,
+					[CoinSpans.mint.amount]: inputs.amount.toString(),
 				});
 
 				const result = yield* signer.withTransactionSigner((lockedSigner) =>
@@ -298,15 +301,7 @@ export const performMint = (
 						//    placeholders via the client.
 						const txBytes = yield* Effect.tryPromise({
 							try: () =>
-								tx.build({
-									// The shim exposes the client opaquely; @mysten/sui
-									// validates the shape at runtime.
-									client: sdk.client as Parameters<typeof tx.build>[0] extends
-										| { client?: infer C }
-										| undefined
-										? C
-										: never,
-								}),
+								tx.build({ client: sdk.client }),
 							catch: (cause): ArtifactPublishError => ({
 								_tag: 'ArtifactPublishError',
 								reason: 'produce-failed',
@@ -332,34 +327,50 @@ export const performMint = (
 					}),
 				);
 
-				// 4. Find the minted `Coin<T>` in objectChanges via the
-				//    inner-generic match (distilled-doc Invariant 9).
-				//    `mint_and_transfer` emits a fresh `Coin<T>` owned by
-				//    the recipient; look it up by the
-				//    `0x2::coin::Coin<${fullCoinType}>` substring.
-				const mintedCoinId = pickCreatedCoin(result.objectChanges, inputs.fullCoinType);
+				// 4a. Dispatch on the SDK-shaped discriminated result. On-chain
+				//     failures (FailedTransaction) are a return value, not an
+				//     error — surface them as a produce-failed artifact error so
+				//     the cache treats this as a re-run candidate.
+				if (result.$kind === 'FailedTransaction') {
+					const failed = result.FailedTransaction!;
+					return yield* Effect.fail({
+						_tag: 'ArtifactPublishError' as const,
+						reason: 'produce-failed' as const,
+						detail:
+							`coin.mint(${inputs.fullCoinType}): transaction execution failed on-chain ` +
+							`(digest=${failed.digest}): ${failed.executionError}`,
+					} satisfies ArtifactPublishError);
+				}
+				const ok = result.Transaction!;
+
+				// 4b. Find the minted `Coin<T>` in objectChanges via the
+				//     inner-generic match (distilled-doc Invariant 9).
+				//     `mint_and_transfer` emits a fresh `Coin<T>` owned by
+				//     the recipient; look it up by the
+				//     `0x2::coin::Coin<${fullCoinType}>` substring.
+				const mintedCoinId = pickCreatedCoin(ok.objectChanges, inputs.fullCoinType);
 				if (mintedCoinId === null) {
 					return yield* Effect.fail({
 						_tag: 'ArtifactPublishError' as const,
 						reason: 'produce-failed' as const,
 						detail:
 							`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
-							`objectChanges (digest=${result.digest}). ` +
+							`objectChanges (digest=${ok.digest}). ` +
 							mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
 								.message,
 					} satisfies ArtifactPublishError);
 				}
 
 				yield* Effect.annotateCurrentSpan({
-					'coin.mint.digest': result.digest,
-					'coin.mint.mintedCoinId': mintedCoinId,
+					[CoinSpans.mint.digest]: ok.digest,
+					[CoinSpans.mint.mintedCoinId]: mintedCoinId,
 				});
 
 				// 5. Return the cached payload. The artifact publisher caches it under
 				//    the content hash; the next cycle's verify probe (on
 				//    cache hit) will lenient-probe `mintedCoinId`.
 				return {
-					digest: result.digest,
+					digest: ok.digest,
 					mintedCoinId,
 					recipient: inputs.recipient,
 					amount: inputs.amount.toString(),
@@ -383,9 +394,9 @@ export const performMint = (
 	}).pipe(
 		Effect.withSpan('coin.mint', {
 			attributes: {
-				'coin.mint.recipient': inputs.recipient,
-				'coin.mint.fullCoinType': inputs.fullCoinType,
-				'coin.mint.amount': inputs.amount.toString(),
+				[CoinSpans.mint.recipient]: inputs.recipient,
+				[CoinSpans.mint.fullCoinType]: inputs.fullCoinType,
+				[CoinSpans.mint.amount]: inputs.amount.toString(),
 			},
 		}),
 	);

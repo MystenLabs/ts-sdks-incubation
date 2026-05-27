@@ -22,6 +22,14 @@ const stubSigner = {
 	) => body({ signTransaction: stubSignTransaction }),
 };
 
+// Mock SuiExecuteClient — only `core.executeTransaction` /
+// `core.waitForTransaction` are reached by `executeSuiTx`; other
+// ClientWithCoreApi fields aren't touched, so we project via `as never`.
+const stubClient = (core: {
+	readonly executeTransaction: (args: unknown) => Promise<unknown>;
+	readonly waitForTransaction: (args: unknown) => Promise<unknown>;
+}): SuiExecuteClient => ({ core } as never);
+
 const successfulClient = (params: {
 	readonly digest?: string;
 	readonly changes?: ReadonlyArray<{
@@ -31,20 +39,21 @@ const successfulClient = (params: {
 	}>;
 	readonly objectTypes?: Record<string, string>;
 	readonly waitFailed?: boolean;
-}): SuiExecuteClient => ({
-	executeTransaction: async () => ({
-		$kind: 'Transaction',
-		Transaction: {
-			digest: params.digest ?? '0xdeadbeef',
-			effects: { changedObjects: params.changes ?? [] },
-			objectTypes: params.objectTypes ?? {},
+}): SuiExecuteClient =>
+	stubClient({
+		executeTransaction: async () => ({
+			$kind: 'Transaction',
+			Transaction: {
+				digest: params.digest ?? '0xdeadbeef',
+				effects: { changedObjects: params.changes ?? [] },
+				objectTypes: params.objectTypes ?? {},
+			},
+		}),
+		waitForTransaction: async () => {
+			if (params.waitFailed) throw new Error('wait failed');
+			return undefined;
 		},
-	}),
-	waitForTransaction: async () => {
-		if (params.waitFailed) throw new Error('wait failed');
-		return undefined;
-	},
-});
+	});
 
 describe('executeSuiTx', () => {
 	it.effect('returns a flat ExecutedReceipt with digest + projected changes', () =>
@@ -76,7 +85,7 @@ describe('executeSuiTx', () => {
 
 	it.effect('FailedTransaction surfaces as phase: "failed-transaction"', () =>
 		Effect.gen(function* () {
-			const client: SuiExecuteClient = {
+			const client = stubClient({
 				executeTransaction: async () => ({
 					$kind: 'FailedTransaction',
 					FailedTransaction: {
@@ -85,7 +94,7 @@ describe('executeSuiTx', () => {
 					},
 				}),
 				waitForTransaction: async () => undefined,
-			};
+			});
 			const exit = yield* Effect.scoped(
 				Effect.exit(
 					executeSuiTx({
@@ -128,7 +137,7 @@ describe('executeSuiTx', () => {
 						});
 					}).pipe(Effect.ensuring(Effect.sync(() => events.push('scope:exit')))),
 			};
-			const client: SuiExecuteClient = {
+			const client = stubClient({
 				executeTransaction: async () => {
 					events.push('execute');
 					return {
@@ -143,7 +152,7 @@ describe('executeSuiTx', () => {
 					events.push('wait');
 					expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait']);
 				},
-			};
+			});
 			const exit = yield* Effect.scoped(
 				Effect.exit(
 					executeSuiTx({
@@ -181,7 +190,7 @@ describe('executeSuiTx', () => {
 
 	it.effect('no-digest surfaces as phase: "no-digest"', () =>
 		Effect.gen(function* () {
-			const client: SuiExecuteClient = {
+			const client = stubClient({
 				executeTransaction: async () => ({
 					$kind: 'Transaction',
 					Transaction: {
@@ -190,7 +199,7 @@ describe('executeSuiTx', () => {
 					},
 				}),
 				waitForTransaction: async () => undefined,
-			};
+			});
 			const exit = yield* Effect.scoped(
 				Effect.exit(
 					executeSuiTx({
@@ -208,7 +217,7 @@ describe('executeSuiTx', () => {
 	it.effect('awaitFinality=false skips waitForTransaction', () =>
 		Effect.gen(function* () {
 			let waitCalled = false;
-			const client: SuiExecuteClient = {
+			const client = stubClient({
 				executeTransaction: async () => ({
 					$kind: 'Transaction',
 					Transaction: { digest: '0xabc', effects: { changedObjects: [] } },
@@ -216,7 +225,7 @@ describe('executeSuiTx', () => {
 				waitForTransaction: async () => {
 					waitCalled = true;
 				},
-			};
+			});
 			yield* Effect.scoped(
 				executeSuiTx({
 					client,

@@ -41,7 +41,12 @@ import {
 } from './inventory.ts';
 import { LabelKey } from './labels.ts';
 import { removeVolume } from './volume.ts';
-import { isNoSuchContainerStderr, wrapGeneric } from './wrap.ts';
+import {
+	isMissingImageStderr,
+	isMissingNetworkStderr,
+	isNoSuchContainerStderr,
+	wrapGeneric,
+} from './wrap.ts';
 
 /** Sweep orphan containers matching the partial label tuple. Returns
  *  the number of containers removed.
@@ -97,6 +102,9 @@ export const sweepOrphans = (
 		for (const c of containers) {
 			if (claimNames.has(c.name)) continue;
 			const res = yield* dockerRunOk('rm', ['-f', c.name]).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logDebug('sweep: docker rm -f spawn failed', { name: c.name, cause }),
+				),
 				Effect.catch(() =>
 					Effect.succeed({ exitCode: 1, stdout: '', stderr: 'sweep rm spawn failed' }),
 				),
@@ -176,9 +184,6 @@ export const removeDevstackContainersByKindAndName = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainersByKindAndName'));
 
-const isMissingImageStderr = (stderr: string): boolean =>
-	/no such image|not found|reference does not exist/i.test(stderr);
-
 const removeManagedImage = (
 	ref: string,
 ): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -232,9 +237,6 @@ export const removeDevstackImages = (
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackImages'));
-
-const isMissingNetworkStderr = (stderr: string): boolean =>
-	/no such network|network .* not found|not found/i.test(stderr);
 
 const removeManagedNetwork = (
 	name: string,

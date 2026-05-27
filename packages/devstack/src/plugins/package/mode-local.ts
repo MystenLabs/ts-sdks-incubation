@@ -43,6 +43,7 @@ import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
+import { PackageSpans } from './spans.ts';
 
 /** Cache-stored payload — the stable id verify re-confirms on
  *  every cycle. Distilled doc Invariant 8: the probe MUST consume
@@ -250,10 +251,10 @@ export const acquireLocal = (
 			// it to `ArtifactPublishError` at the substrate boundary.
 			produce: Effect.gen(function* () {
 				yield* Effect.annotateCurrentSpan({
-					'package.publish.package': inputs.packageName,
-					'package.publish.sourcePath': inputs.sourcePath,
-					'package.publish.chainId': inputs.chainId,
-					'package.publish.publisher': inputs.publisherAddress,
+					[PackageSpans.publish.package]: inputs.packageName,
+					[PackageSpans.publish.sourcePath]: inputs.sourcePath,
+					[PackageSpans.publish.chainId]: inputs.chainId,
+					[PackageSpans.publish.publisher]: inputs.publisherAddress,
 				});
 
 				// Produce 1/5 — scrub locks. Distilled doc §Move-specific
@@ -263,7 +264,7 @@ export const acquireLocal = (
 				// invoking the build. Uses the unified `stripPinnedSections`
 				// (re-exported through `build.ts` → from
 				// `../sui/move-lock-scrub.ts`) — NO duplicate.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'scrub' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'scrub' });
 				yield* scrubLocksHost(inputs.sourcePath, '~/.move', {
 					packageLockFailures: inputs.executor.scrubsInsideContainer ? 'best-effort' : 'fatal',
 				});
@@ -271,7 +272,7 @@ export const acquireLocal = (
 				// Produce 2/5 — build. Executor dispatches between (a)
 				// per-app build container, (b) `docker run --rm`, (c) host
 				// `sui` CLI.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'build' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'build' });
 				const buildOutput: BuildOutput = yield* inputs.executor
 					.build({
 						sourcePath: inputs.sourcePath,
@@ -300,7 +301,7 @@ export const acquireLocal = (
 				// Produce 3/5 — publish-tx. Construct `Transaction.publish`,
 				// sign + execute via the publisher's account signer, decode
 				// the output.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'publish-tx' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'publish-tx' });
 				const output: LocalPackagePublishOutput = yield* inputs.executor.publishTx({
 					modules: buildOutput.modules,
 					dependencies: buildOutput.dependencies,
@@ -314,14 +315,14 @@ export const acquireLocal = (
 				// gate, downstream tx builders fail with "Dependent package
 				// not found". Failure surfaces as `PublishError('parse')`
 				// per the distilled doc's phase catalog ("stuck indexer").
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'waiting-for-index' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
 				yield* inputs.executor.waitForReady(output.packageId);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;
 				// pick the `UpgradeCap`-typed `'created'` change for the
 				// upgrade cap.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'parse' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'parse' });
 				const published = pickPublishedChange(output.objectChanges);
 				if (!published?.objectId) {
 					return yield* Effect.fail(

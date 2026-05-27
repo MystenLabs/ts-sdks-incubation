@@ -24,6 +24,8 @@ type LocalSealResolved = ResourceValueOf<typeof _localSeal>;
 export const _resolvedShape: SealResolved = null as never as LocalSealResolved;
 export const _keyServerUrl: string = (null as never as LocalSealResolved).keyServerUrl;
 export const _manager: SealKeyManager | null = (null as never as LocalSealResolved).manager;
+// @ts-expect-error — rotate is not exposed until it has a real implementation
+export const _rotate = (null as never as SealKeyManager).rotate;
 
 export const _localNamespace = sealFor(localNet).localKeygen({ signer: publisher });
 

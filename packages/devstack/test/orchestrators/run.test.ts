@@ -5,11 +5,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from '@effect/vitest';
 import { Effect, Exit } from 'effect';
 
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { Identity } from '../../../src/substrate/identity.ts';
-import type { SupervisedStack } from '../../../src/substrate/runtime/supervisor.ts';
-import { definePlugin } from '../../../src/substrate/plugin.ts';
-import { runStackEffect } from '../../../src/substrate/runtime/run.ts';
+import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import type { Identity } from '../../src/substrate/identity.ts';
+import type { SupervisedStack } from '../../src/substrate/runtime/supervisor/index.ts';
+import { definePlugin } from '../../src/substrate/plugin.ts';
+import { runStackEffect } from '../../src/orchestrators/run.ts';
 
 const identity: Identity = {
 	app: appName('run-test-app'),
@@ -17,7 +17,7 @@ const identity: Identity = {
 	chain: chainId('test:local'),
 };
 
-describe('substrate/runtime/run', () => {
+describe('orchestrators/run', () => {
 	it.effect('one-shot supervision fails when initial start fails', () =>
 		Effect.gen(function* () {
 			const pluginFail = definePlugin({

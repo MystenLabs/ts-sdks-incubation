@@ -70,6 +70,19 @@ export const isImageNotFoundStderr = (stderr: string): boolean =>
 	/repository .* not found/i.test(stderr) ||
 	/No such image/i.test(stderr);
 
+/** Image missing — broader classifier for `docker image rm` / `docker tag`
+ *  flows, where the daemon's wording varies (`No such image`, bare
+ *  `not found`, or `reference does not exist`). Distinct from
+ *  `isImageNotFoundStderr` (pull-flow-specific) — this one is the
+ *  union used by idempotent remove/tag paths. */
+export const isMissingImageStderr = (stderr: string): boolean =>
+	/no such image|not found|reference does not exist/i.test(stderr);
+
+/** Network missing — idempotent classifier for `docker network rm` /
+ *  `docker network inspect`. */
+export const isMissingNetworkStderr = (stderr: string): boolean =>
+	/no such network|network .* not found|not found/i.test(stderr);
+
 // -----------------------------------------------------------------------------
 // Wrappers — translate CaptureError → typed DockerRuntimeError
 // -----------------------------------------------------------------------------

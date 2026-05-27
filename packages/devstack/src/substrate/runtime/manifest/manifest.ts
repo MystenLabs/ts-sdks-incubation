@@ -104,6 +104,7 @@ export interface PluginManifestContribution {
 export interface WriteManifestInput {
 	readonly identity: ManifestEnvelope['identity'];
 	readonly contributions: ReadonlyArray<PluginManifestContribution>;
+	readonly endpoints?: ReadonlyArray<EndpointEntry>;
 	readonly extras?: ManifestExtras;
 }
 
@@ -123,6 +124,21 @@ export const buildEnvelope = (
 		const services: Record<string, unknown> = {};
 		const endpoints: Record<string, EndpointEntry> = {};
 		const extras: Record<string, unknown> = { ...input.extras };
+
+		const addEndpoint = (ep: EndpointEntry): Effect.Effect<void, ManifestError> =>
+			Effect.gen(function* () {
+				const ek = ep.endpointKey as string;
+				if (ek in endpoints) {
+					return yield* Effect.fail(
+						new ManifestError({
+							reason: 'duplicate-contribution',
+							path: '(in-memory envelope)',
+							detail: `endpointKey ${ek} contributed twice`,
+						}),
+					);
+				}
+				endpoints[ek] = ep;
+			});
 
 		for (const contribution of input.contributions) {
 			const key = contribution.pluginKey as string;
@@ -151,18 +167,11 @@ export const buildEnvelope = (
 				}
 			}
 			for (const ep of contribution.endpoints) {
-				const ek = ep.endpointKey as string;
-				if (ek in endpoints) {
-					return yield* Effect.fail(
-						new ManifestError({
-							reason: 'duplicate-contribution',
-							path: '(in-memory envelope)',
-							detail: `endpointKey ${ek} contributed twice`,
-						}),
-					);
-				}
-				endpoints[ek] = ep;
+				yield* addEndpoint(ep);
 			}
+		}
+		for (const ep of input.endpoints ?? []) {
+			yield* addEndpoint(ep);
 		}
 
 		return {

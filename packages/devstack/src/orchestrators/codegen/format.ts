@@ -66,9 +66,28 @@ export interface RenderInput {
 	readonly imports?: ReadonlyArray<string>;
 }
 
-/** Render an emitted file to a TS source string. Throws a tagged
- *  error class when the value is unserialisable. */
-export const renderFile = (input: RenderInput): string | CodegenRenderError => {
+/** Result of a render attempt. Discriminated so callers can dispatch
+ *  on `ok` without resorting to `instanceof` checks (STYLE_GUIDE §2). */
+export type RenderResult =
+	| { readonly ok: true; readonly text: string }
+	| { readonly ok: false; readonly error: CodegenRenderError };
+
+const renderErr = (
+	input: RenderInput,
+	detail: string,
+): { readonly ok: false; readonly error: CodegenRenderError } => ({
+	ok: false,
+	error: new CodegenRenderError({
+		emitterName: input.emitterName,
+		outputPath: input.outputPath,
+		detail,
+	}),
+});
+
+/** Render an emitted file to a TS source string. Returns a discriminated
+ *  `RenderResult` — `{ok: true, text}` on success, `{ok: false, error}`
+ *  when the value is unserialisable or imports forbidden paths. */
+export const renderFile = (input: RenderInput): RenderResult => {
 	const lines: Array<string> = [];
 	lines.push(GENERATED_HEADER);
 	if (input.sensitive) {
@@ -79,11 +98,7 @@ export const renderFile = (input: RenderInput): string | CodegenRenderError => {
 	if (input.imports && input.imports.length > 0) {
 		for (const imp of input.imports) {
 			if (isForbiddenGeneratedImport(imp)) {
-				return new CodegenRenderError({
-					emitterName: input.emitterName,
-					outputPath: input.outputPath,
-					detail: `generated files must not import devstack source: ${imp}`,
-				});
+				return renderErr(input, `generated files must not import devstack source: ${imp}`);
 			}
 			lines.push(imp);
 		}
@@ -94,28 +109,23 @@ export const renderFile = (input: RenderInput): string | CodegenRenderError => {
 	for (const key of keys) {
 		const value = input.exports[key];
 		const rendered = tryRender(value, new Set());
-		if (rendered instanceof Error) {
-			return new CodegenRenderError({
-				emitterName: input.emitterName,
-				outputPath: input.outputPath,
-				detail: `export '${key}': ${rendered.message}`,
-			});
+		if (!rendered.ok) {
+			return renderErr(input, `export '${key}': ${rendered.detail}`);
 		}
 		if (!isIdentifier(key)) {
-			return new CodegenRenderError({
-				emitterName: input.emitterName,
-				outputPath: input.outputPath,
-				detail: `export key '${key}' is not a valid TS identifier`,
-			});
+			return renderErr(input, `export key '${key}' is not a valid TS identifier`);
 		}
-		lines.push(`export const ${key} = ${rendered} as const;`);
+		lines.push(`export const ${key} = ${rendered.text} as const;`);
 		lines.push('');
 	}
 	// Single trailing newline; never two.
 	while (lines.length > 1 && lines[lines.length - 1] === '' && lines[lines.length - 2] === '') {
 		lines.pop();
 	}
-	return lines.join('\n') + (lines[lines.length - 1] === '' ? '' : '\n');
+	return {
+		ok: true,
+		text: lines.join('\n') + (lines[lines.length - 1] === '' ? '' : '\n'),
+	};
 };
 
 // -----------------------------------------------------------------------------
@@ -124,59 +134,58 @@ export const renderFile = (input: RenderInput): string | CodegenRenderError => {
 
 const INDENT = '\t';
 
-const tryRender = (value: unknown, seen: Set<object>, depth = 1): string | Error => {
-	if (value === null) return 'null';
-	if (value === undefined) {
-		return new Error('undefined is not serialisable — emit null instead');
-	}
+type TryRenderResult =
+	| { readonly ok: true; readonly text: string }
+	| { readonly ok: false; readonly detail: string };
+
+const tryOk = (text: string): TryRenderResult => ({ ok: true, text });
+const tryErr = (detail: string): TryRenderResult => ({ ok: false, detail });
+
+const tryRender = (value: unknown, seen: Set<object>, depth = 1): TryRenderResult => {
+	if (value === null) return tryOk('null');
+	if (value === undefined) return tryErr('undefined is not serialisable — emit null instead');
 	const t = typeof value;
-	if (t === 'string') return JSON.stringify(value);
+	if (t === 'string') return tryOk(JSON.stringify(value));
 	if (t === 'number') {
-		if (!Number.isFinite(value as number)) {
-			return new Error('non-finite number');
-		}
-		return String(value);
+		if (!Number.isFinite(value as number)) return tryErr('non-finite number');
+		return tryOk(String(value));
 	}
-	if (t === 'boolean') return String(value);
-	if (t === 'bigint') {
-		return JSON.stringify(value.toString());
-	}
-	if (t === 'function' || t === 'symbol') {
-		return new Error(`${t} is not serialisable`);
-	}
+	if (t === 'boolean') return tryOk(String(value));
+	if (t === 'bigint') return tryOk(JSON.stringify(value.toString()));
+	if (t === 'function' || t === 'symbol') return tryErr(`${t} is not serialisable`);
 	if (Array.isArray(value)) {
-		if (seen.has(value)) return new Error('circular reference');
+		if (seen.has(value)) return tryErr('circular reference');
 		seen.add(value);
-		if (value.length === 0) return '[]';
+		if (value.length === 0) return tryOk('[]');
 		const inner: Array<string> = [];
 		for (const item of value) {
 			const r = tryRender(item, seen, depth + 1);
-			if (r instanceof Error) return r;
-			inner.push(INDENT.repeat(depth) + r);
+			if (!r.ok) return r;
+			inner.push(INDENT.repeat(depth) + r.text);
 		}
 		seen.delete(value);
-		return `[\n${inner.join(',\n')},\n${INDENT.repeat(depth - 1)}]`;
+		return tryOk(`[\n${inner.join(',\n')},\n${INDENT.repeat(depth - 1)}]`);
 	}
 	if (t === 'object') {
 		const obj = value as Record<string, unknown>;
-		if (seen.has(obj)) return new Error('circular reference');
+		if (seen.has(obj)) return tryErr('circular reference');
 		seen.add(obj);
 		const keys = Object.keys(obj).sort();
-		if (keys.length === 0) return '{}';
+		if (keys.length === 0) return tryOk('{}');
 		const lines: Array<string> = [];
 		for (const k of keys) {
 			const v = obj[k];
 			if (v === undefined) continue; // drop undefined props (distilled-doc skip-emit-explicit)
 			const r = tryRender(v, seen, depth + 1);
-			if (r instanceof Error) return r;
+			if (!r.ok) return r;
 			const keyText = isIdentifier(k) ? k : JSON.stringify(k);
-			lines.push(`${INDENT.repeat(depth)}${keyText}: ${r}`);
+			lines.push(`${INDENT.repeat(depth)}${keyText}: ${r.text}`);
 		}
 		seen.delete(obj);
-		if (lines.length === 0) return '{}';
-		return `{\n${lines.join(',\n')},\n${INDENT.repeat(depth - 1)}}`;
+		if (lines.length === 0) return tryOk('{}');
+		return tryOk(`{\n${lines.join(',\n')},\n${INDENT.repeat(depth - 1)}}`);
 	}
-	return new Error(`unsupported value type ${t}`);
+	return tryErr(`unsupported value type ${t}`);
 };
 
 const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;

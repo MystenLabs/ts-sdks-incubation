@@ -41,13 +41,13 @@ describe('seal public refs', () => {
 			serverConfigs: [{ objectId: '0x1', weight: 1 }],
 			manager: {
 				masterKeyEnvFile: '/tmp/master-key.env',
-				rotate: undefined as never,
 			},
 		};
 
 		expect(plugin.id).toBe(sealResourceId('seal'));
 		expect(resolved.keyServerUrl).toBe('http://key-server.localhost');
 		expect(resolved.manager?.masterKeyEnvFile).toBe('/tmp/master-key.env');
+		expect('rotate' in resolved.manager!).toBe(false);
 	});
 
 	it('does not export an unsupported manager resource constructor from the plugin barrel', () => {

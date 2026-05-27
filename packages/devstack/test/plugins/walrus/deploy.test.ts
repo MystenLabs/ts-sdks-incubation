@@ -365,7 +365,7 @@ describe('parseDeployOutput', () => {
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},
-				client: {},
+				client: {} as never,
 			};
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
 			const publisher: ArtifactPublisher = {
@@ -415,7 +415,7 @@ describe('parseDeployOutput', () => {
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},
-				client: {},
+				client: {} as never,
 			};
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
 			const publisher: ArtifactPublisher = {

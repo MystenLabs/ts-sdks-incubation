@@ -38,6 +38,7 @@ export const operationalEndpointEventsFromResolvedValue = (
 			tag: 'endpoint.registered',
 			endpoint: {
 				endpointKey: endpointKey(`${pluginKey}:${field}`),
+				pluginKey,
 				name,
 				url: raw,
 				displayUrl: null,
