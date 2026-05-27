@@ -3,6 +3,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import type { AccountValue } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { WalrusSpans } from './spans.ts';
@@ -118,16 +119,12 @@ export const swapAccountSuiForWal = (
 						),
 					);
 				if (result.$kind === 'FailedTransaction') {
-					const errorTail =
-						result.FailedTransaction.executionError !== undefined
-							? `: ${result.FailedTransaction.executionError}`
-							: ' (no validator error attached).';
 					return yield* Effect.fail(
 						walrusPluginError(
 							'fund-wal',
 							`walrus.fundWal: SUI -> WAL swap failed on-chain ` +
-								`(digest=${result.FailedTransaction.digest}, ` +
-								`exchange=${args.exchange.objectId})${errorTail}`,
+								`(exchange=${args.exchange.objectId}) ` +
+								formatExecutedFailure(result.FailedTransaction),
 						),
 					);
 				}

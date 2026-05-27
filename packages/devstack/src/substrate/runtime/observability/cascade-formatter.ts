@@ -28,13 +28,9 @@
 // the operator can tell programmer errors from typed failures at a
 // glance. Interrupts render as `INTERRUPT[<fiberId>]`.
 
-import type { Cause } from 'effect';
+import { Cause } from 'effect';
 
 import { redactText, redactValue, type RedactionRule } from './redaction.ts';
-
-// `Cause` is a namespace in effect v4; the actual cause type is
-// `Cause.Cause<E>`. We re-alias here so call sites read naturally.
-type CauseT<E> = Cause.Cause<E>;
 
 // -----------------------------------------------------------------------------
 // Plug-in formatter API
@@ -110,29 +106,6 @@ export const isTaggedError = (value: unknown): value is TaggedErrorLike =>
 	value !== null &&
 	typeof (value as { _tag?: unknown })._tag === 'string';
 
-interface CauseLike {
-	readonly reasons: ReadonlyArray<ReasonLike>;
-}
-
-interface FailReasonLike {
-	readonly _tag: 'Fail';
-	readonly error: unknown;
-}
-interface DieReasonLike {
-	readonly _tag: 'Die';
-	readonly defect: unknown;
-}
-interface InterruptReasonLike {
-	readonly _tag: 'Interrupt';
-	readonly fiberId: number | undefined;
-}
-type ReasonLike = FailReasonLike | DieReasonLike | InterruptReasonLike;
-
-const isCauseLike = (value: unknown): value is CauseLike =>
-	typeof value === 'object' &&
-	value !== null &&
-	Array.isArray((value as { reasons?: unknown }).reasons);
-
 // -----------------------------------------------------------------------------
 // Public entry points
 // -----------------------------------------------------------------------------
@@ -146,7 +119,7 @@ const isCauseLike = (value: unknown): value is CauseLike =>
  *
  * Cyclic `cause` chains are broken with `…[cycle]`.
  */
-export const formatCause = <E>(cause: CauseT<E>, options?: FormatOptions): string => {
+export const formatCause = <E>(cause: Cause.Cause<E>, options?: FormatOptions): string => {
 	const opts: Required<FormatOptions> = {
 		formatters: options?.formatters ?? emptyFormatterRegistry,
 		fieldTruncate: options?.fieldTruncate ?? DEFAULT_FIELD_TRUNCATE,
@@ -154,9 +127,8 @@ export const formatCause = <E>(cause: CauseT<E>, options?: FormatOptions): strin
 		redactions: options?.redactions ?? [],
 	};
 	const visited = new WeakSet<object>();
-	const reasons = (cause as unknown as CauseLike).reasons;
-	if (reasons.length === 0) return '(empty cause)';
-	const rendered = reasons.map((reason) => formatReason(reason, opts, visited, 0));
+	if (cause.reasons.length === 0) return '(empty cause)';
+	const rendered = cause.reasons.map((reason) => formatReason(reason, opts, visited, 0));
 	return rendered.join('\n--- (also)\n');
 };
 
@@ -194,21 +166,20 @@ const indent = (s: string, prefix: string): string =>
 		.join('\n');
 
 const formatReason = (
-	reason: ReasonLike,
+	reason: Cause.Reason<unknown>,
 	opts: Required<FormatOptions>,
 	visited: WeakSet<object>,
 	depth: number,
 ): string => {
-	switch (reason._tag) {
-		case 'Fail':
-			return formatAny(reason.error, opts, visited, depth);
-		case 'Die': {
-			const inner = formatAny(reason.defect, opts, visited, depth);
-			return `DEFECT:\n${indent(inner, '  ')}`;
-		}
-		case 'Interrupt':
-			return `INTERRUPT[${reason.fiberId ?? 'unknown'}]`;
+	if (Cause.isFailReason(reason)) {
+		return formatAny(reason.error, opts, visited, depth);
 	}
+	if (Cause.isDieReason(reason)) {
+		const inner = formatAny(reason.defect, opts, visited, depth);
+		return `DEFECT:\n${indent(inner, '  ')}`;
+	}
+	// Cause.isInterruptReason(reason)
+	return `INTERRUPT[${reason.fiberId ?? 'unknown'}]`;
 };
 
 const formatAny = (
@@ -223,10 +194,11 @@ const formatAny = (
 		if (visited.has(value as object)) return '…[cycle]';
 		visited.add(value as object);
 	}
-	if (isCauseLike(value)) {
-		const rs = value.reasons;
-		if (rs.length === 0) return '(empty cause)';
-		return rs.map((r) => formatReason(r, opts, visited, depth)).join('\n--- (also)\n');
+	if (Cause.isCause(value)) {
+		if (value.reasons.length === 0) return '(empty cause)';
+		return value.reasons
+			.map((r) => formatReason(r, opts, visited, depth))
+			.join('\n--- (also)\n');
 	}
 	if (isTaggedError(value)) {
 		return formatTagged(value, opts, visited, depth);

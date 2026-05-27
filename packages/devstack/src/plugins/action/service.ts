@@ -39,9 +39,10 @@ import { createHash } from 'node:crypto';
 import { Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
@@ -222,11 +223,11 @@ export const bootActionService = (
 				return receipt;
 			}).pipe(
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `action.${inputs.actionName} ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError(
+							'produce-failed',
+							`action.${inputs.actionName} ${err.phase}: ${err.message}`,
+						),
 				),
 			),
 			register: (_artifact) =>

@@ -354,7 +354,6 @@ export type {
 	AccountOptions,
 	ResolvedAccountOptions,
 	AccountValue,
-	FailedTxResult,
 	SignAndExecuteResult,
 	TxResult,
 } from './service.ts';

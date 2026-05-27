@@ -24,10 +24,12 @@
 export {
 	discoverBuildIntegrationIdentity,
 	discoverManifestPath,
+	discoverSingleStackManifestPath,
 	readAppName,
 	readAppNameWalkup,
 	type DiscoverManifestPathOptions,
 	type DiscoverBuildIntegrationIdentityOptions,
+	type DiscoverSingleStackManifestPathOptions,
 	type BuildIntegrationIdentity,
 	DEFAULT_STACK,
 	DEFAULT_STATE_DIR,

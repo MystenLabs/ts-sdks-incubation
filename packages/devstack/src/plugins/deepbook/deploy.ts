@@ -16,15 +16,17 @@ import {
 	contentHash as brandContentHash,
 	type ContentHash,
 } from '../../substrate/brand.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { SuiSdkShim } from '../sui/index.ts';
 import type { CoinValue } from '../coin/index.ts';
 import type { ResolvedSigner } from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	executeSuiTx,
+	formatExecutedFailure,
 	isSuiStaleObjectVersionError,
 } from '../../substrate/runtime/sui-execute/index.ts';
 import {
@@ -388,39 +390,34 @@ export const createDeepbookPools = (
 							},
 						}).pipe(
 							Effect.mapError(
-								(err): ArtifactPublishError => ({
-									_tag: 'ArtifactPublishError',
-									reason: 'produce-failed',
-									detail: `deepbook pool transaction failed: ${err.message}`,
-								}),
+								(err): ArtifactPublishError =>
+									artifactPublishError(
+										'produce-failed',
+										`deepbook pool transaction failed: ${err.message}`,
+									),
 							),
 						);
 						if (result.$kind === 'FailedTransaction') {
-							const errorClause =
-								result.FailedTransaction.executionError !== undefined
-									? `: ${result.FailedTransaction.executionError}`
-									: ' (validator returned no error message)';
-							return yield* Effect.fail({
-								_tag: 'ArtifactPublishError' as const,
-								reason: 'produce-failed' as const,
-								detail:
+							return yield* Effect.fail(
+								artifactPublishError(
+									'produce-failed',
 									`deepbook pool transaction on-chain execution failed ` +
-									`(digest=${result.FailedTransaction.digest})` +
-									errorClause,
-							});
+										formatExecutedFailure(result.FailedTransaction),
+								),
+							);
 						}
 						const receipt = result.Transaction;
 
 						for (const pool of missingPools) {
 							const poolId = pickCreatedPool(receipt.objectChanges, pool);
 							if (poolId === null) {
-								return yield* Effect.fail({
-									_tag: 'ArtifactPublishError' as const,
-									reason: 'produce-failed' as const,
-									detail:
+								return yield* Effect.fail(
+									artifactPublishError(
+										'produce-failed',
 										`deepbook pool '${pool.name}' not found in objectChanges ` +
-										`(digest=${receipt.digest}).`,
-								});
+											`(digest=${receipt.digest}).`,
+									),
+								);
 							}
 							cachedPools.push(toCachedPool(pool, poolId));
 						}
@@ -521,13 +518,12 @@ const requestSeedFunding = (
 	}
 	return strategy.request({ address: signer.address, amount }).pipe(
 		Effect.mapError(
-			(err): ArtifactPublishError => ({
-				_tag: 'ArtifactPublishError',
-				reason: 'produce-failed',
-				detail:
+			(err): ArtifactPublishError =>
+				artifactPublishError(
+					'produce-failed',
 					`deepbook seed funding failed for ${coinType} ` +
-					`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
-			}),
+						`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
+				),
 		),
 	);
 };
@@ -854,38 +850,33 @@ export const seedDeepbookPools = (
 							},
 						}).pipe(
 							Effect.mapError(
-								(err): ArtifactPublishError => ({
-									_tag: 'ArtifactPublishError',
-									reason: 'produce-failed',
-									detail: `deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
-								}),
+								(err): ArtifactPublishError =>
+									artifactPublishError(
+										'produce-failed',
+										`deepbook seed transaction failed for pool '${spec.name}': ${err.message}`,
+									),
 							),
 						);
 						if (result.$kind === 'FailedTransaction') {
-							const errorClause =
-								result.FailedTransaction.executionError !== undefined
-									? `: ${result.FailedTransaction.executionError}`
-									: ' (validator returned no error message)';
-							return yield* Effect.fail({
-								_tag: 'ArtifactPublishError' as const,
-								reason: 'produce-failed' as const,
-								detail:
+							return yield* Effect.fail(
+								artifactPublishError(
+									'produce-failed',
 									`deepbook seed transaction on-chain execution failed for pool '${spec.name}' ` +
-									`(digest=${result.FailedTransaction.digest})` +
-									errorClause,
-							});
+										formatExecutedFailure(result.FailedTransaction),
+								),
+							);
 						}
 						const receipt = result.Transaction;
 
 						const balanceManagerId = pickCreatedBalanceManager(receipt.objectChanges);
 						if (balanceManagerId === null) {
-							return yield* Effect.fail({
-								_tag: 'ArtifactPublishError' as const,
-								reason: 'produce-failed' as const,
-								detail:
+							return yield* Effect.fail(
+								artifactPublishError(
+									'produce-failed',
 									`deepbook seed BalanceManager not found in objectChanges ` +
-									`(digest=${receipt.digest}).`,
-							});
+										`(digest=${receipt.digest}).`,
+								),
+							);
 						}
 						return { poolName: spec.name, balanceManagerId, digest: receipt.digest };
 					}),

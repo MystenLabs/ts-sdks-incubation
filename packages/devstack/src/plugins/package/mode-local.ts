@@ -33,9 +33,10 @@ import {
 	type PackagePublishObjectChange,
 	type LocalPackagePublishOutput,
 } from './publish-output.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
@@ -371,11 +372,11 @@ export const acquireLocal = (
 				return entry;
 			}).pipe(
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `package.publish ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError(
+							'produce-failed',
+							`package.publish ${err.phase}: ${err.message}`,
+						),
 				),
 			),
 			// Register: on EVERY cycle. Distilled doc Invariant 6. The
@@ -447,11 +448,11 @@ export const acquireLocal = (
 				// threw"` — regardless of whether the bug surfaces on a
 				// cache miss (inside `produce`) or a cache hit (here).
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `package.publish ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError(
+							'produce-failed',
+							`package.publish ${err.phase}: ${err.message}`,
+						),
 				),
 			);
 			yield* registry.set(inputs.packageName, {

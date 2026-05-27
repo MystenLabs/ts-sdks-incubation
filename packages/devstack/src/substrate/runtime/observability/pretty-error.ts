@@ -14,7 +14,7 @@
 // `cascade-formatter.ts`. Splitting them keeps the formatter pure
 // + reusable while letting this module evolve IO conventions.
 
-import type { Cause } from 'effect';
+import { Cause } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { StructuredError } from '../../projection.ts';
@@ -77,10 +77,9 @@ export const prettyErrorStructured = <E>(
 /** Walk the cause's first `Fail` reason and pull out the outermost
  *  tag + message for projection.summary. */
 const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: string } => {
-	const reasons = (cause as unknown as { reasons: ReadonlyArray<{ _tag: string }> }).reasons;
-	for (const reason of reasons) {
-		if (reason._tag === 'Fail') {
-			const error = (reason as unknown as { error: unknown }).error;
+	for (const reason of cause.reasons) {
+		if (Cause.isFailReason(reason)) {
+			const error = reason.error;
 			if (isTaggedError(error)) {
 				return {
 					tag: error._tag,
@@ -92,8 +91,8 @@ const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: s
 			}
 			return { tag: 'UnknownFailure', summary: String(error) };
 		}
-		if (reason._tag === 'Die') {
-			const defect = (reason as unknown as { defect: unknown }).defect;
+		if (Cause.isDieReason(reason)) {
+			const defect = reason.defect;
 			if (isTaggedError(defect)) {
 				return {
 					tag: `Defect[${defect._tag}]`,
@@ -105,9 +104,8 @@ const extractHeadline = (cause: Cause.Cause<unknown>): { tag: string; summary: s
 			}
 			return { tag: 'Defect', summary: String(defect) };
 		}
-		if (reason._tag === 'Interrupt') {
-			return { tag: 'Interrupt', summary: 'fiber interrupted' };
-		}
+		// Cause.isInterruptReason(reason)
+		return { tag: 'Interrupt', summary: 'fiber interrupted' };
 	}
 	return { tag: 'EmptyCause', summary: '(empty cause)' };
 };
@@ -123,24 +121,21 @@ const headlineText = (value: TaggedErrorLike): string | null => {
 /** Walk every layer of the cause's outermost `Fail` chain and build a
  *  list of `<tag>: <message>` strings — one per nested layer. */
 const extractChain = (cause: Cause.Cause<unknown>): ReadonlyArray<string> => {
-	const reasons = (cause as unknown as { reasons: ReadonlyArray<unknown> }).reasons;
 	const out: Array<string> = [];
-	for (const reason of reasons) {
+	for (const reason of cause.reasons) {
 		walkChainFromReason(reason, out, new WeakSet());
 	}
 	return out;
 };
 
 const walkChainFromReason = (
-	reason: unknown,
+	reason: Cause.Reason<unknown>,
 	out: Array<string>,
 	visited: WeakSet<object>,
 ): void => {
-	if (typeof reason !== 'object' || reason === null) return;
-	const r = reason as { _tag?: unknown; error?: unknown; defect?: unknown; fiberId?: unknown };
-	if (r._tag === 'Fail') walkChainFromValue(r.error, out, visited);
-	else if (r._tag === 'Die') walkChainFromValue(r.defect, out, visited);
-	else if (r._tag === 'Interrupt') out.push('Interrupt');
+	if (Cause.isFailReason(reason)) walkChainFromValue(reason.error, out, visited);
+	else if (Cause.isDieReason(reason)) walkChainFromValue(reason.defect, out, visited);
+	else out.push('Interrupt');
 };
 
 const walkChainFromValue = (value: unknown, out: Array<string>, visited: WeakSet<object>): void => {

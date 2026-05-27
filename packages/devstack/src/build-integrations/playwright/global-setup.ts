@@ -25,9 +25,10 @@
 // via `globalTeardown` indirection — we return the teardown so the
 // preset's `globalTeardown` can call it).
 
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
+import { discoverSingleStackManifestPath } from '../runtime/discover.ts';
 import {
 	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
 	type PlaywrightStackFixture as RuntimePlaywrightStackFixture,
@@ -127,33 +128,11 @@ const stackOptionWasExplicit = (options: DefineGlobalSetupOptions): boolean => {
 const findSingleStackManifestPath = (options: DefineGlobalSetupOptions): string | null => {
 	if (stackOptionWasExplicit(options)) return null;
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
-	const cwd = resolve(options.cwd ?? process.cwd());
-	const stateDirName = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR] ?? '.devstack';
-	const startDirs = isAbsolute(stateDirName)
-		? [stateDirName]
-		: (() => {
-				const dirs: string[] = [];
-				let dir = cwd;
-				while (true) {
-					dirs.push(join(dir, stateDirName));
-					const parent = dirname(dir);
-					if (parent === dir) return dirs;
-					dir = parent;
-				}
-			})();
-
-	for (const stateDir of startDirs) {
-		const stacksDir = join(stateDir, 'stacks');
-		if (!existsSync(stacksDir)) continue;
-		const manifests = readdirSync(stacksDir, { withFileTypes: true })
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => join(stacksDir, entry.name, 'manifest.json'))
-			.filter((path) => existsSync(path))
-			.sort();
-		if (manifests.length === 1) return manifests[0]!;
-		if (manifests.length > 1) return null;
-	}
-	return null;
+	const stateDir = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR];
+	return discoverSingleStackManifestPath({
+		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+		...(stateDir !== undefined && stateDir !== '' ? { stateDir } : {}),
+	});
 };
 
 const readContextForSetup = (options: DefineGlobalSetupOptions): StackContext => {

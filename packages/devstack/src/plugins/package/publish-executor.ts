@@ -33,6 +33,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
@@ -278,18 +279,13 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 							),
 						);
 						if (result.$kind === 'FailedTransaction') {
-							const failed = result.FailedTransaction;
-							const errorTail =
-								failed.executionError !== undefined
-									? `: ${failed.executionError}`
-									: ' (no validator error attached).';
 							return yield* Effect.fail(
 								publishError('publish-tx', {
 									sourcePath,
 									packageName,
 									message:
 										`executeTransaction returned FailedTransaction ` +
-										`(digest=${failed.digest})${errorTail}`,
+										formatExecutedFailure(result.FailedTransaction),
 								}),
 							);
 						}

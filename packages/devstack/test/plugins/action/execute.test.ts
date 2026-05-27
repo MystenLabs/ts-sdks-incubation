@@ -382,7 +382,10 @@ describe('action signAndExecute helper', () => {
 		const err = (errOpt as Option.Some<{ phase?: string; message?: string }>).value;
 		expect(err.phase).toBe('execute-failed');
 		expect(err.message?.includes('InsufficientGas')).toBe(true);
-		expect(err.message?.includes('digest=GGGG')).toBe(true);
+		// `formatExecutedFailure` (substrate/runtime/sui-execute) renders
+		// the on-chain failure tail as `at <digest>: <executionError>` —
+		// the digest is plainly present without a `digest=` prefix.
+		expect(err.message?.includes('at GGGG')).toBe(true);
 	});
 
 	it('account scope unwinds AFTER the action body completes (sequencing pin)', async () => {

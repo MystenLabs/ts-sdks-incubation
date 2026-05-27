@@ -11,9 +11,15 @@ import { Effect, Schema, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64, fromHex, toHex } from '@mysten/sui/utils';
 
-import type { ArtifactPublisher } from '../../../primitives/artifact-publisher.ts';
+import {
+	artifactPublishError,
+	type ArtifactPublisher,
+} from '../../../primitives/artifact-publisher.ts';
 import type { ResolvedSigner } from '../../../substrate/runtime/sui-execute/index.ts';
-import { executeSuiTx } from '../../../substrate/runtime/sui-execute/index.ts';
+import {
+	executeSuiTx,
+	formatExecutedFailure,
+} from '../../../substrate/runtime/sui-execute/index.ts';
 import {
 	chainId as brandChainId,
 	contentHash as brandContentHash,
@@ -271,61 +277,54 @@ export const initLocalPythFeeds = (
 							return tx.build({ client: sdk.client });
 						},
 					}).pipe(
-						Effect.mapError(
-							(err) =>
-								({
-									_tag: 'ArtifactPublishError',
-									reason: 'produce-failed',
-									detail: `pyth feed transaction failed: ${err.message}`,
-								}) as const,
+						Effect.mapError((err) =>
+							artifactPublishError(
+								'produce-failed',
+								`pyth feed transaction failed: ${err.message}`,
+							),
 						),
 					);
 					if (result.$kind === 'FailedTransaction') {
-						const errorClause =
-							result.FailedTransaction.executionError !== undefined
-								? `: ${result.FailedTransaction.executionError}`
-								: ' (validator returned no error message)';
-						return yield* Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
 								`pyth feed transaction on-chain execution failed ` +
-								`(digest=${result.FailedTransaction.digest})` +
-								errorClause,
-						});
+									formatExecutedFailure(result.FailedTransaction),
+							),
+						);
 					}
 					const receipt = result.Transaction;
 
 					const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
 					if (created.length !== feeds.length) {
-						return yield* Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
 								`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
-								`(digest=${receipt.digest}).`,
-						});
+									`(digest=${receipt.digest}).`,
+							),
+						);
 					}
 					const idsByFeed = yield* Effect.tryPromise({
 						try: () => mapCreatedPriceObjects(sdk, created),
 						catch: (cause) =>
-							({
-								_tag: 'ArtifactPublishError',
-								reason: 'produce-failed',
-								detail: `failed to read created Pyth PriceInfoObjects: ${
+							artifactPublishError(
+								'produce-failed',
+								`failed to read created Pyth PriceInfoObjects: ${
 									cause instanceof Error ? cause.message : String(cause)
 								}`,
-							}) as const,
+							),
 					});
 					const cachedFeeds: CachedPythFeed[] = [];
 					for (const feed of feeds) {
 						const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
 						if (priceInfoObjectId === undefined) {
-							return yield* Effect.fail({
-								_tag: 'ArtifactPublishError' as const,
-								reason: 'produce-failed' as const,
-								detail: `created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
-							});
+							return yield* Effect.fail(
+								artifactPublishError(
+									'produce-failed',
+									`created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
+								),
+							);
 						}
 						cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
 					}

@@ -33,9 +33,10 @@ import { access, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
@@ -451,11 +452,11 @@ export const deployWalrusContracts = (
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `walrus.deploy ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError(
+							'produce-failed',
+							`walrus.deploy ${err.phase}: ${err.message}`,
+						),
 				),
 			),
 			// Register: fires on EVERY cycle. The plugin's outer body

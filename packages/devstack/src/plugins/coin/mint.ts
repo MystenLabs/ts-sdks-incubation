@@ -27,10 +27,12 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import type { ClientWithCoreApi } from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
@@ -302,13 +304,12 @@ export const performMint = (
 						const txBytes = yield* Effect.tryPromise({
 							try: () =>
 								tx.build({ client: sdk.client }),
-							catch: (cause): ArtifactPublishError => ({
-								_tag: 'ArtifactPublishError',
-								reason: 'produce-failed',
-								detail:
+							catch: (cause): ArtifactPublishError =>
+								artifactPublishError(
+									'produce-failed',
 									`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
-									`${cause instanceof Error ? cause.message : String(cause)}`,
-							}),
+										`${cause instanceof Error ? cause.message : String(cause)}`,
+								),
 						});
 
 						// 3. Sign + execute via the Account-supplied signer. Map
@@ -316,12 +317,11 @@ export const performMint = (
 						//    Account plugin's signer handles waitForTransaction internally.
 						return yield* lockedSigner.signAndExecute(txBytes).pipe(
 							Effect.mapError(
-								(cause): ArtifactPublishError => ({
-									_tag: 'ArtifactPublishError',
-									reason: 'produce-failed',
-									detail:
+								(cause): ArtifactPublishError =>
+									artifactPublishError(
+										'produce-failed',
 										`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
-								}),
+									),
 							),
 						);
 					}),
@@ -333,17 +333,13 @@ export const performMint = (
 				//     the cache treats this as a re-run candidate.
 				if (result.$kind === 'FailedTransaction') {
 					const failed = result.FailedTransaction!;
-					const errorTail =
-						failed.executionError !== undefined
-							? `: ${failed.executionError}`
-							: ' (no validator error attached).';
-					return yield* Effect.fail({
-						_tag: 'ArtifactPublishError' as const,
-						reason: 'produce-failed' as const,
-						detail:
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
 							`coin.mint(${inputs.fullCoinType}): transaction execution failed on-chain ` +
-							`(digest=${failed.digest})${errorTail}`,
-					} satisfies ArtifactPublishError);
+								formatExecutedFailure(failed),
+						),
+					);
 				}
 				const ok = result.Transaction!;
 
@@ -354,15 +350,15 @@ export const performMint = (
 				//     `0x2::coin::Coin<${fullCoinType}>` substring.
 				const mintedCoinId = pickCreatedCoin(ok.objectChanges, inputs.fullCoinType);
 				if (mintedCoinId === null) {
-					return yield* Effect.fail({
-						_tag: 'ArtifactPublishError' as const,
-						reason: 'produce-failed' as const,
-						detail:
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
 							`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
-							`objectChanges (digest=${ok.digest}). ` +
-							mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
-								.message,
-					} satisfies ArtifactPublishError);
+								`objectChanges (digest=${ok.digest}). ` +
+								mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
+									.message,
+						),
+					);
 				}
 
 				yield* Effect.annotateCurrentSpan({

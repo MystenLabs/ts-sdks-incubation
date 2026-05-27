@@ -31,6 +31,7 @@ import type {
 	TxResult,
 } from '../account/index.ts';
 import { buildForkImpersonationTransactionBytes, type SuiClient } from '../sui/index.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
@@ -223,18 +224,13 @@ export const signAndExecute = (params: {
 				// renders them distinctly from transport-level signing
 				// failures (`phase: 'sign'`).
 				if (result.$kind === 'FailedTransaction') {
-					const failed = result.FailedTransaction;
-					const errorTail =
-						failed.executionError !== undefined
-							? `: ${failed.executionError}`
-							: ' (no validator error attached).';
 					return yield* Effect.fail(
 						actionError('execute-failed', {
 							actionName,
 							message:
 								`Action '${actionName}': transaction execution failed on-chain ` +
-								`(digest=${failed.digest}, account='${account.name}', ` +
-								`address=${account.address})${errorTail}`,
+								`for account '${account.name}' (address=${account.address}) ` +
+								formatExecutedFailure(result.FailedTransaction),
 						}),
 					);
 				}

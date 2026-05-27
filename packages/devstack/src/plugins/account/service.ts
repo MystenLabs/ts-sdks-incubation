@@ -62,7 +62,10 @@ import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { TransactionSignerScope } from '../../substrate/runtime/sui-execute/index.ts';
+import type {
+	ExecutedFailure,
+	TransactionSignerScope,
+} from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	LeaseBrokerService,
 	type LeaseBroker,
@@ -184,29 +187,19 @@ export interface TxResult {
 	readonly balanceChanges: ReadonlyArray<unknown>;
 }
 
-/** On-chain failure projection. Mirrors the `'FailedTransaction'`
- *  variant of the SDK's `SuiClientTypes.TransactionResult` — the
- *  transaction was delivered and executed by the validator but the
- *  on-chain execution failed. Carries the digest (for log
- *  correlation) plus the validator's stringified error when one was
- *  attached. `executionError` is omitted when the SDK returns no
- *  message (per §5: do NOT synthesize sentinel placeholder strings
- *  at resolved-value surfaces — fail or omit). The `digest` is
- *  always present; an envelope without a digest fails at projection
- *  with `AccountSignError(phase: 'no-digest')`. */
-export interface FailedTxResult {
-	readonly digest: string;
-	readonly executionError?: string;
-}
-
 /** Outcome of `signAndExecute`. Mirrors the SDK's discriminated
  *  `SuiClientTypes.TransactionResult` shape — on-chain failures are
  *  a RETURN VALUE (callers dispatch on `$kind`), NOT an error. Only
  *  transport / lifecycle failures (sign refused, RPC unreachable,
- *  finality wait broke) surface through `AccountSignError`. */
+ *  finality wait broke) surface through `AccountSignError`.
+ *
+ *  The on-chain `FailedTransaction` projection is the substrate
+ *  `ExecutedFailure` shape — single source of truth lives in
+ *  `substrate/runtime/sui-execute/index.ts`. An envelope without a
+ *  digest fails at projection with `AccountSignError(phase: 'no-digest')`. */
 export type SignAndExecuteResult =
 	| { readonly $kind: 'Transaction'; readonly Transaction: TxResult }
-	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: FailedTxResult };
+	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: ExecutedFailure };
 
 export interface AccountTransactionSigner extends TransactionSignerScope<AccountSignError> {
 	readonly signAndExecute: AccountValue['signAndExecute'];

@@ -19,6 +19,7 @@ import {
 	type AccountFundingStrategy,
 } from '../account/index.ts';
 import type { SuiSdkShim } from '../sui/index.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import { DeepbookSpans } from './spans.ts';
@@ -166,16 +167,12 @@ export const makeDeepbookDeepFundingStrategy = (
 								),
 							);
 						if (result.$kind === 'FailedTransaction') {
-							const errorTail =
-								result.FailedTransaction.executionError !== undefined
-									? `: ${result.FailedTransaction.executionError}`
-									: ' (no validator error attached).';
 							return yield* Effect.fail(
 								deepbookPluginError(
 									'fund-deep',
 									`DeepBook DEEP funding transaction failed on-chain ` +
-										`(digest=${result.FailedTransaction.digest}, ` +
-										`account='${req.account.name}', address=${req.account.address})${errorTail}`,
+										`for account '${req.account.name}' (address=${req.account.address}) ` +
+										formatExecutedFailure(result.FailedTransaction),
 								),
 							);
 						}

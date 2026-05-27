@@ -120,18 +120,38 @@ export interface ExecutedReceipt {
 	readonly objectChanges: ReadonlyArray<ExecutedObjectChange>;
 }
 
-/** On-chain failure projection. Mirrors `account.signAndExecute`'s
- *  `FailedTxResult` — the transaction was delivered + executed by the
- *  validator but the on-chain execution failed. Carries the digest
- *  (for log correlation) plus the validator's stringified error when
- *  one was attached. `executionError` is omitted when the SDK returns
- *  no message (STYLE_GUIDE §5: no sentinel placeholders at
- *  resolved-value surfaces). An envelope without a digest fails at
- *  projection with `SuiExecuteError(phase: 'no-digest')`. */
+/** On-chain failure projection. The transaction was delivered +
+ *  executed by the validator but the on-chain execution failed.
+ *  Carries the digest (for log correlation) plus the validator's
+ *  stringified error when one was attached. `executionError` is
+ *  omitted when the SDK returns no message (STYLE_GUIDE §5: no
+ *  sentinel placeholders at resolved-value surfaces). An envelope
+ *  without a digest fails at projection with
+ *  `SuiExecuteError(phase: 'no-digest')`.
+ *
+ *  This is the single source of truth for the on-chain-failure shape
+ *  across the devstack: `account.SignAndExecuteResult`'s
+ *  `FailedTransaction` variant carries it directly; every plugin that
+ *  renders one of these failures into a user-facing error message goes
+ *  through `formatExecutedFailure` (below). */
 export interface ExecutedFailure {
 	readonly digest: string;
 	readonly executionError?: string;
 }
+
+/** Render the canonical "digest + executionError-or-noted-absent" tail
+ *  used by every plugin's `FailedTransaction` surface. Pure projection;
+ *  does not throw.
+ *
+ *  Used at the call site as e.g.
+ *  `\`seal publish ... ${formatExecutedFailure(result.FailedTransaction)}\``.
+ *  Centralising the wording means future tweaks propagate uniformly
+ *  across the seal / coin / walrus / deepbook / action / package
+ *  surfaces. */
+export const formatExecutedFailure = (failure: ExecutedFailure): string =>
+	failure.executionError !== undefined
+		? `at ${failure.digest}: ${failure.executionError}`
+		: `at ${failure.digest} (no validator error attached)`;
 
 /** Outcome of `executeSuiTx`. Mirrors the SDK's discriminated
  *  `SuiClientTypes.TransactionResult` shape — on-chain failures are a

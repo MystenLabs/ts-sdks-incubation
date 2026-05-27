@@ -12,12 +12,17 @@ import {
 
 import type { ChainProbe, ChainProbeSchema } from '../../contracts/chain-probe.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
-import { executeSuiTx, type ExecutedReceipt } from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	executeSuiTx,
+	formatExecutedFailure,
+	type ExecutedReceipt,
+} from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	hashMoveSources,
 	runMoveBuild,
@@ -39,11 +44,8 @@ export interface SealSuiSdk {
 	readonly client: ClientWithCoreApi;
 }
 
-const sealProduceFailed = (op: 'publish' | 'register', err: SealError): ArtifactPublishError => ({
-	_tag: 'ArtifactPublishError',
-	reason: 'produce-failed',
-	detail: `seal.${op} ${err.phase}: ${err.message}`,
-});
+const sealProduceFailed = (op: 'publish' | 'register', err: SealError): ArtifactPublishError =>
+	artifactPublishError('produce-failed', `seal.${op} ${err.phase}: ${err.message}`);
 
 const moveBuildToSealError = (name: string, err: MoveBuildError): SealError =>
 	sealError('publish', {
@@ -208,18 +210,13 @@ export const runSealPublishTransaction = (
 			),
 		);
 		if (result.$kind === 'FailedTransaction') {
-			const errorClause =
-				result.FailedTransaction.executionError !== undefined
-					? `: ${result.FailedTransaction.executionError}`
-					: ' (validator returned no error message)';
 			return yield* Effect.fail(
 				sealError('publish', {
 					name: inputs.name,
 					message:
 						`seal publish tx executed but on-chain execution failed for signer ` +
-						`'${inputs.signer.name}' (address=${inputs.signer.address}, ` +
-						`digest=${result.FailedTransaction.digest})` +
-						errorClause,
+						`'${inputs.signer.name}' (address=${inputs.signer.address}) ` +
+						formatExecutedFailure(result.FailedTransaction),
 				}),
 			);
 		}
@@ -427,18 +424,13 @@ export const runRegisterKeyServerTransaction = (
 			),
 		);
 		if (result.$kind === 'FailedTransaction') {
-			const errorClause =
-				result.FailedTransaction.executionError !== undefined
-					? `: ${result.FailedTransaction.executionError}`
-					: ' (validator returned no error message)';
 			return yield* Effect.fail(
 				sealError('register', {
 					name: inputs.name,
 					message:
 						`seal register tx executed but on-chain execution failed for signer ` +
-						`'${signer.name}' (address=${signer.address}, ` +
-						`digest=${result.FailedTransaction.digest})` +
-						errorClause,
+						`'${signer.name}' (address=${signer.address}) ` +
+						formatExecutedFailure(result.FailedTransaction),
 				}),
 			);
 		}

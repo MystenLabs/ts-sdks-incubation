@@ -28,8 +28,8 @@
 // Playwright config-load, and Playwright's loader API is sync. Cost is
 // a handful of `existsSync` calls — cheap.
 
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { existsSync, readdirSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { ManifestDiscoveryError } from './errors.ts';
 import {
@@ -198,3 +198,65 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 	}
 	return undefined;
 }
+
+export interface DiscoverSingleStackManifestPathOptions {
+	/** Starting directory for the walk-up. Defaults to `process.cwd()`. */
+	readonly cwd?: string;
+	/** State-dir name. Defaults to `.devstack`. Absolute paths are
+	 *  honored — the walk-up degenerates into a single existence check
+	 *  in that case. */
+	readonly stateDir?: string;
+}
+
+/**
+ * Walks up from `cwd` looking for a `<stateDir>` that contains EXACTLY
+ * ONE stack subdirectory; returns that stack's `manifest.json` path.
+ * Returns `null` when zero or >1 stacks are found at every ancestor.
+ *
+ * Used by integrations that need a no-explicit-stack auto-detect mode
+ * (Playwright preset; future Vitest cold-start). The contract:
+ *
+ *   - At each ancestor, list `<ancestor>/<stateDir>/stacks/*`.
+ *   - If exactly one stack dir with a `manifest.json` exists at that
+ *     level: return its path. Stop walking.
+ *   - If >1 stacks exist at that level: ambiguous → return `null` (do
+ *     NOT continue walking past an ambiguous level).
+ *   - If 0 stacks exist at that level: continue walking up.
+ *   - If the filesystem root is reached without resolution: return
+ *     `null`.
+ *
+ * Pure — does not consult env vars. Callers do their own gating (the
+ * Playwright preset only invokes this when no explicit stack was
+ * supplied via option or env).
+ */
+export const discoverSingleStackManifestPath = (
+	options: DiscoverSingleStackManifestPathOptions = {},
+): string | null => {
+	const cwd = resolve(options.cwd ?? process.cwd());
+	const stateDirName = options.stateDir ?? DEFAULT_STATE_DIR;
+	const startDirs = isAbsolute(stateDirName)
+		? [stateDirName]
+		: (() => {
+				const dirs: string[] = [];
+				let dir = cwd;
+				while (true) {
+					dirs.push(join(dir, stateDirName));
+					const parent = dirname(dir);
+					if (parent === dir) return dirs;
+					dir = parent;
+				}
+			})();
+
+	for (const stateDir of startDirs) {
+		const stacksDir = join(stateDir, 'stacks');
+		if (!existsSync(stacksDir)) continue;
+		const manifests = readdirSync(stacksDir, { withFileTypes: true })
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => join(stacksDir, entry.name, 'manifest.json'))
+			.filter((path) => existsSync(path))
+			.sort();
+		if (manifests.length === 1) return manifests[0]!;
+		if (manifests.length > 1) return null;
+	}
+	return null;
+};

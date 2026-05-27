@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 
 import {
 	discoverManifestPath,
+	discoverSingleStackManifestPath,
 	ManifestDiscoveryError,
 } from '../../../src/build-integrations/runtime/index.ts';
 
@@ -148,5 +149,62 @@ describe('discoverManifestPath', () => {
 		const overridePath = makeStackManifest(otherTmp);
 		process.env.DEVSTACK_MANIFEST_PATH = envPath;
 		expect(discoverManifestPath({ override: overridePath })).toBe(envPath);
+	});
+});
+
+describe('discoverSingleStackManifestPath', () => {
+	it('returns the manifest when exactly one stack exists at cwds stateDir', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		const path = makeStackManifest(tmp, 'only-one');
+		expect(discoverSingleStackManifestPath({ cwd: tmp })).toBe(path);
+	});
+
+	it('returns null when no stacks exist anywhere on the walk-up', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		expect(discoverSingleStackManifestPath({ cwd: tmp })).toBeNull();
+	});
+
+	it('returns null (ambiguous) when multiple stacks exist at the same level', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		makeStackManifest(tmp, 'stack-a');
+		makeStackManifest(tmp, 'stack-b');
+		expect(discoverSingleStackManifestPath({ cwd: tmp })).toBeNull();
+	});
+
+	it('walks up to an ancestor stateDir when cwds has none', () => {
+		const outer = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		const path = makeStackManifest(outer, 'lone');
+		const nested = join(outer, 'a', 'b', 'c');
+		mkdirSync(nested, { recursive: true });
+		expect(discoverSingleStackManifestPath({ cwd: nested })).toBe(path);
+	});
+
+	it('honors a custom stateDir name', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		const dir = join(tmp, '.devstack-alt', 'stacks', 'solo');
+		mkdirSync(dir, { recursive: true });
+		const path = join(dir, 'manifest.json');
+		writeFileSync(path, '{}');
+		expect(discoverSingleStackManifestPath({ cwd: tmp, stateDir: '.devstack-alt' })).toBe(path);
+	});
+
+	it('skips a stacks dir that holds only directories without manifests', () => {
+		const tmp = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		// Create stacks/half-baked/ with NO manifest.json — should be
+		// treated as zero, not one.
+		mkdirSync(join(tmp, '.devstack', 'stacks', 'half-baked'), { recursive: true });
+		expect(discoverSingleStackManifestPath({ cwd: tmp })).toBeNull();
+	});
+
+	it('does not walk past an ambiguous level to find a higher single-stack', () => {
+		// Outer has one stack; inner has two — caller cwd at inner should
+		// see ambiguous and stop (returning null), NOT walk up to outer.
+		const outer = mkdtempSync(join(tmpdir(), 'devstack-single-'));
+		makeStackManifest(outer, 'outer-only');
+		const inner = join(outer, 'sub');
+		mkdirSync(inner, { recursive: true });
+		makeStackManifest(inner, 'inner-a');
+		makeStackManifest(inner, 'inner-b');
+		expect(discoverSingleStackManifestPath({ cwd: inner })).toBeNull();
 	});
 });

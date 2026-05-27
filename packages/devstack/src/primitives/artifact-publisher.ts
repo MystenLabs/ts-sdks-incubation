@@ -70,6 +70,20 @@ export interface ArtifactPublishError {
 	readonly detail: string;
 }
 
+/** Constructor for `ArtifactPublishError`. Centralising the literal
+ *  shape (single `_tag` site, no `as const` ceremony at call sites)
+ *  per STYLE_GUIDE §2: tagged errors expose a factory at every
+ *  plugin/public boundary. Every plugin's `produce` /
+ *  `Effect.mapError` path goes through this. */
+export const artifactPublishError = (
+	reason: ArtifactPublishError['reason'],
+	detail: string,
+): ArtifactPublishError => ({
+	_tag: 'ArtifactPublishError',
+	reason,
+	detail,
+});
+
 /** The publisher service. Plugins call `publish`; substrate handles
  *  cache lookup, verify, produce-on-miss, idempotent register.
  *
