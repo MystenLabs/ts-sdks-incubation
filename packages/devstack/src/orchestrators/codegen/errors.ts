@@ -12,12 +12,17 @@
 
 import { Schema } from 'effect';
 
-/** Two `Codegenable` contributions claim the same `outputPath`. Hard
- *  failure detected BEFORE write so the user-visible output dir
- *  never sees an ambiguous overwrite. */
+/** Path-layer rejection from the codegen orchestrator.
+ *  - `kind: 'duplicate'` — two `Codegenable` contributions claim the
+ *    same `outputPath`. Hard failure detected BEFORE write so the
+ *    user-visible output dir never sees an ambiguous overwrite.
+ *  - `kind: 'non-relative'` — a plugin-authored `outputPath` escapes
+ *    the codegen root (contains `..` or is absolute). Defense-in-depth
+ *    for the file-layout invariants. */
 export class CodegenPathConflict extends Schema.TaggedErrorClass<CodegenPathConflict>()(
 	'CodegenPathConflict',
 	{
+		kind: Schema.Literals(['duplicate', 'non-relative']),
 		outputPath: Schema.String,
 		emitters: Schema.Array(Schema.String),
 	},

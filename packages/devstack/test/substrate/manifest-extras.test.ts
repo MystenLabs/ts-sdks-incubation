@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect } from 'effect';
+import { Effect, Exit } from 'effect';
 
-import { resolveManifestExtras } from '../../src/substrate/manifest.ts';
+import { ManifestExtrasInvalid, resolveManifestExtras } from '../../src/substrate/manifest.ts';
 import { resource } from '../../src/substrate/plugin.ts';
 
 describe('manifest extras', () => {
@@ -44,6 +44,30 @@ describe('manifest extras', () => {
 					url: 'http://seal.localhost:5175',
 				},
 			});
+		}),
+	);
+
+	// Regression — STYLE_GUIDE §2 rule 5: non-record extras surface a
+	// tagged `ManifestExtrasInvalid` so downstream classifiers can
+	// `catchTag` instead of sniffing the message.
+	it.effect('fails with ManifestExtrasInvalid when extras do not resolve to a record', () =>
+		Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				resolveManifestExtras(
+					// Function returning a non-record (array) — invalid.
+					() => [1, 2, 3] as unknown as Readonly<Record<string, unknown>>,
+					{
+						value: () => undefined,
+					},
+				),
+			);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const err = Exit.findErrorOption(exit);
+			expect(err._tag).toBe('Some');
+			if (err._tag === 'Some') {
+				expect(err.value).toBeInstanceOf(ManifestExtrasInvalid);
+				expect(err.value._tag).toBe('ManifestExtrasInvalid');
+			}
 		}),
 	);
 });

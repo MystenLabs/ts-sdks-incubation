@@ -84,7 +84,7 @@ export const resolveKeystoreVariant = (
 		// Best-effort: missing aliases file is not fatal — fall through
 		// to the by-address path.
 		const aliasesPath = `${args.path.replace(/\.keystore$/, '')}.aliases`;
-		const aliasIdx = yield* resolveAliasIndex(aliasesPath, args.aliasOrAddress).pipe(
+		const aliasIdx = yield* resolveAliasIndex(aliasesPath, args.aliasOrAddress, args.name).pipe(
 			Effect.orElseSucceed(() => -1),
 		);
 		if (aliasIdx >= 0 && aliasIdx < rows.length) {
@@ -117,6 +117,7 @@ export const resolveKeystoreVariant = (
 const resolveAliasIndex = (
 	aliasesPath: string,
 	want: string,
+	accountName: string,
 ): Effect.Effect<number, AccountAcquireError> =>
 	Effect.gen(function* () {
 		const raw = yield* Effect.tryPromise({
@@ -124,7 +125,7 @@ const resolveAliasIndex = (
 			catch: (cause): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
-					accountName: '<keystore>',
+					accountName,
 					variant: 'keystore',
 					message: `aliases file '${aliasesPath}' missing or unreadable`,
 					cause,
@@ -135,7 +136,7 @@ const resolveAliasIndex = (
 			mkError: (issue): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
-					accountName: '<keystore>',
+					accountName,
 					variant: 'keystore',
 					message:
 						issue.message === 'failed to parse JSON'

@@ -11,6 +11,7 @@ import type { CapabilityDecl } from '../contracts/capability-decl.ts';
 import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { PluginRole } from './lifecycle.ts';
+import type { RowSection } from './projection.ts';
 
 const resourceBrand: unique symbol = Symbol.for('devstack.resource') as never;
 const pluginBrand: unique symbol = Symbol.for('devstack.plugin') as never;
@@ -139,6 +140,16 @@ interface PluginSpecBase<
 	readonly start: Start;
 	readonly capabilities?: CapabilitySource<StartValue<Start>, Caps>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
+	/** Dashboard section bucket the plugin's rows belong to. Required so
+	 *  the renderer never has to pattern-match on plugin name substrings
+	 *  to compute it. The supervisor stamps this onto every row at
+	 *  acquire-time. */
+	readonly section: RowSection;
+	/** Optional override for rows that own a routed endpoint. When set
+	 *  and the row carries an endpoint, the renderer groups it under
+	 *  `endpointSection` instead of `section`. Use sparingly — the
+	 *  default is for the plugin's normal `section` to apply uniformly. */
+	readonly endpointSection?: RowSection;
 }
 
 export type PluginSpec<
@@ -167,6 +178,8 @@ export interface Plugin<
 	) => Effect.Effect<Value, unknown, unknown>;
 	readonly capabilities?: Caps | CapabilitiesFactory<Caps, Value>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
+	readonly section: RowSection;
+	readonly endpointSection?: RowSection;
 }
 
 export type AnyPlugin = Plugin<
@@ -308,6 +321,7 @@ export function definePlugin(
 		id: spec.id,
 		dependsOn,
 		role: spec.role,
+		section: spec.section,
 		start: spec.start as AnyPlugin['start'],
 		...(spec.pluginKey === undefined ? {} : { pluginKey: spec.pluginKey }),
 		...(spec.watch === undefined ? {} : { watch: spec.watch }),
@@ -315,6 +329,7 @@ export function definePlugin(
 		...(spec.errorContributions === undefined
 			? {}
 			: { errorContributions: spec.errorContributions }),
+		...(spec.endpointSection === undefined ? {} : { endpointSection: spec.endpointSection }),
 	} as AnyPlugin;
 }
 

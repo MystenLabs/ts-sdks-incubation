@@ -101,6 +101,7 @@ const buildPlugin = (opts: SuiOptions) => {
 	return definePlugin({
 		id: suiResource.id,
 		role: 'service',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// The substrate threads `ContainerRuntime` + `IdentityContext`

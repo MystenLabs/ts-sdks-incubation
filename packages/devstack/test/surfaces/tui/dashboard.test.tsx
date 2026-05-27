@@ -32,6 +32,8 @@ const state = (): SubscribableState => ({
 			},
 			endpoints: [endpointKey('sui#0:rpc')],
 			selectiveRestartHighlight: false,
+			section: 'service',
+			endpointSection: 'service',
 		},
 		{
 			key: pluginKey('account/alice#1'),
@@ -42,6 +44,8 @@ const state = (): SubscribableState => ({
 			logTail: { lines: ['address=0xabc'], level: 'info', truncated: false },
 			endpoints: [],
 			selectiveRestartHighlight: false,
+			section: 'account',
+			endpointSection: 'account',
 		},
 		{
 			key: pluginKey('package/connect-four#2'),
@@ -52,6 +56,8 @@ const state = (): SubscribableState => ({
 			logTail: { lines: ['packageId=0x123'], level: 'info', truncated: false },
 			endpoints: [],
 			selectiveRestartHighlight: false,
+			section: 'package',
+			endpointSection: 'package',
 		},
 	],
 	endpoints: [

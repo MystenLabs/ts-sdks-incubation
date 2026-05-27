@@ -4,11 +4,11 @@
 // `layerCrossProcessLockFlock` is the O_EXCL/PID-liveness-backed
 // production Layer that adapts `acquireStackLock`.
 
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { Deferred, Effect, Layer, Ref } from 'effect';
+import { Cause, Deferred, Effect, Exit, Layer, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -16,6 +16,7 @@ import {
 	layerCrossProcessLockFlock,
 	layerCrossProcessLockInProcess,
 } from '../../../src/substrate/runtime/cross-process-lock.ts';
+import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
 import { StackPathsService } from '../../../src/substrate/runtime/paths.ts';
 import type { StackPaths } from '../../../src/substrate/runtime/paths.ts';
 
@@ -195,6 +196,52 @@ describe('layerCrossProcessLockFlock', () => {
 			Effect.provide(layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackRoot)))),
 		);
 	});
+
+	it.effect(
+		'acquire timeout surfaces as typed StackLockTimeoutError, not a defect',
+		() => {
+			// Regression for Phase C1 — earlier `Effect.orDie` shape
+			// converted a peer-contention timeout into a fiber defect that
+			// could crash the surrounding scope. The typed shape must
+			// surface `StackLockTimeoutError` in the `E` channel so
+			// consumers (state-store) can map it to their own error.
+			const root = freshRoot();
+			const stackRoot = join(root, 'app', 'main');
+			const lockPath = join(stackRoot, 'stack.lock');
+			// Plant a stack.lock body that points at THIS process — the
+			// liveness probe sees the holder as alive (same pid +
+			// start-time), so the acquire loop never reclaims and times
+			// out cleanly. Default acquire window is 5s (per stack-lock
+			// module).
+			mkdirSync(dirname(lockPath), { recursive: true });
+			writeFileSync(lockPath, JSON.stringify(ownHolder()));
+			return Effect.gen(function* () {
+				try {
+					const lock = yield* CrossProcessLock;
+					const exit = yield* lock.withLock(Effect.succeed('unreachable')).pipe(Effect.exit);
+					expect(Exit.isFailure(exit)).toBe(true);
+					if (Exit.isFailure(exit)) {
+						// MUST be a typed Fail, NOT a Die. The whole
+						// point of this regression: peer contention
+						// cannot be a defect.
+						expect(Cause.hasDies(exit.cause)).toBe(false);
+						const fail = exit.cause.reasons.find(Cause.isFailReason);
+						expect(fail).toBeDefined();
+						if (fail !== undefined) {
+							expect((fail.error as { _tag: string })._tag).toBe('StackLockTimeoutError');
+						}
+					}
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}).pipe(
+				Effect.provide(
+					layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackRoot))),
+				),
+			);
+		},
+		{ timeout: 15_000 },
+	);
 
 	it.effect('parallel-stack instances do not share locks', () => {
 		// Two distinct stack roots → two distinct on-disk lock files →

@@ -188,10 +188,15 @@ export interface TxResult {
  *  variant of the SDK's `SuiClientTypes.TransactionResult` — the
  *  transaction was delivered and executed by the validator but the
  *  on-chain execution failed. Carries the digest (for log
- *  correlation) plus the validator's stringified error. */
+ *  correlation) plus the validator's stringified error when one was
+ *  attached. `executionError` is omitted when the SDK returns no
+ *  message (per §5: do NOT synthesize sentinel placeholder strings
+ *  at resolved-value surfaces — fail or omit). The `digest` is
+ *  always present; an envelope without a digest fails at projection
+ *  with `AccountSignError(phase: 'no-digest')`. */
 export interface FailedTxResult {
 	readonly digest: string;
-	readonly executionError: string;
+	readonly executionError?: string;
 }
 
 /** Outcome of `signAndExecute`. Mirrors the SDK's discriminated
@@ -493,18 +498,34 @@ const projectTxResult = (
 		};
 		if (r.$kind === 'FailedTransaction') {
 			const failed = r.FailedTransaction ?? {};
+			if (failed.digest === undefined) {
+				return yield* Effect.fail(
+					accountSignError({
+						phase: 'no-digest',
+						accountName,
+						address,
+						message:
+							`Account '${accountName}': executeTransaction returned a FailedTransaction ` +
+							`without a digest — protocol violation, got ` +
+							`${JSON.stringify(r).slice(0, 200)}`,
+					}),
+				);
+			}
 			const errorRaw = failed.status?.error;
 			const executionError =
 				typeof errorRaw === 'string'
 					? errorRaw
-					: typeof errorRaw === 'object' && errorRaw !== null && 'message' in errorRaw
-						? String(errorRaw.message ?? '<no error>')
-						: '<no error>';
+					: typeof errorRaw === 'object' &&
+						  errorRaw !== null &&
+						  'message' in errorRaw &&
+						  typeof errorRaw.message === 'string'
+						? errorRaw.message
+						: undefined;
 			return {
 				$kind: 'FailedTransaction',
 				FailedTransaction: {
-					digest: failed.digest ?? '<unknown>',
-					executionError,
+					digest: failed.digest,
+					...(executionError !== undefined ? { executionError } : {}),
 				},
 			};
 		}
@@ -512,7 +533,7 @@ const projectTxResult = (
 		if (tx?.digest === undefined) {
 			return yield* Effect.fail(
 				accountSignError({
-					phase: 'submit',
+					phase: 'no-digest',
 					accountName,
 					address,
 					message:

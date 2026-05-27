@@ -23,50 +23,37 @@
 //         SHA-256 digest, so lossy readable folding cannot collide.
 //   #13 — User-influenceable strings are validated against a
 //         conservative character set before render.
+//
+// As of B1 (boundary-repair): pure URL composition + hostname minting
+// live in `substrate/runtime/routed-url.ts` so L2 plugins can call
+// them without reaching across the L2→L3 boundary. This module re-
+// exports the substrate primitives, owns dispatch-file id minting
+// (router-orchestrator-specific), and provides a `routerHostname`
+// adapter that projects substrate's `HostnameValidationError` into the
+// router's `RouterValidationError` union for intra-L3 callers
+// (file-provider, resolveRoute).
 
 import { createHash } from 'node:crypto';
 
 import { Effect } from 'effect';
 import type { DispatchId } from '../../contracts/routable.ts';
 import type { Identity } from '../../substrate/identity.ts';
+import {
+	DEFAULT_STACK,
+	HostnameValidationError,
+	normalizeServiceSegment,
+	renderUrl,
+	routedHostname,
+} from '../../substrate/runtime/routed-url.ts';
 import { RouterValidationError } from './errors.ts';
 
-/** The conventional "default" stack name. Hostnames for this stack
- *  omit the stack segment per the architecture's UX rule. */
-export const DEFAULT_STACK = 'main';
+// Re-export substrate-blind primitives for intra-L3 callers that
+// continue to import from this module path.
+export { DEFAULT_STACK, normalizeServiceSegment, renderUrl };
 
-// RFC-1035 single-label regex: starts/ends with alphanumeric, allows
-// internal hyphens, length 1-63. We use the same shape for app, role,
-// and (post-fold) the stack segment.
-const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
 // The readable prefix is capped, and the SHA-256 suffix is fixed size.
 const MAX_DISPATCH_ID_LEN = 140;
 const MAX_DISPATCH_ID_READABLE_LEN = 48;
-// 253 chars is the RFC-1035 full-name max. We stay well below.
-const MAX_HOSTNAME_LEN = 200;
-
-/** Validate a single label-shaped string. Returns the input or fails
- *  with a typed `RouterValidationError`. */
-const validateLabel = (
-	field: RouterValidationError['field'],
-	value: string,
-): Effect.Effect<string, RouterValidationError> => {
-	if (!LABEL.test(value)) {
-		return Effect.fail(
-			new RouterValidationError({
-				field,
-				value,
-				detail: 'expected lower-case RFC-1035 label (alphanumeric + internal hyphens, 1-63 chars)',
-			}),
-		);
-	}
-	return Effect.succeed(value);
-};
-
-/** Fold dots → hyphens (architecture invariant #8) and lower-case.
- *  Pure, no validation. The output is fed to `validateLabel`. */
-export const normalizeServiceSegment = (raw: string): string =>
-	raw.toLowerCase().replace(/\./g, '-');
 
 /** Build the human-readable prefix of a dispatch id. This is not the
  *  identity key; uniqueness comes from the hash over the canonical
@@ -79,56 +66,32 @@ export const normalizeDispatchSegment = (raw: string): string =>
 		.replace(/^-|-$/g, '') || 'route';
 
 // ---------------------------------------------------------------------------
-// Hostname minting
+// Hostname minting — orchestrator-internal adapter
 // ---------------------------------------------------------------------------
 
-/** Mint the per-Routable hostname from `(identity, role)`.
+/** Project the substrate-blind hostname error into the router error
+ *  union. The shape is identical (tagged class with field/value/detail);
+ *  this exists so intra-L3 composers (file-provider, resolveRoute) can
+ *  keep returning the existing `RouterError` union without a per-call
+ *  `mapError` at every call site. */
+const liftHostnameError = (cause: HostnameValidationError): RouterValidationError =>
+	new RouterValidationError({
+		field: cause.field,
+		value: cause.value,
+		detail: cause.detail,
+	});
+
+/** Intra-L3 alias for substrate's `routedHostname` that maps the
+ *  substrate error onto the router orchestrator's `RouterError` union.
  *
- *  Default stack: `<role>.<app>.localhost`
- *  Other stacks:  `<role>.<stack>.<app>.localhost`
- *
- *  The `role` segment is folded + validated; the `app` and `stack`
- *  segments are also validated (they come from `Identity`, which the
- *  substrate has already validated once at boot, but defense-in-depth
- *  is cheap and the failure mode is a programming error).
- *
- *  Architecture invariant #7: this MUST embed the stack dimension for
- *  non-default stacks. Distinct identities → distinct hostnames. */
+ *  L2 plugins MUST NOT import this — they import `routedHostname` from
+ *  `substrate/runtime/routed-url.ts` directly. This adapter exists only
+ *  for the orchestrator's own composers. */
 export const routerHostname = (
 	identity: Identity,
 	role: string,
 ): Effect.Effect<string, RouterValidationError> =>
-	Effect.gen(function* () {
-		const app = yield* validateLabel('hostname', identity.app);
-		const folded = normalizeServiceSegment(role);
-		const roleSafe = yield* validateLabel('hostname', folded);
-		const host = (() => {
-			if (identity.stack === DEFAULT_STACK) {
-				return `${roleSafe}.${app}.localhost`;
-			}
-			const stackSafe = identity.stack.toLowerCase();
-			// `validateLabel` runs *after* lower-casing so the stack name
-			// (Identity brand) is held to the same character set as the
-			// role and the app. Boot validation should already enforce
-			// this; we re-check defensively.
-			return `${roleSafe}.${stackSafe}.${app}.localhost`;
-		})();
-		if (host.length > MAX_HOSTNAME_LEN) {
-			return yield* Effect.fail(
-				new RouterValidationError({
-					field: 'hostname',
-					value: host,
-					detail: `exceeds ${MAX_HOSTNAME_LEN}-char limit`,
-				}),
-			);
-		}
-		// Re-validate the stack segment for non-default stacks now that
-		// it's part of a composed hostname.
-		if (identity.stack !== DEFAULT_STACK) {
-			yield* validateLabel('hostname', identity.stack.toLowerCase());
-		}
-		return host;
-	});
+	routedHostname(identity, role).pipe(Effect.mapError(liftHostnameError));
 
 // ---------------------------------------------------------------------------
 // Dispatch-file id minting
@@ -201,21 +164,3 @@ export const dispatchFileId = (
 		}
 		return id;
 	});
-
-/** URL-construction helper: `<scheme>://<hostname>:<port>`.
- *
- *  - `http` / `h2c` → `http://…` (h2c is HTTP/2 cleartext; Traefik
- *    handles upstream selection internally, the URL scheme is still
- *    `http`).
- *  - `tcp` → `tcp://…` — used by the file-provider renderer to
- *    distinguish from HTTP at YAML-emit time. Consumers of the
- *    resolved URL (manifest, codegen) translate back to whatever
- *    scheme their protocol expects (e.g. `postgres://`, `redis://`). */
-export const renderUrl = (parts: {
-	readonly protocol: 'http' | 'h2c' | 'tcp';
-	readonly hostname: string;
-	readonly port: number;
-}): string => {
-	if (parts.protocol === 'tcp') return `tcp://${parts.hostname}:${parts.port}`;
-	return `http://${parts.hostname}:${parts.port}`;
-};

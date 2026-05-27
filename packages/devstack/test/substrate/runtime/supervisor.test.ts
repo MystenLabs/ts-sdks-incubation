@@ -304,6 +304,7 @@ const errorContribBeta: PluginErrorContribution = {
 const pluginSnap = definePlugin({
 	id: 'test:snap',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'snap' as const }),
 	capabilities: [snapDecl] as const,
 });
@@ -311,6 +312,7 @@ const pluginSnap = definePlugin({
 const pluginRoute = definePlugin({
 	id: 'test:route',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'route' as const }),
 	capabilities: [routeDecl] as const,
 });
@@ -318,6 +320,7 @@ const pluginRoute = definePlugin({
 const pluginCodegen = definePlugin({
 	id: 'test:codegen',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'codegen' as const }),
 	capabilities: [codegenDecl] as const,
 });
@@ -325,6 +328,7 @@ const pluginCodegen = definePlugin({
 const pluginStrat = definePlugin({
 	id: 'test:strat',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'strat' as const }),
 	capabilities: [strategyDecl] as const,
 });
@@ -332,6 +336,7 @@ const pluginStrat = definePlugin({
 const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
 	role: 'task' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'account' as const }),
 	capabilities: [accountStrategyDecl, accountProjectionDecl] as const,
 });
@@ -339,6 +344,7 @@ const pluginAccountProjection = definePlugin({
 const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'package' as const }),
 	capabilities: [packageStrategyDecl, packageProjectionDecl] as const,
 });
@@ -346,6 +352,7 @@ const pluginPackageProjection = definePlugin({
 const pluginStableKey = definePlugin({
 	id: 'test:stable-key',
 	role: 'task' as const,
+	section: 'service',
 	pluginKey: 'plug-stable-key',
 	start: () => Effect.succeed({ v: 'stable-key' as const }),
 	errorContributions: [errorContribAlpha],
@@ -354,6 +361,7 @@ const pluginStableKey = definePlugin({
 const pluginErrorOnly = definePlugin({
 	id: 'test:errorOnly',
 	role: 'task' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'err' as const }),
 	errorContributions: [errorContribBeta],
 });
@@ -374,6 +382,7 @@ describe('supervisor harvest loop', () => {
 			const pluginSlow = definePlugin({
 				id: 'test:slow',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
@@ -447,17 +456,20 @@ describe('supervisor harvest loop', () => {
 			const root = definePlugin({
 				id: 'test:root',
 				role: 'task' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'root' as const }),
 			});
 			const signer = definePlugin({
 				id: 'test:signer',
 				role: 'task' as const,
+				section: 'service',
 				dependsOn: { root },
 				start: () => Effect.succeed({ v: 'signer' as const }),
 			});
 			const slowWalrus = definePlugin({
 				id: 'test:walrus',
 				role: 'service' as const,
+				section: 'service',
 				dependsOn: { root },
 				start: () =>
 					Effect.gen(function* () {
@@ -469,6 +481,7 @@ describe('supervisor harvest loop', () => {
 			const seal = definePlugin({
 				id: 'test:seal',
 				role: 'service' as const,
+				section: 'service',
 				dependsOn: { signer },
 				start: () =>
 					Effect.gen(function* () {
@@ -541,6 +554,7 @@ describe('supervisor harvest loop', () => {
 			const pluginShutdown = definePlugin({
 				id: 'test:shutdown',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'shutdown' as const }),
 			});
 			const state = yield* makeProjectionRef();
@@ -671,6 +685,7 @@ describe('supervisor harvest loop', () => {
 			const pluginRestarting = definePlugin({
 				id: 'test:restarting',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
@@ -793,6 +808,7 @@ describe('supervisor harvest loop', () => {
 			const pluginRestartable = definePlugin({
 				id: 'test:restartable',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
@@ -1098,6 +1114,7 @@ describe('supervisor harvest loop', () => {
 				const pluginCustom = definePlugin({
 					id: 'test:custom',
 					role: 'service' as const,
+					section: 'service',
 					start: () => Effect.succeed({ v: 'custom' as const }),
 					// Cast: the custom decl isn't part of the built-in
 					// CapabilityDecl union. The substrate dispatches
@@ -1167,6 +1184,7 @@ describe('supervisor harvest loop', () => {
 			const pluginCustom = definePlugin({
 				id: 'test:custom-unregistered',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'custom-unregistered' as const }),
 				capabilities: [
 					{ kind: 'plugin-author:unregistered', payload: 'ignored' },
@@ -1227,6 +1245,7 @@ describe('supervisor harvest loop', () => {
 			const pluginLog = definePlugin({
 				id: 'test:log',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const logger = yield* Logger;
@@ -1281,6 +1300,7 @@ describe('supervisor harvest loop', () => {
 			const pluginFail = definePlugin({
 				id: 'test:fail',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.fail(new Error('boom from acquire')) as Effect.Effect<
 						{ readonly v: 'fail' },
@@ -1313,6 +1333,7 @@ describe('supervisor harvest loop', () => {
 				const pluginFail = definePlugin({
 					id: 'test:root-fail',
 					role: 'service' as const,
+					section: 'service',
 					start: () =>
 						Effect.fail(new Error('root acquire failed')) as Effect.Effect<
 							{ readonly v: 'fail' },
@@ -1322,6 +1343,7 @@ describe('supervisor harvest loop', () => {
 				const pluginDependent = definePlugin({
 					id: 'test:dependent',
 					role: 'service' as const,
+					section: 'service',
 					dependsOn: pluginFail,
 					start: () => Effect.succeed({ v: 'dependent' as const }),
 				});
@@ -1354,6 +1376,7 @@ describe('supervisor harvest loop', () => {
 			const pluginCaps = definePlugin({
 				id: 'test:caps',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'caps' as const }),
 				capabilities: (() => {
 					throw new Error('capability boom');

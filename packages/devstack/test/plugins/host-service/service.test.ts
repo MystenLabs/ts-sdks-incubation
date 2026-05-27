@@ -109,6 +109,7 @@ const findFreePort = (): Promise<number> =>
 const neededMember = definePlugin({
 	id: 'test/needed',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ok: true } as const),
 });
 

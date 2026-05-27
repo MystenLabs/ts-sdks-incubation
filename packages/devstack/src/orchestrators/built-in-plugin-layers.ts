@@ -1,7 +1,9 @@
 // Built-in plugin runtime composition.
 //
-// L0 substrate builds only name-blind services. This module is the higher-level
-// composition point for built-in plugin services and built-in capability sinks.
+// Orchestrator-layer composition (L3): depends on L2 plugin internals
+// (coin/package registries, publish discovery), so it cannot live at L1 runtime.
+// Moved from src/runtime/ to src/orchestrators/ to honor the ARCHITECTURE.md
+// L1-never-imports-from-L2 boundary.
 
 import { Context, Effect, Layer } from 'effect';
 

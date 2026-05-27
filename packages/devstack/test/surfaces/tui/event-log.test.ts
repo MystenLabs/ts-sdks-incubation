@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
+import type { RowSection } from '../../../src/substrate/projection.ts';
 import {
 	appendEventLogLine,
 	eventLogLineFromEvent,
@@ -10,6 +11,14 @@ import {
 } from '../../../src/surfaces/tui/event-log.ts';
 
 const AT = Date.parse('2026-05-19T20:11:32.001Z');
+
+// Test stub for the section lookup the host (`app.tsx`) builds from
+// the live projection. The renderer must NOT pattern-match plugin
+// names — it consumes `row.section` via this lookup.
+const fixedSection =
+	(section: RowSection) =>
+	(_pluginKey: string): RowSection =>
+		section;
 
 describe('event log derivation', () => {
 	it('renders warning plugin logs as scoped activity lines', () => {
@@ -22,6 +31,7 @@ describe('event log derivation', () => {
 				at: AT,
 			},
 			0,
+			fixedSection('service'),
 		);
 		expect(line).toMatchObject({
 			level: 'warn',
@@ -94,12 +104,52 @@ describe('event log derivation', () => {
 				},
 			},
 			1,
+			fixedSection('service'),
 		);
 		expect(error?.level).toBe('error');
 		expect(error?.scope).toBe('Seal');
 		expect(error?.scopeColor).toBe('cyan');
 		expect(error?.message).toContain('private content key server exited');
 		expect(error?.message).toContain('port is already allocated');
+	});
+
+	it('colors the scope chip from the provided section lookup, not the pluginKey shape', () => {
+		// The renderer is name-blind: chip color comes from the `RowSection`
+		// the host (`app.tsx`) supplies for each pluginKey. With the
+		// lookup returning `'package'` for a key that LOOKS like a
+		// service, the scope chip should render as the `package` color
+		// (`blueBright`) — proving no substring matching survives in the
+		// renderer.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('sui-looking-key#0'),
+				line: 'something happened',
+				level: 'warn',
+				at: AT,
+			},
+			0,
+			fixedSection('package'),
+		);
+		expect(line?.scopeColor).toBe('blueBright');
+	});
+
+	it('falls back to the "other" section color when the lookup has no entry', () => {
+		// A pluginKey not yet projected (or one we deliberately filter)
+		// should not crash the renderer or leak a default tied to plugin
+		// names. The lookup returning `undefined` means: render with the
+		// `'other'` color token.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('unknown#0'),
+				line: 'who am i',
+				level: 'warn',
+				at: AT,
+			},
+			0,
+		);
+		expect(line?.scopeColor).toBe('cyan'); // sectionColor('other') === 'cyan'
 	});
 
 	it('renders shutdown escalation as an operator warning', () => {

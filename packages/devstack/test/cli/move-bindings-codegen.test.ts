@@ -40,6 +40,7 @@ import {
 const moveBindingsProofPlugin = definePlugin({
 \tid: 'test/move-bindings-proof',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ packageName: 'hello' } as const),
 \tcapabilities: () => [
 \t\tcodegenable({

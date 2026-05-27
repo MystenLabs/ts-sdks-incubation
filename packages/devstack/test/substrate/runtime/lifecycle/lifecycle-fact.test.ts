@@ -32,6 +32,8 @@ const sampleRow: Row = {
 	logTail: { lines: [], level: 'info', truncated: false },
 	endpoints: [],
 	selectiveRestartHighlight: false,
+	section: 'service',
+	endpointSection: 'service',
 };
 
 const emptyState = (): SubscribableState => ({

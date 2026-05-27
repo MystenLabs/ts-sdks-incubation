@@ -74,6 +74,7 @@ export {
 	IdentitySliceSchema,
 	IntegrityFileSchema,
 	OpaqueContributionStateSchema,
+	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,

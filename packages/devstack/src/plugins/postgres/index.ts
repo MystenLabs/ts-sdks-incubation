@@ -90,6 +90,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 	return definePlugin({
 		id: postgresResource.id,
 		role: 'service',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// Substrate-context plumbing supplies real

@@ -13,9 +13,11 @@
 // The check strips line- and block-comments before matching so a
 // documentation-only mention of "the wallet" in a header doesn't trip
 // the alarm. It then scans the surviving code for `\bname\b`. False
-// positives belong on the allowlist with a TODO; the bar to add a new
-// entry is the same as adding to ARCHITECTURE.md's "Documented
-// exceptions" list.
+// positives belong on the allowlist with a permanent `reason:` naming
+// the architecture exception (substrate field shape, network-host
+// overload, branded resource-id literal, L1-adjacent helper); the bar
+// to add a new entry is the same as adding to ARCHITECTURE.md's
+// "Documented exceptions" list.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -201,7 +203,9 @@ describe('substrate name-blindness', () => {
 				`Substrate name-blindness violation. The following files mention plugin names ` +
 					`(${PLUGIN_NAMES.join(', ')}) and are not on the allowlist:\n${report}\n\n` +
 					`Either remove the mention (preferred) or add the file to ALLOWED_FILES ` +
-					`with a TODO referencing the backlog item that will close it.`,
+					`with a \`reason:\` naming the architecture exception. Substrate ` +
+					`name-blindness has documented permanent exceptions (see ARCHITECTURE.md ` +
+					`§"Substrate name-blindness").`,
 			);
 		}
 		expect(offenders).toEqual([]);

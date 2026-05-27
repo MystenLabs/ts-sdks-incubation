@@ -56,12 +56,14 @@ import {
 const leaf = definePlugin({
 	id: 'test/leaf',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ok: true } as const),
 });
 
 const runtimeCodegenPlugin = definePlugin({
 	id: 'test/runtime-codegen',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ message: 'from-acquire' } as const),
 	capabilities: ({ value: resolved }) =>
 		[
@@ -82,6 +84,7 @@ const runtimeCodegenPlugin = definePlugin({
 const failingRuntimeCodegenPlugin = definePlugin({
 	id: 'test/failing-runtime-codegen',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ message: 'from-acquire' } as const),
 	capabilities: () =>
 		[
@@ -242,6 +245,7 @@ describe('api/run-stack', () => {
 		const customPlugin = definePlugin({
 			id: 'test/custom-context',
 			role: 'service',
+			section: 'service',
 			start: () =>
 				Effect.gen(function* () {
 					const service = yield* RunStackCustomService;
@@ -287,6 +291,7 @@ describe('api/run-stack', () => {
 		const customPlugin = definePlugin({
 			id: 'test/custom-capability',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 			capabilities: [{ kind: 'test-run-stack-capability', value: 'sink-hit' }] as const,
 		});
@@ -316,6 +321,7 @@ describe('api/run-stack', () => {
 		const counted = definePlugin({
 			id: 'test/counted-start',
 			role: 'service',
+			section: 'service',
 			start: () =>
 				Effect.sync(() => {
 					starts += 1;
@@ -345,6 +351,7 @@ describe('api/run-stack', () => {
 		const blocking = definePlugin({
 			id: 'test/blocking-start',
 			role: 'service',
+			section: 'service',
 			start: () =>
 				Effect.gen(function* () {
 					yield* Deferred.succeed(started, undefined);
@@ -380,6 +387,7 @@ describe('api/run-stack', () => {
 		const failingPlugin = definePlugin({
 			id: 'test/failing-boot',
 			role: 'service',
+			section: 'service',
 			start: () =>
 				Effect.fail(new Error('intentional boot failure')).pipe(Effect.as({ ok: false } as const)),
 		});

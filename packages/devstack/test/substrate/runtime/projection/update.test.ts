@@ -17,6 +17,8 @@ const makeState = (): SubscribableState => ({
 			logTail: { lines: [], level: 'info', truncated: false },
 			endpoints: [endpointKey('wallet#0:wallet-app')],
 			selectiveRestartHighlight: false,
+			section: 'service',
+			endpointSection: 'service',
 		},
 	],
 	endpoints: [
@@ -86,6 +88,46 @@ describe('projection endpoint history', () => {
 		expect(after.lastEvent.at).toBe(3);
 	});
 
+	it('drops projection.updated[account] with malformed payload and leaves state untouched', () => {
+		const before = makeState();
+		const after = applyEvent(before, {
+			tag: 'projection.updated',
+			kind: 'account',
+			key: 'account/bogus',
+			// Intentionally malformed: missing every required field of
+			// AccountProjectionSchema. The reducer must structurally
+			// reject this via per-kind Schema decode, skip the slice
+			// update, and keep the surrounding projection intact (the
+			// supervise stream must not crash on misbehaving plugins).
+			payload: { wrong: 'shape' },
+			at: 5,
+		});
+
+		expect(after.accounts).toEqual(before.accounts);
+		expect(after.packages).toEqual(before.packages);
+		expect(after.rows).toEqual(before.rows);
+		// `lastEvent.at` still advances — the event was observed even
+		// though the slice update was skipped.
+		expect(after.lastEvent.at).toBe(5);
+	});
+
+	it('drops projection.updated[package] with malformed payload and leaves state untouched', () => {
+		const before = makeState();
+		const after = applyEvent(before, {
+			tag: 'projection.updated',
+			kind: 'package',
+			key: 'package/bogus',
+			// `packageId` is required `string` per PackageProjectionSchema; the
+			// number `123` must structurally fail decode.
+			payload: { packageId: 123 },
+			at: 6,
+		});
+
+		expect(after.packages).toEqual(before.packages);
+		expect(after.accounts).toEqual(before.accounts);
+		expect(after.lastEvent.at).toBe(6);
+	});
+
 	it('attaches endpoints by exact pluginKey instead of endpointKey prefix', () => {
 		const before: SubscribableState = {
 			...makeState(),
@@ -99,6 +141,8 @@ describe('projection endpoint history', () => {
 					logTail: { lines: [], level: 'info', truncated: false },
 					endpoints: [],
 					selectiveRestartHighlight: false,
+					section: 'service',
+					endpointSection: 'service',
 				},
 				{
 					key: pluginKey('service#10'),
@@ -109,6 +153,8 @@ describe('projection endpoint history', () => {
 					logTail: { lines: [], level: 'info', truncated: false },
 					endpoints: [],
 					selectiveRestartHighlight: false,
+					section: 'service',
+					endpointSection: 'service',
 				},
 			],
 			endpoints: [],

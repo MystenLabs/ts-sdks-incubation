@@ -24,9 +24,12 @@ import type {
 	Endpoint,
 	PackageProjection,
 	Row,
+	RowSection,
 	StructuredError,
 	SubscribableState,
 } from '../../substrate/projection.ts';
+
+export type { RowSection } from '../../substrate/projection.ts';
 
 // -----------------------------------------------------------------------------
 // Color tokens
@@ -83,30 +86,6 @@ export interface DisplayCells {
 	/** Secondary details visible in the detail pane. */
 	readonly secondary: ReadonlyArray<string>;
 }
-
-export type RowSection = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
-
-interface RowSectionClassifier {
-	readonly prefixes: ReadonlyArray<string>;
-	readonly section: RowSection;
-	readonly endpointSection?: RowSection;
-}
-
-const ROW_SECTION_CLASSIFIERS = [
-	{ prefixes: ['package:', 'package/'], section: 'package' },
-	{ prefixes: ['account/'], section: 'account' },
-	{ prefixes: ['action:', 'action/'], section: 'action' },
-	{ prefixes: ['coin:'], section: 'action' },
-	{ prefixes: ['app:', 'app/'], section: 'app', endpointSection: 'service' },
-	{ prefixes: ['host-service/'], section: 'service' },
-	{ prefixes: ['sui'], section: 'service' },
-	{ prefixes: ['wallet'], section: 'service' },
-	{ prefixes: ['walrus:', 'walrus/'], section: 'service' },
-	{ prefixes: ['seal:', 'seal/'], section: 'service' },
-	{ prefixes: ['deepbook:', 'deepbook/'], section: 'service' },
-	{ prefixes: ['postgres'], section: 'service' },
-	{ prefixes: ['faucet'], section: 'service' },
-] as const satisfies ReadonlyArray<RowSectionClassifier>;
 
 export interface DisplayRow {
 	readonly row: Row;
@@ -287,29 +266,20 @@ export const ownerForRow = (key: string): string => {
 	return first === undefined ? 'plugin' : humanizeToken(first);
 };
 
+/** Pure: pick the row's dashboard section. Reads `row.section`
+ *  directly; if the plugin declared an `endpointSection` AND the row
+ *  owns a routed endpoint, the endpoint variant wins. NEVER pattern-
+ *  matches on `row.key`; the classifier is plugin-declared at
+ *  `definePlugin({ section, endpointSection })` time and stamped by
+ *  the supervisor. */
 export const sectionForRow = (
-	row: Pick<Row, 'key' | 'role' | 'endpoints'>,
+	row: Pick<Row, 'key' | 'endpoints' | 'section' | 'endpointSection'>,
 	endpoints: ReadonlyArray<Endpoint> = [],
 ): RowSection => {
-	const normalized = normalizeClassificationKey(row.key).toLowerCase();
 	const ownsEndpoint = endpointsForRow(row, endpoints).length > 0 || row.endpoints.length > 0;
-	const classifier = rowSectionClassifierFor(normalized);
-	if (classifier !== undefined) {
-		if (ownsEndpoint && classifier.endpointSection !== undefined) return classifier.endpointSection;
-		return classifier.section;
-	}
-	if (row.role === 'service' || ownsEndpoint) return 'service';
-	if (row.role === 'task') return 'action';
-	return 'other';
-};
-
-/** Pure: key-only section classifier. Used by event-log scope coloring
- *  where only the `pluginKey` is in hand (no `Row`/`Endpoint` context).
- *  Falls back to `'other'` when no classifier prefix matches. */
-export const sectionForKey = (key: string): RowSection => {
-	const normalized = normalizeClassificationKey(key).toLowerCase();
-	const classifier = rowSectionClassifierFor(normalized);
-	return classifier === undefined ? 'other' : classifier.section;
+	return ownsEndpoint && row.endpointSection !== row.section
+		? row.endpointSection
+		: row.section;
 };
 
 /** Pure: section -> scope-chip color token used by the event log /
@@ -690,13 +660,6 @@ const normalizeKey = (key: string): string =>
 		.replace(/#\d+$/, '')
 		.replace(/\/\d+$/, '');
 
-const normalizeClassificationKey = (key: string): string =>
-	key
-		.replace(/^@devstack\//, '')
-		.replace(/^devstack:/, '')
-		.replace(/#\d+$/, '')
-		.replace(/\/\d+$/, '');
-
 const humanizeToken = (token: string): string =>
 	token.replace(/[-_]+/g, ' ').replace(/^\w/, (head) => head.toUpperCase());
 
@@ -707,18 +670,6 @@ const containsKeyPart = (key: string, parts: ReadonlyArray<string>): boolean => 
 
 const isSectionish = (token: string): boolean =>
 	containsKeyPart(token.toLowerCase(), ['service', 'package', 'account', 'action', 'app']);
-
-const rowSectionClassifierFor = (key: string): RowSectionClassifier | undefined =>
-	ROW_SECTION_CLASSIFIERS.find((classifier) =>
-		classifier.prefixes.some((prefix) => keyMatchesClassifierPrefix(key, prefix)),
-	);
-
-const keyMatchesClassifierPrefix = (key: string, prefix: string): boolean => {
-	if (prefix.endsWith(':') || prefix.endsWith('/')) return key.startsWith(prefix);
-	if (key === prefix) return true;
-	const next = key[prefix.length];
-	return key.startsWith(prefix) && next !== undefined && '/:._-'.includes(next);
-};
 
 const isOperationalEndpoint = (rowKey: Pick<Row, 'key'>['key'], endpoint: Endpoint): boolean => {
 	if (endpoint.pluginKey !== rowKey) return false;

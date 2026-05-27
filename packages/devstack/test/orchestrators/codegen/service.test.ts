@@ -9,13 +9,17 @@ import { Effect, Layer } from 'effect';
 import { FileSystem } from 'effect';
 import { chmodSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 // Subpath imports — the barrel re-exports `NodeRedis` which transitively
 // requires `ioredis`, an optional peer not installed in this package.
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 
-import type { CodegenableDecl, CodegenEmitContext } from '../../../src/contracts/codegenable.ts';
+import type {
+	AggregateContribution,
+	CodegenableDecl,
+	CodegenEmitContext,
+} from '../../../src/contracts/codegenable.ts';
 
 import {
 	MoveCodegenService,
@@ -45,12 +49,16 @@ const fakeDecl = (parts: {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive?: boolean;
+	readonly allowEmitterNameRepetition?: boolean;
+	readonly aggregate?: AggregateContribution;
 	readonly exports: { readonly [key: string]: unknown };
 }): CodegenableDecl<string> => ({
 	kind: 'codegenable',
 	emitterName: parts.emitterName,
 	outputPath: parts.outputPath,
 	sensitive: parts.sensitive,
+	allowEmitterNameRepetition: parts.allowEmitterNameRepetition,
+	aggregate: parts.aggregate,
 	emit: (ctx) =>
 		Effect.sync(() => {
 			writeExports(ctx, parts.exports);
@@ -99,10 +107,24 @@ describe('codegen.runEmitCycle', () => {
 		return Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
 			let emits = 0;
+			// Inline the package plugin's contract shape so this test
+			// validates the orchestrator's name-blind consumption of
+			// `aggregate.project` rather than naming the plugin.
 			const packageDecl: CodegenableDecl<string> = {
 				kind: 'codegenable',
 				emitterName: 'package',
 				outputPath: 'package/single.ts',
+				allowEmitterNameRepetition: true,
+				aggregate: {
+					kind: 'package',
+					bucket: 'packages.ts',
+					project: (exported) => {
+						const bindings = exported['packageBindings'];
+						return typeof bindings === 'object' && bindings !== null
+							? { [(bindings as { name: string }).name]: bindings }
+							: null;
+					},
+				},
 				emit: (ctx) =>
 					Effect.sync(() => {
 						emits += 1;
@@ -144,27 +166,73 @@ describe('codegen.runEmitCycle', () => {
 		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-1'))),
 	);
 
-	it.effect('refuses two non-package emitters with the same name', () =>
+	it.effect(
+		'refuses two emitters with the same name when neither opts into repetition',
+		() =>
+			Effect.gen(function* () {
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'same-name',
+							outputPath: 'a.ts',
+							exports: { a: 1 },
+						}),
+						fakeDecl({
+							emitterName: 'same-name',
+							outputPath: 'b.ts',
+							exports: { b: 1 },
+						}),
+					],
+				}).pipe(Effect.flip);
+				expect(result).toBeInstanceOf(CodegenEmitterCollision);
+			}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-2'))),
+	);
+
+	it.effect(
+		'refuses a non-relative outputPath with CodegenPathConflict({kind:"non-relative"})',
+		() =>
+			Effect.gen(function* () {
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'escape',
+							outputPath: '../escape.ts',
+							exports: { a: 1 },
+						}),
+					],
+				}).pipe(Effect.flip);
+				expect(result).toBeInstanceOf(CodegenPathConflict);
+				if (result instanceof CodegenPathConflict) {
+					expect(result.kind).toBe('non-relative');
+					expect(result.outputPath).toBe('../escape.ts');
+				}
+			}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-non-relative'))),
+	);
+
+	it.effect('duplicate-path conflict carries kind: "duplicate"', () =>
 		Effect.gen(function* () {
 			const result = yield* runEmitCycle({
 				contributions: [
 					fakeDecl({
-						emitterName: 'same-name',
-						outputPath: 'a.ts',
+						emitterName: 'a',
+						outputPath: 'dup.ts',
 						exports: { a: 1 },
 					}),
 					fakeDecl({
-						emitterName: 'same-name',
-						outputPath: 'b.ts',
+						emitterName: 'b',
+						outputPath: 'dup.ts',
 						exports: { b: 1 },
 					}),
 				],
 			}).pipe(Effect.flip);
-			expect(result).toBeInstanceOf(CodegenEmitterCollision);
-		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-2'))),
+			expect(result).toBeInstanceOf(CodegenPathConflict);
+			if (result instanceof CodegenPathConflict) {
+				expect(result.kind).toBe('duplicate');
+			}
+		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-duplicate-kind'))),
 	);
 
-	it.effect('allows multiple `package` emitters (per-Package exception)', () => {
+	it.effect('allows shared emitter names when allowEmitterNameRepetition is set', () => {
 		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
 		return Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
@@ -173,6 +241,7 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'package',
 						outputPath: 'package/p1.ts',
+						allowEmitterNameRepetition: true,
 						exports: {
 							packageBindings: {
 								name: 'p1',
@@ -182,10 +251,18 @@ describe('codegen.runEmitCycle', () => {
 								excluded: true,
 							},
 						},
+						aggregate: {
+							bucket: 'packages.ts',
+							project: (e) => {
+								const b = e['packageBindings'] as { name: string };
+								return { [b.name]: b };
+							},
+						},
 					}),
 					fakeDecl({
 						emitterName: 'package',
 						outputPath: 'package/p2.ts',
+						allowEmitterNameRepetition: true,
 						exports: {
 							packageBindings: {
 								name: 'p2',
@@ -193,6 +270,13 @@ describe('codegen.runEmitCycle', () => {
 								mvrPlaceholder: '@local/p2',
 								sourcePath: null,
 								excluded: true,
+							},
+						},
+						aggregate: {
+							bucket: 'packages.ts',
+							project: (e) => {
+								const b = e['packageBindings'] as { name: string };
+								return { [b.name]: b };
 							},
 						},
 					}),
@@ -218,6 +302,13 @@ describe('codegen.runEmitCycle', () => {
 					emitterName: 'sui-network',
 					outputPath: 'sui/network.ts',
 					exports: { suiNetwork: { chain: 'sui:local', rpcUrl: 'http://x' } },
+					aggregate: {
+						bucket: 'services.ts',
+						project: (e) => {
+							const n = e['suiNetwork'] as { rpcUrl: string };
+							return { sui: { rpc: { url: n.rpcUrl } } };
+						},
+					},
 				}),
 			];
 			const r1 = yield* runEmitCycle({ contributions });
@@ -267,11 +358,18 @@ describe('codegen.runEmitCycle', () => {
 		const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
 		return Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
+			// Each decl below carries its own `aggregate` contribution
+			// matching what the real account/coin/sui/package plugins
+			// register. The orchestrator must remain plugin-name-blind.
 			const result = yield* runEmitCycle({
 				contributions: [
 					fakeDecl({
 						emitterName: 'account/alice',
 						outputPath: 'accounts/alice.ts',
+						aggregate: {
+							bucket: 'accounts.ts',
+							project: (e) => e,
+						},
 						exports: {
 							alice: {
 								name: 'alice',
@@ -284,6 +382,10 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'coin/mock_usdc',
 						outputPath: 'coins/mock_usdc.ts',
+						aggregate: {
+							bucket: 'coins.ts',
+							project: (e) => e,
+						},
 						exports: {
 							mock_usdc: {
 								symbol: 'mock_usdc',
@@ -296,6 +398,23 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'sui-network',
 						outputPath: 'sui/network.ts',
+						aggregate: {
+							bucket: 'services.ts',
+							project: (e) => {
+								const n = e['suiNetwork'] as {
+									readonly rpcUrl: string;
+									readonly faucetUrl: string | null;
+									readonly graphqlUrl: string | null;
+								};
+								return {
+									sui: {
+										rpc: { url: n.rpcUrl },
+										faucet: n.faucetUrl === null ? null : { url: n.faucetUrl },
+										graphql: n.graphqlUrl === null ? null : { url: n.graphqlUrl },
+									},
+								};
+							},
+						},
 						exports: {
 							suiNetwork: {
 								chain: 'sui:local',
@@ -309,6 +428,14 @@ describe('codegen.runEmitCycle', () => {
 					fakeDecl({
 						emitterName: 'package',
 						outputPath: 'package/mock-usdc.ts',
+						allowEmitterNameRepetition: true,
+						aggregate: {
+							bucket: 'packages.ts',
+							project: (e) => {
+								const b = e['packageBindings'] as { readonly name: string };
+								return { [b.name]: b };
+							},
+						},
 						exports: {
 							packageBindings: {
 								name: 'mock_usdc',
@@ -384,11 +511,20 @@ describe('codegen.runEmitCycle', () => {
 			const root = `/tmp/codegen-test-${Date.now()}-${Math.random()}`;
 			return Effect.gen(function* () {
 				const fs = yield* FileSystem.FileSystem;
+				const packageAggregate = {
+					bucket: 'packages.ts',
+					project: (e: Readonly<Record<string, unknown>>) => {
+						const b = e['packageBindings'] as { readonly name: string };
+						return { [b.name]: b };
+					},
+				};
 				const result = yield* runEmitCycle({
 					contributions: [
 						fakeDecl({
 							emitterName: 'package',
 							outputPath: 'package/hello.ts',
+							allowEmitterNameRepetition: true,
+							aggregate: packageAggregate,
 							exports: {
 								packageBindings: {
 									name: 'hello',
@@ -436,6 +572,8 @@ describe('codegen.runEmitCycle', () => {
 						fakeDecl({
 							emitterName: 'package',
 							outputPath: 'package/hello.ts',
+							allowEmitterNameRepetition: true,
+							aggregate: packageAggregate,
 							exports: {
 								packageBindings: {
 									name: 'hello',
@@ -489,6 +627,14 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 					fakeDecl({
 						emitterName: 'package',
 						outputPath: 'package/hello.ts',
+						allowEmitterNameRepetition: true,
+						aggregate: {
+							bucket: 'packages.ts',
+							project: (e) => {
+								const b = e['packageBindings'] as { readonly name: string };
+								return { [b.name]: b };
+							},
+						},
 						exports: {
 							packageBindings: {
 								name: 'hello',
@@ -507,5 +653,26 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 			expect(output).toContain(']): MoveStruct<any, string> {');
 			yield* fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore);
 		}).pipe(Effect.provide(baseLayerWithMove(root, moveLayers)));
+	});
+});
+
+// Architectural invariant: the codegen orchestrator service module
+// must not name any plugin (ARCHITECTURE.md § "Orchestrator
+// boundaries — never names a service"). Aggregate special-casing
+// lives in the plugin contributors via `CodegenableDecl.aggregate`.
+describe('codegen orchestrator source — plugin-name blindness', () => {
+	it('does not reference any plugin name in service.ts', async () => {
+		const serviceUrl = new URL('../../../src/orchestrators/codegen/service.ts', import.meta.url);
+		const source = await readFile(fileURLToPath(serviceUrl), 'utf8');
+		const forbiddenPluginNames = [
+			"'sui-network'",
+			"'suiNetwork'",
+			"'account/",
+			"'coin/",
+			"'packageBindings'",
+		];
+		for (const needle of forbiddenPluginNames) {
+			expect(source, `service.ts must not mention ${needle}`).not.toContain(needle);
+		}
 	});
 });

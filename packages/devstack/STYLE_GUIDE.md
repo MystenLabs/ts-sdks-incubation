@@ -47,8 +47,8 @@ the PR1 typecheck sweep:
 - `it.effect` from `@effect/vitest` for Effect-bearing tests; pure-data helpers use plain `it`.
 - **`Effect.fork` split in v4.** Use `Effect.forkChild` for an unscoped fiber, or
   `Effect.forkScoped` for one tied to the surrounding scope. Plain `Effect.fork` is gone. (See
-  `substrate/runtime/supervisor.ts` + `surfaces/tui/index.ts` for the canonical `forkScoped`
-  pattern.)
+  `substrate/runtime/supervisor/start-supervisor.ts:318-412` + `surfaces/tui/index.ts` for the
+  canonical `forkScoped` pattern.)
 - **`Effect.async` → `Effect.callback` in v4.** The name changed; the shape is the same
   `(resume) => void`. See `substrate/runtime/host-tree-tar/index.ts` + `port-broker/service.ts`.
 - **`Cause` shape changed.** Reading the failure value via
@@ -129,11 +129,23 @@ Rules that apply across all four styles:
   lifecycle failures (sign refused, RPC unreachable, finality timeout). The same shape applies
   whenever a non-exceptional outcome carries a discriminated success/failure split — keep the
   error channel for "the operation couldn't proceed" and the return channel for "the operation
-  produced an outcome, here's which".
+  produced an outcome, here's which". The substrate Sui helper `executeSuiTx`
+  (`substrate/runtime/sui-execute/index.ts`) follows the same discipline: it returns
+  `SuiExecuteResult = { $kind: 'Transaction'; Transaction } | { $kind: 'FailedTransaction'; FailedTransaction }`,
+  and `SuiExecuteError` covers only transport / protocol failures (`'serialize'`, `'sign'`,
+  `'execute'`, `'no-digest'`, `'wait-for-finality'`). On-chain `FailedTransaction` is a RETURN
+  variant — its callers (`plugins/seal/deploy.ts`, `plugins/deepbook/deploy.ts`,
+  `plugins/deepbook/pyth/index.ts`) dispatch on `$kind` and map the failure to their own
+  plugin-shaped tagged error.
 - Phase enums on tagged errors describe WHAT STEP failed, not WHAT KIND OF FAILURE happened.
   Overloading a phase with multiple distinct failure semantics (`'submit'` carrying both
   transport rejection AND on-chain failure) is a violation — split into discrete phases that
   each name one step, OR lift the failure-kind discriminator into a return-channel variant.
+  Worked example: `AccountSignError` previously raised `phase: 'submit'` both for transport
+  failures (RPC unreachable) AND for SDK envelope protocol violations (executeTransaction
+  returned a response with no `digest`). The protocol-violation case was lifted into its own
+  `phase: 'no-digest'` so `'submit'` retains its single transport-failure meaning. The
+  underlying substrate `SuiExecuteError` already carried the distinction.
 - Do NOT introduce a fifth style.
 - `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits it (this is the
   v4-idiomatic shape and round-trips cleanly through the cascade formatter and CLI envelope).
@@ -309,15 +321,35 @@ Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
   owns the literal `'router'` it stamps into `LabelKey.kind`; the generic
   `listDevstackContainersByKind('router')` / `removeDevstackContainersByKindAndName('router', name)`
   L1 helpers stay plugin-blind.
-- **Substrate must not depend on contract NAMES either.** `substrate/runtime/supervisor.ts:35-40`
-  imports six named capability-decl modules; the substrate is name-blind only at the plugin level,
-  but capability awareness is also a coupling. Pending inversion via a `CapabilitySinks` registry —
-  see Open slot O6.
+- **Substrate must not depend on contract NAMES either.** Historically
+  `substrate/runtime/supervisor.ts:35-40` imported six named capability-decl modules; the substrate
+  is name-blind only at the plugin level, but capability awareness was also a coupling. Inverted
+  (O6 closed) via the `CapabilitySinks` registry at `substrate/runtime/capability-sinks/`; the
+  supervisor's dispatch path (`supervisor/dispatch-contributions.ts:148-173`) is now kind-blind
+  and routes contributions through `sinks.dispatch(item, harvestCtx)`.
 - **L5 build integrations use `build-integrations/runtime/` (canonical), NOT reimplement.** Today
   four sibling integrations (`vite/`, `vitest/`, `playwright/`, `browser/`) ship their own discovery
   / decode / cold-start / dapp-kit-slot — must consolidate to `runtime/`. See Open slot O7.
 - **Apps NEVER import devstack.** L5 example apps consume codegen-emitted manifest + L5
   build-integration helpers only.
+- **L2 plugins MUST NOT import L3 orchestrators.** When an orchestrator-side helper turns out to
+  be pure / substrate-blind and L2 plugins need it (the canonical case: URL composition +
+  routed-hostname minting), lift the pure logic into `substrate/runtime/` and have the
+  orchestrator re-export or adapt it for its own internal callers. The lift, not a reach across
+  the boundary, is the fix. Reference: `substrate/runtime/routed-url.ts` (B1, ex-`orchestrators/
+  router/hostname.ts:renderUrl + routerHostname`). The orchestrator's adapter mints its richer
+  error union from the substrate-blind shape so intra-L3 composers (`file-provider.ts`,
+  `resolveRoute`) keep their existing error type.
+- **Orchestrators are plugin-name-blind.** No L3 orchestrator may branch on an
+  `emitterName` / plugin-id literal, a `'sui-network'` / `'account/...'` / `'coin/...'` prefix,
+  or invoke a CLI binary named after a plugin. Aggregate cross-plugin renderings (e.g. the
+  codegen `services.ts`, `accounts.ts`, `coins.ts`, `packages.ts` files) live in plugin
+  contributors via `CodegenableDecl.aggregate.{bucket,project}` — the orchestrator treats the
+  bucket name as opaque and delegates projection to the plugin. Subprocess invocations that
+  encode a plugin's domain (e.g. `sui move summary`) live in the plugin (canonical case:
+  `plugins/sui/move-summary-runner.ts` ships `layerSuiMoveSummaryRunner{Docker,Host}` and the
+  codegen orchestrator only references the abstract `MoveSummaryRunnerService`). Reference: B3
+  remediation `orchestrators/codegen/service.ts` + `plugins/{sui,account,coin,package}/codegen.ts`.
 - **L4 surfaces vs. `cli/main.ts`-adjacent infrastructure.** `cli/main.ts`-side modules
   (`cli/prune-direct.ts`, `cli/doctor-probes.ts`, `cli/snapshot-reader.ts`, `cli/up-lifecycle.ts`)
   are L4-adjacent infrastructure, NOT L4 surfaces — they may import L3 orchestrator / L2 plugin
@@ -608,6 +640,8 @@ Named retry-policy profiles (consume rather than re-derive constants):
 - `FUNDING_BALANCE_READ_TIMEOUT_MS` — `5_000` — per-call balance-reader deadline.
 - `DEPLOY_BIND_SOURCE_RETRY_PROFILE` — `{ attempts: 10, delayMs: 500 }` — Docker Desktop bind-mount visibility race.
 - `FAUCET_HTTP_RETRY_PROFILE` — `{ maxAttempts: 15, initialDelayMs: 500, backoffFactor: 1.5, wallClockBudgetMs: 90_000, perRequestDeadlineMs: 5_000 }` — cold-faucet POST retry.
+- `STALE_OBJECT_VERSION_RETRY_PROFILE` — `{ attempts: 20, delayMs: 500 }` — Sui Move-call retry when an object ref is stale-versioned by a concurrent transaction (deepbook pool seeding).
+- `NETWORK_REMOVE_RETRY_PROFILE` — `{ attempts: 6, delayMs: 250 }` — `docker network rm` retry after force-disconnecting our own endpoints, before declaring foreign holders.
 
 When a fifth class surfaces, lift a fresh substrate primitive before the second plugin-side copy
 lands.
@@ -730,9 +764,21 @@ diagnostic visibility. Reference: `cli/main.ts:tryDecodeEventRecord`.
 display-vocabulary field (`title`, `primary`, `extras`) is a TS error at the wiring site via
 `__ProjectionFieldsClosed`. The TUI carries a second-layer guard `__TuiDisplayVocabClean`.
 
+`Row` is itself a closed field set enforced via `__RowFieldsClosed`:
+`{ key, role, status, phase, lastError, logTail, endpoints, selectiveRestartHighlight, section, endpointSection }`.
+Adding/removing a row field requires updating both the alias and the supervisor row-construction
+site at the same time — the closed alias makes drift a TS error.
+
 - **Single source of truth: the code.** Update both the code AND the corresponding section in
   ARCHITECTURE.md in the same change — they must not split.
 - Logs live INSIDE rows as `row.logTail`, not as a top-level `logs` field.
+- **`Row.section` is plugin-declared, not renderer-derived.** Plugin authors declare the dashboard
+  bucket once at `definePlugin({ section: 'service' | 'package' | 'account' | 'action' | 'app' | 'other' })`
+  time; the supervisor stamps it onto every row. The TUI reads `row.section` directly. The
+  renderer MUST NOT pattern-match on plugin-name substrings to derive a section — substring
+  classifiers (the deleted `ROW_SECTION_CLASSIFIERS`) are forbidden. Endpoint-aware overrides use
+  the optional `endpointSection` declaration; the supervisor defaults `endpointSection` to
+  `section` when authors don't override.
 - Substrate projection EVENTS are name-blind. The only projection-shaped event is
   `projection.updated` carrying `{kind: string, key: string, payload: unknown, at: number}`. The
   reducer (`substrate/runtime/projection/update.ts`) dispatches on `event.kind` and decodes
@@ -796,7 +842,7 @@ each.
 | **O2**  | Tagged-error class style unification (3 → 1)                                                                                                                                                                                                                                                                                                                                                                        | cross-cutting audit           | every plugin + substrate + runtime                                                           |
 | **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                            | substrate triage              | boundary readers and plugin config factories                                                 |
 | **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to). Pending a substrate event-bus primitive (`substrate/runtime/event-bus/`) generic over event shapes — neither command nor lifecycle channels fit. Related cross-plugin gap: Account↔Coin bidirectional import (lift `AccountFundingStrategy` to `src/contracts/funding-strategy.ts`) and Sui→faucet reverse-import (sui-owned `sui-local` faucet strategy). | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/account/funding.ts`, `plugins/sui/index.ts:64-65` |
-| ~~**O6**~~  | ~~`CapabilitySinks` registry~~ — landed at `substrate/runtime/capability-sinks/`; supervisor harvest loop dispatches through it; plugin-author Layer composition can inject custom sinks. (Closed)                                                                                                                                                                                                            | closed                        | `substrate/runtime/capability-sinks/`, `supervisor.ts:1383+`                                |
+| ~~**O6**~~  | ~~`CapabilitySinks` registry~~ — landed at `substrate/runtime/capability-sinks/`; supervisor harvest loop dispatches through it; plugin-author Layer composition can inject custom sinks. (Closed)                                                                                                                                                                                                            | closed                        | `substrate/runtime/capability-sinks/`, `supervisor/dispatch-contributions.ts:148-173`        |
 | **O7**  | Consolidate build-integrations to `runtime/` — **partially closed**: hardcoded route/port table (backlog #30) lifted to `runtime/conventional-routes.ts`; typed Playwright global slot (backlog #31) lifted to `runtime/playwright-stack-context-slot.ts`. Remaining duplication: manifest readers and dapp-kit-slot variants per `vitest/`/`browser/` are still siloed.                                                                                                                                                                                              | build-integrations cleanup    | `vitest/`, `playwright/`, `browser/`                                                |
 | **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                      | substrate triage              | future container-owning plugins                                                              |
 | **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                                                                               | closed                        | `src/substrate/plugin.ts`                                                                    |
@@ -825,7 +871,7 @@ When a slot is filled by its owning pass, **move it to the Closed list above** (
 
 **Phase-6 supervisor-split related closures** (2026-05-26):
 
-- ~~Supervisor monolith~~: `supervisor.ts` (1815 LOC) split into `supervisor/{index,start-supervisor,command-loop,acquire-node,dispatch-contributions,teardown,background-tasks,shutdown,state,types,errors,wiring}.ts`, each <500 LOC. Re-export shim preserves caller import paths. STYLE_GUIDE §8 codifies the split as the reference shape for >700-LOC monoliths.
+- ~~Supervisor monolith~~: `supervisor.ts` (1815 LOC) split into 12 per-concern modules at `supervisor/{index,start-supervisor,command-loop,acquire-node,dispatch-contributions,teardown,background-tasks,shutdown,state,types,errors,wiring}.ts`, each <500 LOC. Callers import directly from `supervisor/` (no shim). STYLE_GUIDE §8 codifies the split as the reference shape for >700-LOC monoliths.
 - ~~`ContributionSinkFailed` misattribution~~: `dispatch-contributions.ts` now catches both `UnknownContributionKind` AND `ContributionSinkFailed`; the latter publishes the new typed `engine.orchestrator.dispatchFailed` event and does NOT mark the plugin failed (orchestrator-fault vs plugin-fault).
 - ~~`OptionalService<T>` helper~~: lifted to `supervisor/wiring.ts`; three callsites (Logger, RuntimeRoot, CapabilitySinks) fold into one shape.
 

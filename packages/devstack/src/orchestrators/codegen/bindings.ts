@@ -2,8 +2,9 @@
 //
 // Distilled-doc § "Move-to-TS bindings: per-published-package typed
 // client modules produced from each local Move package's summary."
-// Calls `@mysten/codegen`'s `generateFromPackageSummary` against the
-// `sui move summary` JSON for each LOCAL package.
+// Drives `@mysten/codegen`'s `generateFromPackageSummary` against
+// `MoveSummary` JSON contributed by a plugin-owned
+// `MoveSummaryRunnerService`.
 //
 // sourcePath-known-vs-unknown discipline:
 //   - `Package` plugin's `Codegenable` emits a `PackageBindings`
@@ -13,10 +14,12 @@
 //     are skipped — their bindings come from the SDK or MVR.
 //
 // Architecture seam:
-//   - The production layer runs `sui move summary` through the
-//     container runtime's Sui CLI image. Tests and embedders can
-//     replace `MoveSummaryRunnerService` through normal Layer
-//     composition; no harness-only path exists.
+//   - `MoveSummaryRunnerService` is contributed by a plugin (the
+//     sui plugin ships `layerSuiMoveSummaryRunnerDocker` /
+//     `layerSuiMoveSummaryRunnerHost`). The codegen orchestrator
+//     consumes only the abstract service — it never names the Sui
+//     CLI binary or container image (architecture: "Orchestrator
+//     boundaries — never names a service").
 //   - The call to `@mysten/codegen.generateFromPackageSummary` is
 //     similarly behind a tagged service so unit tests can stub it
 //     without pulling in the heavyweight `@mysten/codegen` graph.
@@ -26,21 +29,14 @@
 // If it's empty, that's a `CodegenBindingsFailed` with a hint about
 // the common `Move.toml` `[addresses]` cause.
 
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, relative, sep } from 'node:path';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative, sep } from 'node:path';
 
 import { generateFromPackageSummary } from '@mysten/codegen';
 import { Context, Effect, FileSystem, Layer } from 'effect';
-import { ChildProcess, ChildProcessSpawner } from 'effect/unstable/process';
 
-import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
-import {
-	shellQuote,
-	suiCliImageBuildContext,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+import type { ImageRef } from '../../contracts/container-runtime.ts';
 
 import { emitOne } from './emit.ts';
 import { CodegenBindingsFailed } from './errors.ts';
@@ -67,10 +63,11 @@ export interface MoveSummaryInput {
 	readonly buildImage?: ImageRef | null;
 }
 
-/** Shape of the Move summary runner. Implementations:
- *   - `dockerMoveSummary` — the `ContainerRuntime.runOneShot` path.
- *   - `hostMoveSummary` — the fallback host-binary path.
- *   - `stubMoveSummary` — used in tests (returns a fixture). */
+/** Shape of the Move summary runner. Implementations live in
+ *  plugin packages (e.g. `plugins/sui/move-summary-runner.ts`
+ *  exports `layerSuiMoveSummaryRunnerDocker` and
+ *  `layerSuiMoveSummaryRunnerHost`); tests use `stubMoveSummaryRunner`
+ *  below. */
 export interface MoveSummaryRunner {
 	readonly runSummary: (
 		input: MoveSummaryInput,
@@ -278,254 +275,12 @@ export const stubMoveCodegen = (
 // -----------------------------------------------------------------------------
 // Production implementations
 // -----------------------------------------------------------------------------
-
-export const layerDockerMoveSummaryRunner: Layer.Layer<
-	MoveSummaryRunnerService,
-	never,
-	ContainerRuntimeService
-> = Layer.effect(
-	MoveSummaryRunnerService,
-	Effect.gen(function* () {
-		const runtime: ContainerRuntime = yield* ContainerRuntimeService;
-		return MoveSummaryRunnerService.of({
-			runSummary: (input) => runSummaryViaDocker(runtime, input),
-		});
-	}),
-);
-
-export const layerHostMoveSummaryRunner: Layer.Layer<
-	MoveSummaryRunnerService,
-	never,
-	ChildProcessSpawner.ChildProcessSpawner
-> = Layer.effect(
-	MoveSummaryRunnerService,
-	Effect.gen(function* () {
-		const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-		return MoveSummaryRunnerService.of({
-			runSummary: ({ packageName, sourcePath }) =>
-				Effect.gen(function* () {
-					const scratchDir = yield* Effect.tryPromise({
-						try: () => mkdtemp(join(tmpdir(), 'devstack-move-summary-')),
-						catch: (cause) =>
-							new CodegenBindingsFailed({
-								package: packageName,
-								sourcePath,
-								reason: 'summary-failed',
-								hint: 'Unable to create a temporary directory for Move summary output.',
-								cause,
-							}),
-					});
-					const summaryPath = join(scratchDir, 'package');
-					const cleanupScratch = Effect.promise(() =>
-						rm(scratchDir, { recursive: true, force: true }),
-					).pipe(Effect.ignore);
-					const result = yield* Effect.gen(function* () {
-						yield* Effect.tryPromise({
-							try: async () => {
-								await mkdir(summaryPath, { recursive: true });
-								await copyFile(join(sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml'));
-							},
-							catch: (cause) =>
-								new CodegenBindingsFailed({
-									package: packageName,
-									sourcePath,
-									reason: 'summary-failed',
-									hint: 'Unable to prepare a temporary Move summary package directory.',
-									cause,
-								}),
-						});
-						const cmd = ChildProcess.make(
-							'sui',
-							[
-								'move',
-								'summary',
-								'--path',
-								'.',
-								'--install-dir',
-								join(scratchDir, 'install'),
-								'--output-directory',
-								join(summaryPath, 'package_summaries'),
-							],
-							{ cwd: sourcePath },
-						);
-						return yield* capture(spawner, cmd, {
-							op: `sui move summary (${sourcePath})`,
-							nonZeroIsFailure: true,
-							stdoutTruncate: Infinity,
-							stderrTruncate: 4_000,
-						}).pipe(
-							Effect.mapError(
-								(cause) =>
-									new CodegenBindingsFailed({
-										package: packageName,
-										sourcePath,
-										reason: 'summary-failed',
-										hint: 'Install the Sui CLI and ensure this Move package can run `sui move summary`.',
-										cause,
-									}),
-							),
-						);
-					}).pipe(Effect.tapError(() => cleanupScratch));
-					return {
-						packageName,
-						sourcePath,
-						summaryPath,
-						cleanupPath: scratchDir,
-						summaryJson: parseSummaryStdout(result.stdout),
-					};
-				}),
-		});
-	}),
-);
-
-const runSummaryViaDocker = (
-	runtime: ContainerRuntime,
-	input: MoveSummaryInput,
-): Effect.Effect<MoveSummary, CodegenBindingsFailed> =>
-	Effect.scoped(
-		Effect.gen(function* () {
-			const scratchDir = yield* makeSummaryScratch(input);
-			const summaryPath = join(scratchDir, 'package');
-			const cleanupScratch = Effect.promise(() =>
-				rm(scratchDir, { recursive: true, force: true }),
-			).pipe(Effect.ignore);
-			const result = yield* Effect.gen(function* () {
-				yield* prepareSummaryPackage(summaryPath, input);
-				const image = input.buildImage ?? (yield* resolveDefaultSummaryImage(runtime, input));
-				const moveHome = join(homedir(), '.move');
-				yield* ensureMoveHome(moveHome, input);
-				const packageRoot = dirname(input.sourcePath);
-				const packageDir = basename(input.sourcePath);
-				const hostUid = typeof process.getuid === 'function' ? process.getuid() : 0;
-				const hostGid = typeof process.getgid === 'function' ? process.getgid() : 0;
-				const command = [
-					'set -e',
-					'cleanup_summary() { status=$?; ' +
-						'chmod -R a+rwX /summary 2>/dev/null || true; ' +
-						`chown -R ${hostUid}:${hostGid} /summary 2>/dev/null || true; ` +
-						'exit "$status"; }',
-					'trap cleanup_summary EXIT',
-					'mkdir -p /summary/package_summaries',
-					`sui move summary --path /workspace/${shellQuote(packageDir)} ` +
-						'--install-dir /tmp/devstack-move-summary-install ' +
-						'--output-directory /summary/package_summaries',
-				].join('; ');
-				const run = yield* runtime
-					.runOneShot({
-						image,
-						entrypoint: 'sh',
-						argv: ['-c', command],
-						mounts: [
-							{ source: packageRoot, target: '/workspace' },
-							{ source: summaryPath, target: '/summary' },
-							{ source: moveHome, target: '/root/.move' },
-						],
-						timeoutMillis: 5 * 60_000,
-					})
-					.pipe(
-						Effect.mapError(
-							(cause) =>
-								new CodegenBindingsFailed({
-									package: input.packageName,
-									sourcePath: input.sourcePath,
-									reason: 'summary-failed',
-									hint: 'Docker runtime failed while running `sui move summary` for bindings codegen.',
-									cause,
-								}),
-						),
-					);
-				if (run.exitCode !== 0) {
-					return yield* Effect.fail(
-						new CodegenBindingsFailed({
-							package: input.packageName,
-							sourcePath: input.sourcePath,
-							reason: 'summary-failed',
-							hint:
-								`sui move summary exited ${run.exitCode}. ` +
-								`stderr: ${run.stderr || '(empty)'}; stdout tail: ${
-									run.stdout.slice(-400) || '(empty)'
-								}`,
-						}),
-					);
-				}
-				return run;
-			}).pipe(Effect.tapError(() => cleanupScratch));
-			return {
-				packageName: input.packageName,
-				sourcePath: input.sourcePath,
-				summaryPath,
-				cleanupPath: scratchDir,
-				summaryJson: parseSummaryStdout(result.stdout),
-			};
-		}),
-	);
-
-const makeSummaryScratch = (
-	input: MoveSummaryInput,
-): Effect.Effect<string, CodegenBindingsFailed> =>
-	Effect.tryPromise({
-		try: () => mkdtemp(join(tmpdir(), 'devstack-move-summary-')),
-		catch: (cause) =>
-			new CodegenBindingsFailed({
-				package: input.packageName,
-				sourcePath: input.sourcePath,
-				reason: 'summary-failed',
-				hint: 'Unable to create a temporary directory for Move summary output.',
-				cause,
-			}),
-	});
-
-const prepareSummaryPackage = (
-	summaryPath: string,
-	input: MoveSummaryInput,
-): Effect.Effect<void, CodegenBindingsFailed> =>
-	Effect.tryPromise({
-		try: async () => {
-			await mkdir(summaryPath, { recursive: true });
-			await copyFile(join(input.sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml'));
-		},
-		catch: (cause) =>
-			new CodegenBindingsFailed({
-				package: input.packageName,
-				sourcePath: input.sourcePath,
-				reason: 'summary-failed',
-				hint: 'Unable to prepare a temporary Move summary package directory.',
-				cause,
-			}),
-	});
-
-const resolveDefaultSummaryImage = (
-	runtime: ContainerRuntime,
-	input: MoveSummaryInput,
-): Effect.Effect<ImageRef, CodegenBindingsFailed> =>
-	runtime.ensureImage(suiCliImageBuildContext()).pipe(
-		Effect.mapError(
-			(cause) =>
-				new CodegenBindingsFailed({
-					package: input.packageName,
-					sourcePath: input.sourcePath,
-					reason: 'summary-failed',
-					hint: 'Unable to resolve the Sui CLI container image for Move bindings codegen.',
-					cause,
-				}),
-		),
-	);
-
-const ensureMoveHome = (
-	moveHome: string,
-	input: MoveSummaryInput,
-): Effect.Effect<void, CodegenBindingsFailed> =>
-	Effect.tryPromise({
-		try: () => mkdir(moveHome, { recursive: true }),
-		catch: (cause) =>
-			new CodegenBindingsFailed({
-				package: input.packageName,
-				sourcePath: input.sourcePath,
-				reason: 'summary-failed',
-				hint: `Unable to create Move cache mount source "${moveHome}".`,
-				cause,
-			}),
-	}).pipe(Effect.asVoid);
+//
+// Layer factories for `MoveSummaryRunnerService` are plugin-owned —
+// they live in `src/plugins/sui/move-summary-runner.ts`. The codegen
+// orchestrator does not name the Sui CLI binary or container image;
+// per "Orchestrator boundaries — never names a service", any plugin
+// that can produce `MoveSummary` JSON may contribute a runner Layer.
 
 export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.succeed(
 	MoveCodegenService,
@@ -571,16 +326,6 @@ export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.suc
 
 const joinPath = (...parts: ReadonlyArray<string>): string =>
 	parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/');
-
-const parseSummaryStdout = (stdout: string): unknown => {
-	const trimmed = stdout.trim();
-	if (trimmed.length === 0) return null;
-	try {
-		return JSON.parse(trimmed) as unknown;
-	} catch {
-		return trimmed;
-	}
-};
 
 const generatedBcsFactoryPattern =
 	/export function ([A-Za-z_$][\w$]*)<((?:[^<>]|<[^<>]*>)+)>\((\.\.\.typeParameters: \[[\s\S]*?\n\])\) \{\n(\s*)return new (MoveStruct|MoveEnum|MoveTuple)\(/g;

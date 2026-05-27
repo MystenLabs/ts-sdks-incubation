@@ -46,8 +46,17 @@ export const makeQueueCommandPublisher =
 		options: QueueCommandPublisherOptions = {},
 	): ((command: EngineCommand) => void) =>
 	(command) => {
+		// `hardKillRequested` escalates directly via `process.exit` —
+		// `setImmediate(process.exit)` fires before the supervisor's
+		// command loop can dequeue in the same tick, so any queue offer
+		// here would be dead code. The supervisor still observes the
+		// hard-kill through the signal handler chain
+		// (`substrate/runtime/lifecycle/signals.ts`); this publisher
+		// only handles the TUI keypress path and the platform exit is
+		// authoritative for it.
 		if (command.tag === 'shutdown.hardKillRequested') {
 			(options.scheduleHardExit ?? scheduleProcessExit)(command.exitCode);
+			return;
 		}
 		Effect.runFork(Queue.offer(commands, command));
 	};

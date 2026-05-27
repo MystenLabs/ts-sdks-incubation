@@ -102,25 +102,26 @@ export interface RunEmitCycleResult {
 }
 
 const buildParentModeResolver = (
-	paths: { readonly resolve: (outputPath: string) => string },
+	paths: CodegenPaths,
 	decls: ReadonlyArray<Codegenable>,
-): ((absolutePath: string) => number) => {
-	const byParent = new Map<string, Array<Pick<Codegenable, 'sensitive'>>>();
-	for (const decl of decls) {
-		const parent = dirname(paths.resolve(decl.outputPath));
-		const current = byParent.get(parent);
-		if (current === undefined) {
-			byParent.set(parent, [decl]);
-		} else {
-			current.push(decl);
+): Effect.Effect<(absolutePath: string) => number, CodegenPathConflict> =>
+	Effect.gen(function* () {
+		const byParent = new Map<string, Array<Pick<Codegenable, 'sensitive'>>>();
+		for (const decl of decls) {
+			const parent = dirname(yield* paths.resolve(decl.outputPath));
+			const current = byParent.get(parent);
+			if (current === undefined) {
+				byParent.set(parent, [decl]);
+			} else {
+				current.push(decl);
+			}
 		}
-	}
-	const modes = new Map<string, number>();
-	for (const [parent, parentDecls] of byParent) {
-		modes.set(parent, dirModeFor(parentDecls));
-	}
-	return (absolutePath) => modes.get(dirname(absolutePath)) ?? NON_SENSITIVE_DIR_MODE;
-};
+		const modes = new Map<string, number>();
+		for (const [parent, parentDecls] of byParent) {
+			modes.set(parent, dirModeFor(parentDecls));
+		}
+		return (absolutePath: string) => modes.get(dirname(absolutePath)) ?? NON_SENSITIVE_DIR_MODE;
+	});
 
 // -----------------------------------------------------------------------------
 // Main entry — one cycle of the codegen pipeline
@@ -258,10 +259,11 @@ const rebasePaths = (original: CodegenPaths, stagingDir: string): CodegenPaths =
 		outputDir: stripped,
 		gitignoreFile: rebase(original.gitignoreFile),
 		bindingsDir: rebase(original.bindingsDir),
-		resolve: (outputPath) => {
-			assertRelativeCodegenOutputPath(outputPath);
-			return `${stripped}${sep}${outputPath}`;
-		},
+		resolve: (outputPath) =>
+			Effect.gen(function* () {
+				yield* assertRelativeCodegenOutputPath(outputPath);
+				return `${stripped}${sep}${outputPath}`;
+			}),
 		resolveBindingsPackage: (packageName) => `${rebase(original.bindingsDir)}${sep}${packageName}`,
 	};
 };
@@ -315,20 +317,37 @@ const runEmitCycleInner = (
 		const filesWritten: Array<string> = [];
 		const filesUnchanged: Array<string> = [];
 		const filesChmod: Array<string> = [];
-		const aggregates = emptyAggregateBuckets();
+		// Aggregate buckets keyed by plugin-supplied bucket name. The
+		// orchestrator treats bucket names as opaque tags chosen by
+		// the contributor; it never branches on plugin identity. See
+		// `CodegenableDecl.aggregate` (contracts/codegenable.ts).
+		const aggregates = new Map<string, Record<string, unknown>>();
 		const packageContribs: Array<PackageBindings> = [];
 		const sortedDecls = [...fileEmitters].sort(
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
-		const parentModeFor = buildParentModeResolver(paths, fileEmitters);
+		const parentModeFor = yield* buildParentModeResolver(paths, fileEmitters);
 		for (const decl of sortedDecls) {
 			const emission = yield* runEmitter(decl);
 			const exported = emission.exports;
-			collectAggregateExport(aggregates, decl, exported);
-			if (decl.emitterName === 'package') {
-				const bindings = exported['packageBindings'];
-				if (isPackageBindings(bindings)) {
-					packageContribs.push(bindings);
+			if (decl.aggregate !== undefined) {
+				const projected = decl.aggregate.project(exported);
+				if (projected !== null) {
+					const bucket = aggregates.get(decl.aggregate.bucket) ?? {};
+					Object.assign(bucket, projected);
+					aggregates.set(decl.aggregate.bucket, bucket);
+				}
+			}
+			// Move-bindings collection: any export whose shape matches
+			// the orchestrator's `PackageBindings` consumer contract is
+			// forwarded to `emitBindings`. Runs against the raw `exported`
+			// map (not via `aggregate.project`) so direct `codegenable(...)`
+			// contributions — which carry no `aggregate` — are picked up
+			// too. The orchestrator validates the shape it consumes; it
+			// does NOT name the plugin that produced it.
+			for (const value of Object.values(exported)) {
+				if (isPackageBindings(value)) {
+					packageContribs.push(value);
 				}
 			}
 			const rendered = renderFile({
@@ -341,7 +360,7 @@ const runEmitCycleInner = (
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = paths.resolve(decl.outputPath);
+			const abs = yield* paths.resolve(decl.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
@@ -371,7 +390,7 @@ const runEmitCycleInner = (
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = paths.resolve(aggregate.outputPath);
+			const abs = yield* paths.resolve(aggregate.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
@@ -458,10 +477,11 @@ const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEm
 	});
 
 /**
- * Uniqueness check: emitter name (literal) must be unique EXCEPT
- * for the `package` emitter, which legitimately appears once per
- * Package contribution. Output paths must be unique across ALL
- * emitters (including each `package`-emitted pointer file).
+ * Uniqueness check: emitter name (literal) must be unique unless
+ * the decl opts into repetition via `allowEmitterNameRepetition`
+ * (used by per-item plugins like Package, which emit one decl per
+ * published package under a shared emitter name). Output paths
+ * must be unique across ALL emitters.
  */
 const validateUniqueness = (
 	decls: ReadonlyArray<Codegenable>,
@@ -473,8 +493,7 @@ const validateUniqueness = (
 			const ps = byPath.get(d.outputPath) ?? [];
 			ps.push(d.emitterName);
 			byPath.set(d.outputPath, ps);
-			// `package` is allowed to repeat — it's per-Package by design.
-			if (d.emitterName === 'package') continue;
+			if (d.allowEmitterNameRepetition === true) continue;
 			const ns = byName.get(d.emitterName) ?? [];
 			ns.push(d.outputPath);
 			byName.set(d.emitterName, ns);
@@ -483,6 +502,7 @@ const validateUniqueness = (
 			if (emitters.length > 1) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
+						kind: 'duplicate',
 						outputPath: path,
 						emitters,
 					}),
@@ -501,35 +521,26 @@ const validateUniqueness = (
 		}
 	});
 
-const AGGREGATE_OUTPUTS = {
-	accounts: 'accounts.ts',
-	coins: 'coins.ts',
-	packages: 'packages.ts',
-	services: 'services.ts',
-} as const;
-
-const aggregatePathFor = (decl: Codegenable): string | null => {
-	if (decl.emitterName.startsWith('account/')) return AGGREGATE_OUTPUTS.accounts;
-	if (decl.emitterName.startsWith('coin/')) return AGGREGATE_OUTPUTS.coins;
-	if (decl.emitterName === 'package') return AGGREGATE_OUTPUTS.packages;
-	if (decl.emitterName === 'sui-network') return AGGREGATE_OUTPUTS.services;
-	return null;
-};
-
+/**
+ * Reject contribution sets that would have an aggregate bucket
+ * collide with a per-decl `outputPath`. The orchestrator only knows
+ * bucket names because plugins declared them via `aggregate.bucket`;
+ * it does not enumerate or recognize plugin identities here.
+ */
 const validateAggregatePathAvailability = (
 	decls: ReadonlyArray<Codegenable>,
 ): Effect.Effect<void, CodegenPathConflict> =>
 	Effect.gen(function* () {
 		const aggregatePaths = new Set<string>();
 		for (const decl of decls) {
-			const path = aggregatePathFor(decl);
-			if (path !== null) aggregatePaths.add(path);
+			if (decl.aggregate !== undefined) aggregatePaths.add(decl.aggregate.bucket);
 		}
 		for (const path of aggregatePaths) {
 			const colliding = decls.filter((decl) => decl.outputPath === path);
 			if (colliding.length > 0) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
+						kind: 'duplicate',
 						outputPath: path,
 						emitters: [...colliding.map((decl) => decl.emitterName), `aggregate/${path}`],
 					}),
@@ -538,94 +549,47 @@ const validateAggregatePathAvailability = (
 		}
 	});
 
-interface AggregateBuckets {
-	readonly accounts: Record<string, unknown>;
-	readonly coins: Record<string, unknown>;
-	readonly packages: Record<string, unknown>;
-	readonly services: Record<string, unknown>;
-}
-
-const emptyAggregateBuckets = (): AggregateBuckets => ({
-	accounts: {},
-	coins: {},
-	packages: {},
-	services: {},
-});
-
-const collectAggregateExport = (
-	buckets: AggregateBuckets,
-	decl: Codegenable,
-	exported: { readonly [key: string]: unknown },
-): void => {
-	if (decl.emitterName.startsWith('account/')) {
-		Object.assign(buckets.accounts, exported);
-		return;
-	}
-	if (decl.emitterName.startsWith('coin/')) {
-		Object.assign(buckets.coins, exported);
-		return;
-	}
-	if (decl.emitterName === 'package') {
-		const bindings = exported['packageBindings'];
-		if (isPackageBindings(bindings)) {
-			buckets.packages[bindings.name] = bindings;
-		}
-		return;
-	}
-	if (decl.emitterName === 'sui-network') {
-		const network = exported['suiNetwork'];
-		if (isRecord(network)) {
-			const rpcUrl = stringField(network, 'rpcUrl');
-			const faucetUrl = stringField(network, 'faucetUrl');
-			const graphqlUrl = stringField(network, 'graphqlUrl');
-			buckets.services['sui'] = {
-				rpc: { url: rpcUrl ?? '' },
-				faucet: faucetUrl === null ? null : { url: faucetUrl },
-				graphql: graphqlUrl === null ? null : { url: graphqlUrl },
-			};
-		}
-	}
-};
-
 interface AggregateFile {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly exports: { readonly [key: string]: unknown };
 }
 
-const buildAggregateFiles = (buckets: AggregateBuckets): ReadonlyArray<AggregateFile> => {
+/**
+ * Synthesize one `AggregateFile` per non-empty bucket. The exports
+ * map is keyed by the bucket's stem (e.g. `accounts.ts` → `accounts`)
+ * so the rendered file exports `export const <stem> = { ... }`. The
+ * orchestrator picks the export key from the bucket filename; the
+ * stem itself is not a plugin identifier — it is the filename
+ * without the `.ts` extension, derived mechanically.
+ */
+const buildAggregateFiles = (
+	buckets: ReadonlyMap<string, Record<string, unknown>>,
+): ReadonlyArray<AggregateFile> => {
 	const files: Array<AggregateFile> = [];
-	if (Object.keys(buckets.accounts).length > 0) {
+	const sortedEntries = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
+	for (const [bucket, contents] of sortedEntries) {
+		if (Object.keys(contents).length === 0) continue;
+		const stem = bucketStem(bucket);
 		files.push({
-			emitterName: 'aggregate/accounts',
-			outputPath: AGGREGATE_OUTPUTS.accounts,
-			exports: { accounts: buckets.accounts },
-		});
-	}
-	if (Object.keys(buckets.coins).length > 0) {
-		files.push({
-			emitterName: 'aggregate/coins',
-			outputPath: AGGREGATE_OUTPUTS.coins,
-			exports: { coins: buckets.coins },
-		});
-	}
-	if (Object.keys(buckets.packages).length > 0) {
-		files.push({
-			emitterName: 'aggregate/packages',
-			outputPath: AGGREGATE_OUTPUTS.packages,
-			exports: { packages: buckets.packages },
-		});
-	}
-	if (Object.keys(buckets.services).length > 0) {
-		files.push({
-			emitterName: 'aggregate/services',
-			outputPath: AGGREGATE_OUTPUTS.services,
-			exports: { services: buckets.services },
+			emitterName: `aggregate/${stem}`,
+			outputPath: bucket,
+			exports: { [stem]: contents },
 		});
 	}
 	return files;
 };
 
+const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
+
+/**
+ * Consumer-side shape guard: does this aggregated value look like a
+ * Move-bindings contribution that `emitBindings` knows how to
+ * consume? This is structural validation of the orchestrator's own
+ * input contract, NOT a plugin-name match. Any plugin whose
+ * `aggregate.project` returns objects with this shape will be
+ * forwarded to the Move bindings emitter.
+ */
 const isPackageBindings = (v: unknown): v is PackageBindings =>
 	typeof v === 'object' &&
 	v !== null &&
@@ -633,14 +597,6 @@ const isPackageBindings = (v: unknown): v is PackageBindings =>
 	'packageId' in v &&
 	'mvrPlaceholder' in v &&
 	'sourcePath' in v;
-
-const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> =>
-	typeof v === 'object' && v !== null;
-
-const stringField = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-	const value = record[key];
-	return typeof value === 'string' && value.length > 0 ? value : null;
-};
 
 // -----------------------------------------------------------------------------
 // Service surface — registration API + emit-cycle trigger

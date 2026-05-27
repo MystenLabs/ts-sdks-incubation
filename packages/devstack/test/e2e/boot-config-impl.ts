@@ -95,7 +95,7 @@ import {
 import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../src/runtime/built-in-plugin-layers.ts';
+} from '../../src/orchestrators/built-in-plugin-layers.ts';
 import {
 	SnapshotOrchestratorService,
 	layerSnapshotOrchestrator,

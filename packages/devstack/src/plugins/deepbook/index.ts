@@ -386,6 +386,7 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		id: deepbookResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'task',
+		section: 'service',
 		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.sync(() => {
@@ -454,6 +455,7 @@ const buildLocalPlugin = <
 		id: deepbookResource.id,
 		dependsOn,
 		role: 'task',
+		section: 'service',
 		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -664,6 +666,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		id: deepbookResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'task',
+		section: 'service',
 		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;

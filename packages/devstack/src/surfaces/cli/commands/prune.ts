@@ -78,6 +78,15 @@ export interface PruneForeignNetworkHolder {
 	readonly container: { readonly id: string; readonly name: string };
 }
 
+/** Endpoint Docker still tracks on a network even though the owning
+ *  container is gone and no CLI/API path can remove it. Docker engine
+ *  bug — only a daemon restart reclaims the network. */
+export interface PruneStaleNetworkEndpoint {
+	readonly network: string;
+	readonly name: string;
+	readonly id: string;
+}
+
 export interface PruneSummary {
 	readonly inspectedGroups: number;
 	readonly selectedGroups: number;
@@ -90,6 +99,9 @@ export interface PruneSummary {
 	/** Foreign holders surviving network removal. Empty when every
 	 *  network came down cleanly or no network removal was attempted. */
 	readonly foreignNetworkHolders: ReadonlyArray<PruneForeignNetworkHolder>;
+	/** Stale phantom endpoints requiring a Docker daemon restart to
+	 *  reclaim. Empty in the happy path. */
+	readonly staleNetworkEndpoints: ReadonlyArray<PruneStaleNetworkEndpoint>;
 }
 
 export type PruneOutcome = { readonly kind: 'completed'; readonly summary: PruneSummary };
@@ -259,11 +271,22 @@ const completedLines = (summary: PruneSummary, dryRun: boolean): ReadonlyArray<s
 	const skippedNetworks =
 		summary.networksSkipped > 0 ? `, ${summary.networksSkipped} network(s) still in use` : '';
 	const head = `${prefix}: ${summary.selectedGroups} group(s), ${summary.containersRemoved} container(s), ${summary.networksRemoved} network(s), ${summary.volumesRemoved} volume(s), ${summary.imagesRemoved} image(s), ${summary.skippedLiveGroups} live group(s) skipped${skippedNetworks}`;
-	if (summary.foreignNetworkHolders.length === 0) return [head];
-	const holders = summary.foreignNetworkHolders.map(
-		(h) => `  ${h.network} held by ${h.container.name} (${h.container.id.slice(0, 12)})`,
-	);
-	return [head, 'foreign network holders:', ...holders];
+	const lines: Array<string> = [head];
+	if (summary.foreignNetworkHolders.length > 0) {
+		lines.push('foreign network holders:');
+		for (const h of summary.foreignNetworkHolders) {
+			lines.push(`  ${h.network} held by ${h.container.name} (${h.container.id.slice(0, 12)})`);
+		}
+	}
+	if (summary.staleNetworkEndpoints.length > 0) {
+		lines.push(
+			'stale endpoints (Docker engine bug — restart Docker Desktop to reclaim these networks):',
+		);
+		for (const ep of summary.staleNetworkEndpoints) {
+			lines.push(`  ${ep.network}: phantom endpoint "${ep.name}" (${ep.id.slice(0, 12)})`);
+		}
+	}
+	return lines;
 };
 
 const mapUnknownPruneError = (cause: unknown): Effect.Effect<never, CliError> =>
@@ -345,6 +368,7 @@ export const runPrune = (
 							volumesRemoved: 0,
 							imagesRemoved: 0,
 							foreignNetworkHolders: [],
+							staleNetworkEndpoints: [],
 						},
 					},
 				},

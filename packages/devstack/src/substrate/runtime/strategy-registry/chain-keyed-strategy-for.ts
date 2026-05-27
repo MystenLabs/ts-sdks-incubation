@@ -9,8 +9,8 @@
 
 import { Effect } from 'effect';
 
-import type { StrategyNotFoundError } from '../../../contracts/strategy-contributor.ts';
 import type { ChainId } from '../../brand.ts';
+import type { StrategyNotFoundError } from '../errors.ts';
 import { StrategyRegistryService } from './service.ts';
 
 /**

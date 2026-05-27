@@ -90,7 +90,7 @@ import {
 import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../runtime/built-in-plugin-layers.ts';
+} from '../orchestrators/built-in-plugin-layers.ts';
 import type { StatusReader } from '../surfaces/cli/commands/status.ts';
 import type { GlobalFlags } from '../surfaces/cli/flags.ts';
 import { ExitCode } from '../surfaces/cli/sysexits.ts';

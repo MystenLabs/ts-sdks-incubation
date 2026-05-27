@@ -33,9 +33,12 @@ export class CacheError extends Schema.TaggedErrorClass<CacheError>()('CacheErro
 	cause: Schema.optional(Schema.Defect),
 }) {}
 
-/** Strategy registry missing-key surface — mirrors
- *  `StrategyNotFoundError` from `contracts/strategy-contributor.ts`
- *  as a yieldable. */
+/** Strategy registry missing-key surface. Canonical tagged error
+ *  yielded from `StrategyRegistry.get` when no contributor is
+ *  registered under the requested capability key. The
+ *  `contracts/strategy-contributor.ts` `StrategyRegistry` interface
+ *  imports this class as its `E` channel — one `_tag` literal,
+ *  one class, package-wide. */
 export class StrategyNotFoundError extends Schema.TaggedErrorClass<StrategyNotFoundError>()(
 	'StrategyNotFoundError',
 	{

@@ -809,10 +809,22 @@ export const runRestore = (
 		yield* preflightArtifact(meta, inputs.artifactDir);
 
 		// 4. Stage filesystem content and non-destructive Docker image
-		//    refs; atomic swap on success. Until `stageAndSwap`
-		//    succeeds, the restore-pending marker is only in staging, so
-		//    restore owns cleanup for any Docker staging refs it minted.
-		const stagedImages = yield* Effect.scoped(
+		//    refs; atomic swap on success, then promote staged images and
+		//    clear the recovery marker. The inner `Effect.scoped` keeps
+		//    `cleanupRestoreStagingImages` armed across BOTH the
+		//    stage-and-swap build phase AND the post-swap Docker handoff
+		//    (promote → remove containers → clear marker). The handoff
+		//    flag flips only after `clearRestorePendingMarker` returns,
+		//    so a mid-handoff failure (e.g. promotion of image N of M
+		//    refuses) leaves the swapped tree carrying the pending
+		//    marker (re-supervise can detect the broken handoff) AND
+		//    has the inner scope clean the still-tagged staging refs so
+		//    Docker is not littered with orphan `devstack-snapshot:restore-*`
+		//    tags. The post-publish three-step sequence runs under
+		//    `Effect.uninterruptible` so an outer interrupt cannot
+		//    arrive between promote and the marker clear and tear the
+		//    handoff state.
+		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
 				let recoveryHandoffComplete = false;
@@ -821,7 +833,7 @@ export const runRestore = (
 						? cleanupRestoreStagingImages(inputs.runtime, stagedImages)
 						: Effect.void,
 				);
-				const swappedImages = yield* stageAndSwap({
+				yield* stageAndSwap({
 					targetPath: inputs.runtimeStackRoot,
 					stagingPath: inputs.runtimeStagingPath,
 					backupPath: inputs.runtimeBackupPath,
@@ -915,19 +927,29 @@ export const runRestore = (
 						return stagedImages;
 					}),
 				});
-				recoveryHandoffComplete = true;
-				return swappedImages;
+
+				// 5. Docker finalization happens after filesystem publish.
+				//    Promote → remove captured containers → clear marker, all
+				//    inside the staging-cleanup scope. If any step fails the
+				//    inner finalizer reclaims orphan staging tags while the
+				//    pending marker stays in the swapped tree as the
+				//    re-supervise breadcrumb. Uninterruptible so an outer
+				//    interrupt cannot tear the handoff between promote and
+				//    `clearRestorePendingMarker`.
+				if (stagedImages.length > 0) {
+					yield* Effect.uninterruptible(
+						Effect.gen(function* () {
+							yield* promoteStagedImages(stagedImages, inputs.runtime);
+							yield* removeCapturedContainers(meta, inputs.runtime, inputs.runtimeIdentity);
+							yield* clearRestorePendingMarker(inputs.runtimeStackRoot);
+							recoveryHandoffComplete = true;
+						}),
+					);
+				} else {
+					recoveryHandoffComplete = true;
+				}
 			}),
 		);
-
-		// 5. Docker finalization happens after filesystem publish. If
-		//    promotion or removal fails, the restored root still carries
-		//    snapshot.restore-pending.json with the staged image refs.
-		if (stagedImages.length > 0) {
-			yield* promoteStagedImages(stagedImages, inputs.runtime);
-			yield* removeCapturedContainers(meta, inputs.runtime, inputs.runtimeIdentity);
-			yield* clearRestorePendingMarker(inputs.runtimeStackRoot);
-		}
 
 		// 6. Post-restore hooks (after the swap lands so plugins read
 		//    fresh state from the runtime root).

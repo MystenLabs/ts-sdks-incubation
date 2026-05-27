@@ -34,6 +34,12 @@ import {
 import { readStashedFixture } from './global-setup.ts';
 import { PlaywrightWalletAdapterError } from './errors.ts';
 import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/dapp-kit-slot.ts';
+// The wallet plugin owns the wire-protocol path constants. We import
+// them directly from the plugin's `protocol.ts` (an L2 module) rather
+// than re-typing the strings here — server + adapter MUST stay in
+// lock-step or every request silently 404s. Layer rule: L5 may import
+// L0–L3 directly (ARCHITECTURE.md § layer table).
+import { WalletHttpPath } from '../../plugins/wallet/protocol.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an
@@ -74,13 +80,13 @@ export interface WalletAdapter {
 	/** List dev-wallet account names + addresses. */
 	readonly listAccounts: () => Promise<ReadonlyArray<DevAccount>>;
 
-	/** Switch the active dev-wallet account by name. Posts to the
-	 *  wallet's `switch-account` endpoint. */
-	readonly switchAccount: (accountName: string) => Promise<void>;
-
 	/** Sign + execute a serialized transaction as `accountName`.
 	 *  `txBytes` is the canonical Sui tx bytes (base64). Returns the
-	 *  wallet's response body (typed `unknown` — caller decodes). */
+	 *  wallet's response body (typed `unknown` — caller decodes).
+	 *
+	 *  NOTE on account switching: the HTTP wallet server has no
+	 *  `/accounts/switch` endpoint — active-account selection is owned
+	 *  by the dapp-kit slot. Use `selectAccount` / `connectAs` below. */
 	readonly signTransaction: (input: SignTxRequest) => Promise<SignTxResponse>;
 
 	/** Raw POST escape hatch. Used by the helpers above and by tests
@@ -201,12 +207,12 @@ export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletA
 
 	return {
 		walletUrl,
-		listAccounts: () => request<ReadonlyArray<DevAccount>>('/accounts'),
-		switchAccount: async (accountName: string) => {
-			await request<{ readonly ok: true }>('/accounts/switch', { accountName });
-		},
+		// Paths come from the wallet plugin's canonical wire-protocol
+		// module. Hard-coded literals here would silently 404 the moment
+		// `WalletHttpPath` is reorganised, with no compile-time signal.
+		listAccounts: () => request<ReadonlyArray<DevAccount>>(WalletHttpPath.ACCOUNTS),
 		signTransaction: (input: SignTxRequest) =>
-			request<SignTxResponse>('/sign-transaction', {
+			request<SignTxResponse>(WalletHttpPath.SIGN_TRANSACTION, {
 				accountName: input.accountName,
 				txBytesBase64: input.txBytesBase64,
 				label: input.label,

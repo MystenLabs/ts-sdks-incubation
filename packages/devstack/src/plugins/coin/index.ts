@@ -39,7 +39,7 @@ import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
-import { COIN_REGISTRY_CAPABILITY_KEY, CoinRegistryService } from './registry.ts';
+import { CoinRegistryService } from './registry.ts';
 import { COIN_ERROR_TAGS } from './errors.ts';
 import { acquireCoin, type CoinAddressForm, type CoinValue } from './service.ts';
 import { BUILTIN_COINS } from './address-resolution.ts';
@@ -118,21 +118,6 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		symbol,
 		resolved: bindings,
 	});
-	// Auto-mounted strategy contribution — siblings (Wallet, Faucet's
-	// treasury-cap mint, Deepbook market-maker) read the per-stack
-	// registry via this seam. The actual `CoinRegistry` instance is
-	// wired at compose time (one registry per stack); each coin
-	// contributes its `register(record)` call as a side effect at
-	// acquire.
-	const registryContribution: StrategyContributorDecl<
-		typeof COIN_REGISTRY_CAPABILITY_KEY,
-		{ readonly symbol: string }
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: COIN_REGISTRY_CAPABILITY_KEY,
-		strategy: { symbol },
-		autoMounted: true,
-	};
 	const fundingContribution =
 		resolved.fundingStrategy === undefined
 			? []
@@ -144,7 +129,7 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
 				];
-	return [snap, codegen, registryContribution, ...fundingContribution] as const;
+	return [snap, codegen, ...fundingContribution] as const;
 };
 
 // ---------------------------------------------------------------------------
@@ -192,6 +177,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		id: coinRef.id,
 		dependsOn: { pkg, sui: suiResource },
 		role: 'task',
+		section: 'action',
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
 				const artifactPublisher = yield* ArtifactPublisherService;
@@ -236,6 +222,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
@@ -267,6 +254,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
@@ -306,11 +294,7 @@ export type { ResolvedCoin, BuiltinCoinName } from './address-resolution.ts';
 export { BUILTIN_COINS } from './address-resolution.ts';
 
 export type { CoinRecord, CoinRegistry, CoinKey } from './registry.ts';
-export {
-	COIN_REGISTRY_CAPABILITY_KEY,
-	CoinRegistryService,
-	layerCoinRegistry,
-} from './registry.ts';
+export { CoinRegistryService, layerCoinRegistry } from './registry.ts';
 
 export type { CoinBindings } from './codegen.ts';
 

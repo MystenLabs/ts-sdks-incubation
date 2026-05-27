@@ -7,10 +7,8 @@ import { describe, expect, it } from '@effect/vitest';
 import { Effect, Stream } from 'effect';
 
 import type { ContainerRuntime, OneShotSpec } from '../../../src/contracts/container-runtime.ts';
-import {
-	layerDockerMoveSummaryRunner,
-	MoveSummaryRunnerService,
-} from '../../../src/orchestrators/codegen/bindings.ts';
+import { MoveSummaryRunnerService } from '../../../src/orchestrators/codegen/bindings.ts';
+import { layerSuiMoveSummaryRunnerDocker } from '../../../src/plugins/sui/move-summary-runner.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
 
 const unusedRuntimeMethod = () => Effect.die('not used');
@@ -98,7 +96,7 @@ describe('codegen Move summary runner', () => {
 						sourcePath,
 					});
 				}).pipe(
-					Effect.provide(layerDockerMoveSummaryRunner),
+					Effect.provide(layerSuiMoveSummaryRunnerDocker),
 					Effect.provideService(ContainerRuntimeService, runtime),
 				);
 

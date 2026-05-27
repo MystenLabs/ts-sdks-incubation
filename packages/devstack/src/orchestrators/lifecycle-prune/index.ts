@@ -41,6 +41,7 @@ import {
 	removeDevstackImages,
 	removeDevstackNetworksBestEffort,
 	removeDevstackVolumes,
+	type StaleNetworkEndpoint,
 } from '../../runtime/docker/index.ts';
 import { checkHolderLiveness, readRoster } from '../../substrate/runtime/cross-process/index.ts';
 import {
@@ -48,6 +49,9 @@ import {
 	removeRouterProfileStateForDockerStack,
 } from '../router/cleanup.ts';
 import { ROUTER_KIND_LABEL_VALUE } from '../router/traefik-container.ts';
+import { failPhase, type LifecyclePruneError } from './errors.ts';
+
+export { LifecyclePruneError, LifecyclePrunePhase } from './errors.ts';
 
 // -----------------------------------------------------------------------------
 // Public shapes — mirror `surfaces/cli/commands/prune.ts` field-for-field so
@@ -106,6 +110,11 @@ export interface LifecyclePruneSummary {
 	/** Non-devstack containers still holding networks that prune could
 	 *  not remove. Empty when every network came down cleanly. */
 	readonly foreignNetworkHolders: ReadonlyArray<ForeignNetworkHolder>;
+	/** Endpoints Docker insists exist on a network but which no CLI/API
+	 *  path can address — symptom of a Docker engine bug (the bridge
+	 *  driver leaked endpoint metadata after a container was reaped).
+	 *  Only a Docker daemon restart clears these. */
+	readonly staleNetworkEndpoints: ReadonlyArray<StaleNetworkEndpoint>;
 }
 
 // -----------------------------------------------------------------------------
@@ -225,7 +234,7 @@ const isRouterGroup = (group: Pick<LifecyclePruneGroup, 'app' | 'stack'>): boole
 
 export const collectLifecyclePruneInventory = (
 	options: LifecyclePruneOptions,
-): Effect.Effect<LifecyclePruneInventory, unknown> =>
+): Effect.Effect<LifecyclePruneInventory, LifecyclePruneError> =>
 	Effect.gen(function* () {
 		const [containers, routerContainers, networks, volumes, images] = yield* Effect.all(
 			[
@@ -236,7 +245,7 @@ export const collectLifecyclePruneInventory = (
 				listDevstackImages(),
 			],
 			{ concurrency: 'unbounded' },
-		).pipe(Effect.provide(dockerLayer));
+		).pipe(Effect.provide(dockerLayer), Effect.mapError(failPhase('inventory')));
 
 		const buckets = new Map<string, ResourceBucket>();
 
@@ -308,7 +317,7 @@ const selectedGroups = (
 export const runLifecyclePrune = (
 	options: LifecyclePruneOptions,
 	selection: LifecyclePruneSelection,
-): Effect.Effect<LifecyclePruneSummary, unknown> =>
+): Effect.Effect<LifecyclePruneSummary, LifecyclePruneError> =>
 	Effect.gen(function* () {
 		const inventory = yield* collectLifecyclePruneInventory(options);
 		const groups = selectedGroups(inventory, selection);
@@ -341,40 +350,50 @@ export const runLifecyclePrune = (
 					containersRemoved += yield* removeDevstackContainersByKindAndName(
 						ROUTER_KIND_LABEL_VALUE,
 						group.stack,
-					).pipe(Effect.provide(dockerLayer));
+					).pipe(Effect.provide(dockerLayer), Effect.mapError(failPhase('remove-containers')));
 				} else {
 					const match = { app: group.app, stack: group.stack };
 					containersRemoved += yield* removeDevstackContainers(match).pipe(
 						Effect.provide(dockerLayer),
+						Effect.mapError(failPhase('remove-containers')),
 					);
 				}
 			}
 		}
 
 		const foreignNetworkHolders: Array<ForeignNetworkHolder> = [];
+		const staleNetworkEndpoints: Array<StaleNetworkEndpoint> = [];
 		if (!selection.dryRun && selection.resources.networks) {
 			for (const group of prunableGroups) {
 				const match = { app: group.app, stack: group.stack };
 				const result = yield* removeDevstackNetworksBestEffort(match).pipe(
 					Effect.provide(dockerLayer),
+					Effect.mapError(failPhase('remove-networks')),
 				);
 				networksRemoved += result.removed;
 				networksSkipped += result.skippedInUse;
 				for (const holder of result.foreignHolders) foreignNetworkHolders.push(holder);
+				for (const ep of result.staleEndpoints) staleNetworkEndpoints.push(ep);
 			}
 		}
 
 		if (!selection.dryRun && selection.resources.volumes) {
 			for (const group of prunableGroups) {
 				const match = { app: group.app, stack: group.stack };
-				volumesRemoved += yield* removeDevstackVolumes(match).pipe(Effect.provide(dockerLayer));
+				volumesRemoved += yield* removeDevstackVolumes(match).pipe(
+					Effect.provide(dockerLayer),
+					Effect.mapError(failPhase('remove-volumes')),
+				);
 			}
 		}
 
 		if (!selection.dryRun && selection.resources.images) {
 			for (const group of prunableGroups) {
 				const match = { app: group.app, stack: group.stack };
-				imagesRemoved += yield* removeDevstackImages(match).pipe(Effect.provide(dockerLayer));
+				imagesRemoved += yield* removeDevstackImages(match).pipe(
+					Effect.provide(dockerLayer),
+					Effect.mapError(failPhase('remove-images')),
+				);
 			}
 		}
 
@@ -398,5 +417,6 @@ export const runLifecyclePrune = (
 			volumesRemoved,
 			imagesRemoved,
 			foreignNetworkHolders,
+			staleNetworkEndpoints,
 		};
 	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.run'));

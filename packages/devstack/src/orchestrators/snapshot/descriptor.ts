@@ -53,16 +53,36 @@ const SNAPSHOT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 export const SNAPSHOT_ID_RULE =
 	'snapshot ids must be 1-128 characters matching [A-Za-z0-9][A-Za-z0-9_-]*';
 
+/** Tagged failure for descriptor-layer validation. Carries a discriminator
+ *  so downstream phase classifiers can `catchTag` and dispatch on `kind`
+ *  without sniffing the message. STYLE_GUIDE §2 rule 5. */
+export class SnapshotDescriptorError extends Schema.TaggedErrorClass<SnapshotDescriptorError>()(
+	'SnapshotDescriptorError',
+	{
+		kind: Schema.Literals(['invalid-id', 'invalid-segment']),
+		detail: Schema.String,
+		value: Schema.String,
+	},
+) {}
+
 export const isValidSnapshotId = (value: string): boolean =>
 	SNAPSHOT_ID_PATTERN.test(value) && isSafeSnapshotPathSegment(value);
 
 export const parseSnapshotId = (value: string): SnapshotId | null =>
 	isValidSnapshotId(value) ? (value as SnapshotId) : null;
 
+/** Brand-cast helper for known-valid id literals (primarily test
+ *  fixtures). Throws a typed `SnapshotDescriptorError` instance on
+ *  violation so any defect surfacing carries the canonical `_tag`
+ *  instead of a bare `Error` string-match. */
 export const snapshotIdFromString = (value: string): SnapshotId => {
 	const parsed = parseSnapshotId(value);
 	if (parsed === null) {
-		throw new Error(`${SNAPSHOT_ID_RULE}: ${value}`);
+		throw new SnapshotDescriptorError({
+			kind: 'invalid-id',
+			detail: SNAPSHOT_ID_RULE,
+			value,
+		});
 	}
 	return parsed;
 };
@@ -92,7 +112,11 @@ export const isRestorableContainerImageName = (imageName: string): boolean =>
 
 const snapshotPathSegment = (kind: string, value: string): string => {
 	if (!isSafeSnapshotPathSegment(value)) {
-		throw new Error(`unsafe snapshot ${kind} path segment: ${value}`);
+		throw new SnapshotDescriptorError({
+			kind: 'invalid-segment',
+			detail: `unsafe snapshot ${kind} path segment`,
+			value,
+		});
 	}
 	return value;
 };

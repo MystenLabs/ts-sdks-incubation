@@ -51,6 +51,13 @@ export const makeCoinCodegen = <Symbol extends string>(parts: {
 	emitterName: `coin/${parts.symbol}` as `coin/${Symbol}`,
 	outputPath: `coins/${parts.symbol}.ts`,
 	sensitive: false,
+	aggregate: {
+		kind: 'coin',
+		bucket: 'coins.ts',
+		// Pass-through: this decl's exported map already keys by
+		// coin symbol, which is the aggregate's merge key.
+		project: (exported) => exported,
+	},
 	emit: (ctx) =>
 		Effect.sync(() => {
 			ctx.exportConst(parts.symbol, parts.resolved);

@@ -374,6 +374,15 @@ describe('removeManagedContainers', () => {
 				// `network inspect`. This shim doesn't expose attachments,
 				// so the holder list should be empty.
 				expect(result.foreignHolders).toEqual([]);
+				// The shim's "active endpoints" stderr names a phantom
+				// endpoint — that's the stale-endpoint signature.
+				expect(result.staleEndpoints).toEqual([
+					{
+						network: 'seal-seal-net',
+						name: 'devstack-private-content-rewrite-main-seal-seal-key-server',
+						id: '58dd',
+					},
+				]);
 				expect(lines).toContain('network rm seal-seal-net');
 			} finally {
 				rmSync(root, { recursive: true, force: true });

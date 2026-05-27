@@ -247,6 +247,7 @@ const buildLocalPlugin = <
 		id: packageRef.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		role: 'task',
+		section: 'package',
 		watch: {
 			// File-watcher contribution — restart on Move source edits.
 			// Distilled doc §Outputs: literal-path Packages contribute
@@ -328,6 +329,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		id: packageRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'package',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;

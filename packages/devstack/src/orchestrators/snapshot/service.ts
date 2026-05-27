@@ -46,6 +46,7 @@ import {
 	type SnapshotProgressReporter,
 } from './capture.ts';
 import {
+	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_ID_RULE,
@@ -87,7 +88,8 @@ export type SnapshotOrchestratorError =
 	| StageAndSwapError
 	| SnapshotReservationError
 	| StackLockError
-	| SnapshotIdError;
+	| SnapshotIdError
+	| SnapshotDescriptorError;
 
 /** Tagged failure when the substrate's startTime probe could not be
  *  reduced to a number. */
@@ -198,12 +200,18 @@ export class SnapshotOrchestratorService extends Context.Service<
 const mintId = (prefix = 'snap'): string =>
 	`${prefix}-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 
-const mintSnapshotId = (): SnapshotId => {
-	const id = parseSnapshotId(mintId());
-	if (id === null) {
-		throw new Error('internal snapshot id minting produced an invalid id');
-	}
-	return id;
+const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> => {
+	const raw = mintId();
+	const id = parseSnapshotId(raw);
+	return id === null
+		? Effect.fail(
+				new SnapshotDescriptorError({
+					kind: 'invalid-id',
+					detail: 'internal snapshot id minting produced an invalid id',
+					value: raw,
+				}),
+			)
+		: Effect.succeed(id);
 };
 
 const mintSnapshotName = (): string => {
@@ -382,7 +390,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, onProgress }) =>
 			Effect.gen(function* () {
 				const snapshotId =
-					id === undefined ? mintSnapshotId() : yield* validateSnapshotId('capture', id);
+					id === undefined ? yield* mintSnapshotId() : yield* validateSnapshotId('capture', id);
 				const snapshotName = yield* normalizeSnapshotName('capture', label);
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.capture);

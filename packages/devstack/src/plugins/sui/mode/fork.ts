@@ -25,7 +25,7 @@ import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { stringifyCause } from '../stringify-cause.ts';
-import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
+import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SeedManifestMismatchError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -531,7 +531,7 @@ const readForkStatus = (sdkClient: SuiGrpcClient): Effect.Effect<ForkStatus, Sui
 	});
 
 const routedSuiRpcUrl = (identity: Identity): Effect.Effect<string, SuiPluginError> =>
-	routerHostname(identity, SUI_RPC_ENDPOINT_NAME).pipe(
+	routedHostname(identity, SUI_RPC_ENDPOINT_NAME).pipe(
 		Effect.map((hostname) =>
 			renderUrl({ protocol: 'http', hostname, port: SUI_RPC_ENTRYPOINT_PORT }),
 		),

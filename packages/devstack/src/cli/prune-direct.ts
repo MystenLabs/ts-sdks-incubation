@@ -10,10 +10,11 @@ import { Effect } from 'effect';
 
 import {
 	collectLifecyclePruneInventory,
-	runLifecyclePrune,
+	type LifecyclePruneError,
 	type LifecyclePruneGroup,
 	type LifecyclePruneInventory,
 	type LifecyclePruneOptions,
+	runLifecyclePrune,
 } from '../orchestrators/lifecycle-prune/index.ts';
 import {
 	summarizePruneGroups,
@@ -45,15 +46,21 @@ const adaptInventory = (inventory: LifecyclePruneInventory): PruneInventory => {
 	return { groups, totals: summarizePruneGroups(groups) };
 };
 
+// Internal helpers preserve the orchestrator's typed `LifecyclePruneError`
+// channel. The `PruneDeps` surface contract still accepts `unknown` for
+// the E channel (the surface module owns its own CliError projection via
+// `mapUnknownPruneError`); Effect's covariant E channel means
+// `LifecyclePruneError` flows up cleanly without erasing the type here.
+
 const collectInventory = (
 	options: LifecyclePruneOptions,
-): Effect.Effect<PruneInventory, unknown> =>
+): Effect.Effect<PruneInventory, LifecyclePruneError> =>
 	collectLifecyclePruneInventory(options).pipe(Effect.map(adaptInventory));
 
 const pruneSelection = (
 	options: LifecyclePruneOptions,
 	selection: PruneSelection,
-): Effect.Effect<PruneOutcome, unknown> =>
+): Effect.Effect<PruneOutcome, LifecyclePruneError> =>
 	runLifecyclePrune(options, {
 		groupKeys: selection.groupKeys,
 		resources: selection.resources,

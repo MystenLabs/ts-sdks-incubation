@@ -132,3 +132,104 @@ describe('router contributeRoute dispatch-lock invariant', () => {
 		}
 	});
 });
+
+// boot() must hold dispatch + bootstrap locks under a SINGLE outer
+// Effect.scoped — splitting them across two scopes opens a peer-write
+// window between the scan that computes `protectedRouteLeaseIds` and the
+// `bootstrap()` call that consumes them. A concurrent peer that publishes
+// a new dispatch route file in that window would have its file silently
+// invalidated by a stale `forceRemove` decision in `bootstrap`.
+//
+// Pinned structurally for the same reason `contributeRoute`'s invariant
+// is: an `it.live` fiber-race test against real flock would starve
+// sibling vitest workers, and a behavior mock of the substrate lock
+// module is brittle. The single-scope shape IS what Effect.Scope
+// semantics use to keep both locks held across the entire boot critical
+// section. See STYLE_GUIDE §3 + §18.
+describe('router boot dispatch-lock-spans-bootstrap invariant', () => {
+	it('boot() holds both dispatch and bootstrap locks inside a single Effect.scoped block', () => {
+		const source = stripComments(readFileSync(ROUTER_SERVICE_PATH, 'utf8'));
+
+		// Locate the boot lambda body — start at `const boot:` and slice
+		// forward to the next `const contributeRoute` (the next top-level
+		// member) so we only inspect boot's source span.
+		const bootStart = source.indexOf('const boot:');
+		expect(bootStart).toBeGreaterThan(-1);
+		const contributeStart = source.indexOf('const contributeRoute', bootStart);
+		expect(contributeStart).toBeGreaterThan(bootStart);
+		const bootSlice = source.slice(bootStart, contributeStart);
+
+		// Walk every Effect.scoped(...) call inside boot.
+		const scopedBodies: Array<string> = [];
+		for (const match of bootSlice.matchAll(/Effect\.scoped\s*\(/g)) {
+			const openIdx = (match.index ?? 0) + match[0].length - 1;
+			const closeIdx = findBalancedClose(bootSlice, openIdx);
+			if (closeIdx > openIdx) {
+				scopedBodies.push(bootSlice.slice(openIdx + 1, closeIdx));
+			}
+		}
+
+		// The invariant: at least one scoped body inside boot must contain
+		// BOTH `acquireStackLock(profile.dispatchLockFile,` AND
+		// `acquireStackLock(profile.bootstrapLockFile,` AND `bootstrap({`.
+		// If they live in separate scoped bodies, a peer-write window
+		// opens between the dispatch-lock scope close and the bootstrap-
+		// lock scope acquire.
+		const unifiedBody = scopedBodies.find(
+			(body) =>
+				body.includes('acquireStackLock(profile.dispatchLockFile,') &&
+				body.includes('acquireStackLock(profile.bootstrapLockFile,') &&
+				body.includes('bootstrap({'),
+		);
+
+		if (unifiedBody === undefined) {
+			throw new Error(
+				'Router `boot()` no longer wraps `acquireStackLock(dispatchLockFile) + ' +
+					'acquireStackLock(bootstrapLockFile) + bootstrap(...)` inside a single ' +
+					'`Effect.scoped(...)` block. Splitting these across two scopes lets a ' +
+					'concurrent peer publish a new dispatch route file between the scan and ' +
+					'the bootstrap decision; the live peer’s route is then silently invalidated ' +
+					'by a stale `protectedRouteLeaseIds`. See STYLE_GUIDE §18.',
+			);
+		}
+
+		// Acquisition ordering: dispatch lock must be acquired before
+		// bootstrap lock so finalizers release in the safe order
+		// (bootstrap first, dispatch second).
+		const dispatchAcquireIdx = unifiedBody.indexOf('acquireStackLock(profile.dispatchLockFile,');
+		const bootstrapAcquireIdx = unifiedBody.indexOf('acquireStackLock(profile.bootstrapLockFile,');
+		const bootstrapCallIdx = unifiedBody.indexOf('bootstrap({');
+		expect(dispatchAcquireIdx).toBeGreaterThan(-1);
+		expect(bootstrapAcquireIdx).toBeGreaterThan(dispatchAcquireIdx);
+		expect(bootstrapCallIdx).toBeGreaterThan(bootstrapAcquireIdx);
+	});
+
+	it('boot() does NOT have a scoped block that closes between the dispatch scan and bootstrap()', () => {
+		const source = stripComments(readFileSync(ROUTER_SERVICE_PATH, 'utf8'));
+		const bootStart = source.indexOf('const boot:');
+		expect(bootStart).toBeGreaterThan(-1);
+		const contributeStart = source.indexOf('const contributeRoute', bootStart);
+		const bootSlice = source.slice(bootStart, contributeStart);
+
+		// Forbidden shape: an Effect.scoped block inside boot that
+		// contains `readDispatchRouteScan(` (the protected-id source) or
+		// `sweepStaleDispatchRoutes(` but NOT `bootstrap({` — the lock
+		// would close before bootstrap consumes the stale ids.
+		for (const match of bootSlice.matchAll(/Effect\.scoped\s*\(/g)) {
+			const openIdx = (match.index ?? 0) + match[0].length - 1;
+			const closeIdx = findBalancedClose(bootSlice, openIdx);
+			if (closeIdx <= openIdx) continue;
+			const body = bootSlice.slice(openIdx + 1, closeIdx);
+			const reads = body.includes('readDispatchRouteScan(') || body.includes('sweepStaleDispatchRoutes(');
+			if (reads && !body.includes('bootstrap({')) {
+				throw new Error(
+					'Found an Effect.scoped block inside `boot()` that reads dispatch routes ' +
+						'(readDispatchRouteScan / sweepStaleDispatchRoutes) but does NOT call ' +
+						'`bootstrap({ ... })` — the dispatch lock would close before bootstrap ' +
+						'consumes `protectedRouteLeaseIds`, opening a peer-write race. ' +
+						'See STYLE_GUIDE §18.',
+				);
+			}
+		}
+	});
+});

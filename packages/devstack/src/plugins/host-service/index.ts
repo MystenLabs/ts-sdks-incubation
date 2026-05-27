@@ -65,6 +65,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 		id: serviceResource.id,
 		dependsOn: after,
 		role: 'service',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;

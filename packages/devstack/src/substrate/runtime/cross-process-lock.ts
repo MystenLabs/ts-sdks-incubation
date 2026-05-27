@@ -18,7 +18,11 @@
 
 import { Clock, Context, Duration, Effect, Layer, Semaphore } from 'effect';
 
-import { acquireStackLock } from './cross-process/stack-lock.ts';
+import {
+	acquireStackLock,
+	type StackLockIoError,
+	type StackLockTimeoutError,
+} from './cross-process/stack-lock.ts';
 import { StackPathsService } from './paths.ts';
 
 /** Live system Clock instance. The lock layers provide this for the
@@ -64,9 +68,22 @@ const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<
  * lock unwinds without acquiring. Acquisition while another holder
  * dies (PID cleanup) is the lock primitive's job, not the
  * state-store's.
+ *
+ * Acquisition surfaces `StackLockTimeoutError` (peer contention
+ * exceeded the acquire window) and `StackLockIoError` (disk failure
+ * during acquire) in the `E` channel alongside the body's own errors.
+ * Consumers MUST handle these typed failures — either degrade
+ * gracefully via `Effect.catchTag` or widen their own `E` channel.
+ * Surfacing them as defects (the prior `Effect.orDie` shape) was a
+ * bug: a busy peer should not crash the supervisor's fiber. The
+ * in-process Layer's typed `E` channel matches `never` for the
+ * acquire surface so test wiring stays interchangeable with prod
+ * (the union absorbs `never` cleanly).
  */
 export interface CrossProcessLockShape {
-	readonly withLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+	readonly withLock: <A, E, R>(
+		effect: Effect.Effect<A, E, R>,
+	) => Effect.Effect<A, E | StackLockTimeoutError | StackLockIoError, R>;
 }
 
 export class CrossProcessLock extends Context.Service<CrossProcessLock, CrossProcessLockShape>()(
@@ -86,13 +103,12 @@ export class CrossProcessLock extends Context.Service<CrossProcessLock, CrossPro
  * in the same process race each other to `O_EXCL`-write the same
  * path; one wins, the other times out unnecessarily after backoff.
  *
- * Acquisition surfaces the underlying `StackLockError` as a defect
- * if the disk side fails — the `CrossProcessLock` contract is
- * "succeed by yielding the body's error channel", so we don't widen
- * `E` with the lock's IO/timeout errors. State-store + cache callers
- * already have an `E` channel that surfaces their own IO failures;
- * a lock-acquire defect under them surfaces in the supervisor's
- * cascade formatter.
+ * Acquisition surfaces `StackLockTimeoutError` / `StackLockIoError`
+ * in the `E` channel per `CrossProcessLockShape`; consumers catch
+ * via `Effect.catchTag` or widen their own surface. The earlier
+ * `Effect.orDie` here converted legitimate peer-contention timeouts
+ * into supervisor defects — that was wrong; busy peers must be
+ * recoverable through the typed channel.
  */
 export const layerCrossProcessLockFlock: Layer.Layer<CrossProcessLock, never, StackPathsService> =
 	Layer.effect(
@@ -107,7 +123,7 @@ export const layerCrossProcessLockFlock: Layer.Layer<CrossProcessLock, never, St
 						semaphore.withPermits(1)(
 							Effect.scoped(
 								Effect.gen(function* () {
-									yield* acquireStackLock(lockPath).pipe(Effect.orDie);
+									yield* acquireStackLock(lockPath);
 									return yield* effect;
 								}),
 							),

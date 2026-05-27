@@ -11,7 +11,7 @@
 // policy is **log-warn-and-continue** — a single advance-clock
 // RPC failure must not break the supervisor.
 
-import { Effect, Schedule, type Fiber, type Scope } from 'effect';
+import { Effect, Schedule, type Scope } from 'effect';
 
 import { expectPositiveFiniteNumber } from '../../substrate/runtime/config-validation.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
@@ -54,16 +54,11 @@ export interface ClockAdvancer {
  * Fork a scope-bound fiber that calls `advanceClock(intervalMs)` on
  * a `Schedule.spaced(intervalMs)` cadence. The fiber dies on the
  * surrounding scope's close (wipe / restart / Ctrl-C).
- *
- * Returns the fiber handle. Today's code discards the handle — the
- * distilled doc flags a designed-for-but-not-landed re-config path
- * (`engine/sui-fork/control.ts` opportunity). We keep the handle
- * returned so a future cadence-change surface has a join point.
  */
 export const runAutoTickClock = (
 	advancer: ClockAdvancer,
 	intervalMs: number,
-): Effect.Effect<Fiber.Fiber<void>, never, Scope.Scope> =>
+): Effect.Effect<void, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		const tick = advancer.advanceClock(intervalMs).pipe(
 			Effect.catch((err) =>
@@ -76,11 +71,10 @@ export const runAutoTickClock = (
 				),
 			),
 		);
-		const fiber = yield* tick.pipe(
+		yield* tick.pipe(
 			Effect.repeat(Schedule.spaced(`${intervalMs} millis`)),
 			Effect.forkScoped,
 		);
-		return fiber as Fiber.Fiber<void>;
 	});
 
 /** Build a no-op advancer for local mode. Localnet's validator

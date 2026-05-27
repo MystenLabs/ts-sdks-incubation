@@ -39,6 +39,7 @@ const StrangerResource = resource<'account/stranger', AliceValue>('account/stran
 const alice = definePlugin({
 	id: AliceResource.id,
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed<AliceValue>({ address: '0xa11ce' }),
 });
 
@@ -51,6 +52,7 @@ const makeConsumerNode = (
 		id: 'consumer',
 		dependsOn: upstreamResources,
 		role: 'service',
+		section: 'service',
 		start: () => Effect.succeed({ ok: true } as const),
 	}) as AnyPlugin,
 	upstreamResources,

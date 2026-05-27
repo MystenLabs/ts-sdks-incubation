@@ -29,6 +29,10 @@ import type { PluginKey } from '../../brand.ts';
 import type { StateKey, StateStore } from '../../state-store.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { CrossProcessLock } from '../cross-process-lock.ts';
+import type {
+	StackLockIoError,
+	StackLockTimeoutError,
+} from '../cross-process/stack-lock.ts';
 import { StateStoreError } from '../errors.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
@@ -175,59 +179,92 @@ export const layerStateStore: Layer.Layer<
 				return entry.value as V;
 			});
 
+		// Map the lock's typed acquire failures onto our `lock-contention`
+		// reason on `StateStoreError`. The `StateStore` contract already
+		// advertises that mutation methods surface this reason — caller
+		// recovery is the same shape as any other write failure (retry on
+		// the next user action; surface in the supervisor cascade).
+		const mapLockErrors = <A, R>(
+			eff: Effect.Effect<A, StateStoreError | StackLockTimeoutError | StackLockIoError, R>,
+		): Effect.Effect<A, StateStoreError, R> =>
+			eff.pipe(
+				Effect.catchTags({
+					StackLockTimeoutError: (e) =>
+						Effect.fail(
+							new StateStoreError({
+								reason: 'lock-contention',
+								detail: `state-store write blocked: peer holds ${e.path} (waited ${e.waitedMillis}ms)`,
+								cause: e,
+							}),
+						),
+					StackLockIoError: (e) =>
+						Effect.fail(
+							new StateStoreError({
+								reason: 'io-failed',
+								detail: `state-store lock IO error on ${e.path}`,
+								cause: e.cause,
+							}),
+						),
+				}),
+			);
+
 		const set: StateStore['set'] = <V>(key: StateKey<V>, value: V) =>
-			lock.withLock(
-				provideEnv(
-					Effect.gen(function* () {
-						// Re-read INSIDE the lock so we don't clobber
-						// foreign writes that landed since our prime.
-						const fresh = yield* readDocument;
-						const { plugin, suffix } = splitKey(key);
-						const next: StateDocument = {
-							version: 1,
-							plugins: {
-								...fresh.plugins,
-								[plugin]: {
-									...fresh.plugins[plugin],
-									[suffix]: {
-										state: 'present',
-										value: value as unknown,
-										updatedAt: Date.now(),
+			mapLockErrors(
+				lock.withLock(
+					provideEnv(
+						Effect.gen(function* () {
+							// Re-read INSIDE the lock so we don't clobber
+							// foreign writes that landed since our prime.
+							const fresh = yield* readDocument;
+							const { plugin, suffix } = splitKey(key);
+							const next: StateDocument = {
+								version: 1,
+								plugins: {
+									...fresh.plugins,
+									[plugin]: {
+										...fresh.plugins[plugin],
+										[suffix]: {
+											state: 'present',
+											value: value as unknown,
+											updatedAt: Date.now(),
+										},
 									},
 								},
-							},
-						};
-						yield* writeDocument(next);
-						yield* Ref.set(cache, next);
-					}),
+							};
+							yield* writeDocument(next);
+							yield* Ref.set(cache, next);
+						}),
+					),
 				),
 			);
 
 		const del: StateStore['delete'] = <V>(key: StateKey<V>) =>
-			lock.withLock(
-				provideEnv(
-					Effect.gen(function* () {
-						const fresh = yield* readDocument;
-						const { plugin, suffix } = splitKey(key);
-						// Tombstone-write — preserves the
-						// "deleted-since" record across snapshots.
-						const next: StateDocument = {
-							version: 1,
-							plugins: {
-								...fresh.plugins,
-								[plugin]: {
-									...fresh.plugins[plugin],
-									[suffix]: {
-										state: 'tombstone',
-										value: null,
-										updatedAt: Date.now(),
+			mapLockErrors(
+				lock.withLock(
+					provideEnv(
+						Effect.gen(function* () {
+							const fresh = yield* readDocument;
+							const { plugin, suffix } = splitKey(key);
+							// Tombstone-write — preserves the
+							// "deleted-since" record across snapshots.
+							const next: StateDocument = {
+								version: 1,
+								plugins: {
+									...fresh.plugins,
+									[plugin]: {
+										...fresh.plugins[plugin],
+										[suffix]: {
+											state: 'tombstone',
+											value: null,
+											updatedAt: Date.now(),
+										},
 									},
 								},
-							},
-						};
-						yield* writeDocument(next);
-						yield* Ref.set(cache, next);
-					}),
+							};
+							yield* writeDocument(next);
+							yield* Ref.set(cache, next);
+						}),
+					),
 				),
 			);
 

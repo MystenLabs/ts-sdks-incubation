@@ -166,13 +166,16 @@ export const makeDeepbookDeepFundingStrategy = (
 								),
 							);
 						if (result.$kind === 'FailedTransaction') {
+							const errorTail =
+								result.FailedTransaction.executionError !== undefined
+									? `: ${result.FailedTransaction.executionError}`
+									: ' (no validator error attached).';
 							return yield* Effect.fail(
 								deepbookPluginError(
 									'fund-deep',
 									`DeepBook DEEP funding transaction failed on-chain ` +
 										`(digest=${result.FailedTransaction.digest}, ` +
-										`account='${req.account.name}', address=${req.account.address}): ` +
-										result.FailedTransaction.executionError,
+										`account='${req.account.name}', address=${req.account.address})${errorTail}`,
 								),
 							);
 						}

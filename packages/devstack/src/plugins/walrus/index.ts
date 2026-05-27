@@ -164,6 +164,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		id: walrusResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'service',
+		section: 'service',
 		pluginKey: walrusKey,
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -311,6 +312,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		// Known deployment is a pure value-producer — no containers,
 		// no long-running children.
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.succeed({
 				mode: 'known',
@@ -471,6 +473,7 @@ export const walCoin = (walrusMember: ResourceRef<'walrus', WalrusResolved>) => 
 		id: coinRef.id,
 		dependsOn: walrusMember,
 		role: 'task',
+		section: 'action',
 		start: (resolved): Effect.Effect<WalCoinValue, WalrusPluginError> =>
 			Effect.gen(function* () {
 				if (resolved.walCoinType === null) {

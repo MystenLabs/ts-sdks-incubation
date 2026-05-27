@@ -356,7 +356,7 @@ export const createDeepbookPools = (
 
 					const cachedPools: CachedDeepbookPool[] = [];
 					if (missingPools.length > 0) {
-						const receipt = yield* executeSuiTx({
+						const result = yield* executeSuiTx({
 							client: sdk.client,
 							signer,
 							build: async () => {
@@ -395,6 +395,21 @@ export const createDeepbookPools = (
 								}),
 							),
 						);
+						if (result.$kind === 'FailedTransaction') {
+							const errorClause =
+								result.FailedTransaction.executionError !== undefined
+									? `: ${result.FailedTransaction.executionError}`
+									: ' (validator returned no error message)';
+							return yield* Effect.fail({
+								_tag: 'ArtifactPublishError' as const,
+								reason: 'produce-failed' as const,
+								detail:
+									`deepbook pool transaction on-chain execution failed ` +
+									`(digest=${result.FailedTransaction.digest})` +
+									errorClause,
+							});
+						}
+						const receipt = result.Transaction;
 
 						for (const pool of missingPools) {
 							const poolId = pickCreatedPool(receipt.objectChanges, pool);
@@ -774,7 +789,7 @@ export const seedDeepbookPools = (
 							seed.quoteAmount,
 						);
 
-						const receipt = yield* executeSuiTxWithStaleObjectRetry({
+						const result = yield* executeSuiTxWithStaleObjectRetry({
 							client: sdk.client,
 							signer,
 							build: async () => {
@@ -846,6 +861,21 @@ export const seedDeepbookPools = (
 								}),
 							),
 						);
+						if (result.$kind === 'FailedTransaction') {
+							const errorClause =
+								result.FailedTransaction.executionError !== undefined
+									? `: ${result.FailedTransaction.executionError}`
+									: ' (validator returned no error message)';
+							return yield* Effect.fail({
+								_tag: 'ArtifactPublishError' as const,
+								reason: 'produce-failed' as const,
+								detail:
+									`deepbook seed transaction on-chain execution failed for pool '${spec.name}' ` +
+									`(digest=${result.FailedTransaction.digest})` +
+									errorClause,
+							});
+						}
+						const receipt = result.Transaction;
 
 						const balanceManagerId = pickCreatedBalanceManager(receipt.objectChanges);
 						if (balanceManagerId === null) {

@@ -89,6 +89,7 @@ const identity: Identity = {
 const routablePlugin = definePlugin({
 	id: 'test/routable',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ready: true } as const),
 	capabilities: [routable] as const,
 });
@@ -96,6 +97,7 @@ const routablePlugin = definePlugin({
 const operationalEndpointPlugin = definePlugin({
 	id: 'test/remote-rpc',
 	role: 'service',
+	section: 'service',
 	start: () =>
 		Effect.succeed({
 			rpcUrl: 'https://rpc.example.invalid',

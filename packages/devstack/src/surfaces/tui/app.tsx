@@ -55,6 +55,11 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
 	const eventSeq = useRef(0);
 	const shutdownLogged = useRef(false);
+	// Latest projection rows for `sectionLookup`. Held in a ref so the
+	// event-subscription effect doesn't re-fire when state changes — it
+	// reads the up-to-date snapshot through the ref instead.
+	const rowsRef = useRef(state.rows);
+	rowsRef.current = state.rows;
 
 	useEffect(() => {
 		// Stream.runForEach pulls each new state from the
@@ -72,10 +77,12 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	}, [stateRef]);
 
 	useEffect(() => {
+		const sectionLookup = (pluginKey: string) =>
+			rowsRef.current.find((row) => row.key === pluginKey)?.section;
 		const fiber = Effect.runFork(
 			Stream.runForEach(events, (event) =>
 				Effect.sync(() => {
-					const line = eventLogLineFromEvent(event, eventSeq.current++);
+					const line = eventLogLineFromEvent(event, eventSeq.current++, sectionLookup);
 					setEventLog((prev) => appendEventLogLine(prev, line));
 					switch (event.tag) {
 						case 'snapshot.captureStarted':

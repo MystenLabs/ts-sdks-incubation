@@ -1303,10 +1303,15 @@ describe('snapshot restore safety', () => {
 						expect(error.value.phase).toBe('retag-image');
 					}
 				}
-				expect(events).toHaveLength(3);
+				// load → tag staging → tag target (fails) → finalizer
+				// removes the staging tag so Docker is not littered with
+				// orphan restore-* refs.
+				expect(events).toHaveLength(4);
 				expect(events[0]).toBe('load');
 				expect(events[1]?.startsWith('tag:devstack-snapshot:restore-')).toBe(true);
 				expect(events[2]).toBe(`tag:${imageName}`);
+				const stagingTag = events[1]!.slice('tag:'.length);
+				expect(events[3]).toBe(`remove-image:${stagingTag}`);
 				expect(sweepCalls).toEqual([]);
 				const pending = JSON.parse(
 					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
@@ -1327,9 +1332,138 @@ describe('snapshot restore safety', () => {
 						plugin: 'postgres',
 						role: 'db',
 						targetImageName: imageName,
-						stagedImageTag: events[1]!.slice('tag:'.length),
+						stagedImageTag: stagingTag,
 					},
 				]);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('keeps pending marker and clears orphan staging tags when mid-promote fails', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+			const events: string[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			try {
+				const stackRoot = join(root, 'runtime-stack');
+				const dbImageName = 'devstack-build:postgres-db';
+				const workerImageName = 'devstack-build:postgres-worker';
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							role: 'db',
+							imageName: dbImageName,
+							snapshotTag: 'devstack-snapshot:postgres-db',
+						}),
+						capturedContainer({
+							role: 'worker',
+							imageName: workerImageName,
+							snapshotTag: 'devstack-snapshot:postgres-worker',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir, [
+					'devstack-snapshot:postgres-db',
+					'devstack-snapshot:postgres-worker',
+				]);
+				// Promotion runs in metadata order; fail the SECOND
+				// promotion (worker → workerImageName) so the first image
+				// has already been promoted (and its staging tag removed
+				// via removeSourceAfterTag inside the docker runtime),
+				// while the second image's staging tag is still live and
+				// must be cleaned by the scope finalizer.
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					tagErrorFor: (newTag) =>
+						newTag === workerImageName
+							? {
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-tag-failed',
+									detail: 'second promotion refused',
+								}
+							: undefined,
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('retag-image');
+						expect(error.value.plugin).toBe('postgres');
+					}
+				}
+
+				// Re-supervise breadcrumb: the swapped tree still carries
+				// the pending marker (we never reached clearRestorePendingMarker).
+				const pending = JSON.parse(
+					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
+				) as {
+					readonly version: number;
+					readonly snapshotId: string;
+					readonly containers: ReadonlyArray<{
+						readonly plugin: string;
+						readonly role: string;
+						readonly targetImageName: string;
+						readonly stagedImageTag: string;
+					}>;
+				};
+				expect(pending.version).toBe(1);
+				expect(pending.snapshotId).toBe(meta.id);
+				expect(pending.containers).toHaveLength(2);
+				const dbPending = pending.containers.find((c) => c.role === 'db');
+				const workerPending = pending.containers.find((c) => c.role === 'worker');
+				expect(dbPending?.targetImageName).toBe(dbImageName);
+				expect(workerPending?.targetImageName).toBe(workerImageName);
+
+				// Container removal never runs once promotion fails.
+				expect(sweepCalls).toEqual([]);
+
+				// Staging tag bookkeeping: both staging refs were minted
+				// during stage; promotion of db succeeded (and the docker
+				// runtime would drop its staging tag via
+				// removeSourceAfterTag — the stub doesn't model that, but
+				// the finalizer's removeImage warning path tolerates a
+				// missing ref). The finalizer MUST call removeImage on
+				// every staged ref so no orphan devstack-snapshot:restore-*
+				// tags survive scope close.
+				const stagingTagEvents = events
+					.filter((event) => event.startsWith('tag:devstack-snapshot:restore-'))
+					.map((event) => event.slice('tag:'.length));
+				expect(stagingTagEvents).toHaveLength(2);
+
+				const promotionEvents = events.filter(
+					(event) => event === `tag:${dbImageName}` || event === `tag:${workerImageName}`,
+				);
+				expect(promotionEvents).toEqual([`tag:${dbImageName}`, `tag:${workerImageName}`]);
+
+				const removeImageEvents = events.filter((event) => event.startsWith('remove-image:'));
+				expect(removeImageEvents).toHaveLength(2);
+				expect(removeImageEvents).toEqual(
+					expect.arrayContaining([
+						`remove-image:${stagingTagEvents[0]}`,
+						`remove-image:${stagingTagEvents[1]}`,
+					]),
+				);
+				expect(removeImageCalls).toHaveLength(2);
+				expect(removeImageCalls).toEqual(
+					expect.arrayContaining(
+						stagingTagEvents.map((tag) => ({
+							digest: expect.stringMatching(/^sha256:/) as unknown as string,
+							tag,
+						})),
+					),
+				);
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

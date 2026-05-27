@@ -18,7 +18,7 @@
 //     `_exhaustive: never` line will fail to type-check if a new
 //     tag is added without a handler here).
 
-import { Effect, SubscriptionRef } from 'effect';
+import { Effect, Schema, SubscriptionRef } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
@@ -33,6 +33,7 @@ import type {
 	SubscribableState,
 } from '../../projection.ts';
 import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
+import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
 
 // -----------------------------------------------------------------------------
 // Capacity policy
@@ -106,15 +107,43 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 			// `kind` decode. New plugin-author projection kinds slot in
 			// here without a new event variant — extending this switch
 			// is the load-bearing knob.
+			//
+			// Per STYLE_GUIDE §20: a misbehaving plugin emitting a
+			// malformed payload must NOT crash the reducer or the
+			// surrounding projection stream. Decode per-kind via the
+			// canonical Schema; on failure, log + skip the slice update
+			// (`lastEvent.at` still advances so the renderer sees the
+			// event was observed).
 			if (event.kind === 'account') {
-				return withTouched({
-					accounts: upsertAccount(state.accounts, event.payload as AccountProjection),
-				});
+				const decoded = decodeProjectionPayload(
+					AccountProjectionSchema,
+					event.payload,
+					'account',
+					event.key,
+				);
+				// `event.payload` (not `decoded`) is forwarded once the schema
+				// has confirmed the structural shape — the runtime brand
+				// (`account/${string}`) is TS-only and Schema can't express
+				// it. The cast is justified by the preceding decode, not a
+				// `Schema.decodeUnknownSync(...) as A` bare-cast (§20).
+				return decoded === null
+					? withTouched({})
+					: withTouched({
+							accounts: upsertAccount(state.accounts, event.payload as AccountProjection),
+						});
 			}
 			if (event.kind === 'package') {
-				return withTouched({
-					packages: upsertPackage(state.packages, event.payload as PackageProjection),
-				});
+				const decoded = decodeProjectionPayload(
+					PackageProjectionSchema,
+					event.payload,
+					'package',
+					event.key,
+				);
+				return decoded === null
+					? withTouched({})
+					: withTouched({
+							packages: upsertPackage(state.packages, event.payload as PackageProjection),
+						});
 			}
 			return withTouched({});
 
@@ -292,6 +321,39 @@ export const updateRef = (
 // -----------------------------------------------------------------------------
 // Internals
 // -----------------------------------------------------------------------------
+
+/**
+ * Sync per-kind validator for `projection.updated` payloads. Returns the
+ * decoded value on success or `null` on failure (logging a warning via the
+ * default logger). The reducer is documented as pure-data sync; the
+ * warning is emitted through `Effect.runSync` because no fiber context is
+ * available here — the cost is "warnings on bad payloads go to the
+ * default logger" which is acceptable for a substrate-blind orchestrator
+ * guarding against misbehaving plugins.
+ *
+ * On success the caller still passes `event.payload` to the upsert (not
+ * the decoded copy) — the runtime brand types (`account/${string}`,
+ * `package/${string}`) are TS-only and the decoded copy would strip
+ * them. The schema acts as a structural guard only.
+ */
+const decodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
+	schema: S,
+	payload: unknown,
+	kind: 'account' | 'package',
+	key: string,
+): S['Type'] | null => {
+	try {
+		return Schema.decodeUnknownSync(schema)(payload);
+	} catch (cause) {
+		Effect.runSync(
+			Effect.logWarning(
+				`projection.updated: dropping malformed ${kind} payload for key=${key}`,
+				cause,
+			),
+		);
+		return null;
+	}
+};
 
 const eventAt = (event: EngineEvent): number | null => {
 	if ('at' in event) return event.at;

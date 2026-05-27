@@ -11,13 +11,12 @@
 
 import { Context, Effect, Option, Queue, SubscriptionRef } from 'effect';
 
-import type {
-	StrategyRegistry,
-} from '../../../contracts/strategy-contributor.ts';
+import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
+import { StrategyNotFoundError } from '../errors.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import { updateRef } from '../projection/update.ts';
 
@@ -71,11 +70,12 @@ export const noopLogger: LoggerShape = {
 
 export const noopStrategyRegistry: StrategyRegistry = {
 	get: (key) =>
-		Effect.fail({
-			_tag: 'StrategyNotFoundError',
-			capabilityKey: key,
-			registeredKeys: [],
-		}),
+		Effect.fail(
+			new StrategyNotFoundError({
+				capabilityKey: key,
+				registeredKeys: [],
+			}),
+		),
 	list: () => Effect.succeed([]),
 	register: () => Effect.void,
 };

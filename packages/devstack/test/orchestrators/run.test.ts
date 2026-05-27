@@ -23,6 +23,7 @@ describe('orchestrators/run', () => {
 			const pluginFail = definePlugin({
 				id: 'test:one-shot-fail',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.fail(new Error('initial acquire failed')) as Effect.Effect<
 						{ readonly ok: true },

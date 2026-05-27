@@ -218,6 +218,7 @@ const makeHarness = (
 							volumesRemoved: selection.resources.volumes ? 1 : 0,
 							imagesRemoved: selection.resources.images ? 3 : 0,
 							foreignNetworkHolders: [],
+							staleNetworkEndpoints: [],
 						},
 					};
 				}),

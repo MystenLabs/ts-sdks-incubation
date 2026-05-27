@@ -664,7 +664,17 @@ export const layerRouterService: Layer.Layer<
 				}
 				const cached = yield* Ref.get(bootRef);
 				if (cached !== null) return cached;
-				const protectedRouteLeaseIds = yield* Effect.scoped(
+				// Single outer scope holds BOTH locks for the entire boot duration.
+				// Acquire dispatch lock first (outer), then bootstrap lock (inner) so
+				// scope finalizers release in reverse order: bootstrap lock first, then
+				// dispatch lock. `protectedRouteLeaseIds` is computed under the
+				// dispatch lock and consumed by `bootstrap` while still under the same
+				// lock — no peer-write window can publish a new dispatch route file
+				// between the scan and the bootstrap-time forceRemove decision.
+				// STYLE_GUIDE §18 cross-process protocol — router boot must hold the
+				// dispatch lock across the scan + bootstrap critical section, exactly
+				// the same way `contributeRoute` holds it across write + probe.
+				const report = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 							Effect.mapError(
@@ -676,9 +686,6 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						// Write the shared CORS middleware file before reading
-						// active dispatch routes so the later bootstrap phase can
-						// hold only the bootstrap lock.
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
@@ -733,14 +740,10 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						return [
+						const protectedRouteLeaseIds = [
 							...activeDispatchRoutes.map((route) => route.dispatchFileId),
 							...existingDispatchScan.unknownRouteFileIds,
 						];
-					}),
-				);
-				const report = yield* Effect.scoped(
-					Effect.gen(function* () {
 						yield* acquireStackLock(profile.bootstrapLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>

@@ -27,10 +27,13 @@ export type PublishPhase = 'hash' | 'scrub' | 'build' | 'publish-tx' | 'parse' |
 export interface PublishError {
 	readonly _tag: 'PublishError';
 	readonly phase: PublishPhase;
-	/** Source path of the package being published. ALWAYS populated
-	 *  — `KnownPackage` paths set this to the symbolic id (distilled
-	 *  doc §Opportunities — "every throw site passes sourcePath"). */
-	readonly sourcePath: string;
+	/** Source path of the package being published. Populated at every
+	 *  throw site that has it in scope — `KnownPackage` paths set this
+	 *  to the symbolic id; post-publish probe phases (e.g. the
+	 *  `waitForReady` step that only sees the on-chain `packageId`)
+	 *  pass `undefined`. The `mode-local` re-stamp pass back-fills
+	 *  from the outer `inputs.sourcePath` whenever it can. */
+	readonly sourcePath?: string | undefined;
 	/** Symbolic package name (the user-declared `pkg.name`). */
 	readonly packageName: string;
 	readonly message: string;

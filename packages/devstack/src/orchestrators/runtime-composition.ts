@@ -9,11 +9,11 @@ import { Context, Data, Effect, FileSystem, Layer, Ref, Scope } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
-	layerDockerMoveSummaryRunner,
 	layerMystenMoveCodegen,
 	MoveCodegenService,
 	MoveSummaryRunnerService,
 } from './codegen/bindings.ts';
+import { layerSuiMoveSummaryRunnerDocker } from '../plugins/sui/move-summary-runner.ts';
 import { CodegenPathsService, layerCodegenPaths, layerCodegenRoot } from './codegen/paths.ts';
 import {
 	CodegenOrchestratorService,
@@ -187,7 +187,7 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 				}),
 			),
 		),
-		layerDockerMoveSummaryRunner,
+		layerSuiMoveSummaryRunnerDocker,
 		layerMystenMoveCodegen,
 	);
 };

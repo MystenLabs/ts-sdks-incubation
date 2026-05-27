@@ -30,6 +30,8 @@ const state = (): SubscribableState => ({
 			logTail: { lines: ['localnet ready'], level: 'info', truncated: false },
 			endpoints: [endpointKey('sui#0:rpc')],
 			selectiveRestartHighlight: false,
+			section: 'service',
+			endpointSection: 'service',
 		},
 	],
 	endpoints: [

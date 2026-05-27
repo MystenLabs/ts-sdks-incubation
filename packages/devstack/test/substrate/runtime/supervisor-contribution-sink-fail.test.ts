@@ -72,6 +72,7 @@ describe('supervisor — ContributionSinkFailed routing (backlog #39)', () => {
 			const plugin = definePlugin({
 				id: 'test:sink-fail-plugin',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'ok' as const }),
 				capabilities: [codegenDecl] as const,
 			});

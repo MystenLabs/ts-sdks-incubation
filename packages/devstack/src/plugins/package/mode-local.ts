@@ -339,10 +339,14 @@ export const acquireLocal = (
 				);
 
 				// Capture spec — user-declared projection from output to
-				// typed object id map. Distilled doc §Outputs + Invariant:
-				// safe to swallow individual key failures (callback form
-				// is user code), but a callback throw bubbles up as a
-				// PublishError('parse') so the user catches the typo.
+				// typed object id map. Distilled doc §Outputs: the callback
+				// is user code, so a throw is a USER BUG (typo / missing
+				// field) — surface as `PublishError('parse')` so the user
+				// catches the mistake instead of silently shipping a stale
+				// captured map. The cache-HIT path performs the symmetric
+				// recompute post-`publisher.publish` (see comment block
+				// below the `publisher.publish` call) — both paths bubble
+				// the same `PublishError('parse')` shape.
 				const captured: Readonly<Record<string, string>> = inputs.capture
 					? yield* Effect.try({
 							try: () => inputs.capture!(output),
@@ -377,21 +381,18 @@ export const acquireLocal = (
 			// Register: on EVERY cycle. Distilled doc Invariant 6. The
 			// substrate hands the decoded `CachedPackageEntry` payload
 			// here on both verify-hit and freshly-produced paths.
-			// Recompute `captured` from the current capture spec when
-			// cached output is present so changing capture keys does not
-			// require a republish.
+			//
+			// Register writes the entry verbatim using `artifact.captured`
+			// (produce-time on miss; cached on hit). The user's `capture`
+			// callback is NOT re-run here — `register`'s contract is
+			// `Effect.Effect<void, never>` (primitives/artifact-publisher.ts)
+			// and a user-bug throw needs a typed failure channel. The
+			// post-publish recompute below (cache-hit branch) re-runs
+			// `capture` so renamed/typo keys surface IDENTICALLY to the
+			// cache-miss path (mode-local.ts:346-357) — i.e., as
+			// `PublishError('parse')`.
 			register: (artifact) =>
 				Effect.gen(function* () {
-					const captured: Readonly<Record<string, string>> =
-						inputs.capture !== undefined && artifact.output !== undefined
-							? (() => {
-									try {
-										return inputs.capture(artifact.output);
-									} catch {
-										return artifact.captured;
-									}
-								})()
-							: artifact.captured;
 					const r: ResolvedLocalPackage = {
 						kind: 'local',
 						name: inputs.packageName,
@@ -399,11 +400,70 @@ export const acquireLocal = (
 						upgradeCapId: artifact.upgradeCapId,
 						sourcePath: inputs.sourcePath,
 						mvrPlaceholder: artifact.mvrPlaceholder,
-						captured,
+						captured: artifact.captured,
 					};
 					yield* registry.set(r.name, r);
 				}),
 		});
+
+		// Post-publish capture recompute — cache-hit ONLY.
+		//
+		// Symmetric with the produce-time capture (L346-357): the user's
+		// `capture` callback is user code; a throw is a user bug (typo /
+		// renamed key against a stale cached output) and MUST surface as
+		// `PublishError('parse')` so the user sees the mistake instead of
+		// silently carrying forward `artifact.captured` (the historical
+		// `try { ... } catch { return artifact.captured }` hid renamed
+		// keys behind stale data — A5 of the remediation plan).
+		//
+		// Cache miss: `producedOutput` was set inside `produce`, the
+		// produce-time capture already ran (Effect.try → PublishError),
+		// and the substrate cached the produced entry. Re-running here
+		// would be redundant and would double-throw on user bugs.
+		//
+		// Cache hit: `producedOutput` is null, `entry.output` came from
+		// the cached payload, and `entry.captured` is whatever the user's
+		// `capture` returned at the time of the original publish. We
+		// re-run `capture(entry.output)` so warm restarts with renamed
+		// capture keys (a) reflect the new shape in the registry without
+		// requiring a republish, and (b) FAIL LOUDLY on user-callback
+		// throws — the symmetric counterpart to the produce-time guard.
+		const cacheHit = producedOutput === null;
+		if (cacheHit && inputs.capture !== undefined && entry.output !== undefined) {
+			const recomputedCaptured: Readonly<Record<string, string>> = yield* Effect.try({
+				try: () => inputs.capture!(entry.output!),
+				catch: (cause): PublishError =>
+					publishError('parse', {
+						sourcePath: inputs.sourcePath,
+						packageName: inputs.packageName,
+						message: 'capture callback threw',
+						cause,
+					}),
+			}).pipe(
+				// Match the produce-body `mapError` projection (L373-379)
+				// so callers see ONE consistent failure shape on
+				// `capture` throws — `ArtifactPublishError('produce-failed')`
+				// with `detail: "package.publish parse: capture callback
+				// threw"` — regardless of whether the bug surfaces on a
+				// cache miss (inside `produce`) or a cache hit (here).
+				Effect.mapError(
+					(err): ArtifactPublishError => ({
+						_tag: 'ArtifactPublishError',
+						reason: 'produce-failed',
+						detail: `package.publish ${err.phase}: ${err.message}`,
+					}),
+				),
+			);
+			yield* registry.set(inputs.packageName, {
+				kind: 'local',
+				name: inputs.packageName,
+				packageId: entry.packageId,
+				upgradeCapId: entry.upgradeCapId,
+				sourcePath: inputs.sourcePath,
+				mvrPlaceholder: entry.mvrPlaceholder,
+				captured: recomputedCaptured,
+			});
+		}
 
 		// Project the cached entry back to the resolved shape. The
 		// publisher returned the decoded `CachedPackageEntry`; re-read

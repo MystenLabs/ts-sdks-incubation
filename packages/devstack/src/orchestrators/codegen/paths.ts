@@ -11,17 +11,26 @@
 
 import { Context, Effect, Layer, Path } from 'effect';
 
+import { CodegenPathConflict } from './errors.ts';
+
 /** Guard plugin-authored `CodegenableDecl.outputPath` against `..`
- *  traversal and absolute paths. Throws on violation — defense-in-depth
+ *  traversal and absolute paths. Fails with a typed
+ *  `CodegenPathConflict({kind:'non-relative'})` — defense-in-depth
  *  for the file-layout invariants. Shared by `layerCodegenPaths` and
- *  `rebasePaths` so the two CodegenPaths sites can't drift. */
-export const assertRelativeCodegenOutputPath = (outputPath: string): void => {
-	if (outputPath.includes('..') || outputPath.startsWith('/')) {
-		throw new Error(
-			`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
-		);
-	}
-};
+ *  `rebasePaths` so the two CodegenPaths sites can't drift.
+ *  STYLE_GUIDE §2 rule 5 — orchestrator failures are typed. */
+export const assertRelativeCodegenOutputPath = (
+	outputPath: string,
+): Effect.Effect<void, CodegenPathConflict> =>
+	outputPath.includes('..') || outputPath.startsWith('/')
+		? Effect.fail(
+				new CodegenPathConflict({
+					kind: 'non-relative',
+					outputPath,
+					emitters: [],
+				}),
+			)
+		: Effect.void;
 
 /**
  * Codegen output root — the directory codegen owns and overwrites.
@@ -61,8 +70,9 @@ export interface CodegenPaths {
 	/** Subtree where Move-to-TS bindings land. */
 	readonly bindingsDir: string;
 	/** Helper: resolve an emitter's `outputPath` (e.g. `sui/network.ts`)
-	 *  against the output root. */
-	readonly resolve: (outputPath: string) => string;
+	 *  against the output root. Fails with `CodegenPathConflict({kind:
+	 *  'non-relative'})` if the supplied path escapes the root. */
+	readonly resolve: (outputPath: string) => Effect.Effect<string, CodegenPathConflict>;
 	/** Helper: resolve a per-package bindings subtree path. */
 	readonly resolveBindingsPackage: (packageName: string) => string;
 }
@@ -86,10 +96,11 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 				? path.join(root.outputDir, root.stackSubdir)
 				: root.outputDir;
 			const bindingsDir = path.join(outputDir, 'bindings');
-			const resolve = (outputPath: string): string => {
-				assertRelativeCodegenOutputPath(outputPath);
-				return path.join(outputDir, outputPath);
-			};
+			const resolve = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
+				Effect.gen(function* () {
+					yield* assertRelativeCodegenOutputPath(outputPath);
+					return path.join(outputDir, outputPath);
+				});
 			const resolveBindingsPackage = (packageName: string): string =>
 				path.join(bindingsDir, packageName);
 			return CodegenPathsService.of({

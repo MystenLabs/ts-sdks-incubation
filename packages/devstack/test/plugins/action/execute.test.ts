@@ -17,16 +17,22 @@
 //                    and `mutated` buckets carried from the account's
 //                    flat `objectChanges`; fully-qualified `objectType`
 //                    survives.
-//   2. failed-tx   — `AccountSignError(phase:'submit', message:'failed
-//                    on-chain ...')` maps to `ActionError(phase:'sign')`
-//                    with the message preserved.
-//   3. no-digest   — `AccountSignError(phase:'submit', message:'returned
-//                    no digest ...')` maps to `ActionError(phase:'parse')`.
+//   2. failed-tx   — `SignAndExecuteResult({$kind:'FailedTransaction'})`
+//                    maps to `ActionError(phase:'execute-failed')` with
+//                    the on-chain `executionError` preserved.
+//   3. no-digest   — `AccountSignError(phase:'no-digest')` (SDK
+//                    envelope protocol violation) flows through the
+//                    transport branch and maps to `ActionError
+//                    (phase:'sign')` with the originating phase
+//                    preserved via `cause`.
 //   4. build-throw — caller's `build` callback throws → ActionError
 //                    ({phase:'sign'}).
 //   5. lease + ordering — the build → signAndExecute → projection
 //      sequence happens inside the account's withTransactionSigner
 //      scope; finalizer runs after.
+//   6. transport   — `AccountSignError(phase:'submit')` maps to
+//                    `ActionError(phase:'sign')` with the cause
+//                    message preserved.
 
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
@@ -474,5 +480,45 @@ describe('action signAndExecute helper', () => {
 		const err = (errOpt as Option.Some<{ phase?: string; message?: string }>).value;
 		expect(err.phase).toBe('sign');
 		expect(err.message?.includes('rpc-down-503')).toBe(true);
+	});
+
+	it("no-digest: AccountSignError(phase='no-digest') flows through and preserves the cause phase", async () => {
+		const account = fakeAccount({
+			signAndExecuteImpl: () =>
+				Effect.fail(
+					accountSignError({
+						phase: 'no-digest',
+						accountName: 'tester',
+						address: '0x1111111111111111111111111111111111111111111111111111111111111111',
+						message:
+							"Account 'tester': executeTransaction returned a malformed envelope — no digest.",
+					}),
+				),
+		});
+		const sui = makeFakeSui();
+		const exit = await Effect.runPromiseExit(
+			Effect.scoped(
+				signAndExecute({
+					actionName: 'unit.noDigest',
+					sui,
+					account,
+					build: (tx) => {
+						seedTx(tx);
+						tx.moveCall({
+							target: '0x0000000000000000000000000000000000000000000000000000000000000999::m::f',
+						});
+					},
+				}),
+			),
+		);
+		expect(Exit.isFailure(exit)).toBe(true);
+		const errOpt = Exit.findErrorOption(exit);
+		expect(Option.isSome(errOpt)).toBe(true);
+		const err = (errOpt as Option.Some<{ phase?: string; cause?: { phase?: string } }>).value;
+		expect(err.phase).toBe('sign');
+		// The originating no-digest phase must survive on `cause` so the
+		// cause walker can render it distinctly from a generic transport
+		// failure (per STYLE_GUIDE §2 phase discipline).
+		expect(err.cause?.phase).toBe('no-digest');
 	});
 });

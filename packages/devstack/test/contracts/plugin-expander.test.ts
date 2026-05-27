@@ -34,6 +34,7 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: fooResource.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		expect(readPluginExpander(placeholder)).toBeUndefined();
@@ -49,12 +50,14 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: a.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		const bPlugin = definePlugin({
 			id: b.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		const members = [aPlugin, bPlugin] as const;
@@ -68,18 +71,21 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: a.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		const placeholder = definePlugin({
 			id: b.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		const realB = definePlugin({
 			id: b.id,
 			dependsOn: [a],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		let receivedMembers: ReadonlyArray<unknown> = [];
@@ -102,12 +108,14 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: a.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		const real = definePlugin({
 			id: a.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		attachPluginExpander(placeholder, () => real);
@@ -117,6 +125,7 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: resource<'b', { ok: true }>('b').id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		expect(isPluginExpanderPair(placeholder, unrelated)).toBe(false);
@@ -130,6 +139,7 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: sibling.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 
@@ -139,6 +149,7 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 			id: driven.id,
 			dependsOn: [],
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true }),
 		});
 		attachPluginExpander(placeholder, (members) => {
@@ -149,6 +160,7 @@ describe('PLUGIN_EXPANDER — substrate-owned compose-time hook', () => {
 				id: driven.id,
 				dependsOn: matching,
 				role: 'task',
+				section: 'service',
 				start: () => Effect.succeed({ ok: true }),
 			});
 		});

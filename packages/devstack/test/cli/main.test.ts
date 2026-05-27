@@ -51,6 +51,7 @@ import {
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
 \tcapabilities: ({ value }) => [
 \t\tcodegenable({
@@ -649,6 +650,7 @@ import { definePlugin } from '../src/api/define-plugin.ts';
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-identity-codegen',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ message: 'from-cli-identity' } as const),
 \tcapabilities: ({ value }) => [
 \t\tcodegenable({

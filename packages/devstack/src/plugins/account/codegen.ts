@@ -43,6 +43,13 @@ export const makeAccountCodegen = <Name extends string>(parts: {
 	emitterName: `account/${parts.name}` as `account/${Name}`,
 	outputPath: `accounts/${parts.name}.ts`,
 	sensitive: false,
+	aggregate: {
+		kind: 'account',
+		bucket: 'accounts.ts',
+		// Pass-through: this decl's exported map already keys by
+		// account name, which is the aggregate's merge key.
+		project: (exported) => exported,
+	},
 	emit: (ctx) =>
 		Effect.sync(() => {
 			ctx.exportConst(parts.name, parts.resolved);

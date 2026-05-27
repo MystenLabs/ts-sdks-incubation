@@ -184,7 +184,7 @@ export const runSealPublishTransaction = (
 			...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
 		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
 
-		const receipt = yield* executeSuiTx({
+		const result = yield* executeSuiTx({
 			client: inputs.sdk.client,
 			signer: inputs.signer,
 			build: async () => {
@@ -207,8 +207,24 @@ export const runSealPublishTransaction = (
 				}),
 			),
 		);
+		if (result.$kind === 'FailedTransaction') {
+			const errorClause =
+				result.FailedTransaction.executionError !== undefined
+					? `: ${result.FailedTransaction.executionError}`
+					: ' (validator returned no error message)';
+			return yield* Effect.fail(
+				sealError('publish', {
+					name: inputs.name,
+					message:
+						`seal publish tx executed but on-chain execution failed for signer ` +
+						`'${inputs.signer.name}' (address=${inputs.signer.address}, ` +
+						`digest=${result.FailedTransaction.digest})` +
+						errorClause,
+				}),
+			);
+		}
 
-		return yield* projectSealPublishReceipt(inputs.name, receipt);
+		return yield* projectSealPublishReceipt(inputs.name, result.Transaction);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.publish.suiTx', {
 			attributes: {
@@ -391,7 +407,7 @@ export const runRegisterKeyServerTransaction = (
 	inputs: RegisterKeyServerInputs,
 ): Effect.Effect<SealKeyServerCached, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const receipt = yield* executeSuiTx({
+		const result = yield* executeSuiTx({
 			client: sdk.client,
 			signer,
 			build: async () => {
@@ -410,8 +426,24 @@ export const runRegisterKeyServerTransaction = (
 				}),
 			),
 		);
+		if (result.$kind === 'FailedTransaction') {
+			const errorClause =
+				result.FailedTransaction.executionError !== undefined
+					? `: ${result.FailedTransaction.executionError}`
+					: ' (validator returned no error message)';
+			return yield* Effect.fail(
+				sealError('register', {
+					name: inputs.name,
+					message:
+						`seal register tx executed but on-chain execution failed for signer ` +
+						`'${signer.name}' (address=${signer.address}, ` +
+						`digest=${result.FailedTransaction.digest})` +
+						errorClause,
+				}),
+			);
+		}
 
-		return yield* projectRegisterKeyServerReceipt(inputs.name, receipt);
+		return yield* projectRegisterKeyServerReceipt(inputs.name, result.Transaction);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.register.suiTx', {
 			attributes: { [SealSpans.name]: inputs.name, [SealSpans.url]: inputs.keyServerUrl },

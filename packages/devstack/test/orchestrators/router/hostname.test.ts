@@ -7,6 +7,11 @@
 //   #8  — dots in hostname role segments fold to label-safe chars.
 //   #13 — hostname labels reject invalid chars; dispatch ids hash the
 //          full source tuple so readable slug folding cannot collide.
+//
+// Post-B1: pure URL composition + hostname minting live in
+// `substrate/runtime/routed-url.ts`. This file keeps the dispatch-id +
+// `routerHostname` (L3 adapter) coverage; the substrate primitives have
+// their own coverage at `test/substrate/runtime/routed-url.test.ts`.
 
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';

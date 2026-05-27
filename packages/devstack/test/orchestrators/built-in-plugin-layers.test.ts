@@ -1,7 +1,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { layerBuiltInPluginRuntime } from '../../src/runtime/built-in-plugin-layers.ts';
+import { layerBuiltInPluginRuntime } from '../../src/orchestrators/built-in-plugin-layers.ts';
 import { CoinRegistryService } from '../../src/plugins/coin/registry.ts';
 import { makeLocalPackagePublishedDecl } from '../../src/plugins/package/publish-output.ts';
 import { appName, chainId, pluginKey, stackName } from '../../src/substrate/brand.ts';

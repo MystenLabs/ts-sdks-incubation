@@ -26,6 +26,39 @@ type PackDryRunEntry = {
 const PACK_DRY_RUN_TIMEOUT_MS = 120_000;
 let cachedPackFiles: string[] | null = null;
 
+// Every subpath listed here MUST appear in `pkg.exports`. Stripping any
+// of these silently breaks a real consumer wiring; the spot-check style
+// (one explicit `toHaveProperty('./vitest/setup')`) didn't pin the rest.
+const REQUIRED_EXPORTS: ReadonlyArray<readonly [string, string]> = [
+	// Root barrel — `import { ... } from '@mysten-incubation/devstack'`.
+	['.', 'root barrel — plugin-author surface + runtime services'],
+	// Vitest preset barrel (re-exports the helpers).
+	['./vitest', 'vitest preset barrel'],
+	// Vitest setup file consumed by `setupFiles` in user vitest configs.
+	['./vitest/setup', 'vitest setup file (referenced by vitest preset)'],
+	// Playwright preset barrel (re-exports config helpers).
+	['./playwright', 'playwright preset barrel'],
+	// Playwright global-setup file referenced by `playwright/config.ts`
+	// `DEFAULT_GLOBAL_SETUP`. Stripping this silently breaks the default
+	// playwright preset for every consumer.
+	['./playwright/global-setup', 'playwright global setup (DEFAULT_GLOBAL_SETUP target)'],
+	// Build-integration runtime surface consumed by user app code that
+	// reads the stack context emitted by `supervise()`.
+	['./runtime', 'build-integration runtime — stack-context reader'],
+];
+
+// Subpaths that MUST NOT be exported. Devstack consumers must NEVER
+// import from devstack internals (ARCHITECTURE: public surface is the
+// root barrel + the named subpaths above; everything else is private).
+const FORBIDDEN_EXPORTS: ReadonlyArray<readonly [string, string]> = [
+	['./src', 'source tree is private — consumers import compiled dist'],
+	['./substrate', 'substrate is internal — see ARCHITECTURE public-surface rules'],
+	['./orchestrators', 'orchestrators are internal'],
+	['./plugins', 'plugin internals are private — consumers import named plugins from root barrel'],
+	['./cli', 'CLI is a `bin`, not an importable module'],
+	['./dist', 'never expose the build output root directly'],
+];
+
 const readPackageJson = (): PackageJson => JSON.parse(readText('package.json')) as PackageJson;
 
 const exportedTargets = () => {
@@ -66,6 +99,22 @@ describe('release surface static checks', () => {
 		expect(pkg.exports).not.toHaveProperty('./vite');
 		expect(pkg.exports).not.toHaveProperty('./browser');
 		expect(pkg.exports).not.toHaveProperty('./browser/setup');
+	});
+
+	it('exposes every required public subpath', () => {
+		const pkg = readPackageJson();
+		const exports = pkg.exports ?? {};
+		for (const [specifier, why] of REQUIRED_EXPORTS) {
+			expect(exports, `missing ${specifier} (${why})`).toHaveProperty(specifier);
+		}
+	});
+
+	it('does not expose internal subpaths', () => {
+		const pkg = readPackageJson();
+		const exports = pkg.exports ?? {};
+		for (const [specifier, why] of FORBIDDEN_EXPORTS) {
+			expect(exports, `${specifier} must remain private (${why})`).not.toHaveProperty(specifier);
+		}
 	});
 
 	it('points every public export at built JavaScript and declaration files', () => {

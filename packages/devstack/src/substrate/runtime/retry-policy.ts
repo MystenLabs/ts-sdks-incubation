@@ -69,3 +69,15 @@ export const STALE_OBJECT_VERSION_RETRY_PROFILE = {
 	attempts: 20,
 	delayMs: 500,
 } as const;
+
+/** Docker `network rm` retry profile — used by best-effort network
+ *  prune after our own endpoints are force-disconnected. Foreign
+ *  holders and stale bridge-driver endpoints may keep the network
+ *  busy for a short window; 6 × 250ms saturates well inside the
+ *  prune wall-clock budget while letting transient races resolve.
+ *  Callers may override per-invocation via
+ *  `DevstackNetworkRemovalOptions`. */
+export const NETWORK_REMOVE_RETRY_PROFILE = {
+	attempts: 6,
+	delayMs: 250,
+} as const;

@@ -149,7 +149,10 @@ const accountSignErrorToActionError =
  *   - `build` callback throws  → `phase: 'sign'`.
  *   - `Transaction.build` rejects → `phase: 'sign'`.
  *   - `account.signAndExecute` rejects with `AccountSignError` → mapped
- *     to `phase: 'sign'` (or `phase: 'parse'` for the no-digest case).
+ *     to `phase: 'sign'`. The Account plugin's `'no-digest'` phase
+ *     (SDK envelope protocol violation) flows through here as well —
+ *     the originating `AccountSignError` is preserved via `cause` so
+ *     the cause walker renders the underlying `phase: 'no-digest'`.
  *
  *  The `actionName` parameter threads into every error's `actionName`
  *  field so cause-walker output stays attributable.
@@ -221,13 +224,17 @@ export const signAndExecute = (params: {
 				// failures (`phase: 'sign'`).
 				if (result.$kind === 'FailedTransaction') {
 					const failed = result.FailedTransaction;
+					const errorTail =
+						failed.executionError !== undefined
+							? `: ${failed.executionError}`
+							: ' (no validator error attached).';
 					return yield* Effect.fail(
 						actionError('execute-failed', {
 							actionName,
 							message:
 								`Action '${actionName}': transaction execution failed on-chain ` +
 								`(digest=${failed.digest}, account='${account.name}', ` +
-								`address=${account.address}): ${failed.executionError}`,
+								`address=${account.address})${errorTail}`,
 						}),
 					);
 				}

@@ -56,7 +56,7 @@ const successfulClient = (params: {
 	});
 
 describe('executeSuiTx', () => {
-	it.effect('returns a flat ExecutedReceipt with digest + projected changes', () =>
+	it.effect('returns $kind:"Transaction" with a flat ExecutedReceipt', () =>
 		Effect.gen(function* () {
 			const client = successfulClient({
 				digest: '0xfeed',
@@ -69,13 +69,16 @@ describe('executeSuiTx', () => {
 					'0xup': '0x2::package::UpgradeCap',
 				},
 			});
-			const receipt = yield* Effect.scoped(
+			const result = yield* Effect.scoped(
 				executeSuiTx({
 					client,
 					signer: stubSigner,
 					build: async () => new Uint8Array([1, 2, 3]),
 				}),
 			);
+			expect(result.$kind).toBe('Transaction');
+			if (result.$kind !== 'Transaction') return;
+			const receipt = result.Transaction;
 			expect(receipt.digest).toBe('0xfeed');
 			expect(receipt.objectChanges.length).toBe(2);
 			expect(receipt.objectChanges[0]?.objectType).toBe('0x2::package::Package');
@@ -83,7 +86,7 @@ describe('executeSuiTx', () => {
 		}),
 	);
 
-	it.effect('FailedTransaction surfaces as phase: "failed-transaction"', () =>
+	it.effect('FailedTransaction surfaces as $kind:"FailedTransaction" return value (NOT error)', () =>
 		Effect.gen(function* () {
 			const client = stubClient({
 				executeTransaction: async () => ({
@@ -92,6 +95,54 @@ describe('executeSuiTx', () => {
 						digest: '0xbad',
 						status: { error: 'MoveAbort(...)' },
 					},
+				}),
+				waitForTransaction: async () => undefined,
+			});
+			const result = yield* Effect.scoped(
+				executeSuiTx({
+					client,
+					signer: stubSigner,
+					build: async () => new Uint8Array(),
+				}),
+			);
+			expect(result.$kind).toBe('FailedTransaction');
+			if (result.$kind !== 'FailedTransaction') return;
+			expect(result.FailedTransaction.digest).toBe('0xbad');
+			expect(result.FailedTransaction.executionError).toBe('MoveAbort(...)');
+		}),
+	);
+
+	it.effect('FailedTransaction return is exposed via the success channel — no error surfaces', () =>
+		Effect.gen(function* () {
+			const client = stubClient({
+				executeTransaction: async () => ({
+					$kind: 'FailedTransaction',
+					FailedTransaction: { digest: '0xbad', status: { error: 'MoveAbort(0)' } },
+				}),
+				waitForTransaction: async () => undefined,
+			});
+			const exit = yield* Effect.scoped(
+				Effect.exit(
+					executeSuiTx({
+						client,
+						signer: stubSigner,
+						build: async () => new Uint8Array(),
+					}),
+				),
+			);
+			expect(Exit.isSuccess(exit)).toBe(true);
+			if (Exit.isSuccess(exit)) {
+				expect(exit.value.$kind).toBe('FailedTransaction');
+			}
+		}),
+	);
+
+	it.effect('FailedTransaction with no digest fails with phase:"no-digest"', () =>
+		Effect.gen(function* () {
+			const client = stubClient({
+				executeTransaction: async () => ({
+					$kind: 'FailedTransaction',
+					FailedTransaction: { /* no digest */ status: { error: 'MoveAbort(0)' } },
 				}),
 				waitForTransaction: async () => undefined,
 			});
@@ -105,14 +156,7 @@ describe('executeSuiTx', () => {
 				),
 			);
 			expect(Exit.isFailure(exit)).toBe(true);
-			if (Exit.isFailure(exit)) {
-				const err = (exit.cause as unknown as { failures?: ReadonlyArray<SuiExecuteError> })
-					.failures?.[0];
-				const text = JSON.stringify(exit.cause);
-				expect(text).toContain('failed-transaction');
-				expect(text).toContain('MoveAbort');
-				void err;
-			}
+			expect(JSON.stringify(exit)).toContain('no-digest');
 		}),
 	);
 
@@ -153,17 +197,14 @@ describe('executeSuiTx', () => {
 					expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait']);
 				},
 			});
-			const exit = yield* Effect.scoped(
-				Effect.exit(
-					executeSuiTx({
-						client,
-						signer,
-						build: async () => new Uint8Array(),
-					}),
-				),
+			const result = yield* Effect.scoped(
+				executeSuiTx({
+					client,
+					signer,
+					build: async () => new Uint8Array(),
+				}),
 			);
-			expect(Exit.isFailure(exit)).toBe(true);
-			expect(JSON.stringify(exit)).toContain('failed-transaction');
+			expect(result.$kind).toBe('FailedTransaction');
 			expect(events).toEqual(['scope:enter', 'sign', 'execute', 'wait', 'scope:exit']);
 		}),
 	);

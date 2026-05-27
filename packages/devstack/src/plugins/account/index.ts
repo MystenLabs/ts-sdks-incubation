@@ -217,6 +217,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// tasks acquire their value, publish contributions, then reach
 		// `done`.
 		role: 'task',
+		section: 'account',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedDeps] = deps;

@@ -26,6 +26,14 @@ const LifecycleStatusSchema = Schema.Literals([
 ]);
 const PluginRoleSchema = Schema.Literals(['service', 'task']);
 const CyclePhaseSchema = Schema.Literals(['booting', 'running', 'restarting', 'shutting-down']);
+const RowSectionSchema = Schema.Literals([
+	'service',
+	'package',
+	'account',
+	'action',
+	'app',
+	'other',
+]);
 
 const StructuredErrorSchema = Schema.Struct({
 	at: Schema.Number,
@@ -46,7 +54,7 @@ const EndpointSchema = Schema.Struct({
 	registeredAt: Schema.Number,
 });
 
-const AccountProjectionSchema = Schema.Struct({
+export const AccountProjectionSchema = Schema.Struct({
 	key: Schema.String,
 	rowKey: Schema.NullOr(Schema.String),
 	name: Schema.String,
@@ -72,7 +80,7 @@ const AccountProjectionSchema = Schema.Struct({
 	updatedAt: Schema.Number,
 });
 
-const PackageProjectionSchema = Schema.Struct({
+export const PackageProjectionSchema = Schema.Struct({
 	key: Schema.String,
 	rowKey: Schema.NullOr(Schema.String),
 	name: Schema.String,
@@ -97,6 +105,8 @@ const RowSchema = Schema.Struct({
 	}),
 	endpoints: Schema.Array(Schema.String),
 	selectiveRestartHighlight: Schema.Boolean,
+	section: RowSectionSchema,
+	endpointSection: RowSectionSchema,
 });
 
 const BuildEntrySchema = Schema.Struct({

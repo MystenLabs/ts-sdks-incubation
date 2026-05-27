@@ -50,7 +50,7 @@ export interface MintSignAndExecuteResult {
 	};
 	readonly FailedTransaction?: {
 		readonly digest: string;
-		readonly executionError: string;
+		readonly executionError?: string;
 	};
 }
 
@@ -333,12 +333,16 @@ export const performMint = (
 				//     the cache treats this as a re-run candidate.
 				if (result.$kind === 'FailedTransaction') {
 					const failed = result.FailedTransaction!;
+					const errorTail =
+						failed.executionError !== undefined
+							? `: ${failed.executionError}`
+							: ' (no validator error attached).';
 					return yield* Effect.fail({
 						_tag: 'ArtifactPublishError' as const,
 						reason: 'produce-failed' as const,
 						detail:
 							`coin.mint(${inputs.fullCoinType}): transaction execution failed on-chain ` +
-							`(digest=${failed.digest}): ${failed.executionError}`,
+							`(digest=${failed.digest})${errorTail}`,
 					} satisfies ArtifactPublishError);
 				}
 				const ok = result.Transaction!;

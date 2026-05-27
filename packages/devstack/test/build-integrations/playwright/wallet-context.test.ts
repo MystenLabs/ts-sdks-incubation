@@ -25,6 +25,7 @@ import {
 	connectAs,
 	createWalletAdapter,
 } from '../../../src/build-integrations/playwright/wallet-context.ts';
+import { WalletHttpPath } from '../../../src/plugins/wallet/protocol.ts';
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 
 const setFixture = (fixture: PlaywrightStackFixture | null) => {
@@ -250,10 +251,41 @@ describe('createWalletAdapter', () => {
 		expect(res.digest).toBe('abc');
 		expect(calls).toHaveLength(1);
 		const call = calls[0]!;
-		expect(call.url).toBe('http://w.localhost:1/sign-transaction');
+		// Pin against the canonical wire-protocol constant so the test
+		// fails the instant the adapter URL drifts away from what the
+		// wallet HTTP server actually matches. Pre-fix this asserted
+		// the literal `/sign-transaction`, which the server 404'd in
+		// every real Playwright run.
+		expect(call.url).toBe(`http://w.localhost:1${WalletHttpPath.SIGN_TRANSACTION}`);
 		expect(call.init.method).toBe('POST');
 		const body = JSON.parse(String(call.init.body));
 		expect(body).toMatchObject({ accountName: 'alice', txBytesBase64: 'AAAA' });
+	});
+
+	it('listAccounts + signTransaction hit the canonical /api/v1/devstack/* paths', async () => {
+		// Regression for the silent-404 bug: pin the EXACT byte strings
+		// the wallet server's `dispatch` matches (see
+		// `src/plugins/wallet/server.ts:449-460`). If anyone re-hardcodes
+		// `/accounts` or `/sign-transaction` in the adapter, this fails.
+		const calls: Array<{ url: string }> = [];
+		const stubFetch = (async (url: string) => {
+			calls.push({ url });
+			return new Response(JSON.stringify({ digest: 'd', signature: 's', raw: {} }), {
+				status: 200,
+				headers: { 'content-type': 'application/json' },
+			});
+		}) as unknown as typeof fetch;
+
+		const adapter = createWalletAdapter({
+			walletUrl: 'http://w.localhost:1',
+			fetch: stubFetch,
+		});
+		await adapter.listAccounts();
+		await adapter.signTransaction({ accountName: 'alice', txBytesBase64: 'AA' });
+
+		expect(calls).toHaveLength(2);
+		expect(calls[0]!.url.endsWith('/api/v1/devstack/accounts')).toBe(true);
+		expect(calls[1]!.url.endsWith('/api/v1/devstack/sign-transaction')).toBe(true);
 	});
 
 	it('raises a typed error on non-2xx responses', async () => {

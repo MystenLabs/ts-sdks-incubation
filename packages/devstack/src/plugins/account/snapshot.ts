@@ -21,32 +21,19 @@
 
 import { Effect } from 'effect';
 
-import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
+import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { AccountVariantKind } from './errors.ts';
 
 /** Build the Snapshotable contribution for a resolved variant.
  *
- *  Only the `ephemeral` variant declares a persisted subtree. The
- *  subtree is per-account so wipe-single-account (12-account.md
- *  open question) would target a single path; today's "wipe whole
- *  stack" recipe doesn't need this granularity but the seam is here. */
+ *  Only the `ephemeral` variant declares a persisted subtree, scoped
+ *  to a single account's key path. */
 export const makeAccountSnapshotable = (parts: {
 	readonly accountName: string;
 	readonly variant: AccountVariantKind;
 	readonly app: string;
 	readonly stack: string;
 }): SnapshotableDecl => {
-	const _labels: ContainerLabelTuple = {
-		app: parts.app,
-		stack: parts.stack,
-		plugin: 'account',
-		role: parts.accountName,
-	};
-	// Account is value-producing — no managed container. We retain
-	// the label tuple in the file for symmetry with Sui's snapshot
-	// decl (and for the future `wipe-single-account` recipe).
-	void _labels;
-
 	if (parts.variant !== 'ephemeral') {
 		return {
 			kind: 'snapshotable',
@@ -60,8 +47,7 @@ export const makeAccountSnapshotable = (parts: {
 		// Per-account secret file under the runtime tree. The
 		// substrate's runtime-tar already covers `runtime/account/`
 		// inclusively; this opt-in extra is symmetric with Sui's
-		// `sui-fork/` subtree declaration and serves as the
-		// authoritative path for the future per-account wipe.
+		// `sui-fork/` subtree declaration.
 		subtrees: [`account/${parts.accountName}.key`],
 		missingTolerance: 'fine',
 		secretMaterial: true,

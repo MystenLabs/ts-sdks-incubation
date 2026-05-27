@@ -66,6 +66,15 @@ export const accountAcquireError = (
  *   - `submit`           — `executeTransaction` transport failure
  *                          (RPC unreachable, network error). The
  *                          response never arrived.
+ *   - `no-digest`        — `executeTransaction` returned a response
+ *                          that violates the SDK envelope contract
+ *                          (`$kind` missing OR `Transaction.digest`
+ *                          missing OR `FailedTransaction.digest`
+ *                          missing). Protocol violation, not a
+ *                          transport failure — kept distinct so
+ *                          `'submit'` keeps a single failure-kind
+ *                          (per §2 "phases describe steps, not
+ *                          failure kinds").
  *   - `await-finality`   — `waitForTransaction` failed AFTER a
  *                          submit-success; the digest exists but the
  *                          finality wait broke.
@@ -77,6 +86,7 @@ export type AccountSignPhase =
 	| 'build-tx'
 	| 'sign'
 	| 'submit'
+	| 'no-digest'
 	| 'await-finality'
 	| 'dependent-package-not-found'
 	| 'lease-acquire'

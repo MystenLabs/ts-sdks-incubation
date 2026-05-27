@@ -248,7 +248,7 @@ export const initLocalPythFeeds = (
 				verifySchema: CachedPythHandleSchema,
 				verify: (entry) => buildVerifyProbe(sdk, entry),
 				produce: Effect.gen(function* () {
-					const receipt = yield* executeSuiTx({
+					const result = yield* executeSuiTx({
 						client: sdk.client,
 						signer,
 						build: async () => {
@@ -280,6 +280,21 @@ export const initLocalPythFeeds = (
 								}) as const,
 						),
 					);
+					if (result.$kind === 'FailedTransaction') {
+						const errorClause =
+							result.FailedTransaction.executionError !== undefined
+								? `: ${result.FailedTransaction.executionError}`
+								: ' (validator returned no error message)';
+						return yield* Effect.fail({
+							_tag: 'ArtifactPublishError' as const,
+							reason: 'produce-failed' as const,
+							detail:
+								`pyth feed transaction on-chain execution failed ` +
+								`(digest=${result.FailedTransaction.digest})` +
+								errorClause,
+						});
+					}
+					const receipt = result.Transaction;
 
 					const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
 					if (created.length !== feeds.length) {

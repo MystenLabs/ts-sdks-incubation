@@ -118,13 +118,16 @@ export const swapAccountSuiForWal = (
 						),
 					);
 				if (result.$kind === 'FailedTransaction') {
+					const errorTail =
+						result.FailedTransaction.executionError !== undefined
+							? `: ${result.FailedTransaction.executionError}`
+							: ' (no validator error attached).';
 					return yield* Effect.fail(
 						walrusPluginError(
 							'fund-wal',
 							`walrus.fundWal: SUI -> WAL swap failed on-chain ` +
 								`(digest=${result.FailedTransaction.digest}, ` +
-								`exchange=${args.exchange.objectId}): ` +
-								result.FailedTransaction.executionError,
+								`exchange=${args.exchange.objectId})${errorTail}`,
 						),
 					);
 				}

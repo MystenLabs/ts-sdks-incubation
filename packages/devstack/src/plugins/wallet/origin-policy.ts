@@ -29,7 +29,6 @@
 import { Effect } from 'effect';
 
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
-import type { WalletBootError } from './errors.ts';
 import { WalletSpans } from './spans.ts';
 
 // ----------------------------------------------------------------------
@@ -85,13 +84,10 @@ export interface OriginPolicyInputs {
  * are still useful for the host process, but the HTTP surface is
  * effectively closed. A `Effect.logWarning` surfaces the configuration
  * for operator visibility.
- *
- * Returns `Effect<OriginPolicy, WalletBootError>` (the error channel
- * is preserved for future fail-fast modes the resolver may grow).
  */
 export const resolveOriginPolicy = (
 	inputs: OriginPolicyInputs,
-): Effect.Effect<OriginPolicy, WalletBootError> =>
+): Effect.Effect<OriginPolicy> =>
 	Effect.gen(function* () {
 		const allowed = new Set<string>();
 		const stackScopedHost =

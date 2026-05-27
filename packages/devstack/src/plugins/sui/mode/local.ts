@@ -65,7 +65,7 @@ import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
-import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
+import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import {
 	DEFAULT_SUI_CLI_VERSION,
 	suiCliImageBuildContext,
@@ -680,7 +680,7 @@ const routedSuiUrl = (
 	endpointName: string,
 	port: number,
 ): Effect.Effect<string, SuiPluginError> =>
-	routerHostname(identity, endpointName).pipe(
+	routedHostname(identity, endpointName).pipe(
 		Effect.map((hostname) => renderUrl({ protocol: 'http', hostname, port })),
 		Effect.mapError((cause) =>
 			suiPluginError(

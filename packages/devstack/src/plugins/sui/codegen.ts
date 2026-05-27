@@ -27,6 +27,33 @@ export interface SuiNetworkBindings {
 	readonly forkUpstream: string | null;
 }
 
+/** Aggregate projection: fold the emitted `suiNetwork` shape into
+ *  the cross-plugin `services.ts` aggregate at `services.sui`. The
+ *  orchestrator stays plugin-name-blind; this projector owns the
+ *  `{ rpc, faucet, graphql }` shape decision. */
+const projectSuiNetworkServices = (
+	exported: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | null => {
+	const network = exported['suiNetwork'];
+	if (typeof network !== 'object' || network === null) return null;
+	const record = network as Readonly<Record<string, unknown>>;
+	const rpcUrl = stringField(record, 'rpcUrl');
+	const faucetUrl = stringField(record, 'faucetUrl');
+	const graphqlUrl = stringField(record, 'graphqlUrl');
+	return {
+		sui: {
+			rpc: { url: rpcUrl ?? '' },
+			faucet: faucetUrl === null ? null : { url: faucetUrl },
+			graphql: graphqlUrl === null ? null : { url: graphqlUrl },
+		},
+	};
+};
+
+const stringField = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
+	const value = record[key];
+	return typeof value === 'string' && value.length > 0 ? value : null;
+};
+
 /** Construct the Codegenable contribution. Emit is byte-deterministic
  *  on unchanged input (architecture: no mtime churn on no-op
  *  cycles). */
@@ -34,6 +61,11 @@ export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl<'
 	kind: 'codegenable',
 	emitterName: 'sui-network',
 	outputPath: 'sui/network.ts',
+	aggregate: {
+		kind: 'sui-network',
+		bucket: 'services.ts',
+		project: projectSuiNetworkServices,
+	},
 	emit: (ctx) =>
 		Effect.sync(() => {
 			const bindings: SuiNetworkBindings = {

@@ -32,7 +32,7 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
-import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
+import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { suiResource } from '../sui/index.ts';
 import {
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
@@ -188,6 +188,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// handlers fork off the supervisor-context fiber but the server
 		// itself lives for the stack's lifetime.
 		role: 'service',
+		section: 'service',
 		start: (deps) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-
@@ -206,7 +207,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// The first dependency is the hard Sui ordering edge; the
 				// remaining values mirror the explicit account tuple.
 				const [, ...resolvedAccounts] = deps;
-				const routerFrontedUrl = yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
+				const routerFrontedUrl = yield* routedHostname(identity, WALLET_ROUTE_ROLE).pipe(
 					Effect.map((hostname) =>
 						renderUrl({
 							protocol: 'http',
@@ -222,7 +223,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 						}),
 					),
 				);
-				const routedAppOrigin = yield* routerHostname(
+				const routedAppOrigin = yield* routedHostname(
 					identity,
 					HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 				).pipe(

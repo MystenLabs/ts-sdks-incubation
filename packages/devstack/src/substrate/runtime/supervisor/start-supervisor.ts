@@ -245,6 +245,9 @@ export const startSupervisor = (
 
 		// Declare a row for every plugin so the projection's
 		// `lifecycle.statusChanged` events have a row to attach to.
+		// `section` is plugin-declared at `definePlugin({ section })`
+		// time; we stamp it onto the row here so the TUI groups rows
+		// without pattern-matching on plugin-name substrings.
 		for (const [key, node] of graph.nodes) {
 			const declaredAccount = pendingAccountProjection(key, node.member.id, Date.now());
 			yield* SubscriptionRef.update(state, (s) => ({
@@ -262,6 +265,8 @@ export const startSupervisor = (
 								logTail: { lines: [], level: 'info' as const, truncated: false },
 								endpoints: [],
 								selectiveRestartHighlight: false,
+								section: node.member.section,
+								endpointSection: node.member.endpointSection ?? node.member.section,
 							},
 						],
 			}));

@@ -22,6 +22,7 @@ const keyval = () =>
 	definePlugin({
 		id: keyvalResource.id,
 		role: 'service',
+		section: 'service',
 		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } as const),
 	});
 
@@ -32,6 +33,7 @@ const cluster = defineModeNamespace({
 				id: 'cluster',
 				dependsOn: { leaf: keyvalResource },
 				role: 'service',
+				section: 'service',
 				pluginKey: 'cluster',
 				start: ({ leaf }) => Effect.succeed({ endpoint: leaf.url } as const),
 			}),
@@ -41,6 +43,7 @@ const cluster = defineModeNamespace({
 			definePlugin({
 				id: 'cluster-fork',
 				role: 'task',
+				section: 'service',
 				start: () => Effect.succeed({ endpoint: 'https://example.invalid' } as const),
 			}),
 	},
@@ -70,6 +73,7 @@ const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },
 	role: 'service',
+	section: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 

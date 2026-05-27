@@ -15,6 +15,7 @@ export * from './host-tree-tar/index.ts';
 export * from './paths.ts';
 export * from './process-supervisor.ts';
 export * from './retry-policy.ts';
+export * from './routed-url.ts';
 export * from './runtime-decode.ts';
 export * from './scoped-http-server.ts';
 export * from './stage-and-swap/index.ts';

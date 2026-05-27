@@ -1,9 +1,9 @@
 import type { EngineEvent } from '../../substrate/events.ts';
+import type { RowSection } from '../../substrate/projection.ts';
 import {
 	errorSummaryFor,
 	labelForRow,
 	sectionColor,
-	sectionForKey,
 	type ColorToken,
 } from './display-derivation.ts';
 
@@ -19,9 +19,22 @@ export interface EventLogLine {
 
 export const MAX_EVENT_LOG_LINES = 200;
 
-export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLogLine | null => {
+/** Pure: lookup a row's plugin-declared section by `pluginKey`. The
+ *  event log accepts this as a parameter rather than computing it
+ *  itself — the substrate forbids the renderer from pattern-matching
+ *  plugin-name substrings. Callers (e.g. `app.tsx`) build the lookup
+ *  from the live `state.rows` projection. */
+export type SectionLookup = (pluginKey: string) => RowSection | undefined;
+
+export const eventLogLineFromEvent = (
+	event: EngineEvent,
+	seq: number,
+	sectionLookup: SectionLookup = () => undefined,
+): EventLogLine | null => {
 	const at = eventAt(event);
 	const id = `${at}-${seq}-${event.tag}`;
+	const scopeColorFor = (pluginKey: string): ColorToken =>
+		sectionColor(sectionLookup(pluginKey) ?? 'other');
 	switch (event.tag) {
 		case 'log.appended':
 			if (event.level === 'info' || isRedundantPluginLog(event.line)) return null;
@@ -30,7 +43,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				level: event.level,
 				scope: labelForRow(event.pluginKey),
-				scopeColor: scopeColorForKey(event.pluginKey),
+				scopeColor: scopeColorFor(event.pluginKey),
 				message: event.line,
 			});
 		case 'error.reported':
@@ -40,7 +53,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
 				scopeColor:
-					event.error.pluginKey === null ? 'white' : scopeColorForKey(event.error.pluginKey),
+					event.error.pluginKey === null ? 'white' : scopeColorFor(event.error.pluginKey),
 				message: `failed: ${errorSummaryFor(event.error)}`,
 			});
 		case 'build.statusChanged':
@@ -211,8 +224,9 @@ const isRedundantPluginLog = (message: string): boolean => {
 	);
 };
 
-// Scope-chip color is driven by the `RowSection` derived from the
-// plugin key. Keeps the renderer name-blind: it sees only the closed
-// `RowSection` vocabulary (`service` / `package` / `account` / ...),
-// never a substring of a plugin name.
-const scopeColorForKey = (pluginKey: string): ColorToken => sectionColor(sectionForKey(pluginKey));
+// Scope-chip color is driven by `Row.section`, looked up via the
+// `sectionLookup` argument the host (app.tsx / tests) constructs from
+// the live projection. Keeps the renderer name-blind: it sees only the
+// closed `RowSection` vocabulary (`service` / `package` / `account` /
+// ...), never a substring of a plugin name. Plugin authors declare
+// their section once via `definePlugin({ section })`.

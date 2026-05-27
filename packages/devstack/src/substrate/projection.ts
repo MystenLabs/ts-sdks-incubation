@@ -39,6 +39,20 @@ export interface SubscribableState {
 	readonly stackBuild: ReadonlyArray<BuildEntry>;
 }
 
+/** Closed vocabulary of dashboard section buckets a row belongs to.
+ *
+ *  The renderer groups rows by `Row.section` and the event log colors
+ *  scope chips by it. The vocabulary is intentionally small and
+ *  plugin-domain-agnostic — each plugin declares its section ONCE at
+ *  `definePlugin({ ..., section })` time and the supervisor stamps it
+ *  onto every row it constructs.
+ *
+ *  Adding a section is a substrate revision: the closed list lives
+ *  here so the TUI's `sectionLabel` / `sectionColor` cases stay
+ *  exhaustive.
+ */
+export type RowSection = 'service' | 'package' | 'account' | 'action' | 'app' | 'other';
+
 /** One row per visible plugin instance. */
 export interface Row {
 	readonly key: PluginKey;
@@ -49,6 +63,17 @@ export interface Row {
 	readonly logTail: LogTail;
 	readonly endpoints: ReadonlyArray<EndpointKey>;
 	readonly selectiveRestartHighlight: boolean;
+	/** Dashboard section bucket the row belongs to. Plugin-declared at
+	 *  `definePlugin({ section })` time; the supervisor stamps the
+	 *  declaration onto the row at acquire. Renderers consume this
+	 *  field directly — they MUST NOT pattern-match on `key` substrings
+	 *  to derive a section. */
+	readonly section: RowSection;
+	/** Section bucket the row should render in once it owns a routed
+	 *  endpoint. Defaults to `section` (i.e. no override). Plugins set
+	 *  `endpointSection` when an "app"-style row should re-bucket to
+	 *  the services list as soon as its URL is up. */
+	readonly endpointSection: RowSection;
 }
 
 export interface LogTail {
@@ -146,3 +171,31 @@ type _Verify = keyof SubscribableState extends _ProjectionKeysClosed
 // substrate-internal name keeps it from leaking into the public
 // surface but ensures the compiler enforces the invariant.
 export type __ProjectionFieldsClosed = _Verify extends true ? true : never;
+
+// --- Closed `Row` field list ---------------------------------------------
+//
+// Same discipline as `__ProjectionFieldsClosed` but for `Row`. Adding a
+// row field without listing it here (or removing one without dropping it
+// from the alias) trips a TS error at every supervisor row-construction
+// site. Display-vocabulary fields (`title`, `primary`, `extras`, …) are
+// EXPLICITLY ABSENT — see top-of-file comment.
+
+type _RowKeysClosed =
+	| 'key'
+	| 'role'
+	| 'status'
+	| 'phase'
+	| 'lastError'
+	| 'logTail'
+	| 'endpoints'
+	| 'selectiveRestartHighlight'
+	| 'section'
+	| 'endpointSection';
+
+type _VerifyRow = keyof Row extends _RowKeysClosed
+	? _RowKeysClosed extends keyof Row
+		? true
+		: false
+	: false;
+
+export type __RowFieldsClosed = _VerifyRow extends true ? true : never;

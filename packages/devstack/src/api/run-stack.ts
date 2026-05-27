@@ -56,7 +56,7 @@ import {
 import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../runtime/built-in-plugin-layers.ts';
+} from '../orchestrators/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import { resolveAppName, resolveStackName } from './inference-network.ts';

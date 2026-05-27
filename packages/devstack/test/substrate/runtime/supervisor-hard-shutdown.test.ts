@@ -47,6 +47,7 @@ describe('supervisor hard-shutdown teardown (Bug #13)', () => {
 				const slow = definePlugin({
 					id: 'test:slow-teardown',
 					role: 'service' as const,
+					section: 'service',
 					start: () =>
 						Effect.gen(function* () {
 							yield* Effect.addFinalizer(() =>

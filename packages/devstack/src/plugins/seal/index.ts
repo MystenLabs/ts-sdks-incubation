@@ -183,6 +183,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		id: sealResource.id,
 		dependsOn: { sui: suiResource, signer: opts.signer },
 		role: 'service',
+		section: 'service',
 		pluginKey: sealPluginKey(resolved.name),
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -340,6 +341,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	return definePlugin({
 		id: sealResource.id,
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'live', name, resolved: validated };
@@ -368,6 +370,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 	return definePlugin({
 		id: sealResource.id,
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				const mode: SealMode = { mode: 'fork-known', name, ...opts };

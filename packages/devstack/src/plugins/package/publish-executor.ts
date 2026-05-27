@@ -279,13 +279,17 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 						);
 						if (result.$kind === 'FailedTransaction') {
 							const failed = result.FailedTransaction;
+							const errorTail =
+								failed.executionError !== undefined
+									? `: ${failed.executionError}`
+									: ' (no validator error attached).';
 							return yield* Effect.fail(
 								publishError('publish-tx', {
 									sourcePath,
 									packageName,
 									message:
 										`executeTransaction returned FailedTransaction ` +
-										`(digest=${failed.digest}): ${failed.executionError}`,
+										`(digest=${failed.digest})${errorTail}`,
 								}),
 							);
 						}
@@ -339,8 +343,11 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				}
 			},
 			catch: (cause): PublishError =>
+				// `sourcePath` is intentionally omitted — this probe only
+				// has the resolved on-chain `packageId` in scope. The
+				// `mode-local` re-stamp pass back-fills from the outer
+				// inputs when the error bubbles through.
 				publishError('parse', {
-					sourcePath: '<wait-for-ready>',
 					packageName: packageId,
 					message: `waitForReady(${packageId}) failed`,
 					cause,

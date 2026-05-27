@@ -30,6 +30,7 @@ const livenessDecl: LivenessClassifierDecl = {
 const snapshotSmokePlugin = definePlugin({
 	id: 'snapshot-smoke',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ ready: true as const }),
 	capabilities: [snapshotDecl, livenessDecl] as const,
 });
@@ -42,6 +43,7 @@ const stack = {
 const hostTreePlugin = definePlugin({
 	id: 'snapshot-host-tree',
 	role: 'service' as const,
+	section: 'service',
 	start: () =>
 		Effect.gen(function* () {
 			const paths = yield* StackPathsService;

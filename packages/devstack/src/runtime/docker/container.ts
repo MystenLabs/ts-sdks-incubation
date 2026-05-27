@@ -927,64 +927,18 @@ export const ensureContainer = (
 	DockerHost | DockerSpawner | StackPathsService | Scope.Scope
 > =>
 	Effect.gen(function* () {
-		// Per-name lock holds the inspect → applyAction window. We release
-		// immediately after applyAction returns (success or typed failure)
-		// so concurrent callers for the SAME name serialize at the
-		// "decide what to do" step, but the lock does not outlive the
-		// state-machine resolution. `acquireUseRelease` ensures the
-		// release fires on interrupt/defect too.
+		// Per-name lock holds the inspect → applyAction → finalizer-registration
+		// window. The lock CANNOT be released before the stop-on-scope-close
+		// finalizer is armed: an interrupt or `addClaim` failure in that gap
+		// would strand a running container with no scope-bound cleanup until
+		// label-driven sweep ran later (per-scope contract: one
+		// `Effect.scoped` ⇒ one container managed).
+		//
+		// Also: post-`docker run` work (network attach → IP readback →
+		// inspect → `addClaim`) runs uninterruptibly so an interrupt cannot
+		// land between "container started" and "finalizer armed". The
+		// finalizer itself is uninterruptible (Architecture §13).
 		const desiredImageRef = spec.image.tag ?? spec.image.digest;
-		const id = yield* Effect.acquireUseRelease(
-			acquirePerNameLock(deps.perNameLock, spec.name),
-			() =>
-				Effect.gen(function* () {
-					const facts = yield* inspectContainer(spec.name);
-					if (facts !== null) {
-						yield* assertOwnedFacts(spec.name, facts, spec.labels);
-					}
-					const action = decideRunAction(
-						facts,
-						desiredImageRef,
-						spec.recreate,
-						canonicalPortBindings(spec.ports),
-						spec.portBindingReconciliation ?? 'exact',
-						spec.configHash,
-						spec.image.digest,
-						spec.networkAttach,
-					);
-					const id = yield* applyAction(action, spec, deps);
-					return yield* ensureEffectivePublishedPorts(id, spec, deps);
-				}),
-			() => releasePerNameLock(deps.perNameLock, spec.name),
-		);
-		yield* assertContainerHandleOwned({
-			id,
-			name: spec.name,
-			labels: spec.labels,
-			imageName: spec.image.tag ?? spec.image.digest,
-			status: 'running',
-			ips: [],
-		});
-
-		// Architecture §5 — secondary network attaches (any beyond the
-		// first, which is wired in via `--network` on create) must wait
-		// for IP allocation before we declare ready.
-		const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
-		for (const net of secondaries) {
-			yield* connect(spec.name, net.name, net.aliases);
-			yield* waitForIp(spec.name, net.name);
-		}
-
-		const ips = yield* readIps(spec.name);
-		const refreshedFacts = yield* inspectContainer(spec.name);
-		const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
-
-		// Register cross-process claim and scope-bound release. The
-		// stop finalizer fires on scope close if the same container id
-		// still owns the stable name. Restore may deliberately remove a
-		// claimed container and a later acquire may reuse the name before
-		// this scope closes; the old finalizer must not stop that newer
-		// container. Architecture §13: stop is uninterruptible.
 		const paths = yield* StackPathsService;
 		const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
 			new DaemonUnreachable({
@@ -992,38 +946,109 @@ export const ensureContainer = (
 				detail: `cross-process claim mutation failed: ${String(cause)}`,
 				cause,
 			});
-		yield* addClaim(
-			{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-			spec.name,
-		).pipe(Effect.mapError(mapSubstrateError));
+		const registerStopFinalizer = (
+			id: string,
+		): Effect.Effect<void, never, Scope.Scope | DockerHost | DockerSpawner> =>
+			Effect.addFinalizer(() =>
+				Effect.gen(function* () {
+					// Restore may deliberately remove a claimed container and
+					// a later acquire may reuse the name before this scope
+					// closes; the old finalizer must not stop that newer
+					// container — hence the id check.
+					const current = yield* inspectContainer(spec.name).pipe(
+						Effect.tapCause((cause) =>
+							Effect.logDebug('container inspect during scope-close failed', {
+								name: spec.name,
+								cause,
+							}),
+						),
+						Effect.catch(() => Effect.succeed(null)),
+					);
+					if (current?.id === id) {
+						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
+					}
+					yield* removeClaim(
+						{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+						spec.name,
+					).pipe(
+						Effect.tapCause((cause) =>
+							Effect.logDebug('removeClaim during scope-close failed', {
+								name: spec.name,
+								cause,
+							}),
+						),
+						Effect.catch(() => Effect.succeed({ lastClaimReleased: false })),
+					);
+				}).pipe(Effect.uninterruptible),
+			);
+		const { id, ips, ports } = yield* Effect.acquireUseRelease(
+			acquirePerNameLock(deps.perNameLock, spec.name),
+			() =>
+				Effect.uninterruptible(
+					Effect.gen(function* () {
+						const facts = yield* inspectContainer(spec.name);
+						if (facts !== null) {
+							yield* assertOwnedFacts(spec.name, facts, spec.labels);
+						}
+						const action = decideRunAction(
+							facts,
+							desiredImageRef,
+							spec.recreate,
+							canonicalPortBindings(spec.ports),
+							spec.portBindingReconciliation ?? 'exact',
+							spec.configHash,
+							spec.image.digest,
+							spec.networkAttach,
+						);
+						const initialId = yield* applyAction(action, spec, deps);
+						const id = yield* ensureEffectivePublishedPorts(initialId, spec, deps);
 
-		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				const current = yield* inspectContainer(spec.name).pipe(
-					Effect.tapCause((cause) =>
-						Effect.logDebug('container inspect during scope-close failed', {
+						// Arm the stop-on-scope-close finalizer BEFORE we
+						// release the per-name lock and BEFORE we call
+						// `addClaim`. If anything below this point fails
+						// (assert, network attach, addClaim) the container
+						// will still be stopped at scope close.
+						yield* registerStopFinalizer(id);
+
+						yield* assertContainerHandleOwned({
+							id,
 							name: spec.name,
-							cause,
-						}),
-					),
-					Effect.catch(() => Effect.succeed(null)),
-				);
-				if (current?.id === id) {
-					yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
-				}
-				yield* removeClaim(
-					{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-					spec.name,
-				).pipe(
-					Effect.tapCause((cause) =>
-						Effect.logDebug('removeClaim during scope-close failed', {
-							name: spec.name,
-							cause,
-						}),
-					),
-					Effect.catch(() => Effect.succeed({ lastClaimReleased: false })),
-				);
-			}).pipe(Effect.uninterruptible),
+							labels: spec.labels,
+							imageName: spec.image.tag ?? spec.image.digest,
+							status: 'running',
+							ips: [],
+						});
+
+						// Architecture §5 — secondary network attaches (any
+						// beyond the first, which is wired in via `--network`
+						// on create) must wait for IP allocation before we
+						// declare ready.
+						const secondaries = (spec.networkAttach ?? [])
+							.slice(1)
+							.map(normalizeNetworkAttachment);
+						for (const net of secondaries) {
+							yield* connect(spec.name, net.name, net.aliases);
+							yield* waitForIp(spec.name, net.name);
+						}
+
+						const ips = yield* readIps(spec.name);
+						const refreshedFacts = yield* inspectContainer(spec.name);
+						const ports =
+							refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+
+						// Record cross-process claim. The scope finalizer
+						// (already registered) will release it on scope
+						// close. If this fails, the container is still
+						// cleaned up at scope close.
+						yield* addClaim(
+							{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+							spec.name,
+						).pipe(Effect.mapError(mapSubstrateError));
+
+						return { id, ips, ports };
+					}),
+				),
+			() => releasePerNameLock(deps.perNameLock, spec.name),
 		);
 
 		return handleOf(

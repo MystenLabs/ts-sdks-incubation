@@ -123,6 +123,7 @@ export {
 	sweepOrphans,
 	type DevstackNetworkRemovalSummary,
 	type ForeignNetworkHolder,
+	type StaleNetworkEndpoint,
 } from './sweep.ts';
 
 export { ensureVolume, removeVolume } from './volume.ts';

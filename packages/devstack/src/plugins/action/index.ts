@@ -151,6 +151,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 		// acquire and returns; supervisor's lifecycle wrap surfaces
 		// "done" after that.
 		role: 'task',
+		section: 'action',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedUpstream] = deps;

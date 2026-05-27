@@ -13,6 +13,18 @@
 
 import { Effect, Schema } from 'effect';
 
+/** Tagged failure when a plugin's manifest-extras contribution does
+ *  not resolve to a plain record. STYLE_GUIDE §2.2 — substrate (L0)
+ *  errors use `Schema.TaggedErrorClass`; downstream classifiers
+ *  `catchTag('ManifestExtrasInvalid', ...)` instead of sniffing the
+ *  message. */
+export class ManifestExtrasInvalid extends Schema.TaggedErrorClass<ManifestExtrasInvalid>()(
+	'ManifestExtrasInvalid',
+	{
+		detail: Schema.String,
+	},
+) {}
+
 /** Manifest envelope. The `services` slot is open (`unknown`) at
  *  the envelope level; each plugin's Codegenable contribution
  *  emits a typed file the consumer imports for the typed shape.
@@ -51,7 +63,7 @@ export const resolveManifestExtras = (
 	input: ManifestExtrasInput | undefined,
 	ctx: ManifestExtrasContext,
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Effect.Effect<ManifestExtras, Error, never> =>
+): Effect.Effect<ManifestExtras, ManifestExtrasInvalid, never> =>
 	Effect.gen(function* () {
 		if (input === undefined) return {};
 		const resolvedEffect = Effect.isEffect(input)
@@ -63,7 +75,11 @@ export const resolveManifestExtras = (
 				: Effect.succeed(input);
 		const resolved = yield* resolvedEffect;
 		if (!isRecord(resolved)) {
-			return yield* Effect.fail(new Error('manifest extras must resolve to a plain record'));
+			return yield* Effect.fail(
+				new ManifestExtrasInvalid({
+					detail: 'manifest extras must resolve to a plain record',
+				}),
+			);
 		}
 		return resolved;
 	});

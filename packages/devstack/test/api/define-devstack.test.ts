@@ -32,6 +32,7 @@ import { wallet } from '../../src/plugins/wallet/index.ts';
 const standalone = definePlugin({
 	id: 'leaf/standalone',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ id: 1 } as const),
 });
 
@@ -41,12 +42,14 @@ const customNeedsSui = definePlugin({
 	id: 'custom/needs-sui',
 	dependsOn: { sui: localnet },
 	role: 'service',
+	section: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 const customNeedsBareSui = definePlugin({
 	id: 'custom/needs-bare-sui',
 	dependsOn: { sui: bareSuiResource },
 	role: 'service',
+	section: 'service',
 	start: ({ sui }) => Effect.succeed({ chain: sui.chain } as const),
 });
 
@@ -140,12 +143,14 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const database = definePlugin({
 			id: 'test/database',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ url: 'postgres://devstack' } as const),
 		});
 		const api = definePlugin({
 			id: 'test/api',
 			dependsOn: { database },
 			role: 'service',
+			section: 'service',
 			start: ({ database }) => Effect.succeed({ upstream: database.url } as const),
 		});
 
@@ -160,12 +165,14 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const upstream = definePlugin({
 			id: 'test/repeated-upstream',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 		const consumer = definePlugin({
 			id: 'test/repeated-consumer',
 			dependsOn: { first: upstream, second: upstream },
 			role: 'service',
+			section: 'service',
 			start: (deps) => Effect.succeed(deps),
 		});
 
@@ -177,12 +184,14 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const upstream = definePlugin({
 			id: 'test/global-symbol-upstream',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 		const consumer = definePlugin({
 			id: 'test/global-symbol-consumer',
 			dependsOn: [upstream],
 			role: 'service',
+			section: 'service',
 			start: (deps) => Effect.succeed(deps),
 		});
 
@@ -200,17 +209,20 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		const first = definePlugin({
 			id: 'test/duplicate-provider',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ from: 'first' } as const),
 		});
 		const second = definePlugin({
 			id: 'test/duplicate-provider',
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ from: 'second' } as const),
 		});
 		const consumer = definePlugin({
 			id: 'test/duplicate-consumer',
 			dependsOn: [first, second],
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 
@@ -234,12 +246,14 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			id: 'test/cycle-a',
 			dependsOn: depsForA,
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: 'a' } as const),
 		});
 		const b = definePlugin({
 			id: 'test/cycle-b',
 			dependsOn: [a],
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: 'b' } as const),
 		});
 		depsForA.push(b);
@@ -256,6 +270,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			id: 'test/account-setup',
 			dependsOn: { alice, bob },
 			role: 'task',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 		const walletAll = wallet({ accounts: 'all' });
@@ -263,6 +278,7 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 			id: 'test/app-with-wallet-all',
 			dependsOn: [accountSetup, walletAll] as const,
 			role: 'service',
+			section: 'service',
 			start: () => Effect.succeed({ ok: true } as const),
 		});
 
@@ -344,6 +360,7 @@ if (false) {
 		id: 'test/needs-bare-cache',
 		dependsOn: bareCache,
 		role: 'service',
+		section: 'service',
 		start: (cache) => Effect.succeed(cache),
 	});
 	// @ts-expect-error missing provider: test/bare-cache

@@ -135,8 +135,3 @@ export const layerCoinRegistry: Layer.Layer<CoinRegistryService> = Layer.effect(
 		return CoinRegistryService.of(wrapRefMap(refMap));
 	}),
 ).pipe(Layer.provide(CoinRefMap.layer));
-
-/** Capability-key constant for the per-stack registry — siblings
- *  (Wallet, Faucet's treasury-cap mint strategy, Manifest emitter)
- *  look it up through the StrategyContributor registry. */
-export const COIN_REGISTRY_CAPABILITY_KEY = 'coin-registry' as const;
