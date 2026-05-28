@@ -46,7 +46,7 @@ import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
 } from '../../orchestrators/built-in-plugin-layers.ts';
-import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
+import { captureSnapshot, SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -94,28 +94,27 @@ const makeSnapshotCommandHandler = (params: {
 	return (cmd, handlerCtx) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
-				return provideFileSystem(
-					params.fs,
-					params.snapshot.capture({
-						id: cmd.snapshotId,
-						label: cmd.name,
-						onProgress: (progress) =>
-							handlerCtx.publish({
-								tag: 'snapshot.captureProgress',
-								...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
-								...(cmd.name === undefined ? {} : { name: cmd.name }),
-								phase: progress.phase,
-								...(progress.detail === undefined ? {} : { detail: progress.detail }),
-								...(progress.pausedContainers === undefined
-									? {}
-									: { pausedContainers: progress.pausedContainers }),
-								...(progress.totalContainers === undefined
-									? {}
-									: { totalContainers: progress.totalContainers }),
-								at: Date.now(),
-							}),
-					}),
-				).pipe(
+				return captureSnapshot({
+					snapshotId: cmd.snapshotId,
+					name: cmd.name,
+					onProgress: (progress) =>
+						handlerCtx.publish({
+							tag: 'snapshot.captureProgress',
+							...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+							...(cmd.name === undefined ? {} : { name: cmd.name }),
+							phase: progress.phase,
+							...(progress.detail === undefined ? {} : { detail: progress.detail }),
+							...(progress.pausedContainers === undefined
+								? {}
+								: { pausedContainers: progress.pausedContainers }),
+							...(progress.totalContainers === undefined
+								? {}
+								: { totalContainers: progress.totalContainers }),
+							at: Date.now(),
+						}),
+				}).pipe(
+					Effect.provideService(SnapshotOrchestratorService, params.snapshot),
+					Effect.provideService(FileSystem.FileSystem, params.fs),
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.captured',

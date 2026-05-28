@@ -26,6 +26,10 @@ export {
 	type SnapshotProgressReporter,
 } from './capture.ts';
 
+// Command-level primitive shared by every `snapshot.capture` publisher
+// (supervisor command handler, offline CLI path, future web dashboard).
+export { captureSnapshot, type CaptureSnapshotArgs } from './capture-command.ts';
+
 // Restore
 export {
 	RESTORE_PENDING_FILE_NAME,

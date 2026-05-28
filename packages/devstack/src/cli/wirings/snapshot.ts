@@ -30,6 +30,7 @@ import {
 	layerBuiltInPluginRuntime,
 } from '../../orchestrators/built-in-plugin-layers.ts';
 import {
+	captureSnapshot,
 	SnapshotOrchestratorService,
 	type RestoreParticipant,
 	type SnapshotMetadata,
@@ -242,8 +243,6 @@ export const runSnapshotCaptureDirectLoaded = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const snapshot = yield* SnapshotOrchestratorService;
-			const fs = yield* FileSystem.FileSystem;
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
@@ -260,7 +259,7 @@ export const runSnapshotCaptureDirectLoaded = (
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
 					withinScope: () =>
-						provideFileSystem(fs, snapshot.capture({ id: args.snapshotId, label: args.name })).pipe(
+						captureSnapshot({ snapshotId: args.snapshotId, name: args.name }).pipe(
 							Effect.tap((meta) =>
 								Effect.sync(() => {
 									capturedMeta.current = meta;
