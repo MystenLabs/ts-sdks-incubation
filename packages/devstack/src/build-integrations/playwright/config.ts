@@ -38,7 +38,7 @@ import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-con
 // -----------------------------------------------------------------------------
 
 type PlaywrightReporterShape = [string] | [string, Record<string, unknown>];
-type PlaywrightGlobalSetupShape = string | ReadonlyArray<string>;
+type PlaywrightGlobalSetupShape = string | string[];
 
 const DEFAULT_GLOBAL_SETUP = '@mysten-incubation/devstack/playwright/global-setup';
 
