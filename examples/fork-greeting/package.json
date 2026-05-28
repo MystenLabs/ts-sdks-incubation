@@ -17,8 +17,7 @@
 	"devDependencies": {
 		"@mysten-incubation/tsconfig": "workspace:*",
 		"@types/node": "catalog:",
-		"typescript": "catalog:",
-		"vite": "catalog:"
+		"typescript": "catalog:"
 	},
 	"engines": {
 		"node": ">=24"

@@ -38,7 +38,7 @@
 		"tailwindcss": "catalog:",
 		"typescript": "catalog:",
 		"vite": "catalog:",
-		"vitest": "^4.1.6"
+		"vitest": "catalog:"
 	},
 	"engines": {
 		"node": ">=24"

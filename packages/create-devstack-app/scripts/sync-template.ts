@@ -16,6 +16,12 @@
 //
 // Run via `pnpm -F @mysten-incubation/create-devstack-app run sync-template`,
 // or as part of `pnpm build` (the package script chains the two).
+//
+// CI gap: `pnpm -F @mysten-incubation/create-devstack-app run check-template`
+// is the drift detector that proves the bundled `template/` matches
+// `examples/_template/`. It is not yet wired into `turbo.json`'s
+// `typecheck`/`test` graph, so contributors should remember to run it
+// before publishing; see TODO in `applyTemplateCutoverFixups` below.
 
 import {
 	cpSync,
@@ -367,7 +373,14 @@ function replaceInFile(
 ): void {
 	let text = readFileSync(path, 'utf8');
 	for (const [from, to] of replacements) {
+		const before = text;
 		text = text.replace(from, to);
+		if (text === before) {
+			const needle = from instanceof RegExp ? from.toString() : JSON.stringify(from);
+			throw new Error(
+				`sync-template cutover-fixup failed: substring ${needle} not found in ${path}; the upstream template has likely been edited.`,
+			);
+		}
 	}
 	writeFileSync(path, text);
 }

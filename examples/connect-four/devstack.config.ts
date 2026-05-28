@@ -40,9 +40,6 @@ const app = hostService({
 	name: 'app',
 	script: `pnpm exec vite --host 0.0.0.0 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
-	env: {
-		VITE_CONNECT_FOUR_AUTO_APPROVE: '1',
-	},
 	port: DEV_PORT,
 	ready: { kind: 'http' },
 	after: [openLobby, devWallet] as const,

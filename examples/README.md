@@ -44,7 +44,7 @@ Manual path:
 2. Replace the package name and `DEVSTACK_APP=template` runtime identity
    with your app name in `package.json` and `devstack.config.ts`.
 3. Pick non-conflicting port hints. Existing examples occupy ports 5170, 5173,
-   5176, 5179, 5181, and 5182; the per-stack allocator handles collisions at
+   5176, 5179, and 5182; the per-stack allocator handles collisions at
    runtime.
 4. Rename `move/hello/` to your package name and update the address in
    `move/<pkg>/Move.toml`.

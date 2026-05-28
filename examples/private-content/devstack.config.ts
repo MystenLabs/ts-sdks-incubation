@@ -58,6 +58,9 @@ const app = hostService({
 	after: [localnet, vault, walrusCluster, sealKeyServer, devWallet] as const,
 });
 
-const stack: Stack = defineDevstack({ members: [localnet, app] });
+const stack: Stack = defineDevstack({
+	members: [localnet, app],
+	stackName: 'private-content',
+});
 
 export default stack;
