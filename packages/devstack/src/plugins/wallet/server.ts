@@ -25,7 +25,7 @@
 // logs flow to the TUI logger sink), while the substrate scoped HTTP
 // listener owns bind/close lifecycle.
 
-import { Context, Effect, Schema } from 'effect';
+import { Cause, Context, Effect, Schema } from 'effect';
 import type { Scope } from 'effect';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -230,14 +230,28 @@ const makeRequestListener =
 				body,
 			};
 			const program = dispatch(config, walletReq).pipe(
-				Effect.matchEffect({
+				// `dispatch` is typed `Effect<WalletResponse>` (no failure
+				// channel) — its handlers map every expected failure into a
+				// WalletResponse with the right HTTP status. Anything that
+				// lands here is therefore a *defect* (thrown sync exception,
+				// runtime invariant violation). We project the full Cause via
+				// `matchCauseEffect` so we have something to log; `matchEffect`
+				// would type the failure as `never` and the defect would
+				// bypass it.
+				Effect.matchCauseEffect({
 					onFailure: (cause) =>
-						Effect.sync(() => {
-							// `dispatch` is typed `Effect<WalletResponse>` (no
-							// failure channel); a thrown defect lands here as a
-							// `Cause`. Log + write a 500.
-							writeServerError(res, cause);
-						}),
+						Effect.logError('wallet dispatcher defect').pipe(
+							Effect.annotateLogs({
+								[WalletSpans.requestMethod]: walletReq.method,
+								[WalletSpans.requestUrl]: walletReq.url,
+								cause: Cause.pretty(cause),
+							}),
+							Effect.flatMap(() =>
+								Effect.sync(() => {
+									writeServerError(res);
+								}),
+							),
+						),
 					onSuccess: (resp) => Effect.sync(() => writeResponse(res, resp)),
 				}),
 			);
@@ -261,18 +275,20 @@ const writeOverflow = (res: ServerResponse): void => {
 	res.end('payload too large');
 };
 
-const writeServerError = (res: ServerResponse, cause: unknown): void => {
+/** Write an opaque 500 — no token, no internal state leak. The
+ *  caller is responsible for logging the underlying cause (see the
+ *  `Effect.logError('wallet dispatcher defect')` in `dispatch`'s
+ *  `matchCauseEffect` onFailure branch). */
+const writeServerError = (res: ServerResponse): void => {
 	if (res.writableEnded) return;
 	res.statusCode = 500;
 	res.setHeader('content-type', 'application/json; charset=utf-8');
-	// Opaque error body — no token, no internal state leak.
 	res.end(
 		JSON.stringify({
 			error: 'internal error',
 			code: 'internal-error',
 		}),
 	);
-	void cause; // surfaces via Effect.logError on the dispatcher path
 };
 
 /** Normalize Node's `IncomingHttpHeaders` (string | string[] | undefined)

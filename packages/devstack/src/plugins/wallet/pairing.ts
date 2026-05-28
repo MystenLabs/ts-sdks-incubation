@@ -207,12 +207,18 @@ export const parseBearerHeader = (header: string | undefined): string | null => 
  */
 export const safeBearerEquals = (a: string, b: PairingToken | string): boolean => {
 	if (a.length !== b.length) return false;
-	// Both strings are 32 hex chars, ASCII — a fixed-length byte compare
-	// is sufficient. UTF-8 encoding via `Buffer.from(_, 'utf8')` is
-	// constant-time for the ASCII subset (each char → 1 byte).
+	// `a` is attacker-controlled — a multi-byte UTF-8 codepoint in `a`
+	// would inflate `ab.length` past `bb.length` even though
+	// `a.length === b.length` passed (string length counts UTF-16 code
+	// units, byte length counts UTF-8 bytes). The second length guard
+	// stops `timingSafeEqual` from throwing in that case (its contract
+	// requires equal-length buffers) and keeps the function total. For
+	// the canonical case (`b` is a 32-hex `PairingToken`) the guard is
+	// redundant; for the defensive case it prevents a malformed-input
+	// throw from leaking up the dispatcher path.
 	const ab = Buffer.from(a, 'utf8');
 	const bb = Buffer.from(b, 'utf8');
-	if (ab.length !== bb.length) return false; // defensive
+	if (ab.length !== bb.length) return false;
 	return timingSafeEqual(ab, bb);
 };
 

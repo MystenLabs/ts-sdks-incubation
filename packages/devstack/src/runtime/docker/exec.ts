@@ -11,9 +11,9 @@
 //     timed-out container that outlived its foreground subprocess is
 //     still reaped.
 
-import { randomUUID } from 'node:crypto';
-
 import { Effect, Scope } from 'effect';
+
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
 import type {
 	CaptureOptions,
@@ -122,8 +122,7 @@ export const dockerRunOneShot = (
 	opts: DockerOneShotOptions,
 ): Effect.Effect<CaptureResult, DockerRuntimeError, DockerHost | DockerSpawner | Scope.Scope> =>
 	Effect.gen(function* () {
-		const name =
-			opts.name ?? `devstack-oneshot-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+		const name = opts.name ?? `devstack-oneshot-${Date.now()}-${mintRandomSuffix(8)}`;
 		const args = renderRunArgs({
 			keep: opts.keep,
 			name,

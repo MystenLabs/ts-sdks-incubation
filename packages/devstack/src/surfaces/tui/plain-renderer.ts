@@ -267,7 +267,13 @@ const kv = (record: Readonly<Record<string, unknown>>): string =>
 		.map(([k, v]) => `${k}=${quoteIfNeeded(String(v))}`)
 		.join(' ');
 
-const quoteIfNeeded = (s: string): string => (/[\s"]/.test(s) ? quote(s) : s);
+// Quote anything that contains whitespace, a `"`, or an ASCII control
+// byte (`\x00-\x1f`). Control bytes are the load-bearing case: a
+// projection payload field that contains a stray `\x1b` (ESC) would
+// otherwise inject an ANSI escape sequence into the plain-renderer's
+// stdout, corrupting subsequent terminal state for callers tailing
+// `--format plain` output.
+const quoteIfNeeded = (s: string): string => (/[\s"\x00-\x1f]/.test(s) ? quote(s) : s);
 
 const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;
 

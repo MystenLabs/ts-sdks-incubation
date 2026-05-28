@@ -504,11 +504,11 @@ caller writes `[…] as const`.
 
 ### 21.2 `OptionalService` discipline
 
-`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical "probe
-`pluginContext` for a service; fall back if absent" lookup. The internal cast
-(`ctx as Context.Context<I>`) is structural — `pluginContext` is typed `Context.Context<never>` and
-the probe is intentional. Hand-rolled `Context.getOption` plus a cast at the callsite is the
-anti-pattern.
+`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical
+"probe `pluginContext` for a service; fall back if absent" lookup. The internal cast
+(`ctx as Context.Context<I>`) is structural: `pluginContext` is typed
+`Context.Context<never>` and the probe is intentional. Hand-rolled `Context.getOption`
+plus a cast at the callsite is the anti-pattern.
 
 ```ts
 const Logger = OptionalService(LoggerService);

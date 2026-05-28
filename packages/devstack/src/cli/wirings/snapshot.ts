@@ -6,13 +6,13 @@
 // `delete` are direct/offline only; they refuse to run when a
 // supervisor is live.
 
-import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
 import { Effect, Exit, FileSystem, Logger, SubscriptionRef } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import {
 	commandChannelPaths,
 	makeCommandChannelPublisher,
@@ -53,8 +53,7 @@ import { provideFileSystem } from './provide-file-system.ts';
 
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
 
-const mintCliSnapshotId = (): string =>
-	`snap-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+const mintCliSnapshotId = (): string => `snap-${Date.now()}-${mintRandomSuffix(8)}`;
 
 /** Structured payload that the supervisor's command-channel bridge
  *  attaches to the ack/error reply for `snapshot.capture`. Mirrors the

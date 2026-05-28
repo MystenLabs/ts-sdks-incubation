@@ -7,7 +7,7 @@
 // via the underlying subsystems but the public surface projects to
 // the contract's narrow `ContainerRuntimeError`.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
@@ -31,6 +31,7 @@ import type {
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { chainId, contentHash } from '../../substrate/brand.ts';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
@@ -103,7 +104,7 @@ const mapToContractError = <R, A>(
 
 const snapshotTempTag = (containerName: string): string => {
 	const safeName = containerName.replace(/[^A-Za-z0-9_.-]/g, '-');
-	const suffix = randomUUID().replace(/-/g, '').slice(0, 12);
+	const suffix = mintRandomSuffix(12);
 	return `devstack-snapshot:${safeName}-${suffix}`;
 };
 

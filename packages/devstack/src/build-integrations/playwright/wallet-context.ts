@@ -173,7 +173,12 @@ const resolveWalletUrl = (options: WalletAdapterOptions): string => {
 export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletAdapter => {
 	const walletUrl = resolveWalletUrl(options).replace(/\/$/, '');
 	const fetchImpl = options.fetch ?? globalThis.fetch;
-	const timeoutMs = options.timeoutMs ?? 5_000;
+	// 30s default — Playwright's webServer cold-start (vite + first
+	// devstack bring-up) routinely exceeds 5s under CI parallelism; the
+	// shorter default surfaces as a spurious AbortError before the
+	// wallet plugin has finished publishing its HTTP route. Callers can
+	// still tighten via `options.timeoutMs` for hot-path assertions.
+	const timeoutMs = options.timeoutMs ?? 30_000;
 
 	const request = async <T>(path: string, body?: Record<string, unknown>): Promise<T> => {
 		const url = `${walletUrl}${path.startsWith('/') ? path : `/${path}`}`;
