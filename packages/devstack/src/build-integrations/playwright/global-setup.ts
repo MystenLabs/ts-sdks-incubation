@@ -30,7 +30,7 @@ import { dirname, join } from 'node:path';
 
 import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { discoverSingleStackManifestPath } from '../runtime/discover.ts';
-import { WALLET_ENDPOINT_ALIAS } from '../runtime/wallet-paths.ts';
+import { WALLET_ENDPOINT_KEY } from '../runtime/wallet-paths.ts';
 import {
 	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
 	type PlaywrightStackFixture as RuntimePlaywrightStackFixture,
@@ -378,7 +378,7 @@ const stashStackContext = (ctx: StackContext): void => {
 	}
 	const fixture: PlaywrightStackFixture = {
 		endpoints,
-		walletEndpoint: ctx.endpointMaybe(WALLET_ENDPOINT_ALIAS),
+		walletEndpoint: ctx.endpointMaybe(WALLET_ENDPOINT_KEY),
 		manifestPath: ctx.manifestPath,
 		stack: ctx.manifest.identity.stack,
 		app: ctx.manifest.identity.app,

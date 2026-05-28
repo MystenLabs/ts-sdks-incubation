@@ -19,6 +19,13 @@ import { CodegenPathConflict } from './errors.ts';
  *  for the file-layout invariants. Called once inside `buildAt` so
  *  both the root bundle and any `withRoot`-rebased view enforce the
  *  same `..`-rejecting `resolve` discipline.
+ *
+ *  POSIX-only: devstack runs on POSIX filesystems (substrate paths
+ *  are POSIX-shaped throughout), so this check intentionally inspects
+ *  only `/`-rooted absolutes and the `..` substring. A Windows-style
+ *  `'foo/bar\\..\\baz'` would slip past — that's accepted because
+ *  devstack never executes on a Windows runtime.
+ *
  *  STYLE_GUIDE §2 rule 5 — orchestrator failures are typed. */
 export const assertRelativeCodegenOutputPath = (
 	outputPath: string,

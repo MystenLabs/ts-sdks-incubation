@@ -24,7 +24,7 @@ import {
 	type ConventionalRoute,
 	type ConventionalRouteHint,
 } from './cold-start-url.ts';
-import { WALLET_ENDPOINT_ALIAS, WALLET_ENDPOINT_NAME } from './wallet-paths.ts';
+import { WALLET_ENDPOINT_KEY, WALLET_ENDPOINT_NAME } from './wallet-paths.ts';
 import type { ManifestEnvelope } from '../../substrate/manifest.ts';
 
 /**
@@ -47,12 +47,12 @@ export const DEFAULT_ROUTER_ENTRYPOINT_PORT = 5175 as const;
  *
  * The wallet entry sources both sides from the wallet plugin (via the
  * L5 bridge in `wallet-paths.ts`) so there is exactly one source of
- * truth for the alias/canonical pairing — see `WALLET_ENDPOINT_ALIAS`
+ * truth for the alias/canonical pairing — see `WALLET_ENDPOINT_KEY`
  * in `plugins/wallet/routable.ts`.
  */
 export const BUILT_IN_ENDPOINT_ALIASES = {
 	app: 'dev',
-	[WALLET_ENDPOINT_ALIAS]: WALLET_ENDPOINT_NAME,
+	[WALLET_ENDPOINT_KEY]: WALLET_ENDPOINT_NAME,
 } as const;
 
 /**
@@ -70,7 +70,7 @@ export const BUILT_IN_CONVENTIONAL_HINTS: ReadonlyArray<ConventionalRouteHint> =
 	{ endpoint: 'walrus-aggregator', service: 'walrus-aggregator' },
 	{ endpoint: 'walrus-publisher', service: 'walrus-publisher' },
 	{ endpoint: 'seal', service: 'seal' },
-	{ endpoint: WALLET_ENDPOINT_ALIAS, service: 'api' },
+	{ endpoint: WALLET_ENDPOINT_KEY, service: 'api' },
 	{ endpoint: WALLET_ENDPOINT_NAME, service: 'api' },
 ];
 

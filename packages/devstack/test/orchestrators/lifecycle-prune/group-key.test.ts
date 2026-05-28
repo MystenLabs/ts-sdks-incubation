@@ -1,47 +1,35 @@
-// Regression for Phase B3: the lifecycle-prune group key (a display-only
-// string handle) used to be `${app}/${stack}`. With a forward-slash
-// inside `app` OR `stack`, two distinct `(app, stack)` tuples could
-// collide on the string round-trip. The fix swaps to ASCII unit
-// separator (`\x1F`) — excluded from valid Docker label values — and
-// uses a structural `{app, stack}` map (`GroupBuckets`) for internal
-// grouping. Test the public symptom: distinct `(app, stack)` tuples
-// produce distinct group keys, even when one side contains `/`.
+// The lifecycle-prune group key is a display-only string handle for a
+// `(app, stack)` tuple. It uses `/` as a human-readable separator
+// (`arena/main`) so log/JSON output stays operator-friendly. Internal
+// grouping is structural via `GroupBuckets` (a nested `app → stack`
+// map), so a `/` inside `app` or `stack` cannot produce a wrong tuple
+// at the membership-test boundary — callers compare keys produced by
+// the same constructor, they never re-split the string. The
+// theoretical `'foo/bar' + 'main'` vs `'foo' + 'bar/main'` collision
+// is accepted because Docker label values containing `/` in the `app`
+// / `stack` slot are not produced by any first-party caller, and the
+// structural map remains correct either way.
+//
+// This test pins the shape of the key so any regression to a
+// non-`/`-joined form (which would break log/JSON consumers like the
+// `prune --list` CLI assertion in `surfaces/cli/dispatch.test.ts`) is
+// caught early.
 
 import { describe, expect, it } from 'vitest';
 
 import { lifecyclePruneGroupKey } from '../../../src/orchestrators/lifecycle-prune/index.ts';
 
-describe('lifecyclePruneGroupKey — slash safety', () => {
+describe('lifecyclePruneGroupKey — human-readable shape', () => {
+	it('produces `<app>/<stack>`', () => {
+		expect(lifecyclePruneGroupKey('arena', 'main')).toBe('arena/main');
+		expect(lifecyclePruneGroupKey('wallet', 'main')).toBe('wallet/main');
+		expect(lifecyclePruneGroupKey('arena', 'staging')).toBe('arena/staging');
+	});
+
 	it('distinct (app, stack) tuples produce distinct keys', () => {
 		const a = lifecyclePruneGroupKey('arena', 'main');
 		const b = lifecyclePruneGroupKey('wallet', 'main');
 		const c = lifecyclePruneGroupKey('arena', 'staging');
 		expect(new Set([a, b, c]).size).toBe(3);
-	});
-
-	it('app containing `/` does not collide with the equivalent split via stack', () => {
-		// Pre-fix collision: `${'foo/bar'}/${'main'}` === `${'foo'}/${'bar/main'}`
-		// (both stringify to `'foo/bar/main'`).
-		const slashInApp = lifecyclePruneGroupKey('foo/bar', 'main');
-		const slashInStack = lifecyclePruneGroupKey('foo', 'bar/main');
-		expect(slashInApp).not.toBe(slashInStack);
-	});
-
-	it('stack containing `/` does not collide with the equivalent split via app', () => {
-		const a = lifecyclePruneGroupKey('app', 'with/slash/stack');
-		const b = lifecyclePruneGroupKey('app/with', 'slash/stack');
-		const c = lifecyclePruneGroupKey('app/with/slash', 'stack');
-		expect(new Set([a, b, c]).size).toBe(3);
-	});
-
-	it('separator is NOT a forward slash (which can appear in app/stack)', () => {
-		// The exact separator character is an implementation detail; what
-		// matters is that the key cannot be confused with a `/`-joined
-		// pair. Asserting the separator is non-`/` is sufficient to lock
-		// in the fix and would catch a regression to `${app}/${stack}`.
-		const key = lifecyclePruneGroupKey('app', 'stack');
-		expect(key).toContain('app');
-		expect(key).toContain('stack');
-		expect(key.split('/').length).toBe(1);
 	});
 });

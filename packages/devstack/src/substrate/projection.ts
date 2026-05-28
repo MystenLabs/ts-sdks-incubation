@@ -107,7 +107,14 @@ export interface AccountProjection {
 			readonly coin: string;
 			readonly fullCoinType: string;
 			readonly amount: string;
-			readonly status: 'funded' | 'skipped';
+			/** `'funded'` — a faucet call satisfied the request.
+			 *  `'already-satisfied'` — the pre-existing balance covered
+			 *  the request (no faucet call needed); semantically a
+			 *  success, surfaced distinctly so renderers can show
+			 *  "✓ cached" vs "✓ funded" if they want to.
+			 *  `'skipped'` — zero-amount no-op, or the funding pass
+			 *  never reached the entry. */
+			readonly status: 'funded' | 'already-satisfied' | 'skipped';
 		}>;
 	};
 	readonly walletVisible: boolean;

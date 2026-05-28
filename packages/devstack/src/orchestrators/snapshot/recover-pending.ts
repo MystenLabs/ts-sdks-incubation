@@ -319,14 +319,15 @@ export const recoverPendingRestore = (
 			// Rewrite-after-each so a crash mid-recovery doesn't lose
 			// the work-so-far. The new marker carries the still-pending
 			// entries plus everything we haven't tried yet. Cheap (one
-			// write per image, rare path).
+			// write per image, rare path). Unconditional — the rewrite
+			// is idempotent and the final-rewrite below (or
+			// `removePendingMarker` when nothing remains) covers steady
+			// state.
 			const remaining: RestorePendingContainer[] = [
 				...stillPending,
 				...doc.containers.slice(i + 1),
 			];
-			if (remaining.length > 0 && remaining.length !== doc.containers.length) {
-				yield* rewriteMarker(stackRoot, doc, remaining);
-			}
+			yield* rewriteMarker(stackRoot, doc, remaining);
 		}
 
 		let markerCleared = false;

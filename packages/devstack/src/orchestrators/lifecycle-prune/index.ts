@@ -169,12 +169,12 @@ const emptyBucket = (): ResourceBucket => ({
 /** Public, parser-safe key for a `(app, stack)` group. Display-only —
  *  internal grouping uses the structural `{app, stack}` tuple via the
  *  `GroupBuckets` map below, so a slash inside `app` or `stack` cannot
- *  produce a wrong tuple. The chosen separator (``, ASCII unit
- *  separator) is excluded from valid Docker label values, so the
- *  string round-trip via `splitGroupKey` is safe for inventory
- *  consumers that need a string handle (CLI rendering, selection
- *  membership tests). */
-const GROUP_KEY_SEPARATOR = '';
+ *  produce a wrong tuple. The separator is a forward slash for human-
+ *  readable log/JSON output (`arena/main`); membership tests round-trip
+ *  through this same constructor so callers never re-split the key —
+ *  any potential `/`-in-app-or-stack ambiguity is resolved structurally
+ *  by `GroupBuckets`, not by string-splitting the key. */
+const GROUP_KEY_SEPARATOR = '/';
 
 export const lifecyclePruneGroupKey = (app: string, stack: string): string =>
 	`${app}${GROUP_KEY_SEPARATOR}${stack}`;

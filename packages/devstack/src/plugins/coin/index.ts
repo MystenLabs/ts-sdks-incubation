@@ -211,6 +211,12 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		id: coinRef.id,
 		dependsOn: { pkg, sui: suiResource },
 		role: 'task',
+		// Coin lifecycle is action-shaped — uses the action section bucket;
+		// see substrate/projection.ts `RowSection` for the canonical list.
+		// All three coin factories (`fromPackage` / `known` / `builtin`)
+		// share this deliberate bucketing; promoting to a dedicated
+		// `'coin'` section would ripple through every projection / TUI
+		// consumer for marginal display value.
 		section: 'action',
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {

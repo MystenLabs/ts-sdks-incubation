@@ -444,6 +444,15 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								}),
 							);
 						}
+						// O(N) catalog scan for label uniqueness — acceptable
+						// because N (snapshot count per stack) is small in
+						// practice and capture is a rare, human-paced verb. A
+						// future optimization could maintain a sibling name-
+						// index (e.g. `${snapshotDir}/.names/${label}` empty
+						// marker files) that lets uniqueness collapse to a
+						// single `fs.exists`, but that would need a paired
+						// cleanup-on-delete pathway + a corruption-tolerance
+						// story for the sidecar, which is outside this scope.
 						const existing = yield* list;
 						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
 							return yield* Effect.fail(

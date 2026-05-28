@@ -154,7 +154,6 @@ export type { LifecycleStatus, PhaseNarration, PluginRole } from './substrate/li
 export type {
 	NetworkConfig,
 	NetworkMode,
-	DefaultNetwork,
 	DevstackNetworkModeRegistry,
 } from './substrate/network.ts';
 export type { DevstackOptions } from './substrate/options.ts';

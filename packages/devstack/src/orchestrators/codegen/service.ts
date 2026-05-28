@@ -212,10 +212,17 @@ const runEmitCycleLocked = (
 		// survive into the next target verbatim with their original
 		// mtimes (HMR watchers stay quiet for unchanged outputs).
 		//
-		// Cycle id is a random suffix (STYLE_GUIDE §17). 64 bits of
-		// entropy so a long-running supervisor accumulating stale
-		// `.staging.<id>` siblings can't collide a fresh staging dir
-		// onto a half-built tree.
+		// Cycle id is a random suffix. STYLE_GUIDE §17 mandates 8
+		// hex chars for external-facing identifiers; this is a
+		// deliberate 16-char carve-out because the value only
+		// appears in transient staging-directory names
+		// (`.staging.<id>` / `.bak.<id>`) that the substrate rm's
+		// after publish. The extra entropy is defense-in-depth for
+		// the race-window where two concurrent emit cycles under a
+		// custom-CLI caller could mint overlapping staging dirs
+		// against the same shared `outputDir`; a collision there
+		// would corrupt a half-built tree, not just clash an
+		// operator-visible name.
 		const cycleId = randomUUID().replaceAll('-', '').slice(0, 16);
 		const stagingPaths = paths.withRoot(`${paths.outputDir}.staging.${cycleId}`);
 

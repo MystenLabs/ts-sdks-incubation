@@ -71,7 +71,13 @@ export const AccountProjectionSchema = Schema.Struct({
 					coin: Schema.String,
 					fullCoinType: Schema.String,
 					amount: Schema.String,
-					status: Schema.Literals(['funded', 'skipped']),
+					// Mirrors `AccountProjection.funding.entries[].status` in
+					// `substrate/projection.ts`. `'already-satisfied'` is
+					// the pre-existing-balance short-circuit emitted by the
+					// account funding pass — semantically a success, kept
+					// distinct from `'funded'` so renderers can surface the
+					// cached-vs-fresh distinction.
+					status: Schema.Literals(['funded', 'already-satisfied', 'skipped']),
 				}),
 			),
 		),

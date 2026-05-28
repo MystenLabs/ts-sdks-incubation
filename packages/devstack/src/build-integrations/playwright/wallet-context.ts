@@ -40,7 +40,7 @@ import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/dapp-kit-slot.ts
 // canonical endpoint name. Both are surfaced through the L5 runtime
 // bridge so this adapter never reaches into L2 plugin code directly
 // (ARCHITECTURE.md § Layer table — L5 reads only the runtime bridge).
-import { WalletHttpPath, WALLET_ENDPOINT_ALIAS } from '../runtime/wallet-paths.ts';
+import { WalletHttpPath, WALLET_ENDPOINT_KEY } from '../runtime/wallet-paths.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an
@@ -56,12 +56,13 @@ export interface PlaywrightPageLike {
 // Wallet adapter — HTTP client targeting the wallet plugin's endpoint
 // -----------------------------------------------------------------------------
 
-/** Public alias for the dev-wallet endpoint. The manifest stores the
- *  raw endpoint name (`WALLET_ENDPOINT_NAME` — `'wallet-app'`); this
- *  alias is the short form Playwright/vitest helpers look up. Sourced
- *  from the L5 runtime bridge so the alias name + canonical name stay
- *  aligned with the wallet plugin. */
-export const WALLET_ENDPOINT_KEY = WALLET_ENDPOINT_ALIAS;
+// `WALLET_ENDPOINT_KEY` is the short form Playwright/vitest helpers look
+// up — the manifest stores the canonical endpoint name
+// (`WALLET_ENDPOINT_NAME` — `'wallet-app'`) but the substrate's alias
+// resolver folds the key to the canonical name. Re-exported from the L5
+// runtime bridge so the spelling + canonical pairing stay aligned with
+// the wallet plugin.
+export { WALLET_ENDPOINT_KEY };
 
 export interface WalletAdapterOptions extends ResolveStackContextOptions {
 	/** Override the resolved wallet URL. Useful for tests targeting a

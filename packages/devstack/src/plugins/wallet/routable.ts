@@ -27,20 +27,21 @@ import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
  *  Stable across rewrite + legacy so existing consumers don't break. */
 export const WALLET_ENDPOINT_NAME = 'wallet-app' as const;
 
-/** Conventional short alias for the wallet endpoint. Build integrations
- *  (Playwright, vitest helpers) and the conventional-routes alias table
- *  look the endpoint up under this name; the substrate's alias resolver
- *  folds `'wallet'` → `WALLET_ENDPOINT_NAME` (`'wallet-app'`) before
+/** Conventional short endpoint key for the wallet plugin. Matches the
+ *  substrate's `EndpointKey` brand. Build integrations (Playwright,
+ *  vitest helpers) and the conventional-routes alias table look the
+ *  endpoint up under this key; the substrate's alias resolver folds
+ *  `'wallet'` → `WALLET_ENDPOINT_NAME` (`'wallet-app'`) before
  *  consulting the manifest.
  *
- *  Owned here because the alias is a wallet-plugin convention — adding
+ *  Owned here because the key is a wallet-plugin convention — adding
  *  it next to the canonical name keeps both in lockstep when the
  *  plugin's HTTP server is renamed. The L5 bridge in
  *  `build-integrations/runtime/wallet-paths.ts` re-exports this for
  *  layer-discipline reasons; the conventional-routes table in
  *  `build-integrations/runtime/conventional-routes.ts` consumes the
  *  same constant so there is exactly one source of truth. */
-export const WALLET_ENDPOINT_ALIAS = 'wallet' as const;
+export const WALLET_ENDPOINT_KEY = 'wallet' as const;
 
 export const WALLET_ROUTE_ROLE = 'api' as const;
 export const WALLET_ENTRYPOINT_PORT = 6173;

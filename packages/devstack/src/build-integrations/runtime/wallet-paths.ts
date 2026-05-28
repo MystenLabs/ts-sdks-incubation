@@ -29,15 +29,15 @@ export {
 } from '../../plugins/wallet/protocol.ts';
 
 /**
- * Both the canonical endpoint name and the user-facing alias are
- * sourced from the wallet plugin so the alias <-> canonical pairing
- * stays in lockstep with the plugin's HTTP server. The L5 surface
- * (Playwright / vitest) and the conventional-routes table both consume
- * these constants — see `WALLET_ENDPOINT_ALIAS` in the wallet plugin
- * for the convention and `runtime/conventional-routes.ts`
+ * Both the canonical endpoint name and the user-facing key are sourced
+ * from the wallet plugin so the key <-> canonical pairing stays in
+ * lockstep with the plugin's HTTP server. The L5 surface (Playwright /
+ * vitest) and the conventional-routes table both consume these
+ * constants — see `WALLET_ENDPOINT_KEY` in the wallet plugin for the
+ * convention and `runtime/conventional-routes.ts`
  * `BUILT_IN_ENDPOINT_ALIASES` for the alias fold.
  */
 export {
 	WALLET_ENDPOINT_NAME,
-	WALLET_ENDPOINT_ALIAS,
+	WALLET_ENDPOINT_KEY,
 } from '../../plugins/wallet/routable.ts';
