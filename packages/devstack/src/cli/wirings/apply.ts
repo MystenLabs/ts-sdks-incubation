@@ -27,29 +27,46 @@ import {
 	layerBuiltInPluginRuntime,
 } from '../../orchestrators/built-in-plugin-layers.ts';
 import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
-import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
+import {
+	type CliError,
+	CliInternalError,
+} from '../../surfaces/cli/errors.ts';
+import {
+	type CommandResult,
+	probeSupervisorPresence,
+} from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 
+import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
 import { identityValueFor, stackRootFor, type ResolvedIdentity } from './identity.ts';
 import { buildVerbLayers } from './build-verb-layers.ts';
 
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
 
+/** Outcome of the live-supervisor probe + dispatch:
+ *  - `kind: 'direct'` — no supervisor; caller runs the direct path.
+ *  - `kind: 'live-ok'` — live supervisor acked; verb is done.
+ *  - `kind: 'live-failed'` — live supervisor refused/timed-out; caller
+ *    surfaces the typed `CliError` via the dispatcher envelope. */
+type ApplyDispatch =
+	| { readonly kind: 'direct' }
+	| { readonly kind: 'live-ok' }
+	| { readonly kind: 'live-failed'; readonly error: CliError };
+
 /** Probe the roster file; if a supervisor is live, publish
- *  `apply.requested` and await its ack. Returns `true` when the live
- *  path handled the verb (caller should not run the direct path). */
+ *  `apply.requested` and await its ack. */
 const runApplyAgainstLiveSupervisor = (
 	identity: ResolvedIdentity,
 	identityValue: Identity,
-): Effect.Effect<boolean> =>
+): Effect.Effect<ApplyDispatch> =>
 	Effect.gen(function* () {
 		const stackRoot = stackRootFor(identity.runtimeRoot, String(identityValue.stack));
 		const presence = yield* probeSupervisorPresence(resolvePath(stackRoot, 'roster.json')).pipe(
 			Effect.catch(() => Effect.succeed({ live: false, pid: null, hostname: null })),
 		);
-		if (!presence.live) return false;
+		if (!presence.live) return { kind: 'direct' as const };
 
 		const exit = yield* Effect.exit(
 			Effect.gen(function* () {
@@ -65,47 +82,39 @@ const runApplyAgainstLiveSupervisor = (
 		);
 
 		if (Exit.isFailure(exit)) {
-			process.stderr.write(
-				`\nerror: live stack apply failed\n${Cause.pretty(exit.cause as Cause.Cause<unknown>)}\n`,
-			);
-			process.exitCode = ExitCode.GENERIC;
-			return true;
+			return {
+				kind: 'live-failed' as const,
+				error: new CliInternalError({
+					message: 'live stack apply failed',
+					cause: Cause.pretty(exit.cause as Cause.Cause<unknown>),
+				}),
+			};
 		}
 
-		process.exitCode ??= 0;
-		return true;
+		return { kind: 'live-ok' as const };
 	});
 
 export const runApplyLive = (
 	configPath: string | undefined,
 	identity: ResolvedIdentity,
-): Effect.Effect<void> => {
+): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
-		// Config-load failures emit their own stderr + exitCode and then
-		// short-circuit via early return — surfacing them as `Effect.fail`
-		// would require an outer catch to swallow, which would also catch
-		// genuine downstream failures by accident.
+		// Config-load failures surface as typed `CliError`s; the
+		// dispatcher's outer `emitFailure` renders the envelope.
 		const loadExit = yield* Effect.exit(loader.load(configPath));
 		if (Exit.isFailure(loadExit)) {
-			const fail = loadExit.cause.reasons.find(Cause.isFailReason);
-			if (fail !== undefined) {
-				const err = fail.error;
-				process.stderr.write(`error: ${err.message}\n`);
-				process.exitCode =
-					err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
-			} else {
-				// Defect path — surface the raw cause and a generic exit code.
-				process.stderr.write(`error: ${Cause.pretty(loadExit.cause)}\n`);
-				process.exitCode = ExitCode.GENERIC;
-			}
-			return;
+			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
 		}
 		const loaded = loadExit.value;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
 		const identityValue: Identity = identityValueFor(identity, stack);
-		if (yield* runApplyAgainstLiveSupervisor(identity, identityValue)) {
-			return;
+		const dispatch = yield* runApplyAgainstLiveSupervisor(identity, identityValue);
+		if (dispatch.kind === 'live-failed') {
+			return yield* Effect.fail(dispatch.error);
+		}
+		if (dispatch.kind === 'live-ok') {
+			return { exitCode: ExitCode.OK };
 		}
 		const appRoot = dirname(loaded.resolvedConfigPath);
 		const substrateLayers = buildVerbLayers({
@@ -150,21 +159,19 @@ export const runApplyLive = (
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 
-		yield* program.pipe(
+		return yield* program.pipe(
 			Effect.provide(substrateLayers),
 			Effect.provide(Logger.layer([Logger.consolePretty()])),
 			Effect.matchCauseEffect({
-				onFailure: (cause) =>
-					Effect.sync(() => {
-						process.stderr.write(
-							`\nerror: stack apply failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-						);
-						process.exitCode = ExitCode.GENERIC;
-					}),
-				onSuccess: () =>
-					Effect.sync(() => {
-						process.exitCode ??= 0;
-					}),
+				onFailure: (cause): Effect.Effect<CommandResult, CliError> =>
+					Effect.fail(
+						new CliInternalError({
+							message: 'stack apply failed',
+							cause: Cause.pretty(cause as Cause.Cause<unknown>),
+						}),
+					),
+				onSuccess: (): Effect.Effect<CommandResult, CliError> =>
+					Effect.succeed({ exitCode: ExitCode.OK }),
 			}),
 		);
 	});

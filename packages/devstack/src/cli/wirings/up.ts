@@ -7,7 +7,7 @@
 
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import { Cause, Effect, FileSystem, Logger, Queue, Ref, Scope, Stream } from 'effect';
+import { Cause, Effect, Exit, FileSystem, Logger, Queue, Ref, Scope, Stream } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import type { EngineCommand, EngineEvent } from '../../substrate/events.ts';
@@ -41,14 +41,18 @@ import {
 } from '../../orchestrators/built-in-plugin-layers.ts';
 import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
 import {
+	type CliError,
+	CliInternalError,
 	CliSupervisorLiveError,
 	type GlobalFlags,
 } from '../../surfaces/cli/index.ts';
+import type { CommandResult } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import { makeTuiSurface } from '../../surfaces/tui/index.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
-import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 
+import { cliErrorFromConfigExit } from '../bail.ts';
+import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 import { makeConfigLoader } from './config-loader.ts';
 import { isEngineCommand } from './engine-command.ts';
 import { findCliSupervisorLiveError, identityValueFor, type ResolvedIdentity } from './identity.ts';
@@ -406,6 +410,12 @@ const installCommandChannelBridge = (params: {
  * Run `devstack up`. Wires the substrate Layer stack, supervisor,
  * attached renderer, and in-process TUI command queue. The Effect runs
  * as the outer Node fiber so SIGINT reaches scope finalizers.
+ *
+ * Returns a typed `CommandResult` / fails with a typed `CliError` so
+ * the dispatcher's `emitFailure` renders the envelope (JSON mode) or
+ * human-mode stderr line. Wirings MUST NOT write raw bytes to
+ * `process.stderr` or mutate `process.exitCode` for terminal failures —
+ * the dispatcher owns the projection.
  */
 export const runUpLive = (
 	configPath: string | undefined,
@@ -414,20 +424,14 @@ export const runUpLive = (
 		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
 	},
-): Effect.Effect<void> => {
+): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
-		const loaded = yield* loader.load(configPath).pipe(
-			Effect.catch((err) =>
-				Effect.sync(() => {
-					process.stderr.write(`error: ${err.message}\n`);
-					process.exitCode =
-						err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
-					return null;
-				}),
-			),
-		);
-		if (loaded === null) return;
+		const loadExit = yield* Effect.exit(loader.load(configPath));
+		if (Exit.isFailure(loadExit)) {
+			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
+		}
+		const loaded = loadExit.value;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
 
 		const identityValue: Identity = identityValueFor(identity, stack);
@@ -542,30 +546,29 @@ export const runUpLive = (
 			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 		});
 
-		yield* program.pipe(
+		// `Effect.matchCauseEffect` projects the inner program's
+		// cause to a typed `CliError` outcome — `CliSupervisorLiveError`
+		// when the roster-claim path failed, otherwise a wrapped
+		// `CliInternalError` whose `cause` carries the cascade for the
+		// envelope renderer's `error.chain[]`.
+		return yield* program.pipe(
 			Effect.provide(substrateLayers),
 			Effect.provide(Logger.layer([])),
 			Effect.matchCauseEffect({
-				onFailure: (cause) =>
-					Effect.sync(() => {
-						const live = findCliSupervisorLiveError(cause as Cause.Cause<unknown>);
-						if (live !== null) {
-							process.stderr.write(`error: supervisor live for ${live.app}/${live.stack}\n`);
-							if (live.hint !== undefined) {
-								process.stderr.write(`hint: ${live.hint}\n`);
-							}
-							process.exitCode = ExitCode.SUPERVISOR_LIVE;
-							return;
-						}
-						process.stderr.write(
-							`\nerror: stack failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-						);
-						process.exitCode = ExitCode.GENERIC;
-					}),
-				onSuccess: () =>
-					Effect.sync(() => {
-						process.exitCode ??= 0;
-					}),
+				onFailure: (cause): Effect.Effect<CommandResult, CliError> => {
+					const live = findCliSupervisorLiveError(cause as Cause.Cause<unknown>);
+					if (live !== null) {
+						return Effect.fail(live);
+					}
+					return Effect.fail(
+						new CliInternalError({
+							message: 'stack failed',
+							cause: Cause.pretty(cause as Cause.Cause<unknown>),
+						}),
+					);
+				},
+				onSuccess: (): Effect.Effect<CommandResult, CliError> =>
+					Effect.succeed({ exitCode: ExitCode.OK }),
 			}),
 		);
 	});

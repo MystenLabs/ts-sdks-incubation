@@ -115,10 +115,6 @@ const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
 		Effect.sync(() => readProjectionSnapshot(identity.stackRoot) as SubscribableState | null),
 });
 
-const commandResultFromProcess = (): { readonly exitCode: number } => ({
-	exitCode: typeof process.exitCode === 'number' ? process.exitCode : 0,
-});
-
 const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 	return {
 		up: {
@@ -126,11 +122,10 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 				runUpLive(flags.configPath, identity, {
 					renderer: flags.renderer,
 					stdoutIsTty: Boolean((process.stdout as { isTTY?: boolean }).isTTY),
-				}).pipe(Effect.map(() => commandResultFromProcess())),
+				}),
 		},
 		apply: {
-			run: (flags) =>
-				runApplyLive(flags.configPath, identity).pipe(Effect.map(() => commandResultFromProcess())),
+			run: (flags) => runApplyLive(flags.configPath, identity),
 		},
 		status: { reader: projectionStatusReader(identity) },
 		snapshot: {
@@ -163,7 +158,9 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
  *  `--app <x>` / `--stack <x>` / `--network <x>` / `--state-dir <x>` /
  *  `--config <x>` argv, falling back to `DEVSTACK_*` env vars. Throws
  *  on a missing or flag-shaped value so a typo doesn't silently demote
- *  a downstream flag. */
+ *  a downstream flag, and on a duplicate flag (`--app a --app b`) so
+ *  the pre-parser does not silently last-write-wins a value that
+ *  Stricli will later reject outright. */
 export const identityInputsFromArgv = (
 	argv: ReadonlyArray<string>,
 	env: Readonly<Record<string, string | undefined>>,
@@ -177,17 +174,25 @@ export const identityInputsFromArgv = (
 	// pre-parser stays a thin flag-extractor.
 	let stateDir: string | undefined;
 	let configPath = env.DEVSTACK_CONFIG;
+	// Tracks which flags have been seen on the argv side so a second
+	// occurrence trips a usage error before the value silently overwrites
+	// the first. Env-sourced defaults are NOT counted (they are not user
+	// argv).
+	const seenArgvFlags = new Set<string>();
 	for (let i = 0; i < argv.length; i += 1) {
 		const token = argv[i]!;
 		const readValue = (name: string): string | undefined => {
+			let value: string | undefined;
 			// `--name=value` form: trust the literal between `=` and end.
-			if (token.startsWith(`--${name}=`)) return token.slice(name.length + 3);
+			if (token.startsWith(`--${name}=`)) {
+				value = token.slice(name.length + 3);
+			}
 			// `--name value` form: peek the next token. Reject another
 			// flag token (`--foo`) as the value — it almost certainly
 			// means the user meant `--name <empty>` (typo / forgotten
 			// argument) and quietly absorbing `--foo` as the value
 			// silently demotes a downstream flag.
-			if (token === `--${name}`) {
+			else if (token === `--${name}`) {
 				const next = argv[i + 1];
 				if (next === undefined) {
 					throw new CliUsageError({ message: `flag --${name} requires a value` });
@@ -197,9 +202,14 @@ export const identityInputsFromArgv = (
 						message: `flag --${name} requires a value; got "${next}" which looks like a flag`,
 					});
 				}
-				return next;
+				value = next;
 			}
-			return undefined;
+			if (value === undefined) return undefined;
+			if (seenArgvFlags.has(name)) {
+				throw new CliUsageError({ message: `flag --${name} given more than once` });
+			}
+			seenArgvFlags.add(name);
+			return value;
 		};
 		app = readValue('app') ?? app;
 		stack = readValue('stack') ?? stack;
@@ -277,12 +287,17 @@ const isMainEntrypoint = (): boolean => {
 };
 
 if (isMainEntrypoint()) {
-	runCli()
-		.catch((err) => {
-			process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-			process.exitCode = ExitCode.GENERIC;
-		})
-		.then(() => {
-			process.exit(process.exitCode ?? 0);
-		});
+	// Intentionally do NOT call `process.exit(...)` after `runCli`:
+	// `process.exit` synchronously terminates the event loop before any
+	// pending `setImmediate` work flushes. The `up` lifecycle's hard-kill
+	// path schedules its escalation via `setImmediate(process.exit)` in
+	// `up-lifecycle.ts:scheduleProcessExit` (the file-header invariant for
+	// SIGINT → finalizers requires the outer Node fiber to drain
+	// naturally). Letting Node's natural exit handle the shutdown
+	// preserves that invariant. We only set `process.exitCode` so the
+	// final OS exit code reflects the verb's outcome.
+	runCli().catch((err) => {
+		process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
+		process.exitCode = ExitCode.GENERIC;
+	});
 }
