@@ -31,6 +31,7 @@ import type { SubscribableState } from '../../substrate/projection.ts';
 import { Dashboard, type SnapshotStatus } from './dashboard.tsx';
 import {
 	appendEventLogLine,
+	appendEventLogLines,
 	eventLogLineFromEvent,
 	shutdownRequestedLine,
 	type EventLogLine,
@@ -79,11 +80,32 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	useEffect(() => {
 		const sectionLookup = (pluginKey: string) =>
 			rowsRef.current.find((row) => row.key === pluginKey)?.section;
+		// Microtask batching: a burst of N events used to trigger N
+		// `setEventLog` calls, each forcing a React render. We instead
+		// accumulate derived lines in `pendingLines` and flush them
+		// inside a single `queueMicrotask` callback — one `setEventLog`
+		// per tick regardless of burst size. The sidecar `setSnapshotStatus`
+		// updates stay per-event (they're idempotent and don't drive the
+		// hot path).
+		let pendingLines: Array<EventLogLine | null> = [];
+		let flushScheduled = false;
+		const scheduleFlush = (): void => {
+			if (flushScheduled) return;
+			flushScheduled = true;
+			queueMicrotask(() => {
+				flushScheduled = false;
+				if (pendingLines.length === 0) return;
+				const drained = pendingLines;
+				pendingLines = [];
+				setEventLog((prev) => appendEventLogLines(prev, drained));
+			});
+		};
 		const fiber = Effect.runFork(
 			Stream.runForEach(events, (event) =>
 				Effect.sync(() => {
 					const line = eventLogLineFromEvent(event, eventSeq.current++, sectionLookup);
-					setEventLog((prev) => appendEventLogLine(prev, line));
+					pendingLines.push(line);
+					scheduleFlush();
 					switch (event.tag) {
 						case 'snapshot.captureStarted':
 							setSnapshotStatus({
@@ -150,6 +172,13 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 		);
 		return () => {
 			Effect.runFork(Fiber.interrupt(fiber));
+			// Final flush: drain any batched lines synchronously so an
+			// unmount immediately after a burst doesn't lose the tail.
+			if (pendingLines.length > 0) {
+				const drained = pendingLines;
+				pendingLines = [];
+				setEventLog((prev) => appendEventLogLines(prev, drained));
+			}
 		};
 	}, [events]);
 

@@ -29,6 +29,7 @@ describe('PlaywrightStackContextSlot — typed global slot', () => {
 			manifestPath: '/tmp/manifest.json',
 			stack: 'main',
 			app: 'app',
+			generation: 1,
 		};
 		// This assignment is type-checked through the `declare global`
 		// declaration — no `as unknown as ...` escape needed.

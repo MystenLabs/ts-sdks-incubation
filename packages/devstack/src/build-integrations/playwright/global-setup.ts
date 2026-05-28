@@ -28,6 +28,8 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { Schema } from 'effect';
+
 import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { discoverSingleStackManifestPath } from '../runtime/discover.ts';
 import { WALLET_ENDPOINT_KEY } from '../runtime/wallet-paths.ts';
@@ -149,90 +151,179 @@ const readContextForSetup = (options: DefineGlobalSetupOptions): StackContext =>
 };
 
 /**
- * Per-poll state for tail-following `events.ndjson`. We read only the
- * bytes appended since the previous poll, then carry forward an
- * unterminated trailing partial line until the next call. Two
- * cross-poll counters track the latest `endpoint.registered name=app`
- * and `codegen.emitted` line numbers — codegen is fresh only when its
+ * Per-poll state for tail-following `events.ndjson`. We keep an open
+ * file descriptor across polls and `readSync` only the bytes appended
+ * since the previous tick. Re-opening every 100ms (the default poll
+ * cadence) burned ~3000 syscalls per 5min wait; the open-once tail
+ * collapses that to one open + one close at the bracket. Two cross-poll
+ * counters track the latest `endpoint.registered name=app` and
+ * `codegen.emitted` line numbers — codegen is fresh only when its
  * latest sighting is AFTER the latest app-endpoint registration (a
  * restart re-registers the endpoint, invalidating an earlier codegen).
+ *
+ * Lifecycle: `openCodegenWatch` allocates the fd; `advanceCodegenWatch`
+ * reads forward; `closeCodegenWatch` releases. The caller MUST close
+ * (the `waitForReadyStackContext` finally-block does this even on
+ * timeout / exception paths).
  */
 interface CodegenWatchState {
+	fd: number | null;
 	offset: number;
 	lineIndex: number;
 	carry: string;
 	latestAppEndpointLine: number;
 	latestCodegenLine: number;
 	lastFileSize: number;
+	decodeFailures: number;
 }
 
 const createCodegenWatchState = (): CodegenWatchState => ({
+	fd: null,
 	offset: 0,
 	lineIndex: 0,
 	carry: '',
 	latestAppEndpointLine: -1,
 	latestCodegenLine: -1,
 	lastFileSize: 0,
+	decodeFailures: 0,
 });
 
 const READ_CHUNK_BYTES = 64 * 1024;
 
+/**
+ * Pinned-shape schema for the two ndjson record kinds we care about.
+ * The supervisor emits a richer envelope (full `EngineEvent` union
+ * payload) but we only need the discriminators — `kind === 'engine'`
+ * plus `event.tag` ∈ {`endpoint.registered`, `codegen.emitted`} — to
+ * advance the watch. Pinning here keeps the watch tolerant of future
+ * tag additions while loudly surfacing a structural drift if the
+ * `kind`/`event.tag`/`event.endpoint.name` shape ever changes (a
+ * silent miss here would deadlock global-setup at the 5min timeout).
+ */
+const WatchedRecordSchema = Schema.Struct({
+	kind: Schema.optional(Schema.Unknown),
+	event: Schema.optional(
+		Schema.Struct({
+			tag: Schema.optional(Schema.Unknown),
+			endpoint: Schema.optional(
+				Schema.Struct({
+					name: Schema.optional(Schema.Unknown),
+				}),
+			),
+		}),
+	),
+});
+
+const decodeWatchedRecord = Schema.decodeUnknownSync(WatchedRecordSchema);
+
+const DEBUG_ENABLED = (): boolean => process.env.DEVSTACK_PLAYWRIGHT_DEBUG === '1';
+
+const debugLog = (message: string): void => {
+	if (!DEBUG_ENABLED()) return;
+	try {
+		process.stderr.write(`[devstack/playwright] ${message}\n`);
+	} catch {
+		// stderr EPIPE — swallow; the debug channel is best-effort.
+	}
+};
+
 const ingestNdjsonLine = (state: CodegenWatchState, line: string): void => {
 	if (line.length === 0) return;
 	state.lineIndex += 1;
+	let parsed: unknown;
 	try {
-		const record = JSON.parse(line) as {
-			readonly kind?: unknown;
-			readonly event?: {
-				readonly tag?: unknown;
-				readonly endpoint?: { readonly name?: unknown };
-			};
-		};
-		if (
-			record.kind === 'engine' &&
-			record.event?.tag === 'endpoint.registered' &&
-			record.event.endpoint?.name === BUILT_IN_ENDPOINT_ALIASES.app
-		) {
-			state.latestAppEndpointLine = state.lineIndex;
-		}
-		if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
-			state.latestCodegenLine = state.lineIndex;
-		}
+		parsed = JSON.parse(line);
 	} catch {
-		// Ignore partial / corrupt lines — atomic-append from the
-		// supervisor can land a half-flushed write between polls.
+		// Partial / corrupt line — atomic-append from the supervisor can
+		// land a half-flushed write between polls. Bump the counter so
+		// repeated failures surface in debug mode (a steady stream means
+		// the writer is malformed, not just race-y).
+		state.decodeFailures += 1;
+		if (state.decodeFailures <= 3 || state.decodeFailures % 50 === 0) {
+			debugLog(
+				`events.ndjson line ${state.lineIndex} failed JSON.parse (decodeFailures=${state.decodeFailures})`,
+			);
+		}
+		return;
+	}
+	let record: Schema.Schema.Type<typeof WatchedRecordSchema>;
+	try {
+		record = decodeWatchedRecord(parsed);
+	} catch (cause) {
+		// Schema drift: the supervisor emitted a record that doesn't
+		// fit the discriminator shape we pin against. Log so a future
+		// engine refactor that renames `kind` / `event.tag` /
+		// `event.endpoint.name` surfaces immediately instead of
+		// silently stalling the codegen wait at the readyTimeout.
+		state.decodeFailures += 1;
+		if (state.decodeFailures <= 3 || state.decodeFailures % 50 === 0) {
+			debugLog(
+				`events.ndjson line ${state.lineIndex} failed Schema.decode (decodeFailures=${state.decodeFailures}): ${
+					cause instanceof Error ? cause.message : String(cause)
+				}`,
+			);
+		}
+		return;
+	}
+	if (
+		record.kind === 'engine' &&
+		record.event?.tag === 'endpoint.registered' &&
+		record.event.endpoint?.name === BUILT_IN_ENDPOINT_ALIASES.app
+	) {
+		state.latestAppEndpointLine = state.lineIndex;
+	}
+	if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
+		state.latestCodegenLine = state.lineIndex;
 	}
 };
 
 /**
  * Advance the watch state by reading any bytes appended since the
- * previous poll. The file is opened, sized, and read in chunks from
- * the saved offset; an unterminated trailing partial is held in
- * `state.carry` for the next call. Returns `true` when the file has
- * a codegen-fresh state ready for caller continuation.
+ * previous poll. The fd is allocated lazily on the first poll (so a
+ * file that doesn't yet exist isn't a hard error) and stays open across
+ * polls until `closeCodegenWatch`. Returns `true` when the file has a
+ * codegen-fresh state ready for caller continuation.
+ *
+ * Truncation/rotation: when `statSync(...).size < state.lastFileSize`
+ * the file rotated. We close the old fd, reopen, and restart the
+ * counters so the new tail's events aren't shadowed by stale
+ * cross-poll state.
  */
 const advanceCodegenWatch = (state: CodegenWatchState, eventsPath: string): boolean => {
-	let fd: number;
-	try {
-		fd = openSync(eventsPath, 'r');
-	} catch {
-		return false;
+	if (state.fd === null) {
+		try {
+			state.fd = openSync(eventsPath, 'r');
+		} catch {
+			return false;
+		}
 	}
 	try {
 		const size = statSync(eventsPath).size;
 		if (size < state.lastFileSize) {
-			// File was truncated / rotated — restart from the top so we
-			// don't miss the new tail's events.
+			// File was truncated / rotated — drop the stale fd and reopen
+			// so we read the new tail from byte zero.
+			try {
+				closeSync(state.fd);
+			} catch {
+				// Best-effort close; the inode is gone anyway.
+			}
+			state.fd = null;
 			state.offset = 0;
 			state.lineIndex = 0;
 			state.carry = '';
 			state.latestAppEndpointLine = -1;
 			state.latestCodegenLine = -1;
+			state.lastFileSize = 0;
+			try {
+				state.fd = openSync(eventsPath, 'r');
+			} catch {
+				return false;
+			}
 		}
 		state.lastFileSize = size;
 		const buf = Buffer.allocUnsafe(READ_CHUNK_BYTES);
 		while (state.offset < size) {
-			const bytesRead = readSync(fd, buf, 0, READ_CHUNK_BYTES, state.offset);
+			const bytesRead = readSync(state.fd, buf, 0, READ_CHUNK_BYTES, state.offset);
 			if (bytesRead <= 0) break;
 			state.offset += bytesRead;
 			const chunk = state.carry + buf.subarray(0, bytesRead).toString('utf8');
@@ -243,13 +334,22 @@ const advanceCodegenWatch = (state: CodegenWatchState, eventsPath: string): bool
 			}
 		}
 	} catch {
-		// Treat read errors as "no progress this poll".
-	} finally {
-		closeSync(fd);
+		// Treat read errors as "no progress this poll"; the fd stays
+		// open so the next tick retries from `state.offset`.
 	}
 	if (state.latestCodegenLine < 0) return false;
 	if (state.latestAppEndpointLine < 0) return true;
 	return state.latestCodegenLine > state.latestAppEndpointLine;
+};
+
+const closeCodegenWatch = (state: CodegenWatchState): void => {
+	if (state.fd === null) return;
+	try {
+		closeSync(state.fd);
+	} catch {
+		// Best-effort — we're done with the file regardless.
+	}
+	state.fd = null;
 };
 
 const waitForReadyStackContext = async (
@@ -285,15 +385,20 @@ const waitForReadyStackContext = async (
 
 	// Phase 2: tail `events.ndjson` for the codegen-fresh signal. Only
 	// the events file changes during this phase — the manifest path is
-	// fixed once Phase 1 succeeds.
+	// fixed once Phase 1 succeeds. The watch holds an open fd across
+	// polls; we close it on every exit path (success, timeout, throw).
 	const eventsPath = join(dirname(ctx.manifestPath), 'events.ndjson');
 	const watchState = createCodegenWatchState();
-	while (Date.now() <= deadline) {
-		if (advanceCodegenWatch(watchState, eventsPath)) return ctx;
-		lastError = new Error(
-			`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
-		);
-		await sleep(intervalMs);
+	try {
+		while (Date.now() <= deadline) {
+			if (advanceCodegenWatch(watchState, eventsPath)) return ctx;
+			lastError = new Error(
+				`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
+			);
+			await sleep(intervalMs);
+		}
+	} finally {
+		closeCodegenWatch(watchState);
 	}
 
 	throw new Error(
@@ -362,6 +467,12 @@ export default buildGlobalSetup();
  *  module so consumers can import either side. */
 export const STACK_CONTEXT_SLOT = PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY;
 
+/** Monotonic counter for fixture rotations within a single Node process.
+ *  Survives across `stashStackContext` calls so a Playwright retry that
+ *  re-runs global-setup stamps a fresh `generation` even though the
+ *  module never reloads. */
+let stashGeneration = 0;
+
 const stashStackContext = (ctx: StackContext): void => {
 	// Include alias keys in the stashed endpoints map so consumers
 	// iterating `fixture.endpoints` see the same contract as callers
@@ -376,13 +487,34 @@ const stashStackContext = (ctx: StackContext): void => {
 		const url = endpoints[canonical];
 		if (url !== undefined) endpoints[alias] = url;
 	}
+	stashGeneration += 1;
 	const fixture: PlaywrightStackFixture = {
 		endpoints,
 		walletEndpoint: ctx.endpointMaybe(WALLET_ENDPOINT_KEY),
 		manifestPath: ctx.manifestPath,
 		stack: ctx.manifest.identity.stack,
 		app: ctx.manifest.identity.app,
+		generation: stashGeneration,
 	};
+	// Surface a one-line advisory when we overwrite an existing slot —
+	// a second populate means global-setup ran twice (Playwright retry
+	// with `reuseExistingServer:false`, or operator wiring both
+	// `globalSetup` and an inline preset boot). The previous fixture
+	// may be pointing at a stack that has since been torn down, so any
+	// helper that cached the prior reference would silently read stale
+	// state. The bumped `generation` lets cache-holders detect the
+	// rotation and re-fetch.
+	const previous = globalThis[PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY];
+	if (previous !== undefined) {
+		try {
+			process.stderr.write(
+				`[devstack/playwright] global-setup re-ran (generation ${previous.generation} → ${fixture.generation}); ` +
+					`downstream consumers should re-read globalThis[${PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY}].\n`,
+			);
+		} catch {
+			// stderr EPIPE — swallow; the warning is best-effort.
+		}
+	}
 	globalThis[PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY] = fixture;
 };
 

@@ -64,6 +64,25 @@ const currentTestPath = (): string => expect.getState().testPath ?? UNKNOWN_TEST
 
 const capturedByPath = new Map<string, StackContext | undefined>();
 
+// Worker-lifecycle hygiene: vitest in --watch reuses the same Node
+// worker across many test-file runs; without an exit-time cleanup, the
+// per-test-path slots accumulate until the worker is recycled (typically
+// only when vitest's pool-isolation rotates it). Wire a one-shot
+// `process.exit` listener at module load so worker shutdown drains the
+// map deterministically. The listener is idempotent and side-effect-only
+// — it touches no other module state.
+let processExitListenerInstalled = false;
+const ensureProcessExitListener = (): void => {
+	if (processExitListenerInstalled) return;
+	processExitListenerInstalled = true;
+	const drain = (): void => capturedByPath.clear();
+	process.once('exit', drain);
+	// Defensive: SIGINT / SIGTERM paths route through Node's signal
+	// handling rather than `exit`, but vitest's worker termination is
+	// graceful in practice. We register `exit` only to keep the listener
+	// surface minimal — the process is going away regardless.
+};
+
 /** Return the StackContext captured by `runDevstackBeforeAll`. Returns
  *  `undefined` until `beforeAll` has run (or when the suite ran with
  *  `requireDevstack: false` and no manifest exists). */
@@ -129,6 +148,7 @@ export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 		});
 	}
 
+	ensureProcessExitListener();
 	capturedByPath.set(currentTestPath(), ctx);
 };
 

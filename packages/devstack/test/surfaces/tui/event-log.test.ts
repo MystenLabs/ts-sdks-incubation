@@ -4,6 +4,7 @@ import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
 import type { RowSection } from '../../../src/substrate/projection.ts';
 import {
 	appendEventLogLine,
+	appendEventLogLines,
 	eventLogLineFromEvent,
 	type EventLogLine,
 	MAX_EVENT_LOG_LINES,
@@ -217,5 +218,99 @@ describe('event log derivation', () => {
 		})).reduce<ReadonlyArray<EventLogLine>>((acc, line) => appendEventLogLine(acc, line), []);
 		expect(lines).toHaveLength(MAX_EVENT_LOG_LINES);
 		expect(lines[0]?.id).toBe('2');
+	});
+
+	describe('appendEventLogLines — batched append', () => {
+		const fakeLine = (id: number): EventLogLine => ({
+			id: String(id),
+			time: '20:11:32',
+			scope: 'Stack',
+			scopeColor: 'white',
+			message: String(id),
+			text: String(id),
+			level: 'info',
+		});
+
+		it('appends a burst in a single pass, preserving order', () => {
+			const burst = Array.from({ length: 100 }, (_, idx) => fakeLine(idx));
+			const next = appendEventLogLines([], burst);
+			expect(next).toHaveLength(100);
+			expect(next[0]?.id).toBe('0');
+			expect(next[99]?.id).toBe('99');
+		});
+
+		it('filters null entries (matches the singular form contract)', () => {
+			const burst: ReadonlyArray<EventLogLine | null> = [
+				fakeLine(0),
+				null,
+				fakeLine(1),
+				null,
+				fakeLine(2),
+			];
+			const next = appendEventLogLines([], burst);
+			expect(next.map((l) => l.id)).toEqual(['0', '1', '2']);
+		});
+
+		it('returns the input array reference when the burst is all-null (lets setEventLog short-circuit)', () => {
+			const start: ReadonlyArray<EventLogLine> = [fakeLine(0)];
+			const next = appendEventLogLines(start, [null, null]);
+			expect(next).toBe(start);
+		});
+
+		it('respects MAX_EVENT_LOG_LINES across the merged tail', () => {
+			const existing = Array.from({ length: MAX_EVENT_LOG_LINES - 10 }, (_, idx) => fakeLine(idx));
+			const burst = Array.from({ length: 50 }, (_, idx) => fakeLine(MAX_EVENT_LOG_LINES + idx));
+			const next = appendEventLogLines(existing, burst);
+			expect(next).toHaveLength(MAX_EVENT_LOG_LINES);
+			// Oldest 40 trimmed from the head (existing had MAX-10, plus 50
+			// new = MAX+40; tail bound keeps the most recent MAX).
+			expect(next[0]?.id).toBe('40');
+			expect(next[next.length - 1]?.id).toBe(String(MAX_EVENT_LOG_LINES + 49));
+		});
+
+		it('handles a single very large burst without going over the bound', () => {
+			const burst = Array.from({ length: MAX_EVENT_LOG_LINES * 3 }, (_, idx) => fakeLine(idx));
+			const next = appendEventLogLines([], burst);
+			expect(next).toHaveLength(MAX_EVENT_LOG_LINES);
+			// Last MAX entries preserved.
+			expect(next[0]?.id).toBe(String(MAX_EVENT_LOG_LINES * 2));
+			expect(next[next.length - 1]?.id).toBe(String(MAX_EVENT_LOG_LINES * 3 - 1));
+		});
+	});
+
+	it('eventAt projects the producer-time, not a dequeue-time fallback', () => {
+		// Producer-time projection invariant: each event's `at` (or
+		// nested timestamp field for `endpoint.registered` /
+		// `error.reported` / `build.statusChanged`) drives the rendered
+		// `time`. Removing the historical `Date.now()` fallback prevents
+		// late-flushed events from being back-dated to dequeue time,
+		// which would surface as out-of-order log lines under load.
+		const earlier = Date.parse('2026-05-19T20:11:00.000Z');
+		const later = Date.parse('2026-05-19T20:11:32.001Z');
+		const a = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('walrus'),
+				line: 'first',
+				level: 'warn',
+				at: earlier,
+			},
+			0,
+		);
+		const b = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('walrus'),
+				line: 'second',
+				level: 'warn',
+				at: later,
+			},
+			1,
+		);
+		expect(a?.time).toBe('20:11:00');
+		expect(b?.time).toBe('20:11:32');
+		// The id encodes the producer `at` — feeds the renderer's React key.
+		expect(a?.id.startsWith(String(earlier))).toBe(true);
+		expect(b?.id.startsWith(String(later))).toBe(true);
 	});
 });

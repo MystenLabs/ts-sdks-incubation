@@ -3,6 +3,14 @@
 // Live-aware: if a supervisor owns the selected stack, publish an
 // `apply.requested` command and await its ack. Otherwise run a
 // one-shot supervise that exits when all plugins are ready.
+//
+// Logger layer: `Logger.consolePretty()`. `apply` is the documented
+// one-shot mode (no TUI) — its consumers are CI logs and ad-hoc
+// operator runs that read raw stderr. Structured `Effect.log*` records
+// are the only operator-visible diagnostic for non-TUI surfaces, so we
+// route them through the pretty console layer. The sibling `up` verb
+// silences this layer (see `wirings/up.ts` header) because it owns the
+// TUI and would render duplicate / scrambled output otherwise.
 
 import { dirname, resolve as resolvePath } from 'node:path';
 

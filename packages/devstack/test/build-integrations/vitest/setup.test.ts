@@ -124,6 +124,32 @@ describe('runDevstackAfterAll', () => {
 			runDevstackAfterAll();
 			expect(getStackContext()).toBeUndefined();
 		}));
+
+	it('registers a process.exit listener so worker shutdown drains the slot map', () =>
+		// Regression: the per-test-path slot map used to accumulate
+		// forever in `--watch` mode because vitest workers reuse the
+		// module-level binding across test files. The first call to
+		// `runDevstackBeforeAll` now installs an `exit` listener that
+		// clears the map on worker shutdown, bounding the leak.
+		withTempRootSync('devstack-vitest-exit', (root) => {
+			seedManifestUnder(root, 'test');
+			const before = process.listenerCount('exit');
+			runDevstackBeforeAll({
+				cwd: root,
+				env: { DEVSTACK_STACK: 'test' },
+				silent: true,
+			});
+			runDevstackBeforeAll({
+				cwd: root,
+				env: { DEVSTACK_STACK: 'test' },
+				silent: true,
+			});
+			const after = process.listenerCount('exit');
+			// The listener is `once`-installed, idempotent across many
+			// beforeAll calls — only one extra listener (or zero if a
+			// previous test in the same worker already registered it).
+			expect(after - before).toBeLessThanOrEqual(1);
+		}));
 });
 
 describe('useDevstackTestSetup', () => {

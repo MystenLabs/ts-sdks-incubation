@@ -4,6 +4,13 @@
 // in-process TUI command queue. The Effect runs as the outer Node fiber
 // so SIGINT reaches scope finalizers (see surfaces/cli/index.ts
 // architecture invariant).
+//
+// Logger layer: `Logger.layer([])` (silent). `up` owns the TUI, which is
+// the operator-facing output channel; routing structured `Effect.log*`
+// records to stderr would scribble on top of the live ink renderer in
+// human mode and would duplicate the structured event stream the plain
+// renderer already emits in non-TTY mode. The sibling `apply` verb (no
+// TUI) uses `Logger.consolePretty()` because its consumer is CI.
 
 import { dirname, resolve as resolvePath } from 'node:path';
 

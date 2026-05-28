@@ -21,13 +21,21 @@
 export const PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY = '__devstackPlaywrightStackContext__' as const;
 
 /** Prewarmed stack fixture shape. Mirrors what global-setup builds from
- *  the manifest read; in-spec helpers consume it as a frozen view. */
+ *  the manifest read; in-spec helpers consume it as a frozen view.
+ *
+ *  `generation` is a monotonically-increasing token stamped each time
+ *  global-setup populates the slot. Downstream readers can compare
+ *  against a previously-cached generation to detect a stale view (e.g.
+ *  Playwright retried with `reuseExistingServer:false`, which re-runs
+ *  global-setup; helpers caching the fixture across spec files would
+ *  otherwise hold a fixture pointing at a torn-down stack). */
 export interface PlaywrightStackFixture {
 	readonly endpoints: Readonly<Record<string, string>>;
 	readonly walletEndpoint: string | null;
 	readonly manifestPath: string;
 	readonly stack: string;
 	readonly app: string;
+	readonly generation: number;
 }
 
 declare global {

@@ -125,6 +125,7 @@ describe('createWalletAdapter', () => {
 			manifestPath: '/dev/null',
 			stack: 'main',
 			app: 'sample',
+			generation: 1,
 		});
 		const adapter = createWalletAdapter();
 		expect(adapter.walletUrl).toBe('http://from-fixture.localhost:42');
@@ -155,6 +156,39 @@ describe('createWalletAdapter', () => {
 				'wallet-app': 'http://wallet.sample-app.localhost:6173',
 			});
 		} finally {
+			setFixture(null);
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('global setup stamps a generation token and warns on rotation when re-mounted', async () => {
+		// Playwright retries with `reuseExistingServer:false` can re-run
+		// global-setup inside the same Node process; without a generation
+		// token, the second call silently overwrites the slot and any
+		// helper that cached the prior fixture observes stale state.
+		// The fixture now carries a monotonic `generation` and the stash
+		// emits a one-line stderr advisory when it overwrites a populated
+		// slot.
+		const root = writeWalletManifest('http://wallet.sample-app.localhost:6173');
+		const stateDir = join(root, '.devstack', 'stacks', 'main');
+		writeCodegenEvent(stateDir);
+		const originalWrite = process.stderr.write.bind(process.stderr);
+		const captured: Array<string> = [];
+		const stub = ((line: string | Uint8Array) => {
+			captured.push(typeof line === 'string' ? line : String(line));
+			return true;
+		}) as typeof process.stderr.write;
+		process.stderr.write = stub;
+		try {
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			const first = readStashedFixture();
+			expect(first?.generation).toBeGreaterThan(0);
+			await buildGlobalSetup({ cwd: root, env: {}, requireEndpoints: ['wallet'] })();
+			const second = readStashedFixture();
+			expect(second?.generation).toBeGreaterThan(first?.generation ?? 0);
+			expect(captured.some((line) => line.includes('global-setup re-ran'))).toBe(true);
+		} finally {
+			process.stderr.write = originalWrite;
 			setFixture(null);
 			rmSync(root, { recursive: true, force: true });
 		}
