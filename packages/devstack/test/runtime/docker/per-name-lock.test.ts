@@ -178,6 +178,57 @@ describe('per-name lock', () => {
 		}),
 	);
 
+	// Narrower "promoted-but-interrupted" race — release pops B's
+	// deferred AND completes it, then `Fiber.interrupt(fiberB)` fires
+	// B's onInterrupt before B's `Deferred.await` resumes. The
+	// defensive branch in `acquirePerNameLock` detects this via
+	// `Deferred.isDoneUnsafe(waiter)` and re-releases on B's behalf so
+	// C can acquire cleanly without the slot stranding.
+	//
+	// The reproduction is intentionally fragile: even wrapping
+	// release+interrupt in `Effect.uninterruptible` doesn't pin the
+	// scheduling order — B's runLoop may pick up the completed
+	// deferred between the two ops, in which case onInterrupt sees an
+	// already-resumed fiber and the test instead exercises the
+	// happy-path release. We skip the assertion (the defensive source
+	// code at `runtime/docker/container.ts:acquirePerNameLock` is in
+	// place and the sibling "cancelled-waiter drops out" test
+	// exercises the queued-then-interrupted branch). Re-enabling
+	// would require either an Effect-runtime hook to stop the
+	// scheduler between two effect steps or simulating the lock state
+	// directly without driving a real fork.
+	it.skip('promoted-but-interrupted: release re-runs on dead waiter so next acquire proceeds', () =>
+		Effect.gen(function* () {
+			const lock = yield* Ref.make<PerNameLockState>(new Map());
+
+			// A holds 'shared'.
+			yield* acquirePerNameLock(lock, 'shared');
+
+			// B enqueues; wait until B is parked on its Deferred.
+			const fiberB = yield* Effect.forkChild(acquirePerNameLock(lock, 'shared'));
+			yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 1));
+
+			// Race: pop+complete B's deferred, then interrupt B before
+			// its `Deferred.await` resumes. The `uninterruptible` wrap
+			// is intent-documenting — the two effects still run
+			// sequentially and B's runLoop has a window to observe
+			// completion first.
+			yield* Effect.uninterruptible(
+				Effect.gen(function* () {
+					yield* releasePerNameLock(lock, 'shared');
+					yield* Fiber.interrupt(fiberB);
+				}),
+			);
+
+			// If the defensive branch fired, the slot is fully released
+			// (or just held by a transient interruption-aware
+			// release). C must be able to acquire.
+			yield* acquirePerNameLock(lock, 'shared');
+			yield* releasePerNameLock(lock, 'shared');
+			const finalState = yield* Ref.get(lock);
+			expect(finalState.size).toBe(0);
+		}));
+
 	it.effect('cancelled waiter drops out of the queue without stranding the slot', () =>
 		// Regression for the cancelled-waiter cleanup that mirrors the
 		// lease-broker pattern (`substrate/runtime/lease-broker/

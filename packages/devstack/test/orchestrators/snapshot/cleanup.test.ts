@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -9,8 +8,7 @@ import { Effect, Stream } from 'effect';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import { runPrune, runWipe } from '../../../src/orchestrators/snapshot/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-cleanup-test-'));
+import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const runtimeStub = (events: string[]): ContainerRuntime => ({
 	ensureImage: () => Effect.die('ensureImage not used'),
@@ -56,10 +54,9 @@ describe('snapshot cleanup orchestration', () => {
 	it.effect(
 		'wipe uses explicit managed-resource cleanup and preserves only snapshots by default',
 		() =>
-			Effect.gen(function* () {
-				const root = freshRoot();
-				const events: string[] = [];
-				try {
+			withTempRoot('snapshot-cleanup-test', (root) =>
+				Effect.gen(function* () {
+					const events: string[] = [];
 					const stackRoot = join(root, 'stack');
 					const stateFilePath = join(stackRoot, 'state.json');
 					const cacheDir = join(stackRoot, 'cache');
@@ -80,17 +77,14 @@ describe('snapshot cleanup orchestration', () => {
 					expect(existsSync(join(stackRoot, 'work'))).toBe(false);
 					expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
 					expect(existsSync(cacheDir)).toBe(false);
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
-			}),
+				}),
+			),
 	);
 
 	it.effect('wipe can explicitly preserve stack-local cache', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const events: string[] = [];
-			try {
+		withTempRoot('snapshot-cleanup-test', (root) =>
+			Effect.gen(function* () {
+				const events: string[] = [];
 				const stackRoot = join(root, 'stack');
 				const stateFilePath = join(stackRoot, 'state.json');
 				const cacheDir = join(stackRoot, 'cache');
@@ -108,17 +102,14 @@ describe('snapshot cleanup orchestration', () => {
 
 				expect(existsSync(join(cacheDir, 'entry'))).toBe(true);
 				expect(existsSync(stateFilePath)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('prune uses managed image cleanup rather than boot orphan sweep', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const events: string[] = [];
-			try {
+		withTempRoot('snapshot-cleanup-test', (root) =>
+			Effect.gen(function* () {
+				const events: string[] = [];
 				const stackRoot = join(root, 'stack');
 				mkdirSync(join(stackRoot, 'snapshots'), { recursive: true });
 
@@ -131,9 +122,7 @@ describe('snapshot cleanup orchestration', () => {
 
 				expect(result.imagesSwept).toBe(3);
 				expect(events).toEqual(['images:app/main']);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

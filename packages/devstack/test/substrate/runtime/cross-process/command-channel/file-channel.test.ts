@@ -14,8 +14,7 @@
 // TestClock would freeze the poll loop. Matches the convention already
 // established by `test/substrate/runtime/cross-process/command-channel.test.ts`.
 
-import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Cause, Effect, Fiber, Stream } from 'effect';
@@ -25,8 +24,7 @@ import {
 	CommandChannelDecodeError,
 	tailRecords,
 } from '../../../../../src/substrate/runtime/cross-process/command-channel/file-channel.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'file-channel-tail-'));
+import { withTempRoot } from '../../../../helpers/with-temp-root.ts';
 
 interface TestRecord {
 	readonly a: number;
@@ -45,9 +43,8 @@ const decodeRecord = (raw: unknown): TestRecord => {
 
 describe('tailRecords decode-error policy', () => {
 	it.live('onDecodeError:skip drops invalid JSON lines and emits the valid records', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('file-channel-tail', (root) =>
+			Effect.gen(function* () {
 				const file = join(root, 'events.ndjson');
 				// Two valid lines bracketing one malformed (un-parseable JSON) line.
 				writeFileSync(file, '{"a":1}\n{not json\n{"a":2}\n');
@@ -59,16 +56,13 @@ describe('tailRecords decode-error policy', () => {
 					}).pipe(Stream.take(2), Stream.runCollect),
 				);
 				expect(Array.from(collected)).toEqual([{ a: 1 }, { a: 2 }]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('default (onDecodeError:fail) surfaces a CommandChannelDecodeError', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('file-channel-tail', (root) =>
+			Effect.gen(function* () {
 				const file = join(root, 'events.ndjson');
 				writeFileSync(file, '{"a":1}\n{not json\n{"a":2}\n');
 				const exit = yield* Effect.scoped(
@@ -83,10 +77,8 @@ describe('tailRecords decode-error policy', () => {
 					expect(failures.length).toBeGreaterThan(0);
 					expect(failures[0]).toBeInstanceOf(CommandChannelDecodeError);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	// Regression for Phase B1: `drainNewLines` advances `state.offset` by
@@ -101,9 +93,8 @@ describe('tailRecords decode-error policy', () => {
 	// `state.offset = stat.size` write, even one short read would drop a
 	// chunk and the test would fail.
 	it.live('multi-cycle tail emits every appended record without losing bytes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('file-channel-tail', (root) =>
+			Effect.gen(function* () {
 				const file = join(root, 'events.ndjson');
 				writeFileSync(file, '');
 				const records = Array.from({ length: 25 }, (_, i) => ({ a: i + 1 }));
@@ -132,16 +123,13 @@ describe('tailRecords decode-error policy', () => {
 				if (collected._tag === 'Success') {
 					expect(Array.from(collected.value)).toEqual(records);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('onDecodeError:skip survives an atomic-append race (mid-write truncated line)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('file-channel-tail', (root) =>
+			Effect.gen(function* () {
 				const file = join(root, 'events.ndjson');
 				// Writer is partway through atomic-appending `{"a":2}\n` — the
 				// reader observes only `{"a":2` (no newline, malformed JSON).
@@ -174,9 +162,7 @@ describe('tailRecords decode-error policy', () => {
 				if (collected._tag === 'Success') {
 					expect(Array.from(collected.value)).toEqual([{ a: 1 }, { a: 3 }]);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

@@ -1,8 +1,7 @@
 // Recovery scanner — regression coverage for Phase B3's net-new
 // restore-pending recovery contract.
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -20,8 +19,7 @@ import {
 	RESTORE_PENDING_FILE_NAME,
 	RestorePendingRecoveryError,
 } from '../../../src/orchestrators/snapshot/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'devstack-recover-pending-'));
+import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const stubRuntime = (
 	overrides: Partial<ContainerRuntime> = {},
@@ -67,9 +65,8 @@ const writePendingMarkerRaw = (
 
 describe('recoverPendingRestore', () => {
 	it.effect('returns noMarker when no pending marker exists', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				mkdirSync(stackRoot, { recursive: true });
 				const summary = yield* recoverPendingRestore(stackRoot, stubRuntime()).pipe(
@@ -81,16 +78,13 @@ describe('recoverPendingRestore', () => {
 				expect(summary.recovered).toBe(0);
 				expect(summary.stillPending).toEqual([]);
 				expect(summary.markerCleared).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('retags every outstanding entry and removes the marker on full recovery', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				writePendingMarkerRaw(stackRoot, [
 					{
@@ -141,16 +135,13 @@ describe('recoverPendingRestore', () => {
 						newTag: 'devstack-build:pg-worker',
 					},
 				]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('keeps still-pending entries in the marker on per-entry retag failure', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				writePendingMarkerRaw(stackRoot, [
 					{
@@ -191,16 +182,13 @@ describe('recoverPendingRestore', () => {
 				) as { readonly containers: ReadonlyArray<{ readonly role: string }> };
 				expect(rewritten.containers).toHaveLength(1);
 				expect(rewritten.containers[0]?.role).toBe('worker');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('surfaces marker-decode error on corrupt marker', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				mkdirSync(stackRoot, { recursive: true });
 				writeFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), '{not json}');
@@ -217,16 +205,13 @@ describe('recoverPendingRestore', () => {
 					const err = error.value as RestorePendingRecoveryError;
 					expect(err.kind).toBe('marker-decode');
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('recovers via digest when staging tag has been pruned', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				writePendingMarkerRaw(stackRoot, [
 					{
@@ -277,16 +262,13 @@ describe('recoverPendingRestore', () => {
 				});
 				expect(tagCalls[1]?.src).toEqual({ digest: 'sha256:pg-db-digest' });
 				expect(tagCalls[1]?.src.tag).toBeUndefined();
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('warns and leaves a v1 (pre-upgrade) marker untouched', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stack');
 				// Hand-roll a v1 marker — pre-upgrade entries had no
 				// `digest` field. The scanner has no safe way to recover
@@ -327,10 +309,8 @@ describe('recoverPendingRestore', () => {
 				// Marker file MUST still be on disk so the operator can
 				// inspect / manually clean up.
 				expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 });

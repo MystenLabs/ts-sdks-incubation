@@ -4,9 +4,8 @@
 // spawning Docker. Sui's local mode uses `probeHost: '0.0.0.0'` because
 // Docker host publishing binds all interfaces.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Deferred, Effect, Exit, Fiber, Layer } from 'effect';
@@ -18,6 +17,7 @@ import {
 } from '../../../../src/substrate/runtime/port-broker/index.ts';
 import { ownHolder } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
 import { layerRuntimeRoot } from '../../../../src/substrate/runtime/paths.ts';
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 const listenOnRandomPort = (host: '127.0.0.1' | '0.0.0.0'): Effect.Effect<Server, Error> =>
 	Effect.tryPromise({
@@ -50,19 +50,16 @@ const serverPort = (server: Server): number => {
 	return address.port;
 };
 
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'port-broker-test-'));
-
 const portBrokerLayer = (root: string) =>
 	layerPortBroker.pipe(Layer.provide(layerRuntimeRoot(root)));
 
 describe('PortBrokerService', () => {
-	it.effect('reassigns when an all-interface preferred port is already occupied', () => {
-		const root = freshRoot();
-		return Effect.acquireUseRelease(
-			listenOnRandomPort('0.0.0.0'),
-			(server) =>
-				Effect.gen(function* () {
-					try {
+	it.effect('reassigns when an all-interface preferred port is already occupied', () =>
+		withTempRoot('port-broker-test', (root) =>
+			Effect.acquireUseRelease(
+				listenOnRandomPort('0.0.0.0'),
+				(server) =>
+					Effect.gen(function* () {
 						const broker = yield* PortBrokerService;
 						const preferred = serverPort(server);
 						const allocated = yield* Effect.scoped(
@@ -74,21 +71,18 @@ describe('PortBrokerService', () => {
 						);
 
 						expect(allocated.port).not.toBe(preferred);
-					} finally {
-						rmSync(root, { recursive: true, force: true });
-					}
-				}).pipe(Effect.provide(portBrokerLayer(root))),
-			closeServer,
-		);
-	});
+					}).pipe(Effect.provide(portBrokerLayer(root))),
+				closeServer,
+			),
+		),
+	);
 
-	it.effect('reassigns when a loopback listener occupies a Docker wildcard preferred port', () => {
-		const root = freshRoot();
-		return Effect.acquireUseRelease(
-			listenOnRandomPort('127.0.0.1'),
-			(server) =>
-				Effect.gen(function* () {
-					try {
+	it.effect('reassigns when a loopback listener occupies a Docker wildcard preferred port', () =>
+		withTempRoot('port-broker-test', (root) =>
+			Effect.acquireUseRelease(
+				listenOnRandomPort('127.0.0.1'),
+				(server) =>
+					Effect.gen(function* () {
 						const broker = yield* PortBrokerService;
 						const preferred = serverPort(server);
 						const allocated = yield* Effect.scoped(
@@ -100,15 +94,13 @@ describe('PortBrokerService', () => {
 						);
 
 						expect(allocated.port).not.toBe(preferred);
-					} finally {
-						rmSync(root, { recursive: true, force: true });
-					}
-				}).pipe(Effect.provide(portBrokerLayer(root))),
-			closeServer,
-		);
-	});
+					}).pipe(Effect.provide(portBrokerLayer(root))),
+				closeServer,
+			),
+		),
+	);
 
-	it.effect('frees the in-process slot when the allocate fiber is interrupted mid-chain', () => {
+	it.effect('frees the in-process slot when the allocate fiber is interrupted mid-chain', () =>
 		// Regression: between `tryReserve(port)` and `finishAllocation`
 		// arming its scope finalizer there was a gap where an
 		// `Effect.interrupt` would leave the in-process Map slot held
@@ -118,9 +110,8 @@ describe('PortBrokerService', () => {
 		// allocate against the same `preferredPort` after the first
 		// fiber is interrupted; if the slot were still held, the
 		// second allocate would surface `preferred-busy`.
-		const root = freshRoot();
-		return Effect.gen(function* () {
-			try {
+		withTempRoot('port-broker-test', (root) =>
+			Effect.gen(function* () {
 				const broker = yield* PortBrokerService;
 				// Pick a free port the OS hands out, then close the seed
 				// server so the broker's kernel probe will pass.
@@ -164,13 +155,11 @@ describe('PortBrokerService', () => {
 					}),
 				);
 				expect(allocated.port).toBe(preferred);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(portBrokerLayer(root)));
-	});
+			}).pipe(Effect.provide(portBrokerLayer(root))),
+		),
+	);
 
-	it.effect('two concurrent brokers racing the same port: exactly one wins the reservation', () => {
+	it.effect('two concurrent brokers racing the same port: exactly one wins the reservation', () =>
 		// Regression: previously `tryWriteReservationSync` used
 		// `existsSync(path)` + `atomicWriteFileSync` (rename clobbers),
 		// leaving a TOCTOU window where two peers could pass the
@@ -185,9 +174,8 @@ describe('PortBrokerService', () => {
 		// a state dir. They synchronize on a `Deferred` so both pass
 		// any pre-checks at roughly the same instant. Exactly one must
 		// receive the preferred port; the other must reassign.
-		const root = freshRoot();
-		return Effect.gen(function* () {
-			try {
+		withTempRoot('port-broker-test', (root) =>
+			Effect.gen(function* () {
 				// Seed: claim a free OS port, then release so kernel
 				// probes will pass for both brokers.
 				const seed = yield* listenOnRandomPort('127.0.0.1');
@@ -239,25 +227,17 @@ describe('PortBrokerService', () => {
 				const ownersOfPreferred = [portA, portB].filter((p) => p === preferred);
 				expect(ownersOfPreferred.length).toBe(1);
 				expect(portA).not.toBe(portB);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		});
-	});
+			}),
+		),
+	);
 
-	it.effect('reassigns when a live peer reservation holds the preferred port', () => {
-		const root = freshRoot();
+	it.effect('reassigns when a live peer reservation holds the preferred port', () =>
+		withTempRoot('port-broker-test', (root) =>
+			Effect.gen(function* () {
+				const seed = yield* listenOnRandomPort('127.0.0.1');
+				const preferred = serverPort(seed);
+				yield* closeServer(seed);
 
-		const allocatePreferred = Effect.gen(function* () {
-			const seed = yield* listenOnRandomPort('127.0.0.1');
-			const preferred = serverPort(seed);
-			yield* closeServer(seed);
-			return preferred;
-		});
-
-		return Effect.gen(function* () {
-			try {
-				const preferred = yield* allocatePreferred;
 				mkdirSync(join(root, 'port-locks'), { recursive: true });
 				writeFileSync(
 					join(root, 'port-locks', `${preferred}.json`),
@@ -281,9 +261,7 @@ describe('PortBrokerService', () => {
 
 				expect(allocated.port).not.toBe(preferred);
 				expect(allocated.port).toBeGreaterThan(0);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(portBrokerLayer(root)));
-	});
+			}).pipe(Effect.provide(portBrokerLayer(root))),
+		),
+	);
 });

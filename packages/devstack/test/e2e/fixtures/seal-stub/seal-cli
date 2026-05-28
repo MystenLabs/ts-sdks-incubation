@@ -28,12 +28,13 @@ mode="${1:-listen}"
 
 case "$mode" in
 	genkey)
-		# BLS12-381: master key is a 32-byte scalar; G1 public key is
-		# 48 bytes compressed. We mint pseudo-random bytes of the
-		# right widths so any caller that decodes the hex sees a
-		# plausibly-shaped keypair.
+		# BLS12-381: master key is a 32-byte scalar; G2 uncompressed
+		# public key is 96 bytes. Widths match what the real
+		# `seal-cli genkey` prints (observed against seal-v0.6.6) and
+		# what `parseSealKeygenOutput`'s bounded regex expects — 64
+		# hex chars for the master, 192 for the public.
 		master="0x$(mint_hex 32)"
-		public="0x$(mint_hex 48)"
+		public="0x$(mint_hex 96)"
 		printf 'Master key: %s\n' "$master"
 		printf 'Public key: %s\n' "$public"
 		exit 0

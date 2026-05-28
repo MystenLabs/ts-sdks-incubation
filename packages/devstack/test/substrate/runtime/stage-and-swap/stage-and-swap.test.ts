@@ -4,8 +4,7 @@
 // location. The orchestrator-side forwarder (`orchestrators/snapshot/
 // stage-and-swap.ts`) re-exports from substrate; deletion in PR3.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit, FileSystem } from 'effect';
@@ -23,8 +22,7 @@ import {
 	stageAndSwap,
 	StageAndSwapError,
 } from '../../../../src/substrate/runtime/stage-and-swap/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'stage-and-swap-test-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 const buildSucceeds = (stagingPath: string, content: string) =>
 	Effect.gen(function* () {
@@ -34,9 +32,8 @@ const buildSucceeds = (stagingPath: string, content: string) =>
 
 describe('stageAndSwap', () => {
 	it.effect('successful build promotes staging → target atomically', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
 				const target = join(root, 'target');
 				const staging = join(root, 'target.staging');
 				const backup = join(root, 'target.bak');
@@ -50,16 +47,13 @@ describe('stageAndSwap', () => {
 				expect(readFileSync(join(target, 'payload'), 'utf8')).toBe('hello');
 				expect(existsSync(staging)).toBe(false);
 				expect(existsSync(backup)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
 	);
 
 	it.effect('build failure leaves target untouched and removes staging', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
 				const target = join(root, 'target');
 				writeFileSync(target + '.placeholder', 'before');
 				const staging = join(root, 'target.staging');
@@ -75,16 +69,13 @@ describe('stageAndSwap', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				expect(existsSync(staging)).toBe(false);
 				expect(existsSync(target)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
 	);
 
 	it.effect('existing target is restored from backup on rename failure', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
 				const fs = yield* FileSystem.FileSystem;
 				const target = join(root, 'target');
 				yield* fs.makeDirectory(target, { recursive: true });
@@ -102,16 +93,13 @@ describe('stageAndSwap', () => {
 				expect(readFileSync(join(target, 'payload'), 'utf8')).toBe('new-content');
 				expect(existsSync(join(target, 'old'))).toBe(false);
 				expect(existsSync(backup)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
 	);
 
 	it.effect('preserves selected target paths after build and before publish', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
 				const target = join(root, 'target');
 				mkdirSync(target, { recursive: true });
 				writeFileSync(join(target, 'commands.ndjson'), 'before\n');
@@ -135,16 +123,13 @@ describe('stageAndSwap', () => {
 					'before\nduring-build\n',
 				);
 				expect(existsSync(backup)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
 	);
 
 	it.effect('serializes command appends started after backup and before promote', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
 				const target = join(root, 'target');
 				mkdirSync(target, { recursive: true });
 				const paths = commandChannelPaths(target);
@@ -210,10 +195,8 @@ describe('stageAndSwap', () => {
 				);
 				expect(readFileSync(join(target, 'payload'), 'utf8')).toBe('new-content');
 				expect(existsSync(backup)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}).pipe(Effect.provide(NodeFileSystem.layer)),
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
 	);
 
 	it('StageAndSwapError is a tagged failure', () => {

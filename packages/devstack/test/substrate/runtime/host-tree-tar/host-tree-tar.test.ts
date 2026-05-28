@@ -9,13 +9,10 @@ import {
 	chmodSync,
 	existsSync,
 	mkdirSync,
-	mkdtempSync,
 	readFileSync,
-	rmSync,
 	statSync,
 	writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect, Exit, Stream } from 'effect';
@@ -26,8 +23,7 @@ import {
 	tarHostTree,
 	untarHostTree,
 } from '../../../../src/substrate/runtime/host-tree-tar/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'host-tree-tar-test-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 const tarWithFileEntry = (entryPath: string, content: string): Buffer => {
 	const contentBytes = Buffer.from(content, 'utf8');
@@ -56,64 +52,57 @@ const tarWithFileEntry = (entryPath: string, content: string): Buffer => {
 
 describe('tarHostTree + untarHostTree', () => {
 	it.effect('round-trips a small subtree preserving content', () =>
-		Effect.gen(function* () {
-			const src = freshRoot();
-			const dst = freshRoot();
-			try {
-				mkdirSync(join(src, 'a'), { recursive: true });
-				writeFileSync(join(src, 'a', 'one.txt'), 'hello-one');
-				writeFileSync(join(src, 'a', 'two.txt'), 'hello-two');
+		withTempRoot('host-tree-tar-test', (src) =>
+			withTempRoot('host-tree-tar-test', (dst) =>
+				Effect.gen(function* () {
+					mkdirSync(join(src, 'a'), { recursive: true });
+					writeFileSync(join(src, 'a', 'one.txt'), 'hello-one');
+					writeFileSync(join(src, 'a', 'two.txt'), 'hello-two');
 
-				const archiveBytes = yield* Stream.runCollect(
-					tarHostTree({ parentDir: src, relPaths: ['a'] }),
-				);
-				const archive = Array.from(archiveBytes).flatMap((c) => Array.from(c));
-				expect(archive.length).toBeGreaterThan(0);
+					const archiveBytes = yield* Stream.runCollect(
+						tarHostTree({ parentDir: src, relPaths: ['a'] }),
+					);
+					const archive = Array.from(archiveBytes).flatMap((c) => Array.from(c));
+					expect(archive.length).toBeGreaterThan(0);
 
-				const source = Stream.fromIterable([new Uint8Array(archive)]);
-				yield* Effect.scoped(untarHostTree(source, { target: dst }));
+					const source = Stream.fromIterable([new Uint8Array(archive)]);
+					yield* Effect.scoped(untarHostTree(source, { target: dst }));
 
-				expect(readFileSync(join(dst, 'a', 'one.txt'), 'utf8')).toBe('hello-one');
-				expect(readFileSync(join(dst, 'a', 'two.txt'), 'utf8')).toBe('hello-two');
-			} finally {
-				rmSync(src, { recursive: true, force: true });
-				rmSync(dst, { recursive: true, force: true });
-			}
-		}),
+					expect(readFileSync(join(dst, 'a', 'one.txt'), 'utf8')).toBe('hello-one');
+					expect(readFileSync(join(dst, 'a', 'two.txt'), 'utf8')).toBe('hello-two');
+				}),
+			),
+		),
 	);
 
 	it.effect('preserves 0o600 mode bits across the round-trip', () =>
-		Effect.gen(function* () {
-			const src = freshRoot();
-			const dst = freshRoot();
-			try {
-				mkdirSync(join(src, 'secret'), { recursive: true });
-				const secretPath = join(src, 'secret', 'key');
-				writeFileSync(secretPath, 'shh');
-				chmodSync(secretPath, 0o600);
+		withTempRoot('host-tree-tar-test', (src) =>
+			withTempRoot('host-tree-tar-test', (dst) =>
+				Effect.gen(function* () {
+					mkdirSync(join(src, 'secret'), { recursive: true });
+					const secretPath = join(src, 'secret', 'key');
+					writeFileSync(secretPath, 'shh');
+					chmodSync(secretPath, 0o600);
 
-				const archiveBytes = yield* Stream.runCollect(
-					tarHostTree({ parentDir: src, relPaths: ['secret'] }),
-				);
-				const archive = Array.from(archiveBytes).flatMap((c) => Array.from(c));
-				const source = Stream.fromIterable([new Uint8Array(archive)]);
-				yield* Effect.scoped(untarHostTree(source, { target: dst }));
+					const archiveBytes = yield* Stream.runCollect(
+						tarHostTree({ parentDir: src, relPaths: ['secret'] }),
+					);
+					const archive = Array.from(archiveBytes).flatMap((c) => Array.from(c));
+					const source = Stream.fromIterable([new Uint8Array(archive)]);
+					yield* Effect.scoped(untarHostTree(source, { target: dst }));
 
-				const mode = statSync(join(dst, 'secret', 'key')).mode & 0o777;
-				expect(mode).toBe(0o600);
-			} finally {
-				rmSync(src, { recursive: true, force: true });
-				rmSync(dst, { recursive: true, force: true });
-			}
-		}),
+					const mode = statSync(join(dst, 'secret', 'key')).mode & 0o777;
+					expect(mode).toBe(0o600);
+				}),
+			),
+		),
 	);
 
 	it.effect('rejects unsafe archive paths inside untarHostTree before extraction writes them', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const dst = join(root, 'target');
-			const escaped = join(root, 'escape.txt');
-			try {
+		withTempRoot('host-tree-tar-test', (root) =>
+			Effect.gen(function* () {
+				const dst = join(root, 'target');
+				const escaped = join(root, 'escape.txt');
 				mkdirSync(dst, { recursive: true });
 				const archive = tarWithFileEntry('../escape.txt', 'owned');
 				const source = Stream.fromIterable([archive.subarray(0, 128), archive.subarray(128)]);
@@ -129,40 +118,32 @@ describe('tarHostTree + untarHostTree', () => {
 					expect(error.value.detail).toContain('unsafe tar entry path');
 				}
 				expect(existsSync(escaped)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('empty relPaths list fails with stage: "no-subtrees"', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('host-tree-tar-test', (root) =>
+			Effect.gen(function* () {
 				const exit = yield* Effect.exit(
 					Stream.runCollect(tarHostTree({ parentDir: root, relPaths: [] })),
 				);
 				expect(Exit.isFailure(exit)).toBe(true);
 				expect(JSON.stringify(exit)).toContain('no-subtrees');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('tar on missing subtree surfaces stage: "exit-code"', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('host-tree-tar-test', (root) =>
+			Effect.gen(function* () {
 				const exit = yield* Effect.exit(
 					Stream.runCollect(tarHostTree({ parentDir: root, relPaths: ['no-such-thing'] })),
 				);
 				expect(Exit.isFailure(exit)).toBe(true);
 				expect(JSON.stringify(exit)).toContain('exit-code');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it('HostTreeTarError is a tagged failure', () => {

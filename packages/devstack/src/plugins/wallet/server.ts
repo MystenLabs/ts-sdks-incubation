@@ -508,14 +508,15 @@ const decodeJsonBody = <A>(
 				}),
 			);
 		}
-		// Sanctioned cast: `decodeJsonText`'s generic constraint
-		// `S extends Schema.Decoder<unknown>` is wider than
-		// `Schema.Schema<A>` (the Decoder shape has `DecodingServices`/
-		// `RequiresServices` as `unknown`; `Schema.Schema<A>` pins them to
-		// `never`). The runtime helper happily consumes `Schema.Schema<A>`
-		// — only the TS variance disagrees. Lift to a `Schema.Schema<A>`-
-		// accepting decoder helper in `substrate/runtime/runtime-decode.ts`
-		// when the next caller hits the same friction (Phase 17 candidate).
+		// Sanctioned cast: `decodeJsonText`'s `S extends Schema.Decoder<unknown>`
+		// constraint is wider than `Schema.Schema<A>` (DecodingServices /
+		// RequiresServices variance — Effect v4's `Decoder<unknown>` pins
+		// these to `unknown` while `Schema.Schema<A>` pins them to `never`).
+		// The runtime helper happily consumes either; only the TS variance
+		// disagrees. Phase 19A attempted to widen the constraint to
+		// `Schema.Top` but `decodeUnknownSync` requires `Decoder<unknown,
+		// never>`, which a `Top` constraint can't satisfy without a
+		// downstream cast that ends up uglier than this one.
 		return (yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
 			source: 'wallet request body',
 			mkError: (issue) =>

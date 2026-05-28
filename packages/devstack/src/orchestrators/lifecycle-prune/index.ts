@@ -43,7 +43,11 @@ import {
 	removeDevstackVolumes,
 	type StaleNetworkEndpoint,
 } from '../../runtime/docker/index.ts';
-import { checkHolderLiveness, readRoster } from '../../substrate/runtime/cross-process/index.ts';
+import {
+	layerLivenessProbeScope,
+	LivenessProbeScope,
+	readRoster,
+} from '../../substrate/runtime/cross-process/index.ts';
 import { PER_APP_SHARED_STACK } from '../../substrate/runtime/managed-container.ts';
 import { logDebugAndFallback } from '../../substrate/runtime/observability/index.ts';
 import { ROUTER_SHARED_APP, removeRouterProfileStateForDockerStack } from '../router/cleanup.ts';
@@ -236,6 +240,9 @@ const livePidsForStack = (
 ): Effect.Effect<ReadonlyArray<number>> => {
 	const rosterFile = joinPath(runtimeRoot, 'stacks', stack, 'roster.json');
 	if (!existsSync(rosterFile)) return Effect.succeed([]);
+	// Yield a fresh `LivenessProbeScope` so a recycled-PID corner case
+	// (multiple holders sharing one pid in the same roster) forks the OS
+	// liveness probe once per pid across this scan.
 	return Effect.gen(function* () {
 		const doc = yield* readRoster(rosterFile).pipe(
 			logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
@@ -243,19 +250,22 @@ const livePidsForStack = (
 			}),
 		);
 		if (doc === null) return [];
+		const probe = yield* LivenessProbeScope;
 		const pids: Array<number> = [];
 		for (const holder of doc.holders) {
-			const live = yield* checkHolderLiveness(holder).pipe(
-				logDebugAndFallback(
-					'alive' as const,
-					'lifecycle-prune: liveness check failed; assuming alive',
-					{ pid: holder.pid },
-				),
-			);
+			const live = yield* probe
+				.probeHolderLiveness(holder)
+				.pipe(
+					logDebugAndFallback(
+						'alive' as const,
+						'lifecycle-prune: liveness check failed; assuming alive',
+						{ pid: holder.pid },
+					),
+				);
 			if (live === 'alive') pids.push(holder.pid);
 		}
 		return pids;
-	});
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 };
 
 /** True when the group is one of the two shared shapes the

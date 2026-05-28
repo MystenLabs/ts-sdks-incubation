@@ -17,8 +17,7 @@
 // "claim the lock", not "claim the lock, but first someone else must
 // have made sure the directory exists."
 
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Scope } from 'effect';
@@ -29,14 +28,12 @@ import {
 	StackLockIoError,
 } from '../../../../src/substrate/runtime/cross-process/stack-lock.ts';
 import { claim } from '../../../../src/substrate/runtime/cross-process/roster.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'stack-lock-test-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 describe('acquireStackLock', () => {
 	it.effect('creates the parent directory when missing (fresh runtime root)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				// Path two levels deep — `<root>/stacks/stack/stack.lock`.
 				// `<root>/stacks/stack/` does NOT exist yet; the claim
 				// path must mkdir -p before the O_EXCL write.
@@ -59,16 +56,13 @@ describe('acquireStackLock', () => {
 				// Parent directory remains (mkdir is idempotent
 				// across acquires; we don't reap it).
 				expect(existsSync(stackRoot)).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('roster.claim succeeds on a fresh runtime root (regression: StackLockIoError)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', 'main');
 				const paths = {
 					stackLockFile: join(stackRoot, 'stack.lock'),
@@ -89,16 +83,13 @@ describe('acquireStackLock', () => {
 					expect(result.value.roster.holders.length).toBe(1);
 					expect(existsSync(paths.rosterFile)).toBe(true);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('re-acquire after release works (lock file is unlinked at scope close)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', 'main');
 				const lockPath = join(stackRoot, 'stack.lock');
 
@@ -115,10 +106,8 @@ describe('acquireStackLock', () => {
 						expect(existsSync(lockPath)).toBe(true);
 					}),
 				);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });
 

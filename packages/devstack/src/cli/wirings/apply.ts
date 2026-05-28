@@ -82,18 +82,26 @@ export const runApplyLive = (
 ): Effect.Effect<void> => {
 	const loader = makeConfigLoader();
 	return Effect.gen(function* () {
-		const loaded = yield* loader.load(configPath).pipe(
-			Effect.matchEffect({
-				onFailure: (err) =>
-					Effect.gen(function* () {
-						process.stderr.write(`error: ${err.message}\n`);
-						process.exitCode =
-							err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
-						return yield* Effect.fail('config-load-failed' as const);
-					}),
-				onSuccess: (v) => Effect.succeed(v),
-			}),
-		);
+		// Config-load failures emit their own stderr + exitCode and then
+		// short-circuit via early return — surfacing them as `Effect.fail`
+		// would require an outer catch to swallow, which would also catch
+		// genuine downstream failures by accident.
+		const loadExit = yield* Effect.exit(loader.load(configPath));
+		if (Exit.isFailure(loadExit)) {
+			const fail = loadExit.cause.reasons.find(Cause.isFailReason);
+			if (fail !== undefined) {
+				const err = fail.error;
+				process.stderr.write(`error: ${err.message}\n`);
+				process.exitCode =
+					err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
+			} else {
+				// Defect path — surface the raw cause and a generic exit code.
+				process.stderr.write(`error: ${Cause.pretty(loadExit.cause)}\n`);
+				process.exitCode = ExitCode.GENERIC;
+			}
+			return;
+		}
+		const loaded = loadExit.value;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
 		const identityValue: Identity = identityValueFor(identity, stack);
 		if (yield* runApplyAgainstLiveSupervisor(identity, identityValue)) {
@@ -159,5 +167,5 @@ export const runApplyLive = (
 					}),
 			}),
 		);
-	}).pipe(Effect.catch(() => Effect.void));
+	});
 };

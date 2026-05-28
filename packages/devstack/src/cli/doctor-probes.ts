@@ -34,7 +34,11 @@ import {
 } from '../orchestrators/router/index.ts';
 import { BUILT_IN_ENTRYPOINTS } from '../plugins/router-entrypoints.ts';
 import { parseJsonTextSync } from '../substrate/runtime/runtime-decode.ts';
-import { checkHolderLiveness, readRoster } from '../substrate/runtime/cross-process/index.ts';
+import {
+	layerLivenessProbeScope,
+	LivenessProbeScope,
+	readRoster,
+} from '../substrate/runtime/cross-process/index.ts';
 import type { RosterHolder } from '../substrate/cross-process.ts';
 import type { Probe, ProbeOutcome } from '../surfaces/cli/commands/doctor.ts';
 
@@ -283,6 +287,8 @@ const inspectRouterNetwork = (
 };
 
 const inspectRouterDispatch = (profile: RouterProfile): Effect.Effect<RouterDispatchScan> =>
+	// Yield a fresh `LivenessProbeScope` so repeated lease owners across
+	// many dispatch route files fork the OS probe once per pid.
 	Effect.gen(function* () {
 		if (!existsSync(profile.dispatchDir)) {
 			return {
@@ -336,6 +342,7 @@ const inspectRouterDispatch = (profile: RouterProfile): Effect.Effect<RouterDisp
 				safeToPrune: false,
 			};
 		}
+		const probe = yield* LivenessProbeScope;
 		let routeFiles = 0;
 		let liveRoutes = 0;
 		let staleRoutes = 0;
@@ -366,9 +373,9 @@ const inspectRouterDispatch = (profile: RouterProfile): Effect.Effect<RouterDisp
 				unknownOwnerRoutes += 1;
 				continue;
 			}
-			const leaseStatus = yield* checkHolderLiveness(parsed.route.lease.owner).pipe(
-				Effect.catch(() => Effect.succeed('alive' as const)),
-			);
+			const leaseStatus = yield* probe
+				.probeHolderLiveness(parsed.route.lease.owner)
+				.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 			if (leaseStatus === 'dead') staleRoutes += 1;
 			else liveRoutes += 1;
 		}
@@ -383,7 +390,7 @@ const inspectRouterDispatch = (profile: RouterProfile): Effect.Effect<RouterDisp
 			diagnostics,
 			safeToPrune,
 		};
-	});
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 
 const inspectRouterStateDir = (profile: RouterProfile): 'absent' | 'present' | 'not-directory' => {
 	if (!existsSync(profile.stateDir)) return 'absent';
@@ -498,6 +505,10 @@ export const locksProbe = (appRoot: string): Probe => ({
 		Effect.gen(function* () {
 			if (!existsSync(appRoot)) return okOutcome('(no app root yet)');
 			const ownHost = nodeHostname();
+			// Yield a fresh `LivenessProbeScope` so a single pid that
+			// shows up in multiple stack rosters under this app root is
+			// probed AT MOST once across the full lock scan.
+			const probe = yield* LivenessProbeScope;
 			let orphans = 0;
 			let totalLive = 0;
 			try {
@@ -517,16 +528,16 @@ export const locksProbe = (appRoot: string): Probe => ({
 						),
 					);
 					for (const holder of doc.holders) {
-						const liveness = yield* checkHolderLiveness(holder, ownHost).pipe(
-							Effect.catch(() => Effect.succeed('alive' as const)),
-						);
+						const liveness = yield* probe
+							.probeHolderLiveness(holder, ownHost)
+							.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 						if (liveness === 'alive') totalLive += 1;
 						else orphans += 1;
 					}
 				}
 			} catch (cause) {
 				return {
-					status: 'warn',
+					status: 'warn' as const,
 					detail: `lock scan failed: ${cause instanceof Error ? cause.message : String(cause)}`,
 				};
 			}
@@ -534,10 +545,10 @@ export const locksProbe = (appRoot: string): Probe => ({
 				return okOutcome(`${totalLive} live, 0 orphan`);
 			}
 			return {
-				status: 'warn',
+				status: 'warn' as const,
 				detail: `${orphans} orphan holder(s); rerun with --clean-locks`,
 			};
-		}),
+		}).pipe(Effect.provide(layerLivenessProbeScope)),
 });
 
 /** Probe: state-dir is writable. Validates DEVSTACK_STATE_DIR resolves

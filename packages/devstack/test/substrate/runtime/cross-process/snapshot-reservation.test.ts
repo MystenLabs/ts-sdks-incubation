@@ -1,5 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit } from 'effect';
@@ -11,17 +10,15 @@ import {
 	SnapshotReservationHeldError,
 	sweepOrphan,
 } from '../../../../src/substrate/runtime/cross-process/snapshot-reservation.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-reservation-test-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 const reservationPath = (root: string): string => join(root, 'snapshot.reservation');
 
 describe('snapshot reservation PID/start-time safety', () => {
 	it.effect('writes pid/start-time reservation body and unlinks it on scope close', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const path = reservationPath(root);
-			try {
+		withTempRoot('snapshot-reservation-test', (root) =>
+			Effect.gen(function* () {
+				const path = reservationPath(root);
 				const startTime = processStartTime(process.pid) ?? 0;
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -39,17 +36,14 @@ describe('snapshot reservation PID/start-time safety', () => {
 				);
 
 				expect(existsSync(path)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses a live same-process reservation instead of sweeping it', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const path = reservationPath(root);
-			try {
+		withTempRoot('snapshot-reservation-test', (root) =>
+			Effect.gen(function* () {
+				const path = reservationPath(root);
 				const startTime = processStartTime(process.pid) ?? 0;
 				writeFileSync(
 					path,
@@ -68,17 +62,14 @@ describe('snapshot reservation PID/start-time safety', () => {
 					expect(error.value).toBeInstanceOf(SnapshotReservationHeldError);
 				}
 				expect(existsSync(path)).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('sweeps a reservation whose pid is live but start-time does not match', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const path = reservationPath(root);
-			try {
+		withTempRoot('snapshot-reservation-test', (root) =>
+			Effect.gen(function* () {
+				const path = reservationPath(root);
 				const realStartTime = processStartTime(process.pid);
 				if (realStartTime === null) return;
 				writeFileSync(
@@ -93,9 +84,7 @@ describe('snapshot reservation PID/start-time safety', () => {
 				const result = yield* sweepOrphan(path);
 				expect(result.swept).toBe(true);
 				expect(existsSync(path)).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

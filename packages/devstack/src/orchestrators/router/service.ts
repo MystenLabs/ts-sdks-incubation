@@ -44,7 +44,12 @@ import { connect, DockerHost, DockerSpawner, waitForIp } from '../../runtime/doc
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import { logWarningAndIgnore } from '../../substrate/runtime/observability/index.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { checkHolderLiveness, ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
+import {
+	checkHolderLiveness,
+	layerLivenessProbeScope,
+	LivenessProbeScope,
+	ownHolder,
+} from '../../substrate/runtime/cross-process/liveness.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { waitForHttpEndpoint, type HttpProbeFetch } from '../../substrate/runtime/http-probe.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
@@ -339,10 +344,23 @@ const sweepStaleDispatchRoutes = (
 	routes: ReadonlyArray<DispatchRouteMetadata>,
 	dispatchFileId: string,
 ): Effect.Effect<ReadonlyArray<DispatchRouteMetadata>, DispatchWriteFailed> =>
+	// Yield a fresh per-sweep `LivenessProbeScope` so a recycled lease
+	// owner (multiple stale routes pointing at the same dead pid) forks
+	// `ps`/`tasklist` AT MOST once across the loop — matches the roster
+	// sweep migration in Phase 9A.
 	Effect.gen(function* () {
+		const probe = yield* LivenessProbeScope;
 		const active: DispatchRouteMetadata[] = [];
 		for (const route of routes) {
-			const status = yield* classifyDispatchLease(route);
+			const status: DispatchLeaseStatus =
+				route.lease === null
+					? 'unknown-owner'
+					: yield* probe
+							.probeHolderLiveness(route.lease.owner)
+							.pipe(
+								Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
+								Effect.catch(() => Effect.succeed('live' as const)),
+							);
 			if (status === 'stale') {
 				const filePath = path.join(profile.dispatchDir, dispatchFilename(route.dispatchFileId));
 				yield* fs.remove(filePath).pipe(
@@ -361,7 +379,7 @@ const sweepStaleDispatchRoutes = (
 			active.push(route);
 		}
 		return active;
-	});
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 
 const makeRouteLease = (profile: RouterProfile, identity: Identity): RouteLeaseMetadata => ({
 	version: ROUTER_ROUTE_LEASE_VERSION,

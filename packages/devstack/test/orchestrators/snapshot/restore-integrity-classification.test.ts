@@ -3,8 +3,7 @@
 // load-bearing rule (STYLE_GUIDE.md §2 rule 5): the phase classifier
 // MUST branch by tag/kind, never by message substring.
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -27,8 +26,7 @@ import {
 	type SnapshotMetadata,
 	type SnapshotRuntimeIdentity,
 } from '../../../src/orchestrators/snapshot/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'restore-integrity-classify-'));
+import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const runtimeIdentity: SnapshotRuntimeIdentity = {
 	app: 'restore-app',
@@ -120,9 +118,8 @@ const expectRestorePhase = (exit: Exit.Exit<unknown, unknown>, expectedPhase: st
 
 describe('restore integrity classification', () => {
 	it.effect('classifies SnapshotIntegrityError(kind=missing) as phase=read-integrity', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('restore-integrity-classify', (root) =>
+			Effect.gen(function* () {
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				// Deliberately do NOT write integrity.json.
@@ -132,16 +129,13 @@ describe('restore integrity classification', () => {
 				);
 
 				expectRestorePhase(exit, 'read-integrity');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('classifies SnapshotIntegrityError(kind=corrupt) as phase=verify-integrity', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('restore-integrity-classify', (root) =>
+			Effect.gen(function* () {
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				writeFileSync(join(artifactDir, SnapshotLayout.integrityFile), '{ not json at all');
@@ -151,16 +145,13 @@ describe('restore integrity classification', () => {
 				);
 
 				expectRestorePhase(exit, 'verify-integrity');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('classifies SnapshotIntegrityError(kind=mismatch) as phase=verify-integrity', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('restore-integrity-classify', (root) =>
+			Effect.gen(function* () {
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
@@ -175,16 +166,13 @@ describe('restore integrity classification', () => {
 				);
 
 				expectRestorePhase(exit, 'verify-integrity');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('classifies SnapshotIntegrityError(kind=walk-failed) as phase=verify-integrity', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('restore-integrity-classify', (root) =>
+			Effect.gen(function* () {
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
@@ -200,9 +188,7 @@ describe('restore integrity classification', () => {
 				);
 
 				expectRestorePhase(exit, 'verify-integrity');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

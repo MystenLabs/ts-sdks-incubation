@@ -20,7 +20,7 @@ import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcess
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import { describe, expect, it } from '@effect/vitest';
-import { Deferred, Effect, Fiber, Layer, Stream } from 'effect';
+import { Data, Deferred, Effect, Fiber, Layer, Stream } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 import { DockerHost, DockerSpawner, layerDockerHost } from '../../../src/runtime/docker/client.ts';
@@ -80,18 +80,31 @@ const isProcessAlive = (pid: number): boolean => {
 	}
 };
 
-const waitForFile = (path: string, timeoutMs: number): Effect.Effect<void> =>
+/** Typed failure surfaced when `waitForFile` exhausts its deadline.
+ *  Carries the probed `path` and `waitedMs` so callers and test logs
+ *  can identify the wait that timed out without parsing a string. */
+class WaitForFileTimeoutError extends Data.TaggedError('WaitForFileTimeoutError')<{
+	readonly path: string;
+	readonly waitedMs: number;
+}> {}
+
+const waitForFile = (
+	path: string,
+	timeoutMs: number,
+): Effect.Effect<void, WaitForFileTimeoutError> =>
 	Effect.gen(function* () {
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			if (existsSync(path)) return;
 			yield* Effect.sleep('25 millis');
 		}
-		// Surface the timeout explicitly. Without this, callers that
-		// `readFileSync(path)` next get an ENOENT with no breadcrumb
-		// back to the wait — making "fiber never wrote the pidfile"
-		// look like an unrelated I/O bug.
-		yield* Effect.die(`waitForFile: timed out after ${timeoutMs}ms waiting for ${path}`);
+		// Surface the timeout via a tagged error rather than `Effect.die`
+		// with a string. Without this, callers that `readFileSync(path)`
+		// next get an ENOENT with no breadcrumb back to the wait —
+		// making "fiber never wrote the pidfile" look like an unrelated
+		// I/O bug. The typed error also lets callers `catchTag` for
+		// retry / fallback logic without string-matching cause messages.
+		yield* Effect.fail(new WaitForFileTimeoutError({ path, waitedMs: timeoutMs }));
 	});
 
 const waitUntilDead = (pid: number, timeoutMs: number): Effect.Effect<boolean> =>

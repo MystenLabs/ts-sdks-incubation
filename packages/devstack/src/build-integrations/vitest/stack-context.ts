@@ -17,6 +17,7 @@ import {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	resolveBuiltInEndpointAlias,
 	type ManifestEnvelope,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
@@ -71,13 +72,23 @@ export interface LoadStackContextOptions {
 
 const project = (ctx: RuntimeStackContext): StackContext => {
 	const envelope: ManifestEnvelope = manifestEnvelopeFromStackContext(ctx);
+	// Alias-resolve the user-typed name BEFORE the registry lookup so
+	// `endpoint('app')` resolves to whatever canonical key the substrate
+	// emits (`'dev'` today). Mirrors the playwright surface
+	// (`playwrightEndpointNameFor` in `playwright/stack-context.ts`) so
+	// both build integrations share one alias table from
+	// `runtime/conventional-routes.ts`. Without this, the `endpoint(name)`
+	// accessor silently returns `undefined` for legit aliases the
+	// playwright fixture happily accepts.
+	const lookup = (nameOrAlias: string) =>
+		ctx.endpoints.byName(resolveBuiltInEndpointAlias(nameOrAlias));
 	return {
 		manifestPath: ctx.manifestPath,
 		manifest: envelope,
 		identity: envelope.identity,
-		endpoint: (name) => ctx.endpoints.byName(name)?.url,
+		endpoint: (name) => lookup(name)?.url,
 		displayEndpoint: (name) => {
-			const e = ctx.endpoints.byName(name);
+			const e = lookup(name);
 			if (e === undefined) return undefined;
 			return e.displayUrl ?? e.url;
 		},

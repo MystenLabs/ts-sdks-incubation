@@ -5,10 +5,6 @@
 // the tail subscription delivers records appended after the
 // subscription started.
 
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { Effect, Fiber, Schema, Stream } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
@@ -23,17 +19,15 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../../src/substrate/runtime/cross-process/command-channel/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'cmd-channel-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 describe('command-channel', () => {
 	// These tests use real wall-clock time (the file-channel tail polls
 	// via `Effect.sleep`; `it.effect`'s default TestClock would freeze
 	// the poll loop). `it.live` runs under the wall-clock runtime.
 	it.live('publisher writes a record that the subscriber observes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const sub = yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -67,16 +61,13 @@ describe('command-channel', () => {
 				const cmd = sub[0]!.command as { tag: string };
 				expect(cmd.tag).toBe('shutdown.requested');
 				expect(sub[0]!.publisherPid).toBe(process.pid);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('ack/error correlate to the originating command id', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -111,16 +102,13 @@ describe('command-channel', () => {
 					}),
 				);
 				expect(result.ok).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('awaitCompletion times out when no ack arrives', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -135,16 +123,13 @@ describe('command-channel', () => {
 				if (!result.ok) {
 					expect(result.message).toMatch(/timed out/);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('readAllRecords replays every command on disk', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -165,16 +150,13 @@ describe('command-channel', () => {
 				expect((all[0]!.command as { tag: string }).tag).toBe('shutdown.requested');
 				expect((all[1]!.command as { tag: string }).tag).toBe('shutdown.hardKillRequested');
 				expect((all[2]!.command as { tag: string }).tag).toBe('apply.requested');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('engine event records carry kind: engine', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -186,9 +168,7 @@ describe('command-channel', () => {
 				const all = yield* readAllRecords<EventRecord>(paths.eventsFile, (raw) => decode(raw));
 				expect(all).toHaveLength(1);
 				expect(all[0]!.kind).toBe('engine');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

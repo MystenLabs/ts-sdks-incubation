@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { Cause, Deferred, Effect, Exit, Fiber, Layer, Ref } from 'effect';
+import * as TestClock from 'effect/testing/TestClock';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -265,6 +266,48 @@ describe('layerCrossProcessLockFlock', () => {
 		},
 		{ timeout: 15_000 },
 	);
+
+	it.effect('withLock body inherits TestClock so wall-time sleeps are virtual', () => {
+		// Phase 5 regression: `withLock` was previously wrapped end-to-end
+		// in `underLiveClock`, which forced the user body to use the
+		// real OS clock too. That made TestClock-driven tests park
+		// indefinitely on any `Effect.sleep` inside the critical
+		// section. Phase 5 narrowed `underLiveClock` to wrap ONLY the
+		// acquire/release infrastructure — the body inherits the
+		// caller's clock — so `TestClock.adjust` virtually advances
+		// past sleeps inside the lock body.
+		const root = freshRoot();
+		const stackRoot = join(root, 'app', 'main');
+		return Effect.gen(function* () {
+			try {
+				const lock = yield* CrossProcessLock;
+				const done = yield* Deferred.make<void>();
+				const fiber = yield* Effect.forkChild(
+					lock.withLock(
+						Effect.gen(function* () {
+							// Five minutes of wall time — would block the test
+							// runner past its default timeout without TestClock
+							// virtualization of the body.
+							yield* Effect.sleep('5 minutes');
+							yield* Deferred.succeed(done, undefined);
+						}),
+					),
+				);
+				// Let the body fork reach `Effect.sleep` (it acquires the
+				// lock first under live clock, then yields on sleep under
+				// TestClock).
+				yield* TestClock.adjust('100 millis');
+				// Virtually advance past the 5-minute sleep.
+				yield* TestClock.adjust('5 minutes');
+				yield* Deferred.await(done);
+				yield* Fiber.join(fiber);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}).pipe(
+			Effect.provide(layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackRoot)))),
+		);
+	});
 
 	it.effect('parallel-stack instances do not share locks', () => {
 		// Two distinct stack roots → two distinct on-disk lock files →
