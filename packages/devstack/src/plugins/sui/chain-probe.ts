@@ -25,7 +25,7 @@ import type {
 	ChainProbeSchema,
 } from '../../contracts/chain-probe.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
-import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 
 /**
  * Sui's chain-key shape — discriminated so the probe can dispatch
@@ -168,7 +168,7 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 					_tag: 'ChainProbeError',
 					reason: isNotFound(cause) ? 'not-found' : 'transient',
 					chain,
-					detail: stringifyCause(cause),
+					detail: formatUnknownError(cause),
 				}),
 			}).pipe(
 				// Lenient mode coerces both not-found and transient into a
@@ -193,7 +193,7 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 					_tag: 'ChainProbeError',
 					reason: 'decode-failed',
 					chain,
-					detail: stringifyCause(issue.cause ?? issue),
+					detail: formatUnknownError(issue.cause ?? issue),
 				}),
 			});
 			return decoded;

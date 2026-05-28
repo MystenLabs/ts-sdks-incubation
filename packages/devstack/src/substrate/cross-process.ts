@@ -14,6 +14,8 @@
 
 import { Schema } from 'effect';
 
+import { versionedDocSchema } from './versioned-doc-schema.ts';
+
 /** Holder intent — `normal` for ordinary peers; `snapshot` while
  *  the holder is mid-capture (peers' commands defer). */
 export type HolderIntent = 'normal' | 'snapshot';
@@ -45,8 +47,7 @@ export const RosterHolderSchema = Schema.Struct({
 	intent: Schema.Literals(['normal', 'snapshot']),
 });
 
-export const RosterDocumentSchema = Schema.Struct({
-	version: Schema.Literal(1),
+export const RosterDocumentSchema = versionedDocSchema(1, {
 	holders: Schema.Array(RosterHolderSchema),
 });
 

@@ -8,7 +8,6 @@
 export {
 	bootstrap,
 	DEFAULT_TRAEFIK_IMAGE,
-	HOST_GATEWAY_ALIAS,
 	layerTraefikContainerOpsDocker,
 	layerTraefikContainerOpsStub,
 	ROUTER_PROFILE_LABEL,

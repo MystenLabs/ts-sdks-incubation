@@ -549,7 +549,7 @@ target)`.
 
 ### 21.4 `versionedDocSchema` migration procedure
 
-`versionedDocSchema(N, payload)` at `substrate/runtime/versioned-doc-schema.ts` centralises the
+`versionedDocSchema(N, payload)` at `substrate/versioned-doc-schema.ts` centralises the
 `{ version: Literal<N>, ...payload }` shape every persisted cross-process document shares (roster,
 container-claim, snapshot-reservation, port-reservation).
 

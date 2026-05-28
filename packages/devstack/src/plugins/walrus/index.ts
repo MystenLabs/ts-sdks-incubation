@@ -51,7 +51,7 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
-import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
+import { deriveSubnetPrefix, subnetSpec } from '../../substrate/runtime/subnet-broker.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
@@ -126,8 +126,7 @@ export const walrusNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
 	subnetPrefix: string,
 ): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
 	...spec,
-	subnet: `${subnetPrefix}.0/24`,
-	gateway: `${subnetPrefix}.1`,
+	...subnetSpec(subnetPrefix),
 });
 
 const withWalrusNetworkAddressing = (

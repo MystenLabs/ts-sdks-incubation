@@ -10,11 +10,12 @@
 
 import { Schema } from 'effect';
 
+import { versionedDocSchema } from '../../versioned-doc-schema.ts';
+
 /** Versioned envelope. Schema-decode failure on read is treated as
  *  a cache MISS (best-effort cache contract — corruption recovers
  *  by re-producing the artifact). */
-export const CacheEntryDoc = Schema.Struct({
-	version: Schema.Literal(1),
+export const CacheEntryDoc = versionedDocSchema(1, {
 	/** Bytes, base64-encoded. Chosen over hex because typical
 	 *  artifacts are larger (image manifests, package digests) and
 	 *  base64 is 33% overhead vs hex's 100%. */

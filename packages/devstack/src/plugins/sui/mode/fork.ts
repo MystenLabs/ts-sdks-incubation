@@ -25,7 +25,7 @@ import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
-import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SeedManifestMismatchError, type SuiPluginError } from '../errors.ts';
@@ -412,7 +412,7 @@ const ensureForkDataDir = (
 		catch: (cause) =>
 			suiPluginError(
 				'fork-data-dir',
-				`sui fork mode: failed to create data directory ${dataDir}: ${stringifyCause(cause)}`,
+				`sui fork mode: failed to create data directory ${dataDir}: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	});
@@ -446,7 +446,7 @@ const waitForForkReady = (
 						)
 					: suiPluginError(
 							'fork-status-probe',
-							`sui fork mode: ForkingService.GetStatus probe failed: ${stringifyCause(cause)}`,
+							`sui fork mode: ForkingService.GetStatus probe failed: ${formatUnknownError(cause)}`,
 							cause,
 						),
 			),
@@ -464,7 +464,7 @@ const makeForkAdminSurface = (sdkClient: SuiGrpcClient): ForkAdminSurface => ({
 			catch: (cause) =>
 				suiPluginError(
 					'fork-advance-clock',
-					`sui fork mode: advanceClock(${intervalMs}) failed: ${stringifyCause(cause)}`,
+					`sui fork mode: advanceClock(${intervalMs}) failed: ${formatUnknownError(cause)}`,
 					cause,
 				),
 		}).pipe(Effect.asVoid),
@@ -473,7 +473,7 @@ const makeForkAdminSurface = (sdkClient: SuiGrpcClient): ForkAdminSurface => ({
 		catch: (cause) =>
 			suiPluginError(
 				'fork-advance-checkpoint',
-				`sui fork mode: advanceCheckpoint failed: ${stringifyCause(cause)}`,
+				`sui fork mode: advanceCheckpoint failed: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	}).pipe(Effect.asVoid),
@@ -498,7 +498,7 @@ const makeForkAdminSurface = (sdkClient: SuiGrpcClient): ForkAdminSurface => ({
 				catch: (cause) =>
 					suiPluginError(
 						'fork-impersonate',
-						`sui fork mode: impersonate(${sender}) failed: ${stringifyCause(cause)}`,
+						`sui fork mode: impersonate(${sender}) failed: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			});
@@ -529,7 +529,7 @@ const readForkStatus = (sdkClient: SuiGrpcClient): Effect.Effect<ForkStatus, Sui
 		catch: (cause) =>
 			suiPluginError(
 				'fork-status-probe',
-				`sui fork mode: GetStatus failed: ${stringifyCause(cause)}`,
+				`sui fork mode: GetStatus failed: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	});

@@ -9,7 +9,7 @@ import {
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 
 import { suiPluginError, type SuiPluginError } from './errors.ts';
-import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 
 export const FORK_IMPERSONATION_GAS_BUDGET = 1_000_000_000n;
 export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;
@@ -71,7 +71,7 @@ export const buildForkImpersonationTransactionBytes = (
 			if (isSuiPluginError(cause)) return cause;
 			return suiPluginError(
 				'fork-impersonate',
-				`sui fork mode: failed to build fork impersonation transaction for ${sender}: ${stringifyCause(cause)}`,
+				`sui fork mode: failed to build fork impersonation transaction for ${sender}: ${formatUnknownError(cause)}`,
 				cause,
 			);
 		},
@@ -223,7 +223,7 @@ export const verifyForkImpersonationSender = (
 			if (isSuiPluginError(cause)) return cause;
 			return suiPluginError(
 				'fork-impersonate',
-				`sui fork mode: refused impersonation transaction: ${stringifyCause(cause)}`,
+				`sui fork mode: refused impersonation transaction: ${formatUnknownError(cause)}`,
 				cause,
 			);
 		},

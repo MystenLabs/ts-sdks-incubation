@@ -47,7 +47,7 @@ import {
 	DEPLOY_BIND_SOURCE_RETRY_PROFILE,
 	makeSpacedRetrySchedule,
 } from '../../substrate/runtime/retry-policy.ts';
-import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
@@ -261,7 +261,7 @@ export const runDeployOneShot = (
 				Effect.mapError((cause) =>
 					walrusPluginError(
 						'deploy',
-						`walrus deploy funding gate failed before walrus-deploy: ${stringifyCause(cause)}`,
+						`walrus deploy funding gate failed before walrus-deploy: ${formatUnknownError(cause)}`,
 						{ cause },
 					),
 				),

@@ -54,7 +54,7 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
-import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
+import { deriveSubnetPrefix, subnetSpec } from '../../substrate/runtime/subnet-broker.ts';
 import { sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
@@ -113,8 +113,7 @@ export const sealNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
 	subnetPrefix: string,
 ): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
 	...spec,
-	subnet: `${subnetPrefix}.0/24`,
-	gateway: `${subnetPrefix}.1`,
+	...subnetSpec(subnetPrefix),
 });
 
 /** Per-probe interval inside the bounded retry. */

@@ -68,7 +68,7 @@ import {
 	suiCliImageBuildContext,
 } from '../../../substrate/runtime/sui-move-build/index.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import {
@@ -614,7 +614,7 @@ const waitForReady = (
 					suiPluginError(
 						'rpc-probe',
 						`sui local mode: RPC endpoint ${rpcUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),
@@ -636,7 +636,7 @@ const waitForReady = (
 					suiPluginError(
 						'faucet-probe',
 						`sui local mode: faucet endpoint ${faucetUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),
@@ -655,7 +655,7 @@ const waitForReady = (
 					suiPluginError(
 						'graphql-probe',
 						`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),

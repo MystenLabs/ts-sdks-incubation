@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -39,9 +38,10 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../src/substrate/runtime/cross-process/command-channel/index.ts';
+import { withTempRoot } from '../../helpers/with-temp-root.ts';
 import { dockerSaveBundleTarWithLateMetadata, writeImageBundle } from './image-bundle-fixtures.ts';
 
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-restore-test-'));
+const TEMP_PREFIX = 'snapshot-restore-test';
 
 const runtimeIdentity: SnapshotRuntimeIdentity = {
 	app: 'restore-app',
@@ -218,57 +218,55 @@ describe('snapshot restore safety', () => {
 		Effect.gen(function* () {
 			const fields: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
 			for (const field of fields) {
-				const root = freshRoot();
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const loadBytes: number[] = [];
-				const tagCalls: Array<{
-					readonly src: ImageRef;
-					readonly newTag: string;
-					readonly opts: TagImageOptions | undefined;
-				}> = [];
-				try {
-					const foreignMeta = metadata({
-						[field]: `${runtimeIdentity[field]}-foreign`,
-						containers: [
-							capturedContainer({
-								plugin: 'postgres#0',
-								imageName: 'postgres:test',
-							}),
-						],
-					});
-					const exit = yield* runRestoreExit(
-						root,
-						foreignMeta,
-						runtimeIdentity,
-						sweepCalls,
-						runtimeStub(sweepCalls, { loadBytes, tagCalls }),
-					).pipe(Effect.provide(NodeFileSystem.layer));
+				yield* withTempRoot(TEMP_PREFIX, (root) =>
+					Effect.gen(function* () {
+						const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+						const loadBytes: number[] = [];
+						const tagCalls: Array<{
+							readonly src: ImageRef;
+							readonly newTag: string;
+							readonly opts: TagImageOptions | undefined;
+						}> = [];
+						const foreignMeta = metadata({
+							[field]: `${runtimeIdentity[field]}-foreign`,
+							containers: [
+								capturedContainer({
+									plugin: 'postgres#0',
+									imageName: 'postgres:test',
+								}),
+							],
+						});
+						const exit = yield* runRestoreExit(
+							root,
+							foreignMeta,
+							runtimeIdentity,
+							sweepCalls,
+							runtimeStub(sweepCalls, { loadBytes, tagCalls }),
+						).pipe(Effect.provide(NodeFileSystem.layer));
 
-					expect(Exit.isFailure(exit)).toBe(true);
-					const error = Exit.findErrorOption(exit);
-					expect(error._tag).toBe('Some');
-					if (error._tag === 'Some') {
-						expect(error.value).toBeInstanceOf(IdentityMismatchError);
-						expect(error.value._tag).toBe('SnapshotIdentityMismatch');
-						if (error.value._tag === 'SnapshotIdentityMismatch') {
-							expect(error.value.key).toBe(field);
+						expect(Exit.isFailure(exit)).toBe(true);
+						const error = Exit.findErrorOption(exit);
+						expect(error._tag).toBe('Some');
+						if (error._tag === 'Some') {
+							expect(error.value).toBeInstanceOf(IdentityMismatchError);
+							expect(error.value._tag).toBe('SnapshotIdentityMismatch');
+							if (error.value._tag === 'SnapshotIdentityMismatch') {
+								expect(error.value.key).toBe(field);
+							}
 						}
-					}
-					expect(sweepCalls).toEqual([]);
-					expect(loadBytes).toEqual([]);
-					expect(tagCalls).toEqual([]);
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
+						expect(sweepCalls).toEqual([]);
+						expect(loadBytes).toEqual([]);
+						expect(tagCalls).toEqual([]);
+					}),
+				);
 			}
 		}),
 	);
 
 	it.effect('refuses snapshots with no contributed identity before cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const emptyIdentityMeta = metadata({
 					identity: {},
 					containers: [
@@ -295,17 +293,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('scopes restore container replacement to the current app and stack', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -329,17 +324,14 @@ describe('snapshot restore safety', () => {
 						role: 'db',
 					},
 				]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses a missing container tar before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -361,17 +353,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses a missing contribution doc before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -397,17 +386,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses a host-tree tar with traversal entries before extraction', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata({
 					hostTreeIncluded: true,
 					subtrees: [
@@ -439,17 +425,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('accepts contribution docs for plugin keys containing slashes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const pluginKey = 'account/alice#0';
 				const meta = metadata({ participants: [pluginKey] });
 				const artifactDir = writeArtifact(root, meta);
@@ -473,17 +456,14 @@ describe('snapshot restore safety', () => {
 
 				expect(Exit.isSuccess(exit)).toBe(true);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses contribution docs with unknown versions before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const pluginKey = 'postgres';
 				const meta = metadata({ participants: [pluginKey] });
 				const artifactDir = writeArtifact(root, meta);
@@ -511,17 +491,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses corrupt contribution docs before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const pluginKey = 'postgres';
 				const meta = metadata({ participants: [pluginKey] });
 				const artifactDir = writeArtifact(root, meta);
@@ -542,17 +519,14 @@ describe('snapshot restore safety', () => {
 					}
 				}
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses snapshot state docs with unknown versions before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				writeFileSync(
@@ -575,17 +549,14 @@ describe('snapshot restore safety', () => {
 				}
 				expect(sweepCalls).toEqual([]);
 				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses corrupt snapshot state docs before restore cleanup', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const meta = metadata();
 				const artifactDir = writeArtifact(root, meta);
 				writeFileSync(join(artifactDir, SnapshotLayout.stateFile), '{not json');
@@ -605,17 +576,14 @@ describe('snapshot restore safety', () => {
 				}
 				expect(sweepCalls).toEqual([]);
 				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('preserves only runtime-control paths and drops plugin-owned wallet state', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 				const stackRoot = join(root, 'runtime-stack');
 				const walletTokenPath = join(stackRoot, 'wallet', 'token');
 				const meta = metadata();
@@ -669,19 +637,16 @@ describe('snapshot restore safety', () => {
 				);
 				expect(existsSync(join(stackRoot, 'cache', 'entry'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'unrelated-runtime-state'))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live(
 		'keeps command and event tails readable after a live restore swap',
 		() =>
-			Effect.gen(function* () {
-				const root = freshRoot();
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				try {
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
 					const stackRoot = join(root, 'runtime-stack');
 					const meta = metadata();
 					const artifactDir = writeArtifact(stackRoot, meta);
@@ -753,19 +718,16 @@ describe('snapshot restore safety', () => {
 					if (events[0]!.kind === 'engine') {
 						expect((events[0]!.event as { tag: string }).tag).toBe('after.restore');
 					}
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
-			}),
+				}),
+			),
 		{ timeout: 30_000 },
 	);
 
 	it.effect('does not run restore cleanup when docker load fails for a readable image bundle', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -795,18 +757,15 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual(['load']);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('streams the full image bundle to docker load when metadata follows layer blobs', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const loadBytes: number[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const loadBytes: number[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -826,18 +785,15 @@ describe('snapshot restore safety', () => {
 				expect(Exit.isSuccess(exit)).toBe(true);
 				expect(loadBytes).toHaveLength(bundle.length);
 				expect(Buffer.from(loadBytes).includes(Buffer.from('manifest.json'))).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses a Docker save bundle missing metadata snapshot tags before docker load', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -861,18 +817,15 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses unexpected Docker save bundle tags before docker load', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -896,18 +849,15 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('accepts an OCI image layout bundle without legacy Docker manifest', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -921,18 +871,15 @@ describe('snapshot restore safety', () => {
 
 				expect(Exit.isSuccess(exit)).toBe(true);
 				expect(events[0]).toBe('load');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses OCI image layout bundle tag mismatches before docker load', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -956,18 +903,15 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('refuses duplicate snapshot tags before loading image bundles', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -1005,18 +949,15 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('verifies artifact integrity before loading images or replacing containers', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [capturedContainer()],
 				});
@@ -1051,19 +992,16 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('cleans restore-staging image refs when a staging tag fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					containers: [
@@ -1108,20 +1046,17 @@ describe('snapshot restore safety', () => {
 					},
 				]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('cleans earlier restore-staging refs when a later staging tag fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			let stagingTagAttempts = 0;
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				let stagingTagAttempts = 0;
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -1198,19 +1133,16 @@ describe('snapshot restore safety', () => {
 				expect(events).not.toContain('tag:devstack-build:postgres-db');
 				expect(events).not.toContain('tag:devstack-build:postgres-worker');
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('does not replace containers when filesystem publish fails after image staging', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
 				const stackRoot = join(root, 'runtime-stack');
 				const backupPath = join(root, 'runtime-stack.bak');
 				const imageName = 'devstack-build:postgres-original';
@@ -1257,18 +1189,15 @@ describe('snapshot restore safety', () => {
 				expect(sweepCalls).toEqual([]);
 				expect(readFileSync(join(stackRoot, 'live-state'), 'utf8')).toBe('old');
 				expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('leaves a restore-pending marker when post-publish image promotion fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const stackRoot = join(root, 'runtime-stack');
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
@@ -1337,19 +1266,16 @@ describe('snapshot restore safety', () => {
 						digest: 'sha256:loaded-postgres-db',
 					},
 				]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('keeps pending marker and clears orphan staging tags when mid-promote fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
 				const stackRoot = join(root, 'runtime-stack');
 				const dbImageName = 'devstack-build:postgres-db';
 				const workerImageName = 'devstack-build:postgres-worker';
@@ -1472,18 +1398,15 @@ describe('snapshot restore safety', () => {
 						})),
 					),
 				);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('does not run restore cleanup when host-tree expansion fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const imageName = 'devstack-build:postgres-original';
 				const meta = metadata({
 					hostTreeIncluded: true,
@@ -1521,26 +1444,23 @@ describe('snapshot restore safety', () => {
 				}
 				expect(events).toEqual([]);
 				expect(sweepCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect(
 		'loads the saved image bundle and tags the recorded snapshot image under the original ref',
 		() =>
-			Effect.gen(function* () {
-				const root = freshRoot();
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const loadBytes: number[] = [];
-				const tagCalls: Array<{
-					readonly src: ImageRef;
-					readonly newTag: string;
-					readonly opts: TagImageOptions | undefined;
-				}> = [];
-				const events: string[] = [];
-				try {
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+					const loadBytes: number[] = [];
+					const tagCalls: Array<{
+						readonly src: ImageRef;
+						readonly newTag: string;
+						readonly opts: TagImageOptions | undefined;
+					}> = [];
+					const events: string[] = [];
 					const meta = metadata({
 						containers: [
 							capturedContainer({
@@ -1596,18 +1516,15 @@ describe('snapshot restore safety', () => {
 						},
 					]);
 					expect(existsSync(join(root, 'runtime-stack', RESTORE_PENDING_FILE_NAME))).toBe(false);
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
-			}),
+				}),
+			),
 	);
 
 	it.effect('loads a shared image bundle once for multiple captured containers', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-			const events: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
 				const meta = metadata({
 					containers: [
 						capturedContainer({
@@ -1656,9 +1573,7 @@ describe('snapshot restore safety', () => {
 						role: 'worker',
 					},
 				]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

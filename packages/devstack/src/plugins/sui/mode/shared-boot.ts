@@ -31,7 +31,7 @@ import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
 import { suiConfigError, suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';
@@ -66,7 +66,7 @@ export const fetchChainId = (
 		catch: (cause): SuiPluginError =>
 			suiPluginError(
 				'chain-id-fetch',
-				`sui chain-id fetch failed: ${stringifyCause(cause)}`,
+				`sui chain-id fetch failed: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	}).pipe(
@@ -157,7 +157,7 @@ export const buildWaitForTransactionsReady = (
 							'wait-funds-ready',
 							`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
 								`${Duration.toMillis(timeout)}ms (still returning body-level Failure or 5xx): ` +
-								stringifyCause(cause),
+								formatUnknownError(cause),
 							cause,
 						),
 				),

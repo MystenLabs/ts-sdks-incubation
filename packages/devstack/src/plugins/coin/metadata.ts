@@ -18,7 +18,7 @@ import { Effect, Ref, Schema } from 'effect';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { makeSpacedRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
-import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
 
@@ -112,7 +112,7 @@ export const fetchCoinMetadataOnce = (
 				return Effect.logWarning('coin metadata fetch failed; soft-degrading to null').pipe(
 					Effect.annotateLogs({
 						[CoinSpans.type]: fullCoinType,
-						[SpanAttr.errorCause]: stringifyCause(err.cause),
+						[SpanAttr.errorCause]: formatUnknownError(err.cause),
 					}),
 					Effect.as(null),
 				);
@@ -129,7 +129,7 @@ export const fetchCoinMetadataOnce = (
 				).pipe(
 					Effect.annotateLogs({
 						[CoinSpans.type]: fullCoinType,
-						[SpanAttr.errorCause]: stringifyCause(issue.cause ?? issue),
+						[SpanAttr.errorCause]: formatUnknownError(issue.cause ?? issue),
 					}),
 					Effect.as(null as OnchainCoinMetadata | null),
 				),

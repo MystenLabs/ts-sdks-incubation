@@ -8,6 +8,10 @@
 // `Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...))`
 // at exactly one site per document, rather than hand-rolling the
 // discriminator field in each consumer.
+//
+// Lives at substrate L0 (depends only on `effect`'s Schema) so L0
+// declarations such as `substrate/cross-process.ts` can use it without
+// reaching into the L1 runtime tree.
 
 import { Schema } from 'effect';
 

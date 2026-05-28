@@ -22,3 +22,16 @@
 export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
 	'host.docker.internal': 'host-gateway',
 };
+
+/** Same fact as `HOST_GATEWAY_EXTRA_HOSTS`, encoded for the
+ *  `docker run --add-host <host>:<gateway>` CLI flag (the value
+ *  passed as the argv after `--add-host`). Derived from the record
+ *  so a future change to the alias set lives in one place.
+ *
+ *  If the record ever grows past one entry, the router's traefik
+ *  bootstrap will need to emit one `--add-host <pair>` per entry;
+ *  today it stamps exactly one pair, matching this record's single
+ *  member. */
+export const HOST_GATEWAY_ADD_HOST_FLAGS: ReadonlyArray<string> = Object.entries(
+	HOST_GATEWAY_EXTRA_HOSTS,
+).map(([host, gateway]) => `${host}:${gateway}`);

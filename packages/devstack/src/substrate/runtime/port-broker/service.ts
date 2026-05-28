@@ -54,7 +54,7 @@ import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
-import { versionedDocSchema } from '../versioned-doc-schema.ts';
+import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 
 // ----------------------------------------------------------------------
 // Public shape

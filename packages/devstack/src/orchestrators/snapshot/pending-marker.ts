@@ -29,7 +29,7 @@
 
 import { Effect, FileSystem, Schema } from 'effect';
 
-import { versionedDocSchema } from '../../substrate/runtime/versioned-doc-schema.ts';
+import { versionedDocSchema } from '../../substrate/versioned-doc-schema.ts';
 import type { SnapshotMetadata } from './descriptor.ts';
 
 export const SNAPSHOT_RESTORE_PENDING_VERSION = 2 as const;

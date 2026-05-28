@@ -39,6 +39,7 @@ import {
 	LabelKey,
 } from '../../runtime/docker/index.ts';
 import { dockerRun, dockerRunOk } from '../../runtime/docker/client.ts';
+import { HOST_GATEWAY_ADD_HOST_FLAGS } from '../../substrate/runtime/host-gateway.ts';
 import type { RouterProfile } from './profile.ts';
 import {
 	ROUTER_CONTAINER_SPEC_VERSION,
@@ -53,7 +54,6 @@ export {
 } from './sentinels.ts';
 
 export const TRAEFIK_DISPATCH_MOUNT_TARGET = '/etc/traefik/dispatch';
-export const HOST_GATEWAY_ALIAS = 'host.docker.internal:host-gateway';
 
 /** Default Traefik image. Tag, not digest — distilled-doc open
  *  question #9 (digest-pin is a follow-up). */
@@ -449,9 +449,10 @@ const traefikRunArgs = (args: {
 		`${ROUTER_PROFILE_LABEL}=${args.routerProfileId}`,
 		'--label',
 		`${LabelKey.specVersion}=${ROUTER_CONTAINER_SPEC_VERSION}`,
-		'--add-host',
-		HOST_GATEWAY_ALIAS,
 	];
+	for (const pair of HOST_GATEWAY_ADD_HOST_FLAGS) {
+		dockerArgs.push('--add-host', pair);
+	}
 	for (const port of ports) {
 		dockerArgs.push('-p', `127.0.0.1:${port}:${port}`);
 	}

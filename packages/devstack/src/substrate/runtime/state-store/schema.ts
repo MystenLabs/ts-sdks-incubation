@@ -6,6 +6,8 @@
 
 import { Schema } from 'effect';
 
+import { versionedDocSchema } from '../../versioned-doc-schema.ts';
+
 /** Stored value envelope. The phantom-typed `StateKey<V>` reads /
  *  writes against the `value` slot opaquely (the substrate doesn't
  *  introspect plugin values — it stores the JSON value as `unknown`
@@ -25,13 +27,13 @@ export const StateEntry = Schema.Struct({
 export type StateEntry = typeof StateEntry.Type;
 
 /** Document — one file per stack. Keys are the `StateKey<V>` string
- *  form (`<pluginKey>/<suffix>`), values are entries. */
-export const StateDocument = Schema.Struct({
-	/** Schema version; bump on incompatible changes. v1 is the
-	 *  initial release; bumps are the only way to introduce
-	 *  backward-incompatible shape changes. Schema-decode failure on
-	 *  read with an unknown version surfaces as `corruption`. */
-	version: Schema.Literal(1),
+ *  form (`<pluginKey>/<suffix>`), values are entries.
+ *
+ *  Schema version: bump on incompatible changes. v1 is the initial
+ *  release; bumps are the only way to introduce backward-incompatible
+ *  shape changes. Schema-decode failure on read with an unknown
+ *  version surfaces as `corruption`. */
+export const StateDocument = versionedDocSchema(1, {
 	/** Per-plugin namespaces. Key is the plugin-key prefix; nested
 	 *  record is the plugin's own keys (suffix → entry). Two-level
 	 *  structure (vs. flat `pluginKey/suffix → entry`) so `listUnder`

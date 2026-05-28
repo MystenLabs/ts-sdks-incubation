@@ -41,7 +41,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
@@ -85,7 +85,7 @@ export const bootLocalRpcMode = (
 			catch: (cause): SuiPluginError =>
 				suiPluginError(
 					'chain-id-fetch',
-					`sui local-rpc mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${stringifyCause(cause)}`,
+					`sui local-rpc mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${formatUnknownError(cause)}`,
 					cause,
 				),
 		});

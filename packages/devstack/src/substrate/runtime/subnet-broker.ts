@@ -52,3 +52,19 @@ export const deriveSubnetPrefix = (input: string, secondOctetOffset: number): st
 	const thirdOctet = bucket % 256;
 	return `10.${secondOctet}.${thirdOctet}`;
 };
+
+/**
+ * Expand a `/24` prefix into the `{ subnet, gateway }` shape the
+ * container-runtime `EnsureNetworkSpec` consumes.
+ *
+ * Convention: `<prefix>.0/24` for the subnet, `<prefix>.1` for the
+ * gateway — the same pair walrus and seal both stamp on their
+ * `ensureNetwork` requests. Folded here so the `/24` + `.1` literals
+ * live in ONE place.
+ */
+export const subnetSpec = (
+	prefix: string,
+): { readonly subnet: string; readonly gateway: string } => ({
+	subnet: `${prefix}.0/24`,
+	gateway: `${prefix}.1`,
+});

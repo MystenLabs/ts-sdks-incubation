@@ -74,6 +74,7 @@ import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-pu
 import { resolveDefaultSealCargoImage } from '../bootstrap-assets/cargo-image.ts';
 import { resolveDefaultSealSource } from '../bootstrap-assets/source-fetch.ts';
 import { atomicWriteFile } from '../../../substrate/runtime/atomic-write.ts';
+import { versionedDocSchema } from '../../../substrate/versioned-doc-schema.ts';
 
 // ---------------------------------------------------------------------------
 // Options (factory-time)
@@ -175,8 +176,7 @@ interface PersistedLocalKeygenState extends PersistedLocalKeygenKeyMaterial {
 const LOCAL_KEYGEN_STATE_VERSION = 1;
 const LOCAL_KEYGEN_STATE_BASENAME = 'local-keygen-state.v1.json';
 
-const PersistedLocalKeygenMetadataSchema = Schema.Struct({
-	version: Schema.Literal(LOCAL_KEYGEN_STATE_VERSION),
+const PersistedLocalKeygenMetadataSchema = versionedDocSchema(LOCAL_KEYGEN_STATE_VERSION, {
 	publicKey: Schema.String,
 });
 

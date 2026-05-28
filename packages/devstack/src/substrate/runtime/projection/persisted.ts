@@ -5,6 +5,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
 import type { SubscribableState } from '../../projection.ts';
 import { endpointKey, pluginKey } from '../../brand.ts';
+import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
@@ -145,8 +146,7 @@ const SubscribableStateSchema = Schema.Struct({
 	stackBuild: Schema.Array(BuildEntrySchema),
 });
 
-export const ProjectionSnapshotSchema = Schema.Struct({
-	version: Schema.Literal(4),
+export const ProjectionSnapshotSchema = versionedDocSchema(4, {
 	state: SubscribableStateSchema,
 });
 
