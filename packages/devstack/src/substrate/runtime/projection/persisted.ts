@@ -50,7 +50,7 @@ const EndpointSchema = Schema.Struct({
 	name: Schema.String,
 	url: Schema.String,
 	displayUrl: Schema.NullOr(Schema.String),
-	wireProtocol: Schema.String,
+	wireProtocol: Schema.Literals(['http', 'h2c', 'tcp']),
 	registeredAt: Schema.Number,
 });
 

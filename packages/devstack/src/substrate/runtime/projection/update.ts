@@ -76,7 +76,7 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 	const fact = factFromEvent(event);
 	if (fact !== null) {
 		return withTouched({
-			rows: upsertRow(state.rows, fact.pluginKey as PluginKey, (row) =>
+			rows: upsertRow(state.rows, fact.pluginKey, (row) =>
 				applyLifecycleFact(row, fact.delta),
 			),
 		});

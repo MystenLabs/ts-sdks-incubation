@@ -90,7 +90,7 @@ export interface EndpointEntry {
 	readonly name: string;
 	readonly url: string;
 	readonly displayUrl: string | null;
-	readonly wireProtocol: 'http' | 'h2c' | string;
+	readonly wireProtocol: 'http' | 'h2c' | 'tcp';
 	readonly pluginKey: string;
 	readonly endpointKey: string;
 }
@@ -111,7 +111,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 			name: Schema.String,
 			url: Schema.String,
 			displayUrl: Schema.NullOr(Schema.String),
-			wireProtocol: Schema.String,
+			wireProtocol: Schema.Literals(['http', 'h2c', 'tcp']),
 			pluginKey: Schema.String,
 			endpointKey: Schema.String,
 		}),

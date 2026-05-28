@@ -249,7 +249,7 @@ describe('display-derivation', () => {
 					name: 'gql',
 					url: 'http://localhost:9000',
 					displayUrl: 'https://devstack.local/gql',
-					wireProtocol: 'http',
+					wireProtocol: 'http' as const,
 					registeredAt: 0,
 				}),
 			).toBe('gql: https://devstack.local/gql -> http://localhost:9000');
@@ -262,7 +262,7 @@ describe('display-derivation', () => {
 					name: 'rpc',
 					url: 'http://localhost:9001',
 					displayUrl: null,
-					wireProtocol: 'http',
+					wireProtocol: 'http' as const,
 					registeredAt: 0,
 				}),
 			).toBe('rpc: http://localhost:9001');
@@ -387,7 +387,7 @@ describe('display-derivation', () => {
 			name: 'rpc',
 			url: 'http://localhost:9000',
 			displayUrl: null,
-			wireProtocol: 'http',
+			wireProtocol: 'http' as const,
 			registeredAt: 0,
 		};
 
@@ -404,7 +404,7 @@ describe('display-derivation', () => {
 				name: 'http',
 				url: 'http://service.localhost',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 
@@ -418,7 +418,7 @@ describe('display-derivation', () => {
 				name: 'wallet-app',
 				url: 'http://wallet.demo.localhost:5175',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
@@ -435,7 +435,7 @@ describe('display-derivation', () => {
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const routed = {
@@ -444,7 +444,7 @@ describe('display-derivation', () => {
 				name: 'wallet-app',
 				url: 'http://api.wallet.arena.localhost:6173',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			expect(visibleEndpointsForRow(row, [operational, routed])).toEqual([routed]);
@@ -481,7 +481,7 @@ describe('display-derivation', () => {
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const routedEndpoint: Endpoint = {
@@ -490,7 +490,7 @@ describe('display-derivation', () => {
 				name: 'wallet-app',
 				url: 'http://api.arena.arena.localhost:6173',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const account: AccountProjection = {

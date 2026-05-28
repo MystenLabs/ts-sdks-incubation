@@ -120,7 +120,7 @@ export const dispatchContributions = (
 	sinks: CapabilitySinksShape,
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	hub: Queue.Enqueue<EngineEvent>,
-): Effect.Effect<void, unknown, never> =>
+): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const strategyRegistry = strategyRegistryAccess.read(pluginContext, noopStrategyRegistry);
 		const harvestCtx: HarvestContext = {

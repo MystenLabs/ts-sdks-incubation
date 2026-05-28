@@ -67,9 +67,16 @@ export const attachPluginExpander = (placeholder: AnyPlugin, expander: PluginExp
  * Returns the input array verbatim (zero allocation) when no member
  * carries an expander — the explicit-tuple path remains the common case.
  *
- * The composer is responsible for re-running `expandPluginDependencies`
- * after the substitution so the now-resolved dependency edges fold
- * into the closure correctly.
+ * **Single-pass contract.** This pass is single-shot: it scans the input
+ * tuple once and substitutes in place. If an expander returns a member
+ * that ITSELF carries `PLUGIN_EXPANDER`, that nested expander does NOT
+ * fire — `runPluginExpanders` does not recurse. The composer is
+ * responsible for re-invoking both `runPluginExpanders` and
+ * `expandPluginDependencies` until fixed-point (typically: run expanders,
+ * then re-run dependency closure so the now-resolved edges fold into the
+ * member tuple; loop until neither pass produces a change). Keeping this
+ * module ignorant of fixpoint policy means the substrate decides how
+ * many iterations are allowed and what counts as convergence.
  */
 export const runPluginExpanders = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<AnyPlugin> => {
 	let hasAny = false;

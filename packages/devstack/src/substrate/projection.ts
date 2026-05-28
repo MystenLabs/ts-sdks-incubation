@@ -88,7 +88,7 @@ export interface Endpoint {
 	readonly name: string;
 	readonly url: string;
 	readonly displayUrl: string | null;
-	readonly wireProtocol: 'http' | 'h2c' | string;
+	readonly wireProtocol: 'http' | 'h2c' | 'tcp';
 	readonly registeredAt: number;
 }
 

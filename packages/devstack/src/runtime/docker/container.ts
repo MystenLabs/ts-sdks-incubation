@@ -421,7 +421,10 @@ export const inspectContainer = (
 		}
 		// `decodeJsonArrayElementSync`'s `mkError` produces a typed
 		// `DockerInspectDecodeFailed`; we route it through `Effect.try`
-		// so the error channel stays typed without a re-cast.
+		// so the error channel stays typed. The `catch` narrows on
+		// `instanceof` so that any UNEXPECTED sync defect thrown from
+		// inside the decode body (e.g. a reader helper bug) is wrapped
+		// in a fresh envelope rather than cast-lied as the wrong type.
 		return yield* Effect.try({
 			try: (): InspectFacts => {
 				const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
@@ -471,7 +474,15 @@ export const inspectContainer = (
 					networkAttachments,
 				};
 			},
-			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+			catch: (cause): DockerInspectDecodeFailed =>
+				cause instanceof DockerInspectDecodeFailed
+					? cause
+					: new DockerInspectDecodeFailed({
+							resource: 'container',
+							name,
+							detail: 'unexpected defect while decoding container inspect',
+							cause,
+						}),
 		});
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
