@@ -25,25 +25,18 @@ import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../substrate/runtime/probes.ts';
 import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import {
-	DockerInspectDecodeFailed,
-	DockerInspectFailed,
-	DaemonUnreachable,
 	type DockerRuntimeError,
 	ForeignDockerResource,
 	NetworkIpReadbackTimeout,
 	NetworkOperationFailed,
 } from './errors.ts';
+import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedNetworkOwnershipLabels,
 	ownershipMismatchDetail,
 	renderNetworkLabels,
 } from './labels.ts';
-import {
-	isAlreadyInNetworkStderr,
-	isDaemonUnreachableStderr,
-	isMissingNetworkStderr,
-	wrapNetworkError,
-} from './wrap.ts';
+import { isAlreadyInNetworkStderr, isMissingNetworkStderr, wrapNetworkError } from './wrap.ts';
 
 /** The cross-host shared network name. Architecture-mandated single
  *  bridge per host. Callers can target other networks (per-stack) but
@@ -102,48 +95,18 @@ const inspectNetwork = (
 	name: string,
 ): Effect.Effect<NetworkInspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('network', ['inspect', name]).pipe(
-			Effect.mapError(wrapNetworkError('inspect', name)),
-		);
-		if (res.exitCode !== 0) {
-			if (isMissingNetworkStderr(res.stderr)) return null;
-			if (isDaemonUnreachableStderr(res.stderr)) {
-				return yield* Effect.fail(
-					new DaemonUnreachable({
-						op: 'docker.network.inspect',
-						detail: 'docker daemon unreachable',
-					}),
-				);
-			}
-			return yield* Effect.fail(
-				new DockerInspectFailed({
-					resource: 'network',
-					name,
-					stderr: res.stderr,
-					exitCode: res.exitCode,
-				}),
-			);
-		}
-		return yield* Effect.try({
-			try: (): NetworkInspectFacts => {
-				const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
-					source: `docker network inspect ${name}`,
-					missingMessage: 'inspect returned an empty result',
-					mkError: (issue) =>
-						new DockerInspectDecodeFailed({
-							resource: 'network',
-							name,
-							detail:
-								issue.message === 'inspect returned an empty result'
-									? issue.message
-									: 'inspect returned malformed network JSON',
-							cause: issue.cause,
-						}),
-				});
-				return { id: decoded.Id, labels: readLabels(decoded.Labels) };
-			},
-			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'network',
+			name,
+			op: 'docker.network.inspect',
+			inspectCommand: dockerRunOk('network', ['inspect', name]).pipe(
+				Effect.mapError(wrapNetworkError('inspect', name)),
+			),
+			schema: NetworkInspectSchema,
+			isMissingStderr: isMissingNetworkStderr,
 		});
+		if (decoded === null) return null;
+		return { id: decoded.Id, labels: readLabels(decoded.Labels) };
 	});
 
 const assertNetworkOwned = (
@@ -282,45 +245,18 @@ export const listAttachedContainers = (
 	DockerHost | DockerSpawner
 > =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('network', ['inspect', name]).pipe(
-			Effect.mapError(wrapNetworkError('inspect', name)),
-		);
-		if (res.exitCode !== 0) {
-			if (isMissingNetworkStderr(res.stderr)) return [];
-			if (isDaemonUnreachableStderr(res.stderr)) {
-				return yield* Effect.fail(
-					new DaemonUnreachable({
-						op: 'docker.network.inspect',
-						detail: 'docker daemon unreachable',
-					}),
-				);
-			}
-			return yield* Effect.fail(
-				new DockerInspectFailed({
-					resource: 'network',
-					name,
-					stderr: res.stderr,
-					exitCode: res.exitCode,
-				}),
-			);
-		}
-		return yield* Effect.try({
-			try: (): ReadonlyArray<NetworkAttachedEndpoint> => {
-				const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
-					source: `docker network inspect ${name}`,
-					missingMessage: 'inspect returned an empty result',
-					mkError: (issue) =>
-						new DockerInspectDecodeFailed({
-							resource: 'network',
-							name,
-							detail: 'inspect returned malformed network JSON',
-							cause: issue.cause,
-						}),
-				});
-				return readContainers(decoded.Containers);
-			},
-			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'network',
+			name,
+			op: 'docker.network.inspect',
+			inspectCommand: dockerRunOk('network', ['inspect', name]).pipe(
+				Effect.mapError(wrapNetworkError('inspect', name)),
+			),
+			schema: NetworkInspectSchema,
+			isMissingStderr: isMissingNetworkStderr,
 		});
+		if (decoded === null) return [];
+		return readContainers(decoded.Containers);
 	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
 
 // -----------------------------------------------------------------------------

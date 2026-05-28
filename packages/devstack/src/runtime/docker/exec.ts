@@ -21,6 +21,7 @@ import type {
 } from '../../substrate/runtime/observability/subprocess-capture.ts';
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
 import { DaemonUnreachable, type DockerRuntimeError, ExecFailed } from './errors.ts';
+import { renderRunArgs } from './render-run-args.ts';
 import { wrapGeneric } from './wrap.ts';
 
 // -----------------------------------------------------------------------------
@@ -121,35 +122,21 @@ export const dockerRunOneShot = (
 	opts: DockerOneShotOptions,
 ): Effect.Effect<CaptureResult, DockerRuntimeError, DockerHost | DockerSpawner | Scope.Scope> =>
 	Effect.gen(function* () {
-		const args: Array<string> = [];
-		if (!opts.keep) args.push('--rm');
 		const name =
 			opts.name ?? `devstack-oneshot-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
-		args.push('--name', name);
-		if (opts.network) args.push('--network', opts.network);
-		if (opts.entrypoint) args.push('--entrypoint', opts.entrypoint);
-		if (opts.user) args.push('--user', opts.user);
-		if (opts.env) {
-			for (const [k, v] of Object.entries(opts.env)) {
-				args.push('--env', `${k}=${v}`);
-			}
-		}
-		if (opts.mounts) {
-			for (const m of opts.mounts) {
-				const ro = m.readonly ? ',readonly' : '';
-				args.push('--mount', `type=bind,source=${m.source},target=${m.target}${ro}`);
-			}
-		}
-		if (opts.labels) {
-			for (const l of opts.labels) args.push('--label', l);
-		}
-		if (opts.extraHosts) {
-			for (const [host, ip] of Object.entries(opts.extraHosts)) {
-				args.push('--add-host', `${host}:${ip}`);
-			}
-		}
-		args.push(opts.image);
-		if (opts.argv) args.push(...opts.argv);
+		const args = renderRunArgs({
+			keep: opts.keep,
+			name,
+			image: opts.image,
+			argv: opts.argv,
+			network: opts.network,
+			entrypoint: opts.entrypoint,
+			user: opts.user,
+			env: opts.env,
+			mounts: opts.mounts,
+			labels: opts.labels,
+			addHosts: opts.extraHosts,
+		});
 
 		// Register the belt-and-suspenders rm finalizer BEFORE we
 		// invoke. Even if the spawner blows up mid-flight, the

@@ -39,18 +39,16 @@ import {
 } from '../../substrate/runtime/cross-process/roster.ts';
 import type { StackLockError } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
-import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
 	ContainerNameCollisionUnrecoverable,
 	DaemonUnreachable,
-	DockerInspectDecodeFailed,
-	DockerInspectFailed,
 	type DockerRuntimeError,
 	ForeignDockerResource,
 	RecreateRefused,
 } from './errors.ts';
+import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedContainerOwnershipLabels,
 	LabelKey,
@@ -58,6 +56,7 @@ import {
 	renderContainerLabels,
 } from './labels.ts';
 import { connect, readIps, waitForIp } from './network.ts';
+import { renderCreateArgs } from './render-run-args.ts';
 import {
 	classifyExit,
 	isDaemonUnreachableStderr,
@@ -397,93 +396,49 @@ export const inspectContainer = (
 	name: string,
 ): Effect.Effect<InspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('container', ['inspect', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.container.inspect')),
-		);
-		if (res.exitCode !== 0) {
-			if (isNoSuchContainerStderr(res.stderr)) return null;
-			if (isDaemonUnreachableStderr(res.stderr)) {
-				return yield* Effect.fail(
-					new DaemonUnreachable({
-						op: 'docker.container.inspect',
-						detail: 'docker daemon unreachable',
-					}),
-				);
-			}
-			return yield* Effect.fail(
-				new DockerInspectFailed({
-					resource: 'container',
-					name,
-					stderr: res.stderr,
-					exitCode: res.exitCode,
-				}),
-			);
-		}
-		// `decodeJsonArrayElementSync`'s `mkError` produces a typed
-		// `DockerInspectDecodeFailed`; we route it through `Effect.try`
-		// so the error channel stays typed. The `catch` narrows on
-		// `instanceof` so that any UNEXPECTED sync defect thrown from
-		// inside the decode body (e.g. a reader helper bug) is wrapped
-		// in a fresh envelope rather than cast-lied as the wrong type.
-		return yield* Effect.try({
-			try: (): InspectFacts => {
-				const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
-					source: `docker container inspect ${name}`,
-					missingMessage: 'inspect returned an empty result',
-					mkError: (issue) =>
-						new DockerInspectDecodeFailed({
-							resource: 'container',
-							name,
-							detail:
-								issue.message === 'inspect returned an empty result'
-									? issue.message
-									: 'inspect returned malformed container JSON',
-							cause: issue.cause,
-						}),
-				});
-				const lifecycle = readLifecycleState(decoded.State);
-				const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
-				const ports =
-					decoded.HostConfig === undefined
-						? effectivePorts
-						: readPublishedPorts(decoded.HostConfig.PortBindings);
-				const mounts = readMounts(decoded.Mounts);
-				const command = readStringArray(decoded.Config.Cmd);
-				const labels = readLabels(decoded.Config.Labels);
-				const networks = readNetworks(decoded.NetworkSettings.Networks);
-				const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
-				return {
-					id: decoded.Id,
-					lifecycle,
-					running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
-					paused: lifecycle.kind === 'paused',
-					exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
-					// The container's recorded image. Docker may omit the
-					// top-level digest field, but lifecycle decisions need the
-					// create-time ref from Config.Image.
-					image: decoded.Config.Image,
-					...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
-					mounts,
-					portBindings: canonicalPortBindings(ports),
-					ports,
-					effectivePortBindings: canonicalPortBindings(effectivePorts),
-					effectivePorts,
-					command,
-					labels,
-					networks,
-					networkAttachments,
-				};
-			},
-			catch: (cause): DockerInspectDecodeFailed =>
-				cause instanceof DockerInspectDecodeFailed
-					? cause
-					: new DockerInspectDecodeFailed({
-							resource: 'container',
-							name,
-							detail: 'unexpected defect while decoding container inspect',
-							cause,
-						}),
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'container',
+			name,
+			op: 'docker.container.inspect',
+			inspectCommand: dockerRunOk('container', ['inspect', name]).pipe(
+				Effect.mapError(wrapGeneric('docker.container.inspect')),
+			),
+			schema: InspectSchema,
+			isMissingStderr: isNoSuchContainerStderr,
 		});
+		if (decoded === null) return null;
+		const lifecycle = readLifecycleState(decoded.State);
+		const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
+		const ports =
+			decoded.HostConfig === undefined
+				? effectivePorts
+				: readPublishedPorts(decoded.HostConfig.PortBindings);
+		const mounts = readMounts(decoded.Mounts);
+		const command = readStringArray(decoded.Config.Cmd);
+		const labels = readLabels(decoded.Config.Labels);
+		const networks = readNetworks(decoded.NetworkSettings.Networks);
+		const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
+		return {
+			id: decoded.Id,
+			lifecycle,
+			running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
+			paused: lifecycle.kind === 'paused',
+			exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
+			// The container's recorded image. Docker may omit the
+			// top-level digest field, but lifecycle decisions need the
+			// create-time ref from Config.Image.
+			image: decoded.Config.Image,
+			...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
+			mounts,
+			portBindings: canonicalPortBindings(ports),
+			ports,
+			effectivePortBindings: canonicalPortBindings(effectivePorts),
+			effectivePorts,
+			command,
+			labels,
+			networks,
+			networkAttachments,
+		};
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
 // -----------------------------------------------------------------------------
@@ -504,52 +459,28 @@ const createArgv = (
 	cycle: number,
 	imageRef: string,
 ): ReadonlyArray<string> => {
-	const args: Array<string> = ['-d', '--name', spec.name];
 	const configLabels: Readonly<Record<string, string>> | undefined =
 		spec.configHash === undefined ? undefined : { [LabelKey.configHash]: spec.configHash };
-	for (const label of renderContainerLabels(spec.labels, cycle, configLabels)) {
-		args.push('--label', label);
-	}
-	if (spec.env) {
-		for (const [k, v] of Object.entries(spec.env)) {
-			args.push('--env', `${k}=${v}`);
-		}
-	}
-	if (spec.ports) {
-		for (const p of spec.ports) {
-			const hostPrefix = p.hostIp === undefined ? '' : `${p.hostIp}:`;
-			args.push('-p', `${hostPrefix}${p.hostPort}:${p.containerPort}`);
-		}
-	}
-	if (spec.mounts) {
-		for (const m of spec.mounts) {
-			const ro = m.readonly ? ',readonly' : '';
-			args.push('--mount', `type=bind,source=${m.source},target=${m.target}${ro}`);
-		}
-	}
-	if (spec.networkAttach && spec.networkAttach.length > 0) {
-		// First attach goes via --network; subsequent attaches via
-		// post-start `network connect` so we can wait for IP readback.
-		// Per-network aliases (if any) become `--network-alias` flags.
-		const first = normalizeNetworkAttachment(spec.networkAttach[0]!);
-		args.push('--network', first.name);
-		for (const alias of first.aliases ?? []) {
-			args.push('--network-alias', alias);
-		}
-	}
-	if (spec.extraHosts) {
-		for (const [host, ip] of Object.entries(spec.extraHosts)) {
-			args.push('--add-host', `${host}:${ip}`);
-		}
-	}
-	if (spec.entrypoint) {
-		args.push('--entrypoint', spec.entrypoint);
-	}
-	args.push(imageRef);
-	if (spec.command) {
-		args.push(...spec.command);
-	}
-	return args;
+	const labels = renderContainerLabels(spec.labels, cycle, configLabels);
+	// First attach is rendered into `--network` + `--network-alias`;
+	// subsequent attaches happen post-start via `network connect` so we
+	// can wait for IP readback.
+	const firstNetwork =
+		spec.networkAttach && spec.networkAttach.length > 0
+			? normalizeNetworkAttachment(spec.networkAttach[0]!)
+			: undefined;
+	return renderCreateArgs({
+		name: spec.name,
+		image: imageRef,
+		labels,
+		env: spec.env,
+		ports: spec.ports,
+		mounts: spec.mounts,
+		network: firstNetwork,
+		addHosts: spec.extraHosts,
+		entrypoint: spec.entrypoint,
+		command: spec.command,
+	});
 };
 
 // -----------------------------------------------------------------------------
