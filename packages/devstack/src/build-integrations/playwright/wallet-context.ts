@@ -3,8 +3,10 @@
 // Architecture (distilled/23-build-integrations.md § Playwright /
 // "What it produces"):
 //
-//   In-spec helpers (`connectAs`, `selectAccount`) and artifact
-//   loaders (`loadStackManifest`, `loadStackKeypair`).
+//   In-spec helpers (`connectAs`, `selectAccount`) and the
+//   `loadStackManifest` artifact loader. (`loadStackKeypair` is not
+//   implemented — keys never leave the wallet plugin; tests sign via
+//   the wallet's HTTP API.)
 //
 // And (per the user task brief): tests sign txs via the wallet's HTTP
 // API rather than driving the browser's wallet-UI flow. That is the
@@ -287,6 +289,12 @@ export const selectAccount = async (
 				`Confirm \`globalThis.${DAPP_KIT_SLOT}\` is populated by the app's ` +
 				`dapp-kit module at boot.`,
 			operation: 'switch-account',
+			// `cause` survives the `page.evaluate` boundary as a string —
+			// the browser-side `Error` instance is lost across the bridge,
+			// but the message is the load-bearing diagnostic. Preserving
+			// it on the typed error keeps the underlying detail attached
+			// when consumers inspect `cause` rather than `message`.
+			cause: result.reason,
 		});
 	}
 };

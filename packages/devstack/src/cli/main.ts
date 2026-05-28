@@ -97,7 +97,12 @@ import { ExitCode } from '../surfaces/cli/sysexits.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
-import { resolveAppName, resolveNetworkSync, resolveStackName } from '../api/inference-network.ts';
+import {
+	resolveAppName,
+	resolveNetworkSync,
+	resolveStackName,
+	resolveStateDir,
+} from '../api/inference-network.ts';
 import { readStackEngine, type Stack } from '../api/define-devstack.ts';
 import { makeDirectPruneDeps } from './prune-direct.ts';
 import {
@@ -305,9 +310,11 @@ const resolveIdentity = (params: {
 		explicit: params.app,
 		cwd,
 	});
-	const stateDir =
-		params.stateDir ?? process.env.DEVSTACK_STATE_DIR ?? resolvePath(cwd, '.devstack');
-	const runtimeRoot = resolvePath(stateDir);
+	const runtimeRoot = resolveStateDir({
+		stateDir: params.stateDir,
+		env: process.env.DEVSTACK_STATE_DIR,
+		cwd,
+	});
 	const stacksRoot = resolvePath(runtimeRoot, 'stacks');
 	const stack = resolveStackName({
 		explicit: params.stack,
@@ -1211,7 +1218,11 @@ export const identityInputsFromArgv = (
 	let app = env.DEVSTACK_APP;
 	let stack = env.DEVSTACK_STACK;
 	let network = env.DEVSTACK_NETWORK;
-	let stateDir = env.DEVSTACK_STATE_DIR;
+	// `stateDir` intentionally captures the `--state-dir` flag ONLY.
+	// Env (`DEVSTACK_STATE_DIR`) precedence is applied at the
+	// `resolveStateDir(...)` call-site in `resolveIdentity` so the
+	// pre-parser stays a thin flag-extractor.
+	let stateDir: string | undefined;
 	let configPath = env.DEVSTACK_CONFIG;
 	for (let i = 0; i < argv.length; i += 1) {
 		const token = argv[i]!;

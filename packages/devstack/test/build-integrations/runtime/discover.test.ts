@@ -43,9 +43,18 @@ describe('discoverManifestPath', () => {
 		expect(discoverManifestPath()).toBe(path);
 	});
 
-	it('returns undefined when DEVSTACK_MANIFEST_PATH points at a missing file', () => {
+	it('throws ManifestDiscoveryError(phase=env-missing) when DEVSTACK_MANIFEST_PATH points at a missing file', () => {
+		// `required: false` does NOT suppress env-miss: the user
+		// explicitly pointed at a path, so a typo must surface rather
+		// than silently fall back to walk-up.
 		process.env.DEVSTACK_MANIFEST_PATH = '/nonexistent/manifest.json';
-		expect(discoverManifestPath()).toBeUndefined();
+		try {
+			discoverManifestPath();
+			expect.fail('should have thrown');
+		} catch (err) {
+			expect(err).toBeInstanceOf(ManifestDiscoveryError);
+			expect((err as ManifestDiscoveryError).phase).toBe('env-missing');
+		}
 	});
 
 	it('throws ManifestDiscoveryError(phase=env-missing) for missing env path when required', () => {

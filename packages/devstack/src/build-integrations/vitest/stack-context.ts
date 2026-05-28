@@ -115,6 +115,21 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 		return project(ctx);
 	} catch (err) {
 		if (err instanceof ManifestDiscoveryError) {
+			// `env-missing` / `override-missing` surface regardless of
+			// `required` — the user explicitly pointed at a file that
+			// doesn't exist; silently returning `undefined` would
+			// quietly fall back to cold-start defaults and hide the typo.
+			// `required: false` only suppresses the walk-up-not-found
+			// path (`phase: 'walk-up' | 'required-missing'`).
+			if (err.phase === 'env-missing' || err.phase === 'override-missing') {
+				throw new VitestManifestNotFoundError({
+					message: err.message,
+					searchedFrom: opts.cwd ?? process.cwd(),
+					stack,
+					stateDir: runtimeRoot,
+					recovery: `run \`devstack up\` (or unset DEVSTACK_MANIFEST_PATH / pass an existing manifestPath)`,
+				});
+			}
 			if (opts.required === true) {
 				throw new VitestManifestNotFoundError({
 					message: `no devstack manifest found for stack '${stack}' under '${runtimeRoot}'`,

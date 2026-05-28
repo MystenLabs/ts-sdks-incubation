@@ -34,6 +34,8 @@
 // No teardown of the devstack itself — that's the supervisor's job;
 // the preset is a pure reader.
 
+import { expect } from 'vitest';
+
 import {
 	loadStackContext,
 	type LoadStackContextOptions,
@@ -43,20 +45,35 @@ import { resolveVitestEnv, VITEST_ENV_VARS, RECOMMENDED_TEST_STACK } from './env
 import { VitestSetupPreconditionError } from './errors.ts';
 
 // -----------------------------------------------------------------------------
-// Captured fixture — single shared handle across the test file
+// Captured fixture — per-test-file handle
 // -----------------------------------------------------------------------------
+//
+// Vitest workers reuse a single module-level binding across the test
+// files they run. A bare `let captured` would carry a stale fixture from
+// the prior file into a later file that forgot `useDevstackTestSetup`,
+// silently steering `getStackContext()` at the wrong stack. Key by the
+// vitest test path so each file gets its own slot.
 
-let captured: StackContext | undefined;
+const UNKNOWN_TEST_PATH_SENTINEL = '<unknown>';
+
+// `expect.getState().testPath` is undefined outside an `it`/`test` body
+// (e.g. in module-init or top-level `beforeAll` before vitest binds the
+// per-file state). Reads in that window fall through the sentinel and
+// still resolve so the pre-test-file setup path stays usable.
+const currentTestPath = (): string => expect.getState().testPath ?? UNKNOWN_TEST_PATH_SENTINEL;
+
+const capturedByPath = new Map<string, StackContext | undefined>();
 
 /** Return the StackContext captured by `runDevstackBeforeAll`. Returns
  *  `undefined` until `beforeAll` has run (or when the suite ran with
  *  `requireDevstack: false` and no manifest exists). */
-export const getStackContext = (): StackContext | undefined => captured;
+export const getStackContext = (): StackContext | undefined =>
+	capturedByPath.get(currentTestPath());
 
 /** Reset the captured fixture. Called by `runDevstackAfterAll`; also
  *  exported so test helpers can wipe between describe-block setups. */
 export const clearStackContext = (): void => {
-	captured = undefined;
+	capturedByPath.delete(currentTestPath());
 };
 
 // -----------------------------------------------------------------------------
@@ -112,7 +129,7 @@ export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 		});
 	}
 
-	captured = ctx;
+	capturedByPath.set(currentTestPath(), ctx);
 };
 
 /** `afterAll` body. Currently just clears the captured fixture; the

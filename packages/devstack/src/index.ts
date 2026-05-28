@@ -64,8 +64,10 @@ export {
 	resolveNetwork,
 	resolveNetworkSync,
 	resolveStackName,
+	resolveStateDir,
 	type ParsedDevstackNetwork,
 	type ResolveNetworkOptions,
+	type ResolveStateDirOptions,
 	type ResolvedDevstackNetwork,
 	type DevstackNetworkName,
 } from './api/inference-network.ts';

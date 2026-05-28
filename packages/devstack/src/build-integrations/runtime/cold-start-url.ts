@@ -73,6 +73,11 @@ export interface ColdStartUrlOptions {
 	readonly cwd?: string;
 	/** Host suffix owned by the router. Default: `.localhost`. */
 	readonly hostSuffix?: string;
+	/** Env bag consulted before falling back to `process.env`. Lets
+	 *  callers (build integrations under test) inject a hermetic env
+	 *  so `DEVSTACK_STACK` / `DEVSTACK_APP` are read from the bag
+	 *  rather than leaking through the ambient environment. */
+	readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 export interface ConventionalRouteHostInput {
@@ -145,8 +150,12 @@ export const coldStartUrl = (endpoint: string, opts: ColdStartUrlOptions): strin
 		});
 	}
 	const cwd = opts.cwd ?? process.cwd();
-	const stack = resolveBuildIntegrationStack(opts.stack);
-	const app = opts.app ?? readAppName(cwd) ?? basename(cwd);
+	const env = opts.env ?? (process.env as Readonly<Record<string, string | undefined>>);
+	const stack = resolveBuildIntegrationStack(opts.stack, env);
+	// `DEVSTACK_APP` is the caller-injectable app name; `readAppName(cwd)` is
+	// the package.json walk-up. The env bag wins so test fixtures don't leak
+	// the host's package metadata into the cold-start URL.
+	const app = opts.app ?? env.DEVSTACK_APP ?? readAppName(cwd) ?? basename(cwd);
 	return conventionalRouteUrl({
 		route,
 		service: route.service,

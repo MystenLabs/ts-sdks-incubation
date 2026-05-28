@@ -122,7 +122,11 @@ export const discoverBuildIntegrationIdentity = (
 	const env = options.env ?? (process.env as Readonly<Record<string, string | undefined>>);
 	const cwd = options.cwd ?? process.cwd();
 	const stack = resolveBuildIntegrationStack(options.stack, env);
-	const stateDirName = options.stateDir ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
+	// `DEVSTACK_RUNTIME_ROOT` takes precedence over `DEVSTACK_STATE_DIR`
+	// to match the vitest layer's `loadStackContext` env ladder; both
+	// are kept for the legacy / dual-name period.
+	const stateDirName =
+		options.stateDir ?? env.DEVSTACK_RUNTIME_ROOT ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
 
 	const discovered = discoverManifestPath({ cwd, stack, stateDir: stateDirName, env });
 	const manifestPath = discovered ?? resolve(cwd, stateDirName, 'stacks', stack, 'manifest.json');
@@ -146,37 +150,36 @@ export const discoverBuildIntegrationIdentity = (
 export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): string | undefined {
 	const env = opts.env ?? (process.env as Readonly<Record<string, string | undefined>>);
 	const envOverride = env.DEVSTACK_MANIFEST_PATH;
+	// Env + override misses ALWAYS throw — the `required: false` knob
+	// only suppresses walk-up-not-found, not "the user explicitly
+	// pointed at a missing file." Silently falling back to walk-up on
+	// a typo'd env var would steer callers at a stale ancestor manifest.
 	if (envOverride !== undefined && envOverride !== '') {
 		const resolved = resolve(envOverride);
 		if (existsSync(resolved)) return resolved;
-		if (opts.required === true) {
-			throw new ManifestDiscoveryError({
-				phase: 'env-missing',
-				path: resolved,
-				message:
-					`[devstack] DEVSTACK_MANIFEST_PATH points at ${resolved}, but no file exists there. ` +
-					`Unset the env var or run \`devstack up\` to write the manifest.`,
-			});
-		}
-		return undefined;
+		throw new ManifestDiscoveryError({
+			phase: 'env-missing',
+			path: resolved,
+			message:
+				`[devstack] DEVSTACK_MANIFEST_PATH points at ${resolved}, but no file exists there. ` +
+				`Unset the env var or run \`devstack up\` to write the manifest.`,
+		});
 	}
 	if (opts.override !== undefined && opts.override !== '') {
 		const resolved = resolve(opts.override);
 		if (existsSync(resolved)) return resolved;
-		if (opts.required === true) {
-			throw new ManifestDiscoveryError({
-				phase: 'override-missing',
-				path: resolved,
-				message:
-					`[devstack] explicit manifest path ${resolved} does not exist. ` +
-					`Run \`devstack up\` to write the manifest first.`,
-			});
-		}
-		return undefined;
+		throw new ManifestDiscoveryError({
+			phase: 'override-missing',
+			path: resolved,
+			message:
+				`[devstack] explicit manifest path ${resolved} does not exist. ` +
+				`Run \`devstack up\` to write the manifest first.`,
+		});
 	}
 	const startDir = opts.cwd ?? process.cwd();
 	const stack = resolveBuildIntegrationStack(opts.stack, env);
-	const stateDir = opts.stateDir ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
+	const stateDir =
+		opts.stateDir ?? env.DEVSTACK_RUNTIME_ROOT ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
 	let dir = resolve(startDir);
 	while (true) {
 		const candidate = join(dir, stateDir, 'stacks', stack, 'manifest.json');

@@ -59,7 +59,12 @@ import {
 } from '../orchestrators/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
-import { resolveAppName, resolveNetworkSync, resolveStackName } from './inference-network.ts';
+import {
+	resolveAppName,
+	resolveNetworkSync,
+	resolveStackName,
+	resolveStateDir,
+} from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -83,8 +88,16 @@ export interface RunStackOptions {
 	readonly codegen?: Omit<ProductionCodegenOptions, 'appRoot'>;
 	/** Filesystem root under which the substrate stores per-stack
 	 *  artifacts (cache, snapshots, manifest, projection, etc.).
-	 *  Defaults to `$DEVSTACK_STATE_DIR` then `<cwd>/.devstack`. */
+	 *  Precedence: `runtimeRoot` > `stateDir` (this option or
+	 *  `DevstackOptions.stateDir` on the stack) > `$DEVSTACK_STATE_DIR`
+	 *  > `<cwd>/.devstack`. */
 	readonly runtimeRoot?: string;
+	/** Sibling of `runtimeRoot` — the `DevstackOptions.stateDir` field
+	 *  threaded through `runStack` so a stack-level default can be
+	 *  overridden per-embedding without forcing every call site to
+	 *  flip between `runtimeRoot` and `stateDir`. Same semantics as
+	 *  `runtimeRoot`; lower precedence. */
+	readonly stateDir?: string;
 	/** Extend the plugin execution context after built-in plugin
 	 *  services are installed. Use this for custom plugin-author
 	 *  services, capability sinks, or logger overrides. */
@@ -156,13 +169,6 @@ const resolveIdentity = (
 	};
 };
 
-const resolveRuntimeRoot = (override: string | undefined): string => {
-	if (override !== undefined) return override;
-	const envRoot = process.env.DEVSTACK_STATE_DIR;
-	if (envRoot !== undefined && envRoot.length > 0) return envRoot;
-	return `${process.cwd()}/.devstack`;
-};
-
 const toBootError = (cause: Cause.Cause<unknown>): BootError => ({
 	_tag: 'BootError',
 	cause,
@@ -196,7 +202,12 @@ export const runStack = (
 	opts: RunStackOptions = {},
 ): RunHandle => {
 	const engineStack = readStackEngine(stack);
-	const runtimeRoot = resolveRuntimeRoot(opts.runtimeRoot);
+	const runtimeRoot = resolveStateDir({
+		runtimeRoot: opts.runtimeRoot,
+		stateDir: opts.stateDir ?? engineStack.options.stateDir,
+		env: process.env.DEVSTACK_STATE_DIR,
+		cwd: process.cwd(),
+	});
 	const appRoot = opts.appRoot ?? process.cwd();
 	const identity = resolveIdentity(stack, opts.identity, appRoot);
 	const codegen = opts.codegen ?? engineStack.options.codegen;

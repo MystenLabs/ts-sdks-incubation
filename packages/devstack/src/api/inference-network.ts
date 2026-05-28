@@ -256,3 +256,45 @@ export const resolveNetworkSync = (
 	const { value, source } = pickInput(options);
 	return { raw: value, parsed: parseDevstackNetwork(value, source) };
 };
+
+// ---------------------------------------------------------------------------
+// resolveStateDir — single precedence ladder for the on-disk runtime root.
+// ---------------------------------------------------------------------------
+
+export interface ResolveStateDirOptions {
+	/** Caller-supplied `runtimeRoot` override (the canonical
+	 *  `RunStackOptions.runtimeRoot` / CLI `--state-dir` field). Wins
+	 *  over every other input. */
+	readonly runtimeRoot?: string;
+	/** Caller-supplied `stateDir` override (the
+	 *  `DevstackOptions.stateDir` field on `defineDevstack(...)`).
+	 *  Lower precedence than `runtimeRoot`. */
+	readonly stateDir?: string;
+	/** Env-var value (typically `process.env.DEVSTACK_STATE_DIR`).
+	 *  Lower precedence than either explicit override. */
+	readonly env?: string;
+	/** Working directory used for the `.devstack` fallback and for
+	 *  resolving any relative override path. */
+	readonly cwd: string;
+}
+
+/**
+ * Resolve the substrate's on-disk runtime root using the canonical
+ * precedence ladder: `runtimeRoot` > `stateDir` > `env` > `<cwd>/.devstack`.
+ * Relative paths are resolved against `cwd`; absolute paths pass through.
+ *
+ * Shared by `runStack`, the CLI bin, and the build-integrations
+ * discover module so all three entry points agree on the same ladder.
+ */
+export const resolveStateDir = (options: ResolveStateDirOptions): string => {
+	const pick =
+		(options.runtimeRoot !== undefined && options.runtimeRoot.length > 0
+			? options.runtimeRoot
+			: undefined) ??
+		(options.stateDir !== undefined && options.stateDir.length > 0
+			? options.stateDir
+			: undefined) ??
+		(options.env !== undefined && options.env.length > 0 ? options.env : undefined);
+	if (pick === undefined) return resolve(options.cwd, '.devstack');
+	return resolve(options.cwd, pick);
+};

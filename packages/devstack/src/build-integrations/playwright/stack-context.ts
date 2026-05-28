@@ -166,14 +166,18 @@ export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
 			});
 		}
 		if (cause instanceof ManifestDiscoveryError) {
-			throw new PlaywrightManifestShapeError({
-				message: `failed to read manifest at ${manifestPath}`,
-				manifestPath,
-				phase: 'parse',
+			// A discovery error (missing file at a known path) is NOT a
+			// shape error — surface the typed discovery tag so callers
+			// can `catchTag` the two failure modes independently.
+			throw new PlaywrightManifestDiscoveryError({
+				message:
+					cause.message !== ''
+						? cause.message
+						: `manifest at ${manifestPath} could not be read`,
+				searchedPaths: cause.path !== undefined ? [cause.path] : [manifestPath],
 				recoveryHint:
 					`Confirm the file exists and is readable. Run \`devstack up\` to ` +
 					`regenerate it if the supervisor was interrupted mid-write.`,
-				cause,
 			});
 		}
 		throw cause;
@@ -226,6 +230,10 @@ export const conventionalUrlFor = (
 		...(opts.app !== undefined ? { app: opts.app } : {}),
 		...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
 		...(opts.hostSuffix !== undefined ? { hostSuffix: opts.hostSuffix } : {}),
+		// Thread the caller env bag so `runtimeColdStartUrl` resolves
+		// `DEVSTACK_STACK` / `DEVSTACK_APP` from the test-injected
+		// fixture rather than silently falling back to `process.env`.
+		...(opts.env !== undefined ? { env: opts.env } : {}),
 	});
 };
 
