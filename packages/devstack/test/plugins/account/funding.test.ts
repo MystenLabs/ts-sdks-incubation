@@ -13,6 +13,7 @@ import {
 import {
 	applyCrossCuttingFunding,
 	fundEphemeralDefault,
+	NULL_BALANCE_READER,
 	SUI_FULL_COIN_TYPE,
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
@@ -44,7 +45,7 @@ const fundingEntry = (overrides: Partial<ProjectedFundingEntry> = {}): Projected
 
 const applyFunding = (
 	funding: ReadonlyArray<ProjectedFundingEntry>,
-	balanceReader?: FundingBalanceReader,
+	balanceReader: FundingBalanceReader = NULL_BALANCE_READER,
 ) =>
 	Effect.gen(function* () {
 		const broker = yield* LeaseBrokerService;
@@ -56,7 +57,7 @@ const applyFunding = (
 			funding,
 			chainId: chainId('sui:localnet'),
 			broker,
-			...(balanceReader !== undefined ? { balanceReader } : {}),
+			balanceReader,
 		});
 	});
 
@@ -301,6 +302,7 @@ describe('account cross-cutting funding dispatch', () => {
 						funding: [fundingEntry()],
 						chainId: chainId('sui:localnet'),
 						broker,
+						balanceReader: NULL_BALANCE_READER,
 					});
 
 					expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
@@ -308,6 +310,41 @@ describe('account cross-cutting funding dispatch', () => {
 				}),
 			),
 		),
+	);
+
+	it.effect(
+		'NULL_BALANCE_READER opt-out is the only way to skip the finality wait — production readers always poll',
+		() =>
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						// Regression: balanceReader USED to be optional, so a
+						// caller that forgot to wire it silently returned
+						// `Effect.void` from the finality wait. Now the field
+						// is REQUIRED at the type level and the only opt-out
+						// is the explicitly-named `NULL_BALANCE_READER`
+						// sentinel — production readers without
+						// `skipFinalityWait: true` always poll until
+						// `balance >= amount` or the bounded schedule
+						// exhausts (which would surface a typed timeout).
+						const registry = yield* StrategyRegistryService;
+						const events: string[] = [];
+						yield* registry.register('coinType:0xfeed::wal::WAL', {
+							request: () =>
+								Effect.sync(() => {
+									events.push('request');
+								}),
+						} satisfies AccountFundingStrategy);
+
+						// NULL_BALANCE_READER — skips the wait deterministically.
+						const applied = yield* applyFunding([fundingEntry()], NULL_BALANCE_READER);
+						expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
+						// No `balance:...` events — the wait was short-circuited
+						// by the sentinel, not by the bounded poll schedule.
+						expect(events).toEqual(['request']);
+					}),
+				),
+			),
 	);
 
 	it.effect('fails loudly when explicit SUI funding has no faucet strategy', () =>

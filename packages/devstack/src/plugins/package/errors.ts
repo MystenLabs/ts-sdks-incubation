@@ -34,8 +34,15 @@ export interface PublishError {
 	 *  pass `undefined`. The `mode-local` re-stamp pass back-fills
 	 *  from the outer `inputs.sourcePath` whenever it can. */
 	readonly sourcePath?: string | undefined;
-	/** Symbolic package name (the user-declared `pkg.name`). */
-	readonly packageName: string;
+	/** Symbolic package name (the user-declared `pkg.name`). Optional
+	 *  because some throw sites (e.g. `postPublishReadyHint` in
+	 *  `publish-executor.ts`) only have the resolved on-chain
+	 *  `packageId` in scope; the `mode-local` re-stamp pass back-fills
+	 *  the symbolic name from `inputs.packageName` whenever it can.
+	 *  Throw sites MUST NOT overload this slot with the on-chain
+	 *  `packageId` — the symbolic name is what user-facing error
+	 *  displays expect. */
+	readonly packageName?: string | undefined;
 	readonly message: string;
 	readonly cause?: unknown;
 }

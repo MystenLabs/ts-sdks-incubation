@@ -7,6 +7,7 @@ import {
 	DevstackNetworkParseError,
 	parseDevstackNetwork,
 	resolveStackName,
+	resolveStateDir,
 } from '../../src/api/inference-network.ts';
 import { withTempRootSync } from '../helpers/with-temp-root.ts';
 
@@ -60,5 +61,47 @@ describe('api inference/network', () => {
 			expect((err as DevstackNetworkParseError)._tag).toBe('DevstackNetworkParseError');
 			expect((err as DevstackNetworkParseError).value).toBe('bogus');
 		}
+	});
+
+	it('resolves stateDir idempotently for absolute inputs (double-resolution parity)', () => {
+		// Parity check between `runStack`-driver and the CLI's
+		// `--state-dir` flag: both call `resolveStateDir`, and both
+		// surfaces may feed each other's output back in (e.g. a CLI
+		// invocation embeds the absolute resolved path into env, then
+		// re-invokes via the library boot path). The resolver must be
+		// idempotent for absolute paths so the chained call yields the
+		// same string. Relative paths intentionally resolve against
+		// `cwd` once — a second pass with the SAME `cwd` is a no-op.
+		const cwd = '/tmp/some/work/dir';
+		const absolute = '/abs/state';
+
+		const fromRunStack = resolveStateDir({ runtimeRoot: absolute, cwd });
+		expect(fromRunStack).toBe(absolute);
+
+		const fromCli = resolveStateDir({ stateDir: absolute, cwd });
+		expect(fromCli).toBe(absolute);
+
+		// Feed the output back in (the chained surface scenario).
+		const chained = resolveStateDir({ runtimeRoot: fromCli, cwd });
+		expect(chained).toBe(absolute);
+
+		// Relative input → resolved against cwd; chained pass on the
+		// already-absolute result is idempotent.
+		const fromRelative = resolveStateDir({ runtimeRoot: 'rel/state', cwd });
+		expect(fromRelative).toBe('/tmp/some/work/dir/rel/state');
+		expect(resolveStateDir({ runtimeRoot: fromRelative, cwd })).toBe(fromRelative);
+
+		// Precedence: `runtimeRoot` wins over `stateDir` over `env`.
+		expect(
+			resolveStateDir({
+				runtimeRoot: '/win',
+				stateDir: '/lose',
+				env: '/lose-too',
+				cwd,
+			}),
+		).toBe('/win');
+		expect(resolveStateDir({ stateDir: '/win', env: '/lose', cwd })).toBe('/win');
+		expect(resolveStateDir({ env: '/win', cwd })).toBe('/win');
+		expect(resolveStateDir({ cwd })).toBe('/tmp/some/work/dir/.devstack');
 	});
 });

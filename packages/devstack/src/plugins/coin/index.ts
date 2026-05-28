@@ -90,9 +90,10 @@ const coinKnownResourceKey = (fullCoinType: string): string => {
 		.update(fullCoinType)
 		.digest('hex')
 		.slice(0, COIN_KNOWN_HASH_SUFFIX_LEN);
-	// `+1` so the divider underscore fits inside the cap; the resulting
-	// id is `<prefix>_<hash>` with total length COIN_KNOWN_PREFIX_MAX +
-	// hash + 1 — bounded and deterministic per input.
+	// The readable prefix is truncated to leave room for the `_` divider
+	// (`-1`) and the hash suffix (`-COIN_KNOWN_HASH_SUFFIX_LEN`), so the
+	// resulting `<prefix>_<hash>` id has total length
+	// ≤ COIN_KNOWN_PREFIX_MAX — bounded and deterministic per input.
 	return `${readable.slice(0, COIN_KNOWN_PREFIX_MAX - COIN_KNOWN_HASH_SUFFIX_LEN - 1)}_${hash}`;
 };
 

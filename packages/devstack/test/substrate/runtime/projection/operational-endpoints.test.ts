@@ -89,4 +89,23 @@ describe('operationalEndpointEventsFromResolvedValue', () => {
 			),
 		).toEqual([]);
 	});
+
+	it('ignores non-allowlisted fields even when they look benign', () => {
+		// Regression: the previous loose `/pair|token|secret|...` regex
+		// gate meant any field NOT matching the regex would be projected
+		// — but the iteration was still over a fixed object so this was
+		// a silent dead branch. After the allowlist switch, novel fields
+		// (`tokenUrl` — legitimate OAuth; `apiUrl` — a future plugin
+		// field) are dropped silently rather than projected by accident.
+		const events = operationalEndpointEventsFromResolvedValue(
+			pluginKey('demo#0'),
+			{
+				tokenUrl: 'http://127.0.0.1:9000/oauth/token',
+				apiUrl: 'http://127.0.0.1:9001',
+				adminUrl: 'http://127.0.0.1:9002',
+			},
+			789,
+		);
+		expect(events).toEqual([]);
+	});
 });

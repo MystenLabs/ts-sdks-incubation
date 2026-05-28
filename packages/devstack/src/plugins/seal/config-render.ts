@@ -122,7 +122,17 @@ export const renderMasterKeyEnvFile = (masterKeyHex: string): string =>
 
 const readQuotedYamlField = (body: string, field: string): string | null => {
 	const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-	const match = new RegExp(`(?:^|\\n)\\s*${escaped}:\\s*"([^"]+)"\\s*(?:\\n|$)`).exec(body);
+	// Anchor to start-of-line: `(?:^|\n)` plus a whitespace-only run
+	// (`[ \t]*` — explicitly excludes `#`) so a commented field
+	// (`# node_url: "fake"`) can never accidentally match. The renderer
+	// does not emit comments today, but the parser is also used on
+	// snapshot-restore bodies that may grow comments in future. The
+	// previous `\s*` admitted no `#`, but `\s` includes `\n` which let
+	// the regex engine skip past the start-of-line anchor; restricting
+	// to inline-whitespace makes the line-anchoring strict.
+	const match = new RegExp(`(?:^|\\n)[ \\t]*${escaped}:[ \\t]*"([^"]+)"[ \\t]*(?:\\n|$)`).exec(
+		body,
+	);
 	return match?.[1] ?? null;
 };
 

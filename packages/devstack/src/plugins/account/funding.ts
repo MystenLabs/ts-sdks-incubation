@@ -179,6 +179,32 @@ export interface FundingBalanceReader {
 	}) => Effect.Effect<bigint | null>;
 }
 
+/** Sentinel brand identifying the test-only no-op reader. Surfaced as
+ *  a separate `readonly skipFinalityWait?: true` discriminator on
+ *  `NULL_BALANCE_READER` so the funding pass can short-circuit the
+ *  finality wait deterministically WITHOUT exhausting the bounded
+ *  poll schedule. Production readers MUST NOT set this. */
+interface NullBalanceReader extends FundingBalanceReader {
+	readonly skipFinalityWait: true;
+}
+
+/** Test-only no-op balance reader.
+ *
+ *  Production callers (`account/service.ts`) build a real reader from
+ *  the live SDK via `makeFundingBalanceReader`; the funding pass
+ *  REQUIRES a reader so the post-faucet finality wait is load-bearing
+ *  on real wire calls. Tests that don't model the read/poll loop pass
+ *  this sentinel to explicitly opt OUT of the wait — the absence of
+ *  this opt-out previously hid as a silent `Effect.void` short-circuit
+ *  on any production caller that forgot to wire the reader. */
+export const NULL_BALANCE_READER: FundingBalanceReader = {
+	readBalance: () => Effect.succeed(null),
+	skipFinalityWait: true,
+} as NullBalanceReader;
+
+const skipsFinalityWait = (reader: FundingBalanceReader): boolean =>
+	(reader as NullBalanceReader).skipFinalityWait === true;
+
 /** The canonical builtin SUI coin type. Used by the funding dispatch
  *  to route SUI entries to the faucet strategy (same key as the
  *  default-funding pass), and by everything that needs to detect
@@ -209,7 +235,12 @@ export interface FundEphemeralDefaultArgs {
 	 *  wire call and acquires the per-address lease so concurrent wire
 	 *  calls for the same address serialize at the chain boundary. */
 	readonly broker: LeaseBroker;
-	readonly balanceReader?: FundingBalanceReader;
+	/** Required. Production callers build this from the SDK via
+	 *  `makeFundingBalanceReader`; tests that don't model the read/poll
+	 *  loop opt out explicitly with `NULL_BALANCE_READER`. The previous
+	 *  optional shape allowed a silent `Effect.void` short-circuit on
+	 *  the finality wait when callers forgot to wire it. */
+	readonly balanceReader: FundingBalanceReader;
 }
 
 /** Outcome of `fundEphemeralDefault`. `'skipped'` covers the
@@ -360,7 +391,8 @@ export interface ApplyCrossCuttingFundingArgs {
 	readonly funding: ProjectedFunding;
 	readonly chainId: ChainId;
 	readonly broker: LeaseBroker;
-	readonly balanceReader?: FundingBalanceReader;
+	/** Required. See `FundEphemeralDefaultArgs.balanceReader`. */
+	readonly balanceReader: FundingBalanceReader;
 }
 
 /** Apply the cross-cutting funding pass. Variant-agnostic — runs for
@@ -524,16 +556,15 @@ export const applyCrossCuttingFunding = (
 	);
 
 const readExistingBalance = (
-	balanceReader: FundingBalanceReader | undefined,
+	balanceReader: FundingBalanceReader,
 	args: {
 		readonly owner: string;
 		readonly coinType: string;
 	},
-): Effect.Effect<bigint | null> =>
-	balanceReader === undefined ? Effect.succeed(null) : balanceReader.readBalance(args);
+): Effect.Effect<bigint | null> => balanceReader.readBalance(args);
 
 const waitForBalanceAtLeast = (parts: {
-	readonly balanceReader: FundingBalanceReader | undefined;
+	readonly balanceReader: FundingBalanceReader;
 	readonly accountName: string;
 	readonly variant: AccountVariantKind;
 	readonly phase: 'fund-default' | 'fund-cross-cutting';
@@ -542,10 +573,14 @@ const waitForBalanceAtLeast = (parts: {
 	readonly coinLabel: string;
 	readonly amount: bigint;
 }): Effect.Effect<void, AccountAcquireError> => {
-	if (parts.balanceReader === undefined) {
+	const reader = parts.balanceReader;
+	// Test-only opt-out — the `NULL_BALANCE_READER` sentinel explicitly
+	// declares "this caller doesn't model the read/poll loop". Production
+	// readers never set `skipFinalityWait`, so the wait stays load-bearing
+	// on real wire calls.
+	if (skipsFinalityWait(reader)) {
 		return Effect.void;
 	}
-	const reader = parts.balanceReader;
 	return Effect.gen(function* () {
 		const read = readExistingBalance(reader, {
 			owner: parts.owner,

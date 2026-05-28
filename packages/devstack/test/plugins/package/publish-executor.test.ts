@@ -12,6 +12,7 @@ import {
 	type ResolvedAccountOptions,
 } from '../../../src/plugins/account/service.ts';
 import type { SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
+import { publishError } from '../../../src/plugins/package/errors.ts';
 import { makePublishExecutor } from '../../../src/plugins/package/publish-executor.ts';
 
 const txHarness = vi.hoisted(() => ({
@@ -334,6 +335,67 @@ describe('package publish executor', () => {
 			const secondReceipt = yield* Fiber.join(second);
 			expect(secondReceipt.packageId).toBe('0xpkg2');
 		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect(
+		'postPublishReadyHint swallows a transient RPC failure (stale-object read is non-fatal)',
+		() =>
+			Effect.gen(function* () {
+				// Contract: `getObject` rejecting after a successful publish
+				// is a "tx written but object not yet queryable" race; the
+				// next produce phase (`parse`) inspects the actual output,
+				// so the hint stays silent. Only infrastructural faults
+				// surface as `PublishError('parse')` — and even then, the
+				// throw site is shaped so `packageName` is NEVER overloaded
+				// with the on-chain `packageId` (the regression target).
+				// See the separate unit-test of `publishError('parse', ...)`
+				// below for the throw-site shape guarantee.
+				const sdk: SuiSdkShim = {
+					core: {
+						getObject: () => Promise.reject(new Error('hint-rpc-down')),
+						getTransaction: () => Promise.reject(new Error('stub')),
+						getBalance: () => Promise.reject(new Error('stub')),
+						listCoins: () =>
+							Promise.resolve({ objects: [], hasNextPage: false, cursor: null }),
+						executeTransaction: () => Promise.reject(new Error('stub')),
+						waitForTransaction: () => Promise.reject(new Error('stub')),
+					},
+					client: null as never,
+				};
+				const account = {
+					name: 'publisher',
+					address: '0xabc',
+				} as unknown as AccountValue;
+				const executor = makePublishExecutor({ sdk, account });
+
+				const exit = yield* Effect.exit(
+					Effect.scoped(executor.postPublishReadyHint('0xpkg-onchain-id')),
+				);
+				expect(Exit.isSuccess(exit)).toBe(true);
+			}),
+	);
+
+	it(
+		'publishError("parse") shape — packageName is optional, never overloaded with on-chain id',
+		() => {
+			// Regression: previously the hint threw
+			// `publishError('parse', { packageName: packageId, ... })`,
+			// stamping the on-chain `0x…` id into the symbolic name
+			// slot — the user's error display showed `packageName=0x...`.
+			// The fix made `packageName` optional on the error class and
+			// removed the overload at the throw site (the on-chain id is
+			// now carried in `message` where it's unambiguous; `mode-local`
+			// re-stamps `packageName` + `sourcePath` from the outer inputs
+			// when the error bubbles through).
+			const err = publishError('parse', {
+				message: 'postPublishReadyHint(0xpkg-onchain-id) failed',
+				cause: new Error('hint-rpc-down'),
+			});
+			expect(err._tag).toBe('PublishError');
+			expect(err.phase).toBe('parse');
+			expect(err.packageName).toBeUndefined();
+			expect(err.message).toContain('0xpkg-onchain-id');
+		},
 	);
 
 	it.effect('publishes with an impersonation account through account.signAndExecute', () =>

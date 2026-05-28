@@ -469,6 +469,79 @@ describe('snapshot capture container images', () => {
 		),
 	);
 
+	it.effect(
+		'unpauses every container the orchestrator intended to pause when pause fails mid-list',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					// Regression — prior to this fix, the `paused` array
+					// was populated AFTER `pause` returned success, so a
+					// pause failure on the SECOND container left the
+					// first container paused (its `unpause` never ran in
+					// the finalizer) and a half-paused second container
+					// was missed entirely. After the fix, every container
+					// the orchestrator INTENDED to pause is recorded
+					// before the syscall, so the finalizer attempts
+					// `unpause` for both — `unpause` against a non-paused
+					// container is a swallowed no-op.
+					const pauseCalls: string[] = [];
+					const saveCalls: ImageRef[] = [];
+					const unpauseCalls: string[] = [];
+					const handlesByRole: Record<string, ContainerHandle> = {
+						alpha: {
+							id: 'alpha-id',
+							name: 'alpha-container',
+							imageName: 'devstack-build:alpha',
+							status: 'running',
+							ips: [],
+						},
+						beta: {
+							id: 'beta-id',
+							name: 'beta-container',
+							imageName: 'devstack-build:beta',
+							status: 'running',
+							ips: [],
+						},
+					};
+					const failingRuntime: ContainerRuntime = {
+						...runtimeStub({
+							handlesByRole,
+							saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+							pauseCalls,
+							saveCalls,
+							unpauseCalls,
+						}),
+						pause: (handle) =>
+							Effect.gen(function* () {
+								pauseCalls.push(handle.name);
+								if (handle.name === 'beta-container') {
+									return yield* Effect.fail({
+										_tag: 'ContainerRuntimeError' as const,
+										reason: 'daemon-unreachable' as const,
+										detail: `pause failed for ${handle.name}`,
+									} satisfies ContainerRuntimeError);
+								}
+							}),
+					};
+
+					mkdirSync(join(root, 'artifact'), { recursive: true });
+					const exit = yield* runCaptureExit(root, failingRuntime, [
+						participant(['alpha', 'beta']),
+					]).pipe(Effect.provide(NodeFileSystem.layer));
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					// Both pauses attempted in order.
+					expect(pauseCalls).toEqual(['alpha-container', 'beta-container']);
+					// Finalizer unpauses BOTH — alpha (confirmed paused)
+					// AND beta (intent recorded before failure). The
+					// runtime sees both unpause calls; in a real Docker
+					// daemon beta would surface "container not paused"
+					// which is treated as best-effort.
+					expect(unpauseCalls.sort()).toEqual(['alpha-container', 'beta-container']);
+				}),
+			),
+	);
+
 	it.effect('keeps running containers paused through host-tree and contribution capture', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {

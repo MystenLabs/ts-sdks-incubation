@@ -366,7 +366,23 @@ export const acquireLocal = (
 				// `signAndExecute` already awaits `waitForTransaction`, so
 				// the typical race is closed before we reach here.
 				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
-				yield* inputs.executor.postPublishReadyHint(output.packageId);
+				yield* inputs.executor.postPublishReadyHint(output.packageId).pipe(
+					// Re-stamp sourcePath/packageName — the executor's hint
+					// probe only has the on-chain `packageId` in scope and
+					// intentionally omits the symbolic fields (see
+					// `publish-executor.ts → postPublishReadyHint`). Back-fill
+					// from the outer inputs so the cascade formatter sees
+					// the symbolic context.
+					Effect.catchTag(
+						'PublishError',
+						(err): Effect.Effect<void, PublishError> =>
+							Effect.fail({
+								...err,
+								...(err.sourcePath === undefined ? { sourcePath: inputs.sourcePath } : {}),
+								...(err.packageName === undefined ? { packageName: inputs.packageName } : {}),
+							}),
+					),
+				);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;

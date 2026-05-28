@@ -30,11 +30,16 @@ const ROSTER_TEST_TIMEOUT_MS = 15_000;
 
 const pathsFor = (
 	root: string,
-): { readonly stackLockFile: string; readonly rosterFile: string } => {
+): {
+	readonly stackLockFile: string;
+	readonly rosterFile: string;
+	readonly containerClaimsFile: string;
+} => {
 	const stackRoot = join(root, 'app', 'main');
 	return {
 		stackLockFile: join(stackRoot, 'stack.lock'),
 		rosterFile: join(stackRoot, 'roster.json'),
+		containerClaimsFile: join(stackRoot, 'container-claims.json'),
 	};
 };
 

@@ -999,7 +999,11 @@ export const ensureContainer = (
 						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
 					}
 					yield* removeClaim(
-						{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+						{
+							stackLockFile: paths.stackLockFile,
+							rosterFile: paths.rosterFile,
+							containerClaimsFile: paths.containerClaimsFile,
+						},
 						spec.name,
 					).pipe(
 						Effect.tapCause((cause) =>
@@ -1070,7 +1074,11 @@ export const ensureContainer = (
 					// cleaned up at scope close.
 					yield* mapSubstrateClaimError(
 						addClaim(
-							{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+							{
+								stackLockFile: paths.stackLockFile,
+								rosterFile: paths.rosterFile,
+								containerClaimsFile: paths.containerClaimsFile,
+							},
 							spec.name,
 						),
 					);

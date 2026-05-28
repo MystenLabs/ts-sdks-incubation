@@ -3,14 +3,23 @@ import type { EngineEvent } from '../../events.ts';
 
 type EndpointRegisteredEvent = Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>;
 
+// Endpoint-projection policy is closed-allowlist:
+// only the fields enumerated below are projected as operational
+// endpoints. Anything else — including legitimate sensitive URLs
+// (`pairUrl`, `walletPairingToken`, OAuth `tokenUrl`, etc.) and any
+// future field a plugin adds — is ignored by default. A plugin that
+// wants a new field projected must extend this list AND ship a
+// projection test pinning its display name. The previous loose
+// "skip-if-matches-sensitive-regex" check dropped legitimate OAuth
+// fields like `tokenUrl` and missed novel sensitive names; the
+// allowlist removes that whole class of false-negative/false-positive
+// pair.
 const SAFE_URL_FIELDS = {
 	url: 'http',
 	rpcUrl: 'rpc',
 	faucetUrl: 'faucet',
 	graphqlUrl: 'graphql',
 } as const;
-
-const SENSITIVE_URL_FIELD = /pair|token|secret|password|private|bearer/i;
 
 export interface OperationalEndpointProjectionOptions {
 	/** Routable capabilities are the authoritative public endpoint
@@ -31,7 +40,6 @@ export const operationalEndpointEventsFromResolvedValue = (
 	const record = value as Readonly<Record<string, unknown>>;
 	const events: Array<EndpointRegisteredEvent> = [];
 	for (const [field, name] of Object.entries(SAFE_URL_FIELDS)) {
-		if (SENSITIVE_URL_FIELD.test(field)) continue;
 		const raw = record[field];
 		if (typeof raw !== 'string' || !isHttpUrl(raw)) continue;
 		events.push({

@@ -31,6 +31,7 @@ const stackPathsFor = (stackRoot: string): StackPaths => ({
 	snapshotDir: join(stackRoot, 'snapshots'),
 	stackLockFile: join(stackRoot, 'stack.lock'),
 	rosterFile: join(stackRoot, 'roster.json'),
+	containerClaimsFile: join(stackRoot, 'container-claims.json'),
 	snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
 	cacheEntry: (namespace, chain, contentHash) => ({
 		dir: join(stackRoot, 'cache', namespace, chain),

@@ -234,6 +234,26 @@ const routerStackForContainer = (
 	stack: name,
 });
 
+/** Read the live-PID set for a stack from its roster.
+ *
+ *  Path policy: `<runtimeRoot>/stacks/<stack>/roster.json`. This is the
+ *  same key the entire substrate uses — see `substrate/runtime/paths.ts`
+ *  (`path.join(root, 'stacks', identity.stack)`) — so the path here
+ *  carries no NEW cross-attribution risk beyond the substrate-wide
+ *  decision to key per-stack-disk-state on `stack` alone. (Two stacks
+ *  in DIFFERENT apps that pick the SAME stack name would already share
+ *  every other on-disk artifact — `state.json`, `cache/`, `snapshots/`,
+ *  `stack.lock`, `container-claims.json`. The Docker-level discriminator
+ *  is the container/network/volume NAME, which IS `<app>-<stack>-…`
+ *  composed inside each plugin; so cross-attribution at the daemon
+ *  level is prevented by name uniqueness even when disk state collides.)
+ *
+ *  This function deliberately omits `app` from the path so the
+ *  prune sweeper agrees with every other consumer (`cli/main.ts`,
+ *  `cli/wirings/identity.ts`, `cli/wirings/up.ts`, the roster module
+ *  itself). Promoting `app` into the stack-state path is an
+ *  architectural change that must update all of those call sites in
+ *  lockstep — out of scope for this orchestrator. */
 const livePidsForStack = (
 	runtimeRoot: string,
 	stack: string,

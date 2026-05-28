@@ -10,7 +10,6 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
-import { dirname } from 'node:path';
 
 import { Data, Effect, Schema } from 'effect';
 
@@ -157,7 +156,34 @@ export interface ReleaseResult {
 interface RosterPaths {
 	readonly stackLockFile: string;
 	readonly rosterFile: string;
+	/** Sibling-file path for the container-claim ledger. Optional
+	 *  because the roster's holder mutations (`claim` / `release` /
+	 *  `heartbeat` / `setIntent`) never touch the ledger; only the
+	 *  `addClaim` / `removeClaim` / `readClaims` / `pruneStaleClaims`
+	 *  entry points require it, and they assert presence at the call
+	 *  site. Sourced from `StackPathsService.containerClaimsFile` —
+	 *  see `substrate/runtime/paths.ts` for the policy rationale
+	 *  (closed L0 path resolver). */
+	readonly containerClaimsFile?: string;
 }
+
+/** Materialize the ledger path from `RosterPaths`. Callers that
+ *  invoke any of the claim-ledger APIs (`readClaims`,
+ *  `pruneStaleClaims`, `addClaim`, `removeClaim`) MUST construct
+ *  `RosterPaths` with `containerClaimsFile` populated from
+ *  `StackPathsService.containerClaimsFile`. The previous behavior of
+ *  reconstructing `dirname(rosterFile) + '/container-claims.json'`
+ *  internally has been removed so nothing in the runtime tree builds
+ *  cross-process paths outside the substrate path resolver. */
+const requireClaimsPath = (paths: RosterPaths): string => {
+	if (paths.containerClaimsFile === undefined) {
+		throw new Error(
+			'cross-process.roster: container-claim API called without `containerClaimsFile` ' +
+				'on the RosterPaths bundle. Source this from StackPathsService.containerClaimsFile.',
+		);
+	}
+	return paths.containerClaimsFile;
+};
 
 /** Match a roster holder against THIS process's identity.
  *
@@ -404,8 +430,6 @@ const ContainerClaimDocumentSchema = versionedDocSchema(1, {
 
 const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
 
-const claimsPath = (rosterFile: string): string => `${dirname(rosterFile)}/container-claims.json`;
-
 const isContainerClaimLive = (
 	claim: ContainerClaim,
 	probeStartTime: (pid: number) => number | null,
@@ -452,7 +476,7 @@ export const readClaims = (
 	paths: RosterPaths,
 ): Effect.Effect<ContainerClaimDocument, RosterError> =>
 	Effect.gen(function* () {
-		const path = claimsPath(paths.rosterFile);
+		const path = requireClaimsPath(paths);
 		if (!existsSync(path)) return EMPTY_CLAIMS;
 		const raw = yield* Effect.try({
 			try: () => readFileSync(path, 'utf8'),
@@ -472,7 +496,7 @@ export const pruneStaleClaims = (
 	withStackLock(
 		paths,
 		Effect.gen(function* () {
-			const path = claimsPath(paths.rosterFile);
+			const path = requireClaimsPath(paths);
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
@@ -493,7 +517,7 @@ export const addClaim = (
 	withStackLock(
 		paths,
 		Effect.gen(function* () {
-			const path = claimsPath(paths.rosterFile);
+			const path = requireClaimsPath(paths);
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
@@ -543,7 +567,7 @@ export const removeClaim = (
 	withStackLock(
 		paths,
 		Effect.gen(function* () {
-			const path = claimsPath(paths.rosterFile);
+			const path = requireClaimsPath(paths);
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);

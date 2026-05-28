@@ -119,6 +119,7 @@ export const sweepOrphans = (
 				const doc = yield* readClaims({
 					stackLockFile: paths.stackLockFile,
 					rosterFile: paths.rosterFile,
+					containerClaimsFile: paths.containerClaimsFile,
 				}).pipe(Effect.mapError(mapSubstrateError));
 				return new Set(doc.claims.map((c: ContainerClaim) => c.containerKey));
 			}),

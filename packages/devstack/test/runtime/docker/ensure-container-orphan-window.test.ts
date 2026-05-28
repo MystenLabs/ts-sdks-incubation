@@ -84,6 +84,7 @@ const stackPathsFor = (stackRoot: string, rosterFile: string): StackPaths => {
 		// ensureContainer maps to a DaemonUnreachable failure.
 		stackLockFile: join(rosterFile, 'stack.lock'),
 		rosterFile: join(rosterFile, 'roster.json'),
+		containerClaimsFile: join(rosterFile, 'container-claims.json'),
 		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
 		cacheEntry,
 		cacheChainDir,

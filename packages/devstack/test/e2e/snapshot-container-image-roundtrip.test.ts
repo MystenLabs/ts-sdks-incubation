@@ -139,6 +139,7 @@ describe('snapshot container image roundtrip', () => {
 						const claimsBeforeRestore = yield* readClaims({
 							stackLockFile: paths.stackLockFile,
 							rosterFile: paths.rosterFile,
+							containerClaimsFile: paths.containerClaimsFile,
 						});
 						expect(claimsBeforeRestore.claims.map((claim) => claim.containerKey)).toContain(
 							containerName,

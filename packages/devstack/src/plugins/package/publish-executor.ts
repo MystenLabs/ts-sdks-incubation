@@ -339,12 +339,15 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				}
 			},
 			catch: (cause): PublishError =>
-				// `sourcePath` is intentionally omitted — this probe only
-				// has the resolved on-chain `packageId` in scope. The
-				// `mode-local` re-stamp pass back-fills from the outer
-				// inputs when the error bubbles through.
+				// `sourcePath` AND `packageName` are intentionally omitted —
+				// this probe only has the resolved on-chain `packageId` in
+				// scope, NOT the symbolic name. Overloading `packageName`
+				// with `packageId` would mislabel the error display.
+				// The `mode-local` re-stamp pass back-fills `sourcePath`
+				// and `packageName` from the outer inputs when the error
+				// bubbles through. The `packageId` itself is carried in
+				// the message body where it's unambiguous.
 				publishError('parse', {
-					packageName: packageId,
 					message: `postPublishReadyHint(${packageId}) failed`,
 					cause,
 				}),
