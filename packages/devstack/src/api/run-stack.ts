@@ -45,7 +45,7 @@ import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { CapabilitySinksService } from '../substrate/runtime/capability-sinks/index.ts';
-import { makeProjectionRef } from '../substrate/runtime/projection/index.ts';
+import { makeProjectionRefSync } from '../substrate/runtime/projection/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
 	buildProductionOrchestratorSinks,
@@ -222,9 +222,14 @@ export const runStack = (
 
 	// State + handle slots are created at `runStack(...)` time so the
 	// caller can subscribe to `state.changes` BEFORE `start` runs.
-	// `SubscriptionRef.make` and `Deferred.make` are both sync-effects
-	// (no side-effects, no async); `Effect.runSync` is safe here.
-	const state = Effect.runSync(makeProjectionRef());
+	// `Deferred.make` is sync-effect (no side-effects, no async);
+	// `Effect.runSync` is safe for it. The projection ref is allocated
+	// via the explicit `makeProjectionRefSync` so the sync contract is
+	// pinned at the substrate constructor — if `makeProjectionRef`
+	// ever picks up an async/Layer wrapper (`withSpan`, annotation),
+	// `makeProjectionRefSync` must remain sync-only or be replaced by
+	// a Deferred-handoff seam at this boot-time call site.
+	const state = makeProjectionRefSync();
 	const bootDeferred = Effect.runSync(Deferred.make<void, BootError>());
 	const stopRequested = Effect.runSync(Deferred.make<void>());
 	const eventQueueRef = Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>());

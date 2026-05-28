@@ -162,6 +162,10 @@ export type {
 	ManifestExtrasContext,
 	ManifestExtrasInput,
 } from './substrate/manifest.ts';
+export {
+	ManifestExtrasInvalid,
+	ManifestExtrasLookupError,
+} from './substrate/manifest.ts';
 export { IdentityContext } from './substrate/runtime/paths.ts';
 
 // --- Branded primitives (constructor functions for plugin authors) ------

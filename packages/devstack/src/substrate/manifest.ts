@@ -25,6 +25,22 @@ export class ManifestExtrasInvalid extends Schema.TaggedErrorClass<ManifestExtra
 	},
 ) {}
 
+/** Tagged failure when a plugin's `extras` factory references a
+ *  resource the host cannot resolve — either the resource id is not
+ *  registered with the supervisor, or it has not produced a value
+ *  yet at the point the factory ran. Thrown synchronously from the
+ *  user-supplied `ctx.value(...)` closure; `resolveManifestExtras`
+ *  catches the throw and surfaces it as a typed failure so callers
+ *  classify via `catchTag('ManifestExtrasLookupError', ...)` rather
+ *  than die-cause inspection. */
+export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestExtrasLookupError>()(
+	'ManifestExtrasLookupError',
+	{
+		kind: Schema.Literals(['unknown-resource', 'unresolved-resource']),
+		resourceId: Schema.String,
+	},
+) {}
+
 /** Manifest envelope. The `services` slot is open (`unknown`) at
  *  the envelope level; each plugin's Codegenable contribution
  *  emits a typed file the consumer imports for the typed shape.
@@ -62,14 +78,27 @@ const isRecord = (value: unknown): value is ManifestExtras =>
 export const resolveManifestExtras = (
 	input: ManifestExtrasInput | undefined,
 	ctx: ManifestExtrasContext,
-	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-): Effect.Effect<ManifestExtras, ManifestExtrasInvalid, never> =>
+): Effect.Effect<ManifestExtras, ManifestExtrasInvalid | ManifestExtrasLookupError, never> =>
 	Effect.gen(function* () {
 		if (input === undefined) return {};
+		// The user-supplied `extras` factory invokes `ctx.value(...)`
+		// synchronously; a missing/unresolved resource throws a
+		// `ManifestExtrasLookupError`. `Effect.try` with a typed
+		// `catch` mapper promotes that throw into the typed failure
+		// channel so callers `catchTag` it instead of having to inspect
+		// the die-cause. Any non-tagged throw is rethrown to preserve
+		// the existing defect semantics for genuine programmer errors
+		// inside the factory body.
 		const resolvedEffect = Effect.isEffect(input)
 			? input
 			: typeof input === 'function'
-				? Effect.sync(() => input(ctx)).pipe(
+				? Effect.try({
+						try: () => input(ctx),
+						catch: (cause) => {
+							if (cause instanceof ManifestExtrasLookupError) return cause;
+							throw cause;
+						},
+					}).pipe(
 						Effect.flatMap((value) => (Effect.isEffect(value) ? value : Effect.succeed(value))),
 					)
 				: Effect.succeed(input);

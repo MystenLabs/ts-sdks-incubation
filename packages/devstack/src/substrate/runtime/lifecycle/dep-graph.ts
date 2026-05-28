@@ -36,7 +36,25 @@ export class UnresolvedDependencyError extends Data.TaggedError('UnresolvedDepen
 	readonly missingResourceId: string;
 }> {}
 
-export type DepGraphError = DepGraphCycleError | UnresolvedDependencyError;
+/** Two members declared the same `resource id`. The compile-time
+ *  `MissingProviders` check only catches collisions on the user-typed
+ *  dependency path, NOT two members declared in the same stack with the
+ *  same `definePlugin({ id })`. Without this guard the dep-graph would
+ *  last-writer-wins the provider index and silently bind every dependent
+ *  to the second declaration. Phase 22e/E3 added a complementary
+ *  package-plugin-level guard (`plugins/package/mode-local.ts`) for the
+ *  registry path; this surfaces the same class of mistake for ALL plugins
+ *  at the substrate dep-graph layer. */
+export class DuplicateResourceIdError extends Data.TaggedError('DuplicateResourceIdError')<{
+	readonly resourceId: string;
+	readonly firstPluginKey: PluginKey;
+	readonly secondPluginKey: PluginKey;
+}> {}
+
+export type DepGraphError =
+	| DepGraphCycleError
+	| UnresolvedDependencyError
+	| DuplicateResourceIdError;
 
 // -----------------------------------------------------------------------------
 // Node shape
@@ -103,7 +121,8 @@ const expand = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<NamedMember> =
  *
  * Steps:
  *  1. Mint a plugin key for every member.
- *  2. Build the resource-id -> key index (providers).
+ *  2. Build the resource-id -> key index (providers). Two members with
+ *     the same `id` fail with `DuplicateResourceIdError`.
  *  3. For each node, resolve its dependency refs to upstream keys.
  *  4. Kahn's algorithm: peel zero-indegree nodes into level 0, decrement
  *     downstream indegrees, repeat.
@@ -119,13 +138,30 @@ export const resolveGraph = (
 		yield* Effect.annotateCurrentSpan({ 'devstack.dep-graph.memberCount': members.length });
 		const named = expand(members);
 
-		// Provider index: resource-id → key. Last writer wins; the
-		// compile-time `MissingProviders` check ensures uniqueness on
-		// the user-typed path, so a duplicate here would be a programmer
-		// error in a runtime-typed stack — we don't enforce uniqueness at
-		// runtime; the duplicate just resolves to the latest declaration.
+		// Provider index: resource-id → key. The compile-time
+		// `MissingProviders` check ensures uniqueness on the user-typed
+		// dependency path, but a runtime-built stack (or a typo'd
+		// `definePlugin({ id })`) can still ship two members with the
+		// same `resource id`. Without an explicit guard the index would
+		// last-writer-wins and every dependent would silently bind to
+		// the second declaration; we fail early with a typed error
+		// instead so a developer sees the conflicting plugin keys at
+		// boot rather than chasing a "wrong provider" mystery downstream.
+		// Phase 22e/E3's package-plugin-level guard in
+		// `plugins/package/mode-local.ts` is complementary — it fires on
+		// the registry path before this resolver runs.
 		const providerByResourceId = new Map<string, PluginKey>();
 		for (const { key, member } of named) {
+			const existing = providerByResourceId.get(member.id);
+			if (existing !== undefined) {
+				return yield* Effect.fail(
+					new DuplicateResourceIdError({
+						resourceId: member.id,
+						firstPluginKey: existing,
+						secondPluginKey: key,
+					}),
+				);
+			}
 			providerByResourceId.set(member.id, key);
 		}
 

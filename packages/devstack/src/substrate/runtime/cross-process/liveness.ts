@@ -68,6 +68,20 @@ export type LivenessCache = Map<number, number | null>;
  *  pass — same `pid` only forks the underlying utility once. */
 export const processStartTime = (pid: number, cache?: LivenessCache): number | null => {
 	if (!Number.isFinite(pid) || pid <= 0) return null;
+	// Our own pid's startTime never changes during the process
+	// lifetime — cache the first probe forever. Eliminates the `ps`
+	// spawn under high in-process contention (e.g. N fibers fighting
+	// over a single cross-process lock all probing each other's
+	// shared pid). Without this cache, 8 concurrent fibers each fork
+	// `ps -o lstart` with a 2s timeout, compounding into seconds of
+	// latency that exhaust the claim budget (review fix phase 22f
+	// reclaim-stress reproducer caught it).
+	if (pid === process.pid) {
+		if (ownStartTimeCache === UNSET) {
+			ownStartTimeCache = probeStartTimeUncached(pid);
+		}
+		return ownStartTimeCache;
+	}
 	if (cache?.has(pid)) {
 		// Map.get is `T | undefined` — but `has` is true, so the value
 		// is one of the cached results (a `number` or `null`).
@@ -77,6 +91,9 @@ export const processStartTime = (pid: number, cache?: LivenessCache): number | n
 	cache?.set(pid, probed);
 	return probed;
 };
+
+const UNSET: unique symbol = Symbol('UNSET');
+let ownStartTimeCache: number | null | typeof UNSET = UNSET;
 
 /** Inner probe — always forks the platform utility. Split out so the
  *  cache branch in `processStartTime` stays a single read/write. */

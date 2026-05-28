@@ -48,6 +48,14 @@ const MAX_BUILD_ENTRIES_KEPT = 200;
 const MAX_ROW_LOG_LINES = 100;
 
 // -----------------------------------------------------------------------------
+// Decode-result type — shared between the reducer's optional pre-flight
+// cache and the `tryDecodeProjectionPayload` helper. Hoisted above the
+// reducer so the optional `prevalidated` parameter can reference it.
+// -----------------------------------------------------------------------------
+
+type DecodeResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly cause: unknown };
+
+// -----------------------------------------------------------------------------
 // Pure reducer
 // -----------------------------------------------------------------------------
 
@@ -59,8 +67,22 @@ const MAX_ROW_LOG_LINES = 100;
  * The `tag` switch is exhaustive against `EngineEvent['tag']`; the
  * trailing `_exhaustive: never` causes TS to flag any new tag that
  * isn't handled here.
+ *
+ * @param prevalidated - Optional pre-flight decode result for
+ *   `projection.updated` payloads. When the Effect-aware `updateRef`
+ *   seam has already decoded the payload (to drive the warning
+ *   emission inside the fiber's logger Layer), it threads the result
+ *   here so the reducer doesn't decode the same payload twice on
+ *   the hot path. Direct `applyEvent` callers (tests, in-process
+ *   projection consumers) leave this undefined and the reducer
+ *   re-decodes — the schema is sync + deterministic so the cached
+ *   result and a fresh decode agree.
  */
-export const applyEvent = (state: SubscribableState, event: EngineEvent): SubscribableState => {
+export const applyEvent = (
+	state: SubscribableState,
+	event: EngineEvent,
+	prevalidated?: DecodeResult<unknown>,
+): SubscribableState => {
 	// Every event advances `lastEvent.at`. `lastEvent.seq` is bumped at
 	// the `updateRef` wrapper, not here — this reducer is pure data.
 	const withTouched = (next: Partial<SubscribableState>): SubscribableState => ({
@@ -120,7 +142,8 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 			// remains pure-data sync, just signaling a decode failure
 			// via the `null` return.
 			if (event.kind === 'account') {
-				const decoded = tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
+				const decoded =
+					prevalidated ?? tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
 				// `event.payload` (not `decoded.value`) is forwarded once the
 				// schema has confirmed the structural shape — the runtime brand
 				// (`account/${string}`) is TS-only and Schema can't express
@@ -133,7 +156,8 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 					: withTouched({});
 			}
 			if (event.kind === 'package') {
-				const decoded = tryDecodeProjectionPayload(PackageProjectionSchema, event.payload);
+				const decoded =
+					prevalidated ?? tryDecodeProjectionPayload(PackageProjectionSchema, event.payload);
 				return decoded.ok
 					? withTouched({
 							packages: upsertPackage(state.packages, event.payload as PackageProjection),
@@ -314,27 +338,29 @@ export const updateRef = (
 ): Effect.Effect<void> =>
 	Effect.gen(function* () {
 		// Pre-flight: detect malformed projection-updated payloads so the
-		// warning runs inside the fiber's logger context. The reducer's
-		// own decode runs again under `SubscriptionRef.update` and stays
-		// pure-data sync — Schema decoding is deterministic so a payload
-		// that fails here is the same payload that the reducer drops.
+		// warning runs inside the fiber's logger context. We thread the
+		// decode result into the reducer below so the hot path decodes
+		// the payload exactly once per event — the previous shape ran
+		// the same `Schema.decodeUnknownSync` pass twice (once here,
+		// once inside `applyEvent`) on every projection.updated event.
+		let prevalidated: DecodeResult<unknown> | undefined;
 		if (event.tag === 'projection.updated') {
 			if (event.kind === 'account' || event.kind === 'package') {
 				const schema = event.kind === 'account' ? AccountProjectionSchema : PackageProjectionSchema;
-				const decoded = tryDecodeProjectionPayload(schema, event.payload);
-				if (!decoded.ok) {
+				prevalidated = tryDecodeProjectionPayload(schema, event.payload);
+				if (!prevalidated.ok) {
 					yield* Effect.logWarning(
 						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
 					).pipe(
 						Effect.annotateLogs({
-							[SpanAttr.errorMessage]: formatDecodeIssue(decoded.cause),
+							[SpanAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
 						}),
 					);
 				}
 			}
 		}
 		yield* SubscriptionRef.update(ref, (state) => {
-			const next = applyEvent(state, event);
+			const next = applyEvent(state, event, prevalidated);
 			return {
 				...next,
 				lastEvent: { seq: state.lastEvent.seq + 1, at: next.lastEvent.at },
@@ -362,8 +388,6 @@ export const updateRef = (
  * `package/${string}`) are TS-only and the decoded copy would strip
  * them. The schema acts as a structural guard only.
  */
-type DecodeResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly cause: unknown };
-
 const tryDecodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
 	schema: S,
 	payload: unknown,

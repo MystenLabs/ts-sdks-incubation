@@ -456,6 +456,18 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						// single `fs.exists`, but that would need a paired
 						// cleanup-on-delete pathway + a corruption-tolerance
 						// story for the sidecar, which is outside this scope.
+						//
+						// Forward-reference safety: `list` is declared LATER
+						// in this outer `Effect.gen` body. No TDZ fires
+						// because `capture` is an arrow function returned
+						// from the gen — by the time any caller invokes it,
+						// the outer gen has fully resolved and all `const`
+						// bindings (including `list`) are bound. The
+						// regression guard at
+						// test/orchestrators/snapshot/capture-collision-tdz.test.ts
+						// pins this; if a future refactor wraps `list` in
+						// an `Effect.fn` decorator or extracts it through a
+						// hoisting-sensitive path, the guard will fail.
 						const existing = yield* list;
 						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
 							return yield* Effect.fail(

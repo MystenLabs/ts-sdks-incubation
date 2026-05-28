@@ -17,7 +17,7 @@
 // "claim the lock", not "claim the lock, but first someone else must
 // have made sure the directory exists."
 
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Scope } from 'effect';
@@ -106,6 +106,65 @@ describe('acquireStackLock', () => {
 						expect(existsSync(lockPath)).toBe(true);
 					}),
 				);
+			}),
+		),
+	);
+});
+
+describe('acquireStackLock — unparseable body + mtime staleness', () => {
+	// Regression for review fix phase 22f Bug 3: a peer that died mid-
+	// write leaves the lock body unparseable. The PID liveness check
+	// has nothing to consult (parse returned null), and pre-fix the
+	// loop fell through to the exponential backoff and burned the full
+	// 5s timeout. Fix: if the body is unparseable AND the file's mtime
+	// is older than `DEFAULT_SWEEP_POLICY.staleAfterMillis` (30s), the
+	// next peer reclaims via unlink + retry.
+	it.live('reclaims an unparseable lock body once mtime exceeds the staleness window', () =>
+		withTempRoot('stack-lock-mtime', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stacks', 'main');
+				mkdirSync(stackRoot, { recursive: true });
+				const lockPath = join(stackRoot, 'stack.lock');
+				// Plant unparseable garbage (mid-write crash simulation).
+				writeFileSync(lockPath, '{partial-json', { flag: 'wx' });
+				// Backdate mtime by 60s (well past the 30s sweep window).
+				const past = (Date.now() - 60_000) / 1_000;
+				utimesSync(lockPath, past, past);
+
+				// Tight 1s budget — without the mtime-stale reclaim, the
+				// loop falls through to exponential backoff and burns the
+				// budget. With the fix, the first iteration's parse-null
+				// + mtime check triggers reclaim and the next O_EXCL wins.
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(lockPath, 1_000);
+						expect(existsSync(lockPath)).toBe(true);
+					}),
+				);
+				// Scope close unlinked our acquire.
+				expect(existsSync(lockPath)).toBe(false);
+			}),
+		),
+	);
+
+	it.live('does NOT reclaim an unparseable lock body whose mtime is fresh', () =>
+		withTempRoot('stack-lock-mtime', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stacks', 'main');
+				mkdirSync(stackRoot, { recursive: true });
+				const lockPath = join(stackRoot, 'stack.lock');
+				// Plant unparseable garbage with current mtime — peer is
+				// presumed actively writing; respect the staleness budget
+				// rather than racing them. A short timeout proves we DON'T
+				// reclaim within the staleness window.
+				writeFileSync(lockPath, '{partial-json', { flag: 'wx' });
+
+				const exit = yield* Effect.scoped(acquireStackLock(lockPath, 300)).pipe(
+					Effect.exit,
+				);
+				expect(exit._tag).toBe('Failure');
+				// The file is still on disk — we never reclaimed it.
+				expect(existsSync(lockPath)).toBe(true);
 			}),
 		),
 	);

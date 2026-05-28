@@ -5,7 +5,7 @@
 // implementations (Traefik ops, upstream resolver, codegen paths), but
 // the sink registrations and router boot step stay shared.
 
-import { Context, Data, Effect, FileSystem, Layer, Ref, Scope } from 'effect';
+import { Context, Effect, FileSystem, Layer, Ref, Scope } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
 
 import {
@@ -54,6 +54,7 @@ import {
 import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
 import { operationalEndpointEventsFromResolvedValue } from '../substrate/runtime/projection/operational-endpoints.ts';
 import {
+	ManifestExtrasLookupError,
 	resolveManifestExtras,
 	type EndpointEntry,
 	type ManifestExtras,
@@ -395,6 +396,14 @@ const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
 	for (const [key, node] of ctx.graph.nodes) {
 		resourceIdToKey.set(node.member.id, key);
 	}
+	// `lookup` throws `ManifestExtrasLookupError` synchronously from
+	// inside the user-supplied `extras` factory.
+	// `resolveManifestExtras` invokes that factory under `Effect.try`
+	// with a typed `catch` mapper, so the throw promotes to the typed
+	// failure channel — callers `catchTag('ManifestExtrasLookupError',
+	// ...)` rather than reading the die-cause. Non-tagged throws stay
+	// defects, preserving the previous semantics for genuine
+	// programmer errors inside the factory body.
 	const lookup = (resourceId: string): unknown => {
 		const key = resourceIdToKey.get(resourceId);
 		if (key === undefined) {
@@ -416,17 +425,6 @@ const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
 		value: (resource: { readonly id: string }) => lookup(resource.id),
 	};
 };
-
-/** Failure surfaced when `extras` references a resource the supervisor
- *  doesn't know about, or one that hasn't resolved yet. Thrown
- *  synchronously from inside the `ManifestExtrasContext.value` closure
- *  (the user-supplied `extras` factory invokes it synchronously); the
- *  Effect runtime captures it as a tagged defect that the
- *  cascade-formatter projects via `_tag`. */
-export class ManifestExtrasLookupError extends Data.TaggedError('ManifestExtrasLookupError')<{
-	readonly kind: 'unknown-resource' | 'unresolved-resource';
-	readonly resourceId: string;
-}> {}
 
 const operationalManifestEndpointEntries = (
 	ctx: SupervisorPostAcquireContext,
