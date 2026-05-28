@@ -1,3 +1,11 @@
+// INVARIANT: this module is Ink-free, React-free, and DOM-free. Its
+// only imports are `type`-only from `substrate/`. Every export returns
+// a plain TS value (string, ColorToken, plain object) — never a JSX or
+// Ink component. This is what lets a future web dashboard reuse the
+// same status→glyph/label/color derivation a browser renderer would
+// otherwise have to duplicate. Do not import from `ink`, `react`, or
+// any sibling `*.tsx` here.
+//
 // Display derivation — the load-bearing transducer that makes the
 // "no display vocab in projection" invariant testable.
 //
