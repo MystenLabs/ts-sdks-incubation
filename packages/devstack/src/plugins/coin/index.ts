@@ -152,14 +152,27 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		symbol,
 		resolved: bindings,
 	});
+	// Project the coin's narrow `{address, amount}`-shaped strategy
+	// to the wider cross-plugin `AccountFundingStrategy` contract
+	// (`{address, amount, account}`) at the capability boundary. The
+	// coin publisher signs the mint via its own lease (see
+	// `coin/service.ts → mint`), so `account` is dropped honestly
+	// here — the type-level contract is satisfied structurally
+	// without a misleading `as` cast on the contribution literal.
+	// Direct consumers (e.g. deepbook seed funding) keep using the
+	// narrow shape on `CoinValue.fundingStrategy` directly.
+	const narrowStrategy = resolved.fundingStrategy;
 	const fundingContribution =
-		resolved.fundingStrategy === undefined
+		narrowStrategy === undefined
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
-						strategy: resolved.fundingStrategy,
+						strategy: {
+							request: (req) =>
+								narrowStrategy.request({ address: req.address, amount: req.amount }),
+						} satisfies AccountFundingStrategy,
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
 				];

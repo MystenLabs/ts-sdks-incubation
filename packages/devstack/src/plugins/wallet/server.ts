@@ -499,15 +499,14 @@ const decodeJsonBody = <A>(
 	body: string,
 ): Effect.Effect<A, WalletRequestError> =>
 	Effect.gen(function* () {
-		if (body.length > MAX_BODY_BYTES) {
-			return yield* Effect.fail(
-				walletRequestError({
-					phase: 'body-invalid',
-					httpStatus: 400,
-					message: `body exceeds ${MAX_BODY_BYTES}-byte cap`,
-				}),
-			);
-		}
+		// Body-byte cap is enforced solely at the request listener (line
+		// ~200): we accumulate `chunk.length` byte counts and write a 413
+		// + destroy the socket the moment we cross `MAX_BODY_BYTES`. A
+		// secondary in-dispatcher check on `body.length` would be wrong
+		// anyway — `String.length` counts UTF-16 code units, not bytes,
+		// so a 64 KiB body of multi-byte runes could slip past it. The
+		// listener already gated correctly, so there's no second check
+		// here.
 		// Sanctioned cast: `decodeJsonText`'s `S extends Schema.Decoder<unknown>`
 		// constraint is wider than `Schema.Schema<A>` (DecodingServices /
 		// RequiresServices variance — Effect v4's `Decoder<unknown>` pins

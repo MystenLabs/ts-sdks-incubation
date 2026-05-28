@@ -119,7 +119,6 @@ export interface ActionAcquireInputs {
  *  (per `DynamicDiscriminator`) collapse onto
  *  `Effect<string | undefined, ActionError>`. */
 export const resolveDiscriminator = <Deps>(
-	_actionName: string,
 	dynamic: DynamicDiscriminator<Deps> | undefined,
 	ctx: ActionBuildContext,
 	deps: Deps,

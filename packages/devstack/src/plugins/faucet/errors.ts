@@ -9,9 +9,12 @@
 //     warm-up the faucet accepts requests it cannot execute, and
 //     treating those bodies as success marks accounts funded when
 //     no coins moved.
-//   - A wall-clock budget exhaustion is distinct from a retry-count
-//     exhaustion; both surface through the same `FaucetExhausted`
-//     class but carry the discriminating field.
+//   - Wall-clock budget exhaustion surfaces as `FaucetExhausted`. The
+//     attempt-cap (`maxRetries` on the underlying retry schedule)
+//     re-raises the LAST `FaucetUnreachable | FaucetBodyError` directly
+//     — wrapping it in `FaucetExhausted` would just hide the wire-level
+//     error the cap was triggered by. The wall-clock budget is the
+//     dominant exit; the attempt cap exists as a safety net.
 //
 // Effect v4: tagged errors are plain interfaces; `Effect.catchTag` /
 // `catchTags` match on the `_tag` literal.
@@ -42,17 +45,21 @@ export const faucetUnreachable = (parts: Omit<FaucetUnreachable, '_tag'>): Fauce
 });
 
 /**
- * Retry-budget exhaustion. The wall-clock budget elapsed before any
- * attempt succeeded, OR the attempt count cap was hit first. Both
- * paths land here; `kind` discriminates so renderers can distinguish
- * "we ran out of time" from "we ran out of attempts".
+ * Wall-clock budget exhaustion. The retry loop did not land a
+ * successful attempt within the configured `timeoutMs`.
+ *
+ * The attempt-count cap (`maxRetries` on the schedule) does NOT
+ * surface as `FaucetExhausted` — when the retry schedule exhausts,
+ * Effect re-raises the LAST `FaucetUnreachable | FaucetBodyError`
+ * verbatim, which is more informative than a wrapped budget message.
+ * Callers handling `FaucetUnreachable | FaucetBodyError` already see
+ * the right wire-level cause.
  *
  * Carries the last underlying cause so pretty-error rendering can
  * show what was actually failing instead of just the budget message.
  */
 export interface FaucetExhausted {
 	readonly _tag: 'FaucetExhausted';
-	readonly kind: 'wall-clock' | 'attempts';
 	readonly url: string;
 	readonly address: string;
 	readonly amount: bigint;

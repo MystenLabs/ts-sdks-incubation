@@ -68,11 +68,19 @@ const MASTER_KEY_LINE_RE = /^.*master[_\- ]?key.*$/gim;
  *  `log::info!("{}", master)` call site upstream that prints only the
  *  hex). Bounded at 64+ to avoid false-positives on shorter hex like
  *  4-byte chain ids or 8-byte object-id prefixes; legitimate Sui
- *  object ids are 32 bytes but emit as `0x` prefixed where the `0x`
- *  breaks the `\b` boundary, so the rule still triggers on those —
- *  this is acceptable since a redacted object id is a tractable bug
- *  while a leaked master key is not. */
-const HIGH_ENTROPY_HEX_RE = /\b[0-9a-fA-F]{64,}\b/g;
+ *  object ids are 32 bytes (64 hex chars) and would also trip the
+ *  rule — acceptable, since a redacted object id is a tractable
+ *  diagnostic regression while a leaked master key is not.
+ *
+ *  Boundary shape: negative lookbehind/lookahead against the hex class
+ *  itself (NOT `\b`). The `\b` form had a known gap — `0x<hex>` and
+ *  `<word-prefix>0x<hex>` failed to match because `0` and `x` are
+ *  both `\w` characters, so `\b` couldn't anchor at the start of the
+ *  hex run. The lookbehind form starts the match anywhere not
+ *  preceded by a hex character, so an adversarial concat like
+ *  `...key0xdeadbeef…` redacts the hex run starting right after the
+ *  non-hex `x`. */
+const HIGH_ENTROPY_HEX_RE = /(?<![0-9a-fA-F])[0-9a-fA-F]{64,}(?![0-9a-fA-F])/g;
 
 const MASTER_KEY_REDACTION_RULES: ReadonlyArray<RedactionRule> = [
 	// Order matters: redact the labeled line first (replaces the whole

@@ -219,16 +219,39 @@ const projectTransactionPayload = (raw: unknown): unknown | null => {
 	return raw;
 };
 
-/** Heuristic: SDK errors carrying "not found" / "Not exist" in
- *  the message are treated as not-found; everything else is
- *  transient. The substrate's lenient-retry profile re-runs the
- *  probe on a transient bucket; not-found is terminal. */
+/** Heuristic: SDK errors carrying object/transaction-shape "not found"
+ *  markers are treated as terminal not-found; everything else is
+ *  transient. The substrate's lenient-retry profile re-runs the probe
+ *  on a transient bucket; not-found is terminal.
+ *
+ *  Limitation: `@mysten/sui` does NOT surface a structured status code
+ *  on its SDK errors — the substrate only sees an `Error` message. We
+ *  therefore narrow the substring matches as much as possible to avoid
+ *  misclassifying network-layer "endpoint does not exist" or generic
+ *  "not found" prose as terminal:
+ *
+ *  - We require the matched phrase to refer to the OBJECT / RPC METHOD
+ *    rather than the endpoint. Concretely we look for the SDK's
+ *    canonical "object not found" / "no such object" wording and the
+ *    JSON-RPC "method ... not found" / "method not exist" wording.
+ *  - We DO NOT match the bare substring "not found" alone (that
+ *    catches "endpoint does not exist", DNS prose, etc. — all of
+ *    which are network-layer transients).
+ *
+ *  If `@mysten/sui` surfaces a structured error class with an
+ *  `httpStatus` (or equivalent) in the future, swap this for an
+ *  exact 404 / -32000 check. */
 const isNotFound = (cause: unknown): boolean => {
 	const msg = (cause as { message?: string })?.message?.toLowerCase() ?? '';
 	return (
-		msg.includes('not found') ||
-		msg.includes('does not exist') ||
-		msg.includes('no such object') ||
-		msg.includes('not exist')
+		// SDK-side `getObject` / `getTransaction` not-found markers.
+		/\bobject\b.*\bnot found\b/u.test(msg) ||
+		/\bobject\b.*\bdoes not exist\b/u.test(msg) ||
+		/\bno such object\b/u.test(msg) ||
+		// JSON-RPC method-not-found ('object not found at the SDK
+		// surface' is functionally equivalent to a missing chain
+		// endpoint dispatch — terminal for this probe).
+		/\btransaction\b.*\bnot found\b/u.test(msg) ||
+		/\btransaction\b.*\bdoes not exist\b/u.test(msg)
 	);
 };

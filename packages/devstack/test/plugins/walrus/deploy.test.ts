@@ -335,6 +335,53 @@ describe('parseDeployOutput', () => {
 		}),
 	);
 
+	it.live('fails loudly when bind-source remains missing through every retry', () =>
+		// Regression: `Effect.repeat({ schedule, until })` exits SUCCESS
+		// once the schedule's recurrence cap is reached even if `until`
+		// still returns false. Pre-fix, the loop would terminate with the
+		// last (still bind-source-missing) result and the follow-up
+		// `result.exitCode !== 0` check surfaced only the raw 125 +
+		// bind-source stderr — masking the fact that the RETRY BUDGET
+		// itself was the failure. Post-fix, the loop surfaces an
+		// explicit "bind-source retry budget exhausted" failure that
+		// names the retry profile in the message.
+		Effect.gen(function* () {
+			const outputDir = tempDeployOutputDir('devstack-walrus-bind-race-exhaust-');
+			let attempts = 0;
+			const runtime = oneShotRuntime(() => {
+				attempts += 1;
+				return Effect.succeed({
+					exitCode: 125,
+					stdout: '',
+					stderr:
+						'docker: Error response from daemon: invalid mount config for type "bind": ' +
+						'bind source path does not exist: /host_mnt/tmp/devstack/walrus/deploy',
+				});
+			});
+
+			const exit = yield* Effect.scoped(
+				runDeployOneShot(runtime, deployInputs(outputDir)).pipe(Effect.exit),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value._tag).toBe('WalrusPluginError');
+				expect(error.value.phase).toBe('deploy');
+				expect(error.value.message).toContain('bind-source visibility race');
+				expect(error.value.message).toContain('retries');
+				// Pin the originating exit/stderr is still surfaced so
+				// operators see WHAT was failing through the budget.
+				expect(error.value.message).toContain('bind source path does not exist');
+			}
+			// At least one attempt happened (initial) and the loop
+			// retried; we don't pin a specific count because the retry
+			// profile's `attempts` constant is allowed to change.
+			expect(attempts).toBeGreaterThanOrEqual(2);
+		}),
+	);
+
 	it.effect('reports missing walrus-deploy as a typed deploy failure with stderr context', () =>
 		Effect.gen(function* () {
 			const runtime = oneShotRuntime((spec) => {

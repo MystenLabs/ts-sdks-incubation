@@ -230,6 +230,44 @@ export const acquireLocal = (
 	inputs: LocalModeInputs,
 ): Effect.Effect<LocalModeOutputs, PublishError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
+		// Intra-stack name collision guard.
+		//
+		// The registry is keyed by symbolic `packageName`; two
+		// `localPackage('foo', ...)` calls in the same stack would both
+		// call `register({ name: 'foo', ... })` and the second `set`
+		// would silently overwrite the first. Upstream's
+		// `resolveGraph` (substrate/runtime/lifecycle/dep-graph.ts:127)
+		// explicitly documents "we don't enforce uniqueness at runtime;
+		// the duplicate just resolves to the latest declaration" —
+		// compile-time `MissingProviders` only catches collisions on
+		// the user-typed dependency path, NOT two members declared on
+		// the same stack with the same id. We catch the collision here
+		// so the user sees a typed parse-phase failure instead of a
+		// confusing "wrong packageId" downstream.
+		//
+		// The check tolerates re-entry from the SAME `localPackage(...)`
+		// call (warm restart / re-acquire on the same scope): a
+		// pre-existing entry with the SAME `sourcePath` is the
+		// previous cycle's register, not a collision.
+		const existing = yield* registry.find(inputs.packageName);
+		if (
+			existing !== null &&
+			existing.kind === 'local' &&
+			existing.sourcePath !== inputs.sourcePath
+		) {
+			return yield* Effect.fail(
+				publishError('parse', {
+					sourcePath: inputs.sourcePath,
+					packageName: inputs.packageName,
+					message:
+						`localPackage('${inputs.packageName}') is declared twice in the same stack ` +
+						`with different sourcePaths (${existing.sourcePath} vs ${inputs.sourcePath}). ` +
+						`The substrate is name-blind at runtime and the second declaration would ` +
+						`silently overwrite the first registry entry. Pick distinct package names ` +
+						`(the symbolic name is the registry key consumers look up).`,
+				}),
+			);
+		}
 		// Distilled doc §Move-specific: hash inputs are `(sourceHash,
 		// signerAddress)`. The hashing helper strips Move.lock pinned
 		// sections (Invariant 2) so warm restarts hit the cache.

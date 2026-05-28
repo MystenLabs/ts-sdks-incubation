@@ -88,15 +88,25 @@ export interface CoinValue extends ResolvedCoin {
 	 *  publishes it under `coinType:<fullCoinType>` so Account funding
 	 *  can mint arbitrary local coins without bespoke example actions.
 	 *
-	 *  The request shape is a narrowed projection of
+	 *  The request shape is a NARROWED projection of
 	 *  `AccountFundingRequest` (`{address, amount}` only — the coin
-	 *  funding strategy doesn't need the resolved account handle since
-	 *  the TreasuryCap-owning publisher signs the mint). The E channel
-	 *  preserves the tagged vocabulary (`CoinError | ArtifactPublishError`)
-	 *  rather than collapsing to `unknown`, so direct consumers (deepbook,
-	 *  examples) can catchTag on the typed errors. The account-side
-	 *  dispatcher's registry lookup narrows the channel to `unknown` at
-	 *  the registry boundary and reads `_tag` defensively. */
+	 *  strategy doesn't need the resolved account handle since the
+	 *  TreasuryCap-owning publisher signs the mint via its own lease
+	 *  inside `mint → signAndDispatch`). Direct consumers (deepbook
+	 *  seed funding) call `.request({address, amount})` against this
+	 *  narrowed shape; the coin barrel projects the value to the wider
+	 *  `AccountFundingStrategy` cross-plugin contract at the
+	 *  `strategy-contributor` capability boundary (see
+	 *  `coin/index.ts → buildCapabilities`), wrapping the narrow
+	 *  request fn so the account bus's `{address, amount, account}`
+	 *  shape is satisfied honestly at the boundary.
+	 *
+	 *  The E channel preserves the tagged vocabulary
+	 *  (`CoinError | ArtifactPublishError`) rather than collapsing to
+	 *  `unknown`, so direct consumers can catchTag on the typed
+	 *  errors. The account-side dispatcher's registry lookup narrows
+	 *  the channel to `unknown` at the registry boundary and reads
+	 *  `_tag` defensively. */
 	readonly fundingStrategy?: {
 		readonly request: (req: {
 			readonly address: string;
@@ -152,10 +162,10 @@ export const acquireCoin = (
 		};
 		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
 		const fundingTreasuryCapId = resolved.treasuryCapId;
-		const fundingStrategy =
+		const fundingStrategy: CoinValue['fundingStrategy'] =
 			fundingSigner !== undefined && fundingTreasuryCapId !== undefined
 				? {
-						request: (req: { readonly address: string; readonly amount: bigint }) =>
+						request: (req) =>
 							Effect.scoped(
 								mint(fundingSigner, {
 									to: req.address,

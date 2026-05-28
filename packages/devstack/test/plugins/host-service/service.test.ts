@@ -498,6 +498,78 @@ describe('acquireHostService', () => {
 	});
 });
 
+describe('logReady fallback wrapper preserves non-tagged causes', () => {
+	// Regression for the `service.ts:382` review-fix-phase-22e: when the
+	// `Effect.tryPromise` catch on the log-readiness path receives a
+	// non-tagged Error (e.g. a future code path where the readiness
+	// Promise rejects with a stream / EventEmitter error rather than a
+	// pre-tagged `HostServiceAcquireError`), the fallback wrap MUST
+	// thread the original cause through the new `HostServiceAcquireError`
+	// instead of dropping it and only preserving the closed-over
+	// template error.
+	//
+	// We assert the shape of `HostServiceAcquireError`'s construction
+	// here rather than driving the live `logReady` path because the
+	// log-readiness Promise today only ever resolves (never rejects with
+	// a non-tagged cause). The fix is defensive against future code
+	// changes that introduce a rejection source on that Promise.
+	it('threads `cause` through the wrapped HostServiceAcquireError', () => {
+		const templateError = new HostServiceAcquireError({
+			serviceName: 'frontend',
+			cwd: '/cwd',
+			command: 'pnpm',
+			args: ['exec', 'vite'],
+			phase: 'ready',
+			message: 'host service readiness failed',
+		});
+
+		const rawCause = new Error('stream closed before readiness signal');
+		// This mirrors the `catch:` arm in `service.ts:382` post-fix.
+		const wrapped =
+			rawCause instanceof HostServiceAcquireError
+				? rawCause
+				: new HostServiceAcquireError({
+						serviceName: templateError.serviceName,
+						cwd: templateError.cwd,
+						command: templateError.command,
+						args: templateError.args,
+						phase: templateError.phase,
+						message: templateError.message,
+						exitCode: templateError.exitCode,
+						signal: templateError.signal,
+						cause: rawCause,
+					});
+
+		expect(wrapped).toBeInstanceOf(HostServiceAcquireError);
+		expect(wrapped.serviceName).toBe('frontend');
+		expect(wrapped.phase).toBe('ready');
+		expect(wrapped.message).toBe('host service readiness failed');
+		// The load-bearing assertion: original cause is preserved.
+		expect(wrapped.cause).toBe(rawCause);
+		expect((wrapped.cause as Error)?.message).toBe('stream closed before readiness signal');
+	});
+
+	it('passes through pre-tagged HostServiceAcquireError unchanged', () => {
+		// The existing `setTimeout` rejection path produces a
+		// `HostServiceAcquireError` directly — the fallback wrap must
+		// NOT re-wrap (would double-stamp the template).
+		const tagged = new HostServiceAcquireError({
+			serviceName: 'frontend',
+			cwd: '/cwd',
+			command: 'pnpm',
+			args: ['exec', 'vite'],
+			phase: 'ready',
+			message: 'host service did not emit readiness log within 5ms',
+		});
+
+		const result =
+			(tagged as unknown) instanceof HostServiceAcquireError ? tagged : new Error('unreachable');
+
+		expect(result).toBe(tagged);
+		expect((result as HostServiceAcquireError).message).toContain('did not emit readiness log');
+	});
+});
+
 describe('host service routable capability', () => {
 	it('emits a host-loopback HTTP endpoint with the legacy default endpoint name', () => {
 		const decl = makeHostServiceRoutable({

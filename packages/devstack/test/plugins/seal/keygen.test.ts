@@ -130,6 +130,74 @@ describe('redactMasterKey — invariant #16 (master-key NEVER in error surfaces)
 		expect(redacted).toBe('<REDACTED-HEX-RUN>');
 	});
 
+	// Defense-in-depth gap fix (review fix phase 22e/Bug 2): the prior
+	// `\b[0-9a-fA-F]{64,}\b` form silently bypassed adversarially-
+	// concatenated `0x`-prefixed runs because `0`/`x` are `\w`
+	// characters and `\b` requires a `\w`/non-`\w` transition. The new
+	// `(?<![0-9a-fA-F])[0-9a-fA-F]{64,}(?![0-9a-fA-F])` form anchors
+	// against the hex class itself, so any 64+ char hex run preceded
+	// by a non-hex character (including `x`, `=`, `:`, `'`, line
+	// start, etc.) is matched and redacted.
+	describe('high-entropy hex pass — adversarial concat coverage', () => {
+		it('redacts a 64-char hex run with a 0x prefix concatenated to a word', () => {
+			// `key0xdeadbeef…` — the prior `\b` form failed because `y`
+			// (a `\w`) preceded `0` (a `\w`), and `x` (a `\w`) preceded
+			// the hex (also `\w`), so neither boundary anchored.
+			const stray = 'e'.repeat(64);
+			const input = `inscription=key0x${stray}/tail`;
+			const redacted = redactMasterKey(input);
+			expect(redacted).not.toContain(stray);
+			expect(redacted).toContain('<REDACTED-HEX-RUN>');
+			expect(redacted).toContain('inscription=key0x');
+			expect(redacted).toContain('/tail');
+		});
+
+		it('redacts a bare 0x-prefixed 64-char hex run', () => {
+			const stray = 'f'.repeat(64);
+			const input = `0x${stray}`;
+			const redacted = redactMasterKey(input);
+			expect(redacted).not.toContain(stray);
+			expect(redacted).toContain('<REDACTED-HEX-RUN>');
+		});
+
+		it('redacts a 64-char hex run embedded in a key=value pair', () => {
+			const stray = 'a'.repeat(80);
+			const input = `MASTERKEY=${stray}`;
+			// The labeled-line pass catches this first (it contains
+			// `masterkey`), but the assertion is still defensible: the
+			// raw hex MUST NOT appear in the redacted output.
+			const redacted = redactMasterKey(input);
+			expect(redacted).not.toContain(stray);
+		});
+
+		it('redacts a 64-char hex run at the start of a line', () => {
+			const stray = 'b'.repeat(64);
+			const input = `${stray} trailing log noise`;
+			const redacted = redactMasterKey(input);
+			expect(redacted).not.toContain(stray);
+			expect(redacted).toContain('<REDACTED-HEX-RUN>');
+			expect(redacted).toContain('trailing log noise');
+		});
+
+		it('redacts a 64-char hex run at the end of a line', () => {
+			const stray = 'c'.repeat(64);
+			const input = `prefix only: ${stray}`;
+			const redacted = redactMasterKey(input);
+			expect(redacted).not.toContain(stray);
+			expect(redacted).toContain('<REDACTED-HEX-RUN>');
+		});
+
+		it('does NOT split a 128-char hex run into two 64-char redactions', () => {
+			// A single contiguous 128-char hex run must redact ONCE as
+			// one block, not twice as two adjacent <REDACTED-HEX-RUN>
+			// markers. This guards against a refactor that pinned the
+			// quantifier to `{64}` exactly.
+			const stray = 'd'.repeat(128);
+			const redacted = redactMasterKey(stray);
+			expect(redacted).toBe('<REDACTED-HEX-RUN>');
+		});
+	});
+
 	// False-positive guard: legitimate short hex (e.g. a Sui object id
 	// fragment like `0xabc` or even a 16-char hash) must NOT trip the
 	// hex pass. Only 64+ char contiguous runs are treated as suspect.

@@ -216,7 +216,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 						actionName: name,
 						dependencyResourceIds,
 					},
-					dynamicMaterial: resolveDiscriminator(name, opts.discriminator, bodyCtx, bodyDeps),
+					dynamicMaterial: resolveDiscriminator(opts.discriminator, bodyCtx, bodyDeps),
 					body: opts.body(bodyCtx, bodyDeps),
 				};
 

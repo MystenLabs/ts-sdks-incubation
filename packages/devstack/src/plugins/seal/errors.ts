@@ -78,6 +78,15 @@ export const sealError = (
 	parts: Omit<SealError, '_tag' | 'phase'>,
 ): SealError => ({ _tag: 'SealError', phase, ...parts });
 
+/** Structural predicate — true iff `value` has the `SealError` tag.
+ *  Used at re-wrap sites (e.g. `key-server.ts` probe mapError) to
+ *  unwrap a nested `SealError` rather than re-wrap and create a
+ *  two-layer cause walk. */
+export const isSealError = (value: unknown): value is SealError =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { readonly _tag?: unknown })._tag === 'SealError';
+
 // ---------------------------------------------------------------------------
 // SealConfigError — synchronous factory-time configuration faults
 // ---------------------------------------------------------------------------

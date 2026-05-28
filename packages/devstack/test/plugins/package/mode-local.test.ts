@@ -352,3 +352,125 @@ describe('local package mode — A5 capture asymmetry regression', () => {
 		}).pipe(Effect.provide(layerPackageRegistry)),
 	);
 });
+
+// ---------------------------------------------------------------------------
+// Intra-stack name-collision guard — two `localPackage(name, ...)` calls
+// in the same stack with different `sourcePath`s would both write to the
+// SAME registry key (`name`). The substrate's `resolveGraph` is
+// name-blind at runtime (`dep-graph.ts:127` — "we don't enforce
+// uniqueness at runtime; the duplicate just resolves to the latest
+// declaration"). Compile-time `MissingProviders` only catches
+// dependency-side mismatches, not two providers sharing an id. We
+// catch the collision in `acquireLocal` before publish and surface a
+// typed `PublishError('parse')` so the user fixes the name instead of
+// debugging a "wrong packageId" downstream.
+// ---------------------------------------------------------------------------
+
+describe('local package mode — intra-stack name-collision guard', () => {
+	const allocatedSourceDirs: string[] = [];
+	afterAll(() => {
+		for (const dir of allocatedSourceDirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	const freshSourceDir = (): string => {
+		const dir = mkdtempSync(join(tmpdir(), 'name-collision-'));
+		allocatedSourceDirs.push(dir);
+		return dir;
+	};
+
+	it.effect(
+		'fails the second acquire when two localPackage calls share a name with different sourcePaths',
+		() =>
+			Effect.gen(function* () {
+				const firstSource = freshSourceDir();
+				const secondSource = freshSourceDir();
+				expect(firstSource).not.toBe(secondSource);
+				const registry = yield* PackageRegistryService;
+
+				// First acquire — succeeds and writes the registry.
+				const firstResult = yield* Effect.scoped(
+					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+						packageName: 'collide',
+						sourcePath: firstSource,
+						chainId: chainId('sui:collide-test'),
+						publisherAddress: '0xpublisheraddr',
+						executor: succeedingExecutor,
+					}),
+				);
+				expect(firstResult.resolved.kind).toBe('local');
+				expect(firstResult.resolved.sourcePath).toBe(firstSource);
+
+				// Second acquire — same `packageName`, DIFFERENT
+				// `sourcePath`. Must fail with PublishError('parse').
+				const exit = yield* Effect.scoped(
+					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+						packageName: 'collide',
+						sourcePath: secondSource,
+						chainId: chainId('sui:collide-test'),
+						publisherAddress: '0xpublisheraddr',
+						executor: succeedingExecutor,
+					}),
+				).pipe(Effect.exit);
+
+				const errorOpt = Exit.findErrorOption(exit) as Option.Option<
+					PublishError | ArtifactPublishError
+				>;
+				expect(Option.isSome(errorOpt)).toBe(true);
+				const error = Option.getOrThrow(errorOpt);
+
+				expect(error._tag).toBe('PublishError');
+				if (error._tag !== 'PublishError') throw new Error('typeguard');
+				expect(error.phase).toBe('parse');
+				expect(error.packageName).toBe('collide');
+				expect(error.message).toContain("localPackage('collide')");
+				expect(error.message).toContain('declared twice');
+				expect(error.message).toContain(firstSource);
+				expect(error.message).toContain(secondSource);
+
+				// Pin the negative: the first acquire's registry entry
+				// is NOT overwritten by the failed second acquire.
+				const registered = yield* registry.find('collide');
+				expect(registered?.kind).toBe('local');
+				if (registered?.kind === 'local') {
+					expect(registered.sourcePath).toBe(firstSource);
+				}
+			}).pipe(Effect.provide(layerPackageRegistry)),
+	);
+
+	it.effect(
+		're-acquire from the SAME localPackage call (same name + sourcePath) is allowed',
+		() =>
+			// Warm-restart / re-acquire on the same scope must NOT trip
+			// the collision guard — the registry entry already names
+			// `inputs.sourcePath` and the second acquire is the same
+			// declaration, not a sibling.
+			Effect.gen(function* () {
+				const sourcePath = freshSourceDir();
+				const registry = yield* PackageRegistryService;
+
+				const firstResult = yield* Effect.scoped(
+					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+						packageName: 'reentrant',
+						sourcePath,
+						chainId: chainId('sui:reentrant-test'),
+						publisherAddress: '0xpublisheraddr',
+						executor: succeedingExecutor,
+					}),
+				);
+				expect(firstResult.resolved.sourcePath).toBe(sourcePath);
+
+				// Same name + same sourcePath — should succeed.
+				const secondResult = yield* Effect.scoped(
+					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
+						packageName: 'reentrant',
+						sourcePath,
+						chainId: chainId('sui:reentrant-test'),
+						publisherAddress: '0xpublisheraddr',
+						executor: succeedingExecutor,
+					}),
+				);
+				expect(secondResult.resolved.sourcePath).toBe(sourcePath);
+			}).pipe(Effect.provide(layerPackageRegistry)),
+	);
+});

@@ -294,7 +294,6 @@ export const requestFundsWithRetry = (
 						const last = yield* Ref.get(lastError);
 						return yield* Effect.fail(
 							faucetExhausted({
-								kind: 'wall-clock',
 								url: opts.faucetUrl,
 								address: opts.address,
 								amount: opts.amount,

@@ -350,6 +350,35 @@ export const runDeployOneShot = (
 			}),
 		);
 
+		// `Effect.repeat` with a bounded `schedule` + `until` exits SUCCESS
+		// in two cases: (a) `until(r)` returned true (bind source is now
+		// visible — the happy path) OR (b) the schedule recurrence cap was
+		// reached while `until(r)` still returned false (the bind source
+		// remained missing through every retry). The follow-up
+		// `result.exitCode !== 0` check below would already surface case
+		// (b) as a deploy-failure exit, but the failure message would be
+		// the bind-source stderr — not the more diagnostic "we exhausted
+		// the bind-source retry budget" message. Surface that explicitly
+		// here so operators see the retry budget in the failure shape.
+		if (isBindSourceMissing(result)) {
+			return yield* Effect.fail(
+				walrusPluginError(
+					'deploy',
+					`walrus deploy: bind-source visibility race did not resolve after ` +
+						`${DEPLOY_BIND_SOURCE_RETRY_PROFILE.attempts} retries ` +
+						`(${DEPLOY_BIND_SOURCE_RETRY_PROFILE.delayMs}ms spacing). ` +
+						`outputDir=${inputs.outputDirHostPath} — Docker Desktop's bind-source ` +
+						`propagation lagged past the retry budget. ` +
+						deployExitDetail(result, inputs),
+					{
+						exitCode: result.exitCode,
+						stdout: result.stdout,
+						stderr: result.stderr,
+					},
+				),
+			);
+		}
+
 		if (result.exitCode !== 0) {
 			return yield* Effect.fail(
 				walrusPluginError('deploy', deployExitDetail(result, inputs), {

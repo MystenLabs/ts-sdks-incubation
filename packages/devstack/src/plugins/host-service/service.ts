@@ -379,7 +379,20 @@ const logReady = (
 						resolveReady();
 					});
 				}),
-			catch: (cause) => (cause instanceof HostServiceAcquireError ? cause : error),
+			catch: (cause) =>
+				cause instanceof HostServiceAcquireError
+					? cause
+					: new HostServiceAcquireError({
+							serviceName: error.serviceName,
+							cwd: error.cwd,
+							command: error.command,
+							args: error.args,
+							phase: error.phase,
+							message: error.message,
+							exitCode: error.exitCode,
+							signal: error.signal,
+							cause,
+						}),
 		}),
 		exit,
 		processError,

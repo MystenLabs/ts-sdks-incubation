@@ -174,7 +174,12 @@ export const ensureDatabase = (
 			return; // already present
 		}
 
-		const created = yield* exec.run(['createdb', '-U', user, dbName]);
+		// The `--` argv separator stops `createdb`'s flag parsing — a
+		// `dbName` starting with `-` (e.g. `--help`) would otherwise be
+		// interpreted as a flag rather than a positional database name.
+		// Argv form already neutralizes shell-metacharacter injection;
+		// the separator closes the remaining flag-shape gap.
+		const created = yield* exec.run(['createdb', '-U', user, '--', dbName]);
 		if (created.exitCode !== 0) {
 			return yield* Effect.fail(
 				databaseCreateFailed({

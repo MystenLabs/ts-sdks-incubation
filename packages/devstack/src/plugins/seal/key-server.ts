@@ -55,7 +55,7 @@ import {
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
 import { deriveSubnetPrefix, subnetSpec } from '../../substrate/runtime/subnet-broker.ts';
-import { sealError, type SealError } from './errors.ts';
+import { isSealError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
 import { SealSpans } from './spans.ts';
@@ -366,12 +366,25 @@ export const startKeyServer = (
 		}).pipe(
 			Effect.mapError((cause) => {
 				if (cause instanceof ProbeTimeoutError) {
+					// Unwrap so we don't double-wrap an inner `SealError`:
+					// if `lastError` was itself a `SealError` (e.g. an
+					// upstream probe site that already promoted to typed),
+					// re-wrapping inside `sealError('ready', …)` would
+					// leave the cause walker chasing two layers. The
+					// outer `passthroughOrWrap.for<SealError>` in
+					// `index.ts` strips one such layer, but the direct
+					// `sealError('ready', …)` path doesn't — collapse
+					// here at the source.
+					const inner = cause.lastError ?? cause.lastNotReady ?? cause;
+					if (isSealError(inner)) {
+						return inner;
+					}
 					return sealError('ready', {
 						name,
 						message:
 							`seal key-server never became ready within ${spec.readyTimeoutMs}ms ` +
 							`(directProbeUrl=${directProbeUrl}, routedUrl=${spec.routedUrl})`,
-						cause: cause.lastError ?? cause.lastNotReady ?? cause,
+						cause: inner,
 					});
 				}
 				return sealError('ready', {
