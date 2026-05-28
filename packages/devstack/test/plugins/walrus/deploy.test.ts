@@ -3,11 +3,11 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@effect/vitest';
+import { afterAll, describe, expect, it } from '@effect/vitest';
 import { Effect, Exit, Option, Stream, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
@@ -87,8 +87,20 @@ const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount
 	}
 };
 
+// Tests below request a nested output-dir layout under a fresh
+// tmpdir. We cannot use `withTempRoot` here because the helper hands
+// back a leaf path used inside an `Effect.gen` body — instead we
+// track every allocated root and tear them all down in `afterAll`.
+const allocatedTempRoots: string[] = [];
+afterAll(() => {
+	for (const root of allocatedTempRoots.splice(0)) {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 const tempDeployOutputDir = (prefix: string): string => {
 	const root = mkdtempSync(join(tmpdir(), prefix));
+	allocatedTempRoots.push(root);
 	const outputDir = join(root, 'stacks', 'main', 'walrus', 'walrus', 'deploy');
 	mkdirSync(outputDir, { recursive: true });
 	return outputDir;

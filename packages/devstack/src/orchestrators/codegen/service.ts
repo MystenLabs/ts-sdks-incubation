@@ -71,11 +71,7 @@ import {
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import {
-	CodegenPathsService,
-	assertRelativeCodegenOutputPath,
-	type CodegenPaths,
-} from './paths.ts';
+import { CodegenPathsService, type CodegenPaths } from './paths.ts';
 import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
@@ -184,15 +180,11 @@ const runEmitCycleLocked = (
 > =>
 	Effect.gen(function* () {
 		const paths = yield* CodegenPathsService;
-		const fs = yield* FileSystem.FileSystem;
 		// Yield the Move-codegen services here (outside the
 		// stage-and-swap build) so the build's R-channel collapses to
-		// just `FileSystem.FileSystem`. The substrate `stageAndSwap`
-		// primitive constrains build's requirements to
-		// `FileSystem.FileSystem` (snapshot's only consumer needs
-		// exactly that); rather than extend the primitive's
-		// signature here (out-of-scope edit for this PR), close over
-		// the services and re-provide them to the inner cycle.
+		// just `FileSystem.FileSystem` — the substrate `stageAndSwap`
+		// primitive constrains `build`'s requirements to
+		// `FileSystem.FileSystem`.
 		const moveRunner = yield* MoveSummaryRunnerService;
 		const moveCodegen = yield* MoveCodegenService;
 
@@ -206,65 +198,32 @@ const runEmitCycleLocked = (
 		yield* validateAggregatePathAvailability(input.contributions);
 
 		// Cycle-level atomicity: substrate stage-and-swap. The build
-		// effect populates `<outputDir>.staging.<cycleId>/`; on success
-		// the substrate renames it into place; on any failure the
-		// previous tree (if any) is restored byte-for-byte. Without
-		// this wrapper a mid-cycle emit failure would leave
-		// `src/generated/` half-rewritten — see opportunities-backlog
-		// #8 and STYLE_GUIDE §19.
+		// populates `<outputDir>.staging.<cycleId>/`; on success the
+		// substrate renames it into place; on any failure the previous
+		// tree (if any) is restored byte-for-byte. Without this wrapper
+		// a mid-cycle emit failure would leave `src/generated/`
+		// half-rewritten — see STYLE_GUIDE §19.
 		//
-		// Cycle id is a random suffix (STYLE_GUIDE §17 random-id rule).
-		// 32 bits is collision-thin once concurrent crashed-cycle
-		// leftovers accumulate (birthday bound ≈ 65k); widen to 64 bits
-		// of entropy so a long-running supervisor can collect many stale
-		// `.staging.<cycleId>` siblings without a 1-in-million collision
-		// re-tagging a half-built tree as a fresh staging dir. Mirrors
-		// the snapshot orchestrator's `mintRestoreStagingTag` (24 hex
-		// chars of UUID entropy) — keep the format short here since it
-		// is only a sibling directory name.
+		// `preserveOnPreseed: true` — substrate clones the current
+		// target into staging before `build` runs so the per-file
+		// no-touch idempotency (and gitignore user-block preservation)
+		// sees the right baseline. Files this cycle rewrites are
+		// overwritten in staging; files this cycle does NOT touch
+		// survive into the next target verbatim with their original
+		// mtimes (HMR watchers stay quiet for unchanged outputs).
+		//
+		// Cycle id is a random suffix (STYLE_GUIDE §17). 64 bits of
+		// entropy so a long-running supervisor accumulating stale
+		// `.staging.<id>` siblings can't collide a fresh staging dir
+		// onto a half-built tree.
 		const cycleId = randomUUID().replaceAll('-', '').slice(0, 16);
-		const stagingDir = `${paths.outputDir}.staging.${cycleId}`;
-		const backupDir = `${paths.outputDir}.bak.${cycleId}`;
-
-		// Pre-seed staging with the current target's contents so the
-		// per-file no-touch idempotency (and gitignore user-block
-		// preservation) sees the right baseline. Files this cycle
-		// rewrites are overwritten in staging; files this cycle does
-		// NOT touch survive into the next target verbatim. After the
-		// atomic swap the rebuilt tree is identical to the previous
-		// tree merged with this cycle's writes.
-		const targetExists = yield* fs
-			.exists(paths.outputDir)
-			.pipe(Effect.match({ onSuccess: (v) => v, onFailure: () => false }));
+		const stagingPaths = paths.withRoot(`${paths.outputDir}.staging.${cycleId}`);
 
 		return yield* stageAndSwap({
 			targetPath: paths.outputDir,
-			stagingPath: stagingDir,
-			backupPath: backupDir,
+			idSuffix: cycleId,
+			preserveOnPreseed: true,
 			build: Effect.gen(function* () {
-				if (targetExists) {
-					// `preserveTimestamps: true` keeps the pre-seeded files'
-					// mtimes intact. Files NOT rewritten this cycle land in
-					// the next target with their original mtimes, so HMR
-					// watchers (Vite/Turbopack — they trigger on mtime, not
-					// content) stay quiet for unchanged outputs.
-					yield* fs
-						.copy(paths.outputDir, stagingDir, {
-							overwrite: true,
-							preserveTimestamps: true,
-						})
-						.pipe(
-							Effect.mapError(
-								(cause) =>
-									new CodegenWriteFailed({
-										outputPath: stagingDir,
-										stage: 'write',
-										cause,
-									}),
-							),
-						);
-				}
-				const stagingPaths = rebasePaths(paths, stagingDir);
 				const inner = yield* runEmitCycleInner(input, stagingPaths).pipe(
 					Effect.provideService(MoveSummaryRunnerService, moveRunner),
 					Effect.provideService(MoveCodegenService, moveCodegen),
@@ -272,7 +231,7 @@ const runEmitCycleLocked = (
 				// Rewrite paths so callers see the final user-visible
 				// `outputDir` location, not the staging directory that
 				// only exists for the duration of the build.
-				return rewriteResultPaths(inner, stagingDir, paths.outputDir);
+				return rewriteResultPaths(inner, stagingPaths.outputDir, paths.outputDir);
 			}),
 		}).pipe(
 			Effect.mapError((e): CodegenError => {
@@ -289,42 +248,11 @@ const runEmitCycleLocked = (
 				attributes: {
 					'codegen.contributions': input.contributions.length,
 					'codegen.cycleId': cycleId,
-					'codegen.stagingDir': stagingDir,
+					'codegen.stagingDir': stagingPaths.outputDir,
 				},
 			}),
 		);
 	});
-
-/**
- * Re-derive a `CodegenPaths` rooted at `stagingDir`. Preserves the
- * original `bindingsDir` subpath relationship and the `..`-rejecting
- * `resolve` discipline — only the root prefix changes.
- */
-const rebasePaths = (original: CodegenPaths, stagingDir: string): CodegenPaths => {
-	const sep = '/';
-	const stripped = stagingDir.replace(/\/+$/, '');
-	// The original `bindingsDir` is `${outputDir}/bindings` (see
-	// `layerCodegenPaths`); preserve that relative shape by replacing
-	// the prefix. `gitignoreFile` is similarly under `outputDir`.
-	const rebase = (abs: string): string =>
-		abs === original.outputDir ? stripped : `${stripped}${abs.slice(original.outputDir.length)}`;
-	return {
-		outputDir: stripped,
-		gitignoreFile: rebase(original.gitignoreFile),
-		bindingsDir: rebase(original.bindingsDir),
-		// Lock is acquired ONCE outside the stage-and-swap build, so the
-		// rebased paths never re-read it. Preserve the original so any
-		// future inner-cycle observer (debug logging, telemetry) names
-		// the real lock path, not a staging-rooted ghost.
-		codegenLockFile: original.codegenLockFile,
-		resolve: (outputPath) =>
-			Effect.gen(function* () {
-				yield* assertRelativeCodegenOutputPath(outputPath);
-				return `${stripped}${sep}${outputPath}`;
-			}),
-		resolveBindingsPackage: (packageName) => `${rebase(original.bindingsDir)}${sep}${packageName}`,
-	};
-};
 
 /**
  * Project a staging-rooted `RunEmitCycleResult` back into the user-

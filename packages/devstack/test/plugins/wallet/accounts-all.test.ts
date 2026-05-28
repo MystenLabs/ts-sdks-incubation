@@ -19,6 +19,10 @@
 //   5. The composer is a no-op (zero allocation) when no wallet
 //      placeholder is present.
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -151,7 +155,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			app: 'app',
 			stack: 'main',
 			chain: 'chain',
-			stateRoot: '/tmp/devstack-wallet-empty',
+			stateRoot: '/dev/null/fake-wallet-state',
 			vitePortForThisStack: null,
 			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
 			resolveAccounts: () => Effect.succeed([]),
@@ -176,7 +180,8 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	});
 
 	it('defaults to a container-reachable bind address for routed stacks', async () => {
-		const stateRoot = `/tmp/devstack-wallet-bind-${Date.now()}`;
+		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-bind-'));
+		try {
 		let allocation: { readonly preferred?: number; readonly probeHost?: string } | null = null;
 		const ctx: WalletAcquireContext = {
 			app: 'app',
@@ -203,10 +208,14 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
 		expect(value.server.url).toBe('http://0.0.0.0:0');
 		expect(value.url).toBe('http://api.app.localhost:6173');
+		} finally {
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
 	});
 
 	it('keeps direct fallback URLs loopback-readable when binding all interfaces', async () => {
-		const stateRoot = `/tmp/devstack-wallet-direct-${Date.now()}`;
+		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-direct-'));
+		try {
 		const ctx: WalletAcquireContext = {
 			app: 'app',
 			stack: 'main',
@@ -227,6 +236,9 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		);
 
 		expect(value.url).toBe('http://127.0.0.1:0');
+		} finally {
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
 	});
 });
 

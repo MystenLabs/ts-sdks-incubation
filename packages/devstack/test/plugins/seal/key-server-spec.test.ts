@@ -22,6 +22,7 @@
 // Lives at `test/plugins/seal/key-server-spec.test.ts` per the
 // mirror-src/ rule.
 
+import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -40,6 +41,14 @@ import {
 } from '../../../src/plugins/seal/key-server.ts';
 import { SEAL_KEY_SERVER_ENDPOINT_NAME } from '../../../src/plugins/seal/routable.ts';
 
+// Pick a sample service path that matches the substrate's
+// `${runtimeRoot}/seal/${serviceName}` layout. `runtimeRootHostPath`
+// is derived in the spec as `dirname(dirname(servicePath))` — we
+// reuse the same derivation here so assertions stay in lockstep if
+// the substrate-side path convention shifts.
+const SAMPLE_SERVICE_PATH = '/tmp/devstack/runtime/seal/seal';
+const SAMPLE_RUNTIME_ROOT = dirname(dirname(SAMPLE_SERVICE_PATH));
+
 const SAMPLE_INPUTS: KeyServerSpecInputs = {
 	name: 'seal',
 	image: { digest: 'sha256:test', tag: 'seal-test:latest' },
@@ -51,7 +60,7 @@ const SAMPLE_INPUTS: KeyServerSpecInputs = {
 		role: 'key-server',
 	},
 	suiNetwork: 'seal-seal-net',
-	servicePath: '/tmp/devstack/runtime/seal/seal',
+	servicePath: SAMPLE_SERVICE_PATH,
 	configFingerprint: 'package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:9000',
 	routedHostname: 'seal.seal.app.localhost',
 	routedUrl: 'http://seal.seal.app.localhost',
@@ -123,7 +132,7 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(CONTAINER_ENV.MASTER_KEY_ENVFILE).toBe(INSIDE_MASTER_KEY_ENVFILE);
 		expect(ensureSpec.env?.CONFIG_PATH).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
 		expect(ensureSpec.env?.MASTER_KEY_ENVFILE).toBe('/devstack/runtime/seal/seal/master-key.env');
-		expect(ensureSpec.configHash).toContain('runtime=/tmp/devstack/runtime');
+		expect(ensureSpec.configHash).toContain(`runtime=${SAMPLE_RUNTIME_ROOT}`);
 		expect(ensureSpec.configHash).toContain(
 			'config=/devstack/runtime/seal/seal/key-server-config.yaml',
 		);
@@ -169,7 +178,7 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
 		expect(spec.configHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/key-server-config.yaml`);
 		expect(spec.masterKeyEnvFileHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/master-key.env`);
-		expect(spec.runtimeRootHostPath).toBe('/tmp/devstack/runtime');
+		expect(spec.runtimeRootHostPath).toBe(SAMPLE_RUNTIME_ROOT);
 		expect(spec.configContainerPath).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
 		expect(spec.masterKeyEnvFileContainerPath).toBe('/devstack/runtime/seal/seal/master-key.env');
 	});
@@ -179,7 +188,7 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		const ensureSpec = buildKeyServerEnsureContainerSpec(spec);
 		expect(ensureSpec.mounts).toEqual([
 			{
-				source: '/tmp/devstack/runtime',
+				source: SAMPLE_RUNTIME_ROOT,
 				target: '/devstack/runtime',
 				readonly: true,
 			},

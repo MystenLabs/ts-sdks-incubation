@@ -16,8 +16,9 @@ import { CodegenPathConflict } from './errors.ts';
 /** Guard plugin-authored `CodegenableDecl.outputPath` against `..`
  *  traversal and absolute paths. Fails with a typed
  *  `CodegenPathConflict({kind:'non-relative'})` — defense-in-depth
- *  for the file-layout invariants. Shared by `layerCodegenPaths` and
- *  `rebasePaths` so the two CodegenPaths sites can't drift.
+ *  for the file-layout invariants. Called once inside `buildAt` so
+ *  both the root bundle and any `withRoot`-rebased view enforce the
+ *  same `..`-rejecting `resolve` discipline.
  *  STYLE_GUIDE §2 rule 5 — orchestrator failures are typed. */
 export const assertRelativeCodegenOutputPath = (
 	outputPath: string,
@@ -83,6 +84,17 @@ export interface CodegenPaths {
 	readonly resolve: (outputPath: string) => Effect.Effect<string, CodegenPathConflict>;
 	/** Helper: resolve a per-package bindings subtree path. */
 	readonly resolveBindingsPackage: (packageName: string) => string;
+	/** Data-driven rebase: re-root the entire bundle at `newRoot`.
+	 *  Preserves the layout (bindings under `<root>/bindings`, gitignore
+	 *  at `<root>/.gitignore`) and the `..`-rejecting `resolve`
+	 *  discipline; only the prefix changes. Used by the stage-and-swap
+	 *  build to redirect the emit pipeline at the staging directory
+	 *  WITHOUT string-surgery in the caller.
+	 *
+	 *  Note: `codegenLockFile` is preserved verbatim — the lock is
+	 *  acquired ONCE outside the staging build, so the rebased view
+	 *  must still name the real lock path. */
+	readonly withRoot: (newRoot: string) => CodegenPaths;
 }
 
 export class CodegenPathsService extends Context.Service<CodegenPathsService, CodegenPaths>()(
@@ -103,23 +115,33 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 			const outputDir = root.stackSubdir
 				? path.join(root.outputDir, root.stackSubdir)
 				: root.outputDir;
-			const bindingsDir = path.join(outputDir, 'bindings');
-			const resolve = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
-				Effect.gen(function* () {
-					yield* assertRelativeCodegenOutputPath(outputPath);
-					return path.join(outputDir, outputPath);
-				});
-			const resolveBindingsPackage = (packageName: string): string =>
-				path.join(bindingsDir, packageName);
-			return CodegenPathsService.of({
-				outputDir,
-				gitignoreFile: path.join(outputDir, '.gitignore'),
-				bindingsDir,
-				// Sibling of `outputDir` (NOT inside it) so the stage-and-swap
-				// rename never sees the lock file as part of the output tree.
-				codegenLockFile: `${outputDir}.codegen.lock`,
-				resolve,
-				resolveBindingsPackage,
-			});
+			// Sibling of `outputDir` (NOT inside it) so the stage-and-swap
+			// rename never sees the lock file as part of the output tree.
+			// Captured once at boot — `withRoot` re-roots the rest of the
+			// bundle but preserves the original lock path so the rebased
+			// view names the real cross-process lock (the lock is acquired
+			// ONCE outside the staging build).
+			const codegenLockFile = `${outputDir}.codegen.lock`;
+			const buildAt = (atRoot: string): CodegenPaths => {
+				const bindingsDir = path.join(atRoot, 'bindings');
+				const resolve = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
+					Effect.gen(function* () {
+						yield* assertRelativeCodegenOutputPath(outputPath);
+						return path.join(atRoot, outputPath);
+					});
+				const resolveBindingsPackage = (packageName: string): string =>
+					path.join(bindingsDir, packageName);
+				const bundle: CodegenPaths = {
+					outputDir: atRoot,
+					gitignoreFile: path.join(atRoot, '.gitignore'),
+					bindingsDir,
+					codegenLockFile,
+					resolve,
+					resolveBindingsPackage,
+					withRoot: (newRoot: string) => buildAt(newRoot),
+				};
+				return bundle;
+			};
+			return CodegenPathsService.of(buildAt(outputDir));
 		}),
 	);

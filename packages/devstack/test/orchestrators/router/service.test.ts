@@ -17,7 +17,7 @@
 // requires `ioredis`, an optional peer not installed in this package.
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Cause, Effect, Layer, Logger, SubscriptionRef } from 'effect';
-import { describe, expect, it } from '@effect/vitest';
+import { afterAll, describe, expect, it } from '@effect/vitest';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -51,7 +51,24 @@ import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
-const makeTmpDir = (): string => mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+// Per-test temp dirs (~24 callers below). Each is captured here so a
+// single `afterAll` can remove them at the end of the file — the
+// router service tests pass these dirs deep into Effect-driven code
+// where wrapping each `it.effect` body with `withTempRoot` would
+// require restructuring every test, so we use the same array-and-
+// sweep pattern as the other large `makeTmpDir`-style test files.
+const allocatedTmpDirs: string[] = [];
+afterAll(() => {
+	for (const dir of allocatedTmpDirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+const makeTmpDir = (): string => {
+	const dir = mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+	allocatedTmpDirs.push(dir);
+	return dir;
+};
 
 const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
 	resolveContainer: (target) => Effect.succeed({ host: '172.20.0.5', port: target.containerPort }),

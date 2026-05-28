@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
+
+import { withTempRootAsync } from '../../helpers/with-temp-root.ts';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
@@ -307,38 +308,38 @@ describe('account impersonation variant', () => {
 });
 
 describe('account ephemeral variant persistence', () => {
-	it('reuses the persisted keypair on warm start', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-'));
-		const secretFilePath = join(root, 'account', 'alice.key');
+	it('reuses the persisted keypair on warm start', () =>
+		withTempRootAsync('devstack-account-ephemeral', async (root) => {
+			const secretFilePath = join(root, 'account', 'alice.key');
 
-		const first = await Effect.runPromise(
-			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-		);
-		const second = await Effect.runPromise(
-			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-		);
+			const first = await Effect.runPromise(
+				resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+			);
+			const second = await Effect.runPromise(
+				resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+			);
 
-		expect(second.address).toBe(first.address);
-		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
-		expect(statSync(secretFilePath).mode & 0o777).toBe(0o600);
-		expect(statSync(join(root, 'account')).mode & 0o777).toBe(0o700);
-	});
+			expect(second.address).toBe(first.address);
+			expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
+			expect(statSync(secretFilePath).mode & 0o777).toBe(0o600);
+			expect(statSync(join(root, 'account')).mode & 0o777).toBe(0o700);
+		}));
 
-	it('collapses concurrent first acquires onto one persisted keypair', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-race-'));
-		const secretFilePath = join(root, 'account', 'alice.key');
+	it('collapses concurrent first acquires onto one persisted keypair', () =>
+		withTempRootAsync('devstack-account-ephemeral-race', async (root) => {
+			const secretFilePath = join(root, 'account', 'alice.key');
 
-		const [first, second] = await Effect.runPromise(
-			Effect.all(
-				[
-					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-				],
-				{ concurrency: 2 },
-			),
-		);
+			const [first, second] = await Effect.runPromise(
+				Effect.all(
+					[
+						resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+						resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+					],
+					{ concurrency: 2 },
+				),
+			);
 
-		expect(second.address).toBe(first.address);
-		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
-	});
+			expect(second.address).toBe(first.address);
+			expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
+		}));
 });

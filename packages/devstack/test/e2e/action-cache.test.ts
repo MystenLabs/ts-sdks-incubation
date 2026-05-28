@@ -28,14 +28,14 @@
 // form's "re-runs on every acquire" semantics live in unit tests; here
 // we exercise the produce + cache + verify + register path.
 
-import { mkdtempSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect, Layer, Logger, Ref } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
@@ -62,7 +62,15 @@ const identity: Identity = {
 	chain: chainId(CHAIN),
 };
 
+// `mkdtempSync` at module top-level (rather than per-`it`) because
+// both describe blocks below share `layerRuntimeRoot(RUNTIME_ROOT)`
+// and one of the test discipline assertions is precisely that the
+// SAME on-disk cache directory survives across tests. `withTempRoot`
+// would scope the dir per-test and defeat that — but we still need
+// the dir to be cleaned up, so an `afterAll` removes it once both
+// describes complete.
 const RUNTIME_ROOT = mkdtempSync(join(tmpdir(), 'e2e-action-cache-'));
+afterAll(() => rmSync(RUNTIME_ROOT, { recursive: true, force: true }));
 
 const platformBase = Layer.mergeAll(
 	layerIdentity(identity),

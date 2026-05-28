@@ -1,9 +1,9 @@
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect, Exit, Option, Schema, type Scope } from 'effect';
-import { describe, expect, it } from '@effect/vitest';
+import { afterAll, describe, expect, it } from '@effect/vitest';
 
 import { chainId } from '../../../src/substrate/brand.ts';
 import type {
@@ -231,7 +231,21 @@ const succeedingExecutor: PublishExecutor = {
 };
 
 describe('local package mode — A5 capture asymmetry regression', () => {
-	const freshSourceDir = (): string => mkdtempSync(join(tmpdir(), 'a5-capture-'));
+	// Tests below treat the dir handed back by `freshSourceDir()` as
+	// the package's source path inside an `Effect.gen` body, so a
+	// per-`it` `withTempRoot` would re-scope it awkwardly. Instead,
+	// every allocated dir gets tracked and torn down in `afterAll`.
+	const allocatedSourceDirs: string[] = [];
+	afterAll(() => {
+		for (const dir of allocatedSourceDirs.splice(0)) {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+	const freshSourceDir = (): string => {
+		const dir = mkdtempSync(join(tmpdir(), 'a5-capture-'));
+		allocatedSourceDirs.push(dir);
+		return dir;
+	};
 
 	it.effect('cache HIT: capture-callback throw surfaces as ArtifactPublishError(parse)', () =>
 		Effect.gen(function* () {

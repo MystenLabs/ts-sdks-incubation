@@ -1,7 +1,6 @@
 // `coldStartUrl` — conventional-route fallback tests.
 
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
@@ -13,6 +12,7 @@ import {
 	readAppName,
 	type ConventionalRoute,
 } from '../../../src/build-integrations/runtime/index.ts';
+import { withTempRootSync } from '../../helpers/with-temp-root.ts';
 
 const ENV_KEYS = ['DEVSTACK_STACK'] as const;
 const saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
@@ -50,12 +50,12 @@ describe('coldStartUrl', () => {
 		expect(url).toBe('http://sui-rpc.feat.demo.localhost:5174');
 	});
 
-	it('uses package metadata for app identity but keeps the default stack at main', () => {
-		const tmp = mkdtempSync(join(tmpdir(), 'devstack-cold-start-'));
-		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/wallet-demo' }));
-		const url = coldStartUrl('sui-rpc', { routes, cwd: tmp });
-		expect(url).toBe('http://sui-rpc.wallet-demo.localhost:5174');
-	});
+	it('uses package metadata for app identity but keeps the default stack at main', () =>
+		withTempRootSync('devstack-cold-start', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/wallet-demo' }));
+			const url = coldStartUrl('sui-rpc', { routes, cwd: tmp });
+			expect(url).toBe('http://sui-rpc.wallet-demo.localhost:5174');
+		}));
 
 	it('throws NoConventionalRouteError for unknown endpoint', () => {
 		try {
@@ -74,26 +74,26 @@ describe('coldStartUrl', () => {
 });
 
 describe('readAppName', () => {
-	it('strips @scope/ prefix', () => {
-		const tmp = mkdtempSync(join(tmpdir(), 'devstack-app-'));
-		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/my-app' }));
-		expect(readAppName(tmp)).toBe('my-app');
-	});
+	it('strips @scope/ prefix', () =>
+		withTempRootSync('devstack-app', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/my-app' }));
+			expect(readAppName(tmp)).toBe('my-app');
+		}));
 
-	it('returns the raw name when unscoped', () => {
-		const tmp = mkdtempSync(join(tmpdir(), 'devstack-app-'));
-		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'plain' }));
-		expect(readAppName(tmp)).toBe('plain');
-	});
+	it('returns the raw name when unscoped', () =>
+		withTempRootSync('devstack-app', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: 'plain' }));
+			expect(readAppName(tmp)).toBe('plain');
+		}));
 
-	it('returns undefined when package.json is missing', () => {
-		const tmp = mkdtempSync(join(tmpdir(), 'devstack-app-'));
-		expect(readAppName(tmp)).toBeUndefined();
-	});
+	it('returns undefined when package.json is missing', () =>
+		withTempRootSync('devstack-app', (tmp) => {
+			expect(readAppName(tmp)).toBeUndefined();
+		}));
 
-	it('returns undefined when name field is missing', () => {
-		const tmp = mkdtempSync(join(tmpdir(), 'devstack-app-'));
-		writeFileSync(join(tmp, 'package.json'), JSON.stringify({ version: '1.0.0' }));
-		expect(readAppName(tmp)).toBeUndefined();
-	});
+	it('returns undefined when name field is missing', () =>
+		withTempRootSync('devstack-app', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ version: '1.0.0' }));
+			expect(readAppName(tmp)).toBeUndefined();
+		}));
 });

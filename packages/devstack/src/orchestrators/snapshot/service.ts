@@ -412,6 +412,15 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.capture);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
+				// Snapshot stages at the SNAPSHOT-DIR level (siblings of
+				// other artifact dirs, NOT siblings of `artifactDir`) so
+				// the `list` walker's `.staging.` / `.bak.` prefix skip
+				// at line 517 keeps transient dirs invisible without
+				// having to descend a level. This layout is structurally
+				// distinct from `${target}.staging.<id>` so we pass
+				// explicit `stagingPath`/`backupPath` instead of
+				// `idSuffix` (the substrate primitive supports both
+				// shapes — see `stageAndSwap`'s union arg).
 				const stagingDir = `${paths.snapshotDir}/.staging.${snapshotId}`;
 				const backupDir = `${paths.snapshotDir}/.bak.${snapshotId}`;
 

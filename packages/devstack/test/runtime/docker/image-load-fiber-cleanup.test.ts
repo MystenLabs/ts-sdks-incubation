@@ -87,6 +87,11 @@ const waitForFile = (path: string, timeoutMs: number): Effect.Effect<void> =>
 			if (existsSync(path)) return;
 			yield* Effect.sleep('25 millis');
 		}
+		// Surface the timeout explicitly. Without this, callers that
+		// `readFileSync(path)` next get an ENOENT with no breadcrumb
+		// back to the wait — making "fiber never wrote the pidfile"
+		// look like an unrelated I/O bug.
+		yield* Effect.die(`waitForFile: timed out after ${timeoutMs}ms waiting for ${path}`);
 	});
 
 const waitUntilDead = (pid: number, timeoutMs: number): Effect.Effect<boolean> =>
