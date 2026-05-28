@@ -15,6 +15,7 @@ import {
 	artifactPublishError,
 	type ArtifactPublisher,
 } from '../../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../../internal/acquire-on-chain-artifact.ts';
 import type { ResolvedSigner } from '../../../substrate/runtime/sui-execute/index.ts';
 import {
 	executeSuiTx,
@@ -249,101 +250,98 @@ export const initLocalPythFeeds = (
 	Effect.gen(function* () {
 		if (feeds.length === 0) return null;
 
-		const cached = yield* publisher
-			.publish<CachedPythHandle, CachedPythHandle>({
-				namespace: 'deepbook/pyth',
-				chain: brandChainId(chain),
-				contentHash: pythInputsHash(pkg, signer, feeds),
-				verifySchema: CachedPythHandleSchema,
-				verify: (entry) => buildVerifyProbe(sdk, entry),
-				produce: Effect.gen(function* () {
-					const result = yield* executeSuiTx({
-						client: sdk.client,
-						signer,
-						build: async () => {
-							const tx = new Transaction();
-							tx.setSender(signer.address);
-							tx.setGasBudget(PYTH_GAS_BUDGET);
-							const timestamp = 0n;
-							const priceInfos = feeds.map((feed) =>
-								addPriceInfo(tx, pkg.packageId, feed, timestamp),
-							);
-							tx.moveCall({
-								target: `${pkg.packageId}::pyth::create_price_feeds`,
-								arguments: [
-									tx.makeMoveVec({
-										type: `${pkg.packageId}::price_info::PriceInfo`,
-										elements: priceInfos,
-									}),
-								],
-							});
-							return tx.build({ client: sdk.client });
-						},
-					}).pipe(
-						Effect.mapError((err) =>
-							artifactPublishError(
-								'produce-failed',
-								`pyth feed transaction failed: ${err.message}`,
-							),
+		const cached = yield* acquireOnChainArtifact<CachedPythHandle, CachedPythHandle>(publisher, {
+			namespace: 'deepbook/pyth',
+			chain: brandChainId(chain),
+			contentHash: pythInputsHash(pkg, signer, feeds),
+			verifySchema: CachedPythHandleSchema,
+			verify: (entry) => buildVerifyProbe(sdk, entry),
+			produce: Effect.gen(function* () {
+				const result = yield* executeSuiTx({
+					client: sdk.client,
+					signer,
+					build: async () => {
+						const tx = new Transaction();
+						tx.setSender(signer.address);
+						tx.setGasBudget(PYTH_GAS_BUDGET);
+						const timestamp = 0n;
+						const priceInfos = feeds.map((feed) =>
+							addPriceInfo(tx, pkg.packageId, feed, timestamp),
+						);
+						tx.moveCall({
+							target: `${pkg.packageId}::pyth::create_price_feeds`,
+							arguments: [
+								tx.makeMoveVec({
+									type: `${pkg.packageId}::price_info::PriceInfo`,
+									elements: priceInfos,
+								}),
+							],
+						});
+						return tx.build({ client: sdk.client });
+					},
+				}).pipe(
+					Effect.mapError((err) =>
+						artifactPublishError(
+							'produce-failed',
+							`pyth feed transaction failed: ${err.message}`,
+						),
+					),
+				);
+				if (result.$kind === 'FailedTransaction') {
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
+							`pyth feed transaction on-chain execution failed ` +
+								formatExecutedFailure(result.FailedTransaction),
 						),
 					);
-					if (result.$kind === 'FailedTransaction') {
-						return yield* Effect.fail(
-							artifactPublishError(
-								'produce-failed',
-								`pyth feed transaction on-chain execution failed ` +
-									formatExecutedFailure(result.FailedTransaction),
-							),
-						);
-					}
-					const receipt = result.Transaction;
+				}
+				const receipt = result.Transaction;
 
-					const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
-					if (created.length !== feeds.length) {
+				const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
+				if (created.length !== feeds.length) {
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
+							`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
+								`(digest=${receipt.digest}).`,
+						),
+					);
+				}
+				const idsByFeed = yield* Effect.tryPromise({
+					try: () => mapCreatedPriceObjects(sdk, created),
+					catch: (cause) =>
+						artifactPublishError(
+							'produce-failed',
+							`failed to read created Pyth PriceInfoObjects: ${
+								cause instanceof Error ? cause.message : String(cause)
+							}`,
+						),
+				});
+				const cachedFeeds: CachedPythFeed[] = [];
+				for (const feed of feeds) {
+					const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
+					if (priceInfoObjectId === undefined) {
 						return yield* Effect.fail(
 							artifactPublishError(
 								'produce-failed',
-								`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
-									`(digest=${receipt.digest}).`,
+								`created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
 							),
 						);
 					}
-					const idsByFeed = yield* Effect.tryPromise({
-						try: () => mapCreatedPriceObjects(sdk, created),
-						catch: (cause) =>
-							artifactPublishError(
-								'produce-failed',
-								`failed to read created Pyth PriceInfoObjects: ${
-									cause instanceof Error ? cause.message : String(cause)
-								}`,
-							),
-					});
-					const cachedFeeds: CachedPythFeed[] = [];
-					for (const feed of feeds) {
-						const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
-						if (priceInfoObjectId === undefined) {
-							return yield* Effect.fail(
-								artifactPublishError(
-									'produce-failed',
-									`created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
-								),
-							);
-						}
-						cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
-					}
-					return { packageId: pkg.packageId, feeds: cachedFeeds };
-				}),
-				register: () => Effect.void,
-			})
-			.pipe(
-				Effect.mapError(
-					(err): DeepbookPluginError =>
-						deepbookPluginError(
-							'pyth-feed',
-							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
-						),
-				),
-			);
+					cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
+				}
+				return { packageId: pkg.packageId, feeds: cachedFeeds };
+			}),
+		}).pipe(
+			Effect.mapError(
+				(err): DeepbookPluginError =>
+					deepbookPluginError(
+						'pyth-feed',
+						err._tag === 'ArtifactPublishError' ? err.detail : String(err),
+					),
+			),
+		);
 
 		return fromCachedHandle(cached);
 	}).pipe(

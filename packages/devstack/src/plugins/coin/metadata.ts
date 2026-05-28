@@ -18,6 +18,7 @@ import { Effect, Ref, Schema } from 'effect';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { makeSpacedRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
+import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
 
@@ -195,14 +196,4 @@ export const validateBareCoinType = (identifier: string): CoinError | null => {
 		});
 	}
 	return null;
-};
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
 };

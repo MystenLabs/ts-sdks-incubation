@@ -53,6 +53,7 @@ import {
 	type AccountVariantKind,
 } from './errors.ts';
 import { withAddressLease } from './lease.ts';
+import { fundingFailureError } from '../internal/funding-failure-error.ts';
 import type { AccountValue } from './service.ts';
 import { AccountSpans } from './spans.ts';
 import { SuiSpans } from '../sui/index.ts';
@@ -294,18 +295,12 @@ export const fundEphemeralDefault = (
 			readonly _tag: 'FaucetUnreachable' | 'FaucetExhausted' | 'FaucetBodyError';
 		}) =>
 			Effect.fail(
-				accountAcquireError({
+				fundingFailureError({
 					phase: 'fund-default',
 					accountName: parts.accountName,
 					variant: 'ephemeral',
-					message:
-						`Account '${parts.accountName}': faucet strategy request failed ` +
-						`for chain '${parts.chainId}' (tag=${cause._tag}).`,
+					chainId: parts.chainId,
 					cause,
-					hint:
-						'See the cause chain — typical roots are the faucet container ' +
-						'not yet ready (FaucetUnreachable), the wall-clock budget elapsed ' +
-						'(FaucetExhausted), or the body returned Failure (FaucetBodyError).',
 				}),
 			);
 		yield* setCurrentPluginPhase('funding SUI');
@@ -432,26 +427,15 @@ export const applyCrossCuttingFunding = (
 			const coinKey = `coinType:${entry.fullCoinType}` as const;
 			const key = isSui ? (`faucet:request:${parts.chainId}` as const) : coinKey;
 
-			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError => {
-				const tag =
-					typeof cause === 'object' && cause !== null && '_tag' in cause
-						? String((cause as { readonly _tag?: unknown })._tag)
-						: 'unknown';
-				return accountAcquireError({
+			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError =>
+				fundingFailureError({
 					phase: 'fund-cross-cutting',
 					accountName: parts.accountName,
 					variant: parts.variant,
-					message:
-						`Account '${parts.accountName}': cross-cutting funding ` +
-						`failed for coin (key='${key}') amount=${entry.amount} ` +
-						`(tag=${tag}).`,
+					key,
+					amount: entry.amount,
 					cause,
-					hint:
-						'Cross-cutting funding requires the matching strategy ' +
-						'to be registered at the time of acquire — check the ' +
-						'plugin that contributes this coin and any `via` dependency.',
 				});
-			};
 
 			let request: Effect.Effect<void, AccountAcquireError>;
 			let usesAccountSigner = false;

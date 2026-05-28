@@ -32,6 +32,7 @@ import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import type { ClientWithCoreApi } from '../sui/index.ts';
@@ -265,10 +266,10 @@ export const performMint = (
 			signerAddress: signer.address,
 		});
 
-		const cached: CachedMint = yield* publisher.publish<
+		const cached: CachedMint = yield* acquireOnChainArtifact<
 			CachedMint,
 			typeof MintedCoinVerifyShape.Type
-		>({
+		>(publisher, {
 			namespace: 'coin-mint',
 			chain,
 			contentHash: cacheHash,
@@ -385,10 +386,6 @@ export const performMint = (
 						}),
 				});
 			}),
-			// Register on EVERY cycle (hit AND miss). Distilled-doc
-			// Invariant 6. Coin mint has no global registry to feed —
-			// the resolved-value carries everything; this is a no-op.
-			register: () => Effect.void,
 		});
 
 		// Project the cached payload to MintResult. The substrate

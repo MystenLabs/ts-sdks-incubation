@@ -45,6 +45,11 @@ describe('L2 plugin sibling boundaries', () => {
 		for (const file of collectPluginFiles(PLUGINS_ROOT)) {
 			const sourcePlugin = pluginFolder(file);
 			if (sourcePlugin === null) continue;
+			// `plugins/internal/` is the sanctioned shared-helper zone —
+			// it's NOT a plugin, so neither its inbound nor its outbound
+			// imports go through plugin barrels. The check is for
+			// plugin-vs-plugin coupling; internal helpers are exempt.
+			if (sourcePlugin === 'internal') continue;
 
 			const body = readFileSync(file, 'utf8');
 			for (const match of body.matchAll(IMPORT_SPEC_REGEX)) {
@@ -58,6 +63,12 @@ describe('L2 plugin sibling boundaries', () => {
 				const targetParts = targetRel.split(sep);
 				const targetPlugin = targetParts[0];
 				if (targetPlugin === undefined || targetPlugin === sourcePlugin) continue;
+				// `plugins/internal/` holds shared plugin helpers (not a
+				// plugin) — intentionally reached into by sibling plugins
+				// without going through a barrel. The "no internals" rule
+				// is for plugin-vs-plugin coupling; this directory is the
+				// sanctioned shared-helper zone.
+				if (targetPlugin === 'internal') continue;
 				if (isAllowedSiblingBarrel(targetParts)) continue;
 
 				offenders.push({

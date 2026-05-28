@@ -1,11 +1,11 @@
 import { Effect, Schema } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
-import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import type { AccountValue } from '../account/index.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { WalrusSpans } from './spans.ts';
 
@@ -16,9 +16,7 @@ export interface WalExchangeHandle {
 
 export type WalExchangeProbeKey = { readonly kind: 'object'; readonly objectId: string };
 
-export interface WalSwapSdk {
-	readonly client: ClientWithCoreApi;
-}
+export type WalSwapSdk = Pick<SuiSdkShim, 'client'>;
 
 export interface WalAccountSwapRequest {
 	readonly account: AccountValue;

@@ -21,6 +21,7 @@ import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
 import type { SuiSdkShim } from '../sui/index.ts';
 import type { CoinValue } from '../coin/index.ts';
 import type { ResolvedSigner } from '../../substrate/runtime/sui-execute/index.ts';
@@ -356,96 +357,96 @@ export const createDeepbookPools = (
 	Effect.gen(function* () {
 		if (pools.length === 0) return { pools: [] };
 
-		const produced = yield* publisher
-			.publish<CachedDeepbookPoolsResult, CachedDeepbookPoolsResult>({
-				namespace: 'deepbook/pools',
-				chain: brandChainId(chain),
-				contentHash: poolInputsHash(pkg, signer, pools),
-				verifySchema: CachedDeepbookPoolsSchema,
-				verify: (cached) => buildVerifyProbe(sdk, cached),
-				produce: Effect.gen(function* () {
-					const existingPools = yield* findExistingPools(sdk, signer, pkg, pools);
-					const missingPools = pools.filter((pool) => !existingPools.has(pool.name));
+		const produced = yield* acquireOnChainArtifact<
+			CachedDeepbookPoolsResult,
+			CachedDeepbookPoolsResult
+		>(publisher, {
+			namespace: 'deepbook/pools',
+			chain: brandChainId(chain),
+			contentHash: poolInputsHash(pkg, signer, pools),
+			verifySchema: CachedDeepbookPoolsSchema,
+			verify: (cached) => buildVerifyProbe(sdk, cached),
+			produce: Effect.gen(function* () {
+				const existingPools = yield* findExistingPools(sdk, signer, pkg, pools);
+				const missingPools = pools.filter((pool) => !existingPools.has(pool.name));
 
-					const cachedPools: CachedDeepbookPool[] = [];
-					if (missingPools.length > 0) {
-						const result = yield* executeSuiTx({
-							client: sdk.client,
-							signer,
-							build: async () => {
-								const tx = new Transaction();
-								tx.setSender(signer.address);
-								tx.setGasBudget(500_000_000);
+				const cachedPools: CachedDeepbookPool[] = [];
+				if (missingPools.length > 0) {
+					const result = yield* executeSuiTx({
+						client: sdk.client,
+						signer,
+						build: async () => {
+							const tx = new Transaction();
+							tx.setSender(signer.address);
+							tx.setGasBudget(500_000_000);
+							tx.moveCall({
+								target: `${pkg.packageId}::registry::init_balance_manager_map`,
+								arguments: [tx.object(pkg.registryId), tx.object(pkg.adminCapId)],
+							});
+							for (const pool of missingPools) {
 								tx.moveCall({
-									target: `${pkg.packageId}::registry::init_balance_manager_map`,
-									arguments: [tx.object(pkg.registryId), tx.object(pkg.adminCapId)],
+									target: `${pkg.packageId}::pool::create_pool_admin`,
+									typeArguments: [pool.baseCoinType, pool.quoteCoinType],
+									arguments: [
+										tx.object(pkg.registryId),
+										tx.pure.u64(pool.tickSize),
+										tx.pure.u64(pool.lotSize),
+										tx.pure.u64(pool.minSize),
+										tx.pure.bool(pool.whitelisted),
+										tx.pure.bool(pool.stablePool),
+										tx.object(pkg.adminCapId),
+									],
 								});
-								for (const pool of missingPools) {
-									tx.moveCall({
-										target: `${pkg.packageId}::pool::create_pool_admin`,
-										typeArguments: [pool.baseCoinType, pool.quoteCoinType],
-										arguments: [
-											tx.object(pkg.registryId),
-											tx.pure.u64(pool.tickSize),
-											tx.pure.u64(pool.lotSize),
-											tx.pure.u64(pool.minSize),
-											tx.pure.bool(pool.whitelisted),
-											tx.pure.bool(pool.stablePool),
-											tx.object(pkg.adminCapId),
-										],
-									});
-								}
-								return tx.build({
-									client: sdk.client,
-								});
-							},
-						}).pipe(
-							Effect.mapError(
-								(err): ArtifactPublishError =>
-									artifactPublishError(
-										'produce-failed',
-										`deepbook pool transaction failed: ${err.message}`,
-									),
+							}
+							return tx.build({
+								client: sdk.client,
+							});
+						},
+					}).pipe(
+						Effect.mapError(
+							(err): ArtifactPublishError =>
+								artifactPublishError(
+									'produce-failed',
+									`deepbook pool transaction failed: ${err.message}`,
+								),
+						),
+					);
+					if (result.$kind === 'FailedTransaction') {
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
+								`deepbook pool transaction on-chain execution failed ` +
+									formatExecutedFailure(result.FailedTransaction),
 							),
 						);
-						if (result.$kind === 'FailedTransaction') {
+					}
+					const receipt = result.Transaction;
+
+					for (const pool of missingPools) {
+						const poolId = pickCreatedPool(receipt.objectChanges, pool);
+						if (poolId === null) {
 							return yield* Effect.fail(
 								artifactPublishError(
 									'produce-failed',
-									`deepbook pool transaction on-chain execution failed ` +
-										formatExecutedFailure(result.FailedTransaction),
+									`deepbook pool '${pool.name}' not found in objectChanges ` +
+										`(digest=${receipt.digest}).`,
 								),
 							);
 						}
-						const receipt = result.Transaction;
-
-						for (const pool of missingPools) {
-							const poolId = pickCreatedPool(receipt.objectChanges, pool);
-							if (poolId === null) {
-								return yield* Effect.fail(
-									artifactPublishError(
-										'produce-failed',
-										`deepbook pool '${pool.name}' not found in objectChanges ` +
-											`(digest=${receipt.digest}).`,
-									),
-								);
-							}
-							cachedPools.push(toCachedPool(pool, poolId));
-						}
+						cachedPools.push(toCachedPool(pool, poolId));
 					}
+				}
 
-					return {
-						pools: pools
-							.map(
-								(pool) =>
-									existingPools.get(pool.name) ?? cachedPools.find((p) => p.name === pool.name),
-							)
-							.filter((pool): pool is CachedDeepbookPool => pool !== undefined),
-					} satisfies CachedDeepbookPoolsResult;
-				}),
-				register: () => Effect.void,
-			})
-			.pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
+				return {
+					pools: pools
+						.map(
+							(pool) =>
+								existingPools.get(pool.name) ?? cachedPools.find((p) => p.name === pool.name),
+						)
+						.filter((pool): pool is CachedDeepbookPool => pool !== undefined),
+				} satisfies CachedDeepbookPoolsResult;
+			}),
+		}).pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
 
 		const producedPools = new Map(produced.pools.map((pool) => [pool.name, pool]));
 		const resolvedPools = pools.map((pool) => producedPools.get(pool.name));
@@ -777,14 +778,16 @@ export const seedDeepbookPools = (
 				);
 			}
 
-			const result = yield* publisher
-				.publish<CachedDeepbookSeedResult, CachedDeepbookSeedResult>({
-					namespace: `deepbook/seed/${spec.name}`,
-					chain: brandChainId(chain),
-					contentHash: seedInputsHash(pkg, signer, spec, pool),
-					verifySchema: CachedDeepbookSeedResultSchema,
-					verify: (cached) => buildSeedVerifyProbe(sdk, cached),
-					produce: Effect.gen(function* () {
+			const result = yield* acquireOnChainArtifact<
+				CachedDeepbookSeedResult,
+				CachedDeepbookSeedResult
+			>(publisher, {
+				namespace: `deepbook/seed/${spec.name}`,
+				chain: brandChainId(chain),
+				contentHash: seedInputsHash(pkg, signer, spec, pool),
+				verifySchema: CachedDeepbookSeedResultSchema,
+				verify: (cached) => buildSeedVerifyProbe(sdk, cached),
+				produce: Effect.gen(function* () {
 						yield* requestSeedFunding(
 							spec.baseFundingStrategy,
 							signer,
@@ -893,9 +896,7 @@ export const seedDeepbookPools = (
 						}
 						return { poolName: spec.name, balanceManagerId, digest: receipt.digest };
 					}),
-					register: () => Effect.void,
-				})
-				.pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
+				}).pipe(Effect.mapError((err) => mapArtifactError('create-pools', err)));
 
 			seeded.push(result);
 		}

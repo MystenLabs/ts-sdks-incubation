@@ -36,7 +36,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { Cause, Effect, Ref, Schema, type Scope } from 'effect';
+import { Cause, Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
 import {
@@ -44,6 +44,8 @@ import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
+import { withPhasePreservingProduce } from '../../substrate/runtime/phase-preserving-produce.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import type { ActionBuildContext } from './build-context.ts';
@@ -173,17 +175,81 @@ export const bootActionService = (
 		const material = composeDiscriminatorMaterial(inputs.staticDiscriminator, resolvedDynamic);
 		const inputsHash = brandContentHash(createHash('sha256').update(material).digest('hex'));
 
-		// --- Phase-preserving stash.
+		// --- Phase-preserving produce.
 		//
 		// `publisher.publish`'s `produce` channel must surface failures
 		// as `ArtifactPublishError` per the substrate contract. That
-		// erases the original `ActionError.phase`. We stash the typed
-		// ActionError into a Ref BEFORE the mapError boundary so the
-		// outer `catchTag('ArtifactPublishError')` (here) can recover
-		// the original tag and re-raise it untouched. The caller in
+		// erases the original `ActionError.phase`.
+		// `withPhasePreservingProduce` stashes the typed `ActionError`
+		// in a Ref BEFORE the mapError boundary so the outer recovery
+		// (`recoverTypedError`) can re-raise it untouched. The caller in
 		// `index.ts` then sees the original `phase` rather than a
 		// uniformly-stamped `'sign'`.
-		const stashedActionError = yield* Ref.make<ActionError | null>(null);
+		const typedProduce = Effect.gen(function* () {
+			yield* Effect.annotateCurrentSpan({
+				[ActionSpans.phase]: 'building',
+			});
+			// `inputs.body` is a USER-SUPPLIED Effect. Two failure
+			// surfaces must collapse onto a single `ActionError`:
+			//
+			//   1. Typed `ActionError` on the failure channel —
+			//      `catchTag('ActionError')` re-raises untouched so
+			//      the original `phase` survives.
+			//   2. Defects (sync `throw` inside the body, `die(...)`)
+			//      bypass typed catches entirely — `catchCause` is
+			//      the only seam that sees them. Defects get
+			//      rebadged to `phase: 'sign'` so a user body that
+			//      throws lands on the typed channel rather than
+			//      crashing the produce step. Interrupt-only causes
+			//      propagate untouched so cancellation semantics
+			//      survive.
+			const receipt: ActionReceipt = yield* inputs.body.pipe(
+				Effect.catchCause((cause) => {
+					// 1. Typed `ActionError` on the failure channel —
+					//    re-raise untouched so the original `phase`
+					//    survives the downstream re-wrap step.
+					const failed = Cause.findError(cause);
+					if (failed._tag === 'Success') {
+						return Effect.fail(failed.success);
+					}
+					// 2. Interrupt-only causes propagate untouched so
+					//    cancellation semantics survive.
+					if (Cause.hasInterruptsOnly(cause)) {
+						return Effect.failCause(cause);
+					}
+					// 3. Defects (sync `throw` inside the body, `die(...)`)
+					//    bypass typed catches entirely — `catchCause` is
+					//    the only seam that sees them. Rebadge to
+					//    `phase: 'sign'` so a user body that throws
+					//    lands on the typed channel rather than crashing
+					//    the produce step.
+					const defect = Cause.findDefect(cause);
+					const defectValue =
+						defect._tag === 'Success' ? defect.success : Cause.squash(cause);
+					return Effect.fail(
+						actionError('sign', {
+							actionName: inputs.actionName,
+							message: `Action '${inputs.actionName}': body Effect raised a defect.`,
+							cause: defectValue,
+						}),
+					);
+				}),
+			);
+			yield* Effect.annotateCurrentSpan({
+				[ActionSpans.phase]: 'parsing',
+				[ActionSpans.digest]: receipt.digest,
+			});
+			return receipt;
+		});
+
+		const { wrappedProduce, recoverTypedError } = yield* withPhasePreservingProduce({
+			produce: typedProduce,
+			wrapProduceError: (err: ActionError): ArtifactPublishError =>
+				artifactPublishError(
+					'produce-failed',
+					`action.${inputs.actionName} ${err.phase}: ${err.message}`,
+				),
+		});
 
 		// --- Submit the spec to the publisher.
 		//
@@ -192,104 +258,17 @@ export const bootActionService = (
 		// pull the digest off the cached payload directly. No
 		// in-process registry-hop required (mirrors the seam pattern
 		// the package plugin's mode-local TODO calls out).
-		const receipt: ActionReceipt = yield* publisher
-			.publish<ActionReceipt, typeof VerifyTxShape.Type>({
-				namespace: 'action',
-				chain: inputs.chainId,
-				contentHash: inputsHash,
-				verifySchema: VerifyTxShape,
-				verify: (cached) => buildVerifyProbe(probe, cached.digest),
-				produce: Effect.gen(function* () {
-					yield* Effect.annotateCurrentSpan({
-						[ActionSpans.phase]: 'building',
-					});
-					// `inputs.body` is a USER-SUPPLIED Effect. Two failure
-					// surfaces must collapse onto a single `ActionError`:
-					//
-					//   1. Typed `ActionError` on the failure channel —
-					//      `catchTag('ActionError')` re-raises untouched so
-					//      the original `phase` survives.
-					//   2. Defects (sync `throw` inside the body, `die(...)`)
-					//      bypass typed catches entirely — `catchCause` is
-					//      the only seam that sees them. Defects get
-					//      rebadged to `phase: 'sign'` so a user body that
-					//      throws lands on the typed channel rather than
-					//      crashing the produce step. Interrupt-only causes
-					//      propagate untouched so cancellation semantics
-					//      survive.
-					const receipt: ActionReceipt = yield* inputs.body.pipe(
-						Effect.catchCause((cause) => {
-							// 1. Typed `ActionError` on the failure channel —
-							//    re-raise untouched so the original `phase`
-							//    survives the downstream re-wrap step.
-							const failed = Cause.findError(cause);
-							if (failed._tag === 'Success') {
-								return Effect.fail(failed.success);
-							}
-							// 2. Interrupt-only causes propagate untouched so
-							//    cancellation semantics survive.
-							if (Cause.hasInterruptsOnly(cause)) {
-								return Effect.failCause(cause);
-							}
-							// 3. Defects (sync `throw` inside the body, `die(...)`)
-							//    bypass typed catches entirely — `catchCause` is
-							//    the only seam that sees them. Rebadge to
-							//    `phase: 'sign'` so a user body that throws
-							//    lands on the typed channel rather than crashing
-							//    the produce step.
-							const defect = Cause.findDefect(cause);
-							const defectValue =
-								defect._tag === 'Success' ? defect.success : Cause.squash(cause);
-							return Effect.fail(
-								actionError('sign', {
-									actionName: inputs.actionName,
-									message: `Action '${inputs.actionName}': body Effect raised a defect.`,
-									cause: defectValue,
-								}),
-							);
-						}),
-					);
-					yield* Effect.annotateCurrentSpan({
-						[ActionSpans.phase]: 'parsing',
-						[ActionSpans.digest]: receipt.digest,
-					});
-					return receipt;
-				}).pipe(
-					// Stash the typed ActionError before the mapError
-					// boundary so the outer recovery path can re-raise
-					// with the original `phase` intact.
-					Effect.tapError((err) => Ref.set(stashedActionError, err)),
-					Effect.mapError(
-						(err): ArtifactPublishError =>
-							artifactPublishError(
-								'produce-failed',
-								`action.${inputs.actionName} ${err.phase}: ${err.message}`,
-							),
-					),
-				),
-				register: (_artifact) =>
-					// Action declares no in-process registry (mirrors v3's
-					// `services/action.ts:189-191` "Action does NOT populate
-					// any in-process registries"). The cached digest is now
-					// threaded directly via the artifact publisher's `verify(cached)`
-					// parameter — no register-hop hint required.
-					Effect.void,
-			})
-			.pipe(
-				// Recover the stashed ActionError if produce raised one.
-				// `verify-exhausted` / `cache-corrupt` are substrate-side
-				// signals with no upstream ActionError — they propagate
-				// as ArtifactPublishError untouched.
-				Effect.catchTag('ArtifactPublishError', (err) =>
-					Effect.gen(function* () {
-						const stashed = yield* Ref.get(stashedActionError);
-						if (stashed !== null && err.reason === 'produce-failed') {
-							return yield* Effect.fail(stashed);
-						}
-						return yield* Effect.fail(err);
-					}),
-				),
-			);
+		const receipt: ActionReceipt = yield* acquireOnChainArtifact<
+			ActionReceipt,
+			typeof VerifyTxShape.Type
+		>(publisher, {
+			namespace: 'action',
+			chain: inputs.chainId,
+			contentHash: inputsHash,
+			verifySchema: VerifyTxShape,
+			verify: (cached) => buildVerifyProbe(probe, cached.digest),
+			produce: wrappedProduce,
+		}).pipe(recoverTypedError);
 
 		// The substrate hands back the decoded `ActionReceipt` on every
 		// path (decoded cached payload on hit, fresh produce on miss).

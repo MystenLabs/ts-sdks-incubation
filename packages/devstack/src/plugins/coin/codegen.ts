@@ -21,9 +21,9 @@
 // the `sdkCoin` runtime projection — that lives in the SDK adapter
 // at codegen time, not in the binding shape.
 
-import { Effect } from 'effect';
-
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+
+import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
 /** The typed shape per emitted coin record. */
 export interface CoinBindings {
@@ -46,21 +46,17 @@ export interface CoinBindings {
 export const makeCoinCodegen = <Symbol extends string>(parts: {
 	readonly symbol: Symbol;
 	readonly resolved: CoinBindings;
-}): CodegenableDecl<`coin/${Symbol}`> => ({
-	kind: 'codegenable',
-	emitterName: `coin/${parts.symbol}` as `coin/${Symbol}`,
-	outputPath: `coins/${parts.symbol}.ts`,
-	sensitive: false,
-	aggregate: {
-		kind: 'coin',
-		bucket: 'coins.ts',
-		// Pass-through: this decl's exported map already keys by
-		// coin symbol, which is the aggregate's merge key.
-		project: (exported) => exported,
-	},
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst(parts.symbol, parts.resolved);
-			return ctx.done();
-		}),
-});
+}): CodegenableDecl<`coin/${Symbol}`> =>
+	defineSimpleConstExport({
+		emitterName: `coin/${parts.symbol}` as `coin/${Symbol}`,
+		outputPath: `coins/${parts.symbol}.ts`,
+		exportName: parts.symbol,
+		value: parts.resolved,
+		aggregate: {
+			kind: 'coin',
+			bucket: 'coins.ts',
+			// Pass-through: this decl's exported map already keys by
+			// coin symbol, which is the aggregate's merge key.
+			project: (exported) => exported,
+		},
+	});
