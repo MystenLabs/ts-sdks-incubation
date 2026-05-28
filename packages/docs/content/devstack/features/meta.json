@@ -8,6 +8,9 @@
 		"testing-vitest",
 		"testing-playwright",
 		"services",
+		"postgres",
+		"actions",
+		"faucet",
 		"state-and-snapshots",
 		"live-networks",
 		"plugins"

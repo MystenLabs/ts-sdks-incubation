@@ -195,6 +195,40 @@ for (const mdxFile of mdxFiles) {
 	}
 }
 
+// Reverse sweep: every `meta.json:pages` entry must resolve to a real file
+// or directory. Catches stale meta.json entries that point at deleted pages
+// or typos that the forward walk would not detect (forward walk only checks
+// that present MDX files are listed; it does not check that listed pages
+// are present).
+function walkMetaDirs(dir: string): void {
+	const meta = readMetaJson(dir);
+	if (meta?.pages) {
+		for (const entry of meta.pages) {
+			if (entry === '...') continue;
+			const mdxFile = path.join(dir, `${entry}.mdx`);
+			const indexFile = path.join(dir, entry, 'index.mdx');
+			const subMeta = path.join(dir, entry, 'meta.json');
+			const resolved =
+				fs.existsSync(mdxFile) || fs.existsSync(indexFile) || fs.existsSync(subMeta);
+			if (!resolved) {
+				const relDir = path.relative(CONTENT_DIR, dir) || '.';
+				console.error(
+					`ERROR: ${relDir}/meta.json — unresolved page "${entry}" (expected ${entry}.mdx, ${entry}/index.mdx, or ${entry}/meta.json)`,
+				);
+				errors++;
+			}
+		}
+	}
+
+	for (const subEntry of fs.readdirSync(dir, { withFileTypes: true })) {
+		if (subEntry.isDirectory()) {
+			walkMetaDirs(path.join(dir, subEntry.name));
+		}
+	}
+}
+
+walkMetaDirs(CONTENT_DIR);
+
 console.log(`\nValidation: ${mdxFiles.length} files, ${errors} errors, ${warnings} warnings`);
 if (errors > 0) {
 	process.exit(1);

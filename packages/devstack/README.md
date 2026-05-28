@@ -71,6 +71,10 @@ export default defineDevstack({
 });
 ```
 
+Listed `members` are entrypoints. Transitive plugin dependencies expand automatically via
+`runPluginExpanders`, so dependencies referenced through `dependsOn` (and the `wallet` /
+`hostService` resource refs above) are pulled into the stack without being listed explicitly.
+
 Run the stack during development:
 
 ```bash
@@ -92,8 +96,8 @@ and logs stay under `.devstack/`.
 ## Package Surface
 
 - Root API: stack composition, built-in factories, plugin-author helpers, and public types.
-- CLI: `devstack up`, `apply`, `status`, `doctor`, `config`, `schema --json`, `snapshot`, `prune`,
-  and `wipe`.
+- CLI: `devstack up`, `apply`, `status`, `doctor`, `config`, `schema`, `snapshot`, `prune`, and
+  `wipe`. `--json` is a global flag that switches any verb to JSON output.
 - Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, and `/runtime`.
 
 App code should consume generated files and the runtime manifest. It should not import devstack

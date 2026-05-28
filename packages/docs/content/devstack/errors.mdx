@@ -1,0 +1,107 @@
+---
+title: Error Catalog
+description: Tagged-error unions per plugin, with the discriminator slots and when each tag surfaces.
+---
+
+Every plugin raises tagged errors with a `_tag` discriminator. `Effect.catchTag` and
+`Effect.catchTags` match on the literal tag string. Most plugins also carry a `phase` field that
+identifies which stage of the lifecycle raised, so consumers can pin behavior by tag + phase rather
+than by message substring.
+
+This catalog enumerates the tags exported from each plugin. The fields shown are the load-bearing
+discriminator slots; full shapes (and the helper constructors) live in each plugin's `errors.ts`.
+
+## Account
+
+- `AccountAcquireError` — `phase: 'validate-name' | 'validate-funding' | 'load-keystore' | 'read-env' | 'decode-inline' | 'bind-signer' | …`. Surfaces during account boot.
+- `AccountSignError` — `phase: 'build-tx' | 'sign' | 'submit' | 'no-digest' | 'await-finality' | 'dependent-package-not-found'`. Surfaces when an account-bound sign attempt fails.
+
+## Action
+
+- `ActionError` — `phase: 'discriminator' | 'build' | 'sign' | 'execute-failed' | 'parse' | 'verify'`. Single tag covers all `action(...)` failure paths.
+
+## Coin
+
+- `CoinError` — `phase: 'not-found' | 'ambiguous' | 'nested-generic' | 'cap-missing' | 'metadata-fetch' | 'mint-tx'`. Surfaces when a `coin.fromPackage` or `coin.known` reference cannot be resolved or minted.
+
+## DeepBook
+
+- `DeepbookPluginError` — `phase: 'image-pull' | 'network' | 'publish' | 'create-pools' | 'pyth-publish' | 'pyth-feed'`. Local-mode boot and pool seeding.
+- `DeepbookConfigError` — invalid `deepbook(...)` options.
+- `ForkIncompatibleError` — fork mode rejected an incompatible reference.
+
+## Faucet
+
+- `FaucetUnreachable` — transport-level (ECONNREFUSED, DNS, TLS, AbortSignal timeout).
+- `FaucetExhausted` — `kind: 'wall-clock' | 'attempts'`. Carries `lastCause`.
+- `FaucetBodyError` — `reason: 'failure-status' | 'malformed-body' | 'invalid-json'`. The
+  load-bearing wire invariant: 200 OK with `{ status: { Failure } }` MUST surface here, not as
+  silent success.
+- `FaucetStrategyMissing` — no strategy registered for the requested capability key. Carries
+  `registeredKeys` so the renderer can show "I asked for X, only Y is wired".
+- `FaucetConfigError` — invalid strategy config.
+
+## Host service
+
+- `HostServiceConfigError` — invalid `hostService(...)` options.
+- `HostServiceAcquireError` — `phase: 'allocate-port' | 'spawn' | 'ready' | 'exit'`. Surfaces during
+  dev-server boot and ready-probing.
+
+## Package
+
+- `PublishError` — `phase: 'hash' | 'scrub' | 'build' | 'publish-tx' | 'parse' | 'verify'`. Single
+  tag covers the full `localPackage(...)` publish path.
+
+## Postgres
+
+- `PostgresPluginError` — `phase: 'network-create' | 'image-build' | 'container-start' | 'ready-probe' | 'db-ensure' | 'unknown'`.
+- `PostgresConfigError` — invalid `postgres(...)` options (empty `databases`, `route` + `hostPort`
+  conflict).
+- `PostgresConnectionTimeout` — `pg_isready` did not succeed before the deadline. Carries
+  `attempts`, `elapsedMs`, last exit code, and captured stdout/stderr.
+- `DatabaseCreateFailed` — `op: 'exists-check' | 'createdb'`. Typical root cause:
+  case-sensitivity collision in Postgres identifier folding.
+
+## Seal
+
+- `SealError` — `phase: 'port-alloc' | 'image' | 'keygen' | 'publish' | 'register' | 'config-render'`. Local-keygen boot.
+- `SealConfigError` — invalid `seal(...)` options.
+- `ForkIncompatibleError` — fork-mode reference mismatch.
+
+## Sui
+
+- `SuiPluginError` — `phase: 'image-build' | 'port-allocate' | 'container-start' | 'rpc-probe' | 'faucet-probe' | 'graphql-probe'`. Localnet boot.
+- `SuiConfigError` — invalid `sui(...)` options.
+- `SuiCliError` — `op`-tagged failure from a Sui CLI shell-out.
+- `ForkUnsupportedError` — fork mode rejected an unsupported request.
+- `SeedManifestMismatchError` — seed-manifest digest does not match the recorded value.
+- `SuiFundsReadyError` — funds-ready check failed (the ready probe for SUI account funding).
+
+## Wallet
+
+- `WalletBootError` — `phase: 'listen' | 'allocate-port' | 'read-token' | 'write-token' | 'bind-account' | 'route-url' | …`. Dev-wallet boot.
+- `WalletRequestError` — `phase: 'origin-missing' | 'origin-forbidden' | 'unauthorized' | 'route-not-found' | 'address-not-found' | 'body-invalid' | …`. Per-request rejections inside the running wallet.
+
+## Walrus
+
+- `WalrusPluginError` — `phase: 'image-build' | 'cluster-network' | 'deploy' | 'exchange' | 'storage-node' | 'proxy'`. Local-mode boot.
+- `WalrusConfigError` — invalid `walrus(...)` options.
+- `ForkIncompatibleError` — fork-mode reference mismatch.
+
+## Catching errors in app code
+
+```ts
+import { Effect } from 'effect';
+
+const program = someEffect.pipe(
+	Effect.catchTags({
+		AccountAcquireError: (err) =>
+			Effect.logError(`account boot failed at phase ${err.phase}`),
+		FaucetExhausted: (err) =>
+			Effect.logError(`faucet ${err.kind === 'wall-clock' ? 'timed out' : 'gave up'}`),
+	}),
+);
+```
+
+Plugin-author code that catches its own union should use `Effect.catchTag` for single-tag handling
+and `catchTags` for the multi-tag form; both narrow on the literal `_tag` discriminator.

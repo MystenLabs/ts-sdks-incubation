@@ -71,7 +71,8 @@ The public package surface is:
 
 - Root API: `defineDevstack`, `runStack`, built-in factories, plugin-author helpers, and public
   types.
-- Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, and `/runtime`.
+- Build integrations: `@mysten-incubation/devstack/vitest`, `/vitest/setup`, `/playwright`,
+  `/playwright/global-setup`, and `/runtime`.
 
 There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
 reads generated files and the runtime manifest instead of importing private helpers.

@@ -313,7 +313,7 @@ direct `dockerCommand('save' | 'load' | 'tag', …)` from a plugin breaches the 
 ## 13. Cross-plugin dependencies
 
 Public plugin authors declare upstreams with `definePlugin({ dependsOn })`. The `start` callback's
-second argument is the resolved dependency value(s):
+sole argument is the resolved dependency value(s):
 
 - Tuple `dependsOn` produces tuple deps: `dependsOn: [suiResource, accountRef]`.
 - Object `dependsOn` produces object deps: `dependsOn: { sui: suiResource, signer }`.
@@ -504,7 +504,8 @@ caller writes `[…] as const`.
 
 ### 21.2 `OptionalService` discipline
 
-`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical "probe `pluginContext` for a service; fall back if absent" lookup. The internal cast
+`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical "probe
+`pluginContext` for a service; fall back if absent" lookup. The internal cast
 (`ctx as Context.Context<I>`) is structural — `pluginContext` is typed `Context.Context<never>` and
 the probe is intentional. Hand-rolled `Context.getOption` plus a cast at the callsite is the
 anti-pattern.
@@ -601,3 +602,65 @@ it.effect('writes manifest', () =>
 
 **Rule:** tests do not call `mkdtempSync` + ad-hoc `try/finally`. Use the helper — it closes
 several historical leak-on-throw bugs in one place.
+
+### 21.7 Minimal `definePlugin` skeleton
+
+The shortest compiling plugin declares `id`, `role`, `section`, and `start`. `dependsOn`,
+`capabilities`, `watch`, `errorContributions`, `pluginKey`, and `endpointSection` are all optional.
+The `start` callback receives the resolved `dependsOn` value as its sole argument; tuple
+`dependsOn` projects to a tuple, object to an object, single ref to the bare resolved value.
+
+```ts
+import { Effect } from 'effect';
+import { definePlugin, resource } from '@mysten-incubation/devstack';
+
+const fooResource = resource<'foo', { readonly id: string }>('foo');
+
+export const foo = () =>
+	definePlugin({
+		id: fooResource.id,
+		role: 'task', // 'task' = value-producer reaches done; 'service' = long-lived host process
+		section: 'other', // dashboard bucket the supervisor stamps onto every row
+		start: (deps) =>
+			Effect.gen(function* () {
+				// Substrate services come from yield*; cross-plugin values from `deps`.
+				void deps;
+				return { id: 'foo-1' };
+			}),
+	});
+```
+
+**Rule:** new plugins start from this shape. Add `dependsOn` / `capabilities` only when the
+plugin genuinely needs them — don't pre-declare empty arrays.
+
+### 21.8 `StrategyContributorDecl` registration shape
+
+The substrate's strategy registry decouples sibling plugins that contribute funding /
+chain-probe / fund-ready strategies. The plugin's `capabilities` factory returns one or more
+`StrategyContributorDecl<Key, Strategy>` entries; the supervisor harvests them post-acquire and
+publishes them keyed by `capabilityKey`. Consumers retrieve with
+`StrategyRegistryService.get<Key, Strategy>(key)`.
+
+Contributor (real example, `plugins/coin/index.ts:158`):
+
+```ts
+const fundingContribution: StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy> = {
+	kind: 'strategy-contributor',
+	capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
+	strategy: resolved.fundingStrategy,
+	autoMounted: true, // hides from renderer rows; user-supplied contributors are visible
+};
+```
+
+Consumer (real example, `plugins/account/funding.ts:475`):
+
+```ts
+const strategy = yield* registry
+	.get<typeof coinKey, AccountFundingStrategy>(coinKey)
+	.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
+```
+
+**Rule:** sibling-plugin strategy hand-off goes through the strategy registry sink. Do not stash
+a strategy on a plugin's resolved value for another plugin to import — it bypasses the
+dep-graph-free decoupling and breaks parity between built-in and custom contributors. See
+`ARCHITECTURE.md`'s "Funding contribution-sink invariant" for the full failure mode.

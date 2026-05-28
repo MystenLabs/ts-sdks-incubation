@@ -1,19 +1,17 @@
 # @mysten-incubation/devstack
 
-## 0.1.0-UNRELEASED
+## Unreleased
 
-First documented pre-release after the multi-phase surface stabilization. Version number is a
-placeholder pending the actual cut. Major lines of work:
+First documented pre-release after the multi-phase surface stabilization. Major lines of work:
 
 ### Surface stabilization (Phases 0-8)
 
 The package was rewritten over eight planned phases that landed before this entry. The result is a
 single root barrel (`@mysten-incubation/devstack`) carrying every built-in plugin factory, plugin
-authoring helper, capability decl type, and substrate helper namespace. Subpaths
-(`/contracts`, `/substrate`, plus L5 build-integration subpaths `/vitest`, `/playwright`,
-`/runtime`) exist for tree-shaking and L5 isolation only — they are not part of the user-facing
-vocabulary. See `ARCHITECTURE.md` for layer boundaries and `STYLE_GUIDE.md` for code-level
-patterns.
+authoring helper, capability decl type, and substrate helper namespace. The only public subpaths
+are the L5 build-integration entrypoints — `/vitest`, `/vitest/setup`, `/playwright`,
+`/playwright/global-setup`, and `/runtime` — exposed for tree-shaking and L5 isolation. See
+`ARCHITECTURE.md` for layer boundaries and `STYLE_GUIDE.md` for code-level patterns.
 
 ### Critical correctness fixes
 

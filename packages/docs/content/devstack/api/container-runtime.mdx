@@ -1,0 +1,100 @@
+---
+title: Container Runtime
+description: The substrate-facing container-runtime contract that backs Docker today and is designed to admit podman or sandbox backends without touching plugin code.
+---
+
+`ContainerRuntime` is a substrate capability contract — a backend-agnostic, container-shaped
+resource manager that plugins yield via `ContainerRuntimeService`. Docker is the reference
+implementation under `runtime/docker/`; podman, host-process, and sandbox backends are not
+foreclosed.
+
+End-user code never constructs a `ContainerRuntime` directly. Plugin authors yield the service to
+acquire images, containers, exec, network, and image-save/load behavior. This page documents the
+abstraction boundary; the Docker-specific behavior lives in plugin source rather than here.
+
+## Yielding the service
+
+```ts
+import { Effect } from 'effect';
+import { ContainerRuntimeService, definePlugin } from '@mysten-incubation/devstack';
+
+export const mything = () =>
+	definePlugin({
+		id: 'mything',
+		role: 'service',
+		start: () =>
+			Effect.gen(function* () {
+				const runtime = yield* ContainerRuntimeService;
+				const image = yield* runtime.ensureImage({ contextPath: './docker' });
+				const handle = yield* runtime.ensureContainer({
+					name: 'mything-1',
+					image,
+					labels: [
+						/* ContainerLabelTuple stamped by the substrate's managed-container helper */
+					],
+					recreate: 'on-config-change',
+				});
+				return { handle };
+			}),
+	});
+```
+
+The supervisor's plugin acquisition path provides `ContainerRuntimeService` before any plugin's
+`start` body runs. Built-in plugins usually go through the substrate `managedContainer` helper
+rather than calling `ensureContainer` directly — the helper stamps the `ContainerLabelTuple` so
+`prune` / `wipe` can find the resource.
+
+## Surface
+
+`ContainerRuntime` exposes (full signatures in source):
+
+- `ensureImage(build, expected?)` — content-addressed image ensure. Backend folds builds into the
+  cache by digest.
+- `pullImage(ref)` — optional pull from a registry reference.
+- `ensureNetwork(spec)` — idempotent per-stack network create. Networks outlive container scopes;
+  they are reaped by `wipe` / `prune`, not by per-container scope finalizers.
+- `ensureContainer(spec)` — idempotent container create with a `recreate` policy enum
+  (`'on-failure' | 'never' | 'on-config-change'`). Returns a `ContainerHandle` whose scope owns the
+  finalizer.
+- `exec(handle, argv, opts?)` — one-shot command inside a running container. The runtime does NOT
+  promote a non-zero exit to failure — the caller is the policy holder (Postgres treats `pg_isready`
+  non-zero as "retry", `createdb` non-zero as a typed plugin error).
+- `runOneShot(spec)` — `docker run --rm` for transient containers (e.g. the Move build path).
+- `inspectByLabels(labels)` — enumerate by ownership labels, never by tag prefix alone.
+- `followLogs(handle)` — `Stream<string, ContainerRuntimeError>`.
+- `pause(handle)`, `unpause(handle)`, `stop(handle, grace)` — explicit lifecycle.
+- `pauseAndCommit(handle)` — snapshot commit; running containers are paused first.
+- `saveImage(ref, opts?)`, `saveImages(refs, opts?)`, `loadImage(tar)`, `tagImage(src, newTag, opts?)`,
+  `removeImage(ref)` — snapshot image transport.
+- `sweepOrphans(labelMatch)`, `removeManagedContainers(labelMatch)`,
+  `removeManagedImages(labelMatch)`, `removeManagedNetworks(labelMatch)`,
+  `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use these. Implementations MUST enumerate
+  by ownership labels.
+
+## Abstraction boundaries
+
+What `ContainerRuntime` is responsible for:
+
+- Idempotent ensure semantics keyed by stable name + ownership labels.
+- Scope-owned finalizers — `ensureContainer` requires a `Scope` so stop runs on scope close.
+- Stable handles (`ContainerHandle.id`, `name`, `labels`, `imageName`, `status`, `ips`, `ports`).
+- Backend-level errors only — daemon-unreachable, build-failed, port-conflict, etc.
+
+What plugins own:
+
+- Whether a non-zero exit means "retry", "fail typed", or "fail config".
+- Schema, init SQL, and ready probes (e.g. Postgres runs `pg_isready` inside its plugin body).
+- Per-container `configHash` for `on-config-change` policy decisions.
+- Whether to publish a host port (`ports`) or stay in-network.
+
+## Error shape
+
+`ContainerRuntimeError` is a tagged record with a `reason` union covering the daemon-level surface:
+`daemon-unreachable`, `image-build-failed`, `image-save-failed`, `image-load-failed`,
+`image-tag-failed`, `docker-inspect-failed`, `foreign-resource`, `container-replace-failed`,
+`name-collision`, `publish-port-conflict`, `network-address-pool-exhausted`, `ip-readback-timeout`,
+`ready-probe-failed`, `recreate-refused`, `image-remove-failed`.
+
+Plugin code typically wraps `ContainerRuntimeError` in a typed plugin error (`PostgresPluginError`,
+`SuiPluginError`, etc.) at the phase boundary so the cause walker attributes the failure to the
+right plugin.

@@ -44,7 +44,11 @@ const extractReadmeVerbs = (readme: string): ReadonlyArray<string> => {
 		// — drops trailing flags like `--json`.
 		const stripped = raw.replace(/^devstack\s+/, '').trim();
 		const head = stripped.split(/\s+/)[0];
-		if (head !== undefined && head.length > 0) verbs.push(head);
+		if (head === undefined || head.length === 0) continue;
+		// Skip flag-shaped tokens. The README also documents `--json` as
+		// a global flag in the same bullet; it's a flag, not a verb.
+		if (head.startsWith('-')) continue;
+		verbs.push(head);
 	}
 	return verbs;
 };

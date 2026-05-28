@@ -15,7 +15,7 @@ Every component lives in exactly one layer. The allowed-imports column is the co
 | -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
 | **L0 substrate**                 | Kernel: scheduler, lifecycle SM, event/command channels, brokers (port/lease/lock), atomic-write, cache, state-store, cross-process protocol, decode helpers, retry policy, process supervisor, observability primitives, manifest envelope, ArtifactPublisher. Name-blind. | External libs only (`effect`, `@effect/*`, Node stdlib).                                                                         | L1+. Plugin or capability-decl names.                       |
 | **L1 runtime adapters**          | `ContainerRuntime` (Docker reference), `InProcessRuntime`, `ReverseProxyRuntime` (Traefik reference). Generic per backend kind, each replaceable.                                                                                                                           | L0.                                                                                                                              | L2+. Named plugins.                                         |
-| **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook, host-service. Renderer plugins (TUI Ink, plain, silent). One folder each exposing `definePlugin({...})`.                                                                             | L0, L1, other plugins through public resource refs at factory boundaries (never internal modules).                               | Other plugins' internal modules.                            |
+| **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook, host-service. One folder each exposing `definePlugin({...})`. (TUI renderers live in L4 surfaces, not L2.)                                                                          | L0, L1, other plugins through public resource refs at factory boundaries (never internal modules).                               | Other plugins' internal modules.                            |
 | **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen. Each walks a registry of plugin capability contributions; never names services.                                                                                     | L0, L1, capability decls from `contracts/`.                                                                                      | L2 internals, named plugins, hardcoded paths.               |
 | **L4 surfaces**                  | CLI (`surfaces/cli/`), TUI (`surfaces/tui/`), programmable API, bin entry (`cli/main.ts`). Symmetric peers: subscribe to typed event stream + publish typed commands.                                                                                                       | L0 (events/commands/manifest schema), L3 capability decls + manifest writer output. Cascade-formatter.                           | L1 directly, any L2 module, any direct engine method calls. |
 | **L5 build integrations + apps** | `build-integrations/{vitest,playwright,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                         | Shared `build-integrations/runtime/` helpers, on-disk manifest, codegen-emitted files, env vars, typed global Playwright bridge. | L0–L3 directly. Engine subscription.                        |
@@ -82,7 +82,7 @@ Declared in `src/contracts/` as a discriminated `CapabilityDecl` union (one decl
 | **NetworkResolver**     | `contracts/network-resolver.ts`     | Chain id / network identity / funds-ready gate.                                                                                                                 | One per chain.                                                        |
 | **ChainProbe**          | `contracts/chain-probe.ts`          | Chain reachability + facts (lenient verify pattern).                                                                                                            | One per chain.                                                        |
 | **StrategyContributor** | `contracts/strategy-contributor.ts` | Pluggable strategy injection.                                                                                                                                   | Faucet strategies, account variants, custom plugin extensions.        |
-| **Projection**          | `contracts/projection.ts`           | Read-model update emitted after acquisition. Verbose form `projection({ event: { tag: 'projection.updated', kind, key, payload, at } })` exists for full control; shorthand `projection({ kind, key, payload })` stamps `tag` + `at` for the common case.                                                                                                                    | Plugins publishing UI/persisted state independent of strategy values. |
+| **Projection**          | `contracts/projection.ts`           | Read-model update emitted after acquisition. Verbose `projection({ event: { tag: 'projection.updated', kind, key, payload, at } })` covers full control; shorthand `projection({ kind, key, payload })` stamps `tag` + `at` for the common case. | Plugins publishing UI/persisted state independent of strategy values. |
 
 Infrastructure contracts (outside the capability-decl union):
 
@@ -97,6 +97,43 @@ Infrastructure contracts (outside the capability-decl union):
   imports any plugin module to perform the rewrite. Compose-time only — distinct from the runtime
   `CapabilitySinks` harvest path which fires AFTER plugin acquire.
 
+### Funding contribution-sink invariant
+
+`AccountFundingStrategy` flows through the substrate's strategy registry via
+`StrategyContributorDecl`. A plugin that wants to FUND an account at acquire-time MUST contribute
+its strategy through this sink before the account plugin asks for it — direct calls to
+`fundingStrategy.request(...)` without a sibling registration silently leave the registry empty and
+the account starves on a `StrategyNotFoundError` (caught as a no-op for cross-cutting funds —
+`plugins/account/funding.ts:478`).
+
+Who contributes:
+
+- **Coin plugins** — `plugins/coin/index.ts` builds a `StrategyContributorDecl` with capability
+  key `coinType:<fullCoinType>` for every coin variant that declares `fundingStrategy`. Walrus and
+  Seal contribute their WAL/SEAL strategies the same way through the coin barrel.
+- **Faucet plugin** — `plugins/faucet/index.ts:defineFaucetStrategy({ chainId, strategy })` builds
+  a contributor keyed `faucet:<chainId>` for SUI funding.
+- **Custom plugins** — same surface; any plugin's `capabilities` factory may return a
+  `StrategyContributorDecl<Key, Strategy>` and the supervisor harvests it into the registry.
+
+Shape:
+
+```ts
+{
+	kind: 'strategy-contributor',
+	capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
+	strategy: resolved.fundingStrategy,
+	autoMounted: true,
+} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>
+```
+
+Consumers (`plugins/account/funding.ts`) read with `registry.get<typeof key, Strategy>(key)` and
+treat `StrategyNotFoundError` as "optional faucet is a no-op for this coin". The invariant: the
+sink is the **only** way to expose a funding strategy across plugin boundaries — bypassing it
+(e.g. a coin plugin calling `fundingStrategy.request` itself, or stashing the strategy on its
+resolved value for a sibling to import) breaks the dep-graph-free decoupling that makes
+custom funding plugins compose like built-ins.
+
 ---
 
 ## Plugin-author surface = user-surface
@@ -104,7 +141,11 @@ Infrastructure contracts (outside the capability-decl union):
 Custom plugin authors must be able to author plugins whose config-site experience is identical to
 built-ins. No privileges built-ins have that customs can't replicate.
 
-- `definePlugin({ id, dependsOn, kind, start, capabilities })` is the public authoring API.
+- `definePlugin({ id, role, section, dependsOn?, start, capabilities?, watch?, pluginKey?, endpointSection?, errorContributions? })`
+  is the public authoring API. `id`, `role`, `section`, and `start` are required; `role` is
+  `'service' | 'task'` (long-lived host process vs. value-producer reaching `done`) and `section` is
+  the dashboard bucket (`'service' | 'package' | 'account' | 'action' | 'app' | 'other'`) the
+  supervisor stamps onto every row this plugin emits.
 - Capability decl helpers and public contract types are reachable from the root package entrypoint.
 - The callable `defineModeNamespace(network)` is available to custom plugins for mode-narrowed
   factories.
@@ -127,19 +168,20 @@ If you add a built-in feature, ask: can a custom plugin do this? If no, expose t
 
 ## Plugin start bodies
 
-Public plugin `start` bodies receive resolved cross-plugin dependencies as the second callback
+Public plugin `start` bodies receive resolved cross-plugin dependencies as the SOLE callback
 argument. Substrate services come from `Effect.gen`'s R-channel:
 
 ```ts
-start: (_ctx, { signer }) =>
+start: (deps) =>
 	Effect.gen(function* () {
 		const runtime = yield* ContainerRuntimeService;
 		const identity = yield* IdentityContext;
-		// signer is the resolved value from dependsOn: { signer }.
+		const [sui, signer] = deps; // shape mirrors dependsOn
 	});
 ```
 
-`dependsOn` shape drives the callback shape: tuple → tuple, object → object, single → bare value.
+`dependsOn` shape drives the callback-argument shape: tuple → tuple, object → object, single → bare
+value. There is no separate `ctx` parameter — supervisor services flow through `yield*`.
 
 No `acquireXxxFromCtx(...)` indirection. The supervisor's wiring Layer satisfies the requirements.
 
@@ -327,10 +369,11 @@ L1 runtime adapters  — Docker (reference), in-process, Traefik reverse-proxy.
                        Generic per backend kind. Each replaceable.
 
 L2 plugins           — sui, postgres, walrus, seal, account, faucet, package,
-                       coin, wallet, action, deepbook, host-service. Plus
-                       renderer plugins. Plugin A → Plugin B goes through
-                       index.ts barrels OR substrate contracts. Sui /
-                       Account / host-service are documented universal buses.
+                       coin, wallet, action, deepbook, host-service.
+                       Plugin A → Plugin B goes through index.ts barrels
+                       OR substrate contracts. Sui / Account /
+                       host-service are documented universal buses.
+                       (TUI renderers live in L4 surfaces.)
 
 L3 orchestrators     — snapshot, router, codegen, network resolver, manifest
                        writer, watch dispatcher. Each walks capability decls;
