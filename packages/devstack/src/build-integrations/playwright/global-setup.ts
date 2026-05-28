@@ -259,33 +259,40 @@ const waitForReadyStackContext = async (
 	const intervalMs = options.readyPollIntervalMs ?? DEFAULT_READY_POLL_INTERVAL_MS;
 	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown = null;
-	const watchState = createCodegenWatchState();
-	let watchManifestPath: string | null = null;
 
+	// Phase 1: poll for the manifest itself. The supervisor writes it
+	// eagerly during boot, but Playwright's `webServer.command` race
+	// can land us here before the file exists. Once we've decoded a
+	// manifest, we pin to its location for the remainder of the wait —
+	// re-decoding on every tick (default 100ms over 5min) costs
+	// thousands of JSON+Schema decodes for no information gain.
+	let ctx: StackContext | null = null;
 	while (Date.now() <= deadline) {
 		try {
-			const ctx = readContextForSetup(options);
-			const eventsPath = join(dirname(ctx.manifestPath), 'events.ndjson');
-			// Restart the offset tracker when the resolved manifest path
-			// flips (single-stack discovery fallback can land on a
-			// different stack on the second try if the runtime root
-			// produced a new sibling between polls).
-			if (watchManifestPath !== eventsPath) {
-				watchManifestPath = eventsPath;
-				watchState.offset = 0;
-				watchState.lineIndex = 0;
-				watchState.carry = '';
-				watchState.latestAppEndpointLine = -1;
-				watchState.latestCodegenLine = -1;
-				watchState.lastFileSize = 0;
-			}
-			if (advanceCodegenWatch(watchState, eventsPath)) return ctx;
-			lastError = new Error(
-				`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
-			);
+			ctx = readContextForSetup(options);
+			break;
 		} catch (cause) {
 			lastError = cause;
+			await sleep(intervalMs);
 		}
+	}
+	if (ctx === null) {
+		throw new Error(
+			`devstack manifest did not appear within ${timeoutMs}ms` +
+				(lastError instanceof Error ? `: ${lastError.message}` : ''),
+		);
+	}
+
+	// Phase 2: tail `events.ndjson` for the codegen-fresh signal. Only
+	// the events file changes during this phase — the manifest path is
+	// fixed once Phase 1 succeeds.
+	const eventsPath = join(dirname(ctx.manifestPath), 'events.ndjson');
+	const watchState = createCodegenWatchState();
+	while (Date.now() <= deadline) {
+		if (advanceCodegenWatch(watchState, eventsPath)) return ctx;
+		lastError = new Error(
+			`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
+		);
 		await sleep(intervalMs);
 	}
 
@@ -356,8 +363,21 @@ export default buildGlobalSetup();
 export const STACK_CONTEXT_SLOT = PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY;
 
 const stashStackContext = (ctx: StackContext): void => {
+	// Include alias keys in the stashed endpoints map so consumers
+	// iterating `fixture.endpoints` see the same contract as callers
+	// of `endpoint(alias)`. Without this, `fixture.endpoints['app']`
+	// would miss while `ctx.endpoint('app')` resolves to `'dev'` —
+	// the asymmetry surprises consumers reading the raw dict.
+	const endpoints: Record<string, string> = Object.fromEntries(
+		ctx.endpointNames.map((name) => [name, ctx.endpoint(name)]),
+	);
+	for (const [alias, canonical] of Object.entries(BUILT_IN_ENDPOINT_ALIASES)) {
+		if (alias in endpoints) continue;
+		const url = endpoints[canonical];
+		if (url !== undefined) endpoints[alias] = url;
+	}
 	const fixture: PlaywrightStackFixture = {
-		endpoints: Object.fromEntries(ctx.endpointNames.map((name) => [name, ctx.endpoint(name)])),
+		endpoints,
 		walletEndpoint: ctx.endpointMaybe(WALLET_ENDPOINT_ALIAS),
 		manifestPath: ctx.manifestPath,
 		stack: ctx.manifest.identity.stack,
