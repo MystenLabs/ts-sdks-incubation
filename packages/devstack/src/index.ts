@@ -118,7 +118,7 @@ export type {
 	LoadedImageBundle,
 	TaggedImageRef,
 } from './contracts/container-runtime.ts';
-export { ContainerRuntimeService } from './runtime/docker/service.ts';
+export { ContainerRuntimeService } from './substrate/runtime/container-runtime.ts';
 export type {
 	LivenessClassifierDecl,
 	LivenessClassification,
@@ -419,9 +419,4 @@ export {
 	type DeepbookPoolSeedLiquidity,
 	type DeepbookPoolSeedOrder,
 	type DeepbookPoolSpec,
-	type PythFeed,
-	type PythHandle,
-	type PythOptions,
-	type PythPackageMember,
-	type PythPriceFeedId,
 } from './plugins/deepbook/index.ts';

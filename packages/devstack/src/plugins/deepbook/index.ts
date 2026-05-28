@@ -906,11 +906,6 @@ export type {
 	DeepbookPoolSeedLiquidity,
 	DeepbookPoolSeedOrder,
 	DeepbookPoolSpec,
-	PythFeed,
-	PythHandle,
-	PythOptions,
-	PythPackageMember,
-	PythPriceFeedId,
 } from './types.ts';
 export {
 	DEEP_PRICE_FEED_ID,

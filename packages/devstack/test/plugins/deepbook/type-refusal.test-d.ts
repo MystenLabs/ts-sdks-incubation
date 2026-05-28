@@ -24,7 +24,8 @@ export type _NoDeepbookMarginOptionsOnDeepbookBarrel = DB.DeepbookMarginOptions;
 // @ts-expect-error — market-maker configuration has no acquire path in this release
 export type _NoDeepbookMarketMakerOptionsOnDeepbookBarrel = DB.DeepbookMarketMakerOptions;
 
-export type _PythOptionsOnDeepbookBarrel = DB.PythOptions;
+// @ts-expect-error — Pyth lives inside deepbook as an implementation detail; not exposed on the deepbook barrel
+export type _NoPythOptionsOnDeepbookBarrel = DB.PythOptions;
 
 // @ts-expect-error — margin defaults are not exported without margin behavior
 export type _NoUsdcMarginDefaultsOnDeepbookBarrel = DPV['USDC_MARGIN_DEFAULTS'];
