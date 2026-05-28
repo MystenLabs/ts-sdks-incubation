@@ -24,37 +24,12 @@
 import { mkdirSync, statSync, unlinkSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { Clock, Data, Duration, Effect, Schema, Scope } from 'effect';
+import { Data, Effect, Schema, Scope } from 'effect';
 
 import { DEFAULT_SWEEP_POLICY, type RosterHolder } from '../../cross-process.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
-
-/** Live system Clock instance — mirrors the discipline in
- *  `cross-process-lock.ts`. The acquire/reclaim sleep loops are
- *  fundamentally wall-time properties: cross-process safety can't
- *  share a virtual test clock, and the PID/start-time liveness probes
- *  measure real time. Pinning sleeps to live clock keeps the lock
- *  primitive's semantics coherent under `TestClock`-driven callers. */
-const LIVE_CLOCK: Clock.Clock = {
-	currentTimeMillis: Effect.sync(() => Date.now()),
-	currentTimeMillisUnsafe: () => Date.now(),
-	currentTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
-	currentTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
-	sleep: (duration: Duration.Duration) =>
-		Effect.callback<void>((resume) => {
-			const ms = Duration.toMillis(duration);
-			if (ms <= 0) {
-				resume(Effect.void);
-				return;
-			}
-			const handle = setTimeout(() => resume(Effect.void), ms);
-			return Effect.sync(() => clearTimeout(handle));
-		}),
-};
-
-const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-	Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);
 
 // -----------------------------------------------------------------------------
 // Errors

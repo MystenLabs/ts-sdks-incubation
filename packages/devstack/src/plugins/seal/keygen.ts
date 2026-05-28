@@ -144,23 +144,6 @@ export const parseSealKeygenOutput = (
 };
 
 // ---------------------------------------------------------------------------
-// Hex decode — minimal helper
-// ---------------------------------------------------------------------------
-
-/** Decode hex → bytes. Tolerates leading `0x`; fails on odd length. */
-export const decodeHex = (hex: string): Uint8Array => {
-	const stripped = hex.startsWith('0x') ? hex.slice(2) : hex;
-	if (stripped.length % 2 !== 0) {
-		throw new Error('decodeHex: odd-length hex string');
-	}
-	const out = new Uint8Array(stripped.length / 2);
-	for (let i = 0; i < out.length; i++) {
-		out[i] = parseInt(stripped.slice(i * 2, i * 2 + 2), 16);
-	}
-	return out;
-};
-
-// ---------------------------------------------------------------------------
 // Real keygen one-shot
 // ---------------------------------------------------------------------------
 

@@ -19,6 +19,11 @@ export interface AppNameResolutionOptions {
 	readonly defaultName?: string;
 }
 
+/** Normalize a candidate name: trim, strip an `@scope/` prefix, then
+ *  strip any leading non-alphanumeric run. Returns `undefined` for empty
+ *  or whitespace-only input, and for inputs that normalize to an empty
+ *  string. Shared by every inferred-name resolver so explicit / env /
+ *  package paths all reject the same junk. */
 const usefulName = (value: string | undefined): string | undefined => {
 	const trimmed = value?.trim();
 	if (trimmed === undefined || trimmed.length === 0) return undefined;
@@ -49,27 +54,45 @@ export const inferPackageNameFromCwd = (cwd: string = process.cwd()): string | u
 	return undefined;
 };
 
-export const resolveStackName = (options: StackNameResolutionOptions = {}): string => {
-	const explicit = usefulName(options.explicit);
+/** Shared `explicit > env > package > default` precedence ladder for the
+ *  app/stack name resolvers. Each input is fed through `usefulName` so a
+ *  whitespace-only or junk-prefixed value falls through to the next rung
+ *  rather than poisoning identity. `envKey` is the environment variable
+ *  whose value (under `env`) supplies the env rung. */
+const resolveInferredName = (params: {
+	readonly explicit: string | undefined;
+	readonly envKey: string;
+	readonly env: Readonly<Record<string, string | undefined>> | undefined;
+	readonly cwd: string | undefined;
+	readonly defaultName: string;
+}): string => {
+	const explicit = usefulName(params.explicit);
 	if (explicit !== undefined) return explicit;
-	const env = options.env ?? process.env;
-	const fromEnv = usefulName(env.DEVSTACK_STACK);
+	const env = params.env ?? process.env;
+	const fromEnv = usefulName(env[params.envKey]);
 	if (fromEnv !== undefined) return fromEnv;
-	const fromPackage = inferPackageNameFromCwd(options.cwd);
+	const fromPackage = inferPackageNameFromCwd(params.cwd);
 	if (fromPackage !== undefined) return fromPackage;
-	return options.defaultName ?? DEFAULT_STACK_NAME;
+	return params.defaultName;
 };
 
-export const resolveAppName = (options: AppNameResolutionOptions = {}): string => {
-	const explicit = usefulName(options.explicit);
-	if (explicit !== undefined) return explicit;
-	const env = options.env ?? process.env;
-	const fromEnv = usefulName(env.DEVSTACK_APP);
-	if (fromEnv !== undefined) return fromEnv;
-	const fromPackage = inferPackageNameFromCwd(options.cwd);
-	if (fromPackage !== undefined) return fromPackage;
-	return options.defaultName ?? 'devstack';
-};
+export const resolveStackName = (options: StackNameResolutionOptions = {}): string =>
+	resolveInferredName({
+		explicit: options.explicit,
+		envKey: 'DEVSTACK_STACK',
+		env: options.env,
+		cwd: options.cwd,
+		defaultName: options.defaultName ?? DEFAULT_STACK_NAME,
+	});
+
+export const resolveAppName = (options: AppNameResolutionOptions = {}): string =>
+	resolveInferredName({
+		explicit: options.explicit,
+		envKey: 'DEVSTACK_APP',
+		env: options.env,
+		cwd: options.cwd,
+		defaultName: options.defaultName ?? 'devstack',
+	});
 
 export const ACTIVE_DEVSTACK_NETWORK_NAMES = ['localnet', 'testnet', 'mainnet', 'devnet'] as const;
 

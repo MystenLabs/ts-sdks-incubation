@@ -3,12 +3,11 @@
 // Architecture § "What's collapsed" — three different locks in the
 // old codebase consolidate to ONE lock primitive. The on-disk
 // implementation (`stack.lock` via O_EXCL + PID/start-time liveness)
-// lives at `./cross-process/stack-lock.ts` as a free function; THIS
-// module wraps it in a Layer satisfying the typed
-// `CrossProcessLock` service so consumers (state-store, cache,
-// etc.) yield ONE name and let wiring decide
-// whether they get the OS-advisory implementation or the in-process
-// semaphore.
+// lives at `./stack-lock.ts` as a free function; THIS module wraps
+// it in a Layer satisfying the typed `CrossProcessLock` service so
+// consumers (state-store, cache, etc.) yield ONE name and let
+// wiring decide whether they get the OS-advisory implementation or
+// the in-process semaphore.
 //
 // The state-store uses this for read-modify-write critical sections
 // where two processes might race to mutate the JSON. The lock is
@@ -16,60 +15,15 @@
 // release immediately. Long lifetimes (whole-stack lifecycle) belong
 // to a separate lease, not this lock.
 
-import { Clock, Context, Duration, Effect, Layer, Semaphore } from 'effect';
+import { Context, Effect, Layer, Semaphore } from 'effect';
 
+import { StackPathsService } from '../paths.ts';
+import { underLiveClock } from './live-clock.ts';
 import {
 	acquireStackLock,
 	type StackLockIoError,
 	type StackLockTimeoutError,
-} from './cross-process/stack-lock.ts';
-import { StackPathsService } from './paths.ts';
-
-/** Live system Clock instance. The lock layers provide this for the
- *  on-disk acquire/release infrastructure so the lock's wall-time
- *  invariants (acquire-timeout, exponential backoff, the holder-liveness
- *  PID/start-time probes) hold even when the surrounding fiber has a
- *  `TestClock` installed.
- *
- *  Cross-process safety is fundamentally a wall-time property — two
- *  OS processes can't share a virtual test clock, and the holder
- *  liveness probes that reclaim stale locks measure real PID
- *  start-time. The user body intentionally does NOT get this clock
- *  pin: see `underLiveClock` for scope. Body code running under
- *  TestClock that virtualizes sleeps inside the critical section is a
- *  test-only concern (no real peers contend in a single-process test
- *  using TestClock); the SHORT-CRITICAL-SECTION discipline from the
- *  architecture is enforced by code review rather than by forcing
- *  wall time on every body. */
-const LIVE_CLOCK: Clock.Clock = {
-	currentTimeMillis: Effect.sync(() => Date.now()),
-	currentTimeMillisUnsafe: () => Date.now(),
-	currentTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
-	currentTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
-	sleep: (duration: Duration.Duration) =>
-		Effect.callback<void>((resume) => {
-			const ms = Duration.toMillis(duration);
-			if (ms <= 0) {
-				resume(Effect.void);
-				return;
-			}
-			const handle = setTimeout(() => resume(Effect.void), ms);
-			return Effect.sync(() => clearTimeout(handle));
-		}),
-};
-
-/** Provide the live Clock for `effect`, overriding any inherited
- *  `TestClock` for the duration of the wrapped effect.
- *
- *  SCOPE: applied ONLY to the acquire/release infrastructure (OS-advisory
- *  lock retry backoff, holder-liveness PID probes). The user-supplied
- *  body Effect inherits the caller's clock so tests can `TestClock.adjust`
- *  past `Effect.sleep` calls inside lock-protected sections without
- *  being forced to wall time. The lock primitives themselves still get
- *  the live clock for the wall-time invariants documented on
- *  `LIVE_CLOCK`. */
-const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-	Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);
+} from './stack-lock.ts';
 
 /**
  * Cross-process exclusive lock. `withLock(effect)` runs `effect`

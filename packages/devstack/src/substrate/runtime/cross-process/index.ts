@@ -13,7 +13,11 @@
 // three.
 
 export * from './liveness.ts';
+export * from './lock.ts';
 export * from './stack-lock.ts';
 export * from './roster.ts';
 export * from './snapshot-reservation.ts';
 export * from './command-channel/index.ts';
+// `live-clock.ts` and `self-pid.ts` are internal substrate primitives;
+// import directly from their modules — they are intentionally not
+// re-exported here.

@@ -71,10 +71,10 @@ const ALLOWED_FILES: ReadonlyArray<{
 			'Documented L1-adjacent Sui Move build helper (ARCHITECTURE.md §Substrate name-blindness).',
 	},
 	{
-		// Barrel re-export of sui-execute + host-tree-tar (network-host, not
-		// plugin-host).
-		path: 'src/substrate/runtime/index.ts',
-		reason: 'Barrel re-export of sui-execute (exception) + host-tree-tar (network-host).',
+		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
+		path: 'src/substrate/runtime/sui-ledger/object-ref.ts',
+		reason:
+			'Documented L1-adjacent Sui ledger-object-ref helper (shared by deepbook + future on-chain seeders; ARCHITECTURE.md §Substrate name-blindness).',
 	},
 	{
 		// network-host fields (`hostname`, `host:port`); NOT the

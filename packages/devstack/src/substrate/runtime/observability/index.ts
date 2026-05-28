@@ -21,3 +21,4 @@ export * from './pretty-error.ts';
 export * from './subprocess-capture.ts';
 export * from './process-lines.ts';
 export * from './ignore-with-log.ts';
+export * from './output-truncate.ts';

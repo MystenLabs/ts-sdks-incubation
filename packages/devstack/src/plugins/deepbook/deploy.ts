@@ -30,6 +30,7 @@ import {
 	formatExecutedFailure,
 	isSuiStaleObjectVersionError,
 } from '../../substrate/runtime/sui-execute/index.ts';
+import { currentLedgerObjectRef } from '../../substrate/runtime/sui-ledger/object-ref.ts';
 import { probeManyLenient } from '../../substrate/runtime/probes.ts';
 import {
 	makeSpacedRetrySchedule,
@@ -587,77 +588,6 @@ export const selectOwnedCoinsForBalance = async (
 	}
 
 	return { selected, selectedBalance };
-};
-
-// SuiGrpcClient-only surface — `ledgerService.getObject` is NOT on
-// `ClientWithCoreApi['core']` (which has `getObject`/`getObjects` with
-// a simpler include-options shape). The gRPC-level call returns the
-// BCS-encoded object envelope with version + digest in the readMask
-// projection, which the `core` surface hides. See @mysten/sui
-// `docs/clients/grpc.md` § Ledger service. The `as unknown` is the
-// sanctioned escape hatch — `ClientWithCoreApi` doesn't structurally
-// overlap with the `{ledgerService}` shape so a direct cast fails.
-const ledgerObjectClient = (
-	sdk: SuiSdkShim,
-): {
-	readonly ledgerService: {
-		readonly getObject: (args: {
-			readonly objectId: string;
-			readonly readMask?: { readonly paths: ReadonlyArray<string> };
-		}) => Promise<{
-			readonly response?: {
-				readonly object?: {
-					readonly objectId?: string;
-					readonly version?: string | number | bigint;
-					readonly digest?: string;
-				};
-			};
-		}>;
-	};
-} =>
-	sdk.client as unknown as {
-		readonly ledgerService: {
-			readonly getObject: (args: {
-				readonly objectId: string;
-				readonly readMask?: { readonly paths: ReadonlyArray<string> };
-			}) => Promise<{
-				readonly response?: {
-					readonly object?: {
-						readonly objectId?: string;
-						readonly version?: string | number | bigint;
-						readonly digest?: string;
-					};
-				};
-			}>;
-		};
-	};
-
-const currentLedgerObjectRef = async (
-	sdk: SuiSdkShim,
-	objectId: string,
-): Promise<{
-	readonly objectId: string;
-	readonly version: string | number;
-	readonly digest: string;
-}> => {
-	const raw = await ledgerObjectClient(sdk).ledgerService.getObject({
-		objectId,
-		readMask: { paths: ['object_id', 'version', 'digest'] },
-	});
-	const object = raw.response?.object;
-	if (
-		object === undefined ||
-		object.objectId === undefined ||
-		object.version === undefined ||
-		object.digest === undefined
-	) {
-		throw new Error(`object '${objectId}' was not found while resolving a DeepBook seed input.`);
-	}
-	return {
-		objectId: object.objectId,
-		version: object.version.toString(),
-		digest: object.digest,
-	};
 };
 
 export const setExplicitSeedGasPayment = async (

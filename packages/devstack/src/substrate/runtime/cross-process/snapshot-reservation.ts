@@ -28,6 +28,7 @@ import { Data, Effect, Scope } from 'effect';
 import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 import { checkHolderLiveness } from './liveness.ts';
+import { selfPid } from './self-pid.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -66,7 +67,7 @@ const parseReservation = (raw: string): SnapshotReservation | null => {
 
 const ownReservation = (startTime: number | null): SnapshotReservation => ({
 	version: 1,
-	creatorPid: process.pid,
+	creatorPid: selfPid(),
 	creatorStartTime: startTime,
 	createdAt: Date.now(),
 	hostname: nodeHostname(),

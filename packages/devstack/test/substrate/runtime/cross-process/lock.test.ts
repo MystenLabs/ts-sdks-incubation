@@ -16,10 +16,10 @@ import {
 	CrossProcessLock,
 	layerCrossProcessLockFlock,
 	layerCrossProcessLockInProcess,
-} from '../../../src/substrate/runtime/cross-process-lock.ts';
-import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
-import { StackPathsService } from '../../../src/substrate/runtime/paths.ts';
-import type { StackPaths } from '../../../src/substrate/runtime/paths.ts';
+} from '../../../../src/substrate/runtime/cross-process/lock.ts';
+import { ownHolder } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
+import { StackPathsService } from '../../../../src/substrate/runtime/paths.ts';
+import type { StackPaths } from '../../../../src/substrate/runtime/paths.ts';
 
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'cross-process-lock-test-'));
 
@@ -47,7 +47,7 @@ describe('layerCrossProcessLockInProcess', () => {
 	it.effect('withLock serializes concurrent fibers (same process)', () =>
 		// Serialization assertion is Deferred-gated (not sleep-gated) so the
 		// test is deterministic and independent of clock semantics: the lock
-		// body inherits the caller's clock per `cross-process-lock.ts`'s
+		// body inherits the caller's clock per `cross-process/lock.ts`'s
 		// `underLiveClock` narrowing, so any wall-time sleep inside the body
 		// would park indefinitely under `it.effect`'s TestClock and miss the
 		// serialization signal.

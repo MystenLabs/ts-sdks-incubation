@@ -21,6 +21,7 @@ import { Effect, Option, Ref, Stream, Scope } from 'effect';
 
 import type { EngineCommand } from '../../../events.ts';
 import { decodeUnknownSync } from '../../runtime-decode.ts';
+import { selfPid } from '../self-pid.ts';
 import { type CommandChannelError, appendRecord, ensureFile, tailRecords } from './file-channel.ts';
 import {
 	COMMAND_CHANNEL_PROTOCOL_VERSION,
@@ -97,7 +98,7 @@ export const makeCommandChannelPublisher = (
 		yield* ensureFile(paths.commandsFile);
 		yield* ensureFile(paths.eventsFile);
 		const state: PublisherState = { seq: yield* Ref.make(0) };
-		const pid = process.pid;
+		const pid = selfPid();
 		const host = nodeHostname();
 
 		const publish = (

@@ -48,6 +48,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, FileSystem, Schema } from 'effect';
 
+import { selfPid } from './cross-process/self-pid.ts';
 import { AtomicWriteFailed } from './errors.ts';
 
 /** 8-hex tempfile suffix. `crypto.randomUUID()` is collision-safe under
@@ -79,7 +80,7 @@ export const atomicWriteFile = (
 		const fs = yield* FileSystem.FileSystem;
 		const mode = options.mode ?? 0o600;
 		const parentMode = options.parentMode ?? 0o700;
-		const tmp = `${path}.tmp.${process.pid}.${tempSuffix()}`;
+		const tmp = `${path}.tmp.${selfPid()}.${tempSuffix()}`;
 		// 1. Ensure parent. recursive: true is idempotent under
 		//    concurrent callers — `mkdir -p` semantics.
 		yield* fs
@@ -151,7 +152,7 @@ const writeAndFsyncTempSync = (
 	mode: number,
 	parentMode: number,
 ): string => {
-	const tmp = `${finalPath}.tmp.${process.pid}.${tempSuffix()}`;
+	const tmp = `${finalPath}.tmp.${selfPid()}.${tempSuffix()}`;
 	mkdirSync(dirname(finalPath), { recursive: true, mode: parentMode });
 	// O_EXCL via `flag: 'wx'`. writeFileSync handles open + write +
 	// close in one call but does NOT fsync; do it manually so we

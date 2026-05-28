@@ -1,4 +1,5 @@
-// Subnet-prefix derivation — ONE canonical implementation.
+// Subnet-prefix derivation + EnsureNetworkSpec stamping — ONE canonical
+// implementation.
 //
 // Architecture § "What's collapsed" — multiple plugins (walrus, seal)
 // need a deterministic Docker `/24` subnet keyed off their stack
@@ -23,6 +24,8 @@
 //
 // The returned prefix is the `a.b.c` of an IPv4 `/24` — callers
 // append `.0/24` for the subnet and `.1` for the gateway.
+
+import type { EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
 
 /**
  * Derive a deterministic `/24` IPv4 subnet prefix from an identity
@@ -67,4 +70,24 @@ export const subnetSpec = (
 ): { readonly subnet: string; readonly gateway: string } => ({
 	subnet: `${prefix}.0/24`,
 	gateway: `${prefix}.1`,
+});
+
+/**
+ * Stamp the `{subnet, gateway}` pair derived from `subnetPrefix` onto
+ * any `EnsureNetworkSpec`-shaped value. Both walrus and seal need the
+ * same fold:
+ *
+ *   {...spec, ...subnetSpec(prefix)}
+ *
+ * to widen a substrate-blind network spec into one that carries the
+ * plugin's deterministic `/24` addressing — folded here so the literal
+ * `Required<Pick<…, 'subnet' | 'gateway'>>` widening type lives in
+ * ONE place.
+ */
+export const withSubnetAddressing = <Spec extends EnsureNetworkSpec>(
+	spec: Spec,
+	subnetPrefix: string,
+): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
+	...spec,
+	...subnetSpec(subnetPrefix),
 });

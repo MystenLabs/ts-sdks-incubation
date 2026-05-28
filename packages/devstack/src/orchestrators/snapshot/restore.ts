@@ -19,7 +19,7 @@
 // Bracketed-atomic — Tension 9 decision: one outer atomic swap, not
 // per-phase idempotency.
 
-import { randomUUID } from 'node:crypto';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
 import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
@@ -341,7 +341,7 @@ const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): S
 };
 
 const mintRestoreStagingTag = (): string =>
-	`devstack-snapshot:restore-${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+	`devstack-snapshot:restore-${mintRandomSuffix(24)}`;
 
 const mapMarkerIoError =
 	(phase: RestorePhaseError['phase']) =>

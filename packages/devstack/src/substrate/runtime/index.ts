@@ -1,44 +1,89 @@
-// Substrate runtime — barrel.
+// Substrate runtime — narrow barrel.
 //
 // L0 Effect-v4 Layer implementations. Types are declared in `substrate/`;
-// this directory wires the runtime.
+// this directory wires the runtime. This barrel re-exports ONLY the
+// symbols consumed externally (CLI wirings + integration tests) so
+// downstream callers don't drag the full L0 dependency cone — node:fs
+// sync APIs, sui-execute primitives, host-tree-tar streamers, etc. —
+// into their import graphs just to reach for one supervisor handle.
+//
+// The discipline:
+//   - In-tree devstack code (plugins, orchestrators, substrate-internal
+//     wiring) imports DIRECTLY from the concrete module
+//     (`./projection/state-ref.ts`, `./supervisor/index.ts`, etc.).
+//   - The CLI surface (and the few integration tests that need a fully
+//     composed runtime) imports through THIS barrel.
+//
+// When adding a new external symbol: add an explicit re-export below
+// AND a comment line identifying the consumer surface. Do NOT switch
+// back to `export *` — the previous shape inflated downstream bundles
+// with sui-execute and host-tree-tar transitives.
 
-export * from './atomic-write.ts';
-export * from './config-validation.ts';
-export * from './mode-errors.ts';
-export * from './passthrough-or-wrap.ts';
-export * from './cross-process-lock.ts';
-export * from './errors.ts';
-export * from './http-probe.ts';
-export * from './managed-container.ts';
-export * from './probes.ts';
-export * from './host-tree-tar/index.ts';
-export * from './paths.ts';
-export * from './process-supervisor.ts';
-export * from './retry-policy.ts';
-export * from './routed-url.ts';
-export * from './runtime-decode.ts';
-export * from './scoped-http-server.ts';
-export * from './stage-and-swap/index.ts';
-export * from './sui-execute/index.ts';
+// ---------------------------------------------------------------------
+// Projection — `makeProjectionRef`, persistence helpers.
+// Consumers: CLI wirings (apply, snapshot, up, main), boot-config-impl.
+// ---------------------------------------------------------------------
+export { makeProjectionRef } from './projection/state-ref.ts';
+export {
+	persistProjectionChanges,
+	readProjectionSnapshot,
+	writeProjectionSnapshot,
+} from './projection/persisted.ts';
 
-export * from './state-store/index.ts';
-export * from './cache/index.ts';
-export * from './strategy-registry/index.ts';
-export * from './artifact-publisher/index.ts';
-export * from './scoped-ref-map/index.ts';
-export * from './port-broker/index.ts';
-export * from './lease-broker/index.ts';
-export * from './capability-sinks/index.ts';
-export * from './post-acquire-tasks.ts';
+// ---------------------------------------------------------------------
+// Cross-process command channel — publisher / subscriber + path helpers.
+// Consumers: CLI wirings (apply, snapshot, up).
+// ---------------------------------------------------------------------
+export {
+	commandChannelPaths,
+	makeCommandChannelPublisher,
+	makeCommandChannelSubscriber,
+} from './cross-process/command-channel/index.ts';
 
-// Lifecycle + supervisor + cross-process protocol.
-export * from './lifecycle/index.ts';
-export * from './cross-process/index.ts';
-export * from './supervisor/index.ts';
+// ---------------------------------------------------------------------
+// Cross-process roster — claim/release/heartbeat (`up` wires these
+// directly because the supervisor protocol leaves them under the CLI's
+// scope, not the supervisor service's).
+// Consumers: CLI wirings (up).
+// ---------------------------------------------------------------------
+export { claim, heartbeatFiber, release } from './cross-process/roster.ts';
 
-// L0 observability primitives + manifest emitter + renderer
-// projection ref.
-export * from './observability/index.ts';
-export * from './manifest/index.ts';
-export * from './projection/index.ts';
+// ---------------------------------------------------------------------
+// Supervisor — handle/types and `startSupervisor` / `supervise` entry
+// points.
+// Consumers: CLI wirings (up, apply, snapshot, build-verb-layers,
+// config-loader, identity, main) + supervisor tests + integration tests.
+// ---------------------------------------------------------------------
+export { startSupervisor, supervise } from './supervisor/index.ts';
+export type {
+	SupervisedStack,
+	SupervisorCommandHandler,
+	SupervisorHandle,
+} from './supervisor/index.ts';
+
+// ---------------------------------------------------------------------
+// Capability sinks — service + default Layer + contribution types.
+// Consumers: capability-sinks tests, supervisor tests, router
+// integration tests, run-stack API test.
+// ---------------------------------------------------------------------
+export {
+	CapabilitySinksService,
+	layerCapabilitySinks,
+	layerCapabilitySinksDefault,
+} from './capability-sinks/index.ts';
+export type {
+	AnyContribution,
+	CapabilitySink,
+	ContributionKind,
+	HarvestContext,
+	OrchestratorSinks,
+} from './capability-sinks/index.ts';
+
+// ---------------------------------------------------------------------
+// Observability — Logger service + default Layers, plus the formatter
+// registry the capability-sinks layer composes with.
+// Consumers: supervisor tests, capability-sinks tests.
+// ---------------------------------------------------------------------
+export { FormatterRegistryService } from './observability/index.ts';
+export { Logger, layerLogger } from './observability/logger.ts';
+export { layerRedactor } from './observability/redaction.ts';

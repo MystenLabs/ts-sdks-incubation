@@ -64,16 +64,12 @@ import { makeConfigLoader } from './config-loader.ts';
 import { isEngineCommand } from './engine-command.ts';
 import { findCliSupervisorLiveError, identityValueFor, type ResolvedIdentity } from './identity.ts';
 import { buildVerbLayers } from './build-verb-layers.ts';
+import { provideFileSystem } from './provide-file-system.ts';
 
 const rosterPathsFor = (stackRoot: string) => ({
 	stackLockFile: resolvePath(stackRoot, 'stack.lock'),
 	rosterFile: resolvePath(stackRoot, 'roster.json'),
 });
-
-const provideFileSystem = <A, E>(
-	fs: FileSystem.FileSystem,
-	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
 // -----------------------------------------------------------------------------
 // Supervisor command handler — snapshot/wipe/prune injected dispatch

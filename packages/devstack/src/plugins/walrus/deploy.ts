@@ -48,6 +48,7 @@ import {
 	makeSpacedRetrySchedule,
 } from '../../substrate/runtime/retry-policy.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
+import { labelledExcerpt } from '../../substrate/runtime/observability/index.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
@@ -162,17 +163,6 @@ const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, Walrus
 			),
 	});
 
-const excerpt = (label: string, value: string): string => {
-	const trimmed = value.trim();
-	if (trimmed.length === 0) return '';
-	const max = 2_400;
-	const body =
-		trimmed.length > max
-			? `${trimmed.slice(0, 1_100)}...<truncated ${trimmed.length - 2_200} chars>...${trimmed.slice(-1_100)}`
-			: trimmed;
-	return ` ${label}=${JSON.stringify(body)}`;
-};
-
 const deployExitDetail = (
 	result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
 	inputs: DeployInputs,
@@ -185,8 +175,8 @@ const deployExitDetail = (
 		`walrus deploy exited with code ${result.exitCode}.` +
 		missingCommandHint +
 		` outputDir=${inputs.outputDirHostPath} committee=${inputs.committeeSize} shards=${inputs.shards}` +
-		excerpt('stdout', result.stdout) +
-		excerpt('stderr', result.stderr)
+		labelledExcerpt('stdout', result.stdout) +
+		labelledExcerpt('stderr', result.stderr)
 	);
 };
 

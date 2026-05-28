@@ -43,7 +43,6 @@
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
-import { randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 
 import type {
@@ -52,6 +51,7 @@ import type {
 	CodegenEmitContext,
 } from '../../contracts/codegenable.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
 
 import {
@@ -223,7 +223,7 @@ const runEmitCycleLocked = (
 		// against the same shared `outputDir`; a collision there
 		// would corrupt a half-built tree, not just clash an
 		// operator-visible name.
-		const cycleId = randomUUID().replaceAll('-', '').slice(0, 16);
+		const cycleId = mintRandomSuffix(16);
 		const stagingPaths = paths.withRoot(`${paths.outputDir}.staging.${cycleId}`);
 
 		return yield* stageAndSwap({

@@ -40,6 +40,7 @@ import {
 	statusLabel,
 } from './display-derivation.ts';
 import { mountFailed } from './errors.ts';
+import { eventAt } from './event-time.ts';
 
 // -----------------------------------------------------------------------------
 // Line shape — pure formatters
@@ -110,46 +111,6 @@ export const makePlainRenderer = (): Renderer => ({
 // -----------------------------------------------------------------------------
 
 const isoTimestamp = (at: number): string => new Date(at || Date.now()).toISOString();
-
-// Exhaustive: see `event-log.ts:eventAt` for the rationale. Every
-// `EngineEvent` variant carries an authoritative timestamp either at
-// the top level or nested; the closed switch enforces that the renderer
-// never falls back to dequeue-time when a producer-time is available.
-const eventAt = (event: EngineEvent): number => {
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		case 'lifecycle.statusChanged':
-		case 'lifecycle.phaseSet':
-		case 'log.appended':
-		case 'projection.updated':
-		case 'endpoint.released':
-		case 'strategy.registered':
-		case 'strategy.unregistered':
-		case 'manifest.flushed':
-		case 'codegen.emitted':
-		case 'restart.requested':
-		case 'restart.completed':
-		case 'shutdown.escalated':
-		case 'snapshot.captureStarted':
-		case 'snapshot.captureProgress':
-		case 'snapshot.captureSkipped':
-		case 'snapshot.captureFailed':
-		case 'snapshot.captured':
-		case 'snapshot.restored':
-		case 'engine.orchestrator.dispatchFailed':
-			return event.at;
-		default: {
-			const _exhaustive: never = event;
-			void _exhaustive;
-			return Date.now();
-		}
-	}
-};
 
 const levelForEvent = (event: EngineEvent): 'INFO' | 'WARN' | 'ERROR' => {
 	switch (event.tag) {

@@ -44,14 +44,17 @@ import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
+import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
-import { deriveSubnetPrefix, subnetSpec } from '../../substrate/runtime/subnet-broker.ts';
+import {
+	deriveSubnetPrefix,
+	withSubnetAddressing,
+} from '../../substrate/runtime/subnet-broker.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
@@ -121,13 +124,12 @@ export interface WalrusNetworkIdentity {
 export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string =>
 	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.walrusName}`, 64);
 
-export const walrusNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
-	spec: Spec,
-	subnetPrefix: string,
-): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
-	...spec,
-	...subnetSpec(subnetPrefix),
-});
+/** Back-compat re-export — `withSubnetAddressing` is the canonical
+ *  cross-plugin helper (substrate-side). Kept here so existing walrus
+ *  callers can keep importing through the walrus barrel.
+ *  @deprecated Use `withSubnetAddressing` from
+ *  `substrate/runtime/subnet-broker.ts` directly. */
+export const walrusNetworkCreateSpec = withSubnetAddressing;
 
 const withWalrusNetworkAddressing = (
 	runtime: ContainerRuntime,
@@ -137,7 +139,7 @@ const withWalrusNetworkAddressing = (
 	...runtime,
 	ensureNetwork: (spec) =>
 		runtime.ensureNetwork(
-			spec.name === walrusNetworkName ? walrusNetworkCreateSpec(spec, subnetPrefix) : spec,
+			spec.name === walrusNetworkName ? withSubnetAddressing(spec, subnetPrefix) : spec,
 		),
 });
 

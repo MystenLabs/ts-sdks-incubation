@@ -17,11 +17,7 @@ import {
 	type ResolvedIdentity,
 } from './identity.ts';
 import { buildDirectSnapshotLayers } from './build-verb-layers.ts';
-
-const provideFileSystem = <A, E>(
-	fs: FileSystem.FileSystem,
-	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+import { provideFileSystem } from './provide-file-system.ts';
 
 export const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown> =>
 	Effect.gen(function* () {

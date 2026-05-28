@@ -20,6 +20,7 @@ import { hostname as nodeHostname } from 'node:os';
 import { Context, Data, Effect, Layer } from 'effect';
 
 import type { RosterHolder } from '../../cross-process.ts';
+import { selfPid } from './self-pid.ts';
 
 /** Tagged failure when the start-time probe itself errored unexpectedly
  *  (timeout, missing utility, etc.). Distinguished from "pid absent",
@@ -76,7 +77,7 @@ export const processStartTime = (pid: number, cache?: LivenessCache): number | n
 	// `ps -o lstart` with a 2s timeout, compounding into seconds of
 	// latency that exhaust the claim budget (review fix phase 22f
 	// reclaim-stress reproducer caught it).
-	if (pid === process.pid) {
+	if (pid === selfPid()) {
 		if (ownStartTimeCache === UNSET) {
 			ownStartTimeCache = probeStartTimeUncached(pid);
 		}
@@ -193,7 +194,7 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
  *  a real stamp would mismatch the recorded `0` and the process could
  *  no longer recognize its own entry. */
 export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolder => {
-	const pid = process.pid;
+	const pid = selfPid();
 	const startTime = processStartTime(pid);
 	return {
 		pid,

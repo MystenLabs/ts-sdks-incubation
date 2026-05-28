@@ -20,7 +20,7 @@
 // each plugin's scope so the registry entry is reaped on plugin
 // teardown.
 
-import { randomUUID } from 'node:crypto';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
 import { Context, Effect, FileSystem, Layer, Ref, Schema, Scope } from 'effect';
 
@@ -215,7 +215,7 @@ export class SnapshotOrchestratorService extends Context.Service<
  *  8-hex random suffix from `crypto.randomUUID()` (STYLE_GUIDE §17) so
  *  concurrent saves don't silently overwrite. */
 const mintId = (prefix = 'snap'): string =>
-	`${prefix}-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+	`${prefix}-${Date.now()}-${mintRandomSuffix(8)}`;
 
 const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> => {
 	const raw = mintId();
@@ -233,7 +233,7 @@ const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> =>
 
 const mintSnapshotName = (): string => {
 	const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').slice(0, 15);
-	return `manual-${stamp}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+	return `manual-${stamp}-${mintRandomSuffix(8)}`;
 };
 
 const validateSnapshotId = (

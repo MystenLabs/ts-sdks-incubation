@@ -49,13 +49,9 @@ import {
 	type ResolvedIdentity,
 } from './identity.ts';
 import { buildDirectSnapshotLayers, buildVerbLayers } from './build-verb-layers.ts';
+import { provideFileSystem } from './provide-file-system.ts';
 
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
-
-const provideFileSystem = <A, E>(
-	fs: FileSystem.FileSystem,
-	effect: Effect.Effect<A, E, FileSystem.FileSystem>,
-): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 
 const mintCliSnapshotId = (): string =>
 	`snap-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;

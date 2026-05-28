@@ -6,6 +6,7 @@ import {
 	sectionColor,
 	type ColorToken,
 } from './display-derivation.ts';
+import { eventAt } from './event-time.ts';
 
 export interface EventLogLine {
 	readonly id: string;
@@ -199,58 +200,6 @@ export const appendEventLogLines = (
 	if (real.length === 0) return lines;
 	const appended = lines.length === 0 ? real : [...lines, ...real];
 	return appended.length > MAX_EVENT_LOG_LINES ? appended.slice(-MAX_EVENT_LOG_LINES) : appended;
-};
-
-/**
- * Project the event's authoritative timestamp. Every variant of
- * `EngineEvent` carries one — either a top-level `at` or a
- * domain-specific nested field — so the switch is exhaustive and the
- * compiler enforces that a new event variant must declare where its
- * timestamp lives. Removing the previous `Date.now()` fallback was
- * load-bearing: under back-pressure (e.g. a queued event flushed late
- * from the dispatcher) the dequeue-time fallback would back-date or
- * forward-date the log entry, producing apparent event-time reordering
- * in the rendered log. Pinning the time to the producer's record
- * preserves the ordering tests assert.
- */
-const eventAt = (event: EngineEvent): number => {
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		case 'lifecycle.statusChanged':
-		case 'lifecycle.phaseSet':
-		case 'log.appended':
-		case 'projection.updated':
-		case 'endpoint.released':
-		case 'strategy.registered':
-		case 'strategy.unregistered':
-		case 'manifest.flushed':
-		case 'codegen.emitted':
-		case 'restart.requested':
-		case 'restart.completed':
-		case 'shutdown.escalated':
-		case 'snapshot.captureStarted':
-		case 'snapshot.captureProgress':
-		case 'snapshot.captureSkipped':
-		case 'snapshot.captureFailed':
-		case 'snapshot.captured':
-		case 'snapshot.restored':
-		case 'engine.orchestrator.dispatchFailed':
-			return event.at;
-		default: {
-			const _exhaustive: never = event;
-			void _exhaustive;
-			// Unreachable — the union is closed and every tag is covered
-			// above. The fallthrough still returns `Date.now()` so a
-			// runtime that somehow receives an unknown shape doesn't
-			// throw inside the event-log path.
-			return Date.now();
-		}
-	}
 };
 
 const time = (at: number): string => new Date(at).toISOString().slice(11, 19);

@@ -18,6 +18,7 @@ import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { hostBindMountOwner } from '../../../substrate/runtime/host-bind-mount-owner.ts';
+import { tailOutput } from '../../../substrate/runtime/observability/index.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
@@ -95,8 +96,6 @@ export const sealSourcePublishLockPath = (ref: string): string =>
 
 const sourceImageRef = { digest: SEAL_SOURCE_FETCH_IMAGE, tag: SEAL_SOURCE_FETCH_IMAGE } as const;
 
-const outputTail = (value: string): string => value.slice(-1000);
-
 export const resolveSealSource = (
 	runtime: ContainerRuntime,
 	inputs: SealSourceFetchInputs,
@@ -167,8 +166,8 @@ export const resolveSealSource = (
 								`seal move-source: git clone exited ${result.exitCode}. ` +
 								`Set SEAL_MOVE_SOURCE_OVERRIDE=<path> or pass movePackagePath to bypass.`,
 							exitCode: result.exitCode,
-							stdout: outputTail(result.stdout),
-							stderr: outputTail(result.stderr),
+							stdout: tailOutput(result.stdout),
+							stderr: tailOutput(result.stderr),
 						}),
 					);
 				}

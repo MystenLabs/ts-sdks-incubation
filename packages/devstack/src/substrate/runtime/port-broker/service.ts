@@ -51,6 +51,7 @@ import { Context, Effect, Layer, Ref, Schema, Scope } from 'effect';
 import { RosterHolderSchema, type RosterHolder } from '../../cross-process.ts';
 import { atomicWriteFileExclusiveSync } from '../atomic-write.ts';
 import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
+import { selfPid } from '../cross-process/self-pid.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
@@ -264,7 +265,7 @@ const acquirePortReservation = (
 ): Effect.Effect<ReservationAttempt> =>
 	Effect.gen(function* () {
 		const path = portReservationPath(root, port);
-		const ownerId = `${process.pid}-${randomUUID().slice(0, 8)}`;
+		const ownerId = `${selfPid()}-${randomUUID().slice(0, 8)}`;
 		const holder: RosterHolder = ownHolder();
 		const doc: PortReservationDoc = {
 			version: PORT_RESERVATION_VERSION,

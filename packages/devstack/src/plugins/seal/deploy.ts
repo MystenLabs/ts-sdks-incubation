@@ -30,10 +30,11 @@ import {
 	type BuildOutput,
 	type MoveBuildError,
 } from '../../substrate/runtime/sui-move-build/index.ts';
+import { fromHex } from '@mysten/sui/utils';
+
 import type { AccountValue } from '../account/index.ts';
 import type { ClientWithCoreApi } from '../sui/index.ts';
 import { sealError, type SealError } from './errors.ts';
-import { decodeHex } from './keygen.ts';
 import { SealSpans } from './spans.ts';
 
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
@@ -360,7 +361,7 @@ export const buildRegisterKeyServerMoveCall = <TArgument>(
 	inputs: RegisterKeyServerTransactionInputs,
 	signerAddress: string,
 ): void => {
-	const pkBytes = decodeHex(inputs.publicKeyHex);
+	const pkBytes = fromHex(inputs.publicKeyHex);
 	tx.setSender(signerAddress);
 	tx.moveCall({
 		target: `${inputs.sealPackageId}::key_server::create_and_transfer_v2_independent_server`,

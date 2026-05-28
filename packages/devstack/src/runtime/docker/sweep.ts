@@ -58,6 +58,24 @@ import {
 	wrapGeneric,
 } from './wrap.ts';
 
+const removeManagedContainer = (
+	name: string,
+): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
+			Effect.mapError(wrapGeneric('docker.rm')),
+		);
+		if (res.exitCode === 0) return true;
+		if (isNoSuchContainerStderr(res.stderr)) return false;
+		return yield* Effect.fail(
+			new ContainerRemoveFailed({
+				name,
+				stderr: res.stderr,
+				exitCode: res.exitCode,
+			}),
+		);
+	});
+
 /** Sweep orphan containers matching the partial label tuple. Returns
  *  the number of containers removed.
  *
@@ -109,42 +127,24 @@ export const sweepOrphans = (
 		// Sweep — best-effort per container. Individual rm failures
 		// don't poison the whole sweep, but they DO need operator
 		// visibility: a broken docker socket would otherwise silently
-		// turn every entry into the same generic "sweep rm spawn failed"
-		// stderr. Surface the cause via `logWarning` so the supervisor's
-		// cascade and structured-log consumers can investigate.
+		// swallow every entry. Surface the cause via `logWarning` so the
+		// supervisor's cascade and structured-log consumers can investigate.
+		// We reuse `removeManagedContainer` so the idempotent "no such
+		// container" path (a container reaped between list+rm) doesn't
+		// trip the warning logger.
 		let removed = 0;
 		for (const c of containers) {
 			if (claimNames.has(c.name)) continue;
-			const res = yield* dockerRunOk('rm', ['-f', c.name]).pipe(
+			const didRemove = yield* removeManagedContainer(c.name).pipe(
 				Effect.tapCause((cause) =>
-					Effect.logWarning('sweep: docker rm -f spawn failed', { name: c.name, cause }),
+					Effect.logWarning('sweep: docker rm -f failed', { name: c.name, cause }),
 				),
-				Effect.catch(() =>
-					Effect.succeed({ exitCode: 1, stdout: '', stderr: 'sweep rm spawn failed' }),
-				),
+				Effect.catch(() => Effect.succeed(false)),
 			);
-			if (res.exitCode === 0) removed += 1;
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.sweep'));
-
-const removeManagedContainer = (
-	name: string,
-): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
-	Effect.gen(function* () {
-		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.rm')),
-		);
-		if (res.exitCode === 0) return true;
-		if (isNoSuchContainerStderr(res.stderr)) return false;
-		return yield* Effect.fail(
-			new ContainerRemoveFailed({
-				name,
-				stderr: res.stderr,
-				exitCode: res.exitCode,
-			}),
-		);
-	});
 
 /** Explicit teardown. Unlike `sweepOrphans`, this does not consult the
  *  claim ledger; wipe/restore are intentional destructive operations. */

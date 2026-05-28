@@ -17,11 +17,7 @@
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
-import {
-	decodeHex,
-	parseSealKeygenOutput,
-	redactMasterKey,
-} from '../../../src/plugins/seal/keygen.ts';
+import { parseSealKeygenOutput, redactMasterKey } from '../../../src/plugins/seal/keygen.ts';
 
 // Fixture widths match what the real seal-cli prints (observed
 // against seal-v0.6.6 binary): master = 32 bytes scalar, public =
@@ -222,19 +218,5 @@ describe('redactMasterKey — invariant #16 (master-key NEVER in error surfaces)
 	});
 });
 
-describe('decodeHex — minimal hex → bytes helper', () => {
-	it('tolerates leading 0x', () => {
-		expect(decodeHex('0xff00').length).toBe(2);
-		expect(decodeHex('0xff00')[0]).toBe(0xff);
-		expect(decodeHex('0xff00')[1]).toBe(0x00);
-	});
-
-	it('round-trips known-good hex', () => {
-		const bytes = decodeHex('deadbeef');
-		expect([...bytes]).toEqual([0xde, 0xad, 0xbe, 0xef]);
-	});
-
-	it('throws on odd-length input', () => {
-		expect(() => decodeHex('abc')).toThrow(/odd-length/i);
-	});
-});
+// Note: hex decoding now goes through `@mysten/sui/utils.fromHex`
+// (see seal/deploy.ts), so there's no local helper to test here.

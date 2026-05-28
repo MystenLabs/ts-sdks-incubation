@@ -25,6 +25,7 @@ import { atomicWriteJsonSync } from '../atomic-write.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
 import { versionedDocSchema } from '../../versioned-doc-schema.ts';
+import { selfPid } from './self-pid.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
 	isPidAlive,
@@ -248,7 +249,7 @@ export const claim = (
  */
 export const heartbeat = (
 	paths: RosterPaths,
-	ownPid: number = process.pid,
+	ownPid: number = selfPid(),
 ): Effect.Effect<void, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,
@@ -282,7 +283,7 @@ export const heartbeat = (
  */
 export const release = (
 	paths: RosterPaths,
-	ownPid: number = process.pid,
+	ownPid: number = selfPid(),
 ): Effect.Effect<ReleaseResult, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,
@@ -311,7 +312,7 @@ export const release = (
 export const setIntent = (
 	paths: RosterPaths,
 	intent: 'normal' | 'snapshot',
-	ownPid: number = process.pid,
+	ownPid: number = selfPid(),
 ): Effect.Effect<void, RosterError | import('./stack-lock.ts').StackLockError> =>
 	withStackLock(
 		paths,
@@ -497,7 +498,7 @@ export const addClaim = (
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
 			const live = yield* liveContainerClaims(current);
-			const ownPid = process.pid;
+			const ownPid = selfPid();
 			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
 			if (
@@ -547,7 +548,7 @@ export const removeClaim = (
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
 			const live = yield* liveContainerClaims(current);
-			const ownPid = process.pid;
+			const ownPid = selfPid();
 			const ownHost = nodeHostname();
 			const remaining = live.claims.filter(
 				(c) => !(c.containerKey === containerKey && c.pid === ownPid && c.hostname === ownHost),
