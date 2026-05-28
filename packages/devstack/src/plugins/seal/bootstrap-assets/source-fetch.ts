@@ -17,7 +17,9 @@
 import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
+import { hostBindMountOwner } from '../../../substrate/runtime/host-bind-mount-owner.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
 import { SealSpans } from '../spans.ts';
 
@@ -67,9 +69,6 @@ export interface SealSourceFetchInputs<Ref extends string = string> {
 	readonly subdir: typeof DEFAULT_SEAL_MOVE_SUBDIR;
 }
 
-const env = (): Record<string, string | undefined> =>
-	(globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
-
 const processId = (): string =>
 	String((globalThis as { process?: { pid?: number } }).process?.pid ?? 'unknown');
 
@@ -87,7 +86,7 @@ const nextScratchPaths = (
 };
 
 export const sealSourceCacheDir = (ref: string): string => {
-	const home = env().HOME ?? '/tmp';
+	const home = readEnv('HOME') ?? '/tmp';
 	return `${home}/.cache/devstack/seal-src/${encodeURIComponent(ref)}`;
 };
 
@@ -98,18 +97,6 @@ const sourceImageRef = { digest: SEAL_SOURCE_FETCH_IMAGE, tag: SEAL_SOURCE_FETCH
 
 const outputTail = (value: string): string => value.slice(-1000);
 
-const hostCloneUser = (): string | undefined => {
-	const process = (
-		globalThis as {
-			process?: { getuid?: () => number; getgid?: () => number };
-		}
-	).process;
-	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
-		return undefined;
-	}
-	return `${process.getuid()}:${process.getgid()}`;
-};
-
 export const resolveSealSource = (
 	runtime: ContainerRuntime,
 	inputs: SealSourceFetchInputs,
@@ -119,7 +106,7 @@ export const resolveSealSource = (
 	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
-		const override = env().SEAL_MOVE_SOURCE_OVERRIDE;
+		const override = readEnv('SEAL_MOVE_SOURCE_OVERRIDE');
 		if (override && override.length > 0) {
 			return {
 				repo: inputs.repo,
@@ -154,7 +141,7 @@ export const resolveSealSource = (
 						.runOneShot({
 							image: sourceImageRef,
 							entrypoint: 'git',
-							user: hostCloneUser(),
+							user: hostBindMountOwner(),
 							argv: ['clone', '--depth', '1', '--branch', inputs.ref, inputs.repo, '/out'],
 							mounts: [{ source: stagingPath, target: '/out' }],
 							timeoutMillis: SEAL_SOURCE_FETCH_TIMEOUT_MS,

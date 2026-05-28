@@ -28,6 +28,7 @@ import { Effect, type Scope } from 'effect';
 import { fileURLToPath } from 'node:url';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
 import { WalrusSpans } from '../spans.ts';
 
@@ -79,8 +80,7 @@ export const resolveCargoImage = (
 	inputs: WalrusCargoImageInputs,
 ): Effect.Effect<WalrusCargoImageResolved, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-			.process?.env?.[WALRUS_CARGO_IMAGE_OVERRIDE_ENV];
+		const override = readEnv(WALRUS_CARGO_IMAGE_OVERRIDE_ENV);
 		if (override && override.length > 0) {
 			// Trust-the-tag path. The digest is opaque (substrate's
 			// content-addressed cache will re-resolve via `docker inspect`

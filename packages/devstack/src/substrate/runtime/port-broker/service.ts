@@ -54,6 +54,7 @@ import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { versionedDocSchema } from '../versioned-doc-schema.ts';
 
 // ----------------------------------------------------------------------
 // Public shape
@@ -163,8 +164,7 @@ type State = ReadonlyMap<number, Holder>;
 
 const PORT_RESERVATION_VERSION = 1 as const;
 
-const PortReservationDocSchema = Schema.Struct({
-	version: Schema.Literal(PORT_RESERVATION_VERSION),
+const PortReservationDocSchema = versionedDocSchema(PORT_RESERVATION_VERSION, {
 	port: Schema.Number,
 	owner: Schema.String,
 	ownerId: Schema.String,

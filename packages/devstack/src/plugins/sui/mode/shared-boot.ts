@@ -31,7 +31,7 @@ import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
 import { suiConfigError, suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../stringify-cause.ts';
+import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';

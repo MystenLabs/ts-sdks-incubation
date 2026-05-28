@@ -25,7 +25,7 @@ import type {
 	ChainProbeSchema,
 } from '../../contracts/chain-probe.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
-import { stringifyCause } from './stringify-cause.ts';
+import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
 
 /**
  * Sui's chain-key shape — discriminated so the probe can dispatch

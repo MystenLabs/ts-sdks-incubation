@@ -25,6 +25,7 @@ import type {
 	ContainerRuntime,
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
 import { SealSpans } from '../spans.ts';
 import { DEFAULT_SEAL_REPO, DEFAULT_SEAL_VERSION } from './source-fetch.ts';
@@ -67,8 +68,7 @@ export const resolveSealCargoImage = (
 	inputs: SealCargoImageInputs,
 ): Effect.Effect<ImageRef, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-			.process?.env?.SEAL_CARGO_IMAGE_OVERRIDE;
+		const override = readEnv('SEAL_CARGO_IMAGE_OVERRIDE');
 		if (override && override.length > 0) {
 			// Trust-the-tag path. Compose the resolved shape from the
 			// pinned tag — the digest is opaque (substrate's

@@ -40,7 +40,7 @@ import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../stringify-cause.ts';
+import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';

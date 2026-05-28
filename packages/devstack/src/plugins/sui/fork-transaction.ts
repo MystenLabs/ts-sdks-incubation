@@ -9,7 +9,7 @@ import {
 import { normalizeSuiAddress } from '@mysten/sui/utils';
 
 import { suiPluginError, type SuiPluginError } from './errors.ts';
-import { stringifyCause } from './stringify-cause.ts';
+import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
 
 export const FORK_IMPERSONATION_GAS_BUDGET = 1_000_000_000n;
 export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;

@@ -35,6 +35,7 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
@@ -238,13 +239,12 @@ export const startStorageNodes = (
 							// secondary attach gives docker DNS for the sui
 							// network. The adapter treats [0] as primary.
 							networkAttach: [spec.walrusNetworkName, spec.suiNetworkName],
-							// `host-gateway` resolves `host.docker.internal` to
-							// the host's loopback inside the container — Docker
-							// Desktop wires this automatically on macOS/Windows
-							// but native Linux Docker requires the explicit
-							// `--add-host` flag. Storage nodes dial sui's
-							// host-bound RPC + faucet via this hostname.
-							extraHosts: { 'host.docker.internal': 'host-gateway' },
+							// Storage nodes dial sui's host-bound RPC + faucet via
+							// `host.docker.internal`. See
+							// substrate/runtime/host-gateway.ts for the platform
+							// rationale (Docker Desktop auto-wires; native Linux
+							// Docker requires the explicit `--add-host`).
+							extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
 							mounts: [
 								{
 									// Mount the stack root and point the entrypoint at

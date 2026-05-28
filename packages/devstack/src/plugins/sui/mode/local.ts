@@ -68,7 +68,7 @@ import {
 	suiCliImageBuildContext,
 } from '../../../substrate/runtime/sui-move-build/index.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
-import { stringifyCause } from '../stringify-cause.ts';
+import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
 import {

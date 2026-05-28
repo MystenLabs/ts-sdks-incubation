@@ -25,7 +25,7 @@ import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
-import { stringifyCause } from '../stringify-cause.ts';
+import { stringifyCause } from '../../../substrate/runtime/stringify-cause.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SeedManifestMismatchError, type SuiPluginError } from '../errors.ts';

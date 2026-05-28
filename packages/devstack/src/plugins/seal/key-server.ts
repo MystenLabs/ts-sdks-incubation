@@ -53,6 +53,8 @@ import {
 	waitForProbe,
 } from '../../substrate/runtime/probes.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
+import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
 import { sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
@@ -87,9 +89,7 @@ export const CONTAINER_ENV: Readonly<Record<string, string>> = {
 	RUST_LOG: 'info',
 };
 
-export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
-	'host.docker.internal': 'host-gateway',
-};
+export { HOST_GATEWAY_EXTRA_HOSTS };
 
 export const buildSealNetworkName = (app: string, stack: string, sealName: string): string =>
 	`devstack-${app}-${stack}-seal-${sealName}-net`;
@@ -101,19 +101,12 @@ export interface SealNetworkIdentity {
 }
 
 /** Seal's key-server network gets a deterministic /24 so repeated
- *  local runs do not consume Docker's default bridge address pools. */
-export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string => {
-	const key = `${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`;
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < key.length; i += 1) {
-		hash ^= key.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	const bucket = hash % (64 * 256);
-	const secondOctet = 128 + Math.floor(bucket / 256);
-	const thirdOctet = bucket % 256;
-	return `10.${secondOctet}.${thirdOctet}`;
-};
+ *  local runs do not consume Docker's default bridge address pools.
+ *  Seal claims the `10.128.*` – `10.191.*` band; see
+ *  substrate/runtime/subnet-broker.ts for the algorithm and band
+ *  coordination with walrus. */
+export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string =>
+	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`, 128);
 
 export const sealNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
 	spec: Spec,

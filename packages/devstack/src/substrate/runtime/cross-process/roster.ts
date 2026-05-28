@@ -24,6 +24,7 @@ import {
 import { atomicWriteJsonSync } from '../atomic-write.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
+import { versionedDocSchema } from '../versioned-doc-schema.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
 	checkHolderLiveness,
@@ -390,8 +391,7 @@ const ContainerClaimSchema = Schema.Struct({
 	claimedAt: Schema.Number,
 });
 
-const ContainerClaimDocumentSchema = Schema.Struct({
-	version: Schema.Literal(1),
+const ContainerClaimDocumentSchema = versionedDocSchema(1, {
 	claims: Schema.Array(ContainerClaimSchema),
 });
 

@@ -40,11 +40,14 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import { hostBindMountOwner } from '../../substrate/runtime/host-bind-mount-owner.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
 import { probeManyLenient } from '../../substrate/runtime/probes.ts';
 import {
 	DEPLOY_BIND_SOURCE_RETRY_PROFILE,
 	makeSpacedRetrySchedule,
 } from '../../substrate/runtime/retry-policy.ts';
+import { stringifyCause } from '../../substrate/runtime/stringify-cause.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
@@ -153,18 +156,6 @@ const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, Walrus
 			),
 	});
 
-const hostBindMountOwner = (): string | undefined => {
-	const process = (
-		globalThis as {
-			process?: { getuid?: () => number; getgid?: () => number };
-		}
-	).process;
-	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
-		return undefined;
-	}
-	return `${process.getuid()}:${process.getgid()}`;
-};
-
 const excerpt = (label: string, value: string): string => {
 	const trimmed = value.trim();
 	if (trimmed.length === 0) return '';
@@ -200,16 +191,6 @@ const isBindSourceMissing = (result: {
 	result.exitCode === 125 &&
 	/bind source path does not exist/i.test(result.stderr) &&
 	/invalid mount config/i.test(result.stderr);
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};
 
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
@@ -325,9 +306,9 @@ export const runDeployOneShot = (
 					network: inputs.suiNetworkName,
 					// Same `host-gateway` rationale as storage-nodes.ts —
 					// deploy one-shot dials sui's host-bound RPC + faucet via
-					// `host.docker.internal`. Native Linux Docker needs the
-					// explicit mapping; Docker Desktop is a no-op.
-					extraHosts: { 'host.docker.internal': 'host-gateway' },
+					// `host.docker.internal`. See substrate/runtime/host-gateway.ts
+					// for the platform rationale.
+					extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
 					timeoutMillis: DEPLOY_TIMEOUT_MS,
 				})
 				.pipe(

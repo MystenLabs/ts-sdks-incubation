@@ -51,6 +51,7 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
@@ -114,19 +115,11 @@ export interface WalrusNetworkIdentity {
 /** Walrus deploy records storage-node listening IPs under this /24.
  *  Docker network create requests the matching subnet explicitly, with
  *  the prefix derived from the Walrus network identity so parallel
- *  stacks don't all claim the same Docker IPAM range. */
-export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string => {
-	const key = `${identity.app}\0${identity.stack}\0${identity.walrusName}`;
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < key.length; i += 1) {
-		hash ^= key.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	const bucket = hash % (64 * 256);
-	const secondOctet = 64 + Math.floor(bucket / 256);
-	const thirdOctet = bucket % 256;
-	return `10.${secondOctet}.${thirdOctet}`;
-};
+ *  stacks don't all claim the same Docker IPAM range. Walrus claims
+ *  the `10.64.*` – `10.127.*` band; see substrate/runtime/subnet-broker.ts
+ *  for the algorithm and band coordination with seal. */
+export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string =>
+	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.walrusName}`, 64);
 
 export const walrusNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
 	spec: Spec,

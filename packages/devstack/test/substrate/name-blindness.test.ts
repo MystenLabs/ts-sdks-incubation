@@ -101,6 +101,13 @@ const ALLOWED_FILES: ReadonlyArray<{
 		reason: 'bind-interface host parameter, not host-service plugin.',
 	},
 	{
+		// `HOST_GATEWAY_EXTRA_HOSTS` exposes Docker's `host.docker.internal`
+		// → `host-gateway` token — refers to the container-runtime
+		// host-gateway concept, NOT the host-service plugin.
+		path: 'src/substrate/runtime/host-gateway.ts',
+		reason: 'Docker host.docker.internal/host-gateway token, not host-service plugin.',
+	},
+	{
 		// `host: 'server.address'` is the OTEL semantic convention
 		// constant, not the host-service plugin name.
 		path: 'src/substrate/runtime/observability/spans.ts',
