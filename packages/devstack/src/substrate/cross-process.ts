@@ -21,11 +21,22 @@ import { versionedDocSchema } from './versioned-doc-schema.ts';
 export type HolderIntent = 'normal' | 'snapshot';
 
 /** One holder entry in `roster.json`. PID + startTime liveness check
- *  is the industry-standard pattern referenced in the synthesis. */
+ *  is the industry-standard pattern referenced in the synthesis.
+ *
+ *  `startTime` is `number | null` — `null` means "the platform could
+ *  not probe a start-time stamp for this process at write time" (an
+ *  exotic platform, or `ps`/`tasklist` failed). Readers MUST treat
+ *  `null` as the conservative branch (see `isOwnEntry` in `roster.ts`
+ *  and `checkHolderLiveness` in `liveness.ts`): on a null recorded
+ *  stamp the start-time comparison is skipped and the (pid, hostname)
+ *  pair carries the identity. Writing `0` for "unknown" was the prior
+ *  shape and caused a false-dead harvest: a later probe yielding a
+ *  real stamp would mismatch the recorded `0`. */
 export interface RosterHolder {
 	readonly pid: number;
-	/** Process start-time, used for PID-reuse-safe liveness. */
-	readonly startTime: number;
+	/** Process start-time, used for PID-reuse-safe liveness. `null`
+	 *  means "unprobable" — see the interface doc above. */
+	readonly startTime: number | null;
 	readonly hostname: string;
 	readonly claimedAt: number;
 	readonly heartbeatAt: number;
@@ -40,7 +51,7 @@ export interface RosterDocument {
 
 export const RosterHolderSchema = Schema.Struct({
 	pid: Schema.Number,
-	startTime: Schema.Number,
+	startTime: Schema.NullOr(Schema.Number),
 	hostname: Schema.String,
 	claimedAt: Schema.Number,
 	heartbeatAt: Schema.Number,
@@ -69,15 +80,32 @@ export const DEFAULT_SWEEP_POLICY: RosterSweepPolicy = {
 
 /** Snapshot reservation file — presence-or-absence semaphore. The
  *  reservation's creator pid is encoded in the JSON body for the
- *  orphan sweep. */
+ *  orphan sweep.
+ *
+ *  `hostname` is carried so the orphan sweep can skip foreign-host
+ *  reservations on shared filesystems (NFS): a peer on host B writing
+ *  the reservation would be falsely declared "dead" by host A's kernel
+ *  probe (`kill(pid, 0)` only meaningful on the local host). The sweep
+ *  treats foreign-host reservations as alive (conservative — matches
+ *  the roster's `trustForeignHosts` policy). */
 export interface SnapshotReservation {
+	readonly version: 1;
 	readonly creatorPid: number;
-	readonly creatorStartTime: number;
+	readonly creatorStartTime: number | null;
 	readonly createdAt: number;
+	readonly hostname: string;
 }
 
-export const SnapshotReservationSchema = Schema.Struct({
+/** Versioned schema — routed through `versionedDocSchema` so a v2
+ *  migration can add a literal-tagged `Schema.Union` at one call site
+ *  rather than hand-rolling a discriminator. `creatorStartTime` mirrors
+ *  `RosterHolderSchema.startTime` (`NullOr(Number)`): when the creator
+ *  couldn't probe its own startTime, write null and the sweep's
+ *  liveness check short-circuits to "alive" rather than evicting on a
+ *  literal `0` mismatch. */
+export const SnapshotReservationSchema = versionedDocSchema(1, {
 	creatorPid: Schema.Number,
-	creatorStartTime: Schema.Number,
+	creatorStartTime: Schema.NullOr(Schema.Number),
 	createdAt: Schema.Number,
+	hostname: Schema.String,
 });

@@ -274,8 +274,11 @@ const normalizeSnapshotName = (
 };
 
 /** Read this process's canonical startTime stamp for the snapshot
- *  reservation liveness check. */
-const ownStartTime = (): number => ownHolder('snapshot').startTime;
+ *  reservation liveness check. Returns `null` when the kernel-probe
+ *  couldn't determine startTime — matches `RosterHolderSchema.startTime`
+ *  semantics and is honored by the sweep's `checkHolderLiveness`
+ *  null-conservative short-circuit. */
+const ownStartTime = (): number | null => ownHolder('snapshot').startTime;
 
 const normalizeIdentityValue = (value: unknown): unknown => {
 	if (Array.isArray(value)) return value.map(normalizeIdentityValue);

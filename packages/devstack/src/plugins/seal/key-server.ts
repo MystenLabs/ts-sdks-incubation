@@ -37,7 +37,7 @@
 //      this file does NOT re-declare it.
 
 import { Effect, type Scope } from 'effect';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, relative } from 'node:path';
 
 import type {
 	ContainerHandle,
@@ -134,16 +134,18 @@ export interface KeyServerContainerSpec {
 	/** Label tuple — drives the snapshot orchestrator's filter +
 	 *  `inspectByLabels`. */
 	readonly labels: ContainerLabelTuple;
-	/** Mount source on host — the rendered key-server-config.yaml. */
-	readonly configHostPath: string;
-	/** Env-file holding `MASTER_KEY=<hex>`. Mode-bit 0o600 inside
-	 *  0o700 parent. Distilled-doc invariant #2. Bind-mounted (see
-	 *  file header for the missing-envFiles workaround). */
-	readonly masterKeyEnvFileHostPath: string;
 	/** Mount source on host. Docker Desktop can reject freshly-created
 	 *  nested file/leaf-directory bind sources even when a parent mount
 	 *  can see them, so key-server mounts the stack root and points the
-	 *  entrypoint at the config/envfile inside that mount. */
+	 *  entrypoint at the config/envfile inside that mount.
+	 *
+	 *  The rendered config + master-key envfile do not appear as their
+	 *  own fields on this spec — they live under `servicePath` inside
+	 *  `runtimeRootHostPath`. The single host mount publishes both into
+	 *  the container; `configContainerPath` /
+	 *  `masterKeyEnvFileContainerPath` give the entrypoint shell the
+	 *  inside-container locations. The spec-builder asserts the
+	 *  relationship between `servicePath` and `runtimeRootHostPath`. */
 	readonly runtimeRootHostPath: string;
 	readonly configContainerPath: string;
 	readonly masterKeyEnvFileContainerPath: string;
@@ -193,14 +195,36 @@ export interface KeyServerSpecInputs {
  *  encoded here:
  *
  *   - `routedUrl` is the SAME value the on-chain Move call registers.
- *   - `env` is `CONTAINER_ENV` (no MASTER_KEY); `masterKeyEnvFileHostPath`
- *     bind-mount carries the secret.
+ *   - `env` is `CONTAINER_ENV` (no MASTER_KEY); the bind-mounted env-file
+ *     at `<servicePath>/master-key.env` (sourced by the entrypoint shell)
+ *     carries the secret.
  *   - `routing[]` lists the seal-key-server entrypoint; the spec returned has
- *     NO `ports:` field (it's not modelled). */
+ *     NO `ports:` field (it's not modelled).
+ *
+ *  Asserts at spec-build time that the substrate-provided `servicePath`
+ *  lives under the derived `runtimeRootHostPath`. The single host
+ *  mount publishes the entire `runtimeRootHostPath` subtree; if the
+ *  caller ever drifts `servicePath` outside that subtree, the
+ *  rendered config + master-key envfile silently would not reach the
+ *  container — surface that drift here instead. */
 export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContainerSpec => {
-	const masterKeyEnvFileHostPath = `${inputs.servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
-	const configHostPath = `${inputs.servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
 	const runtimeRootHostPath = dirname(dirname(inputs.servicePath));
+	const rel = relative(runtimeRootHostPath, inputs.servicePath);
+	if (rel.length === 0 || rel.startsWith('..') || runtimeRootHostPath === '/') {
+		// `runtimeRootHostPath === '/'` catches the degenerate case
+		// where the `dirname(dirname(...))` walk-up collapses to the
+		// host root (e.g. servicePath shorter than 3 segments) — that
+		// would bind-mount the entire host into the container. Same
+		// family of bug as the walrus deploy-paths walk-up.
+		throw new Error(
+			`buildKeyServerSpec: servicePath (${inputs.servicePath}) must be a descendant of ` +
+				`runtimeRootHostPath (${runtimeRootHostPath}) AND runtimeRootHostPath must not ` +
+				`collapse to '/'. The single bind-mount publishes runtimeRootHostPath into the ` +
+				`container — if servicePath drifts outside it, the rendered config + master-key ` +
+				`envfile would silently not reach the container; if the root collapses to '/', the ` +
+				`bind would publish the host root. Cross-check the substrate's seal servicePath layout.`,
+		);
+	}
 	const serviceDirName = basename(inputs.servicePath);
 	const configContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${KEY_SERVER_CONFIG_BASENAME}`;
 	const masterKeyEnvFileContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${MASTER_KEY_ENVFILE_BASENAME}`;
@@ -209,8 +233,6 @@ export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContai
 		image: inputs.image,
 		containerName: inputs.containerName,
 		labels: inputs.labels,
-		configHostPath,
-		masterKeyEnvFileHostPath,
 		runtimeRootHostPath,
 		configContainerPath,
 		masterKeyEnvFileContainerPath,

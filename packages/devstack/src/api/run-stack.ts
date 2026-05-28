@@ -124,9 +124,11 @@ export interface RunHandle {
 	/** Trigger graceful shutdown: enqueues `shutdown.requested` onto
 	 *  the supervisor's command channel, then awaits the fiber. */
 	readonly stop: Effect.Effect<void, never, never>;
-	/** Resolve when the supervisor fiber exits. Always succeeds — any
-	 *  errors surface via `start`. */
-	readonly awaitShutdown: Effect.Effect<void, never, never>;
+	/** Resolve when the supervisor fiber exits. Succeeds on a clean
+	 *  shutdown; fails with the captured `Cause` if the supervisor died
+	 *  mid-run after boot completed (e.g. a plugin scope finalizer
+	 *  defect). Boot-time failures still surface via `start`. */
+	readonly awaitShutdown: Effect.Effect<void, unknown, never>;
 	/** Tail of typed engine events from the supervisor's hub. The
 	 *  upstream is a `Queue.Dequeue`; consume via `Stream.run...`. */
 	readonly events: Stream.Stream<EngineEvent, never, never>;
@@ -228,6 +230,13 @@ export const runStack = (
 	const eventQueueRef = Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>());
 	const fiberRef = Effect.runSync(Deferred.make<Fiber.Fiber<void, never>>());
 	const startClaim = Effect.runSync(Ref.make(false));
+	// Tee for mid-run defects/failures. `Deferred.fail(bootDeferred, …)`
+	// below is a no-op once `bootDeferred` has succeeded (post-boot), so
+	// without this sibling ref a late scope-finalizer defect would
+	// otherwise leave the supervised fiber exiting `Success(void)` and
+	// `awaitShutdown` resolving clean — the operator would have no
+	// signal. `awaitShutdown` re-raises whatever this ref captured.
+	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
 	const substrate = layerProductionOrchestrators({
 		codegen: {
@@ -302,14 +311,30 @@ export const runStack = (
 	const layered = supervised.pipe(Effect.provide(substrate), Effect.provide(loggerLayer));
 
 	// Convert any uncaught cause into a boot failure if the deferred
-	// hasn't completed. The cause is preserved via the fiber's exit for
-	// `awaitShutdown` consumers that need to inspect it.
+	// hasn't completed. If `bootDeferred` HAS already succeeded then
+	// `Deferred.fail` is a no-op — the cause is a mid-run failure
+	// (e.g. a plugin scope finalizer defect) and would otherwise be
+	// silently dropped: the fiber exits `Success(void)` and
+	// `awaitShutdown` resolves clean. Tee the cause into
+	// `midRunCauseRef` so `awaitShutdown` can re-surface it, AND emit
+	// `Effect.logError(Cause.pretty(cause))` so observability stays
+	// loud regardless of whether anyone awaits. Boot failures (still in
+	// the bootDeferred-pending window) only surface via `start`, not
+	// here — we'd otherwise re-raise them on `awaitShutdown` after
+	// `start` already rejected.
 	const supervisedProgram: Effect.Effect<void, never, never> = layered.pipe(
 		Effect.catchCause((cause) =>
-			Deferred.fail(bootDeferred, toBootError(cause)).pipe(
-				Effect.asVoid,
-				Effect.catch(() => Effect.void),
-			),
+			Effect.gen(function* () {
+				const bootAlreadyCompleted = yield* Deferred.isDone(bootDeferred);
+				yield* Deferred.fail(bootDeferred, toBootError(cause)).pipe(
+					Effect.asVoid,
+					Effect.catch(() => Effect.void),
+				);
+				if (bootAlreadyCompleted) {
+					yield* Ref.set(midRunCauseRef, cause);
+				}
+				yield* Effect.logError(`devstack runStack: supervisor died\n${Cause.pretty(cause)}`);
+			}),
 		),
 	);
 
@@ -350,13 +375,22 @@ export const runStack = (
 		yield* Fiber.await(fiber);
 	});
 
-	const awaitShutdown: Effect.Effect<void, never, never> = Effect.gen(function* () {
+	const awaitShutdown: Effect.Effect<void, unknown, never> = Effect.gen(function* () {
 		const alreadyStarted = yield* Deferred.isDone(fiberRef);
 		if (!alreadyStarted) {
 			return;
 		}
 		const fiber = yield* Deferred.await(fiberRef);
 		yield* Fiber.await(fiber);
+		// Re-surface any mid-run defect/failure captured by the
+		// supervised body's `catchCause` (boot failures are already
+		// surfaced via `start`). Without this re-raise a plugin scope
+		// finalizer defect would silently drop and operators get no
+		// signal — see the comment on `midRunCauseRef` above.
+		const midRunCause = yield* Ref.get(midRunCauseRef);
+		if (midRunCause !== null) {
+			return yield* Effect.failCause(midRunCause);
+		}
 	});
 
 	const events: Stream.Stream<EngineEvent, never, never> = Stream.unwrap(

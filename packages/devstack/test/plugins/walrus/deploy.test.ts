@@ -54,21 +54,29 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 
 const deployInputs = (
 	outputDirHostPath = '/tmp/devstack/stacks/main/walrus/walrus/deploy',
-): DeployInputs => ({
-	walrusName: 'walrus',
-	chainId: chainId('sui:localnet'),
-	contentHash: contentHash('walrus-test'),
-	outputDirHostPath,
-	suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
-	walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
-	committeeSize: 4,
-	shards: 100,
-	epochDuration: '24h',
-	publicHostsCsv: 'a,b,c,d',
-	listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
-	walrusImage: { digest: 'walrus:test' },
-	suiNetworkName: 'devstack-test-sui',
-});
+): DeployInputs => {
+	// Derive `stackRoot` from the canonical `<stackRoot>/walrus/<name>/deploy`
+	// layout — the bind-mount source the deploy one-shot publishes is
+	// `stackRoot` (review fix phase 22a — explicit injection replacing
+	// the previous `dirname(dirname(dirname(...)))` walk-up).
+	const stackRoot = outputDirHostPath.replace(/\/walrus\/[^/]+\/deploy$/u, '');
+	return {
+		walrusName: 'walrus',
+		chainId: chainId('sui:localnet'),
+		contentHash: contentHash('walrus-test'),
+		outputDirHostPath,
+		stackRoot,
+		suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
+		walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
+		committeeSize: 4,
+		shards: 100,
+		epochDuration: '24h',
+		publicHostsCsv: 'a,b,c,d',
+		listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
+		walrusImage: { digest: 'walrus:test' },
+		suiNetworkName: 'devstack-test-sui',
+	};
+};
 
 const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount = 4) => {
 	mkdirSync(dir, { recursive: true });

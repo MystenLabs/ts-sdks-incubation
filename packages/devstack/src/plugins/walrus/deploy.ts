@@ -114,6 +114,12 @@ export interface DeployInputs {
 	 *  name, 'deploy')` equivalent. Persists across teardown
 	 *  (distilled-doc §"What survives teardown"). */
 	readonly outputDirHostPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  bind-mount source is `stackRoot`; `outputDirHostPath` MUST be a
+	 *  descendant. Threaded explicitly to remove the previous
+	 *  `dirname(dirname(dirname(...)))` walk-up footgun in
+	 *  `walrusDeployMountPaths`. */
+	readonly stackRoot: string;
 	readonly suiRpcUrlInNetwork: string;
 	readonly walrusFaucetUrlInNetwork: string;
 	readonly committeeSize: number;
@@ -270,7 +276,11 @@ export const runDeployOneShot = (
 		yield* ensureDeployOutputDir(inputs);
 
 		const outputOwner = hostBindMountOwner();
-		const outputMount = walrusDeployMountPaths(inputs.outputDirHostPath, '/opt/walrus/runtime');
+		const outputMount = walrusDeployMountPaths({
+			stackRoot: inputs.stackRoot,
+			deployOutputDirHostPath: inputs.outputDirHostPath,
+			mountTarget: '/opt/walrus/runtime',
+		});
 		const argv: ReadonlyArray<string> = [
 			'deploy',
 			'--output-dir',

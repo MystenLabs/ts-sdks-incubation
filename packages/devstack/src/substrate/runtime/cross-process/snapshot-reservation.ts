@@ -10,15 +10,18 @@
 //
 // Discipline:
 //   - Acquire is atomic O_EXCL create with a JSON body carrying
-//     `{ creatorPid, creatorStartTime, createdAt }`.
+//     `{ version: 1, creatorPid, creatorStartTime, createdAt, hostname }`.
 //   - Release is `unlink`.
-//   - Orphan sweep: on the next claim, if the body's creator pid is
-//     dead (PID + start-time check), the reservation is unlinked. This
-//     mirrors the roster's stale-PID reclaim.
+//   - Orphan sweep: on the next claim, the body's `hostname` is checked
+//     first. Foreign-host reservations short-circuit as alive (NFS-safe
+//     conservative default — `kill(pid, 0)` is meaningless on a remote
+//     kernel). Same-host reservations fall through to the PID +
+//     start-time check, which mirrors the roster's stale-PID reclaim.
 //   - Acquire DOES NOT retry — snapshot is a one-shot intent; the
 //     caller surfaces the structured error to the user immediately.
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { hostname as nodeHostname } from 'node:os';
 
 import { Data, Effect, Scope } from 'effect';
 
@@ -61,10 +64,12 @@ const parseReservation = (raw: string): SnapshotReservation | null => {
 // Acquire / release
 // -----------------------------------------------------------------------------
 
-const ownReservation = (startTime: number): SnapshotReservation => ({
+const ownReservation = (startTime: number | null): SnapshotReservation => ({
+	version: 1,
 	creatorPid: process.pid,
 	creatorStartTime: startTime,
 	createdAt: Date.now(),
+	hostname: nodeHostname(),
 });
 
 /**
@@ -99,18 +104,28 @@ export const sweepOrphan = (
 			});
 			return { swept: true };
 		}
+		// Foreign-host reservation: NFS-safe — we cannot probe a remote
+		// kernel for pid liveness, so treat the peer as alive (matches
+		// the roster's `trustForeignHosts` policy). Before adding the
+		// `hostname` field we synthesized a holder with hostname='' and
+		// passed ownHost='', which bypassed the foreign-host fast-path
+		// in `checkHolderLiveness` and probed PID/startTime locally — a
+		// live remote process could be declared dead and its reservation
+		// unlinked. The fix is to short-circuit here.
+		const ownHost = nodeHostname();
+		if (reservation.hostname !== ownHost) return { swept: false };
 		// PID-liveness check: synthesize a roster-shaped holder so the
 		// shared liveness predicate applies.
 		const liveness = yield* checkHolderLiveness(
 			{
 				pid: reservation.creatorPid,
 				startTime: reservation.creatorStartTime,
-				hostname: '',
+				hostname: reservation.hostname,
 				claimedAt: reservation.createdAt,
 				heartbeatAt: reservation.createdAt,
 				intent: 'snapshot',
 			},
-			'',
+			ownHost,
 		).pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 		if (liveness === 'alive') return { swept: false };
 		yield* Effect.try({
@@ -134,7 +149,7 @@ export const sweepOrphan = (
  */
 export const acquireReservation = (
 	path: string,
-	startTime: number,
+	startTime: number | null,
 ): Effect.Effect<SnapshotReservation, SnapshotReservationError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({ 'devstack.snapshot-reservation.path': path });

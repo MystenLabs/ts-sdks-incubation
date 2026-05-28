@@ -82,10 +82,14 @@ export type StackLockError = StackLockTimeoutError | StackLockIoError;
 // -----------------------------------------------------------------------------
 
 /** The on-disk body is the same `RosterHolder` shape — re-using the schema
- *  means roster sweep + stack-lock reclaim see the same fields. */
+ *  means roster sweep + stack-lock reclaim see the same fields.
+ *
+ *  `startTime` mirrors `RosterHolderSchema`: `number | null` so an
+ *  unprobable platform's lock body round-trips cleanly through the
+ *  decoder. The shared liveness predicate honors null conservatively. */
 const StackLockBodySchema = Schema.Struct({
 	pid: Schema.Number,
-	startTime: Schema.Number,
+	startTime: Schema.NullOr(Schema.Number),
 	hostname: Schema.String,
 	claimedAt: Schema.Number,
 	heartbeatAt: Schema.Number,

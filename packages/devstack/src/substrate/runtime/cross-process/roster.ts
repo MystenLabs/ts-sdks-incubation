@@ -178,7 +178,13 @@ const isOwnEntry = (
 	ownStartTime: number | null,
 ): boolean => {
 	if (h.pid !== ownPid || h.hostname !== ownHost) return false;
-	if (ownStartTime === null) return true;
+	// Either side null → fall back to (pid, hostname). The roster's
+	// own-entry test must symmetrically accept a null recorded stamp:
+	// the writer's probe failed (exotic platform / transient `ps`
+	// error) but the entry IS ours. Mismatching a probed `ownStartTime`
+	// against a recorded `null` would orphan our own entry — peers
+	// would then harvest it as "dead" on the next sweep.
+	if (ownStartTime === null || h.startTime === null) return true;
 	return h.startTime === ownStartTime;
 };
 

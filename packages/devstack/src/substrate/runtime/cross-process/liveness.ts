@@ -155,16 +155,29 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
 		// pid alive but no stamp probable → conservative: ALIVE
 		// (we have nothing to dispute the recorded startTime with).
 		if (probedStart === null) return 'alive' as const;
+		// Holder recorded a `null` startTime (writer's platform couldn't
+		// probe at the time). The (pid, hostname) pair carries the
+		// identity; same conservative policy as the probedStart-null
+		// branch. Mismatching a real probed stamp against a recorded
+		// `null` would otherwise harvest live holders as "dead".
+		if (holder.startTime === null) return 'alive' as const;
 		return probedStart === holder.startTime ? ('alive' as const) : ('dead' as const);
 	},
 );
 
 /** Build a holder snapshot for THIS process. The intent defaults to
  *  `'normal'`; the snapshot-reservation flow flips it to `'snapshot'`
- *  under the stack lock and back when the reservation releases. */
+ *  under the stack lock and back when the reservation releases.
+ *
+ *  A `null` `startTime` propagates verbatim — readers (`isOwnEntry`
+ *  in `roster.ts`, `checkHolderLiveness` above) honor the null-
+ *  conservative branch. Writing `0` for "unprobable" was the prior
+ *  shape and caused a false-dead harvest: a subsequent probe yielding
+ *  a real stamp would mismatch the recorded `0` and the process could
+ *  no longer recognize its own entry. */
 export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolder => {
 	const pid = process.pid;
-	const startTime = processStartTime(pid) ?? 0;
+	const startTime = processStartTime(pid);
 	return {
 		pid,
 		startTime,

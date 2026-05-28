@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { hostname as nodeHostname } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect, Exit } from 'effect';
@@ -48,9 +49,11 @@ describe('snapshot reservation PID/start-time safety', () => {
 				writeFileSync(
 					path,
 					JSON.stringify({
+						version: 1,
 						creatorPid: process.pid,
 						creatorStartTime: startTime,
 						createdAt: Date.now(),
+						hostname: nodeHostname(),
 					}),
 				);
 
@@ -75,9 +78,11 @@ describe('snapshot reservation PID/start-time safety', () => {
 				writeFileSync(
 					path,
 					JSON.stringify({
+						version: 1,
 						creatorPid: process.pid,
 						creatorStartTime: realStartTime + 1,
 						createdAt: Date.now(),
+						hostname: nodeHostname(),
 					}),
 				);
 

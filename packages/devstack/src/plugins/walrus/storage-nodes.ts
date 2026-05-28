@@ -89,6 +89,12 @@ export interface StorageNodesSpec {
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  walrus bind-mount is computed by `walrusDeployMountPaths` as
+	 *  `<stackRoot> -> <mountTarget>`; the deploy output dir MUST be a
+	 *  descendant. Threaded explicitly to remove the previous
+	 *  `dirname(dirname(dirname(...)))` walk-up footgun. */
+	readonly stackRoot: string;
 	/** Fingerprint of the deploy outputs mounted into each node. */
 	readonly deployConfigHash: string;
 	readonly stopGraceSeconds?: number;
@@ -192,12 +198,29 @@ export const startStorageNodes = (
 		// Fork a parallel stop-scope. Per-node `ensureContainer` finalizers
 		// fire here on outer teardown; closing the parallel scope races
 		// the per-container `docker stop`s instead of summing them.
+		//
+		// Cascade semantics (verified against effect-v4 `Scope.ts`
+		// `fork` docs — "Closing the parent closes the child with the
+		// same exit value"): when ANY `bootOne` fails (e.g. a ready-
+		// probe times out on node i), `Effect.all` interrupts the rest;
+		// the failure propagates up through the encompassing
+		// `Effect.scoped` boundary which closes `outerScope`; that
+		// cascade-closes `nodeStopScope`, running EVERY already-acquired
+		// per-node `docker stop` finalizer in parallel. The probe is
+		// intentionally OUTSIDE `Scope.provide(nodeStopScope)` — its
+		// failures do NOT need their own finalizer attached to the
+		// stop scope; the just-started container's finalizer is already
+		// there from the `ensureNode` acquire that preceded the probe.
 		const outerScope = yield* Effect.scope;
 		const nodeStopScope = yield* Scope.fork(outerScope, 'parallel');
 
 		const stopGraceSeconds = spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS;
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS);
-		const deployMount = walrusDeployMountPaths(spec.deployHostMountPath, '/opt/walrus/runtime');
+		const deployMount = walrusDeployMountPaths({
+			stackRoot: spec.stackRoot,
+			deployOutputDirHostPath: spec.deployHostMountPath,
+			mountTarget: '/opt/walrus/runtime',
+		});
 
 		const indices = Array.from({ length: spec.nodeCount }, (_, i) => i);
 

@@ -293,6 +293,26 @@ export const isRouterLifecyclePruneGroup = (
 const isRouterGroup = isRouterLifecyclePruneGroup;
 const isSharedGroup = isSharedLifecyclePruneGroup;
 
+/** Label-tuple match for the `removeDevstack*` sweepers — router-shared
+ *  resources stamp `{app: ROUTER_SHARED_APP, stack: <profile-name>}`
+ *  (see `traefik-container.ts:ensureNetwork`) and the inventory pass
+ *  buckets them under `routerStackForContainer(container.name)`, so for
+ *  router groups the tuple is `{app: ROUTER_SHARED_APP, stack: group.stack}`.
+ *  For non-router groups it's the bucket's literal `{app, stack}`. The
+ *  branch is structurally identical to the container-removal branch's
+ *  router-specific dispatch via `removeDevstackContainersByKindAndName`,
+ *  so dry-run inventory counts and real-run removal stay in lockstep
+ *  for router resources. Exported so tests can pin the dry-run ↔
+ *  real-run parity without standing up a Docker daemon. */
+export const lifecyclePruneRemovalMatchTuple = (
+	group: Pick<LifecyclePruneGroup, 'app' | 'stack'>,
+): { readonly app: string; readonly stack: string } =>
+	isRouterGroup(group)
+		? { app: ROUTER_SHARED_APP, stack: group.stack }
+		: { app: group.app, stack: group.stack };
+
+const matchTupleForGroup = lifecyclePruneRemovalMatchTuple;
+
 // -----------------------------------------------------------------------------
 // Orchestrator entry points
 // -----------------------------------------------------------------------------
@@ -483,7 +503,7 @@ export const runLifecyclePrune = (
 		const staleNetworkEndpoints: Array<StaleNetworkEndpoint> = [];
 		if (!selection.dryRun && selection.resources.networks) {
 			for (const group of prunableGroups) {
-				const match = { app: group.app, stack: group.stack };
+				const match = matchTupleForGroup(group);
 				const result = yield* removeDevstackNetworksBestEffort(match).pipe(
 					Effect.provide(dockerLayer),
 					Effect.mapError(failPhase('remove-networks')),
@@ -497,7 +517,7 @@ export const runLifecyclePrune = (
 
 		if (!selection.dryRun && selection.resources.volumes) {
 			for (const group of prunableGroups) {
-				const match = { app: group.app, stack: group.stack };
+				const match = matchTupleForGroup(group);
 				volumesRemoved += yield* removeDevstackVolumes(match).pipe(
 					Effect.provide(dockerLayer),
 					Effect.mapError(failPhase('remove-volumes')),
@@ -507,7 +527,7 @@ export const runLifecyclePrune = (
 
 		if (!selection.dryRun && selection.resources.images) {
 			for (const group of prunableGroups) {
-				const match = { app: group.app, stack: group.stack };
+				const match = matchTupleForGroup(group);
 				imagesRemoved += yield* removeDevstackImages(match).pipe(
 					Effect.provide(dockerLayer),
 					Effect.mapError(failPhase('remove-images')),

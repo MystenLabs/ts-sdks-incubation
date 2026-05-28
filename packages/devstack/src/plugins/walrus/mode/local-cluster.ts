@@ -206,6 +206,10 @@ export interface LocalClusterDeps {
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  walrus bind-mount is computed off this; `deployHostMountPath`
+	 *  MUST live under it. */
+	readonly stackRoot: string;
 }
 
 /** Boot the local cluster. Returns the resolved value the plugin
@@ -296,6 +300,7 @@ export const bootLocalCluster = (
 				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}`,
 			),
 			outputDirHostPath: deps.deployHostMountPath,
+			stackRoot: deps.stackRoot,
 			suiRpcUrlInNetwork: deps.suiRpcUrlInNetwork,
 			walrusFaucetUrlInNetwork: deps.walrusFaucetUrlInNetwork,
 			waitForFundsReady: deps.waitForFundsReady,
@@ -330,6 +335,7 @@ export const bootLocalCluster = (
 			walrusNetworkName: deps.walrusNetworkName,
 			suiNetworkName: deps.suiNetworkName,
 			deployHostMountPath: deps.deployHostMountPath,
+			stackRoot: deps.stackRoot,
 			deployConfigHash,
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});

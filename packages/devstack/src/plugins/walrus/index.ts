@@ -253,6 +253,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						// network and reach sui via `host.docker.internal`.
 						suiNetworkName: walrusNetworkName,
 						deployHostMountPath,
+						stackRoot: stackPaths.stackRoot,
 					},
 					mode,
 				);
