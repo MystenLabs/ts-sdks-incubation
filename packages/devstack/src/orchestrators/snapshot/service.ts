@@ -24,7 +24,6 @@ import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
 import { Context, Effect, FileSystem, Layer, Ref, Schema, Scope } from 'effect';
 
-import type { LivenessClassifierDecl } from '../../contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/index.ts';
@@ -61,7 +60,6 @@ import {
 } from './identity-guard.ts';
 import {
 	runPrune,
-	type ClassifierDispatch,
 	type PruneResult,
 	type PrunePhaseError,
 } from './prune.ts';
@@ -134,13 +132,6 @@ export interface SnapshotOrchestrator {
 		},
 	) => Effect.Effect<void, never, Scope.Scope>;
 
-	/** Register a plugin-emitted `LivenessClassifier`. The decl is
-	 *  consumed by `prune()`. Scope-bound. */
-	readonly registerClassifier: (
-		pluginKey: string,
-		decl: LivenessClassifierDecl,
-	) => Effect.Effect<void, never, Scope.Scope>;
-
 	/** Capture a new snapshot. The id MAY be caller-supplied; if
 	 *  omitted, the substrate mints a random suffix to sidestep the
 	 *  concurrent-saves-against-same-id silent overwrite.
@@ -183,12 +174,9 @@ export interface SnapshotOrchestrator {
 		readonly keepCache?: boolean;
 	}) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Prune the snapshot catalog + byproduct images via plugin-
-	 *  contributed classifiers. `classifiers` overrides the registered
-	 *  set; omit to consume registered classifiers. */
-	readonly prune: (args: {
-		readonly classifiers?: ReadonlyArray<ClassifierDispatch>;
-	}) => Effect.Effect<PruneResult, SnapshotOrchestratorError, FileSystem.FileSystem>;
+	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
+	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
+	readonly prune: () => Effect.Effect<PruneResult, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Recover from a snapshot-restore that crashed mid-way through the
 	 *  post-publish Docker handoff. Reads the on-disk pending marker,
@@ -330,11 +318,6 @@ interface RegisteredParticipantEntry {
 	readonly seq: number;
 }
 
-interface RegisteredClassifierEntry {
-	readonly dispatch: ClassifierDispatch;
-	readonly seq: number;
-}
-
 export const layerSnapshotOrchestrator: Layer.Layer<
 	SnapshotOrchestratorService,
 	never,
@@ -346,13 +329,12 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 		const identity = yield* IdentityContext;
 		const runtime: ContainerRuntime = yield* ContainerRuntimeService;
 
-		// Scope-local participant + classifier registries. The supervisor
-		// adds entries from each plugin's acquire scope; finalizers
-		// remove them on scope close. Sequence number protects against
-		// the parallel-registration-same-key race when two stack
-		// instances register concurrently.
+		// Scope-local participant registry. The supervisor adds entries
+		// from each plugin's acquire scope; finalizers remove them on
+		// scope close. Sequence number protects against the parallel-
+		// registration-same-key race when two stack instances register
+		// concurrently.
 		const participantsRef = yield* Ref.make<ReadonlyArray<RegisteredParticipantEntry>>([]);
-		const classifiersRef = yield* Ref.make<ReadonlyArray<RegisteredClassifierEntry>>([]);
 		const seqRef = yield* Ref.make(0);
 
 		const registerParticipant: SnapshotOrchestrator['registerParticipant'] = (
@@ -384,24 +366,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					'snapshot.participant.subtrees': decl.subtrees.length,
 				});
 			}).pipe(Effect.withSpan('orchestrator.snapshot.registerParticipant')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
-
-		const registerClassifier: SnapshotOrchestrator['registerClassifier'] = (pluginKey, decl) =>
-			Effect.gen(function* () {
-				const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
-				const dispatch: ClassifierDispatch = { plugin: pluginKey, decl };
-				const entry: RegisteredClassifierEntry = { dispatch, seq };
-				yield* Ref.update(classifiersRef, (xs) => [...xs, entry]);
-				yield* Effect.addFinalizer(() =>
-					Ref.update(classifiersRef, (xs) => xs.filter((e) => e.seq !== seq)),
-				);
-				yield* Effect.annotateCurrentSpan({
-					'snapshot.classifier.plugin': pluginKey,
-				});
-			}).pipe(Effect.withSpan('orchestrator.snapshot.registerClassifier')) as Effect.Effect<
 				void,
 				never,
 				Scope.Scope
@@ -613,22 +577,17 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				);
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
 
-		const prune: SnapshotOrchestrator['prune'] = ({ classifiers }) =>
-			Effect.gen(function* () {
-				const effectiveClassifiers =
-					classifiers ?? (yield* Ref.get(classifiersRef)).map((e) => e.dispatch);
-				return yield* Effect.scoped(
-					Effect.gen(function* () {
-						yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
-						return yield* runPrune({
-							stackRoot: paths.stackRoot,
-							imageLabelFilter: { app: identity.app, stack: identity.stack },
-							classifiers: effectiveClassifiers,
-							runtime,
-						});
-					}),
-				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
+		const prune: SnapshotOrchestrator['prune'] = () =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+					return yield* runPrune({
+						stackRoot: paths.stackRoot,
+						imageLabelFilter: { app: identity.app, stack: identity.stack },
+						runtime,
+					});
+				}),
+			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
 
 		const recoverPendingRestoreImpl: SnapshotOrchestrator['recoverPendingRestore'] =
 			recoverPendingRestore(paths.stackRoot, runtime).pipe(
@@ -637,7 +596,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 
 		return SnapshotOrchestratorService.of({
 			registerParticipant,
-			registerClassifier,
 			capture,
 			restore,
 			list,

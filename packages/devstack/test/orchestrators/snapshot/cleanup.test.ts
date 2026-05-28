@@ -116,7 +116,6 @@ describe('snapshot cleanup orchestration', () => {
 				const result = yield* runPrune({
 					stackRoot,
 					imageLabelFilter: { app: 'app', stack: 'main' },
-					classifiers: [],
 					runtime: runtimeStub(events),
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 

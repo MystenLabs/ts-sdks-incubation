@@ -47,8 +47,7 @@ are the L5 build-integration entrypoints — `/vitest`, `/vitest/setup`, `/playw
 Root-barrel exports added so plugin authors and embedders can author without reaching into
 package subpaths:
 
-- Contracts: `Renderer`, `RendererError`, `EntrypointDecl`, `NetworkResolver`,
-  `NetworkResolutionError`, `FUNDS_READY_GATE_KEY`, `pluginErrorContributions`,
+- Contracts: `Renderer`, `RendererError`, `EntrypointDecl`, `pluginErrorContributions`,
   `PluginErrorContribution`.
 - Network inference helpers: `parseDevstackNetwork`, `parseDevstackNetworkName`,
   `DevstackNetworkParseError`, `resolveAppName`, `resolveStackName`, `resolveNetwork`,

@@ -114,24 +114,13 @@ export interface SeedManifestMismatchError {
 	readonly hint: string;
 }
 
-/** Raised when the funds-ready gate times out against a real
- *  faucet. Plugin-internal — Sui contributes this strategy and
- *  consumes its own error. */
-export interface SuiFundsReadyError {
-	readonly _tag: 'SuiFundsReadyError';
-	readonly attempts: number;
-	readonly lastBody?: string;
-	readonly hint: string;
-}
-
 /** Union of every error a Sui-plugin caller may encounter. */
 export type SuiError =
 	| SuiPluginError
 	| SuiCliError
 	| SuiConfigError
 	| ForkUnsupportedError
-	| SeedManifestMismatchError
-	| SuiFundsReadyError;
+	| SeedManifestMismatchError;
 
 /** Error tags this plugin contributes — surfaced to the cause
  *  walker via `PluginErrorContribution`. */
@@ -141,5 +130,4 @@ export const SUI_ERROR_TAGS: ReadonlyArray<SuiError['_tag']> = [
 	'SuiConfigError',
 	'ForkUnsupportedError',
 	'SeedManifestMismatchError',
-	'SuiFundsReadyError',
 ] as const;

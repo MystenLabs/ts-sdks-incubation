@@ -13,14 +13,12 @@
 //                              `{ local: …, live: …, fork: … }`
 //                              narrowed to the network's mode.
 //
-// The plugin emits FOUR capability decls:
+// The plugin emits THREE capability decls:
 //
 //   1. `chain-probe:<chainId>` strategy contributor — the
 //      schema-validated read surface (`makeSuiChainProbe`).
-//   2. `gate:funds-ready` strategy contributor — the funds-
-//      transferable gate. No-op on faucet-less networks.
-//   3. Snapshotable — mode-aware container + bind-mount capture.
-//   4. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
+//   2. Snapshotable — mode-aware container + bind-mount capture.
+//   3. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
 //
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
 // local-rpc + live no — the caller fronts their own RPC). They land
@@ -36,7 +34,6 @@ import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import { FUNDS_READY_GATE_KEY } from '../../contracts/network-resolver.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
@@ -48,7 +45,7 @@ import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
-import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
+import { SUI_ERROR_TAGS } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey } from '../faucet/index.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
@@ -166,18 +163,6 @@ const makePluginCapabilities = (
 		autoMounted: true,
 	};
 
-	const fundsReadyContribution: StrategyContributorDecl<
-		typeof FUNDS_READY_GATE_KEY,
-		{
-			readonly waitFundsReady: Effect.Effect<void, SuiPluginError>;
-		}
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: FUNDS_READY_GATE_KEY,
-		strategy: { waitFundsReady: resolved.waitForTransactionsReady.wait },
-		autoMounted: true,
-	};
-
 	const faucetContribution =
 		resolvedRuntime.fundingFaucetStrategy === null
 			? []
@@ -212,7 +197,6 @@ const makePluginCapabilities = (
 		codegen,
 		chainProbeContribution,
 		...faucetContribution,
-		fundsReadyContribution,
 		...localRoutables,
 		...forkRoutables,
 	] as const;
@@ -286,7 +270,6 @@ export type {
 	SuiConfigError,
 	ForkUnsupportedError,
 	SeedManifestMismatchError,
-	SuiFundsReadyError,
 } from './errors.ts';
 export { SUI_ERROR_TAGS } from './errors.ts';
 
@@ -298,11 +281,6 @@ export {
 	type ChainProbeError,
 	type ChainProbeMode,
 } from '../../contracts/chain-probe.ts';
-export {
-	FUNDS_READY_GATE_KEY,
-	type FundsReadyStrategy,
-	type FundsReadyError,
-} from '../../contracts/network-resolver.ts';
 export {
 	FORK_UNSUPPORTED_SURFACES,
 	wrapWithForkGuard,

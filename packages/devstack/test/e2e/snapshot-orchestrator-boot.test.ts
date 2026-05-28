@@ -5,7 +5,6 @@ import { Effect, Exit } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { definePlugin } from '../../src/api/define-plugin.ts';
-import type { LivenessClassifierDecl } from '../../src/contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
 import type {
 	SnapshotCatalogEntry,
@@ -22,17 +21,12 @@ const snapshotDecl: SnapshotableDecl = {
 	missingTolerance: 'fine',
 };
 
-const livenessDecl: LivenessClassifierDecl = {
-	kind: 'liveness-classifier',
-	classify: () => Effect.succeed('alive'),
-};
-
 const snapshotSmokePlugin = definePlugin({
 	id: 'snapshot-smoke',
 	role: 'service' as const,
 	section: 'service',
 	start: () => Effect.succeed({ ready: true as const }),
-	capabilities: [snapshotDecl, livenessDecl] as const,
+	capabilities: [snapshotDecl] as const,
 });
 
 const stack = {
@@ -67,7 +61,6 @@ const hostTreePlugin = definePlugin({
 					network: runtime.chain,
 				}),
 			},
-			livenessDecl,
 		] as const,
 });
 

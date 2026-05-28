@@ -13,8 +13,8 @@
 //     wallet-standard / MVR / known-deployment lookups find the
 //     right published ids.
 //
-// Live mode contributes a `NetworkResolver`, a `ChainProbe`, and a
-// `Codegenable` — but NO managed container, NO `Routable`, and the
+// Live mode contributes a `ChainProbe` and a `Codegenable` — but NO
+// managed container, NO `Routable`, and the
 // build container is forced to the host CLI path (no in-stack
 // build image). The latter is flagged in the distilled-doc Open
 // questions as a candidate to revisit.

@@ -62,7 +62,6 @@ export { runWipe, SNAPSHOTS_DIR_NAME, WipePhaseError, type WipeInputs } from './
 export {
 	PrunePhaseError,
 	runPrune,
-	type ClassifierDispatch,
 	type PruneInputs,
 	type PruneResult,
 } from './prune.ts';

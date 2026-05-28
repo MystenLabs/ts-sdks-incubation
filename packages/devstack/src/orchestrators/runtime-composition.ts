@@ -39,7 +39,6 @@ import {
 	type RouterProfile,
 } from './router/profile.ts';
 import { layerSnapshotOrchestrator, SnapshotOrchestratorService } from './snapshot/index.ts';
-import type { LivenessClassifierDecl } from '../contracts/liveness-classifier.ts';
 import type { ProjectionDecl } from '../contracts/projection.ts';
 import type { RoutableDecl } from '../contracts/routable.ts';
 import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
@@ -349,10 +348,6 @@ export const buildProductionOrchestratorSinks = (
 			orchestratorSink<'snapshotable', SnapshotableDecl>({
 				kind: 'snapshotable',
 				accept: (decl, ctx) => snapshot.registerParticipant(ctx.pluginKey, decl),
-			}),
-			orchestratorSink<'liveness-classifier', LivenessClassifierDecl>({
-				kind: 'liveness-classifier',
-				accept: (decl, ctx) => snapshot.registerClassifier(ctx.pluginKey, decl),
 			}),
 			orchestratorSink<'routable', RoutableDecl>({
 				kind: 'routable',

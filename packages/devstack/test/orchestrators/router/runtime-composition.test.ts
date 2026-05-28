@@ -106,7 +106,6 @@ const operationalEndpointPlugin = definePlugin({
 
 const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 	registerParticipant: () => Effect.void,
-	registerClassifier: () => Effect.void,
 	capture: () => Effect.die('unused snapshot capture'),
 	restore: () => Effect.die('unused snapshot restore'),
 	list: Effect.die('unused snapshot list'),

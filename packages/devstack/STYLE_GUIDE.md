@@ -116,7 +116,7 @@ design-comment reasons, use a trailing `void <name>;` line.
 - Plugin factories: **lowercase** (`sui`, `walrus`, `postgres`, `account`, `localPackage`,
   `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`).
 - Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`,
-  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
+  `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
   `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
@@ -451,8 +451,9 @@ Rules:
   `decodeJsonText(schema, text, { source, mkError })` from `substrate/runtime/runtime-decode.ts`.
   Effect-returning, typed error projection with one parse / decode issue shape.
 - **Plugin config:** `substrate/runtime/config-validation.ts` at factory and boundary sites.
-  `defineConfigError(tag)` keeps plugin-owned error tags. `decodeConfig(...)` /
-  `decodeConfigSync(...)` wrap Effect Schema failures in the same `ConfigIssue` shape.
+  `defineConfigError(tag)` keeps plugin-owned error tags. Scalar `expect*` validators throw the
+  plugin-tagged `ConfigIssue` shape; route Schema decodes through `decodeUnknown(Sync)` in
+  `substrate/runtime/runtime-decode.ts`.
 - **Sync acceptable** (cross-process readers, cache / state reads): `decodeUnknownSync(...)` /
   `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption to a miss or typed error.
 - **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely.

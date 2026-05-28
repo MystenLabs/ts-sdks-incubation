@@ -14,8 +14,8 @@
 //   - The chain-id fetch IS the only readiness sentinel; must have
 //     a bounded timeout.
 //
-// Local-RPC mode contributes a `NetworkResolver` and a `ChainProbe`
-// but does NOT contribute a `Snapshotable`-managed container or a
+// Local-RPC mode contributes a `ChainProbe` and a `Codegenable` but
+// does NOT contribute a `Snapshotable`-managed container or a
 // `Routable` entrypoint (the caller's own router fronts the RPC).
 //
 // Boot sequence:
@@ -32,8 +32,8 @@
 //        - Otherwise, the gate is a trivially-succeeding no-op
 //          (callers that need funds must arrange them externally).
 //   4. Assemble the resolved `SuiClient` and return it alongside the
-//      `ResolvedSuiNetwork` projection (consumed by the codegen +
-//      network-resolver contributions at the barrel).
+//      `ResolvedSuiNetwork` projection (consumed by the codegen
+//      contribution at the barrel).
 
 import { Duration, Effect, type Scope } from 'effect';
 

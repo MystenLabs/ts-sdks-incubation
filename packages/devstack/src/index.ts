@@ -122,11 +122,6 @@ export type {
 } from './contracts/container-runtime.ts';
 export { ContainerRuntimeService } from './substrate/runtime/container-runtime.ts';
 export type {
-	LivenessClassifierDecl,
-	LivenessClassification,
-	LivenessHints,
-} from './contracts/liveness-classifier.ts';
-export type {
 	DispatchId,
 	DevstackRoutableUpstreamRegistry,
 	EntrypointDecl,
@@ -139,11 +134,6 @@ export type {
 export type { ContainerLabelTuple, SnapshotableDecl } from './contracts/snapshotable.ts';
 export type { StrategyContributorDecl, StrategyFor } from './contracts/strategy-contributor.ts';
 export type { Renderer, RendererError } from './contracts/renderer.ts';
-export {
-	FUNDS_READY_GATE_KEY,
-	type NetworkResolver,
-	type NetworkResolutionError,
-} from './contracts/network-resolver.ts';
 
 // --- Lifecycle primitives plugin authors touch --------------------------
 
@@ -211,12 +201,9 @@ export {
 	type SuiConfigError,
 	type ForkUnsupportedError,
 	type SeedManifestMismatchError,
-	type SuiFundsReadyError,
 	type ChainProbe,
 	type ChainProbeError,
 	type ChainProbeMode,
-	type FundsReadyStrategy,
-	type FundsReadyError,
 } from './plugins/sui/index.ts';
 
 // --- Account ------------------------------------------------------------

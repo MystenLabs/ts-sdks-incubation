@@ -44,7 +44,6 @@ export type ContributionKind =
 	| 'codegenable'
 	| 'projection'
 	| 'strategy-contributor'
-	| 'liveness-classifier'
 	| 'error-contribution'
 	| (string & { readonly __extensionKind?: never });
 

@@ -1,5 +1,3 @@
-import { Effect, Schema } from 'effect';
-
 export interface ConfigIssue {
 	readonly field: string;
 	readonly message: string;
@@ -163,35 +161,3 @@ export const expectPattern = <E>(
 	});
 };
 
-export const decodeConfig = <S extends Schema.Decoder<unknown>, E>(
-	schema: S,
-	value: unknown,
-	options: ValidatorOptions<E>,
-): Effect.Effect<S['Type'], E> =>
-	Schema.decodeUnknownEffect(schema)(value).pipe(
-		Effect.mapError((cause) =>
-			options.mkError({
-				field: options.field,
-				message: options.message ?? 'failed to decode config value',
-				...(options.hint === undefined ? {} : { hint: options.hint }),
-				cause,
-			}),
-		),
-	);
-
-export const decodeConfigSync = <S extends Schema.Decoder<unknown>, E>(
-	schema: S,
-	value: unknown,
-	options: ValidatorOptions<E>,
-): S['Type'] => {
-	try {
-		return Schema.decodeUnknownSync(schema)(value);
-	} catch (cause) {
-		return fail(options.mkError, {
-			field: options.field,
-			message: options.message ?? 'failed to decode config value',
-			...(options.hint === undefined ? {} : { hint: options.hint }),
-			cause,
-		});
-	}
-};

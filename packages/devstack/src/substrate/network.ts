@@ -1,6 +1,7 @@
-// Network mode discriminator. Substrate-level shape; the concrete
-// `NetworkResolver` contract that produces these lives under
-// `contracts/network-resolver.ts`.
+// Network mode discriminator. Substrate-level shape consumed by the
+// `IdentityContext` + `DevstackOptions.network` resolution path (no
+// dedicated NetworkResolver contract — identity threads through Context
+// directly).
 
 import type { ChainId } from './brand.ts';
 
@@ -15,8 +16,8 @@ export interface DevstackNetworkModeRegistry {
 
 export type NetworkMode = keyof DevstackNetworkModeRegistry & string;
 
-/** Substrate-level network record. Plugins consult the resolver once
- *  per acquire and get this back. */
+/** Substrate-level network record. Plugins read this from the
+ *  `IdentityContext` projection — one value per acquire. */
 export type NetworkConfig<Mode extends NetworkMode = NetworkMode> = Readonly<
 	{
 		readonly mode: Mode;

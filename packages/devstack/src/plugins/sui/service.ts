@@ -37,7 +37,7 @@ import type { PortBroker } from '../../substrate/runtime/port-broker/index.ts';
 
 /** Bundled result of one acquire — resolved metadata + the user-facing
  *  client. The barrel projects this into the Sui resource value; the
- *  resolved metadata feeds the Codegenable + NetworkResolver contributions. */
+ *  resolved metadata feeds the Codegenable contribution. */
 export interface SuiBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;

@@ -1,9 +1,6 @@
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Schema } from 'effect';
 
 import {
-	decodeConfig,
-	decodeConfigSync,
 	defineConfigError,
 	expectNonEmptyArray,
 	expectNonEmptyString,
@@ -65,69 +62,4 @@ describe('config validation helpers', () => {
 		);
 	});
 
-	it('wraps Effect Schema decode failures in the same config issue shape', () => {
-		const DatabaseConfig = Schema.Struct({
-			name: Schema.String,
-			port: Schema.Number,
-		});
-
-		expect(
-			decodeConfigSync(
-				DatabaseConfig,
-				{ name: 'postgres', port: 5432 },
-				{
-					field: 'postgres',
-					mkError: testConfigError,
-				},
-			),
-		).toEqual({ name: 'postgres', port: 5432 });
-
-		expect(() =>
-			decodeConfigSync(
-				DatabaseConfig,
-				{ name: 'postgres', port: '5432' },
-				{
-					field: 'postgres',
-					mkError: testConfigError,
-				},
-			),
-		).toThrowError(
-			expect.objectContaining({
-				_tag: 'TestConfigError',
-				field: 'postgres',
-				message: 'failed to decode config value',
-			}),
-		);
-	});
-
-	it.effect('decodes Effect Schema values through the typed error channel', () =>
-		Effect.gen(function* () {
-			const DatabaseConfig = Schema.Struct({
-				name: Schema.String,
-				port: Schema.Number,
-			});
-
-			const decoded = yield* decodeConfig(
-				DatabaseConfig,
-				{ name: 'postgres', port: 5432 },
-				{
-					field: 'postgres',
-					mkError: testConfigError,
-				},
-			);
-			expect(decoded).toEqual({ name: 'postgres', port: 5432 });
-
-			const exit = yield* Effect.exit(
-				decodeConfig(
-					DatabaseConfig,
-					{ name: 'postgres', port: '5432' },
-					{
-						field: 'postgres',
-						mkError: testConfigError,
-					},
-				),
-			);
-			expect(Exit.isFailure(exit)).toBe(true);
-		}),
-	);
 });

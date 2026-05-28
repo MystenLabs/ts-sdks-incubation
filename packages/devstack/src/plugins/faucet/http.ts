@@ -29,9 +29,9 @@
 //      faucet.
 //
 // The shared funds-transferable barrier (invariant #5 in the doc)
-// is owned by Sui and surfaced via the `gate:funds-ready` strategy
-// in `contracts/network-resolver.ts`; consumers call it before the
-// FIRST POST. This module is barrier-agnostic: it assumes callers
+// is owned by Sui and surfaced directly via
+// `resolved.waitForTransactionsReady.wait`; consumers call it before
+// the FIRST POST. This module is barrier-agnostic: it assumes callers
 // gate themselves.
 //
 // HTTP transport: `globalThis.fetch` + `AbortSignal.timeout`. Kept
