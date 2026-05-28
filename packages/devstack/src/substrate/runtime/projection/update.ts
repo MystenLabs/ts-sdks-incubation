@@ -325,7 +325,11 @@ export const updateRef = (
 				if (!decoded.ok) {
 					yield* Effect.logWarning(
 						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
-					).pipe(Effect.annotateLogs({ [SpanAttr.errorMessage]: String(decoded.cause) }));
+					).pipe(
+						Effect.annotateLogs({
+							[SpanAttr.errorMessage]: formatDecodeIssue(decoded.cause),
+						}),
+					);
 				}
 			}
 		}
@@ -369,6 +373,24 @@ const tryDecodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
 	} catch (cause) {
 		return { ok: false, cause };
 	}
+};
+
+/**
+ * Render a `Schema.decodeUnknownSync` throw into a human-readable
+ * string for the warn annotation. `SchemaError` in Effect v4 stores
+ * the parse issue and exposes `.message` (= `issue.toString()`); using
+ * that surfaces the actual decode-issue path/expectation. Fallback to
+ * `String(cause)` for non-SchemaError throws (defensive — the schema's
+ * sync decoder should always throw `SchemaError`).
+ */
+const formatDecodeIssue = (cause: unknown): string => {
+	if (Schema.isSchemaError(cause)) {
+		return cause.message;
+	}
+	if (cause instanceof Error) {
+		return cause.message;
+	}
+	return String(cause);
 };
 
 const eventAt = (event: EngineEvent): number | null => {

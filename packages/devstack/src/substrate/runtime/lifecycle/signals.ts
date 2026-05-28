@@ -64,6 +64,13 @@ export const installSignalHandler = (
 ): Effect.Effect<never, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		const scheduleExit = options.scheduleExit ?? scheduleProcessExit;
+		// Capture the surrounding fiber's Context so the signal-listener
+		// fork inherits the supervisor's logger Layer, fiber-refs, and
+		// span context. Bare `Effect.runFork` evaluates against an empty
+		// context — warnings/spans from the offered command would
+		// otherwise bypass redaction rules and supervisor instrumentation.
+		const supervisorContext = yield* Effect.context<never>();
+		const runForkInherited = Effect.runForkWith(supervisorContext);
 		let shutdownRequested = false;
 
 		const handlers: Array<{
@@ -83,7 +90,7 @@ export const installSignalHandler = (
 					} satisfies EngineCommand).pipe(
 						Effect.andThen(Effect.sync(() => scheduleExit(exitCode))),
 					);
-					Effect.runFork(offerEffect);
+					runForkInherited(offerEffect);
 					return;
 				}
 				shutdownRequested = true;
@@ -95,10 +102,11 @@ export const installSignalHandler = (
 					tag: 'shutdown.requested',
 				} satisfies EngineCommand);
 				// We're inside a Node listener; bridge into Effect via the
-				// process's default runtime. `runFork` returns a fiber but we
-				// don't track it — the queue is bounded by the supervisor's
-				// lifetime.
-				Effect.runFork(offerEffect);
+				// captured supervisor Context so the offered command
+				// inherits logger/fiber-refs/spans. `runFork` returns a
+				// fiber but we don't track it — the queue is bounded by
+				// the supervisor's lifetime.
+				runForkInherited(offerEffect);
 			};
 			process.on(signal, listener);
 			handlers.push({ signal, listener });

@@ -55,6 +55,14 @@ const SNAPSHOT_TEMP_TAG_PREFIX = 'devstack-snapshot:';
 
 const isSnapshotTempTag = (ref: string): boolean => ref.startsWith(SNAPSHOT_TEMP_TAG_PREFIX);
 
+/** Return the trailing `max` chars of `text`, prefixed with an ellipsis
+ *  when truncation occurred. Used to surface the actual stdout shape in
+ *  parse-failure errors without ballooning the error message. */
+const tailBytes = (text: string, max: number): string => {
+	if (text.length <= max) return text;
+	return `…${text.slice(-max)}`;
+};
+
 const cleanupSnapshotTempTag = (
 	ref: string,
 ): Effect.Effect<void, never, DockerHost | DockerSpawner> => {
@@ -447,10 +455,17 @@ export const loadImage = (
 				}
 				const parsed = parseLoadedRefs(stdoutText);
 				if (parsed.length === 0) {
+					// Include the trailing ~500 bytes of stdout so newer
+					// Docker variants that interleave progress markers
+					// (e.g. JSON status lines) surface the actual output
+					// shape instead of an opaque "no Loaded image lines
+					// found". The full stderr text is still carried for
+					// the rare case docker emitted a diagnostic there.
+					const stdoutTail = tailBytes(stdoutText, 500);
 					return yield* Effect.fail(
 						new ImageLoadFailed({
-							detail: 'docker load succeeded but no Loaded image lines found',
-							stderr: stdoutText,
+							detail: `docker load succeeded but no Loaded image lines found; stdout tail: ${stdoutTail}`,
+							stderr: stderrText,
 						}),
 					);
 				}
