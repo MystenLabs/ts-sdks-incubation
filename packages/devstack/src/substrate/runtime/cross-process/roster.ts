@@ -8,7 +8,6 @@
 // truncated/forward-version write never corrupts a peer's view. Stale
 // entries reaped during step-3 sweep on the next claim.
 
-import { existsSync, readFileSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 
 import { Data, Effect, Schema } from 'effect';
@@ -20,10 +19,12 @@ import {
 	type RosterHolder,
 	type RosterSweepPolicy,
 } from '../../cross-process.ts';
-import { atomicWriteJsonSync } from '../atomic-write.ts';
 import { SpanAttr } from '../observability/spans.ts';
-import { decodeJsonText } from '../runtime-decode.ts';
 import { versionedDocSchema } from '../../versioned-doc-schema.ts';
+import {
+	readVersionedDocumentSync,
+	writeVersionedDocumentSync,
+} from '../../versioned-doc-sync.ts';
 import { selfPid } from './self-pid.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
@@ -57,33 +58,27 @@ export type RosterError = RosterCorruptError | RosterIoError;
 
 const EMPTY_ROSTER: RosterDocument = { version: 1, holders: [] };
 
+const ROSTER_DOC_ERRORS = {
+	mkIo: ({ path, cause }: { path: string; cause: unknown }) => new RosterIoError({ path, cause }),
+	mkCorrupt: ({ path, raw, cause }: { path: string; raw: string; cause: unknown }) =>
+		new RosterCorruptError({ path, raw, cause }),
+} as const;
+
 /** Read the roster from disk. Returns the empty document if absent.
  *  Tolerates a missing file but NOT a malformed file (a malformed
  *  roster surfaces a typed error so callers can decide whether to
  *  abandon or rewrite). */
 export const readRoster = (path: string): Effect.Effect<RosterDocument, RosterError> =>
-	Effect.gen(function* () {
-		if (!existsSync(path)) return EMPTY_ROSTER;
-		const raw = yield* Effect.try({
-			try: () => readFileSync(path, 'utf8'),
-			catch: (cause) => new RosterIoError({ path, cause }),
-		});
-		const decoded = yield* decodeJsonText(RosterDocumentSchema, raw, {
-			source: path,
-			mkError: (issue) => new RosterCorruptError({ path, raw, cause: issue.cause ?? issue }),
-		});
-		return decoded;
-	}).pipe(Effect.withSpan('cross-process.roster.read'));
+	readVersionedDocumentSync(path, RosterDocumentSchema, ROSTER_DOC_ERRORS, EMPTY_ROSTER).pipe(
+		Effect.withSpan('cross-process.roster.read'),
+	);
 
 /** Atomic write: route through the canonical sync primitive. The
  *  roster's mutations are all under `stack.lock`, so the non-yielding
  *  sync surface is correct here — and it shares ONE owner of the
  *  tempfile dance with state-store, cache, and manifest. */
 const atomicWriteRoster = (path: string, doc: RosterDocument): Effect.Effect<void, RosterIoError> =>
-	Effect.try({
-		try: () => atomicWriteJsonSync(path, doc),
-		catch: (cause) => new RosterIoError({ path, cause }),
-	});
+	writeVersionedDocumentSync(path, doc, ROSTER_DOC_ERRORS);
 
 // -----------------------------------------------------------------------------
 // Sweep
@@ -465,28 +460,20 @@ const liveContainerClaims = (
 const writeClaims = (
 	path: string,
 	doc: ContainerClaimDocument,
-): Effect.Effect<void, RosterIoError> =>
-	Effect.try({
-		try: () => atomicWriteJsonSync(path, doc),
-		catch: (cause) => new RosterIoError({ path, cause }),
-	});
+): Effect.Effect<void, RosterIoError> => writeVersionedDocumentSync(path, doc, ROSTER_DOC_ERRORS);
 
 /** Read the container-claim ledger. */
 export const readClaims = (
 	paths: RosterPaths,
 ): Effect.Effect<ContainerClaimDocument, RosterError> =>
-	Effect.gen(function* () {
-		const path = requireClaimsPath(paths);
-		if (!existsSync(path)) return EMPTY_CLAIMS;
-		const raw = yield* Effect.try({
-			try: () => readFileSync(path, 'utf8'),
-			catch: (cause) => new RosterIoError({ path, cause }),
-		});
-		return yield* decodeJsonText(ContainerClaimDocumentSchema, raw, {
-			source: path,
-			mkError: (issue) => new RosterCorruptError({ path, raw, cause: issue.cause ?? issue }),
-		});
-	}).pipe(Effect.withSpan('cross-process.roster.readClaims'));
+	Effect.suspend(() =>
+		readVersionedDocumentSync(
+			requireClaimsPath(paths),
+			ContainerClaimDocumentSchema,
+			ROSTER_DOC_ERRORS,
+			EMPTY_CLAIMS,
+		),
+	).pipe(Effect.withSpan('cross-process.roster.readClaims'));
 
 /** Prune stale same-host claims. This is the recovery path for an
  *  interrupted process that could not run its scope finalizer. */

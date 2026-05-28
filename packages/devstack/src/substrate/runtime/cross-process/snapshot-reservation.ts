@@ -26,7 +26,7 @@ import { hostname as nodeHostname } from 'node:os';
 import { Data, Effect, Scope } from 'effect';
 
 import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
-import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
 import { checkHolderLiveness } from './liveness.ts';
 import { selfPid } from './self-pid.ts';
 
@@ -50,16 +50,8 @@ export type SnapshotReservationError = SnapshotReservationHeldError | SnapshotRe
 // Codec
 // -----------------------------------------------------------------------------
 
-const parseReservation = (raw: string): SnapshotReservation | null => {
-	try {
-		return decodeJsonTextSync(SnapshotReservationSchema, raw, {
-			source: 'snapshot.reservation',
-			mkError: (issue) => issue,
-		});
-	} catch {
-		return null;
-	}
-};
+const parseReservation = (raw: string): SnapshotReservation | null =>
+	parseVersionedDocumentBodyOrNull(raw, SnapshotReservationSchema, 'snapshot.reservation');
 
 // -----------------------------------------------------------------------------
 // Acquire / release

@@ -27,7 +27,7 @@ import { dirname } from 'node:path';
 import { Data, Effect, Schema, Scope } from 'effect';
 
 import { DEFAULT_SWEEP_POLICY, type RosterHolder } from '../../cross-process.ts';
-import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
 import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
 
@@ -71,16 +71,8 @@ const StackLockBodySchema = Schema.Struct({
 	intent: Schema.Literals(['normal', 'snapshot']),
 });
 
-const parseLockBody = (raw: string): RosterHolder | null => {
-	try {
-		return decodeJsonTextSync(StackLockBodySchema, raw, {
-			source: 'stack.lock',
-			mkError: (issue) => issue,
-		});
-	} catch {
-		return null;
-	}
-};
+const parseLockBody = (raw: string): RosterHolder | null =>
+	parseVersionedDocumentBodyOrNull(raw, StackLockBodySchema, 'stack.lock');
 
 // -----------------------------------------------------------------------------
 // Acquire / release
