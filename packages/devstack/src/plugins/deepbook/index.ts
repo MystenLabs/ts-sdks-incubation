@@ -308,13 +308,35 @@ const requireCapturedId = (
 	);
 };
 
+const requirePoolCoinValue = (
+	coinValuesByRefId: ReadonlyMap<string, CoinValue>,
+	poolName: string,
+	side: 'base' | 'quote',
+	coinRefId: string,
+): CoinValue => {
+	const value = coinValuesByRefId.get(coinRefId);
+	if (value === undefined) {
+		// Compose-time bug — `dependsOn`/`poolCoinRefs` dropped this coin.
+		// Surface a typed config error naming the missing coin id rather
+		// than letting a double-cast `undefined` slip into the resolved
+		// pool spec (mirrors the action plugin's miss-guard pattern at
+		// `src/plugins/action/service.ts`).
+		throw deepbookConfigError(
+			'pools',
+			`deepbook: pool '${poolName}' ${side} coin '${coinRefId}' was not resolved by the dependency tuple.`,
+			'This is a compose-time bug — ensure the coin member is included in `dependsOn`/`poolCoinRefs`.',
+		);
+	}
+	return value;
+};
+
 const resolvePoolSpecs = (
 	pools: ReadonlyArray<DeepbookPoolSpec>,
 	coinValuesByRefId: ReadonlyMap<string, CoinValue>,
 ): ReadonlyArray<ResolvedDeepbookPoolSpec> =>
 	pools.map((pool) => {
-		const base = coinValuesByRefId.get(pool.base.coin.id) as CoinValue;
-		const quote = coinValuesByRefId.get(pool.quote.coin.id) as CoinValue;
+		const base = requirePoolCoinValue(coinValuesByRefId, pool.name, 'base', pool.base.coin.id);
+		const quote = requirePoolCoinValue(coinValuesByRefId, pool.name, 'quote', pool.quote.coin.id);
 		return {
 			name: pool.name,
 			base: pool.base.key,

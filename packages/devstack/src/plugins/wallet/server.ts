@@ -508,7 +508,15 @@ const decodeJsonBody = <A>(
 				}),
 			);
 		}
-		return yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
+		// Sanctioned cast: `decodeJsonText`'s generic constraint
+		// `S extends Schema.Decoder<unknown>` is wider than
+		// `Schema.Schema<A>` (the Decoder shape has `DecodingServices`/
+		// `RequiresServices` as `unknown`; `Schema.Schema<A>` pins them to
+		// `never`). The runtime helper happily consumes `Schema.Schema<A>`
+		// — only the TS variance disagrees. Lift to a `Schema.Schema<A>`-
+		// accepting decoder helper in `substrate/runtime/runtime-decode.ts`
+		// when the next caller hits the same friction (Phase 17 candidate).
+		return (yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
 			source: 'wallet request body',
 			mkError: (issue) =>
 				walletRequestError({
@@ -520,7 +528,7 @@ const decodeJsonBody = <A>(
 							: 'request body did not match schema',
 					cause: issue.cause,
 				}),
-		}) as Effect.Effect<A, WalletRequestError>;
+		})) as A;
 	});
 
 const handleSign = (

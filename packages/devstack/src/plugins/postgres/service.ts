@@ -36,6 +36,7 @@
 //     databases at the runtime default.
 
 import { Duration, Effect, type Scope } from 'effect';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
@@ -129,9 +130,19 @@ const POSTGRES_PORT = 5432;
  *  documented in the distilled doc § Postgres-specific concerns:
  *  fine for a single-user dev tool, foot-gun if `hostPort` is set in
  *  a multi-user environment. The user-supplied `password` override on
- *  `PostgresServiceOptions` is the escape hatch. */
-const derivePassword = (app: string, stack: string): string =>
-	`pg-${(app + stack).replace(/[^a-zA-Z0-9]/g, '')}`;
+ *  `PostgresServiceOptions` is the escape hatch.
+ *
+ *  The short hash + separator disambiguate (app, stack) pairs whose
+ *  sanitized concatenation would collide otherwise — e.g. `("my-app",
+ *  "dev")` vs `("my", "appdev")` both sanitize to the same body but
+ *  the hash binds the unambiguous boundary. The `\x1f` (US, ASCII 31)
+ *  separator is unambiguous because identity strings cannot legally
+ *  contain it. */
+export const derivePassword = (app: string, stack: string): string => {
+	const body = (app + stack).replace(/[^a-zA-Z0-9]/g, '');
+	const fingerprint = createHash('sha256').update(`${app}\x1f${stack}`).digest('hex').slice(0, 8);
+	return `pg-${body}-${fingerprint}`;
+};
 
 const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
 
@@ -198,24 +209,28 @@ const resolveImageContextPath = (): string => {
  *  Thin adapter from the runtime's contract surface to the plugin's
  *  local exec seam. The runtime never promotes non-zero exit to
  *  failure here — the caller (pg_isready retry loop, createdb
- *  existence-check) decides. */
+ *  existence-check) decides.
+ *
+ *  Daemon-level failures (no such container, daemon unreachable)
+ *  surface as a typed `PostgresPluginError({phase: 'container-start'})`
+ *  rather than a fabricated `exitCode: 255` ExecResult. STYLE_GUIDE
+ *  §16 — typed errors must carry the actual failure shape, not lie
+ *  about it being a tx-level non-zero exit. The retry loops in
+ *  `awaitReady` / `ensureDatabase` treat the typed failure as
+ *  retryable via `waitForProbe`'s default retry behavior; the
+ *  underlying cause is preserved on the timeout error's `lastError`
+ *  field for the cause walker. */
 const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): ContainerExec => ({
 	run: (argv) =>
 		runtime.exec(handle, argv).pipe(
-			// Daemon-level failures (no such container, daemon
-			// unreachable) collapse to a synthetic non-zero ExecResult
-			// so the retry loop sees them and the typed timeout error
-			// carries the daemon stderr as `lastStderr` for the cause
-			// walker. We do NOT surface ContainerRuntimeError here —
-			// the plugin's typed errors are the only failure shapes
-			// `awaitReady` / `ensureDatabases` produce, and they
-			// already carry the captured streams.
 			Effect.catch((err) =>
-				Effect.succeed({
-					exitCode: 255,
-					stdout: '',
-					stderr: `runtime.exec failed: ${err.reason} — ${err.detail}`,
-				}),
+				Effect.fail(
+					postgresPluginError(
+						'container-start',
+						`runtime.exec failed: ${err.reason} — ${err.detail}`,
+						err,
+					),
+				),
 			),
 		),
 });

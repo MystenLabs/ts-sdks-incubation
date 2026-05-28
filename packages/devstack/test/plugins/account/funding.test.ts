@@ -79,7 +79,7 @@ describe('account cross-cutting funding dispatch', () => {
 
 					const applied = yield* applyFunding([fundingEntry()]);
 
-					expect(applied).toEqual([fundingEntry()]);
+					expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
 					expect(requests).toHaveLength(1);
 					expect(requests[0]).toMatchObject({
 						address: '0xalice',
@@ -127,7 +127,7 @@ describe('account cross-cutting funding dispatch', () => {
 					});
 					const applied = yield* applyFunding([sui]);
 
-					expect(applied).toEqual([sui]);
+					expect(applied).toEqual([{ ...sui, outcome: 'funded' }]);
 					expect(requests.map((request) => request.amount)).toEqual([1_000_000n]);
 				}),
 			),
@@ -200,7 +200,7 @@ describe('account cross-cutting funding dispatch', () => {
 							}),
 					});
 
-					expect(applied).toEqual([fundingEntry()]);
+					expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
 					expect(events).toEqual(['balance:0', 'request', 'balance:123']);
 				}),
 			),
@@ -221,7 +221,7 @@ describe('account cross-cutting funding dispatch', () => {
 						readBalance: () => Effect.succeed(123n),
 					});
 
-					expect(applied).toEqual([fundingEntry()]);
+					expect(applied).toEqual([{ ...fundingEntry(), outcome: 'already-satisfied' }]);
 					expect(called).toBe(false);
 				}),
 			),
@@ -244,7 +244,7 @@ describe('account cross-cutting funding dispatch', () => {
 							readBalance: () => Effect.succeed(1_000_000n),
 						});
 
-						expect(applied).toEqual([sui]);
+						expect(applied).toEqual([{ ...sui, outcome: 'already-satisfied' }]);
 					}),
 				),
 			),
@@ -303,7 +303,7 @@ describe('account cross-cutting funding dispatch', () => {
 						broker,
 					});
 
-					expect(applied).toEqual([fundingEntry()]);
+					expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
 					expect(signerBodyRan).toBe(true);
 				}),
 			),

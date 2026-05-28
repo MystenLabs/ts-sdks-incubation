@@ -47,6 +47,14 @@ export type HostServiceReadyProbe =
 	  }
 	| {
 			readonly kind: 'log';
+			/** Pattern matched against each stdout/stderr line. `string` is a
+			 *  fast substring match. `RegExp` is evaluated via `.test(line)`
+			 *  per line and runs synchronously on the observer fiber —
+			 *  AVOID catastrophic-backtracking shapes like `(a+)+b` or
+			 *  `(a|a)*c` which can wedge the fiber on adversarial output.
+			 *  Prefer anchored, non-nested-quantifier patterns. The
+			 *  plugin emits a one-time warning at registration if it
+			 *  detects nested-quantifier shapes. */
 			readonly pattern: string | RegExp;
 			readonly stream?: 'stdout' | 'stderr' | 'both';
 			readonly timeoutMs?: number;
@@ -229,6 +237,23 @@ export const normalizeHostServiceOptions = (
 const renderPortToken = (value: string, port: number): string =>
 	value.replaceAll(HOST_SERVICE_PORT_TOKEN, String(port));
 
+/** Heuristic: catastrophic-backtracking patterns typically nest a
+ *  quantifier inside another quantifier (e.g. `(a+)+`, `(a*)*`,
+ *  `(a|a)*`). This is intentionally conservative — it flags clearly
+ *  risky shapes without trying to be a real ReDoS analyzer. The
+ *  guard runs once at host-service start and only emits a warning,
+ *  not a fail-stop. */
+const looksRedosProne = (pattern: RegExp): boolean => {
+	const source = pattern.source;
+	// `(...)<quant><quant>` — quantifier directly after a group's quantifier.
+	if (/\)[*+?](?:\{[^}]*\})?[*+?]/.test(source)) return true;
+	// `(...<quant>...)<quant>` — quantifier inside a group that itself is quantified.
+	if (/\([^()]*[*+?][^()]*\)[*+?]/.test(source)) return true;
+	// `(a|a)*` style — alternation with overlapping branches under a quantifier.
+	if (/\([^()]*\|[^()]*\)[*+]/.test(source)) return true;
+	return false;
+};
+
 const renderCommand = (
 	options: HostServiceResolvedOptions,
 	port: number,
@@ -293,9 +318,12 @@ const httpReady = (
 			endpoint: url,
 			timeoutMs,
 			intervalMs,
-			// Host services only need to prove their listener is up. App-level
-			// 4xx/5xx responses can be transient while devstack writes generated files.
-			validate: () => true,
+			// Host services need to prove their listener is up AND that the
+			// framework isn't crashing on every request. 4xx is acceptable
+			// (route may legitimately not exist at `/`), but 5xx indicates
+			// the server is wedged and shouldn't count as ready. Matches
+			// the postgres/sui plugins' probe validators.
+			validate: (response) => response.status < 500,
 		}).pipe(
 			Effect.mapError(
 				(cause) =>
@@ -404,6 +432,25 @@ const startHostProcess = (
 			PORT: String(port),
 		};
 		const tag = `host-service/${options.serviceName}`;
+		// One-time ReDoS-shape warning. The log observer runs `RegExp.test`
+		// synchronously per stdout/stderr line; a catastrophic-backtracking
+		// pattern would wedge the observer fiber on adversarial output.
+		if (
+			options.ready?.kind === 'log' &&
+			options.ready.pattern instanceof RegExp &&
+			looksRedosProne(options.ready.pattern)
+		) {
+			yield* ctx.logger.log(tag, ctx.pluginKey, {
+				level: 'warn',
+				message:
+					'host service readiness pattern has a nested-quantifier shape that may exhibit catastrophic backtracking on adversarial output; prefer anchored, non-nested patterns',
+				fields: {
+					[SpanAttr.serviceName]: options.serviceName,
+					[SpanAttr.event]: 'host-service.ready-pattern.redos-warning',
+					pattern: options.ready.pattern.source,
+				},
+			});
+		}
 		let resolveLogReady: (() => void) | undefined;
 		const logReadySignal =
 			options.ready?.kind === 'log'
@@ -542,36 +589,50 @@ const startHostProcess = (
 			return yield* Effect.failCause(readinessExit.cause);
 		}
 
-		void exited.then((status) => {
-			if (shuttingDown) return;
-			void Effect.runPromise(
-				ctx.logger.log(tag, ctx.pluginKey, {
-					level: 'error',
-					message: 'host service exited after readiness',
-					fields: {
-						[SpanAttr.event]: 'process.exited',
-						[SpanAttr.serviceName]: options.serviceName,
-						[SpanAttr.exitCode]: status.code,
-						[SpanAttr.exitSignal]: status.signal,
-						[SpanAttr.exitStatus]: describeProcessExitStatus(status),
-					},
-				}),
-			).catch(() => {});
-		});
-		void processError.then((cause) => {
-			if (shuttingDown) return;
-			void Effect.runPromise(
-				ctx.logger.log(tag, ctx.pluginKey, {
-					level: 'error',
-					message: 'host service process emitted an error after readiness',
-					fields: {
-						[SpanAttr.event]: 'process.error',
-						[SpanAttr.serviceName]: options.serviceName,
-						[SpanAttr.errorCause]: cause,
-					},
-				}),
-			).catch(() => {});
-		});
+		// Post-readiness observers. These previously used `void
+		// promise.then(() => Effect.runPromise(...))` which could fire
+		// AFTER the surrounding Scope had already closed (running logger
+		// effects outside any scope, with `.catch(() => {})` swallowing
+		// any failures). Fork into the Scope via `Effect.forkScoped` so
+		// that scope-close interrupts the observer fiber cleanly — the
+		// finalizer flips `shuttingDown` first, so expected-exit cases
+		// still no-op as before.
+		yield* Effect.forkScoped(
+			Effect.promise(() => exited).pipe(
+				Effect.flatMap((status) =>
+					shuttingDown
+						? Effect.void
+						: ctx.logger.log(tag, ctx.pluginKey, {
+								level: 'error',
+								message: 'host service exited after readiness',
+								fields: {
+									[SpanAttr.event]: 'process.exited',
+									[SpanAttr.serviceName]: options.serviceName,
+									[SpanAttr.exitCode]: status.code,
+									[SpanAttr.exitSignal]: status.signal,
+									[SpanAttr.exitStatus]: describeProcessExitStatus(status),
+								},
+							}),
+				),
+			),
+		);
+		yield* Effect.forkScoped(
+			Effect.promise(() => processError).pipe(
+				Effect.flatMap((cause) =>
+					shuttingDown
+						? Effect.void
+						: ctx.logger.log(tag, ctx.pluginKey, {
+								level: 'error',
+								message: 'host service process emitted an error after readiness',
+								fields: {
+									[SpanAttr.event]: 'process.error',
+									[SpanAttr.serviceName]: options.serviceName,
+									[SpanAttr.errorCause]: cause,
+								},
+							}),
+				),
+			),
+		);
 	});
 
 export const prepareHostService = (

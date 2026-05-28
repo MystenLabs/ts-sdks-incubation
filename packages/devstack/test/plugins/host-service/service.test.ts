@@ -261,10 +261,13 @@ describe('acquireHostService', () => {
 		expect(value.url).toBe('http://127.0.0.1:6173');
 	});
 
-	it.live('treats any HTTP response as host-service readiness', () =>
+	it.live('treats sub-5xx HTTP responses as host-service readiness', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const port = yield* Effect.promise(findFreePort);
+				// 404 at `/` is fine — the framework is up; a route just
+				// isn't bound to root. 5xx would (correctly) be rejected
+				// as "server wedged" and is exercised by the next test.
 				const options = normalizeHostServiceOptions({
 					name: 'frontend',
 					command: process.execPath,
@@ -273,8 +276,8 @@ describe('acquireHostService', () => {
 						[
 							"const http = require('node:http');",
 							'const server = http.createServer((_req, res) => {',
-							'  res.statusCode = 500;',
-							"  res.end('generated files not ready yet');",
+							'  res.statusCode = 404;',
+							"  res.end('not found');",
 							'});',
 							"server.listen(Number(process.env.PORT), '127.0.0.1');",
 						].join(' '),

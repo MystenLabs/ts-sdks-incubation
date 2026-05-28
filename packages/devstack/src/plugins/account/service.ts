@@ -50,6 +50,8 @@ import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
 	type AccountFundingResult,
+	type AppliedFunding,
+	type AppliedFundingEntry,
 	type FundingBalanceReader,
 	type ProjectedFunding,
 	type ProjectedFundingEntry,
@@ -867,11 +869,16 @@ export const acquireAccount = (
 			defaultFunding === null
 				? (ctx.projectedFunding ?? [])
 				: [defaultFunding, ...(ctx.projectedFunding ?? [])];
-		const appliedDefaultFunding: ProjectedFundingEntry[] = [];
+		const appliedDefaultFunding: AppliedFundingEntry[] = [];
 
 		// --- default funding (bare ephemeral only) -------------------
 		if (defaultFunding !== null) {
-			yield* fundEphemeralDefault({
+			// Outcome distinguishes a real faucet call (`'funded'`) from
+			// the pre-existing-balance short-circuit (`'already-satisfied'`),
+			// so the registry projection doesn't mislabel a no-faucet-call
+			// entry as funded. `'skipped'` (zero amount) drops out entirely
+			// per the same invariant as the cross-cutting pass.
+			const outcome = yield* fundEphemeralDefault({
 				accountName: opts.name,
 				address: resolved.address,
 				amountMist: defaultFunding.amount,
@@ -881,8 +888,8 @@ export const acquireAccount = (
 				broker,
 				balanceReader,
 			});
-			if (defaultFunding.amount > 0n) {
-				appliedDefaultFunding.push(defaultFunding);
+			if (outcome !== 'skipped') {
+				appliedDefaultFunding.push({ ...defaultFunding, outcome });
 			}
 		}
 
@@ -919,7 +926,7 @@ export const acquireAccount = (
 		// empty `projectedFunding` is a no-op (matches the "Optional
 		// Faucet is a noop" invariant).
 		const projected = ctx.projectedFunding ?? [];
-		let appliedCrossCuttingFunding: ProjectedFunding = [];
+		let appliedCrossCuttingFunding: AppliedFunding = [];
 		if (projected.length > 0) {
 			appliedCrossCuttingFunding = yield* applyCrossCuttingFunding({
 				accountName: opts.name,

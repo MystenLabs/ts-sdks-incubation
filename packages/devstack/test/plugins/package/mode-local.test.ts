@@ -207,12 +207,13 @@ const okVerifyProbe: ChainProbe<SuiProbeKey> = {
 };
 
 /** PublishExecutor that fails loudly if invoked — the cache-hit path
- *  must never reach build / publishTx / waitForReady. */
+ *  must never reach build / publishTx / postPublishReadyHint. */
 const unreachableExecutor: PublishExecutor = {
 	scrubsInsideContainer: false,
 	build: () => Effect.die('cache-hit path must not call executor.build'),
 	publishTx: () => Effect.die('cache-hit path must not call executor.publishTx'),
-	waitForReady: () => Effect.die('cache-hit path must not call executor.waitForReady'),
+	postPublishReadyHint: () =>
+		Effect.die('cache-hit path must not call executor.postPublishReadyHint'),
 };
 
 /** PublishExecutor that returns canned BuildOutput / publishTx output /
@@ -226,7 +227,7 @@ const succeedingExecutor: PublishExecutor = {
 			dependencies: ['0x1'],
 		}),
 	publishTx: () => Effect.succeed(PUBLISH_OUTPUT),
-	waitForReady: () => Effect.void,
+	postPublishReadyHint: () => Effect.void,
 };
 
 describe('local package mode — A5 capture asymmetry regression', () => {

@@ -19,6 +19,7 @@
  *  requires editing this list AND the cause-walker's display table. */
 export type AccountAcquirePhase =
 	| 'validate-name'
+	| 'validate-funding'
 	| 'load-keystore'
 	| 'read-env'
 	| 'decode-inline'

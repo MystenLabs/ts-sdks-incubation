@@ -21,15 +21,16 @@
 // import path along; the helpers below are wire-only and have NO
 // substrate-context dependencies.
 
-import { Duration, Effect, Ref, type Scope } from 'effect';
+import { Duration, Effect, SynchronizedRef, type Scope } from 'effect';
 
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
+import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiConfigError, suiPluginError, type SuiPluginError } from '../errors.ts';
 import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -120,7 +121,11 @@ export const buildWaitForTransactionsReady = (
 	Effect.gen(function* () {
 		const retrySpacing = opts?.retrySpacing ?? FUNDS_READY_RETRY_SPACING;
 		const timeout = opts?.timeout ?? FUNDS_READY_TIMEOUT;
-		const ref = yield* Ref.make<Effect.Effect<void, SuiPluginError> | null>(null);
+		// SynchronizedRef serialises the get-or-init transition so two
+		// concurrent callers can't both observe `null` and both build
+		// their own `Effect.cached` instance (CAS-style guard against
+		// the build-once race).
+		const ref = yield* SynchronizedRef.make<Effect.Effect<void, SuiPluginError> | null>(null);
 
 		const makeProbe = (): Effect.Effect<void, SuiPluginError> =>
 			waitForHttpEndpoint({
@@ -158,17 +163,20 @@ export const buildWaitForTransactionsReady = (
 				),
 			);
 
-		const getOrInit: Effect.Effect<Effect.Effect<void, SuiPluginError>> = Effect.gen(function* () {
-			const existing = yield* Ref.get(ref);
-			if (existing !== null) return existing;
-			const cached = yield* Effect.cached(makeProbe());
-			yield* Ref.set(ref, cached);
-			return cached;
-		});
+		// `modifyEffect` atomically observes-then-updates inside a
+		// serialised critical section: at most one fiber builds the
+		// memoised probe, every other caller reads it back. This
+		// closes the read-build-write race the plain Ref had.
+		const getOrInit: Effect.Effect<Effect.Effect<void, SuiPluginError>> =
+			SynchronizedRef.modifyEffect(ref, (existing) =>
+				existing !== null
+					? Effect.succeed([existing, existing] as const)
+					: Effect.cached(makeProbe()).pipe(Effect.map((cached) => [cached, cached] as const)),
+			);
 
 		return {
 			wait: getOrInit.pipe(Effect.flatMap((eff) => eff)),
-			invalidate: Ref.set(ref, null),
+			invalidate: SynchronizedRef.set(ref, null),
 		};
 	});
 
@@ -250,8 +258,17 @@ export const assembleSuiClient = (parts: {
 	readonly sdkShim: SuiSdkShim;
 	readonly chainProbe: ChainProbe<SuiProbeKey>;
 } => {
+	// Defense-in-depth — `fetchChainId` should never resolve to an
+	// empty string (RPC rejects that earlier), but a branded empty
+	// string would silently fold into every downstream cache key.
+	const chain = expectNonEmptyString(parts.chain, {
+		field: 'chain',
+		mkError: suiConfigError,
+		message: 'sui.assembleSuiClient: chain id must be a non-empty string',
+		hint: 'check fetchChainId / network resolver returned a real chain id',
+	});
 	const sdkShim = makeSdkShim(parts.sdkClient);
-	const chainProbe = makeSuiChainProbe(sdkShim, parts.chain);
+	const chainProbe = makeSuiChainProbe(sdkShim, chain);
 	const client: SuiClient = {
 		sdk: sdkShim,
 		rpcUrl: parts.rpcUrl,
@@ -263,7 +280,7 @@ export const assembleSuiClient = (parts: {
 			faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
 			graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
 		},
-		chain: brandChainId(parts.chain),
+		chain: brandChainId(chain),
 		waitForTransactionsReady: parts.waitForTransactionsReady,
 		chainProbe,
 		fork: null,

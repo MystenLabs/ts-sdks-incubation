@@ -16,8 +16,11 @@
 //      critical section, and projecting the response to a
 //      `LocalPackagePublishOutput`.
 //   3. Wrapping `sdk.core.waitForTransaction({ digest })` for
-//      `waitForReady` — the SDK already retries / waits for index
-//      visibility internally.
+//      `postPublishReadyHint` — the SDK already retries / waits for
+//      index visibility internally. The probe is hint-only: transient
+//      `getObject` misses (cold index race) are intentionally
+//      swallowed because the publisher account's `signAndExecute` has
+//      already awaited `waitForTransaction(digest)`.
 //
 // Errors:
 //   - Each method maps its concrete failure → a typed `PublishError`
@@ -77,19 +80,30 @@ const hydrateCreatedObject = (
 	if (!shouldHydrateCreatedObject(change) || change.objectId === undefined) {
 		return Effect.succeed(change);
 	}
+	const objectId = change.objectId;
 	return Effect.tryPromise({
 		try: () =>
 			sdk.core.getObject({
-				objectId: change.objectId!,
+				objectId,
 				include: { json: true },
 			}),
-		catch: () => null,
+		catch: (cause) => cause,
 	}).pipe(
 		Effect.map((raw) => ({
 			...change,
 			...(raw === null ? {} : projectHydratedObjectFields(raw)),
 		})),
-		Effect.catch(() => Effect.succeed(change)),
+		// Hydration is best-effort — a cold-cache `getObject` miss must
+		// not fail the publish. Log at debug so the miss is visible (the
+		// `tryPromise` catch wraps the original cause; cause-detail
+		// extraction is non-trivial here, so we log the objectId — the
+		// fact that this happened is the actionable signal).
+		Effect.catch((cause) =>
+			Effect.logDebug('package: hydrate-created-object cache miss').pipe(
+				Effect.annotateLogs({ objectId, cause: String(cause) }),
+				Effect.as(change),
+			),
+		),
 	);
 };
 
@@ -306,20 +320,17 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			}),
 		),
 
-	// Wait-for-index step — post-publish ready-probe. The SDK's
-	// `waitForTransaction` already polls fullnode index visibility
-	// internally; we wrap it once with a typed PublishError on failure.
-	waitForReady: (packageId: string): Effect.Effect<void, PublishError, Scope.Scope> =>
+	// Post-publish ready HINT — the function ALWAYS succeeds when the
+	// underlying `getObject` infrastructure is reachable. The publish
+	// account's `signAndExecute` already calls `waitForTransaction(digest)`
+	// before returning; the read on `packageId` here is a second-layer
+	// hint to catch the "tx written but object not yet queryable" race.
+	// Transient misses fall through silently — the next produce phase
+	// (parse) only inspects the output. Only infrastructural faults
+	// (the `tryPromise` `catch`) surface as PublishError('parse').
+	postPublishReadyHint: (packageId: string): Effect.Effect<void, PublishError, Scope.Scope> =>
 		Effect.tryPromise({
 			try: async () => {
-				// The publish account's `signAndExecute` already calls
-				// `waitForTransaction(digest)` before returning; the read
-				// on `packageId` here is a second-layer probe to catch the
-				// "tx written but object not yet queryable" race the
-				// chain-probe verify step also guards against. Falls
-				// through silently — if the follow-up `getObject` succeeds
-				// the index is ready, else the next verify cycle picks it
-				// up.
 				try {
 					await inputs.sdk.core.getObject({ objectId: packageId });
 				} catch {
@@ -334,11 +345,11 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 				// inputs when the error bubbles through.
 				publishError('parse', {
 					packageName: packageId,
-					message: `waitForReady(${packageId}) failed`,
+					message: `postPublishReadyHint(${packageId}) failed`,
 					cause,
 				}),
 		}).pipe(
-			Effect.withSpan('devstack.plugin.package.wait-for-ready', {
+			Effect.withSpan('devstack.plugin.package.post-publish-ready-hint', {
 				attributes: { [PackageSpans.publish.packageId]: packageId },
 			}),
 		),

@@ -48,7 +48,11 @@ import { suiResource, SuiSpans } from '../sui/index.ts';
 import { AccountSpans } from './spans.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
-import { ACCOUNT_ERROR_TAGS } from './errors.ts';
+import {
+	ACCOUNT_ERROR_TAGS,
+	accountAcquireError,
+	type AccountAcquireError,
+} from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
@@ -160,17 +164,39 @@ const fundingProviders = (
 		: [provider as AnyResourceRef];
 };
 
-const fundingAmountToBigInt = (amount: number | bigint): bigint => {
+/** Validate a SUI funding amount and project it to bigint MIST.
+ *  Returns a typed-error Effect so a bad amount surfaces as
+ *  `AccountAcquireError(phase: 'validate-funding')` on the failure
+ *  channel — NOT a synchronous throw lifted to a defect when called
+ *  from inside the acquire body's `Effect.gen`. */
+const fundingAmountToBigInt = (
+	amount: number | bigint,
+	accountName: string,
+): Effect.Effect<bigint, AccountAcquireError> => {
 	if (typeof amount === 'bigint') {
 		if (amount < 0n) {
-			throw new TypeError(`SUI funding amount must be a non-negative integer in MIST.`);
+			return Effect.fail(
+				accountAcquireError({
+					phase: 'validate-funding',
+					accountName,
+					variant: 'ephemeral',
+					message: `Account '${accountName}': SUI funding amount must be a non-negative integer in MIST (got ${amount}).`,
+				}),
+			);
 		}
-		return amount;
+		return Effect.succeed(amount);
 	}
 	if (!Number.isSafeInteger(amount) || amount < 0) {
-		throw new TypeError(`SUI funding amount must be a non-negative safe integer in MIST.`);
+		return Effect.fail(
+			accountAcquireError({
+				phase: 'validate-funding',
+				accountName,
+				variant: 'ephemeral',
+				message: `Account '${accountName}': SUI funding amount must be a non-negative safe integer in MIST (got ${amount}).`,
+			}),
+		);
 	}
-	return BigInt(amount);
+	return Effect.succeed(BigInt(amount));
 };
 
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
@@ -236,25 +262,32 @@ export const account = <const N extends string, const Funding extends AccountFun
 				// Project each funding dependency value to a
 				// `{fullCoinType, amount}` projection. Dependency order
 				// mirrors `fundingEntries`, after the hard Sui upstream.
+				// SUI amount validation lives on the failure channel so a
+				// negative / non-integer amount surfaces as a typed
+				// `AccountAcquireError(phase: 'validate-funding')` instead
+				// of a defect (the old sync-throw lifted to a defect when
+				// run inside this `Effect.gen`).
 				let coinIndex = 0;
-				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = fundingEntryList.map(
-					(entry) => {
-						if (entry.coin === 'sui') {
-							return {
-								coin: 'SUI',
-								fullCoinType: SUI_FULL_COIN_TYPE,
-								amount: fundingAmountToBigInt(entry.amount),
-							};
-						}
-						const resolvedCoin = resolvedCoinValues[coinIndex]!;
-						coinIndex += 1;
-						return {
-							coin: coinLabelFor(resolvedCoin),
-							fullCoinType: resolvedCoin.fullCoinType,
-							amount: entry.amount,
-						};
-					},
-				);
+				const projectedFundingMutable: ProjectedFundingEntry[] = [];
+				for (const entry of fundingEntryList) {
+					if (entry.coin === 'sui') {
+						const amount = yield* fundingAmountToBigInt(entry.amount, name);
+						projectedFundingMutable.push({
+							coin: 'SUI',
+							fullCoinType: SUI_FULL_COIN_TYPE,
+							amount,
+						});
+						continue;
+					}
+					const resolvedCoin = resolvedCoinValues[coinIndex]!;
+					coinIndex += 1;
+					projectedFundingMutable.push({
+						coin: coinLabelFor(resolvedCoin),
+						fullCoinType: resolvedCoin.fullCoinType,
+						amount: entry.amount,
+					});
+				}
+				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = projectedFundingMutable;
 
 				const acquireCtx: AccountAcquireContext = {
 					sui: {
@@ -323,20 +356,42 @@ const fundingProjectionForResult = (funding: AccountFundingResult): AccountRegis
 		return { status: 'skipped', balanceMist: null, requestedMist: null, entries: [] };
 	}
 
-	const appliedKeys = new Set(funding.applied.map(fundingEntryKey));
-	const entries = funding.requested.map((entry) => ({
-		coin: entry.coin,
-		fullCoinType: entry.fullCoinType,
-		amount: entry.amount.toString(),
-		status: appliedKeys.has(fundingEntryKey(entry)) ? ('funded' as const) : ('skipped' as const),
-	}));
+	// Outcome-keyed lookup so the projection can distinguish a real
+	// faucet call (`funded`) from the pre-existing-balance short-circuit
+	// (`already-satisfied`). An entry that the funding pass never
+	// reached at all (zero-amount, or wholly absent from `applied`)
+	// projects as `skipped`.
+	const appliedOutcomes = new Map(
+		funding.applied.map((entry) => [fundingEntryKey(entry), entry.outcome] as const),
+	);
+	const entries = funding.requested.map((entry) => {
+		const outcome = appliedOutcomes.get(fundingEntryKey(entry));
+		return {
+			coin: entry.coin,
+			fullCoinType: entry.fullCoinType,
+			amount: entry.amount.toString(),
+			status:
+				outcome === 'funded'
+					? ('funded' as const)
+					: outcome === 'already-satisfied'
+						? ('already-satisfied' as const)
+						: ('skipped' as const),
+		};
+	});
 	const requestedMist =
 		funding.requested
 			.find((entry) => entry.fullCoinType === SUI_FULL_COIN_TYPE)
 			?.amount.toString() ?? null;
-	const fundedCount = entries.filter((entry) => entry.status === 'funded').length;
+	const settledCount = entries.filter(
+		(entry) => entry.status === 'funded' || entry.status === 'already-satisfied',
+	).length;
 	return {
-		status: fundedCount === entries.length ? 'funded' : fundedCount === 0 ? 'skipped' : 'unknown',
+		// `funded` here means "every requested entry is satisfied" —
+		// either the faucet succeeded or the pre-existing balance
+		// already covered it. `unknown` covers the mixed partial-success
+		// case so consumers can distinguish from "nothing ran at all".
+		status:
+			settledCount === entries.length ? 'funded' : settledCount === 0 ? 'skipped' : 'unknown',
 		balanceMist: null,
 		requestedMist,
 		entries,
@@ -373,9 +428,13 @@ export type {
 	AccountFundingResult,
 	AccountFundingRequest,
 	AccountFundingStrategy,
+	AppliedFunding,
+	AppliedFundingEntry,
+	AppliedFundingOutcome,
 	CoinMember,
 	CrossCuttingFundingEntry,
 	CrossCuttingFundingProvider,
+	FundEphemeralDefaultOutcome,
 	ProjectedFunding,
 	ProjectedFundingEntry,
 	SuiFundingEntry,

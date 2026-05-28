@@ -109,12 +109,22 @@ export interface PublishExecutor {
 		readonly packageName: string;
 	}) => Effect.Effect<LocalPackagePublishOutput, PublishError, Scope.Scope>;
 
-	/** Post-publish fullnode/indexer ready-probe. Distilled doc
-	 *  Invariant 5: publish-tx commit precedes index visibility.
-	 *  Polls `getObject(packageId)` until success or a 10s ceiling
-	 *  at ~200ms cadence. Failure raises `PublishError('parse')`
-	 *  per the distilled doc's phase catalog ("stuck indexer"). */
-	readonly waitForReady: (packageId: string) => Effect.Effect<void, PublishError, Scope.Scope>;
+	/** Post-publish fullnode/indexer ready HINT. Distilled doc
+	 *  Invariant 5: publish-tx commit precedes index visibility. This
+	 *  is BEST-EFFORT — the concrete executor swallows transient
+	 *  `getObject` misses (cold index races) because the publisher
+	 *  account's `signAndExecute` already calls `waitForTransaction`
+	 *  before returning, AND the downstream `parse` phase only
+	 *  inspects the publish output. A typed `PublishError('parse')`
+	 *  surfaces only when the `getObject` infrastructure itself
+	 *  faults (network down / SDK throws non-recoverably), NOT when
+	 *  the object is merely not-yet-indexed.
+	 *
+	 *  The "Hint" suffix encodes the contract: callers MUST NOT treat
+	 *  a successful return as "package definitely queryable now". */
+	readonly postPublishReadyHint: (
+		packageId: string,
+	) => Effect.Effect<void, PublishError, Scope.Scope>;
 }
 
 export interface LocalModeInputs {
@@ -312,12 +322,13 @@ export const acquireLocal = (
 				producedOutput = output;
 
 				// Produce 4/5 — wait-for-index. Distilled doc Invariant 5:
-				// publish-tx commit precedes index visibility. Without this
-				// gate, downstream tx builders fail with "Dependent package
-				// not found". Failure surfaces as `PublishError('parse')`
-				// per the distilled doc's phase catalog ("stuck indexer").
+				// publish-tx commit precedes index visibility. This is a
+				// hint-only probe (see `postPublishReadyHint` doc on
+				// `PublishExecutor`): the publisher account's
+				// `signAndExecute` already awaits `waitForTransaction`, so
+				// the typical race is closed before we reach here.
 				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
-				yield* inputs.executor.waitForReady(output.packageId);
+				yield* inputs.executor.postPublishReadyHint(output.packageId);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;

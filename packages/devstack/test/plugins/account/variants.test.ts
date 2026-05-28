@@ -31,7 +31,14 @@ const fakeResolvedAccount = {
 	source: 'real',
 	funding: {
 		requested: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
-		applied: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
+		applied: [
+			{
+				coin: 'SUI',
+				fullCoinType: '0x2::sui::SUI',
+				amount: 1_000_000_000n,
+				outcome: 'funded',
+			},
+		],
 	},
 	signAndExecute: null,
 	withTransactionSigner: null,

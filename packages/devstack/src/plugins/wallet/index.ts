@@ -34,6 +34,7 @@ import { IdentityContext, StackPathsService } from '../../substrate/runtime/path
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { suiResource } from '../sui/index.ts';
+import type { AccountResourceId } from '../account/index.ts';
 import {
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
@@ -62,7 +63,22 @@ import type { AnyPlugin } from '../../substrate/plugin.ts';
  *  placeholder once the full member tuple is known" rewrite uses the
  *  same `attachPluginExpander(...)` seam wallet uses below. */
 
-const ACCOUNT_RESOURCE_ID_PREFIX = 'account/';
+const ACCOUNT_RESOURCE_ID_PREFIX = 'account/' as const;
+
+/** Type-narrowing predicate on a plugin's resource id. The account
+ *  plugin's `AccountResourceId<Name>` template-literal type IS the
+ *  substrate-owned discriminator (12-account.md "resource id flows into
+ *  the on-disk path, the manifest key, container labels, and generated
+ *  TypeScript exports") — every account member's `id` reduces to
+ *  `account/${Name}`. Probing through this typed predicate (vs. a bare
+ *  `startsWith` whose narrowing returns `string`) prevents misclassifying
+ *  a future plugin whose id happens to start with `account/` but is NOT
+ *  the account-plugin shape, AND surfaces a compile error if the
+ *  account-id prefix convention ever changes. */
+const isAccountResourceMember = (
+	member: AnyPlugin,
+): member is AnyPlugin & { readonly id: AccountResourceId<string> } =>
+	member.id.startsWith(ACCOUNT_RESOURCE_ID_PREFIX);
 
 // ----------------------------------------------------------------------
 // Resource identity
@@ -148,11 +164,14 @@ export function wallet(opts?: WalletOptions): AnyPlugin {
 		attachPluginExpander(placeholder, (members) => {
 			// Filter the full composed member tuple to the per-account
 			// resource members the wallet would otherwise have to receive
-			// at factory call. The id-prefix probe is the substrate-owned
-			// convention for account resources.
+			// at factory call. `isAccountResourceMember` narrows on the
+			// `AccountResourceId<Name>` template-literal type — the typed
+			// discriminator the account plugin's barrel exposes via
+			// `AccountResourceId<Name>` — so a future plugin whose id
+			// accidentally starts with `account/` cannot masquerade.
 			const accountMembers: Array<WalletAccountMember> = [];
 			for (const m of members) {
-				if (m.id.startsWith(ACCOUNT_RESOURCE_ID_PREFIX)) {
+				if (isAccountResourceMember(m)) {
 					accountMembers.push(m as unknown as WalletAccountMember);
 				}
 			}

@@ -18,7 +18,8 @@
 import { Effect, FileSystem } from 'effect';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
-import { sealError, type SealError } from './errors.ts';
+import { expectPattern } from '../../substrate/runtime/config-validation.ts';
+import { sealConfigError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { SealSpans } from './spans.ts';
 
@@ -55,19 +56,54 @@ const DEFAULT_TS_SDK_REQUIREMENT = '>=0.4.5';
 // Render — pure string builder
 // ---------------------------------------------------------------------------
 
+/** Allowed character set for raw interpolation into a YAML double-quoted
+ *  string. A `"` would close the quote and let downstream characters
+ *  inject YAML syntax; a backslash would start an escape sequence the
+ *  parser then chokes on. Sui/Seal object ids + node URLs only need
+ *  alphanumerics, `:/_.-`, and `0x` — so the conservative whitelist is
+ *  safe. The `ts_sdk_version_requirement` allows the SemVer comparator
+ *  characters as well. */
+const YAML_INTERP_FIELD_RE = /^[0-9a-zA-Z:/_.\-]+$/;
+const YAML_INTERP_SEMVER_RE = /^[0-9a-zA-Z:/_.\-<>=^~* |!]+$/;
+
+const assertYamlSafe = (field: string, value: string, pattern: RegExp): string =>
+	expectPattern(value, pattern, {
+		field,
+		mkError: sealConfigError,
+		message: `seal.config-render: ${field} contains characters that would break YAML quoting`,
+		hint: `allowed characters: ${pattern.source}`,
+	});
+
 /** Render the key-server config yaml.
  *
  *  Distilled-doc invariant #19: `network: !Devnet` is hardcoded.
  *  This is the "custom chain via node_url" discriminator the
- *  upstream binary expects when devstack supplies its own RPC. */
+ *  upstream binary expects when devstack supplies its own RPC.
+ *
+ *  Each interpolated value is whitelist-asserted BEFORE rendering — a
+ *  `"` in any field would close the YAML quoted string and let
+ *  downstream characters inject syntax. The assertion raises a
+ *  `SealConfigError({phase: 'config-render'})` naming the offending
+ *  field so callers see a typed refusal, not silently-broken YAML. */
 export const renderSealKeyServerConfig = (inputs: SealKeyServerConfigInputs): string => {
-	const tsReq = inputs.tsSdkVersionRequirement ?? DEFAULT_TS_SDK_REQUIREMENT;
+	const sealPackageId = assertYamlSafe('sealPackageId', inputs.sealPackageId, YAML_INTERP_FIELD_RE);
+	const nodeUrl = assertYamlSafe('nodeUrl', inputs.nodeUrl, YAML_INTERP_FIELD_RE);
+	const keyServerObjectId = assertYamlSafe(
+		'keyServerObjectId',
+		inputs.keyServerObjectId,
+		YAML_INTERP_FIELD_RE,
+	);
+	const tsReq = assertYamlSafe(
+		'tsSdkVersionRequirement',
+		inputs.tsSdkVersionRequirement ?? DEFAULT_TS_SDK_REQUIREMENT,
+		YAML_INTERP_SEMVER_RE,
+	);
 	return [
 		'network: !Devnet',
-		`  seal_package: "${inputs.sealPackageId}"`,
-		`node_url: "${inputs.nodeUrl}"`,
+		`  seal_package: "${sealPackageId}"`,
+		`node_url: "${nodeUrl}"`,
 		'server_mode: !Open',
-		`  key_server_object_id: "${inputs.keyServerObjectId}"`,
+		`  key_server_object_id: "${keyServerObjectId}"`,
 		`ts_sdk_version_requirement: "${tsReq}"`,
 		'',
 	].join('\n');

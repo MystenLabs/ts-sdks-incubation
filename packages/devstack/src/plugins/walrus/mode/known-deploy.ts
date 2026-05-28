@@ -174,6 +174,26 @@ export const bootKnownDeployment = (
 	Effect.try({
 		try: () => resolveKnownDeploymentOptions(opts),
 		// `resolveKnownDeploymentOptions` throws our typed config error
-		// shape; map straight back into the typed channel.
-		catch: (err) => err as WalrusConfigError,
+		// shape. STYLE_GUIDE §2 forbids bare error casts; runtime-guard
+		// the `_tag` so an unexpected synchronous throw (e.g. a future
+		// helper that throws a stock `TypeError`) is wrapped instead of
+		// silently mis-tagged as `WalrusConfigError`.
+		catch: (err): WalrusConfigError => {
+			if (
+				typeof err === 'object' &&
+				err !== null &&
+				'_tag' in err &&
+				(err as { readonly _tag?: unknown })._tag === 'WalrusConfigError'
+			) {
+				return err as WalrusConfigError;
+			}
+			return walrusConfigError(
+				'unknown',
+				`walrusKnownDeployment: unexpected non-typed throw inside resolveKnownDeploymentOptions: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+				undefined,
+				err,
+			);
+		},
 	});

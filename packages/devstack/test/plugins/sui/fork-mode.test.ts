@@ -163,7 +163,7 @@ describe('sui fork mode', () => {
 		if (Option.isSome(err)) {
 			expect(err.value._tag).toBe('SuiPluginError');
 			expect(err.value.phase).toBe('fork-impersonate');
-			expect(err.value.message).toContain('does not match impersonated sender');
+			expect(err.value.message).toContain('sender mismatch');
 		}
 	});
 

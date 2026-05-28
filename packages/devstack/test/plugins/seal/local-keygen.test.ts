@@ -68,7 +68,11 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 			events.push('keygen');
 			return {
 				exitCode: 0,
-				stdout: 'Master key: 11112222\nPublic key: 33334444\n',
+				stdout:
+					// 64-char hex (BLS12-381 master key) and 192-char hex
+					// (BLS12-381 public key) — matches the bounded patterns in
+					// `parseSealKeygenOutput`.
+					`Master key: ${'1'.repeat(64)}\nPublic key: ${'3'.repeat(192)}\n`,
 				stderr: '',
 			};
 		}),

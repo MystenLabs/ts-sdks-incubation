@@ -70,11 +70,28 @@ export const validateForkKnownInputs = (inputs: {
 			keyServerUrl: inputs.keyServerUrl,
 		});
 	} catch (err) {
-		throw new Error(
-			`seal.fork-known (upstream=${inputs.upstream}): ${err instanceof Error ? err.message : String(err)}`,
-		);
+		// Re-throw the original tagged error so downstream
+		// `Effect.catchTag('SealConfigError', …)` still matches.
+		// Wrapping in `new Error(…)` would strip the `_tag` and turn
+		// the typed refusal into an untyped runtime crash. Prepend the
+		// upstream context to the message in-place instead.
+		if (isSealConfigError(err)) {
+			throw {
+				...err,
+				message: `seal.fork-known (upstream=${inputs.upstream}): ${err.message}`,
+			};
+		}
+		throw err;
 	}
 };
+
+const isSealConfigError = (
+	value: unknown,
+): value is { readonly _tag: 'SealConfigError'; readonly message: string; [k: string]: unknown } =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { _tag?: unknown })._tag === 'SealConfigError' &&
+	typeof (value as { message?: unknown }).message === 'string';
 
 // ---------------------------------------------------------------------------
 // Mode acquire

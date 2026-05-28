@@ -136,9 +136,26 @@ export interface ProjectedFundingEntry {
 
 export type ProjectedFunding = ReadonlyArray<ProjectedFundingEntry>;
 
+/** Outcome marker carried on each `applied` entry — distinguishes a
+ *  faucet/strategy call that actually moved funds (`'funded'`) from
+ *  the short-circuit case where the existing balance already covered
+ *  the request (`'already-satisfied'`). Downstream projection turns
+ *  this into the `AccountRegistryFundingEntry.status` column so a
+ *  no-faucet-call entry is not mislabeled as "funded".
+ *
+ *  Distilled-doc invariant: the `applied` projection must reflect
+ *  what actually happened — not the user's request shape. */
+export type AppliedFundingOutcome = 'funded' | 'already-satisfied';
+
+export interface AppliedFundingEntry extends ProjectedFundingEntry {
+	readonly outcome: AppliedFundingOutcome;
+}
+
+export type AppliedFunding = ReadonlyArray<AppliedFundingEntry>;
+
 export interface AccountFundingResult {
 	readonly requested: ProjectedFunding;
-	readonly applied: ProjectedFunding;
+	readonly applied: AppliedFunding;
 }
 
 /** Account-bus projection of the substrate funding-request contract
@@ -194,6 +211,14 @@ export interface FundEphemeralDefaultArgs {
 	readonly balanceReader?: FundingBalanceReader;
 }
 
+/** Outcome of `fundEphemeralDefault`. `'skipped'` covers the
+ *  zero-amount no-op; `'already-satisfied'` covers the pre-existing-
+ *  balance short-circuit (no faucet call); `'funded'` covers the
+ *  successful wire path. Callers project this into the `applied`
+ *  shape so the `funded`-vs-`already-satisfied` distinction survives
+ *  to the registry projection. */
+export type FundEphemeralDefaultOutcome = 'funded' | 'already-satisfied' | 'skipped';
+
 /** Apply the default-funding pass for an ephemeral account.
  *
  *  Wiring: yields `StrategyRegistryService` (the R-channel from
@@ -203,7 +228,7 @@ export interface FundEphemeralDefaultArgs {
  *  the address lock around the wire call. */
 export const fundEphemeralDefault = (
 	parts: FundEphemeralDefaultArgs,
-): Effect.Effect<void, AccountAcquireError, StrategyRegistryService> =>
+): Effect.Effect<FundEphemeralDefaultOutcome, AccountAcquireError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		// LOUD AUTO-PROMOTION — distilled-doc invariant: "no silent
 		// surprises". Emit BEFORE attempting the dispatch so the user
@@ -219,7 +244,7 @@ export const fundEphemeralDefault = (
 		// as a no-op; doing the same here avoids a registry lookup +
 		// span emission for the legitimately-no-funding case.
 		if (parts.amountMist <= 0n) {
-			return;
+			return 'skipped' as const;
 		}
 
 		yield* setCurrentPluginPhase('checking SUI funding');
@@ -228,7 +253,7 @@ export const fundEphemeralDefault = (
 			coinType: SUI_FULL_COIN_TYPE,
 		});
 		if (existingBalance !== null && existingBalance >= parts.amountMist) {
-			return;
+			return 'already-satisfied' as const;
 		}
 
 		// Look up the strategy. Sui auto-registers a faucet strategy
@@ -315,6 +340,7 @@ export const fundEphemeralDefault = (
 			[SuiSpans.chain]: parts.chainId,
 			[SuiSpans.mode]: parts.suiMode,
 		});
+		return 'funded' as const;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.fundEphemeralDefault', {
 			attributes: {
@@ -364,13 +390,13 @@ export interface ApplyCrossCuttingFundingArgs {
  *  that do not are wrapped by this dispatcher. */
 export const applyCrossCuttingFunding = (
 	parts: ApplyCrossCuttingFundingArgs,
-): Effect.Effect<ProjectedFunding, AccountAcquireError, StrategyRegistryService> =>
+): Effect.Effect<AppliedFunding, AccountAcquireError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		if (parts.funding.length === 0) {
 			return [];
 		}
 		const registry = yield* StrategyRegistryService;
-		const applied: ProjectedFundingEntry[] = [];
+		const applied: AppliedFundingEntry[] = [];
 
 		for (const entry of parts.funding) {
 			if (entry.amount <= 0n) {
@@ -383,7 +409,7 @@ export const applyCrossCuttingFunding = (
 				coinType: entry.fullCoinType,
 			});
 			if (existingBalance !== null && existingBalance >= entry.amount) {
-				applied.push(entry);
+				applied.push({ ...entry, outcome: 'already-satisfied' });
 				continue;
 			}
 
@@ -493,7 +519,7 @@ export const applyCrossCuttingFunding = (
 				coinLabel: entry.coin,
 				amount: entry.amount,
 			});
-			applied.push(entry);
+			applied.push({ ...entry, outcome: 'funded' });
 		}
 
 		yield* Effect.annotateCurrentSpan({

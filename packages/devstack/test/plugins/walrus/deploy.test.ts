@@ -432,9 +432,9 @@ describe('parseDeployOutput', () => {
 				Effect.succeed({
 					exitCode: 0,
 					stdout: [
-						'package_id: 0xnewpackage',
-						'system_object: 0xnewsystem',
-						'staking_object: 0xnewstaking',
+						'package_id: 0xa1a1a1a1a1a1a1a1',
+						'system_object: 0xb2b2b2b2b2b2b2b2',
+						'staking_object: 0xc3c3c3c3c3c3c3c3',
 					].join('\n'),
 					stderr: '',
 				}),
@@ -445,9 +445,9 @@ describe('parseDeployOutput', () => {
 			);
 
 			expect(result.state).toEqual({
-				walrusPackageId: '0xnewpackage',
-				systemObject: '0xnewsystem',
-				stakingObject: '0xnewstaking',
+				walrusPackageId: '0xa1a1a1a1a1a1a1a1',
+				systemObject: '0xb2b2b2b2b2b2b2b2',
+				stakingObject: '0xc3c3c3c3c3c3c3c3',
 			});
 			expect(requestedObjects).toEqual([]);
 		}),

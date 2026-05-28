@@ -55,11 +55,24 @@ export interface AccountRegistryFunding {
 	readonly entries?: ReadonlyArray<AccountRegistryFundingEntry>;
 }
 
+/** Per-entry funding status — the projection's per-row "did we actually
+ *  hit the faucet?" signal.
+ *
+ *   - `'funded'`            — a wire call ran and balance settled.
+ *   - `'already-satisfied'` — the pre-existing balance covered the
+ *                             request, so no wire call ran.
+ *   - `'skipped'`           — the entry was zero-amount, dropped at
+ *                             the funding-pass boundary, or there was
+ *                             no registered strategy (cross-cutting
+ *                             non-SUI silent-noop).
+ *
+ *  Splitting `'funded'` from `'already-satisfied'` matches the
+ *  applied-projection invariant in `service.ts:858-887`. */
 export interface AccountRegistryFundingEntry {
 	readonly coin: string;
 	readonly fullCoinType: string;
 	readonly amount: string;
-	readonly status: 'funded' | 'skipped';
+	readonly status: 'funded' | 'already-satisfied' | 'skipped';
 }
 
 /** Construct the strategy-contributor decl Account emits for one

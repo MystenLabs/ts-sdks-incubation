@@ -66,6 +66,11 @@ export interface PostgresConnectionTimeout {
 	readonly lastExitCode?: number;
 	readonly lastStdout?: string;
 	readonly lastStderr?: string;
+	/** Underlying typed error from the last probe attempt — populated
+	 *  when the probe itself failed (eg daemon-level container-start
+	 *  error) rather than `pg_isready` returning a non-zero exit. The
+	 *  cause walker reads this to render the actionable hint. */
+	readonly lastError?: unknown;
 }
 
 export const postgresConnectionTimeout = (

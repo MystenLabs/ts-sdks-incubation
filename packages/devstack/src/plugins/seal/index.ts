@@ -48,7 +48,7 @@ import { suiResource } from '../sui/index.ts';
 import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
-import { SEAL_ERROR_TAGS, type SealError } from './errors.ts';
+import { sealError, SEAL_ERROR_TAGS, type SealError } from './errors.ts';
 import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
@@ -215,9 +215,17 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				// bundle. The dir must exist before the key-server's
 				// bind-mounts (config yaml + master-key env-file).
 				const servicePath = path.join(stackPaths.stackRoot, 'seal', resolved.name);
-				yield* fs
-					.makeDirectory(servicePath, { recursive: true })
-					.pipe(Effect.catch(() => Effect.void));
+				yield* fs.makeDirectory(servicePath, { recursive: true }).pipe(
+					Effect.catch((cause) =>
+						Effect.fail(
+							sealError('config-render', {
+								name: resolved.name,
+								message: `seal.config-render: failed to create service directory at ${servicePath} — downstream config + master-key writes would all fail; surfacing the underlying filesystem error.`,
+								cause,
+							}),
+						),
+					),
+				);
 
 				// Cross-container DNS: seal's key-server dials sui RPC via
 				// `host.docker.internal`. The sui plugin binds a brokered

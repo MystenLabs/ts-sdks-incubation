@@ -25,6 +25,8 @@
 // coin instance, so the substrate's compose-time dedup detects collisions
 // cleanly. Mirrors the Package plugin's per-instance resource identity.
 
+import { createHash } from 'node:crypto';
+
 import { Effect } from 'effect';
 
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
@@ -61,6 +63,38 @@ export const coinFundingCapabilityKey = <FullType extends string>(
 export const coinResourceId = <Sym extends string>(symbol: Sym): `coin:${Sym}` => `coin:${symbol}`;
 
 export type CoinResourceId<Sym extends string> = `coin:${Sym}`;
+
+/** Maximum length of the readable prefix in a `coin.known(...)` resource
+ *  id. Two long coin types sharing this prefix length would silently
+ *  collide in the substrate's compose-time dedup (string equality on
+ *  the resource id), so beyond this length we append a short hash of
+ *  the full coin type to disambiguate. */
+const COIN_KNOWN_PREFIX_MAX = 60;
+
+/** Length of the SHA-256 hex suffix appended to long `coin.known(...)`
+ *  resource ids. Eight chars (~32 bits) is the same width used by other
+ *  collision-disambiguation hashes in the package (e.g. router profile,
+ *  fork preimage suffixes). */
+const COIN_KNOWN_HASH_SUFFIX_LEN = 8;
+
+/** Derive a stable, human-readable, collision-free resource-id segment
+ *  for `coin.known(fullCoinType)`. Short types pass through as the
+ *  readable `<addr>_<module>_<witness>` form; long types get a hash
+ *  suffix so two types sharing a 60-char prefix can coexist. */
+const coinKnownResourceKey = (fullCoinType: string): string => {
+	const readable = fullCoinType.replace(/^0x/, '').replace(/::/g, '_');
+	if (readable.length <= COIN_KNOWN_PREFIX_MAX) {
+		return readable;
+	}
+	const hash = createHash('sha256')
+		.update(fullCoinType)
+		.digest('hex')
+		.slice(0, COIN_KNOWN_HASH_SUFFIX_LEN);
+	// `+1` so the divider underscore fits inside the cap; the resulting
+	// id is `<prefix>_<hash>` with total length COIN_KNOWN_PREFIX_MAX +
+	// hash + 1 — bounded and deterministic per input.
+	return `${readable.slice(0, COIN_KNOWN_PREFIX_MAX - COIN_KNOWN_HASH_SUFFIX_LEN - 1)}_${hash}`;
+};
 
 type PackageNameOf<Pkg extends PackageMember> =
 	Pkg extends ResourceRef<`package:${infer Name}`, PackageMemberValue> ? Name : string;
@@ -212,9 +246,13 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
  *  invariant. Resource id uses a deterministic-but-readable derivation of
  *  the coin type so collisions surface at compose time. */
 export const known = <FullType extends string>(fullCoinType: FullType) => {
-	// Derive a resource id from the type: keep it readable but unique. The
-	// substrate's compose-time dedup uses string equality on the id.
-	const id = fullCoinType.replace(/^0x/, '').replace(/::/g, '_').slice(0, 60);
+	// Derive a resource id from the type: keep it readable but unique.
+	// The substrate's compose-time dedup uses string equality on the id,
+	// so two long coin types that share a 60-char prefix MUST NOT collide.
+	// When the projection truncates, append a short hash of the FULL coin
+	// type so the suffix disambiguates the two — the readable prefix
+	// stays human-recognizable while the hash guarantees uniqueness.
+	const id = coinKnownResourceKey(fullCoinType);
 	const coinRef = resource<CoinResourceId<typeof id>, CoinValue>(
 		coinResourceId(id) as CoinResourceId<typeof id>,
 	);

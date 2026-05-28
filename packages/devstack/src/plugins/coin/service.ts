@@ -86,7 +86,17 @@ export interface CoinValue extends ResolvedCoin {
 	/** Centralized funding strategy, present for local package coins
 	 *  whose publisher still owns the TreasuryCap. The coin barrel
 	 *  publishes it under `coinType:<fullCoinType>` so Account funding
-	 *  can mint arbitrary local coins without bespoke example actions. */
+	 *  can mint arbitrary local coins without bespoke example actions.
+	 *
+	 *  The request shape is a narrowed projection of
+	 *  `AccountFundingRequest` (`{address, amount}` only — the coin
+	 *  funding strategy doesn't need the resolved account handle since
+	 *  the TreasuryCap-owning publisher signs the mint). The E channel
+	 *  preserves the tagged vocabulary (`CoinError | ArtifactPublishError`)
+	 *  rather than collapsing to `unknown`, so direct consumers (deepbook,
+	 *  examples) can catchTag on the typed errors. The account-side
+	 *  dispatcher's registry lookup narrows the channel to `unknown` at
+	 *  the registry boundary and reads `_tag` defensively. */
 	readonly fundingStrategy?: {
 		readonly request: (req: {
 			readonly address: string;

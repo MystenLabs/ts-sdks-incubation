@@ -61,16 +61,42 @@ export interface PersistedBlsKeypair {
  *  mention. Mirrors v3's `MASTER_KEY_LINE_RE` (`seal/internal.ts:1343`). */
 const MASTER_KEY_LINE_RE = /^.*master[_\- ]?key.*$/gim;
 
-const MASTER_KEY_REDACTION_RULE: RedactionRule = {
-	kind: 'pattern',
-	pattern: MASTER_KEY_LINE_RE,
-	replacement: '[REDACTED master key]',
-};
+/** Defense-in-depth: any contiguous hex run of 64+ chars is treated as
+ *  a possible BLS12-381 master key (32 bytes = 64 hex chars). The
+ *  label-based pass catches the canonical `Master key: 0x…` format;
+ *  this pass catches stray hex emissions that drop the label (e.g. a
+ *  `log::info!("{}", master)` call site upstream that prints only the
+ *  hex). Bounded at 64+ to avoid false-positives on shorter hex like
+ *  4-byte chain ids or 8-byte object-id prefixes; legitimate Sui
+ *  object ids are 32 bytes but emit as `0x` prefixed where the `0x`
+ *  breaks the `\b` boundary, so the rule still triggers on those —
+ *  this is acceptable since a redacted object id is a tractable bug
+ *  while a leaked master key is not. */
+const HIGH_ENTROPY_HEX_RE = /\b[0-9a-fA-F]{64,}\b/g;
+
+const MASTER_KEY_REDACTION_RULES: ReadonlyArray<RedactionRule> = [
+	// Order matters: redact the labeled line first (replaces the whole
+	// line including the hex), then the standalone-hex pass picks up
+	// anything left over. Because the first pass replaces the full line
+	// with a fixed literal containing no hex, the second pass cannot
+	// double-replace.
+	{
+		kind: 'pattern',
+		pattern: MASTER_KEY_LINE_RE,
+		replacement: '[REDACTED master key]',
+	},
+	{
+		kind: 'pattern',
+		pattern: HIGH_ENTROPY_HEX_RE,
+		replacement: '<REDACTED-HEX-RUN>',
+	},
+];
 
 /** Replace any line containing `master_key` / `master-key` / `masterkey`
- *  (case-insensitive) with the literal `[REDACTED master key]`. Used at
- *  every site that may surface stdout/stderr from `seal-cli`. */
-export const redactMasterKey = (s: string): string => redactText(s, [MASTER_KEY_REDACTION_RULE]);
+ *  (case-insensitive) with `[REDACTED master key]`, AND any standalone
+ *  hex run of 64+ chars with `<REDACTED-HEX-RUN>`. Used at every site
+ *  that may surface stdout/stderr from `seal-cli`. */
+export const redactMasterKey = (s: string): string => redactText(s, MASTER_KEY_REDACTION_RULES);
 
 // ---------------------------------------------------------------------------
 // Output parser — distilled-doc §"Helpers"
@@ -87,8 +113,12 @@ export const parseSealKeygenOutput = (
 	name: string,
 ): Effect.Effect<PersistedBlsKeypair, SealError> => {
 	const stripHex = (s: string): string => (s.startsWith('0x') ? s.slice(2) : s);
-	const masterMatch = stdout.match(/Master key:\s*(0x)?([0-9a-fA-F]+)/);
-	const publicMatch = stdout.match(/Public key:\s*(0x)?([0-9a-fA-F]+)/);
+	// Bounded widths — BLS12-381 master is 32 bytes (64 hex chars);
+	// public key is 96 bytes uncompressed G2 (192 hex chars). The
+	// trailing `\b` prevents a greedy slurp if the upstream binary
+	// ever prints adjacent hex on the same line.
+	const masterMatch = stdout.match(/Master key:\s*(0x)?([0-9a-fA-F]{64})\b/);
+	const publicMatch = stdout.match(/Public key:\s*(0x)?([0-9a-fA-F]{192})\b/);
 	if (!masterMatch || !publicMatch) {
 		return Effect.fail(
 			sealError('keygen', {

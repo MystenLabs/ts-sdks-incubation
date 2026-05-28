@@ -36,7 +36,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { Effect, Ref, Schema, type Scope } from 'effect';
+import { Cause, Effect, Ref, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
 import {
@@ -203,25 +203,51 @@ export const bootActionService = (
 					yield* Effect.annotateCurrentSpan({
 						[ActionSpans.phase]: 'building',
 					});
-					// `inputs.body` is a USER-SUPPLIED Effect — its error channel
-					// is nominally `ActionError`, but bodies can raise non-tagged
-					// throws via `Effect.try`/sync code paths whose `cause` widens
-					// to `unknown`. `Effect.catch` (vs `catchTag`) preserves the
-					// "tag-or-wrap" branch so non-ActionError throws get rebadged
-					// to `phase: 'sign'` without losing the original cause.
+					// `inputs.body` is a USER-SUPPLIED Effect. Two failure
+					// surfaces must collapse onto a single `ActionError`:
+					//
+					//   1. Typed `ActionError` on the failure channel —
+					//      `catchTag('ActionError')` re-raises untouched so
+					//      the original `phase` survives.
+					//   2. Defects (sync `throw` inside the body, `die(...)`)
+					//      bypass typed catches entirely — `catchCause` is
+					//      the only seam that sees them. Defects get
+					//      rebadged to `phase: 'sign'` so a user body that
+					//      throws lands on the typed channel rather than
+					//      crashing the produce step. Interrupt-only causes
+					//      propagate untouched so cancellation semantics
+					//      survive.
 					const receipt: ActionReceipt = yield* inputs.body.pipe(
-						Effect.catch(
-							(cause): Effect.Effect<ActionReceipt, ActionError> =>
-								Effect.fail(
-									(cause as ActionError)?._tag === 'ActionError'
-										? (cause as ActionError)
-										: actionError('sign', {
-												actionName: inputs.actionName,
-												message: `Action '${inputs.actionName}': body Effect failed.`,
-												cause,
-											}),
-								),
-						),
+						Effect.catchCause((cause) => {
+							// 1. Typed `ActionError` on the failure channel —
+							//    re-raise untouched so the original `phase`
+							//    survives the downstream re-wrap step.
+							const failed = Cause.findError(cause);
+							if (failed._tag === 'Success') {
+								return Effect.fail(failed.success);
+							}
+							// 2. Interrupt-only causes propagate untouched so
+							//    cancellation semantics survive.
+							if (Cause.hasInterruptsOnly(cause)) {
+								return Effect.failCause(cause);
+							}
+							// 3. Defects (sync `throw` inside the body, `die(...)`)
+							//    bypass typed catches entirely — `catchCause` is
+							//    the only seam that sees them. Rebadge to
+							//    `phase: 'sign'` so a user body that throws
+							//    lands on the typed channel rather than crashing
+							//    the produce step.
+							const defect = Cause.findDefect(cause);
+							const defectValue =
+								defect._tag === 'Success' ? defect.success : Cause.squash(cause);
+							return Effect.fail(
+								actionError('sign', {
+									actionName: inputs.actionName,
+									message: `Action '${inputs.actionName}': body Effect raised a defect.`,
+									cause: defectValue,
+								}),
+							);
+						}),
 					);
 					yield* Effect.annotateCurrentSpan({
 						[ActionSpans.phase]: 'parsing',

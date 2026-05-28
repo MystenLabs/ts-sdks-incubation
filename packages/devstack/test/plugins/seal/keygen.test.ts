@@ -103,6 +103,55 @@ describe('redactMasterKey — invariant #16 (master-key NEVER in error surfaces)
 		expect(redacted).toContain('Public key: 0xabc');
 		expect(redacted).toContain('Other info');
 	});
+
+	// Defense-in-depth: the label-based pass misses any stray hex run
+	// the upstream binary prints without a `master_key` label nearby
+	// (e.g. a `log::info!("{}", master)` upstream regression). The
+	// secondary high-entropy-hex pass catches any contiguous 64+ char
+	// hex run so the unlabeled leak still surfaces redacted.
+	it('redacts a 64-char hex run that has NO master-key label (high-entropy pass)', () => {
+		// Note: ALL '1' chars makes the line trivially recognisable
+		// for the assertion; the redactor doesn't gate on entropy, only
+		// width — the comment in the source explains the trade-off.
+		const stray = 'b'.repeat(64);
+		const input = `INFO seal-cli: ${stray}\nready`;
+		const redacted = redactMasterKey(input);
+		expect(redacted).not.toContain(stray);
+		expect(redacted).toContain('<REDACTED-HEX-RUN>');
+		// non-secret context survives so log readers still get the
+		// surrounding shape.
+		expect(redacted).toContain('INFO seal-cli:');
+		expect(redacted).toContain('ready');
+	});
+
+	it('redacts a 64+ hex run on its own line', () => {
+		const stray = 'c'.repeat(96);
+		const redacted = redactMasterKey(stray);
+		expect(redacted).toBe('<REDACTED-HEX-RUN>');
+	});
+
+	// False-positive guard: legitimate short hex (e.g. a Sui object id
+	// fragment like `0xabc` or even a 16-char hash) must NOT trip the
+	// hex pass. Only 64+ char contiguous runs are treated as suspect.
+	it('does NOT redact short hex object-id fragments', () => {
+		const input = 'object_id: 0xabc123456789abcd (16 chars)';
+		const redacted = redactMasterKey(input);
+		expect(redacted).toBe(input);
+	});
+
+	// Combined pass: labeled line AND a stray hex run on the same input
+	// — the label-pass owns the labeled line, the hex-pass owns the
+	// stray, neither double-replaces the other.
+	it('handles both labeled line and stray hex without double-replacing', () => {
+		const stray = 'd'.repeat(80);
+		const input = `Master key: 0x${SAMPLE_MASTER}\nleaked: ${stray}\nend`;
+		const redacted = redactMasterKey(input);
+		expect(redacted).not.toContain(SAMPLE_MASTER);
+		expect(redacted).not.toContain(stray);
+		expect(redacted).toContain('[REDACTED master key]');
+		expect(redacted).toContain('<REDACTED-HEX-RUN>');
+		expect(redacted).toContain('end');
+	});
 });
 
 describe('decodeHex — minimal hex → bytes helper', () => {

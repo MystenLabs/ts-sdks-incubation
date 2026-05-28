@@ -64,13 +64,23 @@ export const buildForkImpersonationTransactionBytes = (
 			data.inputs = await Promise.all(data.inputs.map((input) => resolveForkInput(input, client)));
 			return TransactionDataBuilder.restore(data).build();
 		},
-		catch: (cause) =>
-			suiPluginError(
+		catch: (cause) => {
+			// Pass through pre-tagged SuiPluginError (thrown by inner
+			// helpers with structured response fields) so we don't
+			// double-wrap or stringify-leak the response payload.
+			if (isSuiPluginError(cause)) return cause;
+			return suiPluginError(
 				'fork-impersonate',
 				`sui fork mode: failed to build fork impersonation transaction for ${sender}: ${stringifyCause(cause)}`,
 				cause,
-			),
+			);
+		},
 	});
+
+const isSuiPluginError = (value: unknown): value is SuiPluginError =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { _tag?: unknown })._tag === 'SuiPluginError';
 
 const resolveForkInput = async (
 	input: CallArg,
@@ -124,7 +134,9 @@ const objectFromGetObjectResponse = (
 } => {
 	const object = (response as { readonly object?: unknown }).object;
 	if (typeof object !== 'object' || object === null) {
-		throw new Error(`getObject returned no object: ${JSON.stringify(response)}`);
+		throw suiPluginError('fork-impersonate', 'sui fork mode: getObject returned no object', {
+			responseKeys: describeKeys(response),
+		});
 	}
 	const candidate = object as {
 		readonly objectId?: unknown;
@@ -140,7 +152,18 @@ const objectFromGetObjectResponse = (
 		typeof candidate.version !== 'string' ||
 		typeof candidate.digest !== 'string'
 	) {
-		throw new Error(`getObject returned incomplete object ref: ${JSON.stringify(response)}`);
+		throw suiPluginError(
+			'fork-impersonate',
+			'sui fork mode: getObject returned incomplete object ref',
+			{
+				objectKeys: describeKeys(object),
+				missing: {
+					objectId: typeof candidate.objectId !== 'string',
+					version: typeof candidate.version !== 'string',
+					digest: typeof candidate.digest !== 'string',
+				},
+			},
+		);
 	}
 	return {
 		objectId: candidate.objectId,
@@ -159,7 +182,11 @@ const selectForkImpersonationGasPayment = async (
 	const response = await client.listCoins({ owner: sender, limit: 1 });
 	const coin = response.objects[0];
 	if (coin === undefined) {
-		throw new Error(`no SUI gas coins found for ${sender}`);
+		throw suiPluginError(
+			'fork-impersonate',
+			`sui fork mode: no SUI gas coins found for ${sender}`,
+			{ sender, objectCount: response.objects.length },
+		);
 	}
 	return [
 		{
@@ -178,18 +205,31 @@ export const verifyForkImpersonationSender = (
 		try: () => {
 			const actual = TransactionDataBuilder.fromBytes(txBytes).snapshot().sender;
 			if (actual == null) {
-				throw new Error('transaction has no sender');
+				throw suiPluginError(
+					'fork-impersonate',
+					'sui fork mode: refused impersonation transaction — transaction has no sender',
+					{ expectedSender: sender },
+				);
 			}
 			if (normalizeSuiAddress(actual) !== normalizeSuiAddress(sender)) {
-				throw new Error(
-					`transaction sender ${actual} does not match impersonated sender ${sender}`,
+				throw suiPluginError(
+					'fork-impersonate',
+					'sui fork mode: refused impersonation transaction — sender mismatch',
+					{ expectedSender: sender, actualSender: actual },
 				);
 			}
 		},
-		catch: (cause) =>
-			suiPluginError(
+		catch: (cause) => {
+			if (isSuiPluginError(cause)) return cause;
+			return suiPluginError(
 				'fork-impersonate',
 				`sui fork mode: refused impersonation transaction: ${stringifyCause(cause)}`,
 				cause,
-			),
+			);
+		},
 	});
+
+const describeKeys = (value: unknown): ReadonlyArray<string> => {
+	if (typeof value !== 'object' || value === null) return [];
+	return Object.keys(value);
+};

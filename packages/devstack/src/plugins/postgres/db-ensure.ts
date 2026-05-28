@@ -35,6 +35,7 @@ import {
 	postgresConnectionTimeout,
 	type DatabaseCreateFailed,
 	type PostgresConnectionTimeout,
+	type PostgresPluginError,
 } from './errors.ts';
 import { PostgresSpans } from './spans.ts';
 import {
@@ -55,9 +56,15 @@ export interface ExecResult {
 
 /** Exec callable injected by the plugin's service body. Wraps
  *  `ContainerRuntime.exec` (see contract) into the local seam shape so
- *  the retry / existence-check loops here stay runtime-agnostic. */
+ *  the retry / existence-check loops here stay runtime-agnostic.
+ *
+ *  Daemon-level failures surface as `PostgresPluginError`; non-zero
+ *  exit codes (eg `pg_isready` not ready yet) are returned in the
+ *  `ExecResult` for the caller to interpret. */
 export interface ContainerExec {
-	readonly run: (argv: ReadonlyArray<string>) => Effect.Effect<ExecResult>;
+	readonly run: (
+		argv: ReadonlyArray<string>,
+	) => Effect.Effect<ExecResult, PostgresPluginError>;
 }
 
 const READY_PROBE_INTERVAL_MS = 500;
@@ -91,16 +98,19 @@ export const awaitReady = (
 					return exitCodeProbeResult(result);
 				}),
 		}).pipe(
-			Effect.mapError((cause) =>
-				postgresConnectionTimeout({
+			Effect.mapError((cause) => {
+				const lastError =
+					cause instanceof ProbeTimeoutError ? cause.lastError : (cause as unknown);
+				return postgresConnectionTimeout({
 					database,
 					attempts: cause instanceof ProbeTimeoutError ? cause.attempts : attempts,
 					elapsedMs: Date.now() - startedAt,
 					lastExitCode: lastResult?.exitCode,
 					lastStdout: lastResult?.stdout,
 					lastStderr: lastResult?.stderr,
-				}),
-			),
+					...(lastError === undefined ? {} : { lastError }),
+				});
+			}),
 			Effect.withSpan('devstack.plugin.postgres.awaitReady', {
 				attributes: {
 					[PostgresSpans.database]: database,
@@ -131,7 +141,7 @@ export const ensureDatabase = (
 	exec: ContainerExec,
 	user: string,
 	dbName: string,
-): Effect.Effect<void, DatabaseCreateFailed> =>
+): Effect.Effect<void, DatabaseCreateFailed | PostgresPluginError> =>
 	Effect.gen(function* () {
 		// Quote-escape per SQL literal rules (double single-quotes inside
 		// the literal). The plugin's own contract restricts callers to
@@ -189,7 +199,7 @@ export const ensureDatabases = (
 	exec: ContainerExec,
 	user: string,
 	databases: ReadonlyArray<string>,
-): Effect.Effect<void, DatabaseCreateFailed> =>
+): Effect.Effect<void, DatabaseCreateFailed | PostgresPluginError> =>
 	Effect.gen(function* () {
 		for (let i = 1; i < databases.length; i++) {
 			yield* ensureDatabase(exec, user, databases[i]!);

@@ -228,15 +228,22 @@ const stringifyCause = (cause: unknown): string => {
  *  surfaced with stdout/stderr capture for debugging. */
 export const parseDeployOutput = (stdout: string): CachedDeployState | null => {
 	// Match `key: value` (or `key = value`) lines; treat `None` as
-	// "absent" per the upstream walrus-deploy output convention. The
-	// pattern is permissive on the value (`\S+`) — walrus-deploy
-	// versions have varied on the exact hex format, and the substrate's
-	// downstream `ChainProbe` re-validates the id shape anyway.
+	// "absent" per the upstream walrus-deploy output convention.
+	//
+	// Value pattern: `0x<hex>` strictly. The previous `\S+` regex
+	// happily matched values like `None,` (with a trailing comma) or
+	// `[unset]` and passed them through as fake object ids; downstream
+	// `ChainProbe.get(...)` would then issue a `getObject` against
+	// garbage, surfacing a confusing "object not found" instead of a
+	// parse failure. Enforcing the hex shape here makes the parse-
+	// failure surface (`walrusPluginError('deploy', 'parser could not
+	// find ...')`) catch the bad value at its real source.
 	const pick = (k: string): string | undefined => {
 		const re = new RegExp(`(?:^|\\n)\\s*${k}\\s*[:=]\\s*(\\S+)`);
 		const m = re.exec(stdout);
 		const v = m?.[1];
 		if (v === undefined || v === 'None') return undefined;
+		if (!/^0x[0-9a-fA-F]+$/u.test(v)) return undefined;
 		return v;
 	};
 	const walrusPackageId = pick('walrus_package_id') ?? pick('package_id');

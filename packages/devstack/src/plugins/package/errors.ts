@@ -30,7 +30,7 @@ export interface PublishError {
 	/** Source path of the package being published. Populated at every
 	 *  throw site that has it in scope — `KnownPackage` paths set this
 	 *  to the symbolic id; post-publish probe phases (e.g. the
-	 *  `waitForReady` step that only sees the on-chain `packageId`)
+	 *  `postPublishReadyHint` step that only sees the on-chain `packageId`)
 	 *  pass `undefined`. The `mode-local` re-stamp pass back-fills
 	 *  from the outer `inputs.sourcePath` whenever it can. */
 	readonly sourcePath?: string | undefined;
