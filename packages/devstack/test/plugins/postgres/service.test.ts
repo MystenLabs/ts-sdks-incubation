@@ -15,6 +15,8 @@ const identity: Identity = {
 	chain: chainId('sui:local'),
 };
 
+const FAKE_STACK_ROOT = '/tmp/fake-test-stack-root';
+
 const runtimeCapturingPostgresSpec = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
 	ensureImage: () => Effect.succeed({ digest: 'sha256:postgres', tag: 'devstack-postgres:test' }),
 	ensureNetwork: () => Effect.succeed('postgres-net'),
@@ -55,7 +57,7 @@ describe('bootPostgresService', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const specs: EnsureContainerSpec[] = [];
-				yield* bootPostgresService(runtimeCapturingPostgresSpec(specs), identity, {});
+				yield* bootPostgresService(runtimeCapturingPostgresSpec(specs), identity, FAKE_STACK_ROOT, {});
 
 				expect(specs[0]?.stopGraceSeconds).toBe(20);
 			}),
@@ -66,7 +68,7 @@ describe('bootPostgresService', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const specs: EnsureContainerSpec[] = [];
-				yield* bootPostgresService(runtimeCapturingPostgresSpec(specs), identity, {
+				yield* bootPostgresService(runtimeCapturingPostgresSpec(specs), identity, FAKE_STACK_ROOT, {
 					stopGraceSeconds: 45,
 				});
 

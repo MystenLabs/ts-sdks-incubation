@@ -126,21 +126,30 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_STOP_GRACE_SECONDS = 20;
 const POSTGRES_PORT = 5432;
 
-/** Deterministic dev password from `(app, stack)`. Tradeoff
+/** Deterministic dev password from `(app, stack, stackRoot)`. Tradeoff
  *  documented in the distilled doc § Postgres-specific concerns:
  *  fine for a single-user dev tool, foot-gun if `hostPort` is set in
  *  a multi-user environment. The user-supplied `password` override on
  *  `PostgresServiceOptions` is the escape hatch.
  *
- *  The short hash + separator disambiguate (app, stack) pairs whose
- *  sanitized concatenation would collide otherwise — e.g. `("my-app",
- *  "dev")` vs `("my", "appdev")` both sanitize to the same body but
- *  the hash binds the unambiguous boundary. The `\x1f` (US, ASCII 31)
- *  separator is unambiguous because identity strings cannot legally
- *  contain it. */
-export const derivePassword = (app: string, stack: string): string => {
+ *  The short hash + separator disambiguate three collision classes:
+ *  - (app, stack) pairs whose sanitized concatenation would collide
+ *    (e.g. `("my-app", "dev")` vs `("my", "appdev")` both sanitize to
+ *    the same body, but the hash binds the unambiguous boundary).
+ *  - Two checkouts of the SAME `(app, stack)` on the same machine
+ *    (different working directories) — folding `stackRoot` into the
+ *    hash means each checkout's postgres password is distinct, so a
+ *    container started for one checkout cannot be picked up by the
+ *    other's `pg_isready` probe with the right credentials.
+ *  - The `\x1f` (US, ASCII 31) separator between fields is unambiguous
+ *    because identity strings and absolute paths cannot legally
+ *    contain it. */
+export const derivePassword = (app: string, stack: string, stackRoot: string): string => {
 	const body = (app + stack).replace(/[^a-zA-Z0-9]/g, '');
-	const fingerprint = createHash('sha256').update(`${app}\x1f${stack}`).digest('hex').slice(0, 8);
+	const fingerprint = createHash('sha256')
+		.update(`${app}\x1f${stack}\x1f${stackRoot}`)
+		.digest('hex')
+		.slice(0, 8);
 	return `pg-${body}-${fingerprint}`;
 };
 
@@ -150,6 +159,7 @@ const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
  *  values. Pure; safe to call before the Effect body runs. */
 export const resolveOptions = (
 	identity: Identity,
+	stackRoot: string,
 	opts: PostgresServiceOptions,
 ): ResolvedPostgresOptions => {
 	const name = opts.name ?? 'postgres';
@@ -162,7 +172,7 @@ export const resolveOptions = (
 		name,
 		version: opts.version ?? DEFAULT_VERSION,
 		user: opts.user ?? DEFAULT_USER,
-		password: opts.password ?? derivePassword(identity.app, identity.stack),
+		password: opts.password ?? derivePassword(identity.app, identity.stack, stackRoot),
 		databases,
 		hostPort: opts.hostPort,
 		extraNetworks: opts.extraNetworks ?? [],
@@ -240,6 +250,7 @@ const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): Cont
 export const bootPostgresService = (
 	runtime: ContainerRuntime,
 	identity: Identity,
+	stackRoot: string,
 	opts: PostgresServiceOptions,
 ): Effect.Effect<
 	PostgresBootResult,
@@ -248,7 +259,7 @@ export const bootPostgresService = (
 > =>
 	Effect.gen(function* () {
 		const resolved = yield* Effect.try({
-			try: () => resolveOptions(identity, opts),
+			try: () => resolveOptions(identity, stackRoot, opts),
 			catch: (cause) => cause as PostgresConfigError,
 		});
 

@@ -38,7 +38,7 @@ import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
-import { IdentityContext } from '../../substrate/runtime/paths.ts';
+import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 
 import { makeCodegenable } from './codegen.ts';
 import { POSTGRES_ERROR_TAGS, postgresPluginError, type PostgresError } from './errors.ts';
@@ -100,7 +100,8 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				// before this body runs.
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
-				const { handle } = yield* bootPostgresService(runtime, identity, opts);
+				const paths = yield* StackPathsService;
+				const { handle } = yield* bootPostgresService(runtime, identity, paths.stackRoot, opts);
 				return handle;
 			}).pipe(
 				// Distilled-doc § Invariants: already-typed errors must

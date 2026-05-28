@@ -37,6 +37,17 @@ Dead-code purge and substrate race fixes:
 - Cross-process command-channel `ack` / `error` records gain an optional `payload: unknown` field plumbed through `awaitCompletion`. `snapshot.capture` now carries the captured metadata (or failure summary / skipped reason) on the reply directly — the CLI no longer tail-fibers `events.ndjson` for the completion event.
 - Repo-wide Prettier reformat.
 
+User-visible behavior changes (minor-bump rationale):
+
+- **Pyth types removed from the root barrel.** `PythFeed`, `PythHandle`, `PythOptions`, `PythPackageMember`, and `PythPriceFeedId` no longer re-export from `@mysten-incubation/devstack`. They remain reachable via the `DeepbookLocalOptions.pyth` field chain. The value helpers (`pythPriceFeedId`, `DEEP_PRICE_FEED_ID`, `SUI_PRICE_FEED_ID`, `USDC_PRICE_FEED_ID`) are kept because `examples/deepbook-trader/devstack.config.ts` is the market-maker case the architecture permits.
+- **Postgres password format changed.** `derivePassword(app, stack, stackRoot)` now incorporates the stack's on-disk runtime root and an sha256 short hash. Existing dev databases created against the previous `pg-${app+stack}` format will fail to authenticate on first `pg_isready` probe. Either delete the existing container (`docker rm -f`) and let devstack recreate it, OR set `password` explicitly on `PostgresServiceOptions` for stable credentials across the upgrade. Multi-checkout shells of the same `(app, stack)` now derive distinct passwords by design.
+- **CLI argv-parse failures now exit with code 64 (`USAGE`), not 1 (`GENERIC`).** Tests / CI scripts that pattern-match exit codes for "user error vs internal error" should treat 64 the same way they treat the `--help` exit code. `--json` mode now also emits a structured envelope for these failures instead of plain stderr.
+- **`DevstackOptions.stateDir` is now honored.** The field was declared on the type but silently ignored by `runStack` (only `runtimeRoot` was read). Programs that set `defineDevstack({ stateDir })` previously had no effect; they now do. CLI `--state-dir` flag precedence is unchanged.
+- **`setNetworkEnv` now save/restores `process.env.DEVSTACK_NETWORK`.** In-process CLI invocations (tests, embedded use) no longer leak `--network` env state into subsequent calls. Single-process CLI semantics are unchanged.
+- **`stringifyCause` renamed to `formatUnknownError`.** Plugins importing the substrate helper directly need to update their import (canonical path: `substrate/runtime/format-unknown-error.ts`). The function's behavior is unchanged.
+- **Wallet endpoint constant unified.** `WALLET_ENDPOINT_ALIAS` removed; `WALLET_ENDPOINT_KEY` is the single canonical name. All exports surface through the same module paths.
+- **`EndpointEntry.wireProtocol`, `Endpoint.wireProtocol`, `ResolvedEndpoint.wireProtocol`** narrowed from `'http' | 'h2c' | string` to `'http' | 'h2c' | 'tcp'`. Persisted manifests and projections now reject other values at decode time. Plugins emitting custom wire protocols (none ship today) would need to extend the literal union.
+
 dev-wallet:
 
 - `DEVSTACK_WALLET_HTTP_PATH.EXECUTE` removed (devstack-side `/execute` endpoint deleted; the dapp-kit / dev-wallet path bypasses it and the protocol shape didn't match the Sui Wallet Standard).
