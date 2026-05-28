@@ -8,6 +8,7 @@
 
 import { Effect } from 'effect';
 
+import { PER_APP_SHARED_STACK } from '../../../substrate/runtime/managed-container.ts';
 import {
 	type CliError,
 	CliConfirmRequiredError,
@@ -182,11 +183,6 @@ export const groupResourceCountForResources = (
 	(resources.networks ? group.networks : 0) +
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
-
-/** Sentinel that marks a shared group as per-app (versus per-host).
- *  Mirrors the L1 vocabulary at `plugins/sui/chain-build-container.ts`
- *  — the only current producer of this sentinel. */
-const PER_APP_SHARED_STACK = '_per-app_';
 
 /** Apps with at least one live non-shared group — their `_per-app_`
  *  shared resources stay pinned because something under the app is

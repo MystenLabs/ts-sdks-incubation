@@ -76,8 +76,10 @@ export interface ResolvedEndpoint {
 // Playwright contributes nothing of its own here — every per-endpoint
 // fact is substrate-supplied.
 
-export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string =>
-	BUILT_IN_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
+export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string => {
+	const aliases: Readonly<Record<string, string>> = BUILT_IN_ENDPOINT_ALIASES;
+	return aliases[endpointNameOrAlias] ?? endpointNameOrAlias;
+};
 
 const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegistry => {
 	const entries: RuntimeResolvedEndpoint[] = [];

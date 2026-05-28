@@ -34,6 +34,7 @@ import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
@@ -108,9 +109,7 @@ const hydrateCreatedObjects = (
  *  `idOperation: 'Created'`, `mutated` otherwise); we just narrow
  *  to the entries we care about (published + created) and drop the
  *  extras. */
-const publishChangesFromTxResult = (
-	tx: TxResult,
-): ReadonlyArray<PackagePublishObjectChange> => {
+const publishChangesFromTxResult = (tx: TxResult): ReadonlyArray<PackagePublishObjectChange> => {
 	const out: Array<PackagePublishObjectChange> = [];
 	for (const change of tx.objectChanges) {
 		if (typeof change !== 'object' || change === null) continue;
@@ -121,8 +120,7 @@ const publishChangesFromTxResult = (
 		};
 		if (typeof projected.objectId !== 'string') continue;
 		if (projected.type !== 'published' && projected.type !== 'created') continue;
-		const objectType =
-			typeof projected.objectType === 'string' ? projected.objectType : undefined;
+		const objectType = typeof projected.objectType === 'string' ? projected.objectType : undefined;
 		out.push({
 			type: projected.type,
 			objectId: projected.objectId,
@@ -217,84 +215,75 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			});
 			tx.transferObjects([upgradeCapArg], inputs.account.address);
 
-			const { digest, objectChanges } = yield* inputs.account.withTransactionSigner(
-				(lockedSigner) =>
-					Effect.gen(function* () {
-						// Serialise while the account lease is held. Real signers use the SDK resolver;
-						// fork impersonation must build offline with explicit gas fields because the
-						// fork binary does not support the normal gas-selection simulation path.
-						const txBytes =
-							inputs.account.source === 'impersonate'
-								? yield* buildForkImpersonationTransactionBytes(
-										tx,
-										inputs.account.address,
-										inputs.sdk.core,
-									).pipe(
-										Effect.mapError(
-											(cause): PublishError =>
-												publishError('publish-tx', {
-													sourcePath,
-													packageName,
-													message:
-														`Fork impersonation Transaction.build failed for package '${packageName}': ` +
-														cause.message,
-													cause,
-												}),
-										),
-									)
-								: yield* Effect.tryPromise({
-										try: () =>
-											tx.build({ client: inputs.sdk.client }),
-										catch: (cause): PublishError =>
-											publishError('publish-tx', {
-												sourcePath,
-												packageName,
-												message:
-													`Transaction.build failed for package '${packageName}': ` +
-													(cause instanceof Error ? cause.message : String(cause)),
-												cause,
-											}),
-									});
-
-						// Both real-signer and impersonate paths route through the
-						// account's `signAndExecute` (which signs, executes, waits,
-						// and projects to the SDK-shaped `SignAndExecuteResult`
-						// discriminated union). The impersonate path internally
-						// hands off to `fork.impersonate`; the real-signer path
-						// goes through the SDK directly. Either way, callers
-						// dispatch on `$kind` here.
-						const result = yield* lockedSigner.signAndExecute(txBytes).pipe(
-							Effect.mapError(
-								(cause): PublishError =>
+			// Both real-signer and impersonate paths route through the
+			// account's `signAndExecute` (which signs, executes, waits,
+			// and projects to the SDK-shaped `SignAndExecuteResult`
+			// discriminated union). The impersonate path internally
+			// hands off to `fork.impersonate`; the real-signer path
+			// goes through the SDK directly. `signAndDispatch` compacts
+			// the build → sign → execute → $kind dispatch boilerplate.
+			const { digest, objectChanges } = yield* signAndDispatch({
+				signerSource: inputs.account,
+				buildTxBytes: () =>
+					// Serialise while the account lease is held. Real signers use the SDK resolver;
+					// fork impersonation must build offline with explicit gas fields because the
+					// fork binary does not support the normal gas-selection simulation path.
+					inputs.account.source === 'impersonate'
+						? buildForkImpersonationTransactionBytes(
+								tx,
+								inputs.account.address,
+								inputs.sdk.core,
+							).pipe(
+								Effect.mapError(
+									(cause): PublishError =>
+										publishError('publish-tx', {
+											sourcePath,
+											packageName,
+											message:
+												`Fork impersonation Transaction.build failed for package '${packageName}': ` +
+												cause.message,
+											cause,
+										}),
+								),
+							)
+						: Effect.tryPromise({
+								try: () => tx.build({ client: inputs.sdk.client }),
+								catch: (cause): PublishError =>
 									publishError('publish-tx', {
 										sourcePath,
 										packageName,
 										message:
-											`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
-											`(address=${inputs.account.address}): ${
-												cause instanceof Error ? cause.message : String(cause)
-											}`,
+											`Transaction.build failed for package '${packageName}': ` +
+											(cause instanceof Error ? cause.message : String(cause)),
 										cause,
 									}),
-							),
-						);
-						if (result.$kind === 'FailedTransaction') {
-							return yield* Effect.fail(
-								publishError('publish-tx', {
-									sourcePath,
-									packageName,
-									message:
-										`executeTransaction returned FailedTransaction ` +
-										formatExecutedFailure(result.FailedTransaction),
-								}),
-							);
-						}
-						return {
-							digest: result.Transaction.digest,
-							objectChanges: publishChangesFromTxResult(result.Transaction),
-						};
+							}),
+				mapSignError: (cause): PublishError =>
+					publishError('publish-tx', {
+						sourcePath,
+						packageName,
+						message:
+							`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
+							`(address=${inputs.account.address}): ${
+								cause instanceof Error ? cause.message : String(cause)
+							}`,
+						cause,
 					}),
-			);
+				onFailed: (failure) =>
+					Effect.fail(
+						publishError('publish-tx', {
+							sourcePath,
+							packageName,
+							message:
+								`executeTransaction returned FailedTransaction ` + formatExecutedFailure(failure),
+						}),
+					),
+				onSuccess: (txResult: TxResult) =>
+					Effect.succeed({
+						digest: txResult.digest,
+						objectChanges: publishChangesFromTxResult(txResult),
+					}),
+			});
 
 			const published = objectChanges.find((c) => c.type === 'published');
 			const upgradeCap = objectChanges.find(

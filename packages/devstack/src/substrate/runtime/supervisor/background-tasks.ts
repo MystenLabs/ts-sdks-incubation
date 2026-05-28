@@ -7,18 +7,14 @@
 // `running`) so a sibling command can interrupt a running task without
 // racing the fork.
 
-import { Cause, Effect, Exit, Fiber, Ref } from 'effect';
+import { Cause, Effect, Exit, Fiber, Ref, Scope } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineCommand, EngineEvent } from '../../events.ts';
 import { prettyErrorStructured } from '../observability/index.ts';
 import { PostAcquireTaskFailed } from '../post-acquire-tasks.ts';
 import { SupervisorPostAcquireFailed } from './errors.ts';
-import type {
-	SnapshotCaptureTaskState,
-	StackRestartTaskState,
-	SupervisorState,
-} from './state.ts';
+import type { SnapshotCaptureTaskState, StackRestartTaskState, SupervisorState } from './state.ts';
 import { publish } from './wiring.ts';
 
 // Forward reference: the stack-restart background task runs through
@@ -28,7 +24,7 @@ import { publish } from './wiring.ts';
 type HandleCommandRunner = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
-) => Effect.Effect<void, SupervisorPostAcquireFailed, never>;
+) => Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope>;
 
 export const runInjectedCommandHandler = (
 	deps: SupervisorState,
@@ -76,7 +72,7 @@ export const runInjectedCommandHandler = (
 export const startBackgroundSnapshotCapture = (
 	deps: SupervisorState,
 	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
-): Effect.Effect<void, never, never> =>
+): Effect.Effect<void, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		const token = yield* Ref.updateAndGet(deps.snapshotCaptureSeq, (n) => n + 1);
 		const started = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
@@ -118,7 +114,7 @@ export const startBackgroundSnapshotCapture = (
 						: state,
 				),
 			),
-			Effect.forkIn(deps.parentScope),
+			Effect.forkScoped,
 		);
 
 		yield* Ref.update(deps.snapshotCaptureTask, (state) =>
@@ -152,7 +148,7 @@ export const requestBackgroundSnapshotInterrupt = (
 export const startBackgroundStackRestart = (
 	deps: SupervisorState,
 	handleCommand: HandleCommandRunner,
-): Effect.Effect<void, never, never> =>
+): Effect.Effect<void, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		const token = yield* Ref.updateAndGet(deps.stackRestartSeq, (n) => n + 1);
 		const started = yield* Ref.modify(deps.stackRestartTask, (state) =>
@@ -176,7 +172,7 @@ export const startBackgroundStackRestart = (
 						: state,
 				),
 			),
-			Effect.forkIn(deps.parentScope),
+			Effect.forkScoped,
 		);
 
 		yield* Ref.update(deps.stackRestartTask, (state) =>

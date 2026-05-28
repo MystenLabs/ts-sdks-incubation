@@ -29,19 +29,41 @@ import { describe, expect, it } from 'vitest';
 
 const REPO_ROOT = new URL('../../', import.meta.url).pathname;
 
-const SURFACE_DIRS: ReadonlyArray<string> = [
-	'src/api',
-] as const;
+const SURFACE_DIRS: ReadonlyArray<string> = ['src/api'] as const;
 
-/** Extra individual files (relative to repo root) that are in scope but
- *  don't fit the per-directory pattern. */
-const SURFACE_EXTRA_FILES: ReadonlyArray<string> = [
-	'src/plugins/account/index.ts',
-	'src/plugins/deepbook/index.ts',
-	'src/plugins/host-service/index.ts',
-	'src/plugins/host-service/service.ts',
-	'src/plugins/wallet/index.ts',
-] as const;
+/** Extra individual files (relative to repo root) that don't fit the
+ *  glob-walk or per-directory patterns. Every plugin barrel
+ *  (`src/plugins/<name>/index.ts`) is auto-discovered below; list only
+ *  non-barrel files here. */
+const SURFACE_EXTRA_FILES: ReadonlyArray<string> = ['src/plugins/host-service/service.ts'] as const;
+
+/** Auto-discover every plugin barrel under `src/plugins/<name>/index.ts`.
+ *  Files added later (e.g. a new plugin landing in this round) are
+ *  scanned automatically — the static `SURFACE_EXTRA_FILES` list above
+ *  used to miss `coin/`, `walrus/`, `sui/`, etc. */
+const collectPluginBarrels = (): ReadonlyArray<string> => {
+	const root = join(REPO_ROOT, 'src/plugins');
+	const out: Array<string> = [];
+	for (const entry of readdirSync(root)) {
+		const full = join(root, entry);
+		let stat: ReturnType<typeof statSync>;
+		try {
+			stat = statSync(full);
+		} catch {
+			continue;
+		}
+		if (!stat.isDirectory()) continue;
+		const barrel = join(full, 'index.ts');
+		try {
+			if (statSync(barrel).isFile()) {
+				out.push(relative(REPO_ROOT, barrel).replace(/\\/g, '/'));
+			}
+		} catch {
+			// No barrel — skip (some plugin folders may be in-progress).
+		}
+	}
+	return out.sort();
+};
 
 /** The sanctioned-cast manifest. Each entry names the file (relative
  *  to repo root) and the count of `as unknown as` occurrences inside
@@ -150,7 +172,8 @@ const surveySurface = (): Array<SurfaceFinding> => {
 			if (count > 0) out.push({ path: rel, count });
 		}
 	}
-	for (const file of SURFACE_EXTRA_FILES) {
+	const inScopeFiles = [...collectPluginBarrels(), ...SURFACE_EXTRA_FILES];
+	for (const file of inScopeFiles) {
 		const full = join(REPO_ROOT, file);
 		const count = countCasts(readFileSync(full, 'utf8'));
 		if (count > 0) out.push({ path: file, count });
@@ -173,9 +196,7 @@ describe('user-surface `as unknown as` discipline', () => {
 			if (expected === undefined) {
 				newCasts.push(`  - ${path} (${count} cast${count === 1 ? '' : 's'})`);
 			} else if (expected !== count) {
-				driftedCasts.push(
-					`  - ${path} (expected ${expected}, found ${count})`,
-				);
+				driftedCasts.push(`  - ${path} (expected ${expected}, found ${count})`);
 			}
 		}
 		for (const [path, count] of sanctionedByPath) {

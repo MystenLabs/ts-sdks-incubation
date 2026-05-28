@@ -20,6 +20,7 @@ import {
 } from '../account/index.ts';
 import type { SuiSdkShim } from '../sui/index.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import { DeepbookSpans } from './spans.ts';
@@ -113,8 +114,9 @@ export const makeDeepbookDeepFundingStrategy = (
 			);
 			const deepAmountRaw = yield* decimalToRaw(quote.deepRequired, DEEP_SCALAR, 'ceil');
 
-			yield* req.account
-				.withTransactionSigner((lockedSigner) =>
+			yield* signAndDispatch({
+				signerSource: req.account,
+				buildTxBytes: () =>
 					Effect.gen(function* () {
 						const tx = yield* Effect.try({
 							try: () => {
@@ -142,7 +144,7 @@ export const makeDeepbookDeepFundingStrategy = (
 								),
 						});
 
-						const txBytes = yield* Effect.tryPromise({
+						return yield* Effect.tryPromise({
 							try: () => tx.build({ client: opts.suiSdk.client }),
 							catch: (cause): DeepbookPluginError =>
 								deepbookPluginError(
@@ -153,32 +155,24 @@ export const makeDeepbookDeepFundingStrategy = (
 									{ cause },
 								),
 						});
-
-						const result = yield* lockedSigner
-							.signAndExecute(txBytes)
-							.pipe(
-								Effect.mapError(
-									(cause): DeepbookPluginError =>
-										deepbookPluginError(
-											'fund-deep',
-											`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
-											{ cause },
-										),
-								),
-							);
-						if (result.$kind === 'FailedTransaction') {
-							return yield* Effect.fail(
-								deepbookPluginError(
-									'fund-deep',
-									`DeepBook DEEP funding transaction failed on-chain ` +
-										`for account '${req.account.name}' (address=${req.account.address}) ` +
-										formatExecutedFailure(result.FailedTransaction),
-								),
-							);
-						}
 					}),
-				)
-				.pipe(Effect.asVoid);
+				mapSignError: (cause): DeepbookPluginError =>
+					deepbookPluginError(
+						'fund-deep',
+						`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
+						{ cause },
+					),
+				onFailed: (failure) =>
+					Effect.fail(
+						deepbookPluginError(
+							'fund-deep',
+							`DeepBook DEEP funding transaction failed on-chain ` +
+								`for account '${req.account.name}' (address=${req.account.address}) ` +
+								formatExecutedFailure(failure),
+						),
+					),
+				onSuccess: () => Effect.void,
+			});
 		}).pipe(
 			Effect.withSpan('devstack.plugin.deepbook.fundDeep', {
 				attributes: {

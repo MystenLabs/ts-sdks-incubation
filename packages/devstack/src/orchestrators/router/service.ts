@@ -42,6 +42,7 @@ import * as path from 'node:path';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import { connect, DockerHost, DockerSpawner, waitForIp } from '../../runtime/docker/index.ts';
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
+import { logWarningAndIgnore } from '../../substrate/runtime/observability/index.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import { checkHolderLiveness, ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
@@ -923,13 +924,9 @@ export const layerRouterService: Layer.Layer<
 										yield* removeDispatchFile(fs, profile, resolved);
 									}),
 								).pipe(
-									Effect.tapCause((cause) =>
-										Effect.logWarning('router scope-close cleanup failed', {
-											dispatchFileId: resolved.dispatchFileId,
-											cause,
-										}),
-									),
-									Effect.ignore,
+									logWarningAndIgnore('router scope-close cleanup failed', {
+										dispatchFileId: resolved.dispatchFileId,
+									}),
 								);
 							}
 							yield* SubscriptionRef.update(applied, (arr) =>

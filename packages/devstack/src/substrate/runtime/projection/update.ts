@@ -111,16 +111,15 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 			// Per STYLE_GUIDE §20: a misbehaving plugin emitting a
 			// malformed payload must NOT crash the reducer or the
 			// surrounding projection stream. Decode per-kind via the
-			// canonical Schema; on failure, log + skip the slice update
+			// canonical Schema; on failure, drop the slice update
 			// (`lastEvent.at` still advances so the renderer sees the
-			// event was observed).
+			// event was observed). Warning emission is handled by the
+			// Effect-aware seam at the `updateRef` call site so the
+			// logger Layer + redaction apply — the reducer itself
+			// remains pure-data sync, just signaling a decode failure
+			// via the `null` return.
 			if (event.kind === 'account') {
-				const decoded = decodeProjectionPayload(
-					AccountProjectionSchema,
-					event.payload,
-					'account',
-					event.key,
-				);
+				const decoded = tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
 				// `event.payload` (not `decoded`) is forwarded once the schema
 				// has confirmed the structural shape — the runtime brand
 				// (`account/${string}`) is TS-only and Schema can't express
@@ -133,12 +132,7 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 						});
 			}
 			if (event.kind === 'package') {
-				const decoded = decodeProjectionPayload(
-					PackageProjectionSchema,
-					event.payload,
-					'package',
-					event.key,
-				);
+				const decoded = tryDecodeProjectionPayload(PackageProjectionSchema, event.payload);
 				return decoded === null
 					? withTouched({})
 					: withTouched({
@@ -305,17 +299,42 @@ export const declarePackage = (
  * boundaries.
  *
  * Uses `state.lastEvent.seq + 1` for monotonic per-process counts.
+ *
+ * Side-channel: when the event is a `projection.updated` with a
+ * malformed payload, the reducer drops the slice and we emit a
+ * structured warning through the surrounding fiber's logger Layer (so
+ * redaction rules apply). This is the only place in the reducer where
+ * a warning is emitted; the pure `applyEvent` reducer never touches
+ * the logger.
  */
 export const updateRef = (
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	event: EngineEvent,
 ): Effect.Effect<void> =>
-	SubscriptionRef.update(ref, (state) => {
-		const next = applyEvent(state, event);
-		return {
-			...next,
-			lastEvent: { seq: state.lastEvent.seq + 1, at: next.lastEvent.at },
-		};
+	Effect.gen(function* () {
+		// Pre-flight: detect malformed projection-updated payloads so the
+		// warning runs inside the fiber's logger context. The reducer's
+		// own decode runs again under `SubscriptionRef.update` and stays
+		// pure-data sync — Schema decoding is deterministic so a payload
+		// that fails here is the same payload that the reducer drops.
+		if (event.tag === 'projection.updated') {
+			if (event.kind === 'account' || event.kind === 'package') {
+				const schema = event.kind === 'account' ? AccountProjectionSchema : PackageProjectionSchema;
+				const decoded = tryDecodeProjectionPayload(schema, event.payload);
+				if (decoded === null) {
+					yield* Effect.logWarning(
+						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
+					);
+				}
+			}
+		}
+		yield* SubscriptionRef.update(ref, (state) => {
+			const next = applyEvent(state, event);
+			return {
+				...next,
+				lastEvent: { seq: state.lastEvent.seq + 1, at: next.lastEvent.at },
+			};
+		});
 	});
 
 // -----------------------------------------------------------------------------
@@ -323,34 +342,28 @@ export const updateRef = (
 // -----------------------------------------------------------------------------
 
 /**
- * Sync per-kind validator for `projection.updated` payloads. Returns the
- * decoded value on success or `null` on failure (logging a warning via the
- * default logger). The reducer is documented as pure-data sync; the
- * warning is emitted through `Effect.runSync` because no fiber context is
- * available here — the cost is "warnings on bad payloads go to the
- * default logger" which is acceptable for a substrate-blind orchestrator
- * guarding against misbehaving plugins.
+ * Sync per-kind validator for `projection.updated` payloads. Returns
+ * the decoded value on success or `null` on decode failure. Pure-data
+ * sync: no logger access, no `Effect.runSync` — the reducer is
+ * documented as pure, and earlier versions of this seam called
+ * `Effect.runSync(Effect.logWarning(...))` outside any fiber context,
+ * which bypassed the supervisor's logger Layer + redaction. The
+ * Effect-aware `updateRef` wrapper now emits the warning inside the
+ * fiber so redactionRules apply consistently with the rest of the
+ * supervisor.
  *
- * On success the caller still passes `event.payload` to the upsert (not
- * the decoded copy) — the runtime brand types (`account/${string}`,
+ * On success callers still pass `event.payload` to the upsert (not the
+ * decoded copy) — the runtime brand types (`account/${string}`,
  * `package/${string}`) are TS-only and the decoded copy would strip
  * them. The schema acts as a structural guard only.
  */
-const decodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
+const tryDecodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
 	schema: S,
 	payload: unknown,
-	kind: 'account' | 'package',
-	key: string,
 ): S['Type'] | null => {
 	try {
 		return Schema.decodeUnknownSync(schema)(payload);
-	} catch (cause) {
-		Effect.runSync(
-			Effect.logWarning(
-				`projection.updated: dropping malformed ${kind} payload for key=${key}`,
-				cause,
-			),
-		);
+	} catch {
 		return null;
 	}
 };

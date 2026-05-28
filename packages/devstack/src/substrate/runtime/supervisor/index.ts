@@ -31,9 +31,11 @@
 //   - `start-supervisor.ts`   — startSupervisor + supervise +
 //                               runToShutdown.
 
-import type { Fiber } from 'effect';
-
-export { CapabilityFactoryFailed, SupervisorBootError, SupervisorPostAcquireFailed } from './errors.ts';
+export {
+	CapabilityFactoryFailed,
+	SupervisorBootError,
+	SupervisorPostAcquireFailed,
+} from './errors.ts';
 export type { SupervisorError } from './errors.ts';
 export type { SupervisedStack } from './types.ts';
 export type {
@@ -42,11 +44,7 @@ export type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
 } from './state.ts';
-export {
-	runToShutdown,
-	startSupervisor,
-	supervise,
-} from './start-supervisor.ts';
+export { runToShutdown, startSupervisor, supervise } from './start-supervisor.ts';
 export type {
 	SupervisorHandle,
 	SupervisorStartup,
@@ -56,7 +54,3 @@ export type {
 // Re-export of `OrchestratorSinks` mirrors the legacy supervisor.ts
 // surface so existing callers (CLI, e2e tests) keep their import paths.
 export type { OrchestratorSinks } from '../capability-sinks/index.ts';
-
-// Re-export the Fiber namespace type for downstream consumers that
-// imported it transitively from the monolith.
-export type { Fiber };

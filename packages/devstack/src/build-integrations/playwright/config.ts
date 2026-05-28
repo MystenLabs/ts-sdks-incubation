@@ -29,6 +29,7 @@
 // loadable without `@playwright/test` (matching the Vitest helpers'
 // optional-peer pattern).
 
+import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-context.ts';
 
 // -----------------------------------------------------------------------------
@@ -140,7 +141,7 @@ const DEFAULT_TEST_DIR = './e2e';
 const DEFAULT_COMMAND = 'pnpm dev';
 const DEFAULT_WEBSERVER_TIMEOUT_MS = 300_000;
 const DEFAULT_GRACEFUL_SHUTDOWN_MS = 10_000;
-const DEFAULT_ENDPOINT_NAME = 'dev';
+const DEFAULT_ENDPOINT_NAME = BUILT_IN_ENDPOINT_ALIASES.app;
 
 // -----------------------------------------------------------------------------
 // Builders

@@ -1122,8 +1122,23 @@ const identityInputsFromArgv = (
 	for (let i = 0; i < argv.length; i += 1) {
 		const token = argv[i]!;
 		const readValue = (name: string): string | undefined => {
+			// `--name=value` form: trust the literal between `=` and end.
 			if (token.startsWith(`--${name}=`)) return token.slice(name.length + 3);
-			if (token === `--${name}`) return argv[i + 1];
+			// `--name value` form: peek the next token. Reject another
+			// flag token (`--foo`) as the value — it almost certainly
+			// means the user meant `--name <empty>` (typo / forgotten
+			// argument) and quietly absorbing `--foo` as the value
+			// silently demotes a downstream flag.
+			if (token === `--${name}`) {
+				const next = argv[i + 1];
+				if (next === undefined) {
+					throw new Error(`flag --${name} requires a value`);
+				}
+				if (next.startsWith('--')) {
+					throw new Error(`flag --${name} requires a value; got "${next}" which looks like a flag`);
+				}
+				return next;
+			}
 			return undefined;
 		};
 		app = readValue('app') ?? app;

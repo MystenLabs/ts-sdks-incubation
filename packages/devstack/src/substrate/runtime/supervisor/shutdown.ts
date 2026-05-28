@@ -18,9 +18,7 @@
 import { Deferred, Effect, Ref } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
-import {
-	planFullDrain,
-} from '../lifecycle/index.ts';
+import { planFullDrain } from '../lifecycle/index.ts';
 import {
 	requestBackgroundSnapshotInterrupt,
 	requestBackgroundStackRestartInterrupt,
@@ -29,9 +27,7 @@ import type { SupervisorState } from './state.ts';
 import { publish, setCyclePhase } from './wiring.ts';
 import { teardownKeys } from './teardown.ts';
 
-export const handleShutdownRequested = (
-	deps: SupervisorState,
-): Effect.Effect<void, never, never> =>
+export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const { graph, registry, ref, shutdownLatch, logger } = deps;
 		yield* requestBackgroundSnapshotInterrupt(deps);
@@ -42,7 +38,6 @@ export const handleShutdownRequested = (
 			message: 'shutdown requested',
 		});
 		yield* requestBackgroundStackRestartInterrupt(deps);
-		yield* setCyclePhase(ref, 'shutting-down');
 		const plan = planFullDrain(graph);
 		// Uninterruptible covers the Effect-level interrupt a second
 		// SIGINT would inject between teardownKeys and the
@@ -78,7 +73,6 @@ export const handleHardKillRequested = (
 		yield* setCyclePhase(ref, 'shutting-down');
 		yield* Ref.set(shutdownLatch, true);
 		yield* requestBackgroundStackRestartInterrupt(deps);
-		yield* setCyclePhase(ref, 'shutting-down');
 		// Hard-kill path: graceful teardown is owned by the
 		// scope-close finalizer (start-supervisor.ts addFinalizer) which
 		// already runs uninterruptibly. We only need to atomically signal

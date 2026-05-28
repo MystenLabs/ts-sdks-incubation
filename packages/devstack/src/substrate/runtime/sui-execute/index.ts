@@ -53,13 +53,7 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
  *  (return channel). Only transport / protocol failures live in this
  *  taxonomy. See STYLE_GUIDE §2. */
 export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()('SuiExecuteError', {
-	phase: Schema.Literals([
-		'serialize',
-		'sign',
-		'execute',
-		'no-digest',
-		'wait-for-finality',
-	]),
+	phase: Schema.Literals(['serialize', 'sign', 'execute', 'no-digest', 'wait-for-finality']),
 	signerName: Schema.String,
 	signerAddress: Schema.String,
 	message: Schema.String,
@@ -410,5 +404,18 @@ const decodeMessage = (message: string): string => {
  *  for this case. */
 export const isSuiStaleObjectVersionError = (err: SuiExecuteError): boolean => {
 	const message = decodeMessage(err.message);
-	return message.includes('needs to be rebuilt because object') && message.includes('current version');
+	return (
+		message.includes('needs to be rebuilt because object') && message.includes('current version')
+	);
 };
+
+// ---------------------------------------------------------------------------
+// Sibling helpers
+// ---------------------------------------------------------------------------
+
+export {
+	signAndDispatch,
+	type SignAndDispatchResult,
+	type SignAndDispatchSigner,
+	type TransactionSignerSource,
+} from './sign-and-dispatch.ts';

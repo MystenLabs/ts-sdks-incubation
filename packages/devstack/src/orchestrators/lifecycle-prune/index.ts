@@ -44,10 +44,9 @@ import {
 	type StaleNetworkEndpoint,
 } from '../../runtime/docker/index.ts';
 import { checkHolderLiveness, readRoster } from '../../substrate/runtime/cross-process/index.ts';
-import {
-	ROUTER_SHARED_APP,
-	removeRouterProfileStateForDockerStack,
-} from '../router/cleanup.ts';
+import { PER_APP_SHARED_STACK } from '../../substrate/runtime/managed-container.ts';
+import { logDebugAndFallback } from '../../substrate/runtime/observability/index.ts';
+import { ROUTER_SHARED_APP, removeRouterProfileStateForDockerStack } from '../router/cleanup.ts';
 import { ROUTER_KIND_LABEL_VALUE } from '../router/traefik-container.ts';
 import { failPhase, type LifecyclePruneError } from './errors.ts';
 
@@ -196,25 +195,19 @@ const livePidsForStack = (
 	if (!existsSync(rosterFile)) return Effect.succeed([]);
 	return Effect.gen(function* () {
 		const doc = yield* readRoster(rosterFile).pipe(
-			Effect.tapCause((cause) =>
-				Effect.logDebug('lifecycle-prune: roster read failed; treating as empty', {
-					rosterFile,
-					cause,
-				}),
-			),
-			Effect.catch(() => Effect.succeed(null)),
+			logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
+				rosterFile,
+			}),
 		);
 		if (doc === null) return [];
 		const pids: Array<number> = [];
 		for (const holder of doc.holders) {
 			const live = yield* checkHolderLiveness(holder).pipe(
-				Effect.tapCause((cause) =>
-					Effect.logDebug('lifecycle-prune: liveness check failed; assuming alive', {
-						pid: holder.pid,
-						cause,
-					}),
+				logDebugAndFallback(
+					'alive' as const,
+					'lifecycle-prune: liveness check failed; assuming alive',
+					{ pid: holder.pid },
 				),
-				Effect.catch(() => Effect.succeed('alive' as const)),
 			);
 			if (live === 'alive') pids.push(holder.pid);
 		}
@@ -223,7 +216,7 @@ const livePidsForStack = (
 };
 
 const isSharedGroup = (app: string, stack: string): boolean =>
-	stack === '_per-app_' || app === ROUTER_SHARED_APP;
+	stack === PER_APP_SHARED_STACK || app === ROUTER_SHARED_APP;
 
 const isRouterGroup = (group: Pick<LifecyclePruneGroup, 'app' | 'stack'>): boolean =>
 	group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
@@ -398,13 +391,18 @@ export const runLifecyclePrune = (
 		}
 
 		if (!selection.dryRun) {
-			for (const group of prunableGroups) {
-				if (!isRouterGroup(group)) continue;
-				yield* removeRouterProfileStateForDockerStack({
-					runtimeRoot: options.runtimeRoot,
-					routerStack: group.stack,
-				});
-			}
+			yield* Effect.gen(function* () {
+				for (const group of prunableGroups) {
+					if (!isRouterGroup(group)) continue;
+					yield* removeRouterProfileStateForDockerStack({
+						runtimeRoot: options.runtimeRoot,
+						routerStack: group.stack,
+					});
+				}
+			}).pipe(
+				Effect.provide(NodeFileSystem.layer),
+				Effect.withSpan('orchestrator.lifecycle-prune.removeRouterProfileState'),
+			);
 		}
 
 		return {

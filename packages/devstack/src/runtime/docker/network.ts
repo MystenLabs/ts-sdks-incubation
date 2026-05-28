@@ -124,25 +124,26 @@ const inspectNetwork = (
 				}),
 			);
 		}
-		try {
-			const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
-				source: `docker network inspect ${name}`,
-				missingMessage: 'inspect returned an empty result',
-				mkError: (issue) =>
-					new DockerInspectDecodeFailed({
-						resource: 'network',
-						name,
-						detail:
-							issue.message === 'inspect returned an empty result'
-								? issue.message
-								: 'inspect returned malformed network JSON',
-						cause: issue.cause,
-					}),
-			});
-			return { id: decoded.Id, labels: readLabels(decoded.Labels) };
-		} catch (cause) {
-			return yield* Effect.fail(cause as DockerRuntimeError);
-		}
+		return yield* Effect.try({
+			try: (): NetworkInspectFacts => {
+				const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
+					source: `docker network inspect ${name}`,
+					missingMessage: 'inspect returned an empty result',
+					mkError: (issue) =>
+						new DockerInspectDecodeFailed({
+							resource: 'network',
+							name,
+							detail:
+								issue.message === 'inspect returned an empty result'
+									? issue.message
+									: 'inspect returned malformed network JSON',
+							cause: issue.cause,
+						}),
+				});
+				return { id: decoded.Id, labels: readLabels(decoded.Labels) };
+			},
+			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+		});
 	});
 
 const assertNetworkOwned = (
@@ -303,22 +304,23 @@ export const listAttachedContainers = (
 				}),
 			);
 		}
-		try {
-			const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
-				source: `docker network inspect ${name}`,
-				missingMessage: 'inspect returned an empty result',
-				mkError: (issue) =>
-					new DockerInspectDecodeFailed({
-						resource: 'network',
-						name,
-						detail: 'inspect returned malformed network JSON',
-						cause: issue.cause,
-					}),
-			});
-			return readContainers(decoded.Containers);
-		} catch (cause) {
-			return yield* Effect.fail(cause as DockerRuntimeError);
-		}
+		return yield* Effect.try({
+			try: (): ReadonlyArray<NetworkAttachedEndpoint> => {
+				const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
+					source: `docker network inspect ${name}`,
+					missingMessage: 'inspect returned an empty result',
+					mkError: (issue) =>
+						new DockerInspectDecodeFailed({
+							resource: 'network',
+							name,
+							detail: 'inspect returned malformed network JSON',
+							cause: issue.cause,
+						}),
+				});
+				return readContainers(decoded.Containers);
+			},
+			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+		});
 	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
 
 // -----------------------------------------------------------------------------

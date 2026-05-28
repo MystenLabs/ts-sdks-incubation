@@ -21,15 +21,15 @@
 //     heartbeat (no backlog catch-up)". The seam is exposed via
 //     `formatHeartbeat`.
 
-import { Effect, Stream, SubscriptionRef } from 'effect';
+import { Effect, Schema, Stream, SubscriptionRef } from 'effect';
 
 import type { Renderer } from '../../contracts/renderer.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
-import type {
-	AccountProjection,
-	PackageProjection,
-	SubscribableState,
-} from '../../substrate/projection.ts';
+import type { SubscribableState } from '../../substrate/projection.ts';
+import {
+	AccountProjectionSchema,
+	PackageProjectionSchema,
+} from '../../substrate/runtime/projection/persisted.ts';
 import {
 	accountLine,
 	endpointLine,
@@ -166,7 +166,15 @@ const payloadFor = (event: EngineEvent): string => {
 			});
 		case 'projection.updated':
 			if (event.kind === 'account') {
-				const account = event.payload as AccountProjection;
+				// STYLE_GUIDE §19 — substrate-side `decodeUnknownSync` so a
+				// malformed payload skips the line rather than rendering
+				// garbage (`Schema.decodeUnknownSync(...) as A` bare-cast
+				// is banned). The reducer at
+				// `substrate/runtime/projection/update.ts` performs the
+				// same decode; we repeat it here because the renderer
+				// reads the raw event stream, not the reduced state slice.
+				const account = tryDecodeProjection(AccountProjectionSchema, event.payload);
+				if (account === null) return kv({ kind: event.kind, key: event.key });
 				return kv({
 					key: account.key,
 					row: account.rowKey ?? '',
@@ -183,7 +191,8 @@ const payloadFor = (event: EngineEvent): string => {
 				});
 			}
 			if (event.kind === 'package') {
-				const pkg = event.payload as PackageProjection;
+				const pkg = tryDecodeProjection(PackageProjectionSchema, event.payload);
+				if (pkg === null) return kv({ kind: event.kind, key: event.key });
 				return kv({
 					key: pkg.key,
 					row: pkg.rowKey ?? '',
@@ -274,6 +283,27 @@ const kv = (record: Readonly<Record<string, unknown>>): string =>
 const quoteIfNeeded = (s: string): string => (/[\s"]/.test(s) ? quote(s) : s);
 
 const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;
+
+/**
+ * Structural validate-then-narrow for `projection.updated` payloads
+ * before they are formatted as text. Mirrors
+ * `tryDecodeProjectionPayload` in the substrate reducer — returns
+ * `null` on schema-decode failure so the renderer drops the slice
+ * rather than printing fields off a malformed object. The substrate
+ * reducer emits the `Effect.logWarning` for the same payload (the
+ * decode is deterministic), so we stay silent here to avoid double
+ * logging.
+ */
+const tryDecodeProjection = <S extends Schema.Decoder<unknown>>(
+	schema: S,
+	payload: unknown,
+): S['Type'] | null => {
+	try {
+		return Schema.decodeUnknownSync(schema)(payload);
+	} catch {
+		return null;
+	}
+};
 
 // -----------------------------------------------------------------------------
 // Internals — initial sweep

@@ -22,7 +22,7 @@
 import { Effect } from 'effect';
 
 import { acquireLive, validateLiveInputs, type KnownNetwork } from './live.ts';
-import { sealError, type SealError } from '../errors.ts';
+import type { SealError } from '../errors.ts';
 import type { SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
@@ -40,39 +40,56 @@ export const resolveDeploymentNetwork = (upstream: ForkUpstream): KnownNetwork =
 // Inputs
 // ---------------------------------------------------------------------------
 
+/** Pre-validated fork-known inputs. Symmetric with the live mode's
+ *  `{ name, resolved }` shape — the barrel resolves
+ *  `upstream → KnownNetwork → validated tuple` synchronously at
+ *  factory time so both branches reach `acquireLive` with the same
+ *  structural envelope. */
 export interface ForkKnownInputs {
 	readonly name: string;
 	readonly upstream: ForkUpstream;
-	/** Explicit overrides (rare — the wrapped upstream's known
-	 *  deployment is usually authoritative). */
+	readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+}
+
+/** Resolve the fork-known overrides + upstream-derived defaults into
+ *  a validated tuple. Pure synchronous projection — mirrors the
+ *  factory-boundary `validateLiveInputs` call in `index.ts` for the
+ *  live branch. Throws on missing fields after fallback (matches the
+ *  live branch's behaviour — see `validateLiveInputs`). */
+export const validateForkKnownInputs = (inputs: {
+	readonly name: string;
+	readonly upstream: ForkUpstream;
 	readonly objectId?: string;
 	readonly keyServerUrl?: string;
-}
+}): { readonly objectId: string; readonly keyServerUrl: string } => {
+	try {
+		return validateLiveInputs({
+			name: inputs.name,
+			network: resolveDeploymentNetwork(inputs.upstream),
+			objectId: inputs.objectId,
+			keyServerUrl: inputs.keyServerUrl,
+		});
+	} catch (err) {
+		throw new Error(
+			`seal.fork-known (upstream=${inputs.upstream}): ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+};
 
 // ---------------------------------------------------------------------------
 // Mode acquire
 // ---------------------------------------------------------------------------
 
-/** Acquire body for the fork-known mode. Validates upstream-derived
- *  inputs and delegates the read-side projection to live mode. */
+/** Acquire body for the fork-known mode. Inputs already pre-validated
+ *  by the barrel via `validateForkKnownInputs`; delegates the
+ *  read-side projection to live mode. The `upstream` field rides
+ *  through for downstream span attribution.
+ *
+ *  Error channel kept typed as `SealError` for forward-compatibility
+ *  with any future fallible work this body needs to do (currently
+ *  `acquireLive` is `Effect.sync` so the channel is effectively
+ *  `never`). */
 export const acquireForkKnown = (
 	inputs: ForkKnownInputs,
 ): Effect.Effect<SealKnownResolved, SealError> =>
-	Effect.gen(function* () {
-		const validated = yield* Effect.try({
-			try: () =>
-				validateLiveInputs({
-					name: inputs.name,
-					network: resolveDeploymentNetwork(inputs.upstream),
-					objectId: inputs.objectId,
-					keyServerUrl: inputs.keyServerUrl,
-				}),
-			catch: (err): SealError =>
-				sealError('seal', {
-					name: inputs.name,
-					message: `seal.fork-known (upstream=${inputs.upstream}): ${err instanceof Error ? err.message : String(err)}`,
-					cause: err,
-				}),
-		});
-		return yield* acquireLive({ name: inputs.name, resolved: validated });
-	});
+	acquireLive({ name: inputs.name, resolved: inputs.resolved });

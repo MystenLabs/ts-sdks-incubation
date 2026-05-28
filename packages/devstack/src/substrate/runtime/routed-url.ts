@@ -98,10 +98,13 @@ export const routedHostname = (
 				return `${roleSafe}.${app}.localhost`;
 			}
 			const stackSafe = identity.stack.toLowerCase();
-			// `validateLabel` runs *after* lower-casing so the stack name
-			// (Identity brand) is held to the same character set as the
-			// role and the app. Boot validation should already enforce
-			// this; we re-check defensively below.
+			// The stack name comes from the Identity brand, which boot
+			// validation already constrains to the same RFC-1035 label
+			// shape as `app` and `role`. We do not re-validate here —
+			// `validateLabel(folded)` above already proved any label
+			// failure would have surfaced upstream, and earlier revisions
+			// of this code added a defensive re-check that was unreachable
+			// in practice.
 			return `${roleSafe}.${stackSafe}.${app}.localhost`;
 		})();
 		if (assembled.length > MAX_HOSTNAME_LEN) {
@@ -112,9 +115,6 @@ export const routedHostname = (
 					detail: `exceeds ${MAX_HOSTNAME_LEN}-char limit`,
 				}),
 			);
-		}
-		if (identity.stack !== DEFAULT_STACK) {
-			yield* validateLabel('hostname', identity.stack.toLowerCase());
 		}
 		return assembled;
 	});
@@ -141,8 +141,7 @@ export const renderUrl = (parts: {
 	readonly port: number;
 	readonly path?: string;
 }): string => {
-	const scheme =
-		parts.protocol === 'https' ? 'https' : parts.protocol === 'tcp' ? 'tcp' : 'http';
+	const scheme = parts.protocol === 'https' ? 'https' : parts.protocol === 'tcp' ? 'tcp' : 'http';
 	const path = parts.path ?? '';
 	return `${scheme}://${parts.hostname}:${parts.port}${path}`;
 };

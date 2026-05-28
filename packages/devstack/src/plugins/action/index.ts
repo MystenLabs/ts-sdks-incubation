@@ -208,24 +208,22 @@ export const action = <const Name extends string, const DependsOn extends Action
 				};
 
 				const receipt = yield* bootActionService(publisher, probe, acquireInputs).pipe(
-					Effect.catch((err): Effect.Effect<ActionReceipt, ActionError> => {
-						// Re-wrap the ArtifactPublishError into an
-						// ActionError so downstream consumers always see
-						// the typed `ActionError` shape. The detail
-						// already includes the phase + message from the
-						// produce-side mapper.
-						if ((err as { _tag?: string })._tag === 'ActionError') {
-							return Effect.fail(err as ActionError);
-						}
-						const detail =
-							(err as { detail?: string }).detail ?? `Action '${name}': substrate failure.`;
-						return Effect.fail(
-							actionError('sign', {
-								actionName: name,
-								message: detail,
-								cause: err,
-							}),
-						);
+					// `catchTags` narrows on the `_tag` discriminant so each
+					// branch's handler sees the typed shape directly. The
+					// produce-side mapper already stamped ActionError's
+					// phase/message; the substrate's ArtifactPublishError
+					// gets re-wrapped so downstream consumers always see the
+					// typed `ActionError` shape.
+					Effect.catchTags({
+						ActionError: (err) => Effect.fail(err),
+						ArtifactPublishError: (err) =>
+							Effect.fail(
+								actionError('sign', {
+									actionName: name,
+									message: err.detail,
+									cause: err,
+								}),
+							),
 					}),
 				);
 				return receipt;

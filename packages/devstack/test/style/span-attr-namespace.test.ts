@@ -60,21 +60,85 @@ const collectPluginFiles = (dir: string, acc: Array<string>): Array<string> => {
 
 /** Project blocks containing `annotateCurrentSpan({ ... })` /
  *  `annotateLogs({ ... })` / `attributes: { ... }` and return their
- *  contents. Naive single-line + simple-multi-line scan — fine for the
- *  plugin code's actual usage shape. */
+ *  contents. Walks the source with a depth counter so blocks containing
+ *  nested `{...}` (structured payload values, inline object literals)
+ *  are captured in full — the earlier `\{([^}]*)\}` regex silently
+ *  skipped any block with a brace before the closing one. */
 const extractKeyExpressionBlocks = (source: string): Array<string> => {
 	const blocks: Array<string> = [];
-	const patterns = [
-		/annotateCurrentSpan\(\s*\{([^}]*)\}/g,
-		/annotateLogs\(\s*\{([^}]*)\}/g,
-		/attributes:\s*\{([^}]*)\}/g,
+	const openers: ReadonlyArray<{ readonly pattern: RegExp }> = [
+		{ pattern: /annotateCurrentSpan\(\s*\{/g },
+		{ pattern: /annotateLogs\(\s*\{/g },
+		{ pattern: /attributes:\s*\{/g },
 	];
-	for (const pattern of patterns) {
-		for (const match of source.matchAll(pattern)) {
-			blocks.push(match[1] ?? '');
+	for (const { pattern } of openers) {
+		pattern.lastIndex = 0;
+		while (pattern.exec(source) !== null) {
+			const inner = readBalancedBraceBody(source, pattern.lastIndex);
+			if (inner !== null) blocks.push(inner);
 		}
 	}
 	return blocks;
+};
+
+/** Starting AFTER an opening `{`, scan forward counting nested braces
+ *  while ignoring braces that appear inside string / template /
+ *  comment lexemes. Returns the substring between the matched braces,
+ *  or `null` if no balanced close is found (malformed source). */
+const readBalancedBraceBody = (source: string, start: number): string | null => {
+	let depth = 1;
+	let i = start;
+	while (i < source.length) {
+		const ch = source[i]!;
+		const next = source[i + 1] ?? '';
+		// Line comment — skip to end-of-line.
+		if (ch === '/' && next === '/') {
+			while (i < source.length && source[i] !== '\n') i += 1;
+			continue;
+		}
+		// Block comment — skip to */
+		if (ch === '/' && next === '*') {
+			i += 2;
+			while (i < source.length && !(source[i] === '*' && source[i + 1] === '/')) i += 1;
+			i += 2;
+			continue;
+		}
+		// String / template — skip through, honoring backslash escapes.
+		if (ch === '"' || ch === "'" || ch === '`') {
+			const quote = ch;
+			i += 1;
+			while (i < source.length) {
+				if (source[i] === '\\') {
+					i += 2;
+					continue;
+				}
+				if (source[i] === quote) {
+					i += 1;
+					break;
+				}
+				// Template substitution `${...}` — skip a balanced inner.
+				if (quote === '`' && source[i] === '$' && source[i + 1] === '{') {
+					i += 2;
+					let innerDepth = 1;
+					while (i < source.length && innerDepth > 0) {
+						if (source[i] === '{') innerDepth += 1;
+						else if (source[i] === '}') innerDepth -= 1;
+						i += 1;
+					}
+					continue;
+				}
+				i += 1;
+			}
+			continue;
+		}
+		if (ch === '{') depth += 1;
+		else if (ch === '}') {
+			depth -= 1;
+			if (depth === 0) return source.slice(start, i);
+		}
+		i += 1;
+	}
+	return null;
 };
 
 interface Offender {
@@ -107,6 +171,47 @@ const findOffenders = (): Array<Offender> => {
 	}
 	return offenders;
 };
+
+describe('plugin span-attribute namespace discipline — extractor', () => {
+	it('captures blocks that contain nested object literals', () => {
+		const source = `
+			Effect.annotateCurrentSpan({
+				'wallet.token': value,
+				meta: { nested: 'ok' },
+			});
+		`;
+		const blocks = extractKeyExpressionBlocks(source);
+		expect(blocks.length).toBe(1);
+		expect(blocks[0]).toContain("'wallet.token'");
+		expect(blocks[0]).toContain("nested: 'ok'");
+	});
+
+	it('honors string-literal braces (does not split inside template strings)', () => {
+		const source = `
+			Effect.annotateCurrentSpan({
+				'sui.chain': \`prefix \${value}-suffix\`,
+				note: '} not a close }',
+			});
+		`;
+		const blocks = extractKeyExpressionBlocks(source);
+		expect(blocks.length).toBe(1);
+		expect(blocks[0]).toContain("'sui.chain'");
+		expect(blocks[0]).toContain('not a close');
+	});
+
+	it('captures attributes blocks with nested objects on multiple lines', () => {
+		const source = `
+			withSpan('foo', {
+				attributes: {
+					'walrus.aggregator': { url, port },
+					'walrus.publisher': otherValue,
+				},
+			})
+		`;
+		const blocks = extractKeyExpressionBlocks(source);
+		expect(blocks.some((b) => b.includes("'walrus.publisher'"))).toBe(true);
+	});
+});
 
 describe('plugin span-attribute namespace discipline', () => {
 	it('plugin code MUST NOT pass plugin-prefixed string literals as span attribute keys', () => {

@@ -117,29 +117,20 @@ export interface ActionAcquireInputs {
  *  (per `DynamicDiscriminator`) collapse onto
  *  `Effect<string | undefined, ActionError>`. */
 export const resolveDiscriminator = <Deps>(
-	actionName: string,
+	_actionName: string,
 	dynamic: DynamicDiscriminator<Deps> | undefined,
 	ctx: ActionBuildContext,
 	deps: Deps,
 ): Effect.Effect<string | undefined, ActionError> => {
 	if (dynamic === undefined) return Effect.succeed(undefined);
 	if (typeof dynamic === 'string') return Effect.succeed(dynamic);
-	return dynamic(ctx, deps).pipe(
-		Effect.catch(
-			(cause): Effect.Effect<string, ActionError> =>
-				Effect.fail(
-					// If the user's discriminator Effect itself raises an
-					// ActionError, surface it verbatim. Otherwise wrap.
-					(cause as ActionError)._tag === 'ActionError'
-						? (cause as ActionError)
-						: actionError('discriminator', {
-								actionName,
-								message: `Action '${actionName}': discriminator Effect failed.`,
-								cause,
-							}),
-				),
-		),
-	);
+	// The dynamic discriminator's error channel is typed `ActionError`
+	// (see `DynamicDiscriminator<Deps>` in `discriminator.ts`), so user
+	// failures already arrive in the tagged shape — no wrap or
+	// re-projection needed. (Prior code ran `Effect.catch` to fall
+	// through tag-or-wrap, but the channel is exhaustively
+	// ActionError; the wrap branch was unreachable.)
+	return dynamic(ctx, deps);
 };
 
 /** Build the verify-probe Effect for a given cached digest. Lenient
@@ -202,6 +193,12 @@ export const bootActionService = (
 				yield* Effect.annotateCurrentSpan({
 					[ActionSpans.phase]: 'building',
 				});
+				// `inputs.body` is a USER-SUPPLIED Effect — its error channel
+				// is nominally `ActionError`, but bodies can raise non-tagged
+				// throws via `Effect.try`/sync code paths whose `cause` widens
+				// to `unknown`. `Effect.catch` (vs `catchTag`) preserves the
+				// "tag-or-wrap" branch so non-ActionError throws get rebadged
+				// to `phase: 'sign'` without losing the original cause.
 				const receipt: ActionReceipt = yield* inputs.body.pipe(
 					Effect.catch(
 						(cause): Effect.Effect<ActionReceipt, ActionError> =>

@@ -25,9 +25,10 @@
 // via `globalTeardown` indirection — we return the teardown so the
 // preset's `globalTeardown` can call it).
 
-import { readFileSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
+import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { discoverSingleStackManifestPath } from '../runtime/discover.ts';
 import {
 	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
@@ -146,45 +147,108 @@ const readContextForSetup = (options: DefineGlobalSetupOptions): StackContext =>
 	}
 };
 
-const hasCodegenEmittedEvent = (manifestPath: string): boolean => {
-	const eventsPath = join(dirname(manifestPath), 'events.ndjson');
-	let raw: string;
+/**
+ * Per-poll state for tail-following `events.ndjson`. We read only the
+ * bytes appended since the previous poll, then carry forward an
+ * unterminated trailing partial line until the next call. Two
+ * cross-poll counters track the latest `endpoint.registered name=app`
+ * and `codegen.emitted` line numbers — codegen is fresh only when its
+ * latest sighting is AFTER the latest app-endpoint registration (a
+ * restart re-registers the endpoint, invalidating an earlier codegen).
+ */
+interface CodegenWatchState {
+	offset: number;
+	lineIndex: number;
+	carry: string;
+	latestAppEndpointLine: number;
+	latestCodegenLine: number;
+	lastFileSize: number;
+}
+
+const createCodegenWatchState = (): CodegenWatchState => ({
+	offset: 0,
+	lineIndex: 0,
+	carry: '',
+	latestAppEndpointLine: -1,
+	latestCodegenLine: -1,
+	lastFileSize: 0,
+});
+
+const READ_CHUNK_BYTES = 64 * 1024;
+
+const ingestNdjsonLine = (state: CodegenWatchState, line: string): void => {
+	if (line.length === 0) return;
+	state.lineIndex += 1;
 	try {
-		raw = readFileSync(eventsPath, 'utf8');
+		const record = JSON.parse(line) as {
+			readonly kind?: unknown;
+			readonly event?: {
+				readonly tag?: unknown;
+				readonly endpoint?: { readonly name?: unknown };
+			};
+		};
+		if (
+			record.kind === 'engine' &&
+			record.event?.tag === 'endpoint.registered' &&
+			record.event.endpoint?.name === BUILT_IN_ENDPOINT_ALIASES.app
+		) {
+			state.latestAppEndpointLine = state.lineIndex;
+		}
+		if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
+			state.latestCodegenLine = state.lineIndex;
+		}
+	} catch {
+		// Ignore partial / corrupt lines — atomic-append from the
+		// supervisor can land a half-flushed write between polls.
+	}
+};
+
+/**
+ * Advance the watch state by reading any bytes appended since the
+ * previous poll. The file is opened, sized, and read in chunks from
+ * the saved offset; an unterminated trailing partial is held in
+ * `state.carry` for the next call. Returns `true` when the file has
+ * a codegen-fresh state ready for caller continuation.
+ */
+const advanceCodegenWatch = (state: CodegenWatchState, eventsPath: string): boolean => {
+	let fd: number;
+	try {
+		fd = openSync(eventsPath, 'r');
 	} catch {
 		return false;
 	}
-	let latestDevEndpointLine = -1;
-	let latestCodegenLine = -1;
-	let lineIndex = 0;
-	for (const line of raw.split(/\r?\n/)) {
-		if (line.trim().length === 0) continue;
-		lineIndex++;
-		try {
-			const record = JSON.parse(line) as {
-				readonly kind?: unknown;
-				readonly event?: {
-					readonly tag?: unknown;
-					readonly endpoint?: { readonly name?: unknown };
-				};
-			};
-			if (
-				record.kind === 'engine' &&
-				record.event?.tag === 'endpoint.registered' &&
-				record.event.endpoint?.name === 'dev'
-			) {
-				latestDevEndpointLine = lineIndex;
-			}
-			if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
-				latestCodegenLine = lineIndex;
-			}
-		} catch {
-			// Ignore partial trailing lines from a live append.
+	try {
+		const size = statSync(eventsPath).size;
+		if (size < state.lastFileSize) {
+			// File was truncated / rotated — restart from the top so we
+			// don't miss the new tail's events.
+			state.offset = 0;
+			state.lineIndex = 0;
+			state.carry = '';
+			state.latestAppEndpointLine = -1;
+			state.latestCodegenLine = -1;
 		}
+		state.lastFileSize = size;
+		const buf = Buffer.allocUnsafe(READ_CHUNK_BYTES);
+		while (state.offset < size) {
+			const bytesRead = readSync(fd, buf, 0, READ_CHUNK_BYTES, state.offset);
+			if (bytesRead <= 0) break;
+			state.offset += bytesRead;
+			const chunk = state.carry + buf.subarray(0, bytesRead).toString('utf8');
+			const segments = chunk.split(/\r?\n/);
+			state.carry = segments.pop() ?? '';
+			for (const segment of segments) {
+				ingestNdjsonLine(state, segment);
+			}
+		}
+	} catch {
+		// Treat read errors as "no progress this poll".
+	} finally {
+		closeSync(fd);
 	}
-	if (latestCodegenLine < 0) return false;
-	if (latestDevEndpointLine < 0) return true;
-	return latestCodegenLine > latestDevEndpointLine;
+	if (state.latestCodegenLine < 0) return false;
+	if (state.latestAppEndpointLine < 0) return true;
+	return state.latestCodegenLine > state.latestAppEndpointLine;
 };
 
 const waitForReadyStackContext = async (
@@ -194,11 +258,27 @@ const waitForReadyStackContext = async (
 	const intervalMs = options.readyPollIntervalMs ?? DEFAULT_READY_POLL_INTERVAL_MS;
 	const deadline = Date.now() + timeoutMs;
 	let lastError: unknown = null;
+	const watchState = createCodegenWatchState();
+	let watchManifestPath: string | null = null;
 
 	while (Date.now() <= deadline) {
 		try {
 			const ctx = readContextForSetup(options);
-			if (hasCodegenEmittedEvent(ctx.manifestPath)) return ctx;
+			const eventsPath = join(dirname(ctx.manifestPath), 'events.ndjson');
+			// Restart the offset tracker when the resolved manifest path
+			// flips (single-stack discovery fallback can land on a
+			// different stack on the second try if the runtime root
+			// produced a new sibling between polls).
+			if (watchManifestPath !== eventsPath) {
+				watchManifestPath = eventsPath;
+				watchState.offset = 0;
+				watchState.lineIndex = 0;
+				watchState.carry = '';
+				watchState.latestAppEndpointLine = -1;
+				watchState.latestCodegenLine = -1;
+				watchState.lastFileSize = 0;
+			}
+			if (advanceCodegenWatch(watchState, eventsPath)) return ctx;
 			lastError = new Error(
 				`devstack has not emitted codegen yet; waiting on events next to ${ctx.manifestPath}`,
 			);

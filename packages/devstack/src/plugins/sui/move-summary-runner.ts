@@ -272,6 +272,10 @@ const resolveDefaultSummaryImage = (
 	runtime: ContainerRuntime,
 	input: MoveSummaryInput,
 ): Effect.Effect<ImageRef, CodegenBindingsFailed> =>
+	// Shared CLI image — owned at the daemon-level _per-app_ pin (see
+	// `chain-build-container.ts:PER_APP_SHARED_STACK`), not per-stack;
+	// the build container that materialises it carries the labels, so
+	// `ensureImage` itself is intentionally label-free here.
 	runtime.ensureImage(suiCliImageBuildContext()).pipe(
 		Effect.mapError(
 			(cause) =>

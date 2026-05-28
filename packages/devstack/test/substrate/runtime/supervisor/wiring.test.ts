@@ -71,8 +71,14 @@ const walk = (dir: string): ReadonlyArray<string> => {
 
 const STRUCTURAL_LITERAL_PATTERN = /_tag\s*:\s*['"]StrategyNotFoundError['"]/;
 
-describe('StrategyNotFoundError invariant', () => {
-	it('has no structural `_tag` literal anywhere in src/', () => {
+// The grep walks every `.ts` file under `src/` (~600 files) on every
+// `pnpm test` invocation. Gating to CI keeps local watch-mode feedback
+// fast; the invariant still gates merges via the CI run. Set
+// `DEVSTACK_FULL_LINT=1` to force the check locally before pushing.
+const RUN_STRUCTURAL_LINT = process.env.CI === 'true' || process.env.DEVSTACK_FULL_LINT === '1';
+
+describe('StrategyNotFoundError invariant (CI)', () => {
+	it.runIf(RUN_STRUCTURAL_LINT)('has no structural `_tag` literal anywhere in src/', () => {
 		const offenders: Array<{ readonly file: string; readonly line: number }> = [];
 		for (const file of walk(SRC_ROOT)) {
 			const lines = readFileSync(file, 'utf8').split('\n');

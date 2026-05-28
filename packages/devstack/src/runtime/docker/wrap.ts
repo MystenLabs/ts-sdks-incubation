@@ -70,18 +70,29 @@ export const isImageNotFoundStderr = (stderr: string): boolean =>
 	/repository .* not found/i.test(stderr) ||
 	/No such image/i.test(stderr);
 
-/** Image missing — broader classifier for `docker image rm` / `docker tag`
- *  flows, where the daemon's wording varies (`No such image`, bare
- *  `not found`, or `reference does not exist`). Distinct from
- *  `isImageNotFoundStderr` (pull-flow-specific) — this one is the
+/** Image missing — classifier for `docker image rm` / `docker tag`
+ *  flows. Matches the daemon's canonical wording only — a bare
+ *  `/not found/` alternation would misclassify permission-denied and
+ *  registry-auth errors (e.g. `pull access denied … repository does
+ *  not exist`) as "missing" and let sweep silently skip them. Distinct
+ *  from `isImageNotFoundStderr` (pull-flow-specific) — this one is the
  *  union used by idempotent remove/tag paths. */
 export const isMissingImageStderr = (stderr: string): boolean =>
-	/no such image|not found|reference does not exist/i.test(stderr);
+	/no such image|reference does not exist/i.test(stderr);
 
 /** Network missing — idempotent classifier for `docker network rm` /
- *  `docker network inspect`. */
+ *  `docker network inspect`. Matches the daemon's canonical wordings:
+ *  `No such network: <name>` and `network <name> not found`. A bare
+ *  `/not found/` alternation would misclassify auth / permission errors
+ *  on shared docker hosts. */
 export const isMissingNetworkStderr = (stderr: string): boolean =>
-	/no such network|network .* not found|not found/i.test(stderr);
+	/no such network|network \S+ not found/i.test(stderr);
+
+/** Network in-use — `docker network rm` failed because endpoints are
+ *  still attached. Inverse predicate of `isMissingNetworkStderr`; lives
+ *  next to its siblings so the two evolve together. */
+export const isNetworkInUseStderr = (stderr: string): boolean =>
+	/active endpoints|has active endpoint|network .* is in use/i.test(stderr);
 
 // -----------------------------------------------------------------------------
 // Wrappers — translate CaptureError → typed DockerRuntimeError

@@ -49,7 +49,7 @@ import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
 import { SEAL_ERROR_TAGS, type SealError } from './errors.ts';
-import type { ForkUpstream } from './mode/fork-known.ts';
+import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
 import {
@@ -358,14 +358,28 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	});
 };
 
-/** Build the fork-known-mode plugin. Same structure as live, but with
- *  dynamic capabilities so the codegen bindings carry the REAL
- *  objectId / keyServerUrl resolved at acquire (the user-supplied
- *  options may be undefined → resolved by the upstream lookup). */
+/** Build the fork-known-mode plugin. Structurally symmetric with
+ *  `buildLivePlugin` — both resolve their `{objectId, keyServerUrl}`
+ *  tuple at factory time via `validateLiveInputs` (the fork-known
+ *  side maps `upstream → KnownNetwork` first via
+ *  `validateForkKnownInputs`) and thread it through SealMode's
+ *  `resolved:` envelope.
+ *
+ *  Capabilities are kept on the dynamic shape (callback form)
+ *  rather than precomputed — leaves room for a future on-acquire
+ *  override path (e.g. the substrate dynamically rewrites the
+ *  bindings) without restructuring the factory. Not load-bearing
+ *  today; static capabilities would also work. */
 const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
 	const sealResource = makeSealResource(name);
 	const snap = makeKnownSnapshotable({ name });
+	// Validate inputs at factory time so misconfigurations fail
+	// before any plugin row starts work — symmetric with
+	// `buildLivePlugin`'s factory-boundary `validateLiveInputs` call.
+	// `validateForkKnownInputs` maps the upstream alias to a
+	// `KnownNetwork` and runs the same validation pipeline as live mode.
+	const validated = validateForkKnownInputs({ name, ...opts });
 
 	return definePlugin({
 		id: sealResource.id,
@@ -373,7 +387,16 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
-				const mode: SealMode = { mode: 'fork-known', name, ...opts };
+				// Symmetric with the live branch's `{ mode, name, resolved }`
+				// envelope. `upstream` rides through for downstream
+				// span attribution; `resolved` carries the validated
+				// `{objectId, keyServerUrl}` tuple.
+				const mode: SealMode = {
+					mode: 'fork-known',
+					name,
+					upstream: opts.upstream,
+					resolved: validated,
+				};
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {

@@ -31,7 +31,10 @@ import type {
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
-import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import {
+	ensureManagedContainer,
+	PER_APP_SHARED_STACK,
+} from '../../substrate/runtime/managed-container.ts';
 import { containerInnerScript } from '../../substrate/runtime/sui-move-build/index.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
 
@@ -135,7 +138,7 @@ export const acquireChainBuildContainer = (
 				app: spec.app,
 				// Intentionally pin stack to a sentinel — see comment
 				// above; this is per-app, not per-stack.
-				stack: '_per-app_',
+				stack: PER_APP_SHARED_STACK,
 				plugin: 'sui',
 				role: 'build',
 			},

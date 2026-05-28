@@ -38,17 +38,18 @@
 // stacks and apps that share a state dir.
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import {
 	createServer as createNetServer,
 	type AddressInfo,
 	type Server as NetServer,
 } from 'node:net';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 
 import { Context, Effect, Layer, Ref, Schema, Scope } from 'effect';
 
 import { RosterHolderSchema, type RosterHolder } from '../../cross-process.ts';
+import { atomicWriteFileSync } from '../atomic-write.ts';
 import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
@@ -207,19 +208,39 @@ const tryWriteReservationSync = (
 	path: string,
 	doc: PortReservationDoc,
 ): ReservationWriteAttempt => {
-	try {
-		mkdirSync(dirname(path), { recursive: true });
-		writeFileSync(path, `${JSON.stringify(doc)}\n`, { flag: 'wx', mode: 0o600 });
-		return { _tag: 'written' };
-	} catch (cause) {
-		const code = (cause as NodeJS.ErrnoException).code;
-		if (code !== 'EEXIST') return { _tag: 'failed', cause };
-		if (!existsSync(path)) return { _tag: 'race' };
+	// `atomicWriteFileSync` writes a tempfile under O_EXCL + fsync, then
+	// renames. Rename on POSIX clobbers any pre-existing file at the
+	// target — which would defeat the `wx` "fail if exists" semantic we
+	// rely on for cross-process reservation arbitration. Pre-check for
+	// existence and surface `exists` without touching the file; the
+	// caller (acquirePortReservation) inspects the holder and decides
+	// busy-vs-stale. This isn't atomic with the write — a sibling pid
+	// can land between `existsSync` and `atomicWriteFileSync` — but the
+	// caller's outer retry loop handles the resulting `race` tag the
+	// same way it handles a `wx`-EEXIST race.
+	if (existsSync(path)) {
 		try {
 			return { _tag: 'exists', doc: parseReservationDoc(readFileSync(path, 'utf8')) };
 		} catch {
 			return { _tag: 'exists', doc: null };
 		}
+	}
+	try {
+		atomicWriteFileSync(path, `${JSON.stringify(doc)}\n`, { mode: 0o600 });
+		return { _tag: 'written' };
+	} catch (cause) {
+		const code = (cause as NodeJS.ErrnoException).code;
+		if (code === 'EEXIST') {
+			// A sibling pid won the race during our tempfile create. Same
+			// recovery as the pre-check above.
+			if (!existsSync(path)) return { _tag: 'race' };
+			try {
+				return { _tag: 'exists', doc: parseReservationDoc(readFileSync(path, 'utf8')) };
+			} catch {
+				return { _tag: 'exists', doc: null };
+			}
+		}
+		return { _tag: 'failed', cause };
 	}
 };
 
@@ -335,6 +356,83 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 				return next;
 			});
 
+		/** Outcome of one candidate-port attempt.
+		 *
+		 *  `kept` means `finishAllocation` armed its scope finalizer; the
+		 *  in-process slot is now owned by that finalizer and we MUST
+		 *  NOT drop it on this critical region's exit. Any other outcome
+		 *  (busy / probe-in-use / probe-failed / reservation-failed)
+		 *  must release the slot before we hand control back to the
+		 *  caller. */
+		type SlotOutcome =
+			| { readonly _tag: 'kept'; readonly allocated: AllocatedPort }
+			| { readonly _tag: 'busy' }
+			| {
+					readonly _tag: 'reservation-failed';
+					readonly detail: string;
+					readonly cause: unknown;
+			  }
+			| { readonly _tag: 'probe-failed'; readonly cause: unknown };
+
+		/** Reserve `port` in the in-process Map, run the probe+reservation
+		 *  chain uninterruptibly through to either (a) `finishAllocation`
+		 *  arming its scope finalizer or (b) a clean release of the slot.
+		 *
+		 *  Interrupt safety: the critical region is wrapped in
+		 *  `Effect.acquireUseRelease`. If an interrupt or a typed failure
+		 *  lands between `tryReserve` and `finishAllocation`, the release
+		 *  step drops the slot — the only path that intentionally keeps
+		 *  the slot is the `kept` outcome where ownership has been
+		 *  transferred to the scope finalizer (see `finishAllocation`).
+		 */
+		const attemptSlot = (
+			port: number,
+			owner: string,
+			probeHost: PortProbeHost,
+		): Effect.Effect<SlotOutcome | null, never, Scope.Scope> =>
+			Effect.acquireUseRelease(
+				tryReserve(port, owner),
+				(reserved): Effect.Effect<SlotOutcome | null, never, Scope.Scope> => {
+					if (!reserved) return Effect.succeed(null);
+					return Effect.gen(function* () {
+						const reservation = yield* acquirePortReservation(reservationRoot, port, owner);
+						if (reservation._tag === 'busy') return { _tag: 'busy' as const };
+						if (reservation._tag === 'failed') {
+							return {
+								_tag: 'reservation-failed' as const,
+								detail: reservation.detail,
+								cause: reservation.cause,
+							};
+						}
+						const ok = yield* probePort(port, probeHost);
+						if (ok._tag === 'ok') {
+							const allocated = yield* finishAllocation(port, owner, drop, reservation.reservation);
+							return { _tag: 'kept' as const, allocated };
+						}
+						// Probe missed — release the cross-process reservation
+						// before exit. The in-process slot is dropped by the
+						// `release` step of acquireUseRelease.
+						yield* reservation.reservation.release;
+						if (ok._tag === 'probe-failed') {
+							return { _tag: 'probe-failed' as const, cause: ok.cause };
+						}
+						return { _tag: 'busy' as const };
+					});
+				},
+				(reserved, exit) => {
+					// Slot release: drop the in-process entry UNLESS we
+					// successfully transferred ownership to a scope finalizer
+					// (the `kept` outcome). Interrupts and typed failures
+					// both flow through this release, closing the gap that
+					// previously leaked the Map entry until Layer scope close.
+					if (!reserved) return Effect.void;
+					if (exit._tag === 'Success' && exit.value?._tag === 'kept') {
+						return Effect.void;
+					}
+					return drop(port);
+				},
+			);
+
 		const allocate: PortBroker['allocate'] = (opts = {}) =>
 			Effect.gen(function* () {
 				const owner = opts.owner ?? DEFAULT_OWNER;
@@ -346,8 +444,8 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 				//    as a strong hint, but refuses in-process collisions
 				//    (architecture §6: same-stack siblings MUST NOT trample).
 				if (opts.preferredPort !== undefined) {
-					const reserved = yield* tryReserve(opts.preferredPort, owner);
-					if (!reserved) {
+					const outcome = yield* attemptSlot(opts.preferredPort, owner, probeHost);
+					if (outcome === null) {
 						return yield* Effect.fail(
 							new PortBrokerError({
 								reason: 'preferred-busy',
@@ -357,79 +455,47 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 							}),
 						);
 					}
-					// Kernel-level probe. If a foreign process holds the
-					// port, drop our reservation and FALL THROUGH to the
-					// window scan — the caller's preferred was a HINT
-					// for cross-process collisions.
-					const reservation = yield* acquirePortReservation(
-						reservationRoot,
-						opts.preferredPort,
-						owner,
-					);
-					if (reservation._tag === 'busy') {
-						yield* drop(opts.preferredPort);
-					} else if (reservation._tag === 'failed') {
-						yield* drop(opts.preferredPort);
+					if (outcome._tag === 'kept') return outcome.allocated;
+					if (outcome._tag === 'reservation-failed') {
 						return yield* Effect.fail(
 							new PortBrokerError({
 								reason: 'reservation-failed',
-								detail: reservation.detail,
-								cause: reservation.cause,
+								detail: outcome.detail,
+								cause: outcome.cause,
 							}),
 						);
-					} else {
-						const ok = yield* probePort(opts.preferredPort, probeHost);
-						if (ok._tag === 'ok') {
-							return yield* finishAllocation(
-								opts.preferredPort,
-								owner,
-								drop,
-								reservation.reservation,
-							);
-						}
-						yield* reservation.reservation.release;
-						yield* drop(opts.preferredPort);
-						if (ok._tag === 'probe-failed') {
-							return yield* Effect.fail(
-								new PortBrokerError({
-									reason: 'bind-probe-failed',
-									detail:
-										`bind probe on preferred port ${opts.preferredPort} ` +
-										`(owner=${owner}, host=${probeHost}) failed with non-EADDRINUSE error`,
-									cause: ok.cause,
-								}),
-							);
-						}
-						// `ok._tag === 'in-use'` — fall through to scan.
 					}
+					if (outcome._tag === 'probe-failed') {
+						return yield* Effect.fail(
+							new PortBrokerError({
+								reason: 'bind-probe-failed',
+								detail:
+									`bind probe on preferred port ${opts.preferredPort} ` +
+									`(owner=${owner}, host=${probeHost}) failed with non-EADDRINUSE error`,
+								cause: outcome.cause,
+							}),
+						);
+					}
+					// `busy` (either cross-process reservation held by a
+					// live peer OR kernel-level in-use) — fall through to
+					// the window scan; the caller's preferred was a HINT.
 				}
 
 				// 2. Forward-scan the window.
 				for (let p = windowStart; p < windowStart + windowSize; p++) {
-					const reserved = yield* tryReserve(p, owner);
-					if (!reserved) continue;
-					const reservation = yield* acquirePortReservation(reservationRoot, p, owner);
-					if (reservation._tag === 'busy') {
-						yield* drop(p);
-						continue;
-					}
-					if (reservation._tag === 'failed') {
-						yield* drop(p);
+					const outcome = yield* attemptSlot(p, owner, probeHost);
+					if (outcome === null) continue;
+					if (outcome._tag === 'kept') return outcome.allocated;
+					if (outcome._tag === 'reservation-failed') {
 						return yield* Effect.fail(
 							new PortBrokerError({
 								reason: 'reservation-failed',
-								detail: reservation.detail,
-								cause: reservation.cause,
+								detail: outcome.detail,
+								cause: outcome.cause,
 							}),
 						);
 					}
-					const ok = yield* probePort(p, probeHost);
-					if (ok._tag === 'ok') {
-						return yield* finishAllocation(p, owner, drop, reservation.reservation);
-					}
-					yield* reservation.reservation.release;
-					yield* drop(p);
-					if (ok._tag === 'probe-failed') {
+					if (outcome._tag === 'probe-failed') {
 						// A privileged port (EACCES) in the middle of the
 						// window is unrecoverable for this scan. Surface
 						// immediately rather than thrash the whole window.
@@ -439,11 +505,11 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 								detail:
 									`bind probe on port ${p} (owner=${owner}, host=${probeHost}) failed ` +
 									`with non-EADDRINUSE error`,
-								cause: ok.cause,
+								cause: outcome.cause,
 							}),
 						);
 					}
-					// In-use → next candidate.
+					// `busy` — next candidate.
 				}
 
 				return yield* Effect.fail(

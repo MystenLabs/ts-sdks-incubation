@@ -9,27 +9,25 @@
 // extends with the post-acquire context (graph, registry, identity,
 // runtimeRoot) so the same record satisfies every module's needs.
 
-import type {
-	Context,
-	Deferred,
+import {
 	Effect,
-	Exit,
-	Fiber,
-	Queue,
-	Ref,
-	Scope,
-	SubscriptionRef,
+	type Context,
+	type Deferred,
+	type Exit,
+	type Fiber,
+	type Queue,
+	type Ref,
+	type SubscriptionRef,
 } from 'effect';
 
 import type { EngineCommand, EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
+import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
 import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
+import { isReadyOrTerminal } from '../lifecycle/index.ts';
 import type { LoggerShape } from '../observability/index.ts';
-import type {
-	PluginRegistry,
-	ResolvedGraph,
-} from '../lifecycle/index.ts';
+import type { PluginRegistry, ResolvedGraph } from '../lifecycle/index.ts';
 
 export type StackRestartTaskState =
 	| { readonly tag: 'idle' }
@@ -80,6 +78,29 @@ export type QueuedCommand =
 	| { readonly kind: 'submitted'; readonly submission: CommandSubmission };
 
 /**
+ * True when every node in `graph` has reached a `ready`-or-terminal
+ * lifecycle status. Used by the command-loop to gate the post-acquire
+ * hook after a (selective) restart and by the initial-acquire path to
+ * decide whether to transition the cycle phase to `running`.
+ *
+ * Failed status reads collapse to `'failed'` so a transient registry
+ * error doesn't block the readiness gate forever.
+ */
+export const allReadyOrTerminal = (
+	graph: ResolvedGraph,
+	registry: PluginRegistry,
+): Effect.Effect<boolean, never, never> =>
+	Effect.gen(function* () {
+		for (const key of graph.nodes.keys()) {
+			const status = yield* registry
+				.getStatus(key)
+				.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('failed')));
+			if (!isReadyOrTerminal(status)) return false;
+		}
+		return true;
+	});
+
+/**
  * The shared-state record threaded through command-loop, background
  * tasks, and shutdown. Built once at the top of `startSupervisor`.
  */
@@ -100,7 +121,6 @@ export interface SupervisorState {
 	readonly logger: LoggerShape;
 	readonly identity: Identity;
 	readonly runtimeRoot: string;
-	readonly parentScope: Scope.Scope;
 	readonly commandHandler?: SupervisorCommandHandler;
 	readonly postAcquireHook?: SupervisorPostAcquireHook;
 }

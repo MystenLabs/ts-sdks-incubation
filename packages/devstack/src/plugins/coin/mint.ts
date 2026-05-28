@@ -33,28 +33,41 @@ import {
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import type { ClientWithCoreApi } from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
 import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
 
 /** Sign+execute surface narrowed from `AccountValue.signAndExecute`.
- *  We don't import `AccountValue` directly to avoid a layering cycle —
- *  the Account plugin imports nothing from coin, so coin re-publishes
- *  the structural shape. Mirrors the SDK's discriminated
- *  `TransactionResult` return shape — on-chain failures are a return
- *  variant (`$kind: 'FailedTransaction'`), not an error. */
-export interface MintSignAndExecuteResult {
-	readonly $kind: 'Transaction' | 'FailedTransaction';
-	readonly Transaction?: {
-		readonly digest: string;
-		readonly objectChanges: ReadonlyArray<unknown>;
-	};
-	readonly FailedTransaction?: {
-		readonly digest: string;
-		readonly executionError?: string;
-	};
-}
+ *  Mirrors the SDK's discriminated `TransactionResult` return shape —
+ *  on-chain failures are a return variant (`$kind: 'FailedTransaction'`),
+ *  not an error.
+ *
+ *  Modelled as a proper $kind-discriminated union (not both-optional
+ *  fields) so consumers do not need non-null assertions after the
+ *  `result.$kind === 'FailedTransaction'` narrow. We don't import
+ *  `SignAndExecuteResult` from the Account plugin barrel directly
+ *  because the success transaction shape consumed here is narrower
+ *  (only `digest` + `objectChanges`) than the Account plugin's
+ *  `TxResult` (which adds `effects` + `balanceChanges` — fields the
+ *  mint produce body does not surface). The shape is structurally
+ *  compatible — Account's `signAndExecute` widens to this surface. */
+export type MintSignAndExecuteResult =
+	| {
+			readonly $kind: 'Transaction';
+			readonly Transaction: {
+				readonly digest: string;
+				readonly objectChanges: ReadonlyArray<unknown>;
+			};
+	  }
+	| {
+			readonly $kind: 'FailedTransaction';
+			readonly FailedTransaction: {
+				readonly digest: string;
+				readonly executionError?: string;
+			};
+	  };
 
 export interface MintTransactionSigner {
 	readonly signAndExecute: (
@@ -278,103 +291,99 @@ export const performMint = (
 					[CoinSpans.mint.amount]: inputs.amount.toString(),
 				});
 
-				const result = yield* signer.withTransactionSigner((lockedSigner) =>
-					Effect.gen(function* () {
-						// 1. Build the Move tx — distilled-doc 13-coin.md
-						//    Invariant 9 pins the call shape:
-						//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
-						const tx = new Transaction();
-						if (inputs.gasBudget !== undefined) {
-							tx.setGasBudget(inputs.gasBudget);
-						}
-						tx.setSender(signer.address);
-						tx.moveCall({
-							target: '0x2::coin::mint_and_transfer',
-							typeArguments: [inputs.fullCoinType],
-							arguments: [
-								tx.object(inputs.treasuryCapId),
-								tx.pure.u64(inputs.amount),
-								tx.pure.address(inputs.recipient),
-							],
-						});
-
-						// 2. Serialize the tx to BCS bytes while the account lease
-						//    is held. `Transaction.build` resolves gas + object-version
-						//    placeholders via the client.
-						const txBytes = yield* Effect.tryPromise({
-							try: () =>
-								tx.build({ client: sdk.client }),
-							catch: (cause): ArtifactPublishError =>
-								artifactPublishError(
-									'produce-failed',
-									`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
-										`${cause instanceof Error ? cause.message : String(cause)}`,
-								),
-						});
-
-						// 3. Sign + execute via the Account-supplied signer. Map
-						//    `AccountSignError` → `ArtifactPublishError`. The
-						//    Account plugin's signer handles waitForTransaction internally.
-						return yield* lockedSigner.signAndExecute(txBytes).pipe(
-							Effect.mapError(
-								(cause): ArtifactPublishError =>
+				// Drive build → sign → execute → dispatch via the shared
+				// `signAndDispatch` helper. On-chain `FailedTransaction`
+				// is a return value (not an error) — surfaced as a
+				// `produce-failed` artifact error so the cache treats
+				// this as a re-run candidate. Successful dispatch
+				// projects to the cached payload.
+				return yield* signAndDispatch({
+					signerSource: signer,
+					buildTxBytes: () =>
+						Effect.gen(function* () {
+							// 1. Build the Move tx — distilled-doc 13-coin.md
+							//    Invariant 9 pins the call shape:
+							//    `0x2::coin::mint_and_transfer<T>(cap, amount, recipient)`.
+							const tx = new Transaction();
+							if (inputs.gasBudget !== undefined) {
+								tx.setGasBudget(inputs.gasBudget);
+							}
+							tx.setSender(signer.address);
+							tx.moveCall({
+								target: '0x2::coin::mint_and_transfer',
+								typeArguments: [inputs.fullCoinType],
+								arguments: [
+									tx.object(inputs.treasuryCapId),
+									tx.pure.u64(inputs.amount),
+									tx.pure.address(inputs.recipient),
+								],
+							});
+							// 2. Serialize the tx to BCS bytes while the account lease
+							//    is held. `Transaction.build` resolves gas + object-version
+							//    placeholders via the client.
+							return yield* Effect.tryPromise({
+								try: () => tx.build({ client: sdk.client }),
+								catch: (cause): ArtifactPublishError =>
 									artifactPublishError(
 										'produce-failed',
-										`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
+										`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
+											`${cause instanceof Error ? cause.message : String(cause)}`,
 									),
+							});
+						}),
+					// 3. Sign + execute via the Account-supplied signer. Map
+					//    `AccountSignError` → `ArtifactPublishError`. The
+					//    Account plugin's signer handles waitForTransaction internally.
+					mapSignError: (cause): ArtifactPublishError =>
+						artifactPublishError(
+							'produce-failed',
+							`coin.mint(${inputs.fullCoinType}): signAndExecute failed — ` + cause.message,
+						),
+					// 4a. On-chain failure dispatch.
+					onFailed: (failed) =>
+						Effect.fail(
+							artifactPublishError(
+								'produce-failed',
+								`coin.mint(${inputs.fullCoinType}): transaction execution failed on-chain ` +
+									formatExecutedFailure(failed),
 							),
-						);
-					}),
-				);
-
-				// 4a. Dispatch on the SDK-shaped discriminated result. On-chain
-				//     failures (FailedTransaction) are a return value, not an
-				//     error — surface them as a produce-failed artifact error so
-				//     the cache treats this as a re-run candidate.
-				if (result.$kind === 'FailedTransaction') {
-					const failed = result.FailedTransaction!;
-					return yield* Effect.fail(
-						artifactPublishError(
-							'produce-failed',
-							`coin.mint(${inputs.fullCoinType}): transaction execution failed on-chain ` +
-								formatExecutedFailure(failed),
 						),
-					);
-				}
-				const ok = result.Transaction!;
+					// 4b. On success, find the minted `Coin<T>` in objectChanges via the
+					//     inner-generic match (distilled-doc Invariant 9).
+					//     `mint_and_transfer` emits a fresh `Coin<T>` owned by
+					//     the recipient; look it up by the
+					//     `0x2::coin::Coin<${fullCoinType}>` substring.
+					onSuccess: (ok) =>
+						Effect.gen(function* () {
+							const mintedCoinId = pickCreatedCoin(ok.objectChanges, inputs.fullCoinType);
+							if (mintedCoinId === null) {
+								return yield* Effect.fail(
+									artifactPublishError(
+										'produce-failed',
+										`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
+											`objectChanges (digest=${ok.digest}). ` +
+											mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
+												.message,
+									),
+								);
+							}
 
-				// 4b. Find the minted `Coin<T>` in objectChanges via the
-				//     inner-generic match (distilled-doc Invariant 9).
-				//     `mint_and_transfer` emits a fresh `Coin<T>` owned by
-				//     the recipient; look it up by the
-				//     `0x2::coin::Coin<${fullCoinType}>` substring.
-				const mintedCoinId = pickCreatedCoin(ok.objectChanges, inputs.fullCoinType);
-				if (mintedCoinId === null) {
-					return yield* Effect.fail(
-						artifactPublishError(
-							'produce-failed',
-							`coin.mint(${inputs.fullCoinType}): minted Coin<T> not found in ` +
-								`objectChanges (digest=${ok.digest}). ` +
-								mintParseError(inputs.fullCoinType, 'minted Coin<T> absent in objectChanges')
-									.message,
-						),
-					);
-				}
+							yield* Effect.annotateCurrentSpan({
+								[CoinSpans.mint.digest]: ok.digest,
+								[CoinSpans.mint.mintedCoinId]: mintedCoinId,
+							});
 
-				yield* Effect.annotateCurrentSpan({
-					[CoinSpans.mint.digest]: ok.digest,
-					[CoinSpans.mint.mintedCoinId]: mintedCoinId,
+							// 5. Return the cached payload. The artifact publisher caches it under
+							//    the content hash; the next cycle's verify probe (on
+							//    cache hit) will lenient-probe `mintedCoinId`.
+							return {
+								digest: ok.digest,
+								mintedCoinId,
+								recipient: inputs.recipient,
+								amount: inputs.amount.toString(),
+							} satisfies CachedMint;
+						}),
 				});
-
-				// 5. Return the cached payload. The artifact publisher caches it under
-				//    the content hash; the next cycle's verify probe (on
-				//    cache hit) will lenient-probe `mintedCoinId`.
-				return {
-					digest: ok.digest,
-					mintedCoinId,
-					recipient: inputs.recipient,
-					amount: inputs.amount.toString(),
-				} satisfies CachedMint;
 			}),
 			// Register on EVERY cycle (hit AND miss). Distilled-doc
 			// Invariant 6. Coin mint has no global registry to feed —

@@ -14,17 +14,7 @@
 //   8. Install the scope-close finalizer (reverse-dep teardown).
 //   9. Return the handle.
 
-import {
-	Context,
-	Deferred,
-	Effect,
-	Exit,
-	Layer,
-	Queue,
-	Ref,
-	Scope,
-	SubscriptionRef,
-} from 'effect';
+import { Context, Deferred, Effect, Exit, Layer, Queue, Ref, Scope, SubscriptionRef } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineCommand, EngineEvent } from '../../events.ts';
@@ -43,7 +33,6 @@ import {
 	buildWatchIndex,
 	exactPrefixMatch,
 	installSignalHandler,
-	isReadyOrTerminal,
 	planFullDrain,
 	resolveGraph,
 	type PluginRegistry,
@@ -59,13 +48,14 @@ import {
 	type SupervisorError,
 	type SupervisorPostAcquireFailed,
 } from './errors.ts';
-import type {
-	QueuedCommand,
-	SnapshotCaptureTaskState,
-	StackRestartTaskState,
-	SupervisorCommandHandler,
-	SupervisorPostAcquireHook,
-	SupervisorState,
+import {
+	allReadyOrTerminal,
+	type QueuedCommand,
+	type SnapshotCaptureTaskState,
+	type StackRestartTaskState,
+	type SupervisorCommandHandler,
+	type SupervisorPostAcquireHook,
+	type SupervisorState,
 } from './state.ts';
 import type { SupervisedStack } from './types.ts';
 import { teardownKeys } from './teardown.ts';
@@ -107,20 +97,6 @@ export interface SupervisorStartup {
 export interface SupervisorStartupOptions {
 	readonly commandLoop?: boolean;
 }
-
-const allReadyOrTerminal = (
-	graph: ResolvedGraph,
-	registry: PluginRegistry,
-): Effect.Effect<boolean, never, never> =>
-	Effect.gen(function* () {
-		for (const key of graph.nodes.keys()) {
-			const status = yield* registry
-				.getStatus(key)
-				.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('failed')));
-			if (!isReadyOrTerminal(status)) return false;
-		}
-		return true;
-	});
 
 const pendingAccountProjection = (
 	rowKey: PluginKey,
@@ -343,16 +319,12 @@ export const startSupervisor = (
 			logger,
 			identity,
 			runtimeRoot,
-			parentScope: supervisorScope,
 			commandHandler,
 			postAcquireHook,
 		};
 
 		const runInitialAcquire = Effect.gen(function* () {
-			const alreadyStarted = yield* Ref.modify(initialAcquireStarted, (started) => [
-				started,
-				true,
-			]);
+			const alreadyStarted = yield* Ref.modify(initialAcquireStarted, (started) => [started, true]);
 			if (alreadyStarted) return;
 			if (yield* Ref.get(shutdownLatch)) return;
 			yield* acquireFullGraph(

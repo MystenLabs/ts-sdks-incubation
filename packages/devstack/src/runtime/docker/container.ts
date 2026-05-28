@@ -32,7 +32,12 @@ import type {
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
-import { addClaim, removeClaim } from '../../substrate/runtime/cross-process/roster.ts';
+import {
+	addClaim,
+	removeClaim,
+	type RosterError,
+} from '../../substrate/runtime/cross-process/roster.ts';
+import type { StackLockError } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
@@ -414,56 +419,60 @@ export const inspectContainer = (
 				}),
 			);
 		}
-		try {
-			const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
-				source: `docker container inspect ${name}`,
-				missingMessage: 'inspect returned an empty result',
-				mkError: (issue) =>
-					new DockerInspectDecodeFailed({
-						resource: 'container',
-						name,
-						detail:
-							issue.message === 'inspect returned an empty result'
-								? issue.message
-								: 'inspect returned malformed container JSON',
-						cause: issue.cause,
-					}),
-			});
-			const lifecycle = readLifecycleState(decoded.State);
-			const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
-			const ports =
-				decoded.HostConfig === undefined
-					? effectivePorts
-					: readPublishedPorts(decoded.HostConfig.PortBindings);
-			const mounts = readMounts(decoded.Mounts);
-			const command = readStringArray(decoded.Config.Cmd);
-			const labels = readLabels(decoded.Config.Labels);
-			const networks = readNetworks(decoded.NetworkSettings.Networks);
-			const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
-			return {
-				id: decoded.Id,
-				lifecycle,
-				running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
-				paused: lifecycle.kind === 'paused',
-				exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
-				// The container's recorded image. Docker may omit the
-				// top-level digest field, but lifecycle decisions need the
-				// create-time ref from Config.Image.
-				image: decoded.Config.Image,
-				...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
-				mounts,
-				portBindings: canonicalPortBindings(ports),
-				ports,
-				effectivePortBindings: canonicalPortBindings(effectivePorts),
-				effectivePorts,
-				command,
-				labels,
-				networks,
-				networkAttachments,
-			};
-		} catch (cause) {
-			return yield* Effect.fail(cause as DockerRuntimeError);
-		}
+		// `decodeJsonArrayElementSync`'s `mkError` produces a typed
+		// `DockerInspectDecodeFailed`; we route it through `Effect.try`
+		// so the error channel stays typed without a re-cast.
+		return yield* Effect.try({
+			try: (): InspectFacts => {
+				const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
+					source: `docker container inspect ${name}`,
+					missingMessage: 'inspect returned an empty result',
+					mkError: (issue) =>
+						new DockerInspectDecodeFailed({
+							resource: 'container',
+							name,
+							detail:
+								issue.message === 'inspect returned an empty result'
+									? issue.message
+									: 'inspect returned malformed container JSON',
+							cause: issue.cause,
+						}),
+				});
+				const lifecycle = readLifecycleState(decoded.State);
+				const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
+				const ports =
+					decoded.HostConfig === undefined
+						? effectivePorts
+						: readPublishedPorts(decoded.HostConfig.PortBindings);
+				const mounts = readMounts(decoded.Mounts);
+				const command = readStringArray(decoded.Config.Cmd);
+				const labels = readLabels(decoded.Config.Labels);
+				const networks = readNetworks(decoded.NetworkSettings.Networks);
+				const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
+				return {
+					id: decoded.Id,
+					lifecycle,
+					running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
+					paused: lifecycle.kind === 'paused',
+					exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
+					// The container's recorded image. Docker may omit the
+					// top-level digest field, but lifecycle decisions need the
+					// create-time ref from Config.Image.
+					image: decoded.Config.Image,
+					...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
+					mounts,
+					portBindings: canonicalPortBindings(ports),
+					ports,
+					effectivePortBindings: canonicalPortBindings(effectivePorts),
+					effectivePorts,
+					command,
+					labels,
+					networks,
+					networkAttachments,
+				};
+			},
+			catch: (cause): DockerRuntimeError => cause as DockerRuntimeError,
+		});
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
 // -----------------------------------------------------------------------------
@@ -940,12 +949,55 @@ export const ensureContainer = (
 		// finalizer itself is uninterruptible (Architecture §13).
 		const desiredImageRef = spec.image.tag ?? spec.image.digest;
 		const paths = yield* StackPathsService;
-		const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
-			new DaemonUnreachable({
-				op: 'cross-process.claim',
-				detail: `cross-process claim mutation failed: ${String(cause)}`,
-				cause,
-			});
+		// Preserve the substrate-side error taxonomy by surfacing a
+		// distinct `op` per known cause tag. Labeling every roster/lock
+		// failure as "docker daemon unreachable" misleads operators —
+		// `RosterIoError` is a state-dir IO problem, `StackLockTimeoutError`
+		// is a peer-holding-the-lock problem, neither of which has
+		// anything to do with the docker socket. We still emit a typed
+		// `DaemonUnreachable` envelope (substrate→docker channel needs
+		// ONE bridging shape per the DockerRuntimeError union) but the
+		// `op` / `detail` fields keep the original tag visible. A truly
+		// unknown cause falls through to the legacy generic mapping.
+		const mapSubstrateClaimError = <A, R>(
+			eff: Effect.Effect<A, RosterError | StackLockError, R>,
+		): Effect.Effect<A, DockerRuntimeError, R> =>
+			eff.pipe(
+				Effect.catchTags({
+					RosterIoError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.roster-io',
+								detail: `roster IO failed at ${cause.path}`,
+								cause,
+							}),
+						),
+					RosterCorruptError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.roster-corrupt',
+								detail: `roster ledger corrupt at ${cause.path}`,
+								cause,
+							}),
+						),
+					StackLockTimeoutError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.stack-lock-timeout',
+								detail: `stack-lock acquire timed out after ${cause.waitedMillis}ms at ${cause.path}`,
+								cause,
+							}),
+						),
+					StackLockIoError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.stack-lock-io',
+								detail: `stack-lock IO failed at ${cause.path}`,
+								cause,
+							}),
+						),
+				}),
+			);
 		const registerStopFinalizer = (
 			id: string,
 		): Effect.Effect<void, never, Scope.Scope | DockerHost | DockerSpawner> =>
@@ -1023,9 +1075,7 @@ export const ensureContainer = (
 						// beyond the first, which is wired in via `--network`
 						// on create) must wait for IP allocation before we
 						// declare ready.
-						const secondaries = (spec.networkAttach ?? [])
-							.slice(1)
-							.map(normalizeNetworkAttachment);
+						const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
 						for (const net of secondaries) {
 							yield* connect(spec.name, net.name, net.aliases);
 							yield* waitForIp(spec.name, net.name);
@@ -1033,17 +1083,18 @@ export const ensureContainer = (
 
 						const ips = yield* readIps(spec.name);
 						const refreshedFacts = yield* inspectContainer(spec.name);
-						const ports =
-							refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+						const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
 
 						// Record cross-process claim. The scope finalizer
 						// (already registered) will release it on scope
 						// close. If this fails, the container is still
 						// cleaned up at scope close.
-						yield* addClaim(
-							{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-							spec.name,
-						).pipe(Effect.mapError(mapSubstrateError));
+						yield* mapSubstrateClaimError(
+							addClaim(
+								{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+								spec.name,
+							),
+						);
 
 						return { id, ips, ports };
 					}),

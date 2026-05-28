@@ -9,15 +9,9 @@
 // `handleCommand` switches by tag and delegates to the per-concern
 // modules (shutdown, teardown, selective-restart, background-tasks).
 
-import { Deferred, Effect, Queue, Ref } from 'effect';
+import { Deferred, Effect, Queue, Ref, Scope } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
-import type {
-	PluginRegistry,
-	ResolvedGraph,
-} from '../lifecycle/index.ts';
-import type { LifecycleStatus } from '../../lifecycle.ts';
-import { isReadyOrTerminal } from '../lifecycle/index.ts';
 import {
 	runInjectedCommandHandler,
 	runPostAcquireHook,
@@ -25,44 +19,27 @@ import {
 	startBackgroundStackRestart,
 } from './background-tasks.ts';
 import { SupervisorPostAcquireFailed } from './errors.ts';
-import {
-	handleHardKillRequested,
-	handleShutdownRequested,
-} from './shutdown.ts';
-import type { SupervisorState } from './state.ts';
+import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts';
+import { allReadyOrTerminal, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
 import { planFullDrain } from '../lifecycle/index.ts';
 
-const allReadyOrTerminal = (
-	graph: ResolvedGraph,
-	registry: PluginRegistry,
-): Effect.Effect<boolean, never, never> =>
-	Effect.gen(function* () {
-		for (const key of graph.nodes.keys()) {
-			const status = yield* registry
-				.getStatus(key)
-				.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('failed')));
-			if (!isReadyOrTerminal(status)) return false;
-		}
-		return true;
-	});
+const maybeRunPostAcquire = (
+	deps: SupervisorState,
+	options: { readonly failOnPostAcquireHook?: boolean },
+): Effect.Effect<void, SupervisorPostAcquireFailed, never> =>
+	options.failOnPostAcquireHook === true
+		? runPostAcquireHook(deps)
+		: runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
 
 export const handleCommand = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
 	options: { readonly failOnPostAcquireHook?: boolean } = {},
-): Effect.Effect<void, SupervisorPostAcquireFailed, never> =>
+): Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope> =>
 	Effect.gen(function* () {
-		const {
-			graph,
-			registry,
-			pluginContext,
-			sinks,
-			logger,
-			identity,
-			runtimeRoot,
-			parentScope,
-		} = deps;
+		const { graph, registry, pluginContext, sinks, logger, identity, runtimeRoot } = deps;
+		const parentScope = yield* Effect.scope;
 		switch (cmd.tag) {
 			case 'shutdown.requested':
 			case 'stack.stop': {
@@ -92,11 +69,7 @@ export const handleCommand = (
 					Effect.catch(() => Effect.succeed(false)),
 				);
 				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-					if (options.failOnPostAcquireHook === true) {
-						yield* runPostAcquireHook(deps);
-					} else {
-						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
-					}
+					yield* maybeRunPostAcquire(deps, options);
 				}
 				return;
 			}
@@ -118,11 +91,7 @@ export const handleCommand = (
 					Effect.catch(() => Effect.succeed(false)),
 				);
 				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-					if (options.failOnPostAcquireHook === true) {
-						yield* runPostAcquireHook(deps);
-					} else {
-						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
-					}
+					yield* maybeRunPostAcquire(deps, options);
 				}
 				return;
 			}
@@ -148,30 +117,18 @@ export const handleCommand = (
 						Effect.catch(() => Effect.succeed(false)),
 					);
 					if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-						if (options.failOnPostAcquireHook === true) {
-							yield* runPostAcquireHook(deps);
-						} else {
-							yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
-						}
+						yield* maybeRunPostAcquire(deps, options);
 					}
 					return;
 				}
 				if (yield* allReadyOrTerminal(graph, registry)) {
-					if (options.failOnPostAcquireHook === true) {
-						yield* runPostAcquireHook(deps);
-					} else {
-						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
-					}
+					yield* maybeRunPostAcquire(deps, options);
 				}
 				return;
 			}
 			case 'codegen.requested': {
 				if (yield* allReadyOrTerminal(graph, registry)) {
-					if (options.failOnPostAcquireHook === true) {
-						yield* runPostAcquireHook(deps);
-					} else {
-						yield* runPostAcquireHook(deps).pipe(Effect.catch(() => Effect.void));
-					}
+					yield* maybeRunPostAcquire(deps, options);
 				}
 				return;
 			}
@@ -194,7 +151,7 @@ export const handleCommand = (
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.handleCommand'));
 
-export const commandLoop = (deps: SupervisorState): Effect.Effect<void, never, never> =>
+export const commandLoop = (deps: SupervisorState): Effect.Effect<void, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		while (true) {
 			const next = yield* Queue.take(deps.queuedCommands);

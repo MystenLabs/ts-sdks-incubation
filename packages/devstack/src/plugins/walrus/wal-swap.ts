@@ -4,6 +4,7 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import type { AccountValue } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { WalrusSpans } from './spans.ts';
@@ -86,8 +87,9 @@ export const buildWalSwapTransaction = (args: {
 export const swapAccountSuiForWal = (
 	args: WalAccountSwapRequest,
 ): Effect.Effect<{ readonly digest: string }, WalrusPluginError> =>
-	args.account
-		.withTransactionSigner((lockedSigner) =>
+	signAndDispatch({
+		signerSource: args.account,
+		buildTxBytes: () =>
 			Effect.gen(function* () {
 				const tx = buildWalSwapTransaction({
 					signerAddress: args.account.address,
@@ -95,7 +97,7 @@ export const swapAccountSuiForWal = (
 					exchange: args.exchange,
 					paymentMist: args.paymentMist,
 				});
-				const txBytes = yield* Effect.tryPromise({
+				return yield* Effect.tryPromise({
 					try: () => tx.build({ client: args.sdk.client }),
 					catch: (cause): WalrusPluginError =>
 						walrusPluginError(
@@ -104,39 +106,31 @@ export const swapAccountSuiForWal = (
 							{ cause },
 						),
 				});
-				const result = yield* lockedSigner
-					.signAndExecute(txBytes)
-					.pipe(
-						Effect.mapError(
-							(cause): WalrusPluginError =>
-								walrusPluginError(
-									'fund-wal',
-									`walrus.fundWal: SUI -> WAL swap failed for ${args.recipientAddress} ` +
-										`using account '${args.account.name}' (address=${args.account.address}) ` +
-										`against exchange ${args.exchange.objectId}.`,
-									{ cause },
-								),
-						),
-					);
-				if (result.$kind === 'FailedTransaction') {
-					return yield* Effect.fail(
-						walrusPluginError(
-							'fund-wal',
-							`walrus.fundWal: SUI -> WAL swap failed on-chain ` +
-								`(exchange=${args.exchange.objectId}) ` +
-								formatExecutedFailure(result.FailedTransaction),
-						),
-					);
-				}
-				return { digest: result.Transaction.digest };
 			}),
-		)
-		.pipe(
-			Effect.withSpan('devstack.plugin.walrus.fundWal', {
-				attributes: {
-					[WalrusSpans.fundAccount]: args.account.name,
-					[WalrusSpans.fundAddress]: args.recipientAddress,
-					[WalrusSpans.fundExchange]: args.exchange.objectId,
-				},
-			}),
-		);
+		mapSignError: (cause): WalrusPluginError =>
+			walrusPluginError(
+				'fund-wal',
+				`walrus.fundWal: SUI -> WAL swap failed for ${args.recipientAddress} ` +
+					`using account '${args.account.name}' (address=${args.account.address}) ` +
+					`against exchange ${args.exchange.objectId}.`,
+				{ cause },
+			),
+		onFailed: (failure) =>
+			Effect.fail(
+				walrusPluginError(
+					'fund-wal',
+					`walrus.fundWal: SUI -> WAL swap failed on-chain ` +
+						`(exchange=${args.exchange.objectId}) ` +
+						formatExecutedFailure(failure),
+				),
+			),
+		onSuccess: (ok) => Effect.succeed({ digest: ok.digest }),
+	}).pipe(
+		Effect.withSpan('devstack.plugin.walrus.fundWal', {
+			attributes: {
+				[WalrusSpans.fundAccount]: args.account.name,
+				[WalrusSpans.fundAddress]: args.recipientAddress,
+				[WalrusSpans.fundExchange]: args.exchange.objectId,
+			},
+		}),
+	);

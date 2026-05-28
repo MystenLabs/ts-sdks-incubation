@@ -43,10 +43,10 @@ export const DEFAULT_ROUTER_ENTRYPOINT_PORT = 5175 as const;
  * intent — the table key is the alias users type; the value is the
  * service segment routed in the manifest.
  */
-export const BUILT_IN_ENDPOINT_ALIASES: Readonly<Record<string, string>> = {
+export const BUILT_IN_ENDPOINT_ALIASES = {
 	app: 'dev',
 	wallet: 'wallet-app',
-};
+} as const;
 
 /**
  * Conventional endpoint→service hints for every built-in plugin that
@@ -74,11 +74,14 @@ export const BUILT_IN_CONVENTIONAL_HINTS: ReadonlyArray<ConventionalRouteHint> =
  */
 export const builtInConventionalRoutes = (
 	port: number = DEFAULT_ROUTER_ENTRYPOINT_PORT,
-): ReadonlyMap<string, ConventionalRoute> => conventionalRoutesFromHints(BUILT_IN_CONVENTIONAL_HINTS, port);
+): ReadonlyMap<string, ConventionalRoute> =>
+	conventionalRoutesFromHints(BUILT_IN_CONVENTIONAL_HINTS, port);
 
 /**
  * Look up the alias-resolved endpoint key for a user-typed name.
  * Returns the input unchanged when no alias is registered.
  */
-export const resolveBuiltInEndpointAlias = (endpointNameOrAlias: string): string =>
-	BUILT_IN_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
+export const resolveBuiltInEndpointAlias = (endpointNameOrAlias: string): string => {
+	const aliases: Readonly<Record<string, string>> = BUILT_IN_ENDPOINT_ALIASES;
+	return aliases[endpointNameOrAlias] ?? endpointNameOrAlias;
+};

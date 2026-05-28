@@ -24,14 +24,10 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type {
-	AccountSignError,
-	AccountValue,
-	SignAndExecuteResult,
-	TxResult,
-} from '../account/index.ts';
+import type { AccountSignError, AccountValue, TxResult } from '../account/index.ts';
 import { buildForkImpersonationTransactionBytes, type SuiClient } from '../sui/index.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
@@ -163,11 +159,18 @@ export const signAndExecute = (params: {
 	readonly sui: SuiClient;
 	readonly account: AccountValue;
 	readonly build: (tx: Transaction) => void;
-}): Effect.Effect<ActionReceipt, ActionError, Scope.Scope> =>
-	Effect.gen(function* () {
-		const { actionName, sui, account, build } = params;
-		const mapAccountErr = accountSignErrorToActionError(actionName);
-		return yield* account.withTransactionSigner((lockedSigner) =>
+}): Effect.Effect<ActionReceipt, ActionError, Scope.Scope> => {
+	const { actionName, sui, account, build } = params;
+	const mapAccountErr = accountSignErrorToActionError(actionName);
+	// Delegate the build → sign → execute → dispatch pipeline to the
+	// shared `signAndDispatch` helper. The build closure handles both
+	// the user callback (`build(tx)`) and mode-appropriate serialization
+	// (fork impersonation vs SDK-resolver). On-chain failures surface
+	// as `phase: 'execute-failed'` so cause-walker renders them distinctly
+	// from transport-level signing failures (`phase: 'sign'`).
+	return signAndDispatch({
+		signerSource: account,
+		buildTxBytes: () =>
 			Effect.gen(function* () {
 				// --- 1. Allocate + populate the Transaction ------------------
 				const tx = new Transaction();
@@ -183,65 +186,44 @@ export const signAndExecute = (params: {
 				});
 
 				// --- 2. Serialise via the mode-appropriate path --------------
-				const txBytes =
-					account.source === 'impersonate'
-						? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
-								Effect.mapError(
-									(cause): ActionError =>
-										actionError('sign', {
-											actionName,
-											message: `Action '${actionName}': fork impersonation Transaction.build failed — ${cause.message}.`,
-											cause,
-										}),
-								),
-							)
-						: yield* Effect.tryPromise({
-								try: () =>
-									tx.build({ client: sui.sdk.client }),
-								catch: (cause): ActionError =>
+				return account.source === 'impersonate'
+					? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
+							Effect.mapError(
+								(cause): ActionError =>
 									actionError('sign', {
 										actionName,
-										message: `Action '${actionName}': Transaction.build failed — ${
-											cause instanceof Error ? cause.message : String(cause)
-										}.`,
+										message: `Action '${actionName}': fork impersonation Transaction.build failed — ${cause.message}.`,
 										cause,
 									}),
-							});
-
-				// --- 3. Delegate sign + execute + wait to the account -------
-				//
-				// `lockedSigner.signAndExecute` runs INSIDE the per-address
-				// transaction-signer lease scope the outer
-				// `withTransactionSigner` opened, so we keep sequencing for
-				// gas/object-version resolution across the whole roundtrip.
-				const result: SignAndExecuteResult = yield* lockedSigner
-					.signAndExecute(txBytes)
-					.pipe(Effect.mapError(mapAccountErr));
-
-				// --- 4. Dispatch on the SDK-shaped discriminated result ----
-				// On-chain failures are a return value (not an error);
-				// surface them as `phase: 'execute-failed'` so cause-walker
-				// renders them distinctly from transport-level signing
-				// failures (`phase: 'sign'`).
-				if (result.$kind === 'FailedTransaction') {
-					return yield* Effect.fail(
-						actionError('execute-failed', {
-							actionName,
-							message:
-								`Action '${actionName}': transaction execution failed on-chain ` +
-								`for account '${account.name}' (address=${account.address}) ` +
-								formatExecutedFailure(result.FailedTransaction),
-						}),
-					);
-				}
-				const txResult: TxResult = result.Transaction;
-
-				// --- 5. Re-project TxResult → ActionReceipt -----------------
-				return receiptFromTxResult(txResult);
+							),
+						)
+					: yield* Effect.tryPromise({
+							try: () => tx.build({ client: sui.sdk.client }),
+							catch: (cause): ActionError =>
+								actionError('sign', {
+									actionName,
+									message: `Action '${actionName}': Transaction.build failed — ${
+										cause instanceof Error ? cause.message : String(cause)
+									}.`,
+									cause,
+								}),
+						});
 			}),
-		);
+		mapSignError: mapAccountErr,
+		onFailed: (failure) =>
+			Effect.fail(
+				actionError('execute-failed', {
+					actionName,
+					message:
+						`Action '${actionName}': transaction execution failed on-chain ` +
+						`for account '${account.name}' (address=${account.address}) ` +
+						formatExecutedFailure(failure),
+				}),
+			),
+		onSuccess: (txResult) => Effect.succeed(receiptFromTxResult(txResult)),
 	}).pipe(
 		Effect.withSpan('devstack.plugin.action.signAndExecute', {
-			attributes: { [ActionSpans.name]: params.actionName },
+			attributes: { [ActionSpans.name]: actionName },
 		}),
 	);
+};
