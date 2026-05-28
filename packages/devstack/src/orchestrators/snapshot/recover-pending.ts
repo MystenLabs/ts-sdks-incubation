@@ -103,12 +103,12 @@ export interface RestorePendingRecoverySummary {
 // Internal helpers
 // -----------------------------------------------------------------------------
 
-/** Result of peeking at a marker on disk. We split version-detection
- *  from schema decode so a stale pre-upgrade marker (no `digest` per
- *  entry) can be surfaced as "skip with warning" rather than as a
- *  decode failure — the scanner has no safe way to recover a v1
- *  marker (the digest is the only identity that survives
- *  `docker system prune`, and v1 didn't persist it). */
+/** Result of reading a marker on disk. `unsupported-version` covers
+ *  stale pre-v2 markers whose schema can't safely be recovered (the
+ *  v1 shape had no `digest` per entry, and digest is the only identity
+ *  that survives `docker system prune`); the Union decode fails them
+ *  cleanly and the scanner surfaces them as "leave on disk for
+ *  operator review" rather than as a fatal decode error. */
 type ReadMarkerResult =
 	| { readonly kind: 'absent' }
 	| { readonly kind: 'unsupported-version'; readonly version: unknown; readonly path: string }
@@ -145,35 +145,58 @@ const readMarker = (
 					cause: issue.cause,
 				}),
 		});
-		// Version-peek BEFORE the full schema decode so a stale
-		// pre-upgrade marker can be skipped cleanly. The schema
-		// requires the current version literal, so without this peek
-		// every v1 marker would surface as `marker-decode` and the
-		// supervisor would have no way to distinguish "stale upgrade
-		// artifact" from "corrupt on-disk JSON".
+		// The schema is a `Schema.Union` of every supported marker
+		// version (currently just v2). We peek the discriminant before
+		// the full Union decode so a stale pre-v2 (or future-v3)
+		// marker is reported as `unsupported-version` rather than as a
+		// schema-decode failure — the supervisor surfaces them
+		// differently (operator-review vs corrupt-JSON). A blob whose
+		// `version` matches a known arm but whose inner shape is
+		// malformed still surfaces as `marker-decode`. Future v3
+		// migration appends an arm to the Union in `pending-marker.ts`,
+		// adds the literal to `SUPPORTED_MARKER_VERSIONS`, and adds a
+		// matching `case` in the switch below.
 		const peekedVersion =
 			typeof raw === 'object' && raw !== null && 'version' in raw
 				? (raw as { readonly version: unknown }).version
 				: undefined;
-		if (peekedVersion !== SNAPSHOT_RESTORE_PENDING_VERSION) {
+		if (!SUPPORTED_MARKER_VERSIONS.has(peekedVersion as number)) {
 			return {
 				kind: 'unsupported-version',
 				version: peekedVersion,
 				path,
 			} as const;
 		}
-		const doc = yield* decodeUnknown(RestorePendingDocumentSchema, raw, {
-			source: path,
-			mkError: (issue) =>
-				new RestorePendingRecoveryError({
-					kind: 'marker-decode',
-					path,
-					detail: `pending marker failed schema decode`,
-					cause: issue.cause,
-				}),
-		});
-		return { kind: 'present', doc } as const;
+		const decoded: RestorePendingDocument = yield* decodeUnknown(
+			RestorePendingDocumentSchema,
+			raw,
+			{
+				source: path,
+				mkError: (issue) =>
+					new RestorePendingRecoveryError({
+						kind: 'marker-decode',
+						path,
+						detail: `pending marker failed schema decode`,
+						cause: issue.cause,
+					}),
+			},
+		);
+		// Today the Union has one arm (v2). A future v3 migration adds a
+		// `case 3:` arm here AND extends `SUPPORTED_MARKER_VERSIONS`; the
+		// unsupported-version branch becomes reachable once the Union
+		// grows. With a single-arm Union, TypeScript narrows `decoded`
+		// to `never` after `case 2`, so this single return is exhaustive.
+		switch (decoded.version) {
+			case 2:
+				return { kind: 'present', doc: decoded } as const;
+		}
 	});
+
+/** Set of versions the Union decoder above accepts. Keep in sync with
+ *  the arms of `RestorePendingDocumentSchema` in `pending-marker.ts` —
+ *  the peek uses this to distinguish "stale/future marker version" from
+ *  "blob shape mismatch within a known version". */
+const SUPPORTED_MARKER_VERSIONS = new Set<number>([SNAPSHOT_RESTORE_PENDING_VERSION]);
 
 const rewriteMarker = (
 	stackRoot: string,

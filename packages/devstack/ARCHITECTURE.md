@@ -58,6 +58,15 @@ add their key under the existing prefix scheme rather than expanding the allowli
 `test/substrate/name-blindness.test.ts` enforces the rule + tracks the small permanent allowlist
 (including the `account/` / `package/` / `wallet/` projection-key prefix carve-out above).
 
+### `ContainerRuntimeService` re-export indirection
+
+The root barrel re-exports `ContainerRuntimeService` from `substrate/runtime/container-runtime.ts`
+— a thin shim that itself re-exports from `runtime/docker/service.ts`. The shim exists so the
+public API never names the L1 Docker module directly: a future backend swap (podman, firecracker)
+re-points this one file rather than threading through every consumer of the root barrel. Internal
+callers (plugins, orchestrators) continue to import from `runtime/docker/service.ts` directly —
+they already live inside L1's scope so the indirection earns nothing for them.
+
 ---
 
 ## Capability contracts
@@ -152,6 +161,13 @@ supervision.
 
 Liveness predicate: PID + startTime (`substrate/runtime/cross-process/liveness.ts`). Foreign-host
 PIDs are conservatively-alive (NFS-safe).
+
+`LivenessProbeScope` is a per-sweep Effect Service in the same module: one cache per sweep pass,
+keyed on `(pid, startTime)`, so a sweep that inspects N roster rows referencing the same PID forks
+the underlying `kill(0)` / `/proc` lookup once rather than N times. Common cases this prevents
+from blowing up: a single supervisor parent overseeing many child plugin keys; a process restart
+where the new PID is shared by multiple stale roster entries; cross-process state-store sweeps
+across siblings. The scope's lifetime is one sweep — it is not a persistent cache.
 
 ---
 

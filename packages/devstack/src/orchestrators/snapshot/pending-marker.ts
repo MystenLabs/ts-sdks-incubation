@@ -29,6 +29,7 @@
 
 import { Effect, FileSystem, Schema } from 'effect';
 
+import { versionedDocSchema } from '../../substrate/runtime/versioned-doc-schema.ts';
 import type { SnapshotMetadata } from './descriptor.ts';
 
 export const SNAPSHOT_RESTORE_PENDING_VERSION = 2 as const;
@@ -50,15 +51,31 @@ export const RestorePendingContainerSchema = Schema.Struct({
 });
 export type RestorePendingContainer = Schema.Schema.Type<typeof RestorePendingContainerSchema>;
 
-export const RestorePendingDocumentSchema = Schema.Struct({
-	version: Schema.Literal(SNAPSHOT_RESTORE_PENDING_VERSION),
+const RestorePendingDocumentV2Payload = {
 	snapshotId: Schema.String,
 	artifactDir: Schema.String,
 	app: Schema.String,
 	stack: Schema.String,
 	network: Schema.String,
 	containers: Schema.Array(RestorePendingContainerSchema),
-});
+} as const;
+
+/** v2 marker variant — current shape. New variants are added by
+ *  appending another `versionedDocSchema(N, ...)` arm to the Union
+ *  below; consumers switch on `version` after decode. */
+export const RestorePendingDocumentV2Schema = versionedDocSchema(
+	SNAPSHOT_RESTORE_PENDING_VERSION,
+	RestorePendingDocumentV2Payload,
+);
+export type RestorePendingDocumentV2 = Schema.Schema.Type<typeof RestorePendingDocumentV2Schema>;
+
+/** Discriminated union of every supported marker version. Today only
+ *  v2 is on disk; the Union shape exists so a v3 migration is a
+ *  one-line `Schema.Union(...v2, ...v3)` extension here plus a new
+ *  `case` in the recovery scanner. Stale pre-v2 markers fail decode
+ *  cleanly — the scanner translates that into a "leave on disk for
+ *  operator review" warning rather than a fatal error. */
+export const RestorePendingDocumentSchema = Schema.Union([RestorePendingDocumentV2Schema]);
 export type RestorePendingDocument = Schema.Schema.Type<typeof RestorePendingDocumentSchema>;
 
 /** Path the marker lives at, relative to a runtime stack root or

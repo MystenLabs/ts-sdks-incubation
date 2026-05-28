@@ -216,34 +216,56 @@ export const bootRouterOrchestrator: Effect.Effect<void, never, RouterService> =
 	},
 );
 
-export const endpointEventFromRoutable = (
+/** Project a `(pluginKey, EndpointUrl)` pair into the field-set both
+ *  the engine event and the manifest entry stamp identically. Callers
+ *  spread this and then add their output-specific fields (the engine
+ *  event's branded `endpointKey` + `registeredAt`; the manifest
+ *  entry's stringified `endpointKey` + `pluginKey`). */
+const routableToEndpointFields = (
 	pluginKey: PluginKey,
 	endpoint: EndpointUrl,
-	registeredAt = Date.now(),
-): Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> => ({
-	tag: 'endpoint.registered',
-	endpoint: {
-		endpointKey: endpointKey(`${pluginKey}:${endpoint.endpointName}`),
-		pluginKey,
-		name: endpoint.endpointName,
-		url: endpoint.url,
-		displayUrl: null,
-		wireProtocol: endpoint.wireProtocol,
-		registeredAt,
-	},
-});
-
-export const manifestEndpointEntryFromRoutable = (
-	pluginKey: PluginKey,
-	endpoint: EndpointUrl,
-): EndpointEntry => ({
-	endpointKey: `${pluginKey}:${endpoint.endpointName}`,
+): {
+	readonly name: string;
+	readonly url: string;
+	readonly displayUrl: null;
+	readonly wireProtocol: EndpointUrl['wireProtocol'];
+	readonly endpointKeyString: string;
+} => ({
 	name: endpoint.endpointName,
 	url: endpoint.url,
 	displayUrl: null,
 	wireProtocol: endpoint.wireProtocol,
-	pluginKey: String(pluginKey),
+	endpointKeyString: `${pluginKey}:${endpoint.endpointName}`,
 });
+
+export const endpointEventFromRoutable = (
+	pluginKey: PluginKey,
+	endpoint: EndpointUrl,
+	registeredAt = Date.now(),
+): Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> => {
+	const { endpointKeyString, ...common } = routableToEndpointFields(pluginKey, endpoint);
+	return {
+		tag: 'endpoint.registered',
+		endpoint: {
+			...common,
+			endpointKey: endpointKey(endpointKeyString),
+			pluginKey,
+			registeredAt,
+		},
+	};
+};
+
+export const manifestEndpointEntryFromRoutable = (
+	pluginKey: PluginKey,
+	endpoint: EndpointUrl,
+): EndpointEntry => {
+	const { endpointKeyString, ...common } = routableToEndpointFields(pluginKey, endpoint);
+	return {
+		...common,
+		endpointKey: endpointKeyString,
+		pluginKey: String(pluginKey),
+	};
+};
 
 const manifestEndpointEntryFromOperationalEndpoint = (
 	endpoint: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>['endpoint'],

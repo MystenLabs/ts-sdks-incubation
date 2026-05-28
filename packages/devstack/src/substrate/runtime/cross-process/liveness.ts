@@ -17,7 +17,7 @@
 import { execFileSync } from 'node:child_process';
 import { hostname as nodeHostname } from 'node:os';
 
-import { Data, Effect } from 'effect';
+import { Context, Data, Effect, Layer } from 'effect';
 
 import type { RosterHolder } from '../../cross-process.ts';
 
@@ -174,3 +174,50 @@ export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolde
 		intent,
 	};
 };
+
+// -----------------------------------------------------------------------------
+// LivenessProbeScope — per-sweep cache, lifted out of the Map parameter.
+// -----------------------------------------------------------------------------
+//
+// The bare `LivenessCache = Map<pid, stamp | null>` was threaded through
+// `roster.sweepStaleHolders` and `liveContainerClaims` as an explicit
+// parameter, which is fine for two sites but doesn't scale to the three
+// other sweep loops (dispatch routes, doctor probes, lifecycle-prune)
+// that haven't migrated yet. Promoting the cache into a service lets a
+// sweep loop `yield* LivenessProbeScope` once and call the probe
+// methods without re-passing the Map. The optional-Map params on
+// `processStartTime` / `checkHolderLiveness` stay so unmigrated callers
+// can keep working from outside an Effect.
+
+/** Methods a per-sweep scope exposes — the captured cache backs both
+ *  so the same `pid` forks `ps`/`tasklist` at most once per scope. */
+export interface LivenessProbeScopeShape {
+	readonly probeStartTime: (pid: number) => number | null;
+	readonly probeHolderLiveness: (
+		holder: RosterHolder,
+		ownHost?: string,
+	) => Effect.Effect<'alive' | 'dead'>;
+}
+
+/** A per-sweep liveness scope. Callers `yield* LivenessProbeScope`
+ *  once per sweep (typically inside an `Effect.scoped` block that
+ *  wraps the loop) and call `probeStartTime` / `probeHolderLiveness`
+ *  on each holder without threading the Map manually. */
+export class LivenessProbeScope extends Context.Service<
+	LivenessProbeScope,
+	LivenessProbeScopeShape
+>()('@devstack/substrate/cross-process/LivenessProbeScope') {}
+
+/** Construct a fresh `LivenessProbeScope` whose underlying cache is
+ *  private to this layer — every yielding scope gets its own Map. */
+export const layerLivenessProbeScope: Layer.Layer<LivenessProbeScope> = Layer.effect(
+	LivenessProbeScope,
+	Effect.sync(() => {
+		const cache: LivenessCache = new Map();
+		return LivenessProbeScope.of({
+			probeStartTime: (pid) => processStartTime(pid, cache),
+			probeHolderLiveness: (holder, ownHost = nodeHostname()) =>
+				checkHolderLiveness(holder, ownHost, cache),
+		});
+	}),
+);

@@ -9,7 +9,6 @@
 // endpoint-name accessors in-spec helpers use.
 
 import {
-	BUILT_IN_ENDPOINT_ALIASES,
 	DEFAULT_ROUTER_ENTRYPOINT_PORT,
 	builtInConventionalRoutes,
 	discoverManifestPath as runtimeDiscoverManifestPath,
@@ -19,6 +18,7 @@ import {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	resolveBuiltInEndpointAlias,
 	type DiscoverManifestPathOptions,
 	type EndpointEntry,
 	type ManifestEnvelope,
@@ -77,10 +77,12 @@ export interface ResolvedEndpoint {
 // Playwright contributes nothing of its own here — every per-endpoint
 // fact is substrate-supplied.
 
-export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string => {
-	const aliases: Readonly<Record<string, string>> = BUILT_IN_ENDPOINT_ALIASES;
-	return aliases[endpointNameOrAlias] ?? endpointNameOrAlias;
-};
+/** Resolve a user-typed endpoint name or alias to the canonical
+ *  endpoint name the manifest stores. Delegates to the canonical
+ *  alias resolver in `runtime/conventional-routes.ts` so vitest and
+ *  Playwright share one alias table. */
+export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string =>
+	resolveBuiltInEndpointAlias(endpointNameOrAlias);
 
 const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegistry => {
 	const entries: RuntimeResolvedEndpoint[] = [];

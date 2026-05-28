@@ -38,6 +38,13 @@ import { updateRef } from '../projection/update.ts';
  * - `readEffect(ctx)` — Effect fallback so the substrate only pays the
  *   "build the default Layer" cost when nothing is in context
  *   (CapabilitySinksService).
+ *
+ * Upstream-watch (Phase 5 reviewer): Effect v4 exposes `Context.getOption`
+ * (returns `Option<S>`) and `Context.getUnsafe` (throws on missing), but
+ * NO `getOptionUnchecked`-style variant that returns `Option<S>` over a
+ * `Context<never>` without the typed cast we perform here. The wrapper
+ * stays until upstream adds an unchecked optional getter — at which
+ * point the body collapses to a thin alias.
  */
 export const OptionalService = <S, I>(tag: Context.Key<I, S>) => ({
 	read: (ctx: Context.Context<never>, fallback: S): S => {

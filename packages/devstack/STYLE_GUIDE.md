@@ -478,3 +478,126 @@ Code-level rules that follow from the closure:
   `projection.updated` carrying `{ kind: string, key: string, payload: unknown, at: number }`. New
   plugin-specific projection shapes contribute a decoder branch to the reducer's
   `projection.updated` case — they do NOT add a new event variant.
+
+---
+
+## 21. Cookbook
+
+Reusable patterns. Each entry pairs a substrate primitive with the discipline for using it.
+
+### 21.1 `as const` on `HostServiceAfter` / `ReadonlyArray<AnyResourceRef>` tuples
+
+**Plugin-author tuples declared as a `HostServiceAfter`-style list must be `as const`.** Without
+it, TypeScript widens the tuple to `AnyResourceRef[]` and the generic capture loses the per-element
+narrowing the plugin's `After` parameter relies on.
+
+```ts
+// Wrong — widened to AnyResourceRef[]; downstream type-level narrowing breaks.
+hostService({ command: 'pnpm', after: [neededMember] });
+
+// Right — narrows the tuple length and element types.
+hostService({ command: 'pnpm', after: [neededMember] as const });
+```
+
+**Rule:** when a plugin factory generic parameter extends a `ReadonlyArray<...Ref>` tuple, the
+caller writes `[…] as const`.
+
+### 21.2 `OptionalService` discipline
+
+`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical "probe `pluginContext` for a service; fall back if absent" lookup. The internal cast
+(`ctx as Context.Context<I>`) is structural — `pluginContext` is typed `Context.Context<never>` and
+the probe is intentional. Hand-rolled `Context.getOption` plus a cast at the callsite is the
+anti-pattern.
+
+```ts
+const Logger = OptionalService(LoggerService);
+const logger = Logger.read(pluginContext, noopLogger);
+const sinks = yield* Logger.readEffect(pluginContext, buildDefaultSinks);
+```
+
+**Rule:** probe optional services through `OptionalService(tag).read` / `.readEffect`. Don't
+open-code the lookup.
+
+### 21.3 Stage-and-swap primitive
+
+`stageAndSwap` at `src/substrate/runtime/stage-and-swap/index.ts` is the canonical
+"build-then-publish atomically" primitive. The build effect populates `stagingPath`; on success
+the helper backs up the current target, renames staging into place, and drops the backup. On
+failure the previous target is restored verbatim. The build effect's error tag passes through
+unchanged.
+
+Two call shapes:
+
+- **`idSuffix`** — the primitive mints `<targetPath>.staging.<idSuffix>` /
+  `<targetPath>.bak.<idSuffix>`. Use when the staging-name convention is owned in one place
+  (codegen, snapshot).
+- **explicit `stagingPath` + `backupPath`** — caller picks both names. Use when bespoke sibling
+  names are load-bearing (Seal's `.backup.`, fixtures pinning literal names).
+
+```ts
+yield* stageAndSwap({
+	targetPath,
+	idSuffix: crypto.randomUUID().slice(0, 8),
+	build: Effect.gen(function* () {
+		// populate stagingPath
+	}),
+});
+```
+
+**Rule:** publish-then-swap goes through `stageAndSwap`. No inline `mkdir(tmp) + rename(tmp,
+target)`.
+
+### 21.4 `versionedDocSchema` migration procedure
+
+`versionedDocSchema(N, payload)` at `substrate/runtime/versioned-doc-schema.ts` centralises the
+`{ version: Literal<N>, ...payload }` shape every persisted cross-process document shares (roster,
+container-claim, snapshot-reservation, port-reservation).
+
+```ts
+// v1
+const DocSchema = versionedDocSchema(1, { pid: Schema.Number, host: Schema.String });
+
+// v2 migration — union the two versions at the read site.
+const DocSchema = Schema.Union(
+	versionedDocSchema(1, { pid: Schema.Number, host: Schema.String }),
+	versionedDocSchema(2, { pid: Schema.Number, host: Schema.String, startTime: Schema.Number }),
+);
+```
+
+**Rule:** new versioned cross-process documents use `versionedDocSchema`. v2+ schemas read
+through `Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...), ...)`. Don't
+hand-roll the discriminator field.
+
+### 21.5 `plugins/internal/` directory
+
+Modules under `src/plugins/internal/` are shared plugin helpers that are NOT plugins themselves
+(`acquire-on-chain-artifact.ts`, `codegen-helpers.ts`, `funding-failure-error.ts`). Sibling
+plugins import from `plugins/internal/<helper>.ts` directly — there is no barrel.
+
+```ts
+// Right
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
+
+// Wrong — no barrel exists, and adding one would invite cross-plugin reach.
+import { acquireOnChainArtifact } from '../internal/index.ts';
+```
+
+**Rule:** shared plugin-side helpers live in `plugins/internal/` with per-file imports. No
+barrel.
+
+### 21.6 `withTempRoot` test helper
+
+Tests needing a tempdir use `withTempRoot` / `withTempRootSync` / `withTempRootAsync` from
+`test/helpers/with-temp-root.ts`. Cleanup is unconditional (Effect finalizer, `try/finally`).
+
+```ts
+it.effect('writes manifest', () =>
+	withTempRoot('manifest-test', (root) =>
+		Effect.gen(function* () {
+			yield* writeManifest(join(root, 'manifest.json'));
+		}),
+	));
+```
+
+**Rule:** tests do not call `mkdtempSync` + ad-hoc `try/finally`. Use the helper — it closes
+several historical leak-on-throw bugs in one place.

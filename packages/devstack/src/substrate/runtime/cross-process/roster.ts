@@ -27,9 +27,9 @@ import { decodeJsonText } from '../runtime-decode.ts';
 import { versionedDocSchema } from '../versioned-doc-schema.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
-	checkHolderLiveness,
 	isPidAlive,
-	type LivenessCache,
+	layerLivenessProbeScope,
+	LivenessProbeScope,
 	ownHolder,
 	processStartTime,
 } from './liveness.ts';
@@ -103,13 +103,13 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 	policy: RosterSweepPolicy = DEFAULT_SWEEP_POLICY,
 	now: number = Date.now(),
 ) {
+	// Yield a fresh per-sweep liveness scope so the same pid is probed
+	// AT MOST once across all holders in this pass — two holders sharing
+	// a pid (corrupted-roster edge case) collapse to one fork. The
+	// `Layer.provide` below scopes the cache to THIS sweep only.
+	const probe = yield* LivenessProbeScope;
 	const survivors: RosterHolder[] = [];
 	const evicted: RosterHolder[] = [];
-	// Per-sweep cache — same pid is probed AT MOST once across all
-	// holders in this pass. Two holders sharing a pid (would only
-	// happen on a corrupted roster, but cheap insurance) collapse to
-	// one fork.
-	const livenessCache: LivenessCache = new Map();
 	const ownHost = nodeHostname();
 	for (const holder of doc.holders) {
 		const heartbeatStale = now - holder.heartbeatAt > policy.staleAfterMillis;
@@ -117,9 +117,9 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 			survivors.push(holder);
 			continue;
 		}
-		const liveness = yield* checkHolderLiveness(holder, ownHost, livenessCache).pipe(
-			Effect.catch(() => Effect.succeed('alive' as const)),
-		);
+		const liveness = yield* probe
+			.probeHolderLiveness(holder, ownHost)
+			.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 		if (liveness === 'dead') {
 			evicted.push(holder);
 		} else {
@@ -130,7 +130,7 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 		swept: { version: doc.version, holders: survivors } satisfies RosterDocument,
 		evicted: evicted as ReadonlyArray<RosterHolder>,
 	};
-});
+}, Effect.provide(layerLivenessProbeScope));
 
 // -----------------------------------------------------------------------------
 // Claim / release / heartbeat
@@ -401,28 +401,35 @@ const claimsPath = (rosterFile: string): string => `${dirname(rosterFile)}/conta
 
 const isContainerClaimLive = (
 	claim: ContainerClaim,
+	probeStartTime: (pid: number) => number | null,
 	ownHost: string = nodeHostname(),
-	cache?: LivenessCache,
 ): boolean => {
 	if (claim.hostname !== ownHost) return true;
 	if (!isPidAlive(claim.pid)) return false;
 	if (claim.startTime === undefined) return true;
-	const probedStart = processStartTime(claim.pid, cache);
+	const probedStart = probeStartTime(claim.pid);
 	if (probedStart === null) return true;
 	return probedStart === claim.startTime;
 };
 
-const liveContainerClaims = (doc: ContainerClaimDocument): ContainerClaimDocument => {
-	// Per-pass cache — bound the `ps`/`tasklist` forks to one per
-	// unique pid across this filter sweep (multiple claims by the
-	// same pid collapse to one probe).
-	const cache: LivenessCache = new Map();
-	const ownHost = nodeHostname();
-	return {
-		version: 1,
-		claims: doc.claims.filter((claim) => isContainerClaimLive(claim, ownHost, cache)),
-	};
-};
+/** Effect-flavored filter that yields a fresh `LivenessProbeScope` so
+ *  the same pid is probed at most once across this pass — even when
+ *  multiple claims by the same pid sit in the ledger. The scope's
+ *  cache is private to this call (provided via `Effect.provide`). */
+const liveContainerClaims = (
+	doc: ContainerClaimDocument,
+): Effect.Effect<ContainerClaimDocument> =>
+	Effect.gen(function* () {
+		const probe = yield* LivenessProbeScope;
+		const ownHost = nodeHostname();
+		const filtered: ContainerClaimDocument = {
+			version: 1,
+			claims: doc.claims.filter((claim) =>
+				isContainerClaimLive(claim, probe.probeStartTime, ownHost),
+			),
+		};
+		return filtered;
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 
 const writeClaims = (
 	path: string,
@@ -462,7 +469,7 @@ export const pruneStaleClaims = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
-			const next = liveContainerClaims(current);
+			const next = yield* liveContainerClaims(current);
 			if (next.claims.length !== current.claims.length) {
 				yield* writeClaims(path, next);
 			}
@@ -483,7 +490,7 @@ export const addClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
-			const live = liveContainerClaims(current);
+			const live = yield* liveContainerClaims(current);
 			const ownPid = process.pid;
 			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
@@ -533,7 +540,7 @@ export const removeClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
-			const live = liveContainerClaims(current);
+			const live = yield* liveContainerClaims(current);
 			const ownPid = process.pid;
 			const ownHost = nodeHostname();
 			const remaining = live.claims.filter(

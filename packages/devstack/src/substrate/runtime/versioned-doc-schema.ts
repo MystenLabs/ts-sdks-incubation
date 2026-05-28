@@ -18,7 +18,7 @@ import { Schema } from 'effect';
  *  `Schema.Struct({ version: Schema.Literal(N), ...payload })`; the
  *  `version` field becomes a literal-typed discriminator suitable for
  *  forward-compatible `Schema.Union`s. */
-export const versionedDocSchema = <V extends number, Fields extends Schema.Struct.Fields>(
+export const versionedDocSchema = <const V extends number, Fields extends Schema.Struct.Fields>(
 	version: V,
 	payload: Fields,
 ): Schema.Struct<{ readonly version: Schema.Literal<V> } & Fields> =>
