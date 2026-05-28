@@ -922,6 +922,23 @@ export const releasePerNameLock = (
 		}
 	});
 
+/** Run `body` while holding the per-name lock for `name`. Wraps the
+ *  `acquireUseRelease(acquire, use, release)` triple so every caller
+ *  cannot accidentally forget the release on interrupt. The body is
+ *  responsible for running uninterruptibly over the inspect→action
+ *  window AND arming any stop-on-scope-close finalizer before this
+ *  helper releases the lock. */
+export const withSerializedContainerOp = <A, E, R>(
+	name: string,
+	lock: Ref.Ref<PerNameLockState>,
+	body: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
+	Effect.acquireUseRelease(
+		acquirePerNameLock(lock, name),
+		() => body,
+		() => releasePerNameLock(lock, name),
+	);
+
 /** Idempotent ensure: apply the state machine, register a scope
  *  finalizer that stops the container + releases the cross-process
  *  claim.
@@ -1033,73 +1050,72 @@ export const ensureContainer = (
 					);
 				}).pipe(Effect.uninterruptible),
 			);
-		const { id, ips, ports } = yield* Effect.acquireUseRelease(
-			acquirePerNameLock(deps.perNameLock, spec.name),
-			() =>
-				Effect.uninterruptible(
-					Effect.gen(function* () {
-						const facts = yield* inspectContainer(spec.name);
-						if (facts !== null) {
-							yield* assertOwnedFacts(spec.name, facts, spec.labels);
-						}
-						const action = decideRunAction(
-							facts,
-							desiredImageRef,
-							spec.recreate,
-							canonicalPortBindings(spec.ports),
-							spec.portBindingReconciliation ?? 'exact',
-							spec.configHash,
-							spec.image.digest,
-							spec.networkAttach,
-						);
-						const initialId = yield* applyAction(action, spec, deps);
-						const id = yield* ensureEffectivePublishedPorts(initialId, spec, deps);
+		const { id, ips, ports } = yield* withSerializedContainerOp(
+			spec.name,
+			deps.perNameLock,
+			Effect.uninterruptible(
+				Effect.gen(function* () {
+					const facts = yield* inspectContainer(spec.name);
+					if (facts !== null) {
+						yield* assertOwnedFacts(spec.name, facts, spec.labels);
+					}
+					const action = decideRunAction(
+						facts,
+						desiredImageRef,
+						spec.recreate,
+						canonicalPortBindings(spec.ports),
+						spec.portBindingReconciliation ?? 'exact',
+						spec.configHash,
+						spec.image.digest,
+						spec.networkAttach,
+					);
+					const initialId = yield* applyAction(action, spec, deps);
+					const id = yield* ensureEffectivePublishedPorts(initialId, spec, deps);
 
-						// Arm the stop-on-scope-close finalizer BEFORE we
-						// release the per-name lock and BEFORE we call
-						// `addClaim`. If anything below this point fails
-						// (assert, network attach, addClaim) the container
-						// will still be stopped at scope close.
-						yield* registerStopFinalizer(id);
+					// Arm the stop-on-scope-close finalizer BEFORE we
+					// release the per-name lock and BEFORE we call
+					// `addClaim`. If anything below this point fails
+					// (assert, network attach, addClaim) the container
+					// will still be stopped at scope close.
+					yield* registerStopFinalizer(id);
 
-						yield* assertContainerHandleOwned({
-							id,
-							name: spec.name,
-							labels: spec.labels,
-							imageName: spec.image.tag ?? spec.image.digest,
-							status: 'running',
-							ips: [],
-						});
+					yield* assertContainerHandleOwned({
+						id,
+						name: spec.name,
+						labels: spec.labels,
+						imageName: spec.image.tag ?? spec.image.digest,
+						status: 'running',
+						ips: [],
+					});
 
-						// Architecture §5 — secondary network attaches (any
-						// beyond the first, which is wired in via `--network`
-						// on create) must wait for IP allocation before we
-						// declare ready.
-						const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
-						for (const net of secondaries) {
-							yield* connect(spec.name, net.name, net.aliases);
-							yield* waitForIp(spec.name, net.name);
-						}
+					// Architecture §5 — secondary network attaches (any
+					// beyond the first, which is wired in via `--network`
+					// on create) must wait for IP allocation before we
+					// declare ready.
+					const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
+					for (const net of secondaries) {
+						yield* connect(spec.name, net.name, net.aliases);
+						yield* waitForIp(spec.name, net.name);
+					}
 
-						const ips = yield* readIps(spec.name);
-						const refreshedFacts = yield* inspectContainer(spec.name);
-						const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+					const ips = yield* readIps(spec.name);
+					const refreshedFacts = yield* inspectContainer(spec.name);
+					const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
 
-						// Record cross-process claim. The scope finalizer
-						// (already registered) will release it on scope
-						// close. If this fails, the container is still
-						// cleaned up at scope close.
-						yield* mapSubstrateClaimError(
-							addClaim(
-								{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-								spec.name,
-							),
-						);
+					// Record cross-process claim. The scope finalizer
+					// (already registered) will release it on scope
+					// close. If this fails, the container is still
+					// cleaned up at scope close.
+					yield* mapSubstrateClaimError(
+						addClaim(
+							{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
+							spec.name,
+						),
+					);
 
-						return { id, ips, ports };
-					}),
-				),
-			() => releasePerNameLock(deps.perNameLock, spec.name),
+					return { id, ips, ports };
+				}),
+			),
 		);
 
 		return handleOf(

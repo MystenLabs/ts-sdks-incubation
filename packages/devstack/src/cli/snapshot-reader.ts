@@ -42,11 +42,10 @@ export const makeSnapshotReader = (identity: SnapshotReaderIdentity): SnapshotRe
 					];
 				}
 				try {
-					const meta = decodeJsonTextSync(
-						SnapshotMetadataSchema,
-						readFileSync(metaPath, 'utf8'),
-						{ source: metaPath, mkError: (issue) => issue },
-					);
+					const meta = decodeJsonTextSync(SnapshotMetadataSchema, readFileSync(metaPath, 'utf8'), {
+						source: metaPath,
+						mkError: (issue) => issue,
+					});
 					return [
 						{
 							snapshotId: parsedEntryId,

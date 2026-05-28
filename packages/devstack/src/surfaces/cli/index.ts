@@ -20,6 +20,7 @@ import { readFileSync } from 'node:fs';
 import { commandSchema } from './command-tree.ts';
 import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
 import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
+import { ExitCode } from './sysexits.ts';
 import { parseDevstackNetworkName } from '../../api/inference-network.ts';
 import { type CliIO, emitFailure, nodeProcessIO } from './output.ts';
 import {
@@ -321,10 +322,7 @@ const makeGlobalFlags = (
 			forbidPrompt: flags.noInput === true || ctx.env[ENV_VARS.NO_INPUT] === '1',
 			stdinIsTty: ctx.stdinIsTty,
 		},
-		schemaEmit: false,
 		verbose: flags.verbose === true,
-		help: false,
-		version: false,
 		rest,
 	};
 };
@@ -361,7 +359,7 @@ const runCommandEffect = async (
 				elapsedMs: 0,
 				error: new CliInternalError({ message: 'unexpected internal failure' }),
 				cause,
-			}).pipe(Effect.as({ exitCode: 70 })),
+			}).pipe(Effect.as({ exitCode: ExitCode.SOFTWARE })),
 		),
 	);
 	const result = await Effect.runPromise(program);
@@ -636,8 +634,8 @@ const jsonRequested = (
 ): boolean => env[ENV_VARS.JSON] === '1' || argv.includes('--json');
 
 const normalizeStricliExitCode = (code: number | string | null | undefined): number => {
-	if (typeof code === 'number' && code !== 0) return 64;
-	return 0;
+	if (typeof code === 'number' && code !== 0) return ExitCode.USAGE;
+	return ExitCode.OK;
 };
 
 const flushBufferedProcess = (

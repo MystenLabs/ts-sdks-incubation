@@ -876,13 +876,23 @@ export const layerRouterService: Layer.Layer<
 				if (cfg.disabled) {
 					publishOwnership = yield* publishRouteFile;
 					yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved);
+					if (publishOwnership !== 'reused-live') {
+						yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
+					}
 				} else {
-					// The dispatch lock MUST be held across both the file write
-					// AND the readiness probe — releasing between the two lets
-					// a sibling contributor publish over the half-staged file
-					// and Traefik serves stale content under the same
-					// dispatchFileId. See STYLE_GUIDE §18 cross-process
-					// protocol — router contributeRoute serialization rule.
+					// The dispatch lock MUST be held across (a) the on-disk
+					// scan + write inside `publishRouteFile`, (b) the
+					// readiness probe, AND (c) the in-process
+					// `SubscriptionRef.update(applied, …)` that publishes the
+					// new route to peer fibers in this process. Releasing
+					// the lock before the SubscriptionRef update would let a
+					// concurrent in-process `contributeRoute` sample the
+					// stale `applied` set at line 803 even though our
+					// dispatch file is already on disk — the on-disk scan
+					// covers cross-process visibility but the lock must also
+					// gate the in-process publish so the two views agree.
+					// See STYLE_GUIDE §18 cross-process protocol — router
+					// contributeRoute serialization rule.
 					publishOwnership = yield* Effect.scoped(
 						Effect.gen(function* () {
 							yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
@@ -902,13 +912,14 @@ export const layerRouterService: Layer.Layer<
 									ownership !== 'owned' ? Effect.void : removeDispatchFile(fs, profile, resolved),
 								),
 							);
+							if (ownership !== 'reused-live') {
+								yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
+							}
 							return ownership;
 						}),
 					);
 				}
 				if (publishOwnership !== 'reused-live') {
-					yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
-
 					// Scope finalizer — remove the file + drop from applied
 					// when the caller's scope closes. Best-effort: "already
 					// gone" is fine, but lock contention / IO failures surface

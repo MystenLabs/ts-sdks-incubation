@@ -1195,3 +1195,108 @@ describe('snapshot capture container images', () => {
 		}),
 	);
 });
+
+// Regression for Phase B3: identity-merge fail-on-conflict at capture
+// time. Pre-fix, capture silently last-write-wins'd colliding identity
+// keys; the conflict only surfaced at restore time (way after the
+// operator could have fixed the offending plugins). Post-fix, capture
+// fails AT THE CAPTURE SITE with `IdentityContributionConflictError`
+// (`_tag: 'SnapshotIdentityContributionConflict'`).
+describe('snapshot capture — identity contribution conflict', () => {
+	it.effect('two plugins contributing different values for the same key fail at capture', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					pauseCalls,
+					saveCalls,
+					unpauseCalls,
+				});
+
+				const a: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'sui#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+				const b: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'pyth#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:testnet' }),
+					captureContribution: Effect.succeed({}),
+				};
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [a, b]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					const tag = (error.value as { readonly _tag?: string })._tag;
+					expect(tag).toBe('SnapshotIdentityContributionConflict');
+					const conflict = error.value as unknown as {
+						readonly key: string;
+						readonly conflictingPlugins: ReadonlyArray<string>;
+						readonly values: ReadonlyArray<string>;
+					};
+					expect(conflict.key).toBe('chain');
+					expect([...conflict.conflictingPlugins].sort()).toEqual(['pyth#0', 'sui#0']);
+					expect([...conflict.values].sort()).toEqual(['sui:local', 'sui:testnet']);
+				}
+				// And NO artifact was written — the failure happens before
+				// metadata flush.
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('two plugins contributing the SAME value for the same key succeed', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
+			try {
+				const runtime = runtimeStub({
+					handlesByRole: {},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					pauseCalls,
+					saveCalls,
+					unpauseCalls,
+				});
+
+				const a: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'sui#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+				const b: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'pyth#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [a, b]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+});

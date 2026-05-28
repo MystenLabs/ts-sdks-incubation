@@ -85,9 +85,7 @@ export interface OriginPolicyInputs {
  * effectively closed. A `Effect.logWarning` surfaces the configuration
  * for operator visibility.
  */
-export const resolveOriginPolicy = (
-	inputs: OriginPolicyInputs,
-): Effect.Effect<OriginPolicy> =>
+export const resolveOriginPolicy = (inputs: OriginPolicyInputs): Effect.Effect<OriginPolicy> =>
 	Effect.gen(function* () {
 		const allowed = new Set<string>();
 		const stackScopedHost =

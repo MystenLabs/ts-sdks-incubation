@@ -1323,9 +1323,10 @@ describe('snapshot restore safety', () => {
 						readonly role: string;
 						readonly targetImageName: string;
 						readonly stagedImageTag: string;
+						readonly digest: string;
 					}>;
 				};
-				expect(pending.version).toBe(1);
+				expect(pending.version).toBe(2);
 				expect(pending.snapshotId).toBe(meta.id);
 				expect(pending.containers).toEqual([
 					{
@@ -1333,6 +1334,7 @@ describe('snapshot restore safety', () => {
 						role: 'db',
 						targetImageName: imageName,
 						stagedImageTag: stagingTag,
+						digest: 'sha256:loaded-postgres-db',
 					},
 				]);
 			} finally {
@@ -1406,6 +1408,12 @@ describe('snapshot restore safety', () => {
 
 				// Re-supervise breadcrumb: the swapped tree still carries
 				// the pending marker (we never reached clearRestorePendingMarker).
+				// `promoteStagedImages` rewrites the marker after each
+				// successful tag so the post-failure marker carries ONLY
+				// the still-pending entries — `db` was tagged successfully,
+				// `worker` failed, so only `worker` should remain pending.
+				// The next supervise calls `recoverPendingRestore` which
+				// only has to retry `worker`.
 				const pending = JSON.parse(
 					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
 				) as {
@@ -1416,15 +1424,15 @@ describe('snapshot restore safety', () => {
 						readonly role: string;
 						readonly targetImageName: string;
 						readonly stagedImageTag: string;
+						readonly digest: string;
 					}>;
 				};
-				expect(pending.version).toBe(1);
+				expect(pending.version).toBe(2);
 				expect(pending.snapshotId).toBe(meta.id);
-				expect(pending.containers).toHaveLength(2);
-				const dbPending = pending.containers.find((c) => c.role === 'db');
-				const workerPending = pending.containers.find((c) => c.role === 'worker');
-				expect(dbPending?.targetImageName).toBe(dbImageName);
-				expect(workerPending?.targetImageName).toBe(workerImageName);
+				expect(pending.containers).toHaveLength(1);
+				expect(pending.containers[0]?.role).toBe('worker');
+				expect(pending.containers[0]?.targetImageName).toBe(workerImageName);
+				expect(pending.containers[0]?.digest).toBe('sha256:loaded-postgres-worker');
 
 				// Container removal never runs once promotion fails.
 				expect(sweepCalls).toEqual([]);

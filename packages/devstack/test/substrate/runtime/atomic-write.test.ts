@@ -242,9 +242,7 @@ const makeFailingFs = (
 			writeAll:
 				failOn === 'writeAll'
 					? () =>
-							Effect.fail(
-								fakePlatformError('writeAll', path, `fake writeAll failure for ${path}`),
-							)
+							Effect.fail(fakePlatformError('writeAll', path, `fake writeAll failure for ${path}`))
 					: () => Effect.void,
 		}) as unknown as FileSystem.File;
 	const fs = FileSystem.makeNoop({

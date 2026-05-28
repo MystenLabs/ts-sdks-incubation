@@ -12,7 +12,6 @@ export const SealSpans = {
 	ref: 'seal.ref',
 	repo: 'seal.repo',
 	routedUrl: 'seal.routedUrl',
-	rustToolchain: 'seal.rustToolchain',
 	servicePath: 'seal.servicePath',
 	signer: 'seal.signer',
 	subdir: 'seal.subdir',

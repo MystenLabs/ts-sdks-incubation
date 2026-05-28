@@ -23,7 +23,7 @@ export type SealMode =
 			readonly mode: 'live';
 			readonly name: string;
 			readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
-		}
+	  }
 	| ({ readonly mode: 'fork-known' } & ForkKnownInputs);
 
 export type SealKnownBootResult = SealKnownResolved;

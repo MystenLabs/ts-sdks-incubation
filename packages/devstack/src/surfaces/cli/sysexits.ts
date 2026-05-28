@@ -92,6 +92,12 @@ export const exitCodeName = (code: ExitCode): string => {
 			return 'TEMP_FAIL';
 		case ExitCode.CONFIG:
 			return 'CONFIG';
+		default: {
+			// Proof-of-exhaustiveness — adding a new entry to `ExitCode`
+			// without extending this switch fails compilation here.
+			const _exhaustive: never = code;
+			throw new Error(`Unknown ExitCode: ${String(_exhaustive)}`);
+		}
 	}
 };
 

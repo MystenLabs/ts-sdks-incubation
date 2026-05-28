@@ -130,4 +130,3 @@ export const bootLocalRpcMode = (
 			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'local-rpc' },
 		}),
 	);
-

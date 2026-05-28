@@ -40,6 +40,7 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import { probeManyLenient } from '../../substrate/runtime/probes.ts';
 import {
 	DEPLOY_BIND_SOURCE_RETRY_PROFILE,
 	makeSpacedRetrySchedule,
@@ -430,33 +431,60 @@ export const deployWalrusContracts = (
 				Effect.gen(function* () {
 					if (!(yield* deployOutputFilesComplete(inputs))) return null;
 
-					const system = yield* probe.get(
-						{ kind: 'object', objectId: cached.systemObject },
-						SuiObjectExistsShape,
-						'lenient',
-					);
-					if (system === null) return null;
-
-					const staking = yield* probe.get(
-						{ kind: 'object', objectId: cached.stakingObject },
-						SuiObjectExistsShape,
-						'lenient',
-					);
-					if (staking === null) return null;
+					// Both cached on-chain objects are independent lenient
+					// probes — fan them out via `probeManyLenient` so the
+					// substrate owns the iteration shape. Any null means
+					// "re-deploy"; both non-null gives us the composite
+					// verified payload.
+					const [system, staking] = yield* probeManyLenient([
+						probe.get(
+							{ kind: 'object', objectId: cached.systemObject },
+							SuiObjectExistsShape,
+							'lenient',
+						),
+						probe.get(
+							{ kind: 'object', objectId: cached.stakingObject },
+							SuiObjectExistsShape,
+							'lenient',
+						),
+					]);
+					if (system === undefined || system === null) return null;
+					if (staking === undefined || staking === null) return null;
 
 					return {
 						systemObjectId: system.objectId,
 						stakingObjectId: staking.objectId,
 					} satisfies WalrusDeployVerified;
-				}).pipe(Effect.catch(() => Effect.succeed(null as WalrusDeployVerified | null))),
+				}).pipe(
+					// `verify` must satisfy `Effect<… | null, never>` per
+					// the publisher contract. Narrow the cache-miss
+					// collapse to genuine cache-corruption signals
+					// (`decode-failed`) and missing-registration
+					// (`no-probe-registered`). The lenient probe already
+					// maps `not-found`/`transient` to `null`, so the
+					// remaining ChainProbeError values that reach here
+					// are authoritative — `decode-failed` is stale shape
+					// (re-produce) and `no-probe-registered` means the
+					// plugin booted before the chain probe was
+					// contributed (treat as miss). Anything else is a
+					// real RPC failure we want visible in the logs
+					// rather than silently collapsed to "re-deploy".
+					Effect.catchTag('ChainProbeError', (err) => {
+						if (err.reason === 'decode-failed' || err.reason === 'no-probe-registered') {
+							return Effect.succeed(null as WalrusDeployVerified | null);
+						}
+						return Effect.logWarning(
+							`walrus.deploy verify probe surfaced an authoritative error (` +
+								`reason=${err.reason}, chain=${err.chain}, detail=${err.detail}); ` +
+								`re-deploying.`,
+						).pipe(Effect.as(null as WalrusDeployVerified | null));
+					}),
+				),
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
 				Effect.mapError(
 					(err): ArtifactPublishError =>
-						artifactPublishError(
-							'produce-failed',
-							`walrus.deploy ${err.phase}: ${err.message}`,
-						),
+						artifactPublishError('produce-failed', `walrus.deploy ${err.phase}: ${err.message}`),
 				),
 			),
 			// Register: fires on EVERY cycle. The plugin's outer body

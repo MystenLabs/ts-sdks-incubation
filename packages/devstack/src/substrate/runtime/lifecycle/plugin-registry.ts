@@ -283,9 +283,7 @@ export const buildDependencyReaderFor = (
  *  defect the cascade-formatter projects via `_tag`. The `kind`
  *  discriminator and `target` carry the offending name; consumers
  *  read both. */
-export class DependencyReaderViolation extends Data.TaggedError(
-	'DependencyReaderViolation',
-)<{
+export class DependencyReaderViolation extends Data.TaggedError('DependencyReaderViolation')<{
 	readonly kind: 'undeclared-dependency' | 'unresolved-upstream';
 	readonly target: string;
 }> {}

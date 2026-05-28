@@ -57,10 +57,7 @@ import type {
 } from '../../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
-import type {
-	AllocatedPort,
-	PortBroker,
-} from '../../../substrate/runtime/port-broker/index.ts';
+import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
@@ -70,7 +67,6 @@ import {
 	DEFAULT_SUI_CLI_VERSION,
 	suiCliImageBuildContext,
 } from '../../../substrate/runtime/sui-move-build/index.ts';
-import { noopClockAdvancer } from '../auto-tick.ts';
 import { suiPluginError, type SuiPluginError } from '../errors.ts';
 import { stringifyCause } from '../stringify-cause.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -129,7 +125,6 @@ const PROBE_FETCH_TIMEOUT_MS = 3000;
 export interface LocalModeBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;
-	readonly clockAdvancer: typeof noopClockAdvancer;
 }
 
 /**
@@ -238,7 +233,6 @@ export const bootLocalMode = (
 		return {
 			resolved,
 			client,
-			clockAdvancer: noopClockAdvancer,
 		};
 	}).pipe(
 		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
@@ -465,7 +459,12 @@ const resolvePortMappingWithRelease = (
 	}
 	return Effect.gen(function* () {
 		const rpc = yield* allocatePort(portBroker, 'sui:rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
-		const faucet = yield* allocatePort(portBroker, 'sui:faucet', DEFAULT_HOST_FAUCET_PORT, 'faucet');
+		const faucet = yield* allocatePort(
+			portBroker,
+			'sui:faucet',
+			DEFAULT_HOST_FAUCET_PORT,
+			'faucet',
+		);
 		const graphql = yield* allocatePort(
 			portBroker,
 			'sui:graphql',
@@ -690,4 +689,3 @@ const routedSuiUrl = (
 			),
 		),
 	);
-

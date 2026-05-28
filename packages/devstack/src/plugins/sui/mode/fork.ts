@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { Duration, Effect, type Scope } from 'effect';
 
@@ -154,7 +155,10 @@ export const bootForkMode = (
 	);
 
 export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
-	contextPath: new URL('../../../../images/', import.meta.url).pathname,
+	// `fileURLToPath` normalises the URL → host-path conversion across
+	// platforms (Windows `file:///C:/...` → `C:\...`). Reading
+	// `.pathname` directly leaves the leading `/` on Windows drive paths.
+	contextPath: fileURLToPath(new URL('../../../../images/', import.meta.url)),
 	dockerfile: 'sui-fork/Dockerfile',
 	buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
 });
@@ -557,4 +561,3 @@ const extractExecuteDigest = (raw: unknown): string | undefined => {
 
 const isFailedTransaction = (raw: unknown): boolean =>
 	(raw as { readonly $kind?: string }).$kind === 'FailedTransaction';
-

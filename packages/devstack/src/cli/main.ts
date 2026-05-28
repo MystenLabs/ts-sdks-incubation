@@ -97,9 +97,15 @@ import { ExitCode } from '../surfaces/cli/sysexits.ts';
 import { makeTuiSurface } from '../surfaces/tui/index.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from './up-lifecycle.ts';
-import { resolveAppName, resolveStackName } from '../api/inference-network.ts';
+import { resolveAppName, resolveNetworkSync, resolveStackName } from '../api/inference-network.ts';
 import { readStackEngine, type Stack } from '../api/define-devstack.ts';
 import { makeDirectPruneDeps } from './prune-direct.ts';
+import {
+	collectLifecyclePruneInventory,
+	defaultLifecyclePruneSelection,
+	DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+	runLifecyclePrune,
+} from '../orchestrators/lifecycle-prune/index.ts';
 import { removeRouterDispatchFilesForStack } from '../orchestrators/router/cleanup.ts';
 
 // -----------------------------------------------------------------------------
@@ -307,7 +313,16 @@ const resolveIdentity = (params: {
 		explicit: params.stack,
 		cwd,
 	});
-	const network = params.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
+	// Centralized explicit > env > default ladder. Throws
+	// `DevstackNetworkParseError` on a malformed value so the CLI fails
+	// fast with a structured error instead of a downstream cryptic
+	// chain-probe failure. The raw input is preserved (not the
+	// canonical name) so chain-keyed cache namespaces stay stable.
+	const network = resolveNetworkSync({
+		explicit: params.network,
+		env: process.env.DEVSTACK_NETWORK,
+		explicitSource: '--network',
+	}).raw;
 	const stackRoot = resolvePath(stacksRoot, stack);
 	return {
 		app,
@@ -371,6 +386,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 const makeSnapshotCommandHandler = (params: {
 	readonly snapshot: import('../orchestrators/snapshot/index.ts').SnapshotOrchestrator;
 	readonly fs: FileSystem.FileSystem;
+	readonly runtimeRoot: string;
 }): SupervisorCommandHandler => {
 	return (cmd, handlerCtx) => {
 		switch (cmd.tag) {
@@ -425,7 +441,32 @@ const makeSnapshotCommandHandler = (params: {
 			case 'wipe.requested':
 				return provideFileSystem(params.fs, params.snapshot.wipe({})).pipe(Effect.as([]));
 			case 'prune.requested':
-				return provideFileSystem(params.fs, params.snapshot.prune({})).pipe(Effect.as([]));
+				// Route to the same orchestrator the offline `devstack prune`
+				// verb uses (`runLifecyclePrune`), NOT the snapshot-orchestrator
+				// prune (which only cleans the snapshot catalog and would leave
+				// stale containers/networks/volumes/images behind for an attached
+				// supervisor — silent under-prune is the bug we're closing).
+				// Live supervisor implies the current stack's group is live and
+				// therefore excluded from the default selection — exactly the
+				// invariant the live-attached `prune` needs (operator can prune
+				// sibling stacks under the same Docker daemon without touching
+				// the running one).
+				return collectLifecyclePruneInventory({ runtimeRoot: params.runtimeRoot }).pipe(
+					Effect.flatMap((inventory) =>
+						runLifecyclePrune(
+							{ runtimeRoot: params.runtimeRoot },
+							{
+								groupKeys: defaultLifecyclePruneSelection(
+									inventory,
+									DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+								),
+								resources: DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+								dryRun: false,
+							},
+						),
+					),
+					Effect.as([]),
+				);
 			default:
 				return Effect.succeed([]);
 		}
@@ -524,7 +565,8 @@ const runUpLive = (
 			Effect.catch((err) =>
 				Effect.sync(() => {
 					process.stderr.write(`error: ${err.message}\n`);
-					process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
+					process.exitCode =
+						err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
 					return null;
 				}),
 			),
@@ -556,7 +598,11 @@ const runUpLive = (
 			const state = yield* makeProjectionRef();
 			const snapshot = yield* SnapshotOrchestratorService;
 			const fs = yield* FileSystem.FileSystem;
-			const snapshotCommandHandler = makeSnapshotCommandHandler({ snapshot, fs });
+			const snapshotCommandHandler = makeSnapshotCommandHandler({
+				snapshot,
+				fs,
+				runtimeRoot: identity.runtimeRoot,
+			});
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
@@ -573,6 +619,34 @@ const runUpLive = (
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const stackPaths = yield* StackPathsService;
+							// Reconcile any half-promoted snapshot restore from a
+							// prior supervise (process hard-killed mid `tagImage`
+							// loop, Docker daemon outage, etc.) BEFORE any plugin
+							// acquire fires. The scanner is idempotent and a no-op
+							// when no marker is present; partial recovery surfaces
+							// via the returned summary's `stillPending` list which
+							// we log so the operator can investigate.
+							const recovery = yield* snapshot.recoverPendingRestore.pipe(
+								Effect.tapCause((cause) =>
+									Effect.sync(() => {
+										process.stderr.write(
+											`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+										);
+									}),
+								),
+								Effect.catch(() => Effect.succeed(null)),
+							);
+							if (recovery && !recovery.noMarker) {
+								const summary = `snapshot.recover-pending: inspected=${recovery.inspected} recovered=${recovery.recovered} stillPending=${recovery.stillPending.length} markerCleared=${recovery.markerCleared}`;
+								process.stderr.write(`${summary}\n`);
+								if (recovery.stillPending.length > 0) {
+									for (const entry of recovery.stillPending) {
+										process.stderr.write(
+											`  pending: ${entry.targetImageName} ← ${entry.stagedImageTag} (${entry.plugin}/${entry.role})\n`,
+										);
+									}
+								}
+							}
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
 								handle,
@@ -635,7 +709,7 @@ const runUpLive = (
 						process.stderr.write(
 							`\nerror: stack failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
 						);
-						process.exitCode = 1;
+						process.exitCode = ExitCode.GENERIC;
 					}),
 				onSuccess: () =>
 					Effect.sync(() => {
@@ -674,7 +748,7 @@ const runApplyAgainstLiveSupervisor = (
 			process.stderr.write(
 				`\nerror: live stack apply failed\n${Cause.pretty(exit.cause as Cause.Cause<unknown>)}\n`,
 			);
-			process.exitCode = 1;
+			process.exitCode = ExitCode.GENERIC;
 			return true;
 		}
 
@@ -822,7 +896,8 @@ const runApplyLive = (
 				onFailure: (err) =>
 					Effect.gen(function* () {
 						process.stderr.write(`error: ${err.message}\n`);
-						process.exitCode = err._tag === 'CliConfigNotFoundError' ? 66 : 78;
+						process.exitCode =
+						err._tag === 'CliConfigNotFoundError' ? ExitCode.NO_INPUT : ExitCode.CONFIG;
 						return yield* Effect.fail('config-load-failed' as const);
 					}),
 				onSuccess: (v) => Effect.succeed(v),
@@ -852,6 +927,20 @@ const runApplyLive = (
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
+			// Mirror the up-path recovery: reconcile any half-promoted
+			// snapshot restore from a prior supervise BEFORE the one-shot
+			// apply starts the stack. Idempotent + no-op when no marker.
+			const snapshot = yield* SnapshotOrchestratorService;
+			yield* snapshot.recoverPendingRestore.pipe(
+				Effect.tapCause((cause) =>
+					Effect.sync(() => {
+						process.stderr.write(
+							`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+						);
+					}),
+				),
+				Effect.catch(() => Effect.succeed(null)),
+			);
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
@@ -876,7 +965,7 @@ const runApplyLive = (
 						process.stderr.write(
 							`\nerror: stack apply failed\n${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
 						);
-						process.exitCode = 1;
+						process.exitCode = ExitCode.GENERIC;
 					}),
 				onSuccess: () =>
 					Effect.sync(() => {
@@ -1110,7 +1199,12 @@ const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, unknown>
 		);
 	});
 
-const identityInputsFromArgv = (
+/** @internal Exported for tests. Resolves identity flag inputs from a
+ *  `--app <x>` / `--stack <x>` / `--network <x>` / `--state-dir <x>` /
+ *  `--config <x>` argv, falling back to `DEVSTACK_*` env vars. Throws
+ *  on a missing or flag-shaped value so a typo doesn't silently demote
+ *  a downstream flag. */
+export const identityInputsFromArgv = (
 	argv: ReadonlyArray<string>,
 	env: Readonly<Record<string, string | undefined>>,
 ) => {
@@ -1201,7 +1295,7 @@ if (isMainEntrypoint()) {
 	runCli()
 		.catch((err) => {
 			process.stderr.write(`error: ${err instanceof Error ? err.message : String(err)}\n`);
-			process.exitCode = 1;
+			process.exitCode = ExitCode.GENERIC;
 		})
 		.then(() => {
 			process.exit(process.exitCode ?? 0);

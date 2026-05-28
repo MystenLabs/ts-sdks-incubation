@@ -34,12 +34,11 @@ import {
 import { readStashedFixture } from './global-setup.ts';
 import { PlaywrightWalletAdapterError } from './errors.ts';
 import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/dapp-kit-slot.ts';
-// The wallet plugin owns the wire-protocol path constants. We import
-// them directly from the plugin's `protocol.ts` (an L2 module) rather
-// than re-typing the strings here — server + adapter MUST stay in
-// lock-step or every request silently 404s. Layer rule: L5 may import
-// L0–L3 directly (ARCHITECTURE.md § layer table).
-import { WalletHttpPath } from '../../plugins/wallet/protocol.ts';
+// The wallet plugin owns the wire-protocol path constants AND the
+// canonical endpoint name. Both are surfaced through the L5 runtime
+// bridge so this adapter never reaches into L2 plugin code directly
+// (ARCHITECTURE.md § Layer table — L5 reads only the runtime bridge).
+import { WalletHttpPath, WALLET_ENDPOINT_ALIAS } from '../runtime/wallet-paths.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an
@@ -55,11 +54,12 @@ export interface PlaywrightPageLike {
 // Wallet adapter — HTTP client targeting the wallet plugin's endpoint
 // -----------------------------------------------------------------------------
 
-/** Public alias for the dev-wallet endpoint. The manifest stores raw
- *  keys as `${pluginKey}:${endpointName}` and the actual endpoint name
- *  is `wallet-app`; `readStackContext(...).endpointMaybe('wallet')`
- *  maps this alias through the Playwright boundary. */
-export const WALLET_ENDPOINT_KEY = 'wallet' as const;
+/** Public alias for the dev-wallet endpoint. The manifest stores the
+ *  raw endpoint name (`WALLET_ENDPOINT_NAME` — `'wallet-app'`); this
+ *  alias is the short form Playwright/vitest helpers look up. Sourced
+ *  from the L5 runtime bridge so the alias name + canonical name stay
+ *  aligned with the wallet plugin. */
+export const WALLET_ENDPOINT_KEY = WALLET_ENDPOINT_ALIAS;
 
 export interface WalletAdapterOptions extends ResolveStackContextOptions {
 	/** Override the resolved wallet URL. Useful for tests targeting a

@@ -203,4 +203,3 @@ export const bootLiveMode = (
 			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'live' },
 		}),
 	);
-

@@ -196,9 +196,7 @@ const formatAny = (
 	}
 	if (Cause.isCause(value)) {
 		if (value.reasons.length === 0) return '(empty cause)';
-		return value.reasons
-			.map((r) => formatReason(r, opts, visited, depth))
-			.join('\n--- (also)\n');
+		return value.reasons.map((r) => formatReason(r, opts, visited, depth)).join('\n--- (also)\n');
 	}
 	if (isTaggedError(value)) {
 		return formatTagged(value, opts, visited, depth);

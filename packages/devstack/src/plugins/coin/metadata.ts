@@ -135,7 +135,7 @@ export const fetchCoinMetadataOnce = (
 			),
 		);
 	}).pipe(
-		Effect.withSpan('coin.metadata.fetch', {
+		Effect.withSpan('devstack.plugin.coin.metadata.fetch', {
 			attributes: { [CoinSpans.metadata.fullCoinType]: fullCoinType },
 		}),
 	);

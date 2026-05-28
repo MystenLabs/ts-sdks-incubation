@@ -21,10 +21,7 @@ import type {
 	CodegenableDecl,
 } from '../../../src/contracts/codegenable.ts';
 import { postgres } from '../../../src/plugins/postgres/index.ts';
-import type {
-	Postgres,
-	PostgresServiceOptions,
-} from '../../../src/plugins/postgres/service.ts';
+import type { Postgres, PostgresServiceOptions } from '../../../src/plugins/postgres/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 
@@ -67,9 +64,7 @@ const makePostgresHandle = (opts: PostgresServiceOptions): Postgres => {
 };
 
 /** Drive a `CodegenableDecl.emit` and capture the exported record. */
-const captureExports = (
-	decl: CodegenableDecl,
-): Effect.Effect<Record<string, unknown>> => {
+const captureExports = (decl: CodegenableDecl): Effect.Effect<Record<string, unknown>> => {
 	const exports: Record<string, unknown> = {};
 	const ctx: CodegenEmitContext = {
 		exportConst: (name, value) => {
@@ -81,9 +76,7 @@ const captureExports = (
 	return decl.emit(ctx).pipe(Effect.as(exports));
 };
 
-const findCodegen = (
-	caps: ReadonlyArray<{ readonly kind: string }>,
-): CodegenableDecl => {
+const findCodegen = (caps: ReadonlyArray<{ readonly kind: string }>): CodegenableDecl => {
 	const decl = caps.find((c) => c.kind === 'codegenable');
 	if (decl === undefined) throw new Error('codegen decl missing from capabilities');
 	return decl as CodegenableDecl;

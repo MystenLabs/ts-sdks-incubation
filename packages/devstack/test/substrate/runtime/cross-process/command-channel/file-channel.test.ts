@@ -79,11 +79,58 @@ describe('tailRecords decode-error policy', () => {
 				).pipe(Effect.exit);
 				expect(exit._tag).toBe('Failure');
 				if (exit._tag === 'Failure') {
-					const failures = exit.cause.reasons
-						.filter(Cause.isFailReason)
-						.map((r) => r.error);
+					const failures = exit.cause.reasons.filter(Cause.isFailReason).map((r) => r.error);
 					expect(failures.length).toBeGreaterThan(0);
 					expect(failures[0]).toBeInstanceOf(CommandChannelDecodeError);
+				}
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	// Regression for Phase B1: `drainNewLines` advances `state.offset` by
+	// the actual number of bytes returned by `readSync(2)`, not by
+	// `stat.size - state.offset`. A short read (NFS, exotic FS) used to
+	// silently lose `(grow - bytesRead)` bytes on the next poll.
+	//
+	// We can't force POSIX `read(2)` to short-return from userland, but we
+	// CAN verify the visible contract the fix protects: with many small
+	// appended records arriving across multiple poll cycles, the tail
+	// emits every record without dropping bytes. With the regressed
+	// `state.offset = stat.size` write, even one short read would drop a
+	// chunk and the test would fail.
+	it.live('multi-cycle tail emits every appended record without losing bytes', () =>
+		Effect.gen(function* () {
+			const root = freshRoot();
+			try {
+				const file = join(root, 'events.ndjson');
+				writeFileSync(file, '');
+				const records = Array.from({ length: 25 }, (_, i) => ({ a: i + 1 }));
+				const collected = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const fiber = yield* Effect.forkChild(
+							tailRecords<TestRecord>(file, decodeRecord, {
+								fromOffset: 'start',
+								pollMillis: 5,
+							}).pipe(Stream.take(records.length), Stream.runCollect),
+							{ startImmediately: true },
+						);
+						// Drip the records across multiple poll cycles. Each
+						// append surfaces in a separate poll iteration, so the
+						// short-read invariant is exercised once per record.
+						for (const record of records) {
+							yield* Effect.sleep('15 millis');
+							yield* Effect.sync(() => {
+								appendFileSync(file, `${JSON.stringify(record)}\n`);
+							});
+						}
+						return yield* Fiber.await(fiber);
+					}),
+				);
+				expect(collected._tag).toBe('Success');
+				if (collected._tag === 'Success') {
+					expect(Array.from(collected.value)).toEqual(records);
 				}
 			} finally {
 				rmSync(root, { recursive: true, force: true });

@@ -41,6 +41,7 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
+import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { suiResource } from '../sui/index.ts';
 import type { AccountValue } from '../account/index.ts';
 import type { CoinValue } from '../coin/index.ts';
@@ -561,28 +562,18 @@ const buildLocalPlugin = <
 			}).pipe(
 				// The body's aggregate E channel includes substrate Effects
 				// whose error shape is unknown to TS (ArtifactPublisher
-				// produce bodies, dependency reads). `Effect.catchTags` would
-				// need a statically-known tagged union; here we runtime-check
-				// the `_tag` discriminator to pass typed deepbook errors
-				// through untouched and wrap everything else under `'publish'`
-				// so cascade attribution stays with the plugin.
-				Effect.catch((err: unknown) => {
-					if (
-						typeof err === 'object' &&
-						err !== null &&
-						'_tag' in err &&
-						(err._tag === 'DeepbookPluginError' ||
-							err._tag === 'DeepbookConfigError' ||
-							err._tag === 'ForkIncompatibleError')
-					) {
-						return Effect.fail(err as DeepbookError);
-					}
-					return Effect.fail(
-						deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`, {
-							cause: err,
-						}),
-					);
-				}),
+				// produce bodies, dependency reads). `Effect.catchTags`
+				// would need a statically-known tagged union; the
+				// substrate's `passthroughOrWrap` runtime-checks the `_tag`
+				// against `DEEPBOOK_ERROR_TAGS`, passing typed deepbook
+				// errors through untouched and wrapping everything else
+				// under `'publish'` so cascade attribution stays with the
+				// plugin.
+				passthroughOrWrap.for<DeepbookError>()(DEEPBOOK_ERROR_TAGS, (err) =>
+					deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`, {
+						cause: err,
+					}),
+				),
 			),
 		capabilities: ({ value: resolved }) => {
 			const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
@@ -667,6 +658,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		dependsOn: [suiResource] as const,
 		role: 'task',
 		section: 'service',
+		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;

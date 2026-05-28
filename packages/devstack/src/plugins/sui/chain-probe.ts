@@ -232,4 +232,3 @@ const isNotFound = (cause: unknown): boolean => {
 		msg.includes('not exist')
 	);
 };
-

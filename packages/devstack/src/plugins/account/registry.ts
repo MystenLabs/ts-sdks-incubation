@@ -17,6 +17,7 @@
 // capability-decl surface so the substrate orchestrates dedup-by-
 // name and last-write-wins without an engine import.
 
+import { projection } from '../../api/define-capabilities.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 
@@ -78,24 +79,20 @@ export const makeAccountProjectionContribution = <Name extends string>(
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
 	const key = `account/${entry.name}` as `account/${string}`;
-	return {
-		kind: 'projection',
-		event: {
-			tag: 'projection.updated',
-			kind: 'account',
+	return projection({
+		kind: 'account',
+		key,
+		payload: {
 			key,
-			payload: {
-				key,
-				rowKey: null,
-				name: entry.name,
-				address: entry.address,
-				scheme: entry.scheme,
-				source: entry.source,
-				funding: entry.funding,
-				walletVisible: false,
-				updatedAt,
-			},
-			at: updatedAt,
+			rowKey: null,
+			name: entry.name,
+			address: entry.address,
+			scheme: entry.scheme,
+			source: entry.source,
+			funding: entry.funding,
+			walletVisible: false,
+			updatedAt,
 		},
-	};
+		at: updatedAt,
+	});
 };

@@ -277,9 +277,7 @@ export const sectionForRow = (
 	endpoints: ReadonlyArray<Endpoint> = [],
 ): RowSection => {
 	const ownsEndpoint = endpointsForRow(row, endpoints).length > 0 || row.endpoints.length > 0;
-	return ownsEndpoint && row.endpointSection !== row.section
-		? row.endpointSection
-		: row.section;
+	return ownsEndpoint && row.endpointSection !== row.section ? row.endpointSection : row.section;
 };
 
 /** Pure: section -> scope-chip color token used by the event log /
@@ -334,8 +332,7 @@ export const endpointsForRow = (
 	endpoints: ReadonlyArray<Endpoint>,
 ): ReadonlyArray<Endpoint> =>
 	endpoints.filter(
-		(endpoint) =>
-			row.endpoints.includes(endpoint.endpointKey) || endpoint.pluginKey === row.key,
+		(endpoint) => row.endpoints.includes(endpoint.endpointKey) || endpoint.pluginKey === row.key,
 	);
 
 const OPERATIONAL_ENDPOINT_FIELDS = new Set(['url', 'rpcUrl', 'faucetUrl', 'graphqlUrl']);

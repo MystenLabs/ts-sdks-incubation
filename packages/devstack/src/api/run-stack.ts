@@ -1,12 +1,12 @@
 // `runStack(stack, opts?)` — top-level programmatic embedding.
 //
-// Cutover blocker #3 (api-surface-design.md § Stack handle, parity-
-// matrix.md "Programmatic embedding"): `defineDevstack(...)` returns a
-// static `Stack<Members>` manifest with no runnable surface. Library
-// consumers (vitest setup, custom hosts, Effect-native apps, embedded
-// fixtures) had to re-implement `cli/main.ts:runUpLive`'s substrate
-// Layer composition. `runStack` is the single seam — it consumes the
-// shared `orchestrators/run.ts` helper the CLI also consumes.
+// `defineDevstack(...)` returns a static `Stack<Members>` manifest with
+// no runnable surface. Library consumers (vitest setup, custom hosts,
+// Effect-native apps, embedded fixtures) would otherwise have to
+// re-implement `cli/main.ts:runUpLive`'s substrate Layer composition.
+// `runStack` is the single embedder seam — it consumes the same
+// `orchestrators/runtime-composition.ts` helper the CLI consumes. See
+// ARCHITECTURE.md §"Layer composition lives at L3, not L0".
 //
 // Shape:
 //
@@ -59,7 +59,7 @@ import {
 } from '../orchestrators/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
-import { resolveAppName, resolveStackName } from './inference-network.ts';
+import { resolveAppName, resolveNetworkSync, resolveStackName } from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -139,11 +139,20 @@ const resolveIdentity = (
 		explicit: opts?.stack ?? stack.options.stackName,
 		cwd,
 	});
-	const network = opts?.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
+	// Parse + validate up-front so a malformed value fails here rather
+	// than downstream when a plugin probes the chain id. We keep the
+	// raw input string (`'sui:local'`, `'sui:testnet'`, …) for the
+	// chain-id brand so existing on-disk cache namespaces and plugin
+	// equality checks (`chain === 'sui:testnet'`) remain stable.
+	const resolved = resolveNetworkSync({
+		explicit: opts?.network,
+		env: process.env.DEVSTACK_NETWORK,
+		explicitSource: 'runStack({ identity.network })',
+	});
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: chainId(network),
+		chain: chainId(resolved.raw),
 	};
 };
 

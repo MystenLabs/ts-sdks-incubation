@@ -7,11 +7,7 @@
 
 import { Effect } from 'effect';
 
-import type {
-	PruneInventory,
-	PruneResourceScope,
-	PruneTargetSelection,
-} from './prune.ts';
+import type { PruneInventory, PruneResourceScope, PruneTargetSelection } from './prune.ts';
 
 export const selectPruneTargets = (
 	inventory: PruneInventory,

@@ -106,7 +106,11 @@ describe('lifecycle-prune typed error channel', () => {
 			collectLifecyclePruneInventory({ runtimeRoot: '/tmp' });
 		const runEffect: Effect.Effect<unknown, LifecyclePruneError> = runLifecyclePrune(
 			{ runtimeRoot: '/tmp' },
-			{ groupKeys: [], resources: { containers: true, networks: true, volumes: true, images: true }, dryRun: true },
+			{
+				groupKeys: [],
+				resources: { containers: true, networks: true, volumes: true, images: true },
+				dryRun: true,
+			},
 		);
 		expect(typeof inventoryEffect).toBe('object');
 		expect(typeof runEffect).toBe('object');

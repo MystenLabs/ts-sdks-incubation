@@ -32,11 +32,12 @@
 import { readFileSync } from 'node:fs';
 
 import {
+	decodeUnknownSync,
 	ManifestEnvelopeSchema,
+	parseJsonTextSync,
 	type ManifestEnvelope,
 	type EndpointEntry,
-} from '../../substrate/manifest.ts';
-import { decodeUnknownSync, parseJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';
+} from './manifest-types.ts';
 import { discoverManifestPath, type DiscoverManifestPathOptions } from './discover.ts';
 import { EndpointRegistry } from './endpoint-registry.ts';
 import { ManifestDiscoveryError, ManifestShapeError } from './errors.ts';

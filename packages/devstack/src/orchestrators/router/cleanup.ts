@@ -3,9 +3,9 @@ import { join } from 'node:path';
 import { Effect, FileSystem } from 'effect';
 
 import { dispatchFileIdFromFilename, parseDispatchRouteFile } from './file-provider.ts';
+import { ROUTER_CONTAINER_NAME_PREFIX } from './sentinels.ts';
 
-export const ROUTER_SHARED_APP = 'devstack-router';
-export const ROUTER_CONTAINER_NAME_PREFIX = 'devstack-router-';
+export { ROUTER_CONTAINER_NAME_PREFIX, ROUTER_SHARED_APP } from './sentinels.ts';
 
 const routerStateRoot = (runtimeRoot: string): string => join(runtimeRoot, 'router');
 

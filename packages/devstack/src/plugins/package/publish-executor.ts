@@ -301,7 +301,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 
 			return output;
 		}).pipe(
-			Effect.withSpan('package.publish-tx', {
+			Effect.withSpan('devstack.plugin.package.publish-tx', {
 				attributes: { [PackageSpans.publish.packageName]: packageName },
 			}),
 		),
@@ -338,7 +338,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 					cause,
 				}),
 		}).pipe(
-			Effect.withSpan('package.wait-for-ready', {
+			Effect.withSpan('devstack.plugin.package.wait-for-ready', {
 				attributes: { [PackageSpans.publish.packageId]: packageId },
 			}),
 		),

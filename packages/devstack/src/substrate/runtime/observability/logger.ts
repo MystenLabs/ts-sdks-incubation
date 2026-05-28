@@ -103,9 +103,7 @@ export interface LoggerShape {
 	readonly clearTag: (tag: string) => Effect.Effect<void>;
 }
 
-export class Logger extends Context.Service<Logger, LoggerShape>()(
-	'@devstack/substrate/Logger',
-) {}
+export class Logger extends Context.Service<Logger, LoggerShape>()('@devstack/substrate/Logger') {}
 
 /** Layer that constructs the per-stack Logger. Stateful (holds the
  *  per-tag ring buffers in a Ref); the substrate provides one per

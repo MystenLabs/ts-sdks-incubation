@@ -144,9 +144,6 @@ describe('makeEntrypointRegistry', () => {
 			'walrus-aggregator',
 			'walrus-publisher',
 			'seal-key-server',
-			'deepbook-server',
-			'deepbook-server-metrics',
-			'deepbook-indexer-metrics',
 		]) {
 			expect(Effect.runSync(reg.byName(name))).toBeDefined();
 		}

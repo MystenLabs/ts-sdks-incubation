@@ -220,7 +220,8 @@ describe('router boot dispatch-lock-spans-bootstrap invariant', () => {
 			const closeIdx = findBalancedClose(bootSlice, openIdx);
 			if (closeIdx <= openIdx) continue;
 			const body = bootSlice.slice(openIdx + 1, closeIdx);
-			const reads = body.includes('readDispatchRouteScan(') || body.includes('sweepStaleDispatchRoutes(');
+			const reads =
+				body.includes('readDispatchRouteScan(') || body.includes('sweepStaleDispatchRoutes(');
 			if (reads && !body.includes('bootstrap({')) {
 				throw new Error(
 					'Found an Effect.scoped block inside `boot()` that reads dispatch routes ' +

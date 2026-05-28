@@ -189,7 +189,15 @@ export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.e
 				yield* Effect.annotateCurrentSpan({
 					'capability-sinks.kind': sink.kind,
 				});
-			}).pipe(Effect.withSpan('substrate.capabilitySinks.registerSink'));
+			}).pipe(
+				// Make the install-and-wire-finalizer pair atomic w.r.t.
+				// interruption: an interrupt arriving AFTER `Ref.modify`
+				// swapped the slot but BEFORE `addFinalizer` lands would
+				// leak the sink past scope close. Mirrors the discipline
+				// in `leaseBroker.tryAcquire`.
+				Effect.uninterruptible,
+				Effect.withSpan('substrate.capabilitySinks.registerSink'),
+			);
 
 		const dispatch = (
 			contribution: AnyContribution,

@@ -86,35 +86,37 @@ const registerInputs: RegisterKeyServerInputs = {
 };
 
 describe('seal register — FailedTransaction return dispatch', () => {
-	it.effect('maps $kind:"FailedTransaction" to SealError(register) with digest + execution error', () =>
-		Effect.gen(function* () {
-			const sdk = stubSdk({
-				$kind: 'FailedTransaction',
-				FailedTransaction: {
-					digest: '0xbad-register',
-					status: { error: 'MoveAbort(seal::register::EBadPubKey, 7)' },
-				},
-			});
-			const exit = yield* Effect.exit(
-				runRegisterKeyServerTransaction(sdk, stubSigner, {
-					...registerInputs,
-					sdk,
-				}).pipe(Effect.scoped),
-			);
-			expect(Exit.isFailure(exit)).toBe(true);
-			const err = Exit.findErrorOption(exit);
-			expect(Option.isSome(err)).toBe(true);
-			if (Option.isSome(err)) {
-				expect(err.value._tag).toBe('SealError');
-				expect(err.value.phase).toBe('register');
-				expect(err.value.message).toContain('0xbad-register');
-				expect(err.value.message).toContain('MoveAbort');
-				expect(err.value.message).toContain('on-chain execution failed');
-				// `cause` must NOT carry a SuiExecuteError — FailedTransaction
-				// is a return-value, not an upstream error.
-				expect(err.value.cause).toBeUndefined();
-			}
-		}),
+	it.effect(
+		'maps $kind:"FailedTransaction" to SealError(register) with digest + execution error',
+		() =>
+			Effect.gen(function* () {
+				const sdk = stubSdk({
+					$kind: 'FailedTransaction',
+					FailedTransaction: {
+						digest: '0xbad-register',
+						status: { error: 'MoveAbort(seal::register::EBadPubKey, 7)' },
+					},
+				});
+				const exit = yield* Effect.exit(
+					runRegisterKeyServerTransaction(sdk, stubSigner, {
+						...registerInputs,
+						sdk,
+					}).pipe(Effect.scoped),
+				);
+				expect(Exit.isFailure(exit)).toBe(true);
+				const err = Exit.findErrorOption(exit);
+				expect(Option.isSome(err)).toBe(true);
+				if (Option.isSome(err)) {
+					expect(err.value._tag).toBe('SealError');
+					expect(err.value.phase).toBe('register');
+					expect(err.value.message).toContain('0xbad-register');
+					expect(err.value.message).toContain('MoveAbort');
+					expect(err.value.message).toContain('on-chain execution failed');
+					// `cause` must NOT carry a SuiExecuteError — FailedTransaction
+					// is a return-value, not an upstream error.
+					expect(err.value.cause).toBeUndefined();
+				}
+			}),
 	);
 
 	it.effect('still maps transport SuiExecuteError to SealError(register) with phase context', () =>

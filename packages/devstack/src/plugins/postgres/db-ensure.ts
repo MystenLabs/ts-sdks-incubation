@@ -101,7 +101,7 @@ export const awaitReady = (
 					lastStderr: lastResult?.stderr,
 				}),
 			),
-			Effect.withSpan('postgres.awaitReady', {
+			Effect.withSpan('devstack.plugin.postgres.awaitReady', {
 				attributes: {
 					[PostgresSpans.database]: database,
 					[PostgresSpans.timeoutMs]: timeoutMs,
@@ -133,12 +133,21 @@ export const ensureDatabase = (
 	dbName: string,
 ): Effect.Effect<void, DatabaseCreateFailed> =>
 	Effect.gen(function* () {
+		// Quote-escape per SQL literal rules (double single-quotes inside
+		// the literal). The plugin's own contract restricts callers to
+		// lowercase database identifiers (see distilled-doc § Edge cases
+		// above), but the literal interpolation here is still a foot-
+		// gun: a name containing `'` would break the WHERE clause and
+		// either fail the existence check or, worse, alter its
+		// semantics. Escaping locks the wire shape independent of the
+		// upstream contract.
+		const escapedDbName = dbName.replace(/'/g, "''");
 		const exists = yield* exec.run([
 			'psql',
 			'-U',
 			user,
 			'-tAc',
-			`SELECT 1 FROM pg_database WHERE datname = '${dbName}'`,
+			`SELECT 1 FROM pg_database WHERE datname = '${escapedDbName}'`,
 		]);
 		if (exists.exitCode !== 0) {
 			return yield* Effect.fail(
@@ -168,7 +177,7 @@ export const ensureDatabase = (
 			);
 		}
 	}).pipe(
-		Effect.withSpan('postgres.ensureDatabase', {
+		Effect.withSpan('devstack.plugin.postgres.ensureDatabase', {
 			attributes: { [PostgresSpans.database]: dbName },
 		}),
 	);

@@ -119,7 +119,7 @@ describe('api/run-stack', () => {
 	it('start resolves once every plugin reaches ready, then stop tears down', async () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-test', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-test', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -129,7 +129,7 @@ describe('api/run-stack', () => {
 		expect(snapshot.identity).toEqual({
 			app: 'run-stack-test',
 			stack: 'main',
-			network: 'test:local',
+			network: 'localnet',
 		});
 
 		await Effect.runPromise(handle.stop);
@@ -148,7 +148,7 @@ describe('api/run-stack', () => {
 			const stack = defineDevstack({ members: [leaf] });
 			const handle = runStack(stack, {
 				appRoot,
-				identity: { network: 'test:local' },
+				identity: { network: 'localnet' },
 				runtimeRoot,
 			});
 
@@ -175,7 +175,7 @@ describe('api/run-stack', () => {
 	it('awaitShutdown without start is a no-op', async () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-noop', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-noop', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 		await Effect.runPromise(handle.awaitShutdown);
@@ -184,7 +184,7 @@ describe('api/run-stack', () => {
 	it('awaitShutdown resolves after stop and is idempotent', async () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-idempotent', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-idempotent', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -209,7 +209,7 @@ describe('api/run-stack', () => {
 	it('post-start snapshot retains ready rows (no auto-interrupt on start resolve)', async () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-no-auto-interrupt', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-no-auto-interrupt', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -229,7 +229,7 @@ describe('api/run-stack', () => {
 	it('state is available synchronously before start (caller can subscribe)', () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-sync', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-sync', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -257,7 +257,7 @@ describe('api/run-stack', () => {
 		});
 		const stack = defineDevstack({ members: [customPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-extend-context', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-extend-context', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 			extendContext: (ctx) =>
 				Effect.succeed(
@@ -297,7 +297,7 @@ describe('api/run-stack', () => {
 		});
 		const stack = defineDevstack({ members: [customPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-custom-sink', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-custom-sink', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 			extendContext: (ctx) =>
 				Effect.gen(function* () {
@@ -330,7 +330,7 @@ describe('api/run-stack', () => {
 		});
 		const stack = defineDevstack({ members: [counted], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-concurrent-start', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-concurrent-start', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -361,7 +361,7 @@ describe('api/run-stack', () => {
 		});
 		const stack = defineDevstack({ members: [blocking], stackName: 'main' });
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-interrupted-start', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-interrupted-start', stack: 'main', network: 'localnet' },
 			runtimeRoot: makeRuntimeRoot(),
 		});
 
@@ -394,7 +394,7 @@ describe('api/run-stack', () => {
 		const stack = defineDevstack({ members: [failingPlugin], stackName: 'main' });
 		const runtimeRoot = makeRuntimeRoot();
 		const handle = runStack(stack, {
-			identity: { app: 'run-stack-boot-failure-events', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-boot-failure-events', stack: 'main', network: 'localnet' },
 			runtimeRoot,
 		});
 		const firstEvent = Effect.runPromise(
@@ -421,7 +421,7 @@ describe('api/run-stack', () => {
 		const stack = defineDevstack({ members: [runtimeCodegenPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
-			identity: { app: 'run-stack-codegen', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-codegen', stack: 'main', network: 'localnet' },
 			runtimeRoot,
 		});
 
@@ -461,7 +461,7 @@ describe('api/run-stack', () => {
 		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
-			identity: { app: 'preview-install', stack: 'main', network: 'test:local' },
+			identity: { app: 'preview-install', stack: 'main', network: 'localnet' },
 			runtimeRoot,
 		});
 
@@ -480,7 +480,7 @@ describe('api/run-stack', () => {
 			expect(ctx.identity).toEqual({
 				app: 'preview-install',
 				stack: 'main',
-				chain: 'test:local',
+				chain: 'localnet',
 			});
 		} finally {
 			await Effect.runPromise(handle.stop);
@@ -495,7 +495,7 @@ describe('api/run-stack', () => {
 		const stack = defineDevstack({ members: [failingRuntimeCodegenPlugin], stackName: 'main' });
 		const handle = runStack(stack, {
 			appRoot,
-			identity: { app: 'run-stack-codegen-fail', stack: 'main', network: 'test:local' },
+			identity: { app: 'run-stack-codegen-fail', stack: 'main', network: 'localnet' },
 			runtimeRoot,
 		});
 
@@ -531,4 +531,20 @@ describe('api/run-stack', () => {
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
 	}, 30_000);
+
+	// Regression: pre-Phase-B `runStack` accepted any string for
+	// `identity.network` and only validated downstream when a plugin
+	// probed the chain id. Phase B4 routed both runStack and cli/main
+	// through `parseDevstackNetwork` (via `resolveNetworkSync`) so a
+	// bogus value fails fast at the boundary with the typed
+	// `DevstackNetworkParseError`.
+	it('rejects a bogus identity.network value via parseDevstackNetwork', () => {
+		const stack = defineDevstack({ members: [leaf], stackName: 'main' });
+		expect(() =>
+			runStack(stack, {
+				identity: { app: 'rs-bad-net', stack: 'main', network: 'not-a-network' },
+				runtimeRoot: makeRuntimeRoot(),
+			}),
+		).toThrowError(/DEVSTACK_NETWORK|network|not-a-network/);
+	});
 });

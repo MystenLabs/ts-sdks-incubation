@@ -66,7 +66,6 @@ export {
 	ROUTER_ROUTE_LEASE_VERSION,
 	renderRouteYaml,
 	resolveRoute,
-	STATIC_PROVIDER_FILENAME,
 	type DispatchRouteMetadata,
 	type RouteCollisionMetadata,
 	type RouteLeaseMetadata,

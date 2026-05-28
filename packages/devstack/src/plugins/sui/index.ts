@@ -13,17 +13,14 @@
 //                              `{ local: …, live: …, fork: … }`
 //                              narrowed to the network's mode.
 //
-// The plugin emits FIVE capability decls:
+// The plugin emits FOUR capability decls:
 //
 //   1. `chain-probe:<chainId>` strategy contributor — the
 //      schema-validated read surface (`makeSuiChainProbe`).
 //   2. `gate:funds-ready` strategy contributor — the funds-
 //      transferable gate. No-op on faucet-less networks.
-//   3. `sui:seed-objects` strategy contributor — the per-instance
-//      seed-objects accumulator (fork mode only; emits an empty
-//      accumulator on other modes for shape uniformity).
-//   4. Snapshotable — mode-aware container + bind-mount capture.
-//   5. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
+//   3. Snapshotable — mode-aware container + bind-mount capture.
+//   4. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
 //
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
 // local-rpc + live no — the caller fronts their own RPC). They land
@@ -50,11 +47,6 @@ import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts'
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import {
-	makeSeedObjectsAccumulator,
-	SEED_OBJECTS_CAPABILITY_KEY,
-	type SeedObjectsAccumulator,
-} from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
 import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
@@ -75,7 +67,6 @@ import type {
 
 type SuiResolved = SuiClient & {
 	readonly mode: SuiOptions['mode'];
-	readonly seedObjects: SeedObjectsAccumulator;
 };
 
 /** Internal extension of `SuiResolved` carrying the
@@ -114,7 +105,6 @@ const buildPlugin = (opts: SuiOptions) => {
 				const fundingFaucetLeaseBroker = yield* LeaseBrokerService;
 				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
 
-				const seedObjects = yield* makeSeedObjectsAccumulator();
 				const fundingFaucetStrategy =
 					client.fundingFaucetUrl === null
 						? null
@@ -129,7 +119,6 @@ const buildPlugin = (opts: SuiOptions) => {
 				return {
 					...client,
 					mode: opts.mode,
-					seedObjects,
 					fundingFaucetStrategy,
 				} satisfies SuiResolvedRuntime;
 			}),
@@ -189,16 +178,6 @@ const makePluginCapabilities = (
 		autoMounted: true,
 	};
 
-	const seedObjectsContribution: StrategyContributorDecl<
-		typeof SEED_OBJECTS_CAPABILITY_KEY,
-		SeedObjectsAccumulator
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: SEED_OBJECTS_CAPABILITY_KEY,
-		strategy: resolved.seedObjects,
-		autoMounted: true,
-	};
-
 	const faucetContribution =
 		resolvedRuntime.fundingFaucetStrategy === null
 			? []
@@ -234,7 +213,6 @@ const makePluginCapabilities = (
 		chainProbeContribution,
 		...faucetContribution,
 		fundsReadyContribution,
-		seedObjectsContribution,
 		...localRoutables,
 		...forkRoutables,
 	] as const;
@@ -325,7 +303,6 @@ export {
 	type FundsReadyStrategy,
 	type FundsReadyError,
 } from '../../contracts/network-resolver.ts';
-export { SEED_OBJECTS_CAPABILITY_KEY, type SeedObjectsAccumulator } from './seed-objects.ts';
 export {
 	FORK_UNSUPPORTED_SURFACES,
 	wrapWithForkGuard,

@@ -8,7 +8,12 @@
 
 import { Effect } from 'effect';
 
-import { PER_APP_SHARED_STACK } from '../../../substrate/runtime/managed-container.ts';
+import {
+	defaultLifecyclePruneSelection,
+	DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+	lifecyclePruneAppsWithLiveSiblings,
+	type SharedGroupKind,
+} from '../../../orchestrators/lifecycle-prune/index.ts';
 import {
 	type CliError,
 	CliConfirmRequiredError,
@@ -26,6 +31,10 @@ export interface PruneGroup {
 	readonly live: boolean;
 	readonly livePids: ReadonlyArray<number>;
 	readonly shared: boolean;
+	/** Discriminator for shared groups — mirrored from the L3 orchestrator
+	 *  shape so surfaces never re-derive the `_per-app_` / router-singleton
+	 *  predicate. `null` for normal groups. */
+	readonly sharedKind: SharedGroupKind | null;
 	/** True when the group represents a router-shared resource set that
 	 *  is auto-prunable in non-interactive flows (`devstack prune --all`).
 	 *  Computed by the lifecycle-prune orchestrator; surfaces never
@@ -121,12 +130,9 @@ export interface PruneRunOptions {
 	readonly resources: PruneResourceScope;
 }
 
-export const DEFAULT_PRUNE_RESOURCES: PruneResourceScope = {
-	containers: true,
-	networks: true,
-	volumes: true,
-	images: false,
-};
+/** L4 mirror of the orchestrator's default resource scope. Re-export
+ *  rather than redefine so the default never drifts between layers. */
+export const DEFAULT_PRUNE_RESOURCES: PruneResourceScope = DEFAULT_LIFECYCLE_PRUNE_RESOURCES;
 
 export const summarizePruneGroups = (groups: ReadonlyArray<PruneGroup>): PruneTotals => {
 	let liveGroups = 0;
@@ -184,33 +190,18 @@ export const groupResourceCountForResources = (
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
 
-/** Apps with at least one live non-shared group — their `_per-app_`
- *  shared resources stay pinned because something under the app is
- *  still running. */
-const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> => {
-	const apps = new Set<string>();
-	for (const group of inventory.groups) {
-		if (!group.shared && group.live) apps.add(group.app);
-	}
-	return apps;
-};
+/** L4 mirror — defers to the orchestrator's pinning predicate so the
+ *  shared-resource rule lives in exactly one place. */
+const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> =>
+	lifecyclePruneAppsWithLiveSiblings(inventory);
 
+/** Delegates to the orchestrator's `defaultLifecyclePruneSelection`.
+ *  The L4 shape mirrors the L3 shape field-for-field; the surface
+ *  never reimplements the shared/per-app/router policy. */
 export const defaultPruneSelection = (
 	inventory: PruneInventory,
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
-): ReadonlyArray<string> => {
-	const pinned = appsWithLiveSiblings(inventory);
-	return inventory.groups
-		.filter(
-			(group) =>
-				!group.live &&
-				(!group.shared ||
-					group.autoPrunable ||
-					(group.stack === PER_APP_SHARED_STACK && !pinned.has(group.app))) &&
-				groupResourceCountForResources(group, resources) > 0,
-		)
-		.map((group) => group.key);
-};
+): ReadonlyArray<string> => defaultLifecyclePruneSelection(inventory, resources);
 
 const requireBulkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
 	if (ctx.flags.dryRun) return Effect.void;
@@ -239,7 +230,7 @@ const formatGroupLine = (group: PruneGroup, pinnedApps: ReadonlySet<string>): st
 			? `live pid ${group.livePids.join(',')}`
 			: group.live
 				? 'live'
-				: group.shared && group.stack === PER_APP_SHARED_STACK
+				: group.sharedKind === 'per-app-shared'
 					? pinnedApps.has(group.app)
 						? 'shared (pinned by live sibling)'
 						: 'shared (auto)'

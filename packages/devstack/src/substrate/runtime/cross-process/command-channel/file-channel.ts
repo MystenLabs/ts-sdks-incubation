@@ -175,9 +175,14 @@ const drainNewLines = (
 			const fd = openSync(path, 'r');
 			try {
 				const buf = Buffer.alloc(grow);
-				readSync(fd, buf, 0, grow, state.offset);
-				state.offset = stat.size;
-				const chunk = state.partial + buf.toString('utf8');
+				// POSIX `read(2)` may short-return (especially across
+				// filesystems like NFS); advance the offset by what was
+				// ACTUALLY read, not what we asked for. A short read just
+				// means the rest will arrive on the next poll iteration.
+				const bytesRead = readSync(fd, buf, 0, grow, state.offset);
+				if (bytesRead <= 0) return [];
+				state.offset += bytesRead;
+				const chunk = state.partial + buf.toString('utf8', 0, bytesRead);
 				const parts = chunk.split('\n');
 				state.partial = parts.pop() ?? '';
 				return parts.filter((l) => l.length > 0);

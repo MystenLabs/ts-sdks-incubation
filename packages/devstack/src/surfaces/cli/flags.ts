@@ -39,15 +39,8 @@ export interface GlobalFlags {
 	readonly renderer: CliRendererMode | undefined;
 	readonly dryRun: boolean;
 	readonly confirm: ConfirmPolicy;
-	/** Legacy field kept in the internal shape; schema is now the
-	 *  explicit `devstack schema --json` command. */
-	readonly schemaEmit: boolean;
 	/** Verbosity bump; primarily affects logger filter. */
 	readonly verbose: boolean;
-	/** Print help instead of running. */
-	readonly help: boolean;
-	/** Print version one-liner and exit. */
-	readonly version: boolean;
 	/** Argv tail after the global-flag pass; subcommand parsers slice
 	 *  positional arguments and verb-specific flags out of this. */
 	readonly rest: ReadonlyArray<string>;
@@ -63,7 +56,6 @@ export const ENV_VARS = {
 	STATE_DIR: 'DEVSTACK_STATE_DIR',
 	CONFIG_PATH: 'DEVSTACK_CONFIG',
 	NETWORK: 'DEVSTACK_NETWORK',
-	RENDERER: 'DEVSTACK_RENDERER',
 	NO_COLOR: 'NO_COLOR',
 } as const;
 

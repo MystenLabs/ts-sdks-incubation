@@ -20,9 +20,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
  *  Deepbook's deploy artifacts live on the host subtree; no managed
  *  containers participate (the indexer + server daemons aren't wired
  *  yet). When they land, add their `ContainerLabelTuple` here. */
-export const makeLocalSnapshotable = (inputs: {
-	readonly name: string;
-}): SnapshotableDecl => ({
+export const makeLocalSnapshotable = (inputs: { readonly name: string }): SnapshotableDecl => ({
 	kind: 'snapshotable',
 	subtrees: [`deepbook/${inputs.name}`],
 	managedContainers: [],

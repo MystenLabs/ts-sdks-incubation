@@ -21,7 +21,6 @@ import type {
 	ImageRef,
 } from '../../../src/contracts/container-runtime.ts';
 import {
-	DEFAULT_SEAL_RUST_TOOLCHAIN,
 	resolveDefaultSealCargoImage,
 	resolveSealCargoImage,
 } from '../../../src/plugins/seal/bootstrap-assets/cargo-image.ts';
@@ -114,7 +113,6 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 				resolveSealCargoImage(runtime, {
 					sealRepo: DEFAULT_SEAL_REPO,
 					sealRef: 'seal-v0.7.0',
-					rustToolchain: DEFAULT_SEAL_RUST_TOOLCHAIN,
 					owner: { app: 'test-app', stack: 'test-stack' },
 				}),
 			) as Effect.Effect<ImageRef, unknown>,

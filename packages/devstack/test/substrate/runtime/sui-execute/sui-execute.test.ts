@@ -28,7 +28,7 @@ const stubSigner = {
 const stubClient = (core: {
 	readonly executeTransaction: (args: unknown) => Promise<unknown>;
 	readonly waitForTransaction: (args: unknown) => Promise<unknown>;
-}): SuiExecuteClient => ({ core } as never);
+}): SuiExecuteClient => ({ core }) as never;
 
 const successfulClient = (params: {
 	readonly digest?: string;
@@ -86,30 +86,32 @@ describe('executeSuiTx', () => {
 		}),
 	);
 
-	it.effect('FailedTransaction surfaces as $kind:"FailedTransaction" return value (NOT error)', () =>
-		Effect.gen(function* () {
-			const client = stubClient({
-				executeTransaction: async () => ({
-					$kind: 'FailedTransaction',
-					FailedTransaction: {
-						digest: '0xbad',
-						status: { error: 'MoveAbort(...)' },
-					},
-				}),
-				waitForTransaction: async () => undefined,
-			});
-			const result = yield* Effect.scoped(
-				executeSuiTx({
-					client,
-					signer: stubSigner,
-					build: async () => new Uint8Array(),
-				}),
-			);
-			expect(result.$kind).toBe('FailedTransaction');
-			if (result.$kind !== 'FailedTransaction') return;
-			expect(result.FailedTransaction.digest).toBe('0xbad');
-			expect(result.FailedTransaction.executionError).toBe('MoveAbort(...)');
-		}),
+	it.effect(
+		'FailedTransaction surfaces as $kind:"FailedTransaction" return value (NOT error)',
+		() =>
+			Effect.gen(function* () {
+				const client = stubClient({
+					executeTransaction: async () => ({
+						$kind: 'FailedTransaction',
+						FailedTransaction: {
+							digest: '0xbad',
+							status: { error: 'MoveAbort(...)' },
+						},
+					}),
+					waitForTransaction: async () => undefined,
+				});
+				const result = yield* Effect.scoped(
+					executeSuiTx({
+						client,
+						signer: stubSigner,
+						build: async () => new Uint8Array(),
+					}),
+				);
+				expect(result.$kind).toBe('FailedTransaction');
+				if (result.$kind !== 'FailedTransaction') return;
+				expect(result.FailedTransaction.digest).toBe('0xbad');
+				expect(result.FailedTransaction.executionError).toBe('MoveAbort(...)');
+			}),
 	);
 
 	it.effect('FailedTransaction return is exposed via the success channel — no error surfaces', () =>

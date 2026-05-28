@@ -29,10 +29,7 @@ import type { PluginKey } from '../../brand.ts';
 import type { StateKey, StateStore } from '../../state-store.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { CrossProcessLock } from '../cross-process-lock.ts';
-import type {
-	StackLockIoError,
-	StackLockTimeoutError,
-} from '../cross-process/stack-lock.ts';
+import type { StackLockIoError, StackLockTimeoutError } from '../cross-process/stack-lock.ts';
 import { StateStoreError } from '../errors.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText } from '../runtime-decode.ts';

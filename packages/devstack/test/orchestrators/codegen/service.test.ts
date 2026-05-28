@@ -27,13 +27,29 @@ import {
 	stubMoveCodegen,
 	stubMoveSummaryRunner,
 } from '../../../src/orchestrators/codegen/bindings.ts';
-import { makeExtrasCodegenable } from '../../../src/orchestrators/codegen/extras.ts';
 import {
 	CodegenEmitterCollision,
 	CodegenPathConflict,
 } from '../../../src/orchestrators/codegen/errors.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
 import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
+
+// `makeExtrasCodegenable` was an internal one-call factory. Reproduced
+// inline here so the codegen orchestrator's extras path stays under test
+// without resurrecting a single-use module.
+const makeExtrasCodegenable = (
+	extras: Readonly<Record<string, unknown>>,
+): CodegenableDecl<'app-extras'> => ({
+	kind: 'codegenable',
+	emitterName: 'app-extras',
+	outputPath: 'extras.ts',
+	sensitive: true,
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('extras', extras);
+			return ctx.done();
+		}),
+});
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -166,26 +182,24 @@ describe('codegen.runEmitCycle', () => {
 		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-1'))),
 	);
 
-	it.effect(
-		'refuses two emitters with the same name when neither opts into repetition',
-		() =>
-			Effect.gen(function* () {
-				const result = yield* runEmitCycle({
-					contributions: [
-						fakeDecl({
-							emitterName: 'same-name',
-							outputPath: 'a.ts',
-							exports: { a: 1 },
-						}),
-						fakeDecl({
-							emitterName: 'same-name',
-							outputPath: 'b.ts',
-							exports: { b: 1 },
-						}),
-					],
-				}).pipe(Effect.flip);
-				expect(result).toBeInstanceOf(CodegenEmitterCollision);
-			}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-2'))),
+	it.effect('refuses two emitters with the same name when neither opts into repetition', () =>
+		Effect.gen(function* () {
+			const result = yield* runEmitCycle({
+				contributions: [
+					fakeDecl({
+						emitterName: 'same-name',
+						outputPath: 'a.ts',
+						exports: { a: 1 },
+					}),
+					fakeDecl({
+						emitterName: 'same-name',
+						outputPath: 'b.ts',
+						exports: { b: 1 },
+					}),
+				],
+			}).pipe(Effect.flip);
+			expect(result).toBeInstanceOf(CodegenEmitterCollision);
+		}).pipe(Effect.provide(baseLayer('/tmp/codegen-test-2'))),
 	);
 
 	it.effect(

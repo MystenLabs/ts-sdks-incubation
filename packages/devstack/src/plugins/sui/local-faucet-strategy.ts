@@ -63,7 +63,7 @@ const withSerialization = <E>(
 			yield* effect;
 		}),
 	).pipe(
-		Effect.withSpan('faucet.suiLocal.serializedRequest', {
+		Effect.withSpan('devstack.plugin.sui.localFaucet.serializedRequest', {
 			attributes: {
 				[SuiSpans.localFaucetLeaseKey]: serialization.key,
 				[SuiSpans.localFaucetLeaseOwner]: serialization.owner,

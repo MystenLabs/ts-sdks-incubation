@@ -141,9 +141,9 @@ Three layers of guidance, in order:
 Every `@mysten/*` package ships LLM-optimized documentation in its own
 `docs/` directory. Before writing or modifying code that touches a `@mysten/*`
 package, find and read the relevant docs locally — **don't guess at API shape,
-don't grep `node_modules/**/*.d.ts` for type names, don't search the web**.
+don't grep `node_modules/**/\*.d.ts`for type names, don't search the web**.
 The shipped docs are the ground truth for the version installed in this repo
-(currently `@mysten/sui` 2.x; `experimental` and other 1.x surfaces are gone).
+(currently`@mysten/sui`2.x;`experimental` and other 1.x surfaces are gone).
 
 Workflow:
 

@@ -10,10 +10,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-	KNOWN_DEPLOYMENTS,
-	validateLiveInputs,
-} from '../../../../src/plugins/seal/mode/live.ts';
+import { KNOWN_DEPLOYMENTS, validateLiveInputs } from '../../../../src/plugins/seal/mode/live.ts';
 
 describe('KNOWN_DEPLOYMENTS — testnet entry shape', () => {
 	it('testnet.keyServerObjectId is null until a real id is sourced', () => {

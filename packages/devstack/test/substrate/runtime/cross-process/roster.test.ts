@@ -23,6 +23,7 @@ import {
 	release,
 	removeClaim,
 } from '../../../../src/substrate/runtime/cross-process/roster.ts';
+import { processStartTime } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
 
 const ROSTER_TEST_TIMEOUT_MS = 15_000;
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'roster-test-'));
@@ -260,6 +261,80 @@ describe('roster.addClaim / removeClaim (container-claim ledger)', () => {
 
 					expect(doc.claims).toHaveLength(1);
 					expect(doc.claims[0]?.hostname).toBe('other-host');
+				} finally {
+					rmSync(root, { recursive: true, force: true });
+				}
+			}),
+		ROSTER_TEST_TIMEOUT_MS,
+	);
+});
+
+// Regression for Phase B1: `isOwnEntry` now matches on
+// `(pid, hostname, startTime)`. With the previous PID-only check, a
+// recycled-PID peer on a long-uptime host could be silently overwritten
+// by `heartbeat`/`release`/`setIntent`. The triple match prevents that.
+//
+// We seed a roster entry with the SAME `pid` + `hostname` as the current
+// process but a DIFFERENT `startTime`, then run `release`. The peer
+// entry MUST survive because the startTime triple match identifies it as
+// a different process.
+describe('roster.isOwnEntry — (pid, hostname, startTime) triple match', () => {
+	it.effect(
+		'release leaves a same-(pid, hostname) peer with a different startTime in place',
+		() =>
+			Effect.gen(function* () {
+				const root = freshRoot();
+				const paths = pathsFor(root);
+				// Skip if the platform can't probe startTime — on null,
+				// `isOwnEntry` falls back to (pid, hostname) only, which is
+				// the documented conservative policy (`liveness.ts`).
+				const ownStartTime = processStartTime(process.pid);
+				if (ownStartTime === null) return;
+				try {
+					// Seed: claim with the real process identity, then patch the
+					// roster on disk to introduce a peer with the same pid +
+					// hostname but a different startTime.
+					yield* claim(paths);
+					const initialRoster = JSON.parse(
+						readFileSync(paths.rosterFile, 'utf8'),
+					) as {
+						readonly version: 1;
+						readonly holders: ReadonlyArray<{
+							readonly pid: number;
+							readonly hostname: string;
+							readonly startTime: number;
+							readonly heartbeatAt: number;
+							readonly intent: string;
+						}>;
+					};
+					expect(initialRoster.holders).toHaveLength(1);
+					const ours = initialRoster.holders[0]!;
+
+					// Construct a synthetic peer with the same (pid, hostname) but
+					// a clearly different startTime — simulating a recycled PID
+					// on the same host. The triple match must treat this as a
+					// DIFFERENT process.
+					const peerStartTime = ours.startTime + 999_999;
+					const recycledPeer = {
+						...ours,
+						startTime: peerStartTime,
+						heartbeatAt: Date.now(),
+					};
+					writeFileSync(
+						paths.rosterFile,
+						JSON.stringify({
+							version: 1,
+							holders: [ours, recycledPeer],
+						}),
+					);
+
+					const result = yield* release(paths);
+
+					// We dropped our entry, but the recycled-PID peer survives
+					// because its startTime differs from ours.
+					expect(result.lastLeaver).toBe(false);
+					expect(result.roster.holders).toHaveLength(1);
+					expect(result.roster.holders[0]?.startTime).toBe(peerStartTime);
 				} finally {
 					rmSync(root, { recursive: true, force: true });
 				}

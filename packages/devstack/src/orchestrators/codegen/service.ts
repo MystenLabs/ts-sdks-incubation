@@ -165,11 +165,16 @@ export const runEmitCycle = (
 		// `src/generated/` half-rewritten — see opportunities-backlog
 		// #8 and STYLE_GUIDE §19.
 		//
-		// Cycle id is a short random suffix (STYLE_GUIDE §17 random-id
-		// rule). The full UUID is overkill for a sibling directory
-		// name; 8 hex chars is enough to disambiguate concurrent
-		// crashed-cycle leftovers.
-		const cycleId = randomUUID().slice(0, 8);
+		// Cycle id is a random suffix (STYLE_GUIDE §17 random-id rule).
+		// 32 bits is collision-thin once concurrent crashed-cycle
+		// leftovers accumulate (birthday bound ≈ 65k); widen to 64 bits
+		// of entropy so a long-running supervisor can collect many stale
+		// `.staging.<cycleId>` siblings without a 1-in-million collision
+		// re-tagging a half-built tree as a fresh staging dir. Mirrors
+		// the snapshot orchestrator's `mintRestoreStagingTag` (24 hex
+		// chars of UUID entropy) — keep the format short here since it
+		// is only a sibling directory name.
+		const cycleId = randomUUID().replaceAll('-', '').slice(0, 16);
 		const stagingDir = `${paths.outputDir}.staging.${cycleId}`;
 		const backupDir = `${paths.outputDir}.bak.${cycleId}`;
 

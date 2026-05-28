@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
+import { Effect } from 'effect';
+
 export const DEFAULT_STACK_NAME = 'main';
 
 export interface StackNameResolutionOptions {
@@ -166,3 +168,91 @@ export const parseDevstackNetworkName = (
 	value: string | undefined,
 	source = 'DEVSTACK_NETWORK',
 ): DevstackNetworkName => parseDevstackNetwork(value, source).name;
+
+// ---------------------------------------------------------------------------
+// resolveNetwork — single precedence ladder for every entry point.
+// ---------------------------------------------------------------------------
+
+/**
+ * Options for `resolveNetwork`. `explicit` is the caller-supplied
+ * override (typically a CLI flag or programmatic option). `env` is the
+ * environment value (typically `process.env.DEVSTACK_NETWORK`).
+ * `defaultName` is the final fallback when both miss. The precedence is
+ * explicit > env > default. The `source` string is embedded in the
+ * parse error's `source` field so the diagnosis names the offending
+ * input (e.g. `--network` vs `DEVSTACK_NETWORK`).
+ */
+export interface ResolveNetworkOptions {
+	readonly explicit?: string | undefined;
+	readonly env?: string | undefined;
+	readonly defaultName?: string;
+	readonly explicitSource?: string;
+	readonly envSource?: string;
+}
+
+/** Default value when neither caller nor env provides one. Kept as a
+ *  string (not a `ParsedDevstackNetwork`) because every call site folds
+ *  it through `parseDevstackNetwork` first — keeping the default in the
+ *  same lookup table the env value flows through avoids two source-of-
+ *  truth shapes for "what is the default network?". */
+export const DEFAULT_DEVSTACK_NETWORK = 'sui:local' as const;
+
+/**
+ * Result shape — both the typed parse AND the original input string the
+ * resolver picked. Consumers that thread the value through chain-keyed
+ * caches (the substrate folds chain id into cache namespaces) MUST keep
+ * the raw form to preserve existing on-disk cache keys; consumers that
+ * branch on mode (local/live/fork) read `parsed`.
+ */
+export interface ResolvedDevstackNetwork {
+	readonly raw: string;
+	readonly parsed: ParsedDevstackNetwork;
+}
+
+const pickInput = (
+	options: ResolveNetworkOptions,
+): { readonly value: string; readonly source: string } => {
+	if (options.explicit !== undefined && options.explicit.length > 0) {
+		return { value: options.explicit, source: options.explicitSource ?? '--network' };
+	}
+	if (options.env !== undefined && options.env.length > 0) {
+		return { value: options.env, source: options.envSource ?? 'DEVSTACK_NETWORK' };
+	}
+	return { value: options.defaultName ?? DEFAULT_DEVSTACK_NETWORK, source: 'default' };
+};
+
+/**
+ * Resolve a network from the canonical explicit > env > default ladder
+ * and parse the winning value through `parseDevstackNetwork`. Returns
+ * the typed parse alongside the raw input the resolver picked. A
+ * malformed value surfaces as `DevstackNetworkParseError` on the
+ * failure channel so CLI / library boot fail fast with a structured
+ * error rather than a downstream cryptic message.
+ *
+ * Used by both `api/run-stack.ts` (library embedding) and the CLI
+ * identity resolver so the two paths share one precedence rule + one
+ * parse error type.
+ */
+export const resolveNetwork = (
+	options: ResolveNetworkOptions = {},
+): Effect.Effect<ResolvedDevstackNetwork, DevstackNetworkParseError> =>
+	Effect.try({
+		try: (): ResolvedDevstackNetwork => {
+			const { value, source } = pickInput(options);
+			return { raw: value, parsed: parseDevstackNetwork(value, source) };
+		},
+		catch: (cause) => cause as DevstackNetworkParseError,
+	});
+
+/**
+ * Sync sibling of `resolveNetwork` for entry points that aren't running
+ * inside an Effect (the CLI identity resolver builds a plain TS record).
+ * Throws `DevstackNetworkParseError` on bad input — caller's job to lift
+ * into a typed failure channel if needed.
+ */
+export const resolveNetworkSync = (
+	options: ResolveNetworkOptions = {},
+): ResolvedDevstackNetwork => {
+	const { value, source } = pickInput(options);
+	return { raw: value, parsed: parseDevstackNetwork(value, source) };
+};

@@ -54,9 +54,7 @@ describe('chainKeyedStrategyFor', () => {
 		Effect.scoped(
 			Effect.gen(function* () {
 				const chain = chainId('sui:absent');
-				const exit = yield* Effect.exit(
-					chainKeyedStrategyFor<StubStrategy>(FAUCET_PREFIX, chain),
-				);
+				const exit = yield* Effect.exit(chainKeyedStrategyFor<StubStrategy>(FAUCET_PREFIX, chain));
 				expect(Exit.isFailure(exit)).toBe(true);
 				const err = Exit.findErrorOption(exit);
 				expect(err._tag).toBe('Some');

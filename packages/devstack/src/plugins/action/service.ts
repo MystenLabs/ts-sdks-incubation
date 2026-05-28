@@ -36,7 +36,7 @@
 
 import { createHash } from 'node:crypto';
 
-import { Effect, Schema, type Scope } from 'effect';
+import { Effect, Ref, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
 import {
@@ -173,6 +173,18 @@ export const bootActionService = (
 		const material = composeDiscriminatorMaterial(inputs.staticDiscriminator, resolvedDynamic);
 		const inputsHash = brandContentHash(createHash('sha256').update(material).digest('hex'));
 
+		// --- Phase-preserving stash.
+		//
+		// `publisher.publish`'s `produce` channel must surface failures
+		// as `ArtifactPublishError` per the substrate contract. That
+		// erases the original `ActionError.phase`. We stash the typed
+		// ActionError into a Ref BEFORE the mapError boundary so the
+		// outer `catchTag('ArtifactPublishError')` (here) can recover
+		// the original tag and re-raise it untouched. The caller in
+		// `index.ts` then sees the original `phase` rather than a
+		// uniformly-stamped `'sign'`.
+		const stashedActionError = yield* Ref.make<ActionError | null>(null);
+
 		// --- Submit the spec to the publisher.
 		//
 		// The artifact publisher substrate decodes the cached `ActionReceipt` and
@@ -180,63 +192,90 @@ export const bootActionService = (
 		// pull the digest off the cached payload directly. No
 		// in-process registry-hop required (mirrors the seam pattern
 		// the package plugin's mode-local TODO calls out).
-		const receipt: ActionReceipt = yield* publisher.publish<
-			ActionReceipt,
-			typeof VerifyTxShape.Type
-		>({
-			namespace: 'action',
-			chain: inputs.chainId,
-			contentHash: inputsHash,
-			verifySchema: VerifyTxShape,
-			verify: (cached) => buildVerifyProbe(probe, cached.digest),
-			produce: Effect.gen(function* () {
-				yield* Effect.annotateCurrentSpan({
-					[ActionSpans.phase]: 'building',
-				});
-				// `inputs.body` is a USER-SUPPLIED Effect — its error channel
-				// is nominally `ActionError`, but bodies can raise non-tagged
-				// throws via `Effect.try`/sync code paths whose `cause` widens
-				// to `unknown`. `Effect.catch` (vs `catchTag`) preserves the
-				// "tag-or-wrap" branch so non-ActionError throws get rebadged
-				// to `phase: 'sign'` without losing the original cause.
-				const receipt: ActionReceipt = yield* inputs.body.pipe(
-					Effect.catch(
-						(cause): Effect.Effect<ActionReceipt, ActionError> =>
-							Effect.fail(
-								(cause as ActionError)?._tag === 'ActionError'
-									? (cause as ActionError)
-									: actionError('sign', {
-											actionName: inputs.actionName,
-											message: `Action '${inputs.actionName}': body Effect failed.`,
-											cause,
-										}),
+		const receipt: ActionReceipt = yield* publisher
+			.publish<ActionReceipt, typeof VerifyTxShape.Type>({
+				namespace: 'action',
+				chain: inputs.chainId,
+				contentHash: inputsHash,
+				verifySchema: VerifyTxShape,
+				verify: (cached) => buildVerifyProbe(probe, cached.digest),
+				produce: Effect.gen(function* () {
+					yield* Effect.annotateCurrentSpan({
+						[ActionSpans.phase]: 'building',
+					});
+					// `inputs.body` is a USER-SUPPLIED Effect — its error channel
+					// is nominally `ActionError`, but bodies can raise non-tagged
+					// throws via `Effect.try`/sync code paths whose `cause` widens
+					// to `unknown`. `Effect.catch` (vs `catchTag`) preserves the
+					// "tag-or-wrap" branch so non-ActionError throws get rebadged
+					// to `phase: 'sign'` without losing the original cause.
+					const receipt: ActionReceipt = yield* inputs.body.pipe(
+						Effect.catch(
+							(cause): Effect.Effect<ActionReceipt, ActionError> =>
+								Effect.fail(
+									(cause as ActionError)?._tag === 'ActionError'
+										? (cause as ActionError)
+										: actionError('sign', {
+												actionName: inputs.actionName,
+												message: `Action '${inputs.actionName}': body Effect failed.`,
+												cause,
+											}),
+								),
+						),
+					);
+					yield* Effect.annotateCurrentSpan({
+						[ActionSpans.phase]: 'parsing',
+						[ActionSpans.digest]: receipt.digest,
+					});
+					return receipt;
+				}).pipe(
+					// Stash the typed ActionError before the mapError
+					// boundary so the outer recovery path can re-raise
+					// with the original `phase` intact.
+					Effect.tapError((err) => Ref.set(stashedActionError, err)),
+					Effect.mapError(
+						(err): ArtifactPublishError =>
+							artifactPublishError(
+								'produce-failed',
+								`action.${inputs.actionName} ${err.phase}: ${err.message}`,
 							),
 					),
-				);
-				yield* Effect.annotateCurrentSpan({
-					[ActionSpans.phase]: 'parsing',
-					[ActionSpans.digest]: receipt.digest,
-				});
-				return receipt;
-			}).pipe(
-				Effect.mapError(
-					(err): ArtifactPublishError =>
-						artifactPublishError(
-							'produce-failed',
-							`action.${inputs.actionName} ${err.phase}: ${err.message}`,
-						),
 				),
-			),
-			register: (_artifact) =>
-				// Action declares no in-process registry (mirrors v3's
-				// `services/action.ts:189-191` "Action does NOT populate
-				// any in-process registries"). The cached digest is now
-				// threaded directly via the artifact publisher's `verify(cached)`
-				// parameter — no register-hop hint required.
-				Effect.void,
-		});
+				register: (_artifact) =>
+					// Action declares no in-process registry (mirrors v3's
+					// `services/action.ts:189-191` "Action does NOT populate
+					// any in-process registries"). The cached digest is now
+					// threaded directly via the artifact publisher's `verify(cached)`
+					// parameter — no register-hop hint required.
+					Effect.void,
+			})
+			.pipe(
+				// Recover the stashed ActionError if produce raised one.
+				// `verify-exhausted` / `cache-corrupt` are substrate-side
+				// signals with no upstream ActionError — they propagate
+				// as ArtifactPublishError untouched.
+				Effect.catchTag('ArtifactPublishError', (err) =>
+					Effect.gen(function* () {
+						const stashed = yield* Ref.get(stashedActionError);
+						if (stashed !== null && err.reason === 'produce-failed') {
+							return yield* Effect.fail(stashed);
+						}
+						return yield* Effect.fail(err);
+					}),
+				),
+			);
 
 		// The substrate hands back the decoded `ActionReceipt` on every
 		// path (decoded cached payload on hit, fresh produce on miss).
 		return receipt;
-	});
+	}).pipe(
+		// Outer span so the per-action `annotateCurrentSpan` annotations
+		// above attach to a real span instead of dropping silently when
+		// `bootActionService` is invoked outside a parent span.
+		Effect.withSpan('devstack.plugin.action.boot', {
+			attributes: {
+				[ActionSpans.name]: inputs.actionName,
+				[ActionSpans.chain]: inputs.chainId,
+			},
+		}),
+	);

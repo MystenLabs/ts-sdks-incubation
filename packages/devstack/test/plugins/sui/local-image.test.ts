@@ -99,9 +99,7 @@ describe('Sui local image resolution', () => {
 				}),
 		});
 
-		await Effect.runPromise(
-			resolveImage(runtime, TEST_IDENTITY, { mode: 'local', version: 'v1' }),
-		);
+		await Effect.runPromise(resolveImage(runtime, TEST_IDENTITY, { mode: 'local', version: 'v1' }));
 
 		expect(calls).toEqual([
 			expect.objectContaining({

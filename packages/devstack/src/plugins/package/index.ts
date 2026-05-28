@@ -23,6 +23,7 @@
 
 import { Effect } from 'effect';
 
+import { projection } from '../../api/define-capabilities.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -180,30 +181,26 @@ interface PackageRegistryProjectionContribution {
 }
 
 const makePackageProjectionContribution = (
-	projection: PackageRegistryProjectionContribution,
+	contribution: PackageRegistryProjectionContribution,
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
-	const key = `package/${projection.name}` as `package/${string}`;
-	return {
-		kind: 'projection',
-		event: {
-			tag: 'projection.updated',
-			kind: 'package',
+	const key = `package/${contribution.name}` as `package/${string}`;
+	return projection({
+		kind: 'package',
+		key,
+		payload: {
 			key,
-			payload: {
-				key,
-				rowKey: null,
-				name: projection.name,
-				kind: projection.kind,
-				packageId: projection.packageId,
-				upgradeCapId: projection.upgradeCapId,
-				mvrPlaceholder: projection.mvrPlaceholder,
-				sourcePath: projection.sourcePath,
-				updatedAt,
-			},
-			at: updatedAt,
+			rowKey: null,
+			name: contribution.name,
+			kind: contribution.kind,
+			packageId: contribution.packageId,
+			upgradeCapId: contribution.upgradeCapId,
+			mvrPlaceholder: contribution.mvrPlaceholder,
+			sourcePath: contribution.sourcePath,
+			updatedAt,
 		},
-	};
+		at: updatedAt,
+	});
 };
 
 // ---------------------------------------------------------------------------

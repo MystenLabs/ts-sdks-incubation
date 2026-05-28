@@ -39,10 +39,7 @@ import { describe, expect, it } from 'vitest';
 import { TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import { accountSignError } from '../../../src/plugins/account/errors.ts';
-import type {
-	AccountValue,
-	SignAndExecuteResult,
-} from '../../../src/plugins/account/service.ts';
+import type { AccountValue, SignAndExecuteResult } from '../../../src/plugins/account/service.ts';
 import { chainId } from '../../../src/substrate/brand.ts';
 import type { SuiClient } from '../../../src/plugins/sui/index.ts';
 import { signAndExecute, type ActionObjectChange } from '../../../src/plugins/action/execute.ts';
@@ -82,7 +79,8 @@ const fakeAccount = (opts: FakeAccountOpts = {}): AccountValue => {
 				},
 			};
 		});
-	const signAndExecute: AccountValue['signAndExecute'] = signAndExecuteImpl ?? defaultSignAndExecute;
+	const signAndExecute: AccountValue['signAndExecute'] =
+		signAndExecuteImpl ?? defaultSignAndExecute;
 	const withTransactionSigner: AccountValue['withTransactionSigner'] = (body) => {
 		if (events === undefined) return body({ signTransaction, signAndExecute });
 		return Effect.gen(function* () {
@@ -122,9 +120,13 @@ const makeFakeSui = (): SuiClient => {
 			client: client as unknown,
 			core: {
 				executeTransaction: () =>
-					Promise.reject(new Error('action.signAndExecute should not call executeTransaction directly')),
+					Promise.reject(
+						new Error('action.signAndExecute should not call executeTransaction directly'),
+					),
 				waitForTransaction: () =>
-					Promise.reject(new Error('action.signAndExecute should not call waitForTransaction directly')),
+					Promise.reject(
+						new Error('action.signAndExecute should not call waitForTransaction directly'),
+					),
 				getObject: (_: unknown) => Promise.resolve({}),
 				listCoins: () =>
 					Promise.resolve({
@@ -181,9 +183,9 @@ describe('action signAndExecute helper', () => {
 	it('happy path: projects digest + objectChanges (created + mutated buckets)', async () => {
 		const account = fakeAccount({
 			signAndExecuteImpl: () =>
-					Effect.succeed({
-						$kind: 'Transaction',
-						Transaction: {
+				Effect.succeed({
+					$kind: 'Transaction',
+					Transaction: {
 						digest: '5KqYxFhEWQ6q7ZyKaRYrQX9wYxxYPDLPaGNRpRiKjJ7Y',
 						effects: {},
 						objectChanges: [
@@ -201,9 +203,9 @@ describe('action signAndExecute helper', () => {
 								idOperation: 'None',
 							},
 						],
-							balanceChanges: [],
-						},
-					} satisfies SignAndExecuteResult),
+						balanceChanges: [],
+					},
+				} satisfies SignAndExecuteResult),
 		});
 		const sui = makeFakeSui();
 		const exit = await Effect.runPromiseExit(

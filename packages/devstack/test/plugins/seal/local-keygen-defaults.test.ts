@@ -27,10 +27,7 @@ describe('seal local-keygen — default version', () => {
 	});
 
 	it('caller-supplied version wins over the default', () => {
-		const resolved = resolveLocalKeygenOptions(
-			{ version: 'seal-v9.9.9' },
-			DEFAULT_SEAL_VERSION,
-		);
+		const resolved = resolveLocalKeygenOptions({ version: 'seal-v9.9.9' }, DEFAULT_SEAL_VERSION);
 		expect(resolved.version).toBe('seal-v9.9.9');
 	});
 });

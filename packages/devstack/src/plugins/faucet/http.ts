@@ -212,7 +212,7 @@ export const requestFundsOnce = (
 				}),
 			);
 		}
-	}).pipe(Effect.withSpan('faucet.requestFundsOnce'));
+	}).pipe(Effect.withSpan('devstack.plugin.faucet.requestFundsOnce'));
 
 // ---------------------------------------------------------------------------
 // Retry wrapper
@@ -308,4 +308,4 @@ export const requestFundsWithRetry = (
 					}),
 			}),
 		);
-	}).pipe(Effect.withSpan('faucet.requestFundsWithRetry'));
+	}).pipe(Effect.withSpan('devstack.plugin.faucet.requestFundsWithRetry'));

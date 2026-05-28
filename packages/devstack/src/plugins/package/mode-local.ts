@@ -373,10 +373,7 @@ export const acquireLocal = (
 			}).pipe(
 				Effect.mapError(
 					(err): ArtifactPublishError =>
-						artifactPublishError(
-							'produce-failed',
-							`package.publish ${err.phase}: ${err.message}`,
-						),
+						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
 				),
 			),
 			// Register: on EVERY cycle. Distilled doc Invariant 6. The
@@ -449,10 +446,7 @@ export const acquireLocal = (
 				// cache miss (inside `produce`) or a cache hit (here).
 				Effect.mapError(
 					(err): ArtifactPublishError =>
-						artifactPublishError(
-							'produce-failed',
-							`package.publish ${err.phase}: ${err.message}`,
-						),
+						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
 				),
 			);
 			yield* registry.set(inputs.packageName, {

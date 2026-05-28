@@ -113,6 +113,7 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 	delete: () => Effect.die('unused snapshot delete'),
 	wipe: () => Effect.die('unused snapshot wipe'),
 	prune: () => Effect.die('unused snapshot prune'),
+	recoverPendingRestore: Effect.die('unused snapshot recoverPendingRestore'),
 } satisfies SnapshotOrchestrator);
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
@@ -411,63 +412,67 @@ describe('buildProductionOrchestratorSinks', () => {
 		}),
 	);
 
-	it.effect('production post-acquire hook writes non-routable operational endpoints to manifest', () =>
-		Effect.gen(function* () {
-			const runtimeRoot = mkdtempSync(join(tmpdir(), 'runtime-composition-operational-manifest-'));
-			const layer = Layer.mergeAll(
-				sinkTestLayer,
-				layerCodegenPaths.pipe(
-					Layer.provideMerge(
-						layerCodegenRoot({
-							outputDir: join(runtimeRoot, 'generated'),
-							stackSubdir: null,
-						}),
+	it.effect(
+		'production post-acquire hook writes non-routable operational endpoints to manifest',
+		() =>
+			Effect.gen(function* () {
+				const runtimeRoot = mkdtempSync(
+					join(tmpdir(), 'runtime-composition-operational-manifest-'),
+				);
+				const layer = Layer.mergeAll(
+					sinkTestLayer,
+					layerCodegenPaths.pipe(
+						Layer.provideMerge(
+							layerCodegenRoot({
+								outputDir: join(runtimeRoot, 'generated'),
+								stackSubdir: null,
+							}),
+						),
 					),
-				),
-				Layer.succeed(MoveSummaryRunnerService)({
-					runSummary: () => Effect.die('unused Move summary'),
-				}),
-				Layer.succeed(MoveCodegenService)({
-					generate: () => Effect.die('unused Move codegen'),
-				}),
-			).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
-
-			try {
-				yield* Effect.scoped(
-					Effect.gen(function* () {
-						const state = yield* makeProjectionRef();
-						const sinks = yield* buildProductionOrchestratorSinks();
-						const hook = yield* buildProductionPostAcquireHook();
-						yield* supervise(
-							{ _tag: 'Stack', members: [operationalEndpointPlugin], options: {} },
-							identity,
-							state,
-							Context.empty(),
-							sinks,
-							undefined,
-							hook,
-						);
+					Layer.succeed(MoveSummaryRunnerService)({
+						runSummary: () => Effect.die('unused Move summary'),
 					}),
-				).pipe(Effect.provide(layer));
+					Layer.succeed(MoveCodegenService)({
+						generate: () => Effect.die('unused Move codegen'),
+					}),
+				).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 
-				const manifest = JSON.parse(
-					readFileSync(join(runtimeRoot, 'stacks', 'main', 'manifest.json'), 'utf8'),
-				) as {
-					readonly endpoints: Record<string, unknown>;
-				};
-				expect(manifest.endpoints).toEqual({
-					'test/remote-rpc#0:rpcUrl': {
-						endpointKey: 'test/remote-rpc#0:rpcUrl',
-						name: 'rpc',
-						url: 'https://rpc.example.invalid',
-						displayUrl: null,
-						wireProtocol: 'http',
-						pluginKey: 'test/remote-rpc#0',
-					},
-				});
-			} finally {
-				rmSync(runtimeRoot, { recursive: true, force: true });
-			}
-		}),
+				try {
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const state = yield* makeProjectionRef();
+							const sinks = yield* buildProductionOrchestratorSinks();
+							const hook = yield* buildProductionPostAcquireHook();
+							yield* supervise(
+								{ _tag: 'Stack', members: [operationalEndpointPlugin], options: {} },
+								identity,
+								state,
+								Context.empty(),
+								sinks,
+								undefined,
+								hook,
+							);
+						}),
+					).pipe(Effect.provide(layer));
+
+					const manifest = JSON.parse(
+						readFileSync(join(runtimeRoot, 'stacks', 'main', 'manifest.json'), 'utf8'),
+					) as {
+						readonly endpoints: Record<string, unknown>;
+					};
+					expect(manifest.endpoints).toEqual({
+						'test/remote-rpc#0:rpcUrl': {
+							endpointKey: 'test/remote-rpc#0:rpcUrl',
+							name: 'rpc',
+							url: 'https://rpc.example.invalid',
+							displayUrl: null,
+							wireProtocol: 'http',
+							pluginKey: 'test/remote-rpc#0',
+						},
+					});
+				} finally {
+					rmSync(runtimeRoot, { recursive: true, force: true });
+				}
+			}),
 	);
 });

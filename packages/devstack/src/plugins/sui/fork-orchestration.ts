@@ -48,13 +48,7 @@ export const FORK_UNSUPPORTED_SURFACES: ReadonlyArray<string> = [
 /** Wrap a Sui SDK shim with the fork guard. Property access for a
  *  blocklisted surface SYNCHRONOUSLY throws — the wire call never
  *  happens, so the fork binary stays up. */
-export type ForkGuardedSdk<Sdk extends { readonly core: object }> = Omit<Sdk, 'core'> & {
-	readonly core: Sdk['core'];
-};
-
-export const wrapWithForkGuard = <Sdk extends { readonly core: object }>(
-	sdk: Sdk,
-): ForkGuardedSdk<Sdk> => {
+export const wrapWithForkGuard = <Sdk extends { readonly core: object }>(sdk: Sdk): Sdk => {
 	const guardedCore = new Proxy(sdk.core as Record<string, unknown>, {
 		get(target, prop, receiver) {
 			if (typeof prop === 'string' && FORK_UNSUPPORTED_SURFACES.includes(prop)) {

@@ -148,10 +148,10 @@ export const resolveKnownDeploymentOptions = (
 	const publisherUrl = opts.publisherUrl ?? reg?.publisherUrl ?? null;
 	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? publisherUrl ?? null;
 
-	// Invariant 15: surface null when any URL is missing so the
-	// plugin's projection can conditionally publish the proxy tag.
-	const allUrlsPresent = aggregatorUrl !== null && publisherUrl !== null && proxyUrl !== null;
-
+	// Invariant 15: surface null per individual URL when missing so the
+	// plugin's projection can conditionally publish each tag. Previously
+	// any single missing URL nullified all three, dropping user-supplied
+	// values for the URLs they did provide.
 	return {
 		mode: 'known' as const,
 		chain: reg?.chain ?? 'sui:custom',
@@ -159,9 +159,9 @@ export const resolveKnownDeploymentOptions = (
 		stakingPoolId,
 		exchangeIds: opts.exchangeIds ?? reg?.exchangeIds ?? [],
 		nodes,
-		proxyUrl: allUrlsPresent ? proxyUrl : null,
-		aggregatorUrl: allUrlsPresent ? aggregatorUrl : null,
-		publisherUrl: allUrlsPresent ? publisherUrl : null,
+		proxyUrl,
+		aggregatorUrl,
+		publisherUrl,
 	};
 };
 

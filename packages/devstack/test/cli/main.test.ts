@@ -7,7 +7,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { runCli } from '../../src/cli/main.ts';
+import { identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
 import {
 	contributionPath,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -1145,5 +1145,60 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			stdoutSpy.mockRestore();
 			stderrSpy.mockRestore();
 		}
+	});
+
+	// Regression for the Phase B3 fix: an attached supervisor receiving
+	// `prune.requested` MUST dispatch to the lifecycle-prune orchestrator
+	// (the same code path the offline `devstack prune` verb uses), NOT to
+	// `params.snapshot.prune({})`. The snapshot-orchestrator prune only
+	// cleans the snapshot catalog; routing prune.requested there would
+	// silently leave stale containers/networks/volumes/images behind.
+	//
+	// The handler is a closed-over local in `cli/main.ts`, so this is a
+	// static-text guard against accidental regression — same style as the
+	// other source-level invariants pinned by `test/style/*`.
+	// Regression: `identityInputsFromArgv` must REJECT `--flag` with no
+	// following value AND `--flag --next-flag` (where the next token looks
+	// like a flag). Silently absorbing `--next-flag` as the value would
+	// quietly demote a downstream flag, hiding a user typo.
+	describe('identityInputsFromArgv', () => {
+		it('throws when --app has no following value', () => {
+			expect(() => identityInputsFromArgv(['--app'], {})).toThrow(/flag --app requires a value/);
+		});
+
+		it('throws when --stack is followed by another flag (typo guard)', () => {
+			expect(() => identityInputsFromArgv(['--stack', '--network', 'localnet'], {})).toThrow(
+				/flag --stack requires a value; got "--network" which looks like a flag/,
+			);
+		});
+
+		it('accepts --name=value form even when next token is a flag', () => {
+			const out = identityInputsFromArgv(['--stack=main', '--app', 'demo'], {});
+			expect(out.stack).toBe('main');
+			expect(out.app).toBe('demo');
+		});
+
+		it('falls back to env when neither --flag nor --flag=value is present', () => {
+			const out = identityInputsFromArgv([], { DEVSTACK_APP: 'envapp', DEVSTACK_STACK: 'envstack' });
+			expect(out.app).toBe('envapp');
+			expect(out.stack).toBe('envstack');
+		});
+	});
+
+	it('attached prune.requested routes to runLifecyclePrune, never params.snapshot.prune', () => {
+		const main = readFileSync(join(packageRoot, 'src/cli/main.ts'), 'utf8');
+		// Locate the IMPLEMENTATION switch case (the last occurrence — earlier
+		// ones are type-guard fall-throughs in `isEngineCommand`).
+		const caseIdx = main.lastIndexOf("case 'prune.requested':");
+		expect(caseIdx).toBeGreaterThan(0);
+		// Capture the case body up to the next `case` or `default`.
+		const tail = main.slice(caseIdx);
+		const nextCase = tail.slice(1).search(/\n\s*(case |default:)/);
+		const body = nextCase === -1 ? tail : tail.slice(0, nextCase + 1);
+		// Must invoke the lifecycle-prune orchestrator.
+		expect(body).toMatch(/runLifecyclePrune\s*\(/);
+		expect(body).toMatch(/collectLifecyclePruneInventory\s*\(/);
+		// Must NOT route to the snapshot-orchestrator prune.
+		expect(body).not.toMatch(/params\.snapshot\.prune\b/);
 	});
 });

@@ -52,8 +52,7 @@ export const eventLogLineFromEvent = (
 				level: event.error.severity === 'warn' ? 'warn' : 'error',
 				at,
 				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
-				scopeColor:
-					event.error.pluginKey === null ? 'white' : scopeColorFor(event.error.pluginKey),
+				scopeColor: event.error.pluginKey === null ? 'white' : scopeColorFor(event.error.pluginKey),
 				message: `failed: ${errorSummaryFor(event.error)}`,
 			});
 		case 'build.statusChanged':

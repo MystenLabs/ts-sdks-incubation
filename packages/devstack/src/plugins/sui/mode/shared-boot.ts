@@ -296,4 +296,3 @@ export const makeResolvedNetwork = (parts: {
 	...(parts.checkpoint !== undefined ? { checkpoint: parts.checkpoint } : {}),
 	...(parts.forkUpstream !== undefined ? { forkUpstream: parts.forkUpstream } : {}),
 });
-

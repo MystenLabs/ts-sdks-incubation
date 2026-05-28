@@ -9,13 +9,11 @@ import type { ManifestExtrasInput } from './manifest.ts';
 export interface DevstackOptions {
 	readonly stackName?: string;
 	readonly network?: NetworkConfig;
-	readonly watchPaths?: ReadonlyArray<string>;
 	readonly stateDir?: string;
 	readonly codegen?: {
 		readonly outputDir?: string;
 		readonly stackSubdir?: string | null;
 	};
-	readonly hotRestart?: boolean;
 	readonly renderer?: 'tui' | 'plain' | 'silent';
 	readonly extras?: ManifestExtrasInput;
 }

@@ -35,57 +35,55 @@ const identity: Identity = {
 };
 
 describe('supervisor hard-shutdown teardown (Bug #13)', () => {
-	it.live(
-		'in-loop teardown runs to completion before awaitShutdown resolves',
-		() =>
-			Effect.gen(function* () {
-				const finalizerRanAt = yield* Ref.make<number | null>(null);
-				const shutdownResolvedAt = yield* Ref.make<number | null>(null);
-				let tick = 0;
-				const nextTick = (): number => ++tick;
+	it.live('in-loop teardown runs to completion before awaitShutdown resolves', () =>
+		Effect.gen(function* () {
+			const finalizerRanAt = yield* Ref.make<number | null>(null);
+			const shutdownResolvedAt = yield* Ref.make<number | null>(null);
+			let tick = 0;
+			const nextTick = (): number => ++tick;
 
-				const slow = definePlugin({
-					id: 'test:slow-teardown',
-					role: 'service' as const,
-					section: 'service',
-					start: () =>
-						Effect.gen(function* () {
-							yield* Effect.addFinalizer(() =>
-								Effect.gen(function* () {
-									// Force a yield + tiny delay so any
-									// out-of-order resolution of
-									// `shutdownComplete` would record a
-									// smaller tick than the finalizer.
-									yield* Effect.yieldNow;
-									yield* Effect.sleep('10 millis');
-									yield* Ref.set(finalizerRanAt, nextTick());
-								}),
-							);
-							return { v: 'slow' as const };
-						}),
-				});
-
-				const stack: SupervisedStack = { _tag: 'Stack', members: [slow], options: {} };
-				const state = yield* makeProjectionRef();
-
-				yield* Effect.scoped(
+			const slow = definePlugin({
+				id: 'test:slow-teardown',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
 					Effect.gen(function* () {
-						const startup = yield* startSupervisor(stack, identity, state);
-						yield* startup.runInitialAcquire;
-						yield* startup.handle.registry.awaitReady(pluginKey('test:slow-teardown#0'));
-						yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
-						yield* startup.handle.awaitShutdown;
-						yield* Ref.set(shutdownResolvedAt, nextTick());
+						yield* Effect.addFinalizer(() =>
+							Effect.gen(function* () {
+								// Force a yield + tiny delay so any
+								// out-of-order resolution of
+								// `shutdownComplete` would record a
+								// smaller tick than the finalizer.
+								yield* Effect.yieldNow;
+								yield* Effect.sleep('10 millis');
+								yield* Ref.set(finalizerRanAt, nextTick());
+							}),
+						);
+						return { v: 'slow' as const };
 					}),
-				);
+			});
 
-				const finalizerTick = yield* Ref.get(finalizerRanAt);
-				const shutdownTick = yield* Ref.get(shutdownResolvedAt);
+			const stack: SupervisedStack = { _tag: 'Stack', members: [slow], options: {} };
+			const state = yield* makeProjectionRef();
 
-				expect(finalizerTick).not.toBeNull();
-				expect(shutdownTick).not.toBeNull();
-				expect(finalizerTick!).toBeLessThan(shutdownTick!);
-			}),
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					yield* startup.runInitialAcquire;
+					yield* startup.handle.registry.awaitReady(pluginKey('test:slow-teardown#0'));
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					yield* startup.handle.awaitShutdown;
+					yield* Ref.set(shutdownResolvedAt, nextTick());
+				}),
+			);
+
+			const finalizerTick = yield* Ref.get(finalizerRanAt);
+			const shutdownTick = yield* Ref.get(shutdownResolvedAt);
+
+			expect(finalizerTick).not.toBeNull();
+			expect(shutdownTick).not.toBeNull();
+			expect(finalizerTick!).toBeLessThan(shutdownTick!);
+		}),
 	);
 
 	it.effect('hardKillRequested signals shutdownComplete atomically with the fatal log', () =>

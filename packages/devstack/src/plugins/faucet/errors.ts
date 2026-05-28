@@ -132,4 +132,3 @@ export type FaucetError =
 	| FaucetBodyError
 	| FaucetStrategyMissing
 	| FaucetConfigError;
-

@@ -23,6 +23,18 @@ Highlights:
 - ARCHITECTURE.md / STYLE_GUIDE.md rewritten to describe current state (537→308, 894→477 lines).
 - New style-enforcement tests: `l4-boundary`, `no-unknown-as` (globs every plugin barrel), `plugin-boundary`, `span-attr-namespace`, `substrate/name-blindness`.
 
+Dead-code purge and substrate race fixes:
+
+- Orphan modules removed (no consumers): `orchestrators/codegen/extras.ts` (inlined into `runtime-composition.ts`); `plugins/deepbook/routable.ts` + the `DEEPBOOK_ENTRYPOINTS` aggregation; `plugins/sui/live-faucet-strategy.ts` (`suiLiveStrategy`, `LIVE_FAUCET_URLS`, `SuiLiveNetwork`, `SuiLiveStrategyOptions`); `plugins/sui/seed-objects.ts` (`SeedObjectsAccumulator`, `makeSeedObjectsAccumulator`, `SEED_OBJECTS_CAPABILITY_KEY`). The sui plugin's emitted-capability count drops from 5 to 4.
+- `plugins/walrus/faucet-strategy.ts`: `makeWalFaucetContribution` removed; `makeWalFaucetStrategy` unaffected.
+- `orchestrators/router/index.ts`: unused `STATIC_PROVIDER_FILENAME` export removed.
+- `plugins/sui/fork-orchestration.ts`: `ForkGuardedSdk<Sdk>` derived type alias removed; `wrapWithForkGuard` now returns `Sdk` directly (behavior identical).
+- Capability-sink registration race fixed: install + finalizer wrapped in `Effect.uninterruptible` so an interrupt between `Ref.modify` and `addFinalizer` cannot leak the sink past scope close.
+- Cross-process command channel short-read fix: `readSync` may short-return on NFS / cross-FS; offset advances by `bytesRead` rather than the requested length, with a clean bail on `bytesRead <= 0`.
+- Cross-process roster PID-recycle hazard fixed: `heartbeat` / `release` / `setIntent` now match holders via `(pid, hostname, startTime)` triple via a new `isOwnEntry` helper (was matching `(pid, hostname)` only).
+- Background snapshot interrupt now awaits via `Fiber.interrupt(fiber)` (was fire-and-forget `fiber.interruptUnsafe()`) so a follow-up capture can't start while the previous fiber is still inside `pauseAndCommit` / `saveImages`.
+- Repo-wide Prettier reformat.
+
 dev-wallet:
 
 - `DEVSTACK_WALLET_HTTP_PATH.EXECUTE` removed (devstack-side `/execute` endpoint deleted; the dapp-kit / dev-wallet path bypasses it and the protocol shape didn't match the Sui Wallet Standard).

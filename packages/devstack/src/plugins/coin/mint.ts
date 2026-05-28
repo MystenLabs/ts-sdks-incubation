@@ -401,7 +401,7 @@ export const performMint = (
 			fullCoinType: inputs.fullCoinType,
 		};
 	}).pipe(
-		Effect.withSpan('coin.mint', {
+		Effect.withSpan('devstack.plugin.coin.mint', {
 			attributes: {
 				[CoinSpans.mint.recipient]: inputs.recipient,
 				[CoinSpans.mint.fullCoinType]: inputs.fullCoinType,

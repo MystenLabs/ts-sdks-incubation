@@ -37,10 +37,11 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
+import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 
 import { makeCodegenable } from './codegen.ts';
-import { POSTGRES_ERROR_TAGS, postgresPluginError } from './errors.ts';
+import { POSTGRES_ERROR_TAGS, postgresPluginError, type PostgresError } from './errors.ts';
 import { makePostgresRoutable } from './routable.ts';
 import { bootPostgresService, type Postgres, type PostgresServiceOptions } from './service.ts';
 import { makeSnapshotable } from './snapshot.ts';
@@ -104,16 +105,11 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 			}).pipe(
 				// Distilled-doc § Invariants: already-typed errors must
 				// NOT be re-wrapped by the catch-all unknown handler.
-				// `catchTag` runs first; anything unknown falls into the
-				// catch-all and surfaces as `phase: 'unknown'`.
-				Effect.catchTags({
-					PostgresPluginError: Effect.fail,
-					PostgresConfigError: Effect.fail,
-					PostgresConnectionTimeout: Effect.fail,
-					DatabaseCreateFailed: Effect.fail,
-				}),
-				Effect.catch((cause) =>
-					Effect.fail(postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause)),
+				// `passthroughOrWrap` lets the POSTGRES_ERROR_TAGS union
+				// through unchanged; anything else surfaces as
+				// `phase: 'unknown'`.
+				passthroughOrWrap.for<PostgresError>()(POSTGRES_ERROR_TAGS, (cause) =>
+					postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause),
 				),
 			),
 		errorContributions: postgresErrorContributions,

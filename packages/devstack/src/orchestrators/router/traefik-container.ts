@@ -40,14 +40,19 @@ import {
 } from '../../runtime/docker/index.ts';
 import { dockerRun, dockerRunOk } from '../../runtime/docker/client.ts';
 import type { RouterProfile } from './profile.ts';
+import {
+	ROUTER_CONTAINER_SPEC_VERSION,
+	ROUTER_KIND_LABEL_VALUE,
+	ROUTER_PROFILE_LABEL,
+} from './sentinels.ts';
+
+export {
+	ROUTER_CONTAINER_SPEC_VERSION,
+	ROUTER_KIND_LABEL_VALUE,
+	ROUTER_PROFILE_LABEL,
+} from './sentinels.ts';
 
 export const TRAEFIK_DISPATCH_MOUNT_TARGET = '/etc/traefik/dispatch';
-/** Value stamped into the L1 generic `LabelKey.kind` slot for router
- *  containers. L1 is plugin-blind: the router orchestrator owns this
- *  literal. */
-export const ROUTER_KIND_LABEL_VALUE = 'router';
-export const ROUTER_PROFILE_LABEL = LabelKey.subkind;
-export const ROUTER_CONTAINER_SPEC_VERSION = '3';
 export const HOST_GATEWAY_ALIAS = 'host.docker.internal:host-gateway';
 
 /** Default Traefik image. Tag, not digest — distilled-doc open

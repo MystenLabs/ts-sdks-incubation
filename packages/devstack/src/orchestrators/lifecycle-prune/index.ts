@@ -68,6 +68,11 @@ export interface LifecyclePruneGroup {
 	readonly live: boolean;
 	readonly livePids: ReadonlyArray<number>;
 	readonly shared: boolean;
+	/** Discriminator for shared-resource groups. `'per-app-shared'`
+	 *  groups (the `_per-app_` synthetic stack) stay pinned while any
+	 *  sibling stack under the same app is live; `'router'` groups are
+	 *  auto-prunable when no app pins them. `null` for normal groups. */
+	readonly sharedKind: SharedGroupKind | null;
 	/** True when the group represents a router-shared resource set that
 	 *  is auto-prunable in non-interactive flows (`devstack prune --all`).
 	 *  Computed by the orchestrator so surfaces never recompute the
@@ -79,6 +84,12 @@ export interface LifecyclePruneGroup {
 	readonly volumes: number;
 	readonly images: number;
 }
+
+/** Kind of a shared-resource group. `'per-app-shared'` groups belong
+ *  to the `PER_APP_SHARED_STACK` synthetic stack under a real app and
+ *  stay pinned while a sibling stack is live. `'router'` groups are
+ *  router-singleton resources. */
+export type SharedGroupKind = 'per-app-shared' | 'router';
 
 export interface LifecyclePruneInventory {
 	readonly groups: ReadonlyArray<LifecyclePruneGroup>;
@@ -155,7 +166,52 @@ const emptyBucket = (): ResourceBucket => ({
 	images: 0,
 });
 
-const groupKey = (app: string, stack: string): string => `${app}/${stack}`;
+/** Public, parser-safe key for a `(app, stack)` group. Display-only —
+ *  internal grouping uses the structural `{app, stack}` tuple via the
+ *  `GroupBuckets` map below, so a slash inside `app` or `stack` cannot
+ *  produce a wrong tuple. The chosen separator (``, ASCII unit
+ *  separator) is excluded from valid Docker label values, so the
+ *  string round-trip via `splitGroupKey` is safe for inventory
+ *  consumers that need a string handle (CLI rendering, selection
+ *  membership tests). */
+const GROUP_KEY_SEPARATOR = '';
+
+export const lifecyclePruneGroupKey = (app: string, stack: string): string =>
+	`${app}${GROUP_KEY_SEPARATOR}${stack}`;
+
+/** Map keyed on `(app, stack)` tuples without string encoding. Tuple
+ *  equality is achieved by interning each `(app, stack)` pair through
+ *  a nested `app → stack → bucket` index, so the map is collision-
+ *  free even when `app` or `stack` contains a separator character. */
+class GroupBuckets {
+	private readonly buckets = new Map<string, Map<string, ResourceBucket>>();
+
+	get(identity: { readonly app: string; readonly stack: string }): ResourceBucket {
+		let perApp = this.buckets.get(identity.app);
+		if (perApp === undefined) {
+			perApp = new Map<string, ResourceBucket>();
+			this.buckets.set(identity.app, perApp);
+		}
+		let bucket = perApp.get(identity.stack);
+		if (bucket === undefined) {
+			bucket = emptyBucket();
+			perApp.set(identity.stack, bucket);
+		}
+		return bucket;
+	}
+
+	*entries(): Iterable<{
+		readonly app: string;
+		readonly stack: string;
+		readonly bucket: ResourceBucket;
+	}> {
+		for (const [app, perApp] of this.buckets) {
+			for (const [stack, bucket] of perApp) {
+				yield { app, stack, bucket };
+			}
+		}
+	}
+}
 
 const readAppStack = (
 	labels: Readonly<Record<string, string>>,
@@ -173,19 +229,6 @@ const routerStackForContainer = (
 	app: ROUTER_SHARED_APP,
 	stack: name,
 });
-
-const addBucket = (
-	buckets: Map<string, ResourceBucket>,
-	identity: { readonly app: string; readonly stack: string },
-): ResourceBucket => {
-	const key = groupKey(identity.app, identity.stack);
-	let bucket = buckets.get(key);
-	if (bucket === undefined) {
-		bucket = emptyBucket();
-		buckets.set(key, bucket);
-	}
-	return bucket;
-};
 
 const livePidsForStack = (
 	runtimeRoot: string,
@@ -215,11 +258,30 @@ const livePidsForStack = (
 	});
 };
 
-const isSharedGroup = (app: string, stack: string): boolean =>
+/** True when the group is one of the two shared shapes the
+ *  orchestrator knows about: `_per-app_` (cross-stack-per-app shared)
+ *  or the router-singleton (`ROUTER_SHARED_APP`). Surfaces consult
+ *  this instead of recomputing the predicate. */
+export const isSharedLifecyclePruneGroup = (app: string, stack: string): boolean =>
 	stack === PER_APP_SHARED_STACK || app === ROUTER_SHARED_APP;
 
-const isRouterGroup = (group: Pick<LifecyclePruneGroup, 'app' | 'stack'>): boolean =>
+const sharedKindFor = (app: string, stack: string): SharedGroupKind | null => {
+	if (app === ROUTER_SHARED_APP) return 'router';
+	if (stack === PER_APP_SHARED_STACK) return 'per-app-shared';
+	return null;
+};
+
+/** True when the group represents a router-singleton resource set.
+ *  Exported so L4 surfaces can call this rather than re-implement the
+ *  router-stack naming predicate. */
+export const isRouterLifecyclePruneGroup = (
+	group: Pick<LifecyclePruneGroup, 'app' | 'stack'>,
+): boolean =>
 	group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
+
+// Internal aliases for back-compat call sites in this file.
+const isRouterGroup = isRouterLifecyclePruneGroup;
+const isSharedGroup = isSharedLifecyclePruneGroup;
 
 // -----------------------------------------------------------------------------
 // Orchestrator entry points
@@ -240,48 +302,49 @@ export const collectLifecyclePruneInventory = (
 			{ concurrency: 'unbounded' },
 		).pipe(Effect.provide(dockerLayer), Effect.mapError(failPhase('inventory')));
 
-		const buckets = new Map<string, ResourceBucket>();
+		const buckets = new GroupBuckets();
 
 		for (const container of containers) {
 			const identity = readAppStack(container.labels);
 			if (identity === null) continue;
-			const bucket = addBucket(buckets, identity);
+			const bucket = buckets.get(identity);
 			bucket.containers += 1;
 			if (container.state === 'running') bucket.runningContainers += 1;
 		}
 		for (const container of routerContainers) {
-			const bucket = addBucket(buckets, routerStackForContainer(container.name));
+			const bucket = buckets.get(routerStackForContainer(container.name));
 			bucket.containers += 1;
 			if (container.state === 'running') bucket.runningContainers += 1;
 		}
 		for (const network of networks) {
 			const identity = readAppStack(network.labels);
 			if (identity === null) continue;
-			addBucket(buckets, identity).networks += 1;
+			buckets.get(identity).networks += 1;
 		}
 		for (const volume of volumes) {
 			const identity = readAppStack(volume.labels);
 			if (identity === null) continue;
-			addBucket(buckets, identity).volumes += 1;
+			buckets.get(identity).volumes += 1;
 		}
 		for (const image of images) {
 			const identity = readAppStack(image.labels);
 			if (identity === null) continue;
-			addBucket(buckets, identity).images += 1;
+			buckets.get(identity).images += 1;
 		}
 
 		const groups: Array<LifecyclePruneGroup> = [];
-		for (const [key, bucket] of buckets) {
-			const [app, stack] = key.split('/') as [string, string];
+		for (const entry of buckets.entries()) {
+			const { app, stack, bucket } = entry;
 			const routerGroup = app === ROUTER_SHARED_APP;
 			const livePids = routerGroup ? [] : yield* livePidsForStack(options.runtimeRoot, stack);
 			groups.push({
-				key,
+				key: lifecyclePruneGroupKey(app, stack),
 				app,
 				stack,
 				live: routerGroup ? bucket.runningContainers > 0 : livePids.length > 0,
 				livePids,
 				shared: isSharedGroup(app, stack),
+				sharedKind: sharedKindFor(app, stack),
 				autoPrunable: isRouterGroup({ app, stack }),
 				containers: bucket.containers,
 				runningContainers: bucket.runningContainers,
@@ -305,6 +368,58 @@ const selectedGroups = (
 ): ReadonlyArray<LifecyclePruneGroup> => {
 	const selected = new Set(selection.groupKeys);
 	return inventory.groups.filter((group) => selected.has(group.key));
+};
+
+/** Default resource scope for the lifecycle-prune orchestrator —
+ *  containers + networks + volumes, never images. Surfaces consume
+ *  this directly so the default never drifts between L3 and L4. */
+export const DEFAULT_LIFECYCLE_PRUNE_RESOURCES: LifecyclePruneResourceScope = {
+	containers: true,
+	networks: true,
+	volumes: true,
+	images: false,
+};
+
+/** Apps with at least one live non-shared group — their `_per-app_`
+ *  shared resources stay pinned because something under the app is
+ *  still running. Exported so L4 surfaces consume the orchestrator's
+ *  pinning predicate. */
+export const lifecyclePruneAppsWithLiveSiblings = (
+	inventory: LifecyclePruneInventory,
+): ReadonlySet<string> => {
+	const apps = new Set<string>();
+	for (const group of inventory.groups) {
+		if (!group.shared && group.live) apps.add(group.app);
+	}
+	return apps;
+};
+
+const groupHasResource = (
+	group: LifecyclePruneGroup,
+	resources: LifecyclePruneResourceScope,
+): boolean =>
+	(resources.containers && group.containers > 0) ||
+	(resources.networks && group.networks > 0) ||
+	(resources.volumes && group.volumes > 0) ||
+	(resources.images && group.images > 0);
+
+/** Default selection: every non-live group whose shared shape is
+ *  prunable in non-interactive flows. Surfaces and the live-supervisor
+ *  command handler share this so the orchestrator owns the policy. */
+export const defaultLifecyclePruneSelection = (
+	inventory: LifecyclePruneInventory,
+	resources: LifecyclePruneResourceScope = DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+): ReadonlyArray<string> => {
+	const pinned = lifecyclePruneAppsWithLiveSiblings(inventory);
+	const keys: string[] = [];
+	for (const group of inventory.groups) {
+		if (group.live) continue;
+		if (!groupHasResource(group, resources)) continue;
+		if (group.sharedKind === 'per-app-shared' && pinned.has(group.app)) continue;
+		if (group.shared && !group.autoPrunable && group.sharedKind !== 'per-app-shared') continue;
+		keys.push(group.key);
+	}
+	return keys;
 };
 
 export const runLifecyclePrune = (

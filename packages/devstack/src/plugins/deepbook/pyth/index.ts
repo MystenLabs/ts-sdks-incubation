@@ -20,6 +20,7 @@ import {
 	executeSuiTx,
 	formatExecutedFailure,
 } from '../../../substrate/runtime/sui-execute/index.ts';
+import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
 import {
 	chainId as brandChainId,
 	contentHash as brandContentHash,
@@ -121,13 +122,15 @@ const buildVerifyProbe = (
 	cached: CachedPythHandle,
 ): Effect.Effect<CachedPythHandle | null, never> =>
 	Effect.gen(function* () {
-		for (const feed of cached.feeds) {
-			const raw = yield* Effect.tryPromise({
-				try: () => sdk.core.getObject({ objectId: feed.priceInfoObjectId }),
-				catch: () => null,
-			}).pipe(Effect.catch(() => Effect.succeed(null)));
-			if (raw === null || raw === undefined) return null;
-		}
+		const results = yield* probeManyLenient(
+			cached.feeds.map((feed) =>
+				Effect.tryPromise({
+					try: () => sdk.core.getObject({ objectId: feed.priceInfoObjectId }),
+					catch: () => null,
+				}).pipe(Effect.catch(() => Effect.succeed(null))),
+			),
+		);
+		if (results.some((raw) => raw === null || raw === undefined)) return null;
 		return cached;
 	});
 

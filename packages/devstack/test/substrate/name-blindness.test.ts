@@ -111,7 +111,8 @@ const ALLOWED_FILES: ReadonlyArray<{
 		// refers to the host-side filesystem tar (substrate primitive
 		// `host-tree-tar`), not the host-service plugin.
 		path: 'src/substrate/events.ts',
-		reason: 'capturing-host-tree progress phase = host-tree-tar primitive, not host-service plugin.',
+		reason:
+			'capturing-host-tree progress phase = host-tree-tar primitive, not host-service plugin.',
 	},
 	{
 		// `accounts: AccountProjection[]`, `packages: PackageProjection[]`,
@@ -154,9 +155,7 @@ const ALLOWED_PATHS = new Set(ALLOWED_FILES.map((entry) => entry.path));
  *  code uses real comments, not multi-line string contents that look
  *  like comments. */
 const stripComments = (source: string): string =>
-	source
-		.replace(/\/\*[\s\S]*?\*\//g, ' ')
-		.replace(/\/\/[^\n]*/g, ' ');
+	source.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
 
 const collectSubstrateFiles = (dir: string, acc: Array<string>): Array<string> => {
 	for (const entry of readdirSync(dir)) {

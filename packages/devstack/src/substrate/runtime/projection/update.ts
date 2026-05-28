@@ -33,6 +33,7 @@ import type {
 	SubscribableState,
 } from '../../projection.ts';
 import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
 
 // -----------------------------------------------------------------------------
@@ -120,24 +121,24 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 			// via the `null` return.
 			if (event.kind === 'account') {
 				const decoded = tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
-				// `event.payload` (not `decoded`) is forwarded once the schema
-				// has confirmed the structural shape — the runtime brand
+				// `event.payload` (not `decoded.value`) is forwarded once the
+				// schema has confirmed the structural shape — the runtime brand
 				// (`account/${string}`) is TS-only and Schema can't express
 				// it. The cast is justified by the preceding decode, not a
 				// `Schema.decodeUnknownSync(...) as A` bare-cast (§20).
-				return decoded === null
-					? withTouched({})
-					: withTouched({
+				return decoded.ok
+					? withTouched({
 							accounts: upsertAccount(state.accounts, event.payload as AccountProjection),
-						});
+						})
+					: withTouched({});
 			}
 			if (event.kind === 'package') {
 				const decoded = tryDecodeProjectionPayload(PackageProjectionSchema, event.payload);
-				return decoded === null
-					? withTouched({})
-					: withTouched({
+				return decoded.ok
+					? withTouched({
 							packages: upsertPackage(state.packages, event.payload as PackageProjection),
-						});
+						})
+					: withTouched({});
 			}
 			return withTouched({});
 
@@ -321,10 +322,10 @@ export const updateRef = (
 			if (event.kind === 'account' || event.kind === 'package') {
 				const schema = event.kind === 'account' ? AccountProjectionSchema : PackageProjectionSchema;
 				const decoded = tryDecodeProjectionPayload(schema, event.payload);
-				if (decoded === null) {
+				if (!decoded.ok) {
 					yield* Effect.logWarning(
 						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
-					);
+					).pipe(Effect.annotateLogs({ [SpanAttr.errorMessage]: String(decoded.cause) }));
 				}
 			}
 		}
@@ -357,14 +358,16 @@ export const updateRef = (
  * `package/${string}`) are TS-only and the decoded copy would strip
  * them. The schema acts as a structural guard only.
  */
+type DecodeResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly cause: unknown };
+
 const tryDecodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
 	schema: S,
 	payload: unknown,
-): S['Type'] | null => {
+): DecodeResult<S['Type']> => {
 	try {
-		return Schema.decodeUnknownSync(schema)(payload);
-	} catch {
-		return null;
+		return { ok: true, value: Schema.decodeUnknownSync(schema)(payload) };
+	} catch (cause) {
+		return { ok: false, cause };
 	}
 };
 

@@ -18,8 +18,7 @@
  *  the prewarmed stack fixture to. In-spec helpers read from here when
  *  present; absent => global-setup didn't run (user opted out via
  *  `globalSetup: null`). */
-export const PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY =
-	'__devstackPlaywrightStackContext__' as const;
+export const PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY = '__devstackPlaywrightStackContext__' as const;
 
 /** Prewarmed stack fixture shape. Mirrors what global-setup builds from
  *  the manifest read; in-spec helpers consume it as a frozen view. */

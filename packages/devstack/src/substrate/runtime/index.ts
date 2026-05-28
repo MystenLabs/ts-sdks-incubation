@@ -6,6 +6,7 @@
 export * from './atomic-write.ts';
 export * from './config-validation.ts';
 export * from './mode-errors.ts';
+export * from './passthrough-or-wrap.ts';
 export * from './cross-process-lock.ts';
 export * from './errors.ts';
 export * from './http-probe.ts';

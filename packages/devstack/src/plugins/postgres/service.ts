@@ -36,6 +36,7 @@
 //     databases at the runtime default.
 
 import { Duration, Effect, type Scope } from 'effect';
+import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
@@ -186,8 +187,11 @@ const resolveImageContextPath = (): string => {
 	// `images/postgres/`.
 	const here = new URL(import.meta.url);
 	const ctxUrl = new URL('../../../images/postgres/', here);
-	// File: URLs need decoding back to a host path for the docker CLI.
-	return decodeURIComponent(ctxUrl.pathname);
+	// `fileURLToPath` handles the platform-specific decode (the
+	// `file:///C:/...` → `C:\...` round-trip on Windows, plus
+	// percent-decoding everywhere). `decodeURIComponent(pathname)`
+	// would leave the leading `/` on Windows paths.
+	return fileURLToPath(ctxUrl);
 };
 
 /** Build a `ContainerExec` view bound to a specific container handle.
@@ -367,7 +371,7 @@ export const bootPostgresService = (
 
 		return { resolved, handle, containerHandle };
 	}).pipe(
-		Effect.withSpan('postgres.boot', {
+		Effect.withSpan('devstack.plugin.postgres.boot', {
 			attributes: {
 				[PostgresSpans.name]: opts.name ?? 'postgres',
 				[PostgresSpans.version]: opts.version ?? DEFAULT_VERSION,

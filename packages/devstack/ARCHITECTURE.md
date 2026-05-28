@@ -23,7 +23,7 @@ Every component lives in exactly one layer. The allowed-imports column is the co
 ### Layer composition lives at L3, not L0
 
 L0 imports external libs only. Layer-composition seams (`runStackEffect` and friends that assemble
-L0+L1+L2 into a runnable stack) are L3 work in `orchestrators/runtime-composition/`. They can't live
+L0+L1+L2 into a runnable stack) are L3 work in `orchestrators/runtime-composition.ts`. They can't live
 in `substrate/` because they import L1 by definition. If a "substrate" file imports
 `runtime/docker/`, it's mislocated.
 
@@ -73,7 +73,7 @@ Declared in `src/contracts/` as a discriminated `CapabilityDecl` union (one decl
 | **NetworkResolver**     | `contracts/network-resolver.ts`     | Chain id / network identity / funds-ready gate.                                                                                                                 | One per chain.                                                        |
 | **ChainProbe**          | `contracts/chain-probe.ts`          | Chain reachability + facts (lenient verify pattern).                                                                                                            | One per chain.                                                        |
 | **StrategyContributor** | `contracts/strategy-contributor.ts` | Pluggable strategy injection.                                                                                                                                   | Faucet strategies, account variants, custom plugin extensions.        |
-| **Projection**          | `contracts/projection.ts`           | Read-model update emitted after acquisition.                                                                                                                    | Plugins publishing UI/persisted state independent of strategy values. |
+| **Projection**          | `contracts/projection.ts`           | Read-model update emitted after acquisition. Verbose form `projection({ event: { tag: 'projection.updated', kind, key, payload, at } })` exists for full control; shorthand `projection({ kind, key, payload })` stamps `tag` + `at` for the common case.                                                                                                                    | Plugins publishing UI/persisted state independent of strategy values. |
 
 Infrastructure contracts (outside the capability-decl union):
 

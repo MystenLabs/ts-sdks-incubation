@@ -138,10 +138,11 @@ export const requestBackgroundSnapshotInterrupt = (
 				? [state.fiber, { tag: 'idle' } as SnapshotCaptureTaskState]
 				: [null, state],
 		);
+		// Await the interrupt so a follow-up snapshot capture cannot begin
+		// while the previous fiber is still inside `pauseAndCommit` /
+		// `saveImages`. Mirrors `requestBackgroundStackRestartInterrupt`.
 		if (fiber !== null) {
-			yield* Effect.sync(() => {
-				fiber.interruptUnsafe();
-			});
+			yield* Fiber.interrupt(fiber);
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'));
 

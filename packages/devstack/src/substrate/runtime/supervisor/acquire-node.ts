@@ -17,14 +17,9 @@ import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
-import {
-	resolvePluginDependencies,
-	type AcquireContext,
-} from '../../plugin.ts';
+import { resolvePluginDependencies, type AcquireContext } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
-import {
-	type CapabilitySinksShape,
-} from '../capability-sinks/index.ts';
+import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
 import {
 	annotateOp,

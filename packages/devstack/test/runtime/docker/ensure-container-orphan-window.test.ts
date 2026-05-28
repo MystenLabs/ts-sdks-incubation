@@ -19,14 +19,7 @@
 // running by the fake docker; we assert that despite the failure, the
 // scope-close finalizer fires `docker stop` against the container.
 
-import {
-	chmodSync,
-	mkdirSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -43,10 +36,7 @@ import {
 	layerDockerHost,
 	type DockerHost,
 } from '../../../src/runtime/docker/client.ts';
-import {
-	ensureContainer,
-	type PerNameLockState,
-} from '../../../src/runtime/docker/container.ts';
+import { ensureContainer, type PerNameLockState } from '../../../src/runtime/docker/container.ts';
 import { StackPathsService, type StackPaths } from '../../../src/substrate/runtime/paths.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
@@ -101,7 +91,10 @@ const stackPathsFor = (stackRoot: string, rosterFile: string): StackPaths => {
 	};
 };
 
-const stackPathsLayer = (stackRoot: string, rosterBlocker: string): Layer.Layer<StackPathsService> =>
+const stackPathsLayer = (
+	stackRoot: string,
+	rosterBlocker: string,
+): Layer.Layer<StackPathsService> =>
 	Layer.succeed(StackPathsService)(stackPathsFor(stackRoot, rosterBlocker));
 
 describe('ensureContainer orphan-container window', () => {
@@ -201,8 +194,8 @@ describe('ensureContainer orphan-container window', () => {
 				// finalizer was armed BEFORE addClaim, so scope close must
 				// have run `docker stop` on the container.
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
-				const stopInvocations = lines.filter((line) =>
-					line.startsWith('stop ') && line.includes('devstack-orphan'),
+				const stopInvocations = lines.filter(
+					(line) => line.startsWith('stop ') && line.includes('devstack-orphan'),
 				);
 				expect(stopInvocations.length).toBeGreaterThanOrEqual(1);
 			} finally {

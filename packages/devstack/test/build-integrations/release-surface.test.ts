@@ -215,7 +215,9 @@ describe('release surface static checks', () => {
 		const substrate = readText('src/substrate/index.ts');
 
 		for (const leaked of [
-			'PluginErrorContribution',
+			// `PluginErrorContribution` is intentionally part of the public
+			// plugin-author vocabulary — custom plugin authors need it to
+			// declare `errorContributions` (plugin-author-symmetry invariant).
 			'LifecycleFact',
 			'chainProbeFor',
 			'ERROR_TAGS',
@@ -275,6 +277,11 @@ describe('release surface static checks', () => {
 	it('pins build-integration manifest version to the writer version', () => {
 		const writer = readText('src/substrate/runtime/manifest/manifest.ts');
 		const reader = readText('src/build-integrations/runtime/read-stack-context.ts');
+		// L5 read path never reaches into substrate directly; the manifest
+		// types flow through the `manifest-types.ts` bridge per the L5/
+		// substrate boundary. The bridge itself MUST re-export from the
+		// writer's substrate module so reader + writer share one type.
+		const bridge = readText('src/build-integrations/runtime/manifest-types.ts');
 
 		const writerVersion = writer.match(/CURRENT_MANIFEST_VERSION = (\d+) as const/);
 		const readerVersion = reader.match(/CONSUMER_MANIFEST_VERSION = (\d+) as const/);
@@ -283,6 +290,7 @@ describe('release surface static checks', () => {
 		expect(readerVersion?.[1]).toBe(writerVersion?.[1]);
 		expect(reader).toContain('ManifestEnvelopeSchema');
 		expect(reader).toContain('type ManifestEnvelope');
-		expect(reader).toContain('../../substrate/manifest.ts');
+		expect(reader).toContain("from './manifest-types.ts'");
+		expect(bridge).toContain('../../substrate/manifest.ts');
 	});
 });

@@ -25,6 +25,7 @@
 //   - 25: ubuntu:24.04 base — handled in the Dockerfile.
 
 import { Effect, type Scope } from 'effect';
+import { fileURLToPath } from 'node:url';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
@@ -63,9 +64,13 @@ export interface WalrusCargoImageResolved {
 // Runtime resolver
 // ---------------------------------------------------------------------------
 
-/** Resolve to the on-disk path of the vendored Dockerfile context. */
+/** Resolve to the on-disk path of the vendored Dockerfile context.
+ *  `fileURLToPath` normalises the URL → host-path conversion across
+ *  platforms (Windows `file:///C:/...` → `C:\...`; POSIX strips the
+ *  scheme and percent-decodes). Reading `.pathname` directly would
+ *  leave the leading `/` on Windows. */
 const vendoredDockerfileContext = (): string =>
-	new URL('../../../../images/walrus/', import.meta.url).pathname;
+	fileURLToPath(new URL('../../../../images/walrus/', import.meta.url));
 
 /** Resolve the walrus image. Path (a) trusts an env-override tag; path
  *  (b) builds the vendored Dockerfile via `runtime.ensureImage`. */
@@ -119,4 +124,3 @@ export const resolveCargoImage = (
 			},
 		}),
 	);
-

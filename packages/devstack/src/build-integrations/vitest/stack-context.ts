@@ -17,11 +17,15 @@ import {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	type ManifestEnvelope,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
-import type { ManifestEnvelope } from '../../substrate/manifest.ts';
 import { VITEST_ENV_VARS } from './env.ts';
-import { VitestManifestNotFoundError, VitestManifestShapeError } from './errors.ts';
+import {
+	VitestManifestNotFoundError,
+	VitestManifestShapeError,
+	VitestManifestVersionMismatchError,
+} from './errors.ts';
 
 /** Read-only projection over the live manifest, scoped to the vitest
  *  surface's needs. The full envelope is reconstructed (`manifest`)
@@ -123,14 +127,27 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 			return undefined;
 		}
 		if (err instanceof ManifestShapeError) {
-			// The runtime tags both decode-failure and version-mismatch as
-			// `phase: 'parse' | 'shape' | 'version'`. The vitest error
-			// union exposes `parse` and `shape`; map `version` onto
-			// `shape` with a recovery hint that names the version-bump
-			// recipe.
-			const phase: 'parse' | 'shape' = err.phase === 'parse' ? 'parse' : 'shape';
+			// The runtime tags decode-failure, structural drift, and
+			// version-mismatch as `phase: 'parse' | 'shape' | 'version'`.
+			// We surface them as TWO distinct error tags so consumers can
+			// `catchTag` independently — the recovery actions diverge:
+			//
+			//   - parse/shape → regenerate the manifest (the file is wrong)
+			//   - version     → upgrade the consumer dependency (your
+			//                   build and the supervisor are out of sync)
+			if (err.phase === 'version') {
+				throw new VitestManifestVersionMismatchError({
+					path: err.path,
+					message: err.message,
+					recovery:
+						`upgrade @mysten-incubation/devstack to a build that matches the ` +
+						`supervisor's manifestVersion, or run \`devstack up\` to regenerate ` +
+						`the manifest with this consumer's version.`,
+					cause: err,
+				});
+			}
 			throw new VitestManifestShapeError({
-				phase,
+				phase: err.phase,
 				path: err.path,
 				message: err.message,
 				recovery:

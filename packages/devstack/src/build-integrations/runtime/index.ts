@@ -59,6 +59,8 @@ export {
 	BUILT_IN_ENDPOINT_ALIASES,
 	DEFAULT_ROUTER_ENTRYPOINT_PORT,
 	builtInConventionalRoutes,
+	conventionalRoutesFromManifest,
+	conventionalRoutesPreferringManifest,
 	resolveBuiltInEndpointAlias,
 } from './conventional-routes.ts';
 export {
@@ -72,3 +74,19 @@ export {
 	type ManifestDiscoveryPhase,
 	type ManifestShapePhase,
 } from './errors.ts';
+export {
+	WalletHttpPath,
+	WALLET_AUTH_HEADER,
+	WALLET_BEARER_PREFIX,
+	WALLET_ENDPOINT_ALIAS,
+	WALLET_ENDPOINT_NAME,
+	WALLET_PROTOCOL_PREFIX,
+	WALLET_TOKEN_FRAGMENT_KEY,
+	WALLET_TOKEN_HEX_LENGTH,
+	type WalletHttpPathValue,
+} from './wallet-paths.ts';
+export {
+	ManifestEnvelopeSchema,
+	type ManifestEnvelope,
+	type EndpointEntry,
+} from './manifest-types.ts';

@@ -20,7 +20,7 @@ import {
 	layerCodegenOrchestrator,
 	type Codegenable,
 } from './codegen/service.ts';
-import { makeExtrasCodegenable } from './codegen/extras.ts';
+import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import {
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
@@ -56,6 +56,7 @@ import { operationalEndpointEventsFromResolvedValue } from '../substrate/runtime
 import {
 	resolveManifestExtras,
 	type EndpointEntry,
+	type ManifestExtras,
 	type ManifestExtrasInput,
 } from '../substrate/manifest.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
@@ -152,6 +153,22 @@ const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefin
 	const target = outputDir ?? 'src/generated';
 	return isAbsolute(target) ? target : resolve(appRoot, target);
 };
+
+/** Codegenable wrapping the resolved manifest-extras blob into a
+ *  generated `extras.ts` for app-side consumption. Single-callsite
+ *  helper — declared here to keep the orchestrator's view of the
+ *  contribution self-contained. */
+const makeExtrasCodegenable = (extras: ManifestExtras): CodegenableDecl<'app-extras'> => ({
+	kind: 'codegenable',
+	emitterName: 'app-extras',
+	outputPath: 'extras.ts',
+	sensitive: true,
+	emit: (ctx) =>
+		Effect.sync(() => {
+			ctx.exportConst('extras', extras);
+			return ctx.done();
+		}),
+});
 
 export const layerProductionOrchestrators = (router: ProductionRouterOptions = {}) => {
 	const profile = router.profile ?? productionRouterProfile();
@@ -384,9 +401,7 @@ const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {
  *  (the user-supplied `extras` factory invokes it synchronously); the
  *  Effect runtime captures it as a tagged defect that the
  *  cascade-formatter projects via `_tag`. */
-export class ManifestExtrasLookupError extends Data.TaggedError(
-	'ManifestExtrasLookupError',
-)<{
+export class ManifestExtrasLookupError extends Data.TaggedError('ManifestExtrasLookupError')<{
 	readonly kind: 'unknown-resource' | 'unresolved-resource';
 	readonly resourceId: string;
 }> {}

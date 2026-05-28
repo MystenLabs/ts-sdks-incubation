@@ -31,12 +31,13 @@ Match the style of the subsystem boundary that owns the value:
 
 1. L2 plugins and public contracts → plain structural `_tag` interfaces + factories.
 2. Schema-bearing substrate / orchestrator failures → `Schema.TaggedErrorClass`.
-3. Runtime adapters, CLI / cross-process / observability, per-integration L5 errors → `Data.TaggedError`.
-4. `build-integrations/runtime` synchronous reader errors → plain `Error` subclasses. Per-integration
-   Vitest / Playwright / Browser errors may use `Data.TaggedError`.
-5. Orchestrator failures never raise plain `new Error(...)` — phase classifiers pattern-match by tag.
-   `cause instanceof Error && cause.message.includes(...)` in an orchestrator is a violation; add a
-   `kind` field to the upstream tagged error and switch on it.
+3. Runtime adapters, CLI / cross-process / observability, per-integration L5 errors →
+   `Data.TaggedError`.
+4. `build-integrations/runtime` synchronous reader errors → plain `Error` subclasses.
+   Per-integration Vitest / Playwright / Browser errors may use `Data.TaggedError`.
+5. Orchestrator failures never raise plain `new Error(...)` — phase classifiers pattern-match by
+   tag. `cause instanceof Error && cause.message.includes(...)` in an orchestrator is a violation;
+   add a `kind` field to the upstream tagged error and switch on it.
 
 Rules across all four styles:
 
@@ -45,13 +46,13 @@ Rules across all four styles:
   dispatches on. Tagged errors cover only transport / lifecycle failures (sign refused, RPC
   unreachable, finality timeout). The error channel is for "the operation couldn't proceed"; the
   return channel for "the operation produced an outcome — here's which".
-- Phase enums describe WHAT STEP failed, not WHAT KIND OF FAILURE happened. Overloading a phase
-  with multiple distinct failure semantics is a violation — split into discrete phases.
+- Phase enums describe WHAT STEP failed, not WHAT KIND OF FAILURE happened. Overloading a phase with
+  multiple distinct failure semantics is a violation — split into discrete phases.
 - One `_tag` literal per logical error type across the whole package — no duplicates.
 - `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits. Plain-interface
   plugins use `cause?: unknown`.
-- Tag naming: PascalCase. Suffix `Error` for "the error a caller catches"
-  (`WalletBootError`, `SealError`); unsuffixed for "the failure event variant" (`DaemonUnreachable`).
+- Tag naming: PascalCase. Suffix `Error` for "the error a caller catches" (`WalletBootError`,
+  `SealError`); unsuffixed for "the failure event variant" (`DaemonUnreachable`).
 - Plugin author-facing errors must be surfaceable via `Effect.catchTag` / `catchTags` — never rely
   on `instanceof`.
 - Plugins must not silently drop errors. `Schema.decodeUnknownSync(...) as A` bare-cast is banned.
@@ -93,20 +94,20 @@ The "no inline validation in parallel agents" memory directive applies: orchestr
 ## 5. No scaffold debt
 
 - No phase markers, no `<unresolved-*>` sentinel placeholders, no "will replace once Y lands".
-- No `as never` / `as any` / `as unknown as ...` at the user-facing surface. Plugin barrels +
-  `api/` have a sanctioned-cast manifest (`test/style/no-unknown-as.test.ts`) tracking the
-  per-file counts + the reason each cast persists; adding a cast at one of those files (or
-  removing one) requires updating the manifest. Substrate / runtime / orchestrator code is out of
-  scope — those layers have their own decode + typed-error discipline (§2 + §20).
+- No `as never` / `as any` / `as unknown as ...` at the user-facing surface. Plugin barrels + `api/`
+  have a sanctioned-cast manifest (`test/style/no-unknown-as.test.ts`) tracking the per-file
+  counts + the reason each cast persists; adding a cast at one of those files (or removing one)
+  requires updating the manifest. Substrate / runtime / orchestrator code is out of scope — those
+  layers have their own decode + typed-error discipline (§2 + §20).
 - Code either WORKS or DOESN'T EXIST. No orphan exports waiting for a wiring layer.
 - Effect Service tag identifiers must use the current package namespace (`'@devstack/...'`).
 - Sentinel literals at resolved-value surfaces (`'<...>'`, `'<TODO-fill-me>'`,
   `'<cache-hit-not-rehydrated>'`) are scaffold debt. Fail at the factory (typed error or
   `Effect.fail`) or omit the field entirely.
 
-**`noUnusedLocals` quirk:** TypeScript's `noUnusedLocals` is strict — an underscore prefix
-exempts only function parameters, not top-level locals. For unused locals retained for
-type-positional or design-comment reasons, use a trailing `void <name>;` line.
+**`noUnusedLocals` quirk:** TypeScript's `noUnusedLocals` is strict — an underscore prefix exempts
+only function parameters, not top-level locals. For unused locals retained for type-positional or
+design-comment reasons, use a trailing `void <name>;` line.
 
 ---
 
@@ -127,19 +128,19 @@ type-positional or design-comment reasons, use a trailing `void <name>;` line.
 - Per-instance resource id templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
   `action:<name>`, `deepbook/<name>`. Mixing `/` vs `:` separators is intentional per plugin
   convention; do not normalize.
-- File names: kebab-case. Effect Service module shape commonly:
-  `{ index, layer, service }.ts` when nontrivial.
-- Effect `Layer` exports use the `layerXxx` prefix (`layerLogger`,
-  `layerCrossProcessLockFlock`, `layerProductionOrchestrators`). New code follows the prefix
-  shape; suffix-shape exports are renamed on touch.
+- File names: kebab-case. Effect Service module shape commonly: `{ index, layer, service }.ts` when
+  nontrivial.
+- Effect `Layer` exports use the `layerXxx` prefix (`layerLogger`, `layerCrossProcessLockFlock`,
+  `layerProductionOrchestrators`). New code follows the prefix shape; suffix-shape exports are
+  renamed on touch.
 
 **`PluginKey` derivation** (`lifecycle/dep-graph.ts:mintKey`):
 
 - Plugins that need a stable lifecycle key declare `pluginKey: PluginKey | string` in plugin
   metadata; the dep-graph reads it verbatim. Local service factories choose the key shape
   (`seal:${name}`, `walrus:${name}`).
-- Plugins without a declared key mint `${member.id}#${ordinal}` where `ordinal` is the position
-  in the surrounding member tuple. The `#N` suffix disambiguates two members providing the same
+- Plugins without a declared key mint `${member.id}#${ordinal}` where `ordinal` is the position in
+  the surrounding member tuple. The `#N` suffix disambiguates two members providing the same
   resource id.
 - Reserve declared keys for long-lived services whose row identity must survive member reordering.
 
@@ -147,26 +148,26 @@ type-positional or design-comment reasons, use a trailing `void <name>;` line.
 
 ## 7. Imports
 
-- **Plugin A may not import from Plugin B's internal modules.** Cross-plugin imports go through
-  the target plugin's `index.ts` barrel. The three documented universal buses (Sui, Account,
+- **Plugin A may not import from Plugin B's internal modules.** Cross-plugin imports go through the
+  target plugin's `index.ts` barrel. The three documented universal buses (Sui, Account,
   host-service — see ARCHITECTURE.md) flow through barrels too.
-- **Shared cross-plugin contract types live in `src/contracts/`.** When two plugins need to agree
-  on a shape that neither owns, lift the type to a substrate-neutral file. Plugin barrels may
-  re-export for ergonomics (often with a narrowed generic).
+- **Shared cross-plugin contract types live in `src/contracts/`.** When two plugins need to agree on
+  a shape that neither owns, lift the type to a substrate-neutral file. Plugin barrels may re-export
+  for ergonomics (often with a narrowed generic).
 - **Substrate is name-blind.** Substrate code does not mention plugin names.
-- **L1 (`runtime/docker/*`) labels carry generic `kind` / `subkind` / `specVersion` slots.**
-  Never add orchestrator-named label keys or sweep helpers (`listDevstackRouterContainers`) to
-  L1. The router orchestrator owns the literal `'router'` it stamps; the generic
+- **L1 (`runtime/docker/*`) labels carry generic `kind` / `subkind` / `specVersion` slots.** Never
+  add orchestrator-named label keys or sweep helpers (`listDevstackRouterContainers`) to L1. The
+  router orchestrator owns the literal `'router'` it stamps; the generic
   `listDevstackContainersByKind(...)` helpers stay plugin-blind.
-- **Substrate must not depend on capability-contract names either.** The supervisor's dispatch
-  loop is kind-blind and routes contributions through `CapabilitySinks.dispatch(item, ctx)`.
-- **L2 plugins must not import L3 orchestrators.** When an orchestrator helper turns out to be
-  pure / substrate-blind and L2 needs it (canonical case: URL composition + routed-hostname
-  minting), lift the pure logic into `substrate/runtime/` and have the orchestrator re-export or
-  adapt for its own callers.
-- **Orchestrators are plugin-name-blind.** No L3 may branch on an `emitterName` / plugin-id
-  literal or invoke a CLI binary named after a plugin. Aggregate cross-plugin renderings live in
-  plugin contributors via `CodegenableDecl.aggregate.{bucket, project}`. Domain subprocesses (e.g.
+- **Substrate must not depend on capability-contract names either.** The supervisor's dispatch loop
+  is kind-blind and routes contributions through `CapabilitySinks.dispatch(item, ctx)`.
+- **L2 plugins must not import L3 orchestrators.** When an orchestrator helper turns out to be pure
+  / substrate-blind and L2 needs it (canonical case: URL composition + routed-hostname minting),
+  lift the pure logic into `substrate/runtime/` and have the orchestrator re-export or adapt for its
+  own callers.
+- **Orchestrators are plugin-name-blind.** No L3 may branch on an `emitterName` / plugin-id literal
+  or invoke a CLI binary named after a plugin. Aggregate cross-plugin renderings live in plugin
+  contributors via `CodegenableDecl.aggregate.{bucket, project}`. Domain subprocesses (e.g.
   `sui move summary`) live in the plugin (the orchestrator references an abstract
   `MoveSummaryRunnerService`).
 - **L4 surfaces vs. `cli/main.ts`-adjacent infrastructure.** `cli/main.ts`-side modules
@@ -194,13 +195,17 @@ type-positional or design-comment reasons, use a trailing `void <name>;` line.
   `<primitive>/{ index, layer, service }.ts`.
 - Plugin barrel (`plugins/<name>/index.ts`) re-exports only what is user-public. Plugin internals
   stay behind package-local imports unless an explicit package export exposes them.
-- One capability decl per file when nontrivial; `contracts/index.ts` re-exports.
+- One capability decl per file when nontrivial. Contract types reach users only through the root
+  barrel (`src/index.ts`); there is no `contracts/index.ts` barrel — package-internal callers import
+  the per-decl module directly.
 - Renderer modules use `.tsx` only when JSX is used. Ink dependencies must be lazy-imported.
 
 **File length is a smell, not a threshold.** If a file is hard to navigate, factor by
-responsibility. If it's coherent, leave it. Don't split because a file crossed a number.
+responsibility. If it's coherent, leave it. Don't split because a file crossed a number. No lint
+rule enforces a numeric LOC ceiling; review judgement is the gate.
 
-Reference shape for genuine multi-concern decomposition: `substrate/runtime/supervisor/`.
+Reference shape for genuine multi-concern decomposition: `substrate/runtime/supervisor/` (each
+file scoped to one concern, currently each fits in a single editor screen).
 
 ```
 supervisor/
@@ -218,8 +223,8 @@ supervisor/
 └── wiring.ts                 — substrate-wiring helpers + OptionalService<T>
 ```
 
-When splitting a monolith, group locals into a typed shared-state record rather than threading
-every closure capture through helper signatures. When NOT splitting: large composition surfaces
+When splitting a monolith, group locals into a typed shared-state record rather than threading every
+closure capture through helper signatures. When NOT splitting: large composition surfaces
 (`cli/main.ts`) are coherent — scattering a wiring function 8 ways scatters the wiring.
 
 ---
@@ -232,9 +237,9 @@ local-keygen/live/fork-known, deepbook local/live/fork):
 - Use `defineModeNamespace` and call the returned namespace with `network`.
 - Mode refusal lives at the **type level**. `walrus.localOf(sui)` is the only valid local Walrus
   call; `walrus()` on a fork-typed branch is a compile error.
-- Do not add runtime mode checks the type system could have caught. Mode-narrowed factories use
-  two `as` casts inside `defineModeNamespace` — that is the sole boundary between runtime
-  breadth and type-level narrowness; no ad-hoc `if (mode === ...)` runtime guards downstream.
+- Do not add runtime mode checks the type system could have caught. Mode-narrowed factories use two
+  `as` casts inside `defineModeNamespace` — that is the sole boundary between runtime breadth and
+  type-level narrowness; no ad-hoc `if (mode === ...)` runtime guards downstream.
 - Plugin SDK ergonomics: bare form (`walrus({ ... })`) defaults via the network resolver; explicit
   form (`walrus.localOf(sui)({ ... })`) is the typed form. Both are first-class.
 
@@ -242,31 +247,32 @@ local-keygen/live/fork-known, deepbook local/live/fork):
 
 ## 10. L2 wrapper-service around `defineScopedRefMap`
 
-When an L2 plugin owns a per-stack `K → V` registry **and adds plugin-specific methods**
-(Sui-coin's `CoinRegistry` exposes `bySymbol` / `byWitness` / `byType`), use the wrapper-service
-shape:
+When an L2 plugin owns a per-stack `K → V` registry **and adds plugin-specific methods** (Sui-coin's
+`CoinRegistry` exposes `bySymbol` / `byWitness` / `byType`), use the wrapper-service shape:
 
 ```ts
 const FooRefMap = defineScopedRefMap<FooKey, FooRecord>('FooRegistry');
 
-export interface FooRegistry { /* plugin-specific API */ }
+export interface FooRegistry {
+	/* plugin-specific API */
+}
 
 export class FooRegistryService extends Context.Service<FooRegistryService, FooRegistry>()(
-    '@devstack/plugins/foo/FooRegistry',
+	'@devstack/plugins/foo/FooRegistry',
 ) {}
 
 export const layerFooRegistry: Layer.Layer<FooRegistryService> = Layer.effect(
-    FooRegistryService,
-    Effect.gen(function* () {
-        const refMap = yield* FooRefMap.Service;
-        return FooRegistryService.of(wrapRefMap(refMap));
-    }),
+	FooRegistryService,
+	Effect.gen(function* () {
+		const refMap = yield* FooRefMap.Service;
+		return FooRegistryService.of(wrapRefMap(refMap));
+	}),
 ).pipe(Layer.provide(FooRefMap.layer));
 ```
 
 When the surface is a 1:1 re-projection of `set/find/has/entries/changes` and no plugin-specific
-methods exist today, consume `defineScopedRefMap(...)` directly. Don't wrap for symmetry. Switch
-to the wrapper shape when the first plugin-specific method lands.
+methods exist today, consume `defineScopedRefMap(...)` directly. Don't wrap for symmetry. Switch to
+the wrapper shape when the first plugin-specific method lands.
 
 ---
 
@@ -328,8 +334,8 @@ Built-in options accept plugin / resource refs (`ResourceRef<id, value>`) rather
   `broker.acquire(leaseKey('<plugin>:<key>'), '<owner>')`.
 - Key encoding is per-plugin convention; the broker treats keys as opaque. Account uses
   `account:<address>`.
-- Release is scope-bound. No `release()` method. Wrap `broker.acquire(...)` in `Effect.scoped`
-  (or call inside a surrounding scope) and let the finalizer fire.
+- Release is scope-bound. No `release()` method. Wrap `broker.acquire(...)` in `Effect.scoped` (or
+  call inside a surrounding scope) and let the finalizer fire.
 - Non-reentrant. A same-owner nested `acquire` against a held key deadlocks the inner call. If a
   caller needs to re-enter, restructure the caller.
 
@@ -341,10 +347,9 @@ Built-in options accept plugin / resource refs (`ResourceRef<id, value>`) rather
   hostname and emits `endpoint.registered`; plugins do not separately publish their own guessed
   public URL for the same service.
 - Resolved-value URL projection is fallback-only. The supervisor suppresses inferred `url`,
-  `rpcUrl`, `faucetUrl`, `graphqlUrl` endpoints when the plugin contributes any routable
-  capability.
-- Direct URLs used for boot probes, sibling containers, or host-gateway access must be named as
-  such (`direct*`, `probe*`, `hostGateway`) and aren't public endpoint declarations.
+  `rpcUrl`, `faucetUrl`, `graphqlUrl` endpoints when the plugin contributes any routable capability.
+- Direct URLs used for boot probes, sibling containers, or host-gateway access must be named as such
+  (`direct*`, `probe*`, `hostGateway`) and aren't public endpoint declarations.
 - For live / local-rpc modes with no router contribution, resolved-value URL fields may still
   surface as operational endpoints.
 
@@ -352,56 +357,56 @@ Built-in options accept plugin / resource refs (`ResourceRef<id, value>`) rather
 
 ## 16. Observability
 
-- `Effect.withSpan(...)` + `Effect.annotateCurrentSpan(...)` are the only span-instrumentation
-  entry points. No `console.log/warn/error` in production code.
+- `Effect.withSpan(...)` + `Effect.annotateCurrentSpan(...)` are the only span-instrumentation entry
+  points. No `console.log/warn/error` in production code.
 - Span attribute keys flow through a namespace constant. Substrate-owned engine-dimensional keys
   live in `substrate/runtime/observability/spans.ts:SpanAttr`. Plugin-domain keys live in
-  `src/plugins/<name>/spans.ts` (`WalletSpans`, `AccountSpans`, etc.). Cross-plugin reads go
-  through the source plugin's barrel. Free-form string literals are a violation.
+  `src/plugins/<name>/spans.ts` (`WalletSpans`, `AccountSpans`, etc.). Cross-plugin reads go through
+  the source plugin's barrel. Free-form string literals are a violation.
 - Log-level discipline: `logDebug` per-fetch / per-tick loops; `logInfo` lifecycle transitions;
   `logWarning` retryable failures; `logError` typed-error surfacing.
-- Log messages are stable event text; dynamic values go in fields / log annotations. Do not
-  format endpoint URLs, request ids, origins, exit codes, or retry causes into the message.
+- Log messages are stable event text; dynamic values go in fields / log annotations. Do not format
+  endpoint URLs, request ids, origins, exit codes, or retry causes into the message.
 - The structured `Logger` service is the plugin-facing buffered log sink. Long-running child
   processes route stdout/stderr through `ProcessLines.observeProcessLines(...)`; one-shot command
   capture uses `subprocess-capture.ts`; raw `Stream.decodeText() + Stream.splitLines` belongs only
   inside those substrate helpers.
-- Host processes use `substrate/runtime/process-supervisor.ts` for spawn typing, exit / error
-  races, exit-status description, and SIGTERM-to-SIGKILL teardown.
+- Host processes use `substrate/runtime/process-supervisor.ts` for spawn typing, exit / error races,
+  exit-status description, and SIGTERM-to-SIGKILL teardown.
 - HTTP readiness checks use `HttpProbes.waitForHttpEndpoint(...)` from the root plugin-authoring
   barrel: endpoint, total timeout, retry interval, optional per-request timeout, optional response
   validator.
 - Request retry schedules use `substrate/runtime/retry-policy.ts`. Do not build local
   `Schedule.exponential(...).pipe(Schedule.jittered, Schedule.both(...))` chains in plugins.
-- `Effect.annotateCurrentSpan` outside `Effect.withSpan` silently drops annotations. Wrap in a
-  span first.
+- `Effect.annotateCurrentSpan` outside `Effect.withSpan` silently drops annotations. Wrap in a span
+  first.
 
 **Canonical substrate helpers — the four classes of plugin-side bespoke code that must migrate:**
 
-| Class                | Canonical substrate helper                                                                            | Anti-pattern                                                              |
-| -------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Request retry        | `retry-policy.ts` (`makeExponentialRetrySchedule` / `makeSpacedRetrySchedule` / named profiles)       | Hand-rolled `Schedule.exponential(...).pipe(Schedule.jittered, ...)`      |
-| Balance / poll loop  | `retry-policy.ts` (`makeBoundedSpacedSchedule` + named profiles)                                      | `for(;;)` with `Date.now()` + `Effect.sleep` deadline check               |
-| JSON / Schema decode | `runtime-decode.ts` (`decodeJsonText` / `decodeJsonTextSync` / `decodeUnknown` / `decodeUnknownSync`) | Bare `JSON.parse` + `Schema.decodeUnknown*` with try / catch swallow      |
-| HTTP readiness probe | `http-probe.ts` (`waitForHttpEndpoint` + `HttpProbes` namespace)                                      | Hand-rolled `fetch` + `AbortSignal.timeout` poll loop                     |
+| Class                | Canonical substrate helper                                                                            | Anti-pattern                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Request retry        | `retry-policy.ts` (`makeExponentialRetrySchedule` / `makeSpacedRetrySchedule` / named profiles)       | Hand-rolled `Schedule.exponential(...).pipe(Schedule.jittered, ...)` |
+| Balance / poll loop  | `retry-policy.ts` (`makeBoundedSpacedSchedule` + named profiles)                                      | `for(;;)` with `Date.now()` + `Effect.sleep` deadline check          |
+| JSON / Schema decode | `runtime-decode.ts` (`decodeJsonText` / `decodeJsonTextSync` / `decodeUnknown` / `decodeUnknownSync`) | Bare `JSON.parse` + `Schema.decodeUnknown*` with try / catch swallow |
+| HTTP readiness probe | `http-probe.ts` (`waitForHttpEndpoint` + `HttpProbes` namespace)                                      | Hand-rolled `fetch` + `AbortSignal.timeout` poll loop                |
 
-Named retry profiles in `retry-policy.ts` are for shapes reused across plugins. A one-off retry
-with no sibling reuse stays inline — don't fabricate a profile name for a single consumer. Reuse
-drives the lift, not aesthetic uniformity.
+Named retry profiles in `retry-policy.ts` are for shapes reused across plugins. A one-off retry with
+no sibling reuse stays inline — don't fabricate a profile name for a single consumer. Reuse drives
+the lift, not aesthetic uniformity.
 
 **Sui chain access goes through `@mysten/sui`'s gRPC `core` surface.** Construct a `SuiGrpcClient`
 and call `core.getObject` / `core.getTransaction` / `core.executeTransaction` / etc. Do not
 hand-roll JSON-RPC POSTs — JSON-RPC is deprecated upstream and the gRPC core API exposes typed
-`SuiClientTypes` responses. Owner discriminants mirror `SuiClientTypes.ObjectOwner`
-(`AddressOwner` / `ObjectOwner` / `Shared` / `Immutable` / `ConsensusAddressOwner` / `Unknown`).
+`SuiClientTypes` responses. Owner discriminants mirror `SuiClientTypes.ObjectOwner` (`AddressOwner`
+/ `ObjectOwner` / `Shared` / `Immutable` / `ConsensusAddressOwner` / `Unknown`).
 
 **Single sanctioned SDK client cast at plugin boundaries: `ClientWithCoreApi`** (re-exported from
 `plugins/sui/index.ts`; lives at `@mysten/sui/client`). `SuiSdkShim.client` is typed as
 `ClientWithCoreApi` already, so passing `sui.sdk.client` to `Transaction.build({ client })` or
 `client.core.*` needs no cast. Do not cast to inline shapes — `ClientWithCoreApi` already covers
 them. The lone exception is `SuiGrpcClient`-only surfaces (`ledgerService`,
-`transactionExecutionService`, `stateService`, etc.) reachable only off the concrete gRPC class:
-use `sdk.client as unknown as { ... }` and document inline why the surface isn't on `core`.
+`transactionExecutionService`, `stateService`, etc.) reachable only off the concrete gRPC class: use
+`sdk.client as unknown as { ... }` and document inline why the surface isn't on `core`.
 
 ---
 
@@ -417,9 +422,9 @@ Rules:
 
 - New code calls the canonical primitive. No inline tempfile + rename.
 - **Random ID rule: `crypto.randomUUID().slice(0, 8)`.** Avoid `Math.random()`-based names
-  (collision risk in parallel callers + non-cryptographic). Applies uniformly across every site
-  that needs a short random suffix: tempfile names (centralised in `atomic-write.ts`), one-shot
-  container names, snapshot reservation ids, `runOneShot` invocations.
+  (collision risk in parallel callers + non-cryptographic). Applies uniformly across every site that
+  needs a short random suffix: tempfile names (centralised in `atomic-write.ts`), one-shot container
+  names, snapshot reservation ids, `runOneShot` invocations.
 
 ---
 
@@ -427,17 +432,16 @@ Rules:
 
 - `stack.lock` (O_EXCL) + `roster.json` + `snapshot.reservation` are the three on-disk artifacts.
   Liveness via PID + startTime predicates at `substrate/runtime/cross-process/liveness.ts`.
-- One cross-process lock primitive: the typed `CrossProcessLock` Effect Service. Production
-  wiring uses `layerCrossProcessLockFlock`; test wiring uses `layerCrossProcessLockInProcess`.
+- One cross-process lock primitive: the typed `CrossProcessLock` Effect Service. Production wiring
+  uses `layerCrossProcessLockFlock`; test wiring uses `layerCrossProcessLockInProcess`.
   State-store + cache yield `CrossProcessLock` and let wiring decide.
-- Router `contributeRoute` holds the dispatch-file lock across both the file write AND the
-  readiness probe so a sibling contributor cannot publish over a half-staged dispatch file. The
-  probe runs INSIDE the surrounding `Effect.scoped(acquireStackLock(...))` block; releasing the
-  lock between write and probe is a regression.
-- Lock-acquire failures during scope-close cleanup surface via `Effect.logWarning` (with the
-  error annotated). `.pipe(Effect.ignore)` on `acquireStackLock(...)` silently swallows
-  contention and IO errors and is forbidden — best-effort cleanup is fine, but the leak must be
-  visible.
+- Router `contributeRoute` holds the dispatch-file lock across both the file write AND the readiness
+  probe so a sibling contributor cannot publish over a half-staged dispatch file. The probe runs
+  INSIDE the surrounding `Effect.scoped(acquireStackLock(...))` block; releasing the lock between
+  write and probe is a regression.
+- Lock-acquire failures during scope-close cleanup surface via `Effect.logWarning` (with the error
+  annotated). `.pipe(Effect.ignore)` on `acquireStackLock(...)` silently swallows contention and IO
+  errors and is forbidden — best-effort cleanup is fine, but the leak must be visible.
 
 ---
 
@@ -449,22 +453,21 @@ Rules:
 - **Plugin config:** `substrate/runtime/config-validation.ts` at factory and boundary sites.
   `defineConfigError(tag)` keeps plugin-owned error tags. `decodeConfig(...)` /
   `decodeConfigSync(...)` wrap Effect Schema failures in the same `ConfigIssue` shape.
-- **Sync acceptable** (cross-process readers, cache / state reads):
-  `decodeUnknownSync(...)` / `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption
-  to a miss or typed error.
+- **Sync acceptable** (cross-process readers, cache / state reads): `decodeUnknownSync(...)` /
+  `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption to a miss or typed error.
 - **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely.
 
 NDJSON tail-decoders treat per-line decode failure as "skip row + `logDebug`". A truncated line
-during atomic append (writer partway through `events.ndjson` when the tail polls) is normal and
-must not kill the surrounding stream. Wrap the per-line decode in `try / catch` that returns
-`null`, filter the sentinel downstream, emit `Effect.logDebug`.
+during atomic append (writer partway through `events.ndjson` when the tail polls) is normal and must
+not kill the surrounding stream. Wrap the per-line decode in `try / catch` that returns `null`,
+filter the sentinel downstream, emit `Effect.logDebug`.
 
 ---
 
 ## 20. Renderer projection
 
-The projection field set (`SubscribableState` + `Row`) is closed — see ARCHITECTURE.md
-"Closed projection field list" for the canonical fields and the `__*FieldsClosed` guards.
+The projection field set (`SubscribableState` + `Row`) is closed — see ARCHITECTURE.md "Closed
+projection field list" for the canonical fields and the `__*FieldsClosed` guards.
 
 Code-level rules that follow from the closure:
 
@@ -472,6 +475,6 @@ Code-level rules that follow from the closure:
 - `Row.section` is plugin-declared at `definePlugin({ section })` time. The renderer reads it
   directly and must not pattern-match on plugin-name substrings to derive a section.
 - Substrate projection events are name-blind. The only projection-shaped event is
-  `projection.updated` carrying `{ kind: string, key: string, payload: unknown, at: number }`.
-  New plugin-specific projection shapes contribute a decoder branch to the reducer's
+  `projection.updated` carrying `{ kind: string, key: string, payload: unknown, at: number }`. New
+  plugin-specific projection shapes contribute a decoder branch to the reducer's
   `projection.updated` case — they do NOT add a new event variant.

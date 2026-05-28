@@ -12,14 +12,7 @@
 // child process actually exits. A leaking fiber would keep the child
 // alive past scope close.
 
-import {
-	chmodSync,
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 

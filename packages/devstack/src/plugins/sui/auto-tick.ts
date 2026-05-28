@@ -71,15 +71,5 @@ export const runAutoTickClock = (
 				),
 			),
 		);
-		yield* tick.pipe(
-			Effect.repeat(Schedule.spaced(`${intervalMs} millis`)),
-			Effect.forkScoped,
-		);
+		yield* tick.pipe(Effect.repeat(Schedule.spaced(`${intervalMs} millis`)), Effect.forkScoped);
 	});
-
-/** Build a no-op advancer for local mode. Localnet's validator
- *  drives consensus on its own; the auto-tick fiber surface exists
- *  for symmetry but doesn't have anything to advance. */
-export const noopClockAdvancer: ClockAdvancer = {
-	advanceClock: () => Effect.void as Effect.Effect<void, SuiPluginError>,
-};

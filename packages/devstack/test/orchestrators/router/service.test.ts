@@ -18,14 +18,7 @@
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Cause, Effect, Layer, Logger, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
-import {
-	mkdtempSync,
-	readFileSync,
-	readdirSync,
-	rmSync,
-	statSync,
-	writeFileSync,
-} from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 

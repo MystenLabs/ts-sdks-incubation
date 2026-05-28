@@ -157,7 +157,8 @@ describe('Sui local port mapping', () => {
 						}
 						return Effect.succeed({
 							port:
-								opts.preferredPort ?? (opts.owner === 'sui:faucet' ? DEFAULT_HOST_FAUCET_PORT : 51002),
+								opts.preferredPort ??
+								(opts.owner === 'sui:faucet' ? DEFAULT_HOST_FAUCET_PORT : 51002),
 							release: Effect.void,
 						} satisfies AllocatedPort);
 					},

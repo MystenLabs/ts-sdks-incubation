@@ -62,9 +62,7 @@ const failingSink: CapabilitySink<'codegenable', CodegenableDecl<string>> = {
 // `OrchestratorSinks` is the supervisor's caller-facing bag of sinks.
 // We register exactly the failing sink for the codegenable kind so the
 // dispatch path traverses `ContributionSinkFailed` deterministically.
-const sinks: OrchestratorSinks = [
-	failingSink as unknown as OrchestratorSinks[number],
-];
+const sinks: OrchestratorSinks = [failingSink as unknown as OrchestratorSinks[number]];
 
 describe('supervisor — ContributionSinkFailed routing (backlog #39)', () => {
 	it.effect('does not mark plugin failed when a sink rejects', () =>

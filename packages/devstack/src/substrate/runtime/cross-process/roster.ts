@@ -145,6 +145,30 @@ interface RosterPaths {
 	readonly rosterFile: string;
 }
 
+/** Match a roster holder against THIS process's identity.
+ *
+ *  Liveness elsewhere (`checkHolderLiveness`, `isContainerClaimLive`)
+ *  uses `(pid, hostname, startTime)` — PID alone is insufficient on
+ *  long-uptime hosts where the kernel can recycle PIDs. The roster
+ *  mutators (`heartbeat`, `release`, `setIntent`) must apply the same
+ *  triple match so a recycled-PID peer's entry is never silently
+ *  overwritten/removed by this process.
+ *
+ *  `startTime` is the FNV-1a hash of `ps -o lstart` (see
+ *  `liveness.processStartTime`). A `null` probe (process gone, or
+ *  exotic platform) skips the start-time check — same conservative
+ *  policy as `isContainerClaimLive`. */
+const isOwnEntry = (
+	h: RosterHolder,
+	ownPid: number,
+	ownHost: string,
+	ownStartTime: number | null,
+): boolean => {
+	if (h.pid !== ownPid || h.hostname !== ownHost) return false;
+	if (ownStartTime === null) return true;
+	return h.startTime === ownStartTime;
+};
+
 const withStackLock = <A, E, R>(
 	paths: RosterPaths,
 	body: Effect.Effect<A, E, R>,
@@ -215,11 +239,12 @@ export const heartbeat = (
 			);
 			const now = Date.now();
 			const ownHost = nodeHostname();
+			const ownStartTime = processStartTime(ownPid);
 			let touched = false;
 			const next: RosterDocument = {
 				version: 1,
 				holders: current.holders.map((h) => {
-					if (h.pid === ownPid && h.hostname === ownHost) {
+					if (isOwnEntry(h, ownPid, ownHost, ownStartTime)) {
 						touched = true;
 						return { ...h, heartbeatAt: now };
 					}
@@ -247,8 +272,9 @@ export const release = (
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_ROSTER)),
 			);
 			const ownHost = nodeHostname();
+			const ownStartTime = processStartTime(ownPid);
 			const remaining = current.holders.filter(
-				(h) => !(h.pid === ownPid && h.hostname === ownHost),
+				(h) => !isOwnEntry(h, ownPid, ownHost, ownStartTime),
 			);
 			const next: RosterDocument = { version: 1, holders: remaining };
 			yield* atomicWriteRoster(paths.rosterFile, next);
@@ -275,10 +301,11 @@ export const setIntent = (
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_ROSTER)),
 			);
 			const ownHost = nodeHostname();
+			const ownStartTime = processStartTime(ownPid);
 			const next: RosterDocument = {
 				version: 1,
 				holders: current.holders.map((h) =>
-					h.pid === ownPid && h.hostname === ownHost ? { ...h, intent } : h,
+					isOwnEntry(h, ownPid, ownHost, ownStartTime) ? { ...h, intent } : h,
 				),
 			};
 			yield* atomicWriteRoster(paths.rosterFile, next);

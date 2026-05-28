@@ -392,47 +392,20 @@ export const applyCrossCuttingFunding = (
 			// SUI (`0x2::sui::SUI`) → reuse the faucet-request key so the
 			// SUI auto-registered strategy fields the request (this
 			// matches the default-funding pass and keeps the registry
-			// surface uniform).
+			// surface uniform). The faucet contract takes
+			// `{address, amount}` only (it never sees the resolved
+			// account handle) — kept as its own helper so the typing is
+			// honest at the dispatch site.
 			//
 			// Everything else → `coinType:<fullCoinType>` so user-defined
 			// Coin plugins (and Walrus's exchange strategy keyed by
 			// `coinType:<WAL fullCoinType>`) can contribute strategies
-			// declaratively.
+			// declaratively. These satisfy `AccountFundingStrategy` and
+			// receive the resolved account handle in the request.
 			const isSui = entry.fullCoinType === SUI_FULL_COIN_TYPE;
 			const coinKey = `coinType:${entry.fullCoinType}` as const;
-			const lookup = isSui
-				? chainKeyedStrategyFor<AccountFundingStrategy>(
-						FAUCET_CAPABILITY_KEY_PREFIX,
-						parts.chainId,
-					)
-				: registry.get<typeof coinKey, AccountFundingStrategy>(coinKey);
-
-			// Architecture-distilled: optional-faucet-is-noop for
-			// arbitrary coins. Explicit SUI entries are the normal gas
-			// faucet path, so missing strategy is actionable and loud.
-			const strategy = yield* lookup.pipe(
-				Effect.catchTag('StrategyNotFoundError', (err) =>
-					isSui
-						? Effect.fail(
-								accountAcquireError({
-									phase: 'fund-cross-cutting',
-									accountName: parts.accountName,
-									variant: parts.variant,
-									message:
-										`Account '${parts.accountName}': no SUI funding strategy registered ` +
-										`for chain '${parts.chainId}'. Registered keys: [${err.registeredKeys.join(', ')}].`,
-									cause: err,
-									hint: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
-								}),
-							)
-						: Effect.succeed(null as AccountFundingStrategy | null),
-				),
-			);
-			if (strategy === null) {
-				continue;
-			}
-
 			const key = isSui ? (`faucet:request:${parts.chainId}` as const) : coinKey;
+
 			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError => {
 				const tag =
 					typeof cause === 'object' && cause !== null && '_tag' in cause
@@ -453,11 +426,60 @@ export const applyCrossCuttingFunding = (
 						'plugin that contributes this coin and any `via` dependency.',
 				});
 			};
-			const request = strategy
-				.request({ address: parts.address, amount: entry.amount, account: parts.account })
-				.pipe(Effect.mapError(wrapCrossCuttingFailure));
+
+			let request: Effect.Effect<void, AccountAcquireError>;
+			let usesAccountSigner = false;
+			if (isSui) {
+				// FaucetStrategy lookup — request shape is `{address, amount}`.
+				// Architecture-distilled: explicit SUI entries are the
+				// normal gas faucet path, so missing strategy is
+				// actionable and loud (no silent drop).
+				const strategy = yield* chainKeyedStrategyFor<FaucetStrategy>(
+					FAUCET_CAPABILITY_KEY_PREFIX,
+					parts.chainId,
+				).pipe(
+					Effect.catchTag('StrategyNotFoundError', (err) =>
+						Effect.fail(
+							accountAcquireError({
+								phase: 'fund-cross-cutting',
+								accountName: parts.accountName,
+								variant: parts.variant,
+								message:
+									`Account '${parts.accountName}': no SUI funding strategy registered ` +
+									`for chain '${parts.chainId}'. Registered keys: [${err.registeredKeys.join(', ')}].`,
+								cause: err,
+								hint: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
+							}),
+						),
+					),
+				);
+				request = strategy
+					.request({ address: parts.address, amount: entry.amount })
+					.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			} else {
+				// AccountFundingStrategy lookup — request shape is
+				// `{address, amount, account}`. Architecture-distilled:
+				// optional-faucet-is-noop for arbitrary coins — missing
+				// registration short-circuits silently rather than
+				// failing the acquire.
+				const strategy = yield* registry
+					.get<typeof coinKey, AccountFundingStrategy>(coinKey)
+					.pipe(
+						Effect.catchTag('StrategyNotFoundError', () =>
+							Effect.succeed(null as AccountFundingStrategy | null),
+						),
+					);
+				if (strategy === null) {
+					continue;
+				}
+				usesAccountSigner = strategy.usesAccountSigner === true;
+				request = strategy
+					.request({ address: parts.address, amount: entry.amount, account: parts.account })
+					.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			}
+
 			yield* setCurrentPluginPhase(`funding ${entry.coin}`);
-			yield* strategy.usesAccountSigner === true
+			yield* usesAccountSigner
 				? request
 				: withAddressLease(parts.broker, parts.accountName, parts.address, request);
 			yield* setCurrentPluginPhase(`waiting for ${entry.coin} funding settlement`);

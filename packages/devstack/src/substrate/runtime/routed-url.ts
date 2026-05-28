@@ -93,20 +93,19 @@ export const routedHostname = (
 		const app = yield* validateLabel('hostname', identity.app);
 		const folded = normalizeServiceSegment(role);
 		const roleSafe = yield* validateLabel('hostname', folded);
-		const assembled = (() => {
-			if (identity.stack === DEFAULT_STACK) {
-				return `${roleSafe}.${app}.localhost`;
-			}
-			const stackSafe = identity.stack.toLowerCase();
-			// The stack name comes from the Identity brand, which boot
-			// validation already constrains to the same RFC-1035 label
-			// shape as `app` and `role`. We do not re-validate here —
-			// `validateLabel(folded)` above already proved any label
-			// failure would have surfaced upstream, and earlier revisions
-			// of this code added a defensive re-check that was unreachable
-			// in practice.
-			return `${roleSafe}.${stackSafe}.${app}.localhost`;
-		})();
+		// The `StackName` brand does NOT character-validate at construction
+		// (`brand.ts` / `api/inference-network.ts:resolveStackName`), so we
+		// re-validate here for parity with `app`. A malformed stack name
+		// (uppercase / underscores / out-of-RFC-1035 chars) must fail at
+		// hostname assembly, not silently pass through.
+		const stackSafe =
+			identity.stack === DEFAULT_STACK
+				? null
+				: yield* validateLabel('hostname', identity.stack.toLowerCase());
+		const assembled =
+			stackSafe === null
+				? `${roleSafe}.${app}.localhost`
+				: `${roleSafe}.${stackSafe}.${app}.localhost`;
 		if (assembled.length > MAX_HOSTNAME_LEN) {
 			return yield* Effect.fail(
 				new HostnameValidationError({

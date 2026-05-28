@@ -607,12 +607,3 @@ const routeCollisionMessage = (collision: {
 	);
 };
 
-// ---------------------------------------------------------------------------
-// Static base file — Traefik provider directive
-// ---------------------------------------------------------------------------
-
-/** Filename for the file-provider static config. Traefik is launched
- *  with `--providers.file.directory=/etc/traefik/dispatch` so it
- *  reads from there directly; this static file is OPTIONAL polish
- *  and currently unused. Reserved for future provider tuning. */
-export const STATIC_PROVIDER_FILENAME = '00-providers.yml';

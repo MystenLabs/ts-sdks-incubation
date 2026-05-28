@@ -20,10 +20,11 @@ import {
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
 	type DiscoverManifestPathOptions,
+	type EndpointEntry,
+	type ManifestEnvelope,
 	type ResolvedEndpoint as RuntimeResolvedEndpoint,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
-import type { EndpointEntry, ManifestEnvelope } from '../../substrate/manifest.ts';
 import {
 	PlaywrightEndpointNotFoundError,
 	PlaywrightManifestDiscoveryError,

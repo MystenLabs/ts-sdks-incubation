@@ -33,6 +33,7 @@ const adaptGroup = (group: LifecyclePruneGroup): PruneGroup => ({
 	live: group.live,
 	livePids: group.livePids,
 	shared: group.shared,
+	sharedKind: group.sharedKind,
 	autoPrunable: group.autoPrunable,
 	containers: group.containers,
 	runningContainers: group.runningContainers,

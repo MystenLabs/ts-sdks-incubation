@@ -235,9 +235,7 @@ describe('layerCrossProcessLockFlock', () => {
 					rmSync(root, { recursive: true, force: true });
 				}
 			}).pipe(
-				Effect.provide(
-					layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackRoot))),
-				),
+				Effect.provide(layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackRoot)))),
 			);
 		},
 		{ timeout: 15_000 },

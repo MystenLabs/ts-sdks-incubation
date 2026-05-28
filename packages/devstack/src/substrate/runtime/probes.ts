@@ -1,4 +1,4 @@
-import { Data, Duration, Effect } from 'effect';
+import { Data, Duration, Effect, Types } from 'effect';
 
 export type ProbeAttemptResult =
 	| void
@@ -148,3 +148,29 @@ export const exitCodeProbeResult = (result: ExitCodeProbeResult): ProbeAttemptRe
 		},
 	};
 };
+
+// ---------------------------------------------------------------------------
+// probeManyLenient — run a set of lenient `T | null` probes and surface
+// each probe's verdict so the caller can fold the array however it likes.
+// ---------------------------------------------------------------------------
+//
+// Lenient probes (per `ChainProbe`'s `'lenient'` contract) return `T | null`
+// where `null` is a non-authoritative "not yet" signal. Several plugins
+// (walrus deploy, deepbook deploy, pyth init) hand-roll a sequential loop
+// that early-returns `null` on the first non-ready probe. This helper
+// centralizes the iteration so the call sites collapse to a `.every()`
+// or `.find()` against the returned array.
+//
+// Concurrency defaults to `'unbounded'`. Callers that need sequential
+// short-circuit semantics (e.g. RPC backoff politeness) can pass
+// `concurrency: 1`. The return shape is the full array even when concurrency
+// is 1 — callers that want "any null aborts and returns null" should fold
+// with `.every((x) => x !== null) ? array : null` themselves.
+
+export const probeManyLenient = <T, E, R>(
+	probes: ReadonlyArray<Effect.Effect<T | null, E, R>>,
+	options?: { readonly concurrency?: Types.Concurrency },
+): Effect.Effect<ReadonlyArray<T | null>, E, R> =>
+	Effect.forEach(probes, (probe) => probe, {
+		concurrency: options?.concurrency ?? 'unbounded',
+	});

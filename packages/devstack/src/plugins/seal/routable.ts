@@ -90,4 +90,3 @@ export const makeSealRoutable = (inputs: {
 	cors: true,
 	wireProtocol: 'http',
 });
-

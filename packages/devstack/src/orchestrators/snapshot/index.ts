@@ -38,6 +38,23 @@ export {
 	type RestoreParticipant,
 } from './restore.ts';
 
+// Restore-pending recovery
+export {
+	recoverPendingRestore,
+	RestorePendingRecoveryError,
+	type RestorePendingRecoverySummary,
+} from './recover-pending.ts';
+
+// Pending marker shapes — shared between `restore.ts` (writer) and
+// `recover-pending.ts` (reader). Re-exported for tests + consumers
+// that need to inspect a marker out-of-band.
+export {
+	makePendingMarkerDocument,
+	pendingMarkerPath,
+	RestorePendingMarkerIoError,
+	type RestorePendingContainer,
+} from './pending-marker.ts';
+
 // Wipe
 export { runWipe, SNAPSHOTS_DIR_NAME, WipePhaseError, type WipeInputs } from './wipe.ts';
 

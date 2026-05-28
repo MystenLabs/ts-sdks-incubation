@@ -173,9 +173,7 @@ describe('docker network-alias plumbing', () => {
 						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
 						return yield* ensureContainer(
 							baseSpec({
-								networkAttach: [
-									{ name: 'primary', aliases: ['db-main', 'db-replica'] },
-								],
+								networkAttach: [{ name: 'primary', aliases: ['db-main', 'db-replica'] }],
 							}),
 							{ cycle: 1, perNameLock },
 						);
@@ -231,10 +229,7 @@ describe('docker network-alias plumbing', () => {
 						const perNameLock = yield* Ref.make<PerNameLockState>(new Map());
 						return yield* ensureContainer(
 							baseSpec({
-								networkAttach: [
-									'primary',
-									{ name: 'secondary', aliases: ['side-a', 'side-b'] },
-								],
+								networkAttach: ['primary', { name: 'secondary', aliases: ['side-a', 'side-b'] }],
 							}),
 							{ cycle: 1, perNameLock },
 						);

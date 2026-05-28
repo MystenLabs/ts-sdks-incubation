@@ -29,6 +29,7 @@ import {
 	formatExecutedFailure,
 	isSuiStaleObjectVersionError,
 } from '../../substrate/runtime/sui-execute/index.ts';
+import { probeManyLenient } from '../../substrate/runtime/probes.ts';
 import {
 	makeSpacedRetrySchedule,
 	STALE_OBJECT_VERSION_RETRY_PROFILE,
@@ -211,18 +212,24 @@ const seedInputsHash = (
 		].join('||'),
 	);
 
+const sdkGetObjectLenient = (
+	sdk: SuiSdkShim,
+	objectId: string,
+): Effect.Effect<unknown | null, never> =>
+	Effect.tryPromise({
+		try: () => sdk.core.getObject({ objectId }),
+		catch: () => null,
+	}).pipe(Effect.catch(() => Effect.succeed(null)));
+
 const buildVerifyProbe = (
 	sdk: SuiSdkShim,
 	cached: CachedDeepbookPoolsResult,
 ): Effect.Effect<CachedDeepbookPoolsResult | null, never> =>
 	Effect.gen(function* () {
-		for (const pool of cached.pools) {
-			const raw = yield* Effect.tryPromise({
-				try: () => sdk.core.getObject({ objectId: pool.poolId }),
-				catch: () => null,
-			}).pipe(Effect.catch(() => Effect.succeed(null)));
-			if (raw === null || raw === undefined) return null;
-		}
+		const results = yield* probeManyLenient(
+			cached.pools.map((pool) => sdkGetObjectLenient(sdk, pool.poolId)),
+		);
+		if (results.some((raw) => raw === null || raw === undefined)) return null;
 		return cached;
 	});
 
@@ -231,10 +238,7 @@ const buildSeedVerifyProbe = (
 	cached: CachedDeepbookSeedResult,
 ): Effect.Effect<CachedDeepbookSeedResult | null, never> =>
 	Effect.gen(function* () {
-		const raw = yield* Effect.tryPromise({
-			try: () => sdk.core.getObject({ objectId: cached.balanceManagerId }),
-			catch: () => null,
-		}).pipe(Effect.catch(() => Effect.succeed(null)));
+		const raw = yield* sdkGetObjectLenient(sdk, cached.balanceManagerId);
 		if (raw === null || raw === undefined) return null;
 		return cached;
 	});
@@ -260,7 +264,14 @@ const findExistingPoolId = (
 			});
 			const bytes = result.commandResults?.[0]?.returnValues?.[0]?.bcs;
 			if (bytes === undefined) return null;
-			return normalizeSuiAddress(bcs.Address.parse(bytes));
+			const normalized = normalizeSuiAddress(bcs.Address.parse(bytes));
+			// DeepBook's `get_pool_id_by_asset` returns the all-zeros
+			// address when no pool exists for the asset pair (rather
+			// than raising). Treat the sentinel as "not found" so the
+			// outer create-or-find loop creates the pool instead of
+			// adopting `0x0` as a live pool id.
+			if (normalized === normalizeSuiAddress('0x0')) return null;
+			return normalized;
 		},
 		catch: () => null,
 	}).pipe(Effect.catch(() => Effect.succeed(null)));
@@ -516,16 +527,18 @@ const requestSeedFunding = (
 	if (strategy === undefined || amount === undefined || amount === 0n) {
 		return Effect.void;
 	}
-	return strategy.request({ address: signer.address, amount }).pipe(
-		Effect.mapError(
-			(err): ArtifactPublishError =>
-				artifactPublishError(
-					'produce-failed',
-					`deepbook seed funding failed for ${coinType} ` +
-						`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
-				),
-		),
-	);
+	return strategy
+		.request({ address: signer.address, amount })
+		.pipe(
+			Effect.mapError(
+				(err): ArtifactPublishError =>
+					artifactPublishError(
+						'produce-failed',
+						`deepbook seed funding failed for ${coinType} ` +
+							`to publisher '${signer.name}' amount=${amount}: ${errorDetail(err)}`,
+					),
+			),
+		);
 };
 
 interface OwnedCoin {

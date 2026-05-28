@@ -11,7 +11,11 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Exit, Stream } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import type { ContainerRuntime, ImageRef, TagImageOptions } from '../../../src/contracts/container-runtime.ts';
+import type {
+	ContainerRuntime,
+	ImageRef,
+	TagImageOptions,
+} from '../../../src/contracts/container-runtime.ts';
 import {
 	RestorePhaseError,
 	runRestore,

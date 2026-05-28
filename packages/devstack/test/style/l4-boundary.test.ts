@@ -34,8 +34,15 @@ const FORBIDDEN_IMPORT_PATTERNS: ReadonlyArray<{
 		regex: /from\s+['"](?:\.\.\/)+plugins\//,
 	},
 	{
-		description: 'L3 orchestrator barrel (../../../orchestrators/...)',
-		regex: /from\s+['"](?:\.\.\/)+orchestrators\//,
+		// L4 surfaces MAY import from an orchestrator's curated `index.ts`
+		// barrel — that barrel is the promoted typed-shape + predicate
+		// surface (e.g. `LifecyclePruneGroup`, `SharedGroupKind`,
+		// `defaultLifecyclePruneSelection`) the orchestrator publishes for
+		// surface consumers so the surface never reimplements the L3
+		// policy. Deeper subpaths (engine modules) remain forbidden — they
+		// reach into orchestrator implementation details.
+		description: 'L3 orchestrator submodule (../../../orchestrators/<name>/<non-index>)',
+		regex: /from\s+['"](?:\.\.\/)+orchestrators\/[^/'"]+\/(?!index\.ts['"])/,
 	},
 ];
 

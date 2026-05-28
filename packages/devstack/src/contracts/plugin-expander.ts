@@ -54,10 +54,7 @@ export const readPluginExpander = (member: AnyPlugin): PluginExpander | undefine
  *  written as a value-level property only — plugin factories MUST NOT
  *  surface the hook on the member's TS return type or the symbol
  *  identity leaks into inferred Stack types. */
-export const attachPluginExpander = (
-	placeholder: AnyPlugin,
-	expander: PluginExpander,
-): void => {
+export const attachPluginExpander = (placeholder: AnyPlugin, expander: PluginExpander): void => {
 	(placeholder as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER] = expander;
 };
 
@@ -74,9 +71,7 @@ export const attachPluginExpander = (
  * after the substitution so the now-resolved dependency edges fold
  * into the closure correctly.
  */
-export const runPluginExpanders = (
-	members: ReadonlyArray<AnyPlugin>,
-): ReadonlyArray<AnyPlugin> => {
+export const runPluginExpanders = (members: ReadonlyArray<AnyPlugin>): ReadonlyArray<AnyPlugin> => {
 	let hasAny = false;
 	for (const m of members) {
 		if (readPluginExpander(m) !== undefined) {
