@@ -71,7 +71,8 @@ export interface CommandChannelPublisher {
 		id: string,
 		options?: { readonly timeoutMillis?: number },
 	) => Effect.Effect<
-		{ readonly ok: true } | { readonly ok: false; readonly message: string },
+		| { readonly ok: true; readonly payload?: unknown }
+		| { readonly ok: false; readonly message: string; readonly payload?: unknown },
 		CommandChannelError
 	>;
 	readonly events: Stream.Stream<EventRecord, CommandChannelError, Scope.Scope>;
@@ -160,7 +161,8 @@ export const makeCommandChannelPublisher = (
 			id: string,
 			options: { readonly timeoutMillis?: number } = {},
 		): Effect.Effect<
-			{ readonly ok: true } | { readonly ok: false; readonly message: string },
+			| { readonly ok: true; readonly payload?: unknown }
+			| { readonly ok: false; readonly message: string; readonly payload?: unknown },
 			CommandChannelError
 		> => {
 			const withScope = Effect.scoped(findReply(id));
@@ -179,10 +181,15 @@ export const makeCommandChannelPublisher = (
 							? { ok: false as const, message: 'timed out waiting for ack' }
 							: { ok: false as const, message: 'no reply' };
 					}
-					if (inner.kind === 'ack') return { ok: true as const };
+					if (inner.kind === 'ack') {
+						return inner.payload !== undefined
+							? { ok: true as const, payload: inner.payload }
+							: { ok: true as const };
+					}
 					return {
 						ok: false as const,
 						message: inner.detail ? `${inner.message}: ${inner.detail}` : inner.message,
+						...(inner.payload !== undefined ? { payload: inner.payload } : {}),
 					};
 				}),
 			);
@@ -208,11 +215,16 @@ export interface CommandChannelSubscriberOptions {
 export interface CommandChannelSubscriber {
 	readonly commands: Stream.Stream<CommandRecord, CommandChannelError, Scope.Scope>;
 	readonly publishEvent: (event: unknown) => Effect.Effect<void, CommandChannelError>;
-	readonly ack: (correlatesTo: string, detail?: string) => Effect.Effect<void, CommandChannelError>;
+	readonly ack: (
+		correlatesTo: string,
+		detail?: string,
+		payload?: unknown,
+	) => Effect.Effect<void, CommandChannelError>;
 	readonly fail: (
 		correlatesTo: string,
 		message: string,
 		detail?: string,
+		payload?: unknown,
 	) => Effect.Effect<void, CommandChannelError>;
 }
 
@@ -263,7 +275,11 @@ export const makeCommandChannelSubscriber = (
 				});
 			});
 
-		const ack = (correlatesTo: string, detail?: string): Effect.Effect<void, CommandChannelError> =>
+		const ack = (
+			correlatesTo: string,
+			detail?: string,
+			payload?: unknown,
+		): Effect.Effect<void, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSubSeq(state);
 				yield* writeEvent({
@@ -273,6 +289,7 @@ export const makeCommandChannelSubscriber = (
 					kind: 'ack',
 					correlatesTo,
 					...(detail !== undefined ? { detail } : {}),
+					...(payload !== undefined ? { payload } : {}),
 				});
 			});
 
@@ -280,6 +297,7 @@ export const makeCommandChannelSubscriber = (
 			correlatesTo: string,
 			message: string,
 			detail?: string,
+			payload?: unknown,
 		): Effect.Effect<void, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSubSeq(state);
@@ -291,6 +309,7 @@ export const makeCommandChannelSubscriber = (
 					correlatesTo,
 					message,
 					...(detail !== undefined ? { detail } : {}),
+					...(payload !== undefined ? { payload } : {}),
 				});
 			});
 

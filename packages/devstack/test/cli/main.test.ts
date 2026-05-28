@@ -488,7 +488,11 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured');
+								yield* subscriber.ack(record.id, 'captured', {
+									kind: 'captured',
+									snapshotId: command.snapshotId,
+									...(command.name === undefined ? {} : { name: command.name }),
+								});
 							}),
 						),
 					);
@@ -590,7 +594,11 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured');
+								yield* subscriber.ack(record.id, 'captured', {
+									kind: 'captured',
+									snapshotId: command.snapshotId,
+									...(command.name === undefined ? {} : { name: command.name }),
+								});
 							}),
 						),
 					);
@@ -1186,13 +1194,15 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 	});
 
 	it('attached prune.requested routes to runLifecyclePrune, never params.snapshot.prune', () => {
-		const main = readFileSync(join(packageRoot, 'src/cli/main.ts'), 'utf8');
-		// Locate the IMPLEMENTATION switch case (the last occurrence — earlier
-		// ones are type-guard fall-throughs in `isEngineCommand`).
-		const caseIdx = main.lastIndexOf("case 'prune.requested':");
+		// The attached supervisor command handler lives in `cli/wirings/up.ts`
+		// (was inline in `cli/main.ts` before Phase 15).
+		const up = readFileSync(join(packageRoot, 'src/cli/wirings/up.ts'), 'utf8');
+		// Locate the IMPLEMENTATION switch case (`case 'prune.requested':`
+		// inside `makeSnapshotCommandHandler`).
+		const caseIdx = up.lastIndexOf("case 'prune.requested':");
 		expect(caseIdx).toBeGreaterThan(0);
 		// Capture the case body up to the next `case` or `default`.
-		const tail = main.slice(caseIdx);
+		const tail = up.slice(caseIdx);
 		const nextCase = tail.slice(1).search(/\n\s*(case |default:)/);
 		const body = nextCase === -1 ? tail : tail.slice(0, nextCase + 1);
 		// Must invoke the lifecycle-prune orchestrator.

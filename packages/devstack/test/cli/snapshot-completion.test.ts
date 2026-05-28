@@ -100,6 +100,9 @@ describe('cli/main snapshot completion event matcher', () => {
 									readonly name?: string;
 								};
 								// Peer skip — different snapshotId. MUST NOT terminate us.
+								// The CLI wiring no longer tails the event stream for
+								// completion; the peer skip is a pure observability event
+								// that the new wiring ignores.
 								yield* subscriber.publishEvent({
 									tag: 'snapshot.captureSkipped',
 									reason: 'already-running',
@@ -115,7 +118,14 @@ describe('cli/main snapshot completion event matcher', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured');
+								// New protocol: ack carries the structured capture payload.
+								// `awaitCompletion` surfaces this directly so the CLI does
+								// not need to tail the events stream.
+								yield* subscriber.ack(record.id, 'captured', {
+									kind: 'captured',
+									snapshotId: command.snapshotId,
+									...(command.name === undefined ? {} : { name: command.name }),
+								});
 							}),
 						),
 					);
@@ -196,7 +206,19 @@ describe('cli/main snapshot completion event matcher', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'skipped');
+								// New protocol: a skip is now reported via `fail` with a
+								// structured payload (kind=skipped) so the CLI surfaces a
+								// `CliUnavailableError` rather than a successful ack.
+								yield* subscriber.fail(
+									record.id,
+									'snapshot capture skipped',
+									'already-running',
+									{
+										kind: 'skipped',
+										snapshotId: command.snapshotId,
+										reason: 'already-running',
+									},
+								);
 							}),
 						),
 					);

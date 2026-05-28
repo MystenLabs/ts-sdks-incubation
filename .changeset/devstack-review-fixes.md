@@ -33,6 +33,8 @@ Dead-code purge and substrate race fixes:
 - Cross-process command channel short-read fix: `readSync` may short-return on NFS / cross-FS; offset advances by `bytesRead` rather than the requested length, with a clean bail on `bytesRead <= 0`.
 - Cross-process roster PID-recycle hazard fixed: `heartbeat` / `release` / `setIntent` now match holders via `(pid, hostname, startTime)` triple via a new `isOwnEntry` helper (was matching `(pid, hostname)` only).
 - Background snapshot interrupt now awaits via `Fiber.interrupt(fiber)` (was fire-and-forget `fiber.interruptUnsafe()`) so a follow-up capture can't start while the previous fiber is still inside `pauseAndCommit` / `saveImages`.
+- CLI restructure: `cli/main.ts` (1338 LOC) split into per-verb wirings under `cli/wirings/{up,apply,snapshot,wipe,prune}.ts` plus shared `build-verb-layers.ts` / `identity.ts` / `config-loader.ts` helpers. `main.ts` is now argv → identity → deps → dispatch only (~290 LOC).
+- Cross-process command-channel `ack` / `error` records gain an optional `payload: unknown` field plumbed through `awaitCompletion`. `snapshot.capture` now carries the captured metadata (or failure summary / skipped reason) on the reply directly — the CLI no longer tail-fibers `events.ndjson` for the completion event.
 - Repo-wide Prettier reformat.
 
 dev-wallet:

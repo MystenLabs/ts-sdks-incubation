@@ -3,7 +3,7 @@
 // `defineDevstack(...)` returns a static `Stack<Members>` manifest with
 // no runnable surface. Library consumers (vitest setup, custom hosts,
 // Effect-native apps, embedded fixtures) would otherwise have to
-// re-implement `cli/main.ts:runUpLive`'s substrate Layer composition.
+// re-implement `cli/wirings/up.ts:runUpLive`'s substrate Layer composition.
 // `runStack` is the single embedder seam — it consumes the same
 // `orchestrators/runtime-composition.ts` helper the CLI consumes. See
 // ARCHITECTURE.md §"Layer composition lives at L3, not L0".

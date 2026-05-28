@@ -641,6 +641,26 @@ const normalizeStricliExitCode = (code: number | string | null | undefined): num
 	return ExitCode.OK;
 };
 
+/**
+ * Bridge Stricli's synchronous `StricliProcess.{stdout,stderr}.write`
+ * shape to our async (Effect-based) `CliIO` surface.
+ *
+ * The indirection is load-bearing for the JSON-envelope contract:
+ * Stricli writes argv-parse errors to stderr the moment the parser
+ * trips, but `--json` mode demands the failure be EMITTED as a
+ * structured envelope on stdout (not raw text on stderr) with exit
+ * code `EX_USAGE`. We can't wire Stricli's `stderr.write` directly to
+ * `nodeProcessIO.writeStderr` because:
+ *
+ *   1. The stderr bytes are the raw parser error text; in `--json`
+ *      mode we need to transform them into a failure envelope.
+ *   2. We don't know whether the verb handler "touched" the IO
+ *      (rendered its own envelope) until after Stricli returns.
+ *
+ * Buffering lets us delay the decision until both signals are
+ * available. Tests substitute a `BufferedProcess` whose buffers are
+ * later inspected, mirroring the prod flush behavior.
+ */
 const flushBufferedProcess = (
 	process: BufferedProcess,
 	io: CliIO,
