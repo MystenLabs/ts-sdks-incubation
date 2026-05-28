@@ -2,9 +2,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 import {
 	defineConfigError,
-	expectNonEmptyArray,
 	expectNonEmptyString,
-	expectOneOf,
 	expectPort,
 } from '../../../src/substrate/runtime/config-validation.ts';
 
@@ -35,31 +33,4 @@ describe('config validation helpers', () => {
 			}),
 		);
 	});
-
-	it('preserves literal unions and non-empty arrays', () => {
-		const stream = expectOneOf('stderr', ['stdout', 'stderr', 'both'] as const, {
-			field: 'stream',
-			mkError: testConfigError,
-		});
-		const values = expectNonEmptyArray(['devstack'] as const, {
-			field: 'databases',
-			mkError: testConfigError,
-		});
-
-		expect(stream).toBe('stderr');
-		expect(values).toEqual(['devstack']);
-		expect(() =>
-			expectOneOf('other', ['stdout', 'stderr', 'both'] as const, {
-				field: 'stream',
-				mkError: testConfigError,
-			}),
-		).toThrowError(
-			expect.objectContaining({
-				_tag: 'TestConfigError',
-				field: 'stream',
-				message: "must be one of 'stdout', 'stderr', 'both'",
-			}),
-		);
-	});
-
 });

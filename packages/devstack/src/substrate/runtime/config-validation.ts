@@ -1,3 +1,16 @@
+// Plain shape-check helpers — sync-throw discipline.
+//
+// Reach for these when you want to assert a single field's shape
+// ("port must be a positive integer", "name must be a non-empty
+// string") and throw a plugin-tagged `ConfigIssue` if it isn't.
+// Each helper takes one value + a `{ field, mkError }` and either
+// returns the value or throws. Authors compose them at factory /
+// boundary sites.
+//
+// For compound Schema decode (multi-field shapes, refinements,
+// transforms), reach for `decodeUnknownSync(schema, value,
+// { source, mkError })` from `runtime-decode.ts` instead.
+
 export interface ConfigIssue {
 	readonly field: string;
 	readonly message: string;
@@ -34,14 +47,6 @@ export const expectNonEmptyString = <E>(value: unknown, options: ValidatorOption
 	});
 };
 
-export const expectOptionalNonEmptyString = <E>(
-	value: unknown,
-	options: ValidatorOptions<E>,
-): string | undefined => {
-	if (value === undefined) return undefined;
-	return expectNonEmptyString(value, options);
-};
-
 export const expectPositiveInteger = <E>(value: unknown, options: ValidatorOptions<E>): number => {
 	if (typeof value === 'number' && Number.isInteger(value) && value > 0) return value;
 	return fail(options.mkError, {
@@ -59,18 +64,6 @@ export const expectOptionalPositiveInteger = <E>(
 	return expectPositiveInteger(value, options);
 };
 
-export const expectPositiveFiniteNumber = <E>(
-	value: unknown,
-	options: ValidatorOptions<E>,
-): number => {
-	if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
-	return fail(options.mkError, {
-		field: options.field,
-		message: options.message ?? 'must be a positive finite number',
-		...(options.hint === undefined ? {} : { hint: options.hint }),
-	});
-};
-
 export const expectPort = <E>(value: unknown, options: ValidatorOptions<E>): number => {
 	if (typeof value === 'number' && Number.isInteger(value) && value > 0 && value <= 65_535) {
 		return value;
@@ -81,83 +74,3 @@ export const expectPort = <E>(value: unknown, options: ValidatorOptions<E>): num
 		...(options.hint === undefined ? {} : { hint: options.hint }),
 	});
 };
-
-export const expectOptionalPort = <E>(
-	value: unknown,
-	options: ValidatorOptions<E>,
-): number | undefined => {
-	if (value === undefined) return undefined;
-	return expectPort(value, options);
-};
-
-export const expectStringRecord = <E>(
-	value: unknown,
-	options: ValidatorOptions<E>,
-): Readonly<Record<string, string>> => {
-	if (value === undefined) return {};
-	if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-		return fail(options.mkError, {
-			field: options.field,
-			message: options.message ?? 'must be an object of string values',
-			...(options.hint === undefined ? {} : { hint: options.hint }),
-		});
-	}
-	for (const [key, entry] of Object.entries(value)) {
-		if (key.length === 0) {
-			return fail(options.mkError, {
-				field: options.field,
-				message: 'environment variable names must be non-empty',
-				...(options.hint === undefined ? {} : { hint: options.hint }),
-			});
-		}
-		if (typeof entry !== 'string') {
-			return fail(options.mkError, {
-				field: `${options.field}.${key}`,
-				message: 'must be a string',
-				...(options.hint === undefined ? {} : { hint: options.hint }),
-			});
-		}
-	}
-	return value as Readonly<Record<string, string>>;
-};
-
-export const expectOneOf = <const Values extends ReadonlyArray<string>, E>(
-	value: unknown,
-	values: Values,
-	options: ValidatorOptions<E>,
-): Values[number] => {
-	if (typeof value === 'string' && (values as ReadonlyArray<string>).includes(value)) {
-		return value as Values[number];
-	}
-	return fail(options.mkError, {
-		field: options.field,
-		message: options.message ?? `must be one of ${values.map((v) => `'${v}'`).join(', ')}`,
-		...(options.hint === undefined ? {} : { hint: options.hint }),
-	});
-};
-
-export const expectNonEmptyArray = <T, E>(
-	value: ReadonlyArray<T> | undefined,
-	options: ValidatorOptions<E>,
-): ReadonlyArray<T> => {
-	if (Array.isArray(value) && value.length > 0) return value;
-	return fail(options.mkError, {
-		field: options.field,
-		message: options.message ?? 'must be a non-empty array',
-		...(options.hint === undefined ? {} : { hint: options.hint }),
-	});
-};
-
-export const expectPattern = <E>(
-	value: string,
-	pattern: RegExp,
-	options: ValidatorOptions<E>,
-): string => {
-	if (pattern.test(value)) return value;
-	return fail(options.mkError, {
-		field: options.field,
-		message: options.message ?? `must match ${pattern.source}`,
-		...(options.hint === undefined ? {} : { hint: options.hint }),
-	});
-};
-

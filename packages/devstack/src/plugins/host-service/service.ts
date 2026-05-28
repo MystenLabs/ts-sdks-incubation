@@ -7,11 +7,7 @@ import type { PluginKey } from '../../substrate/brand.ts';
 import type { AnyResourceRef } from '../../api/define-plugin.ts';
 import {
 	expectNonEmptyString,
-	expectOneOf,
-	expectOptionalNonEmptyString,
-	expectOptionalPort,
 	expectOptionalPositiveInteger,
-	expectStringRecord,
 } from '../../substrate/runtime/config-validation.ts';
 import {
 	observeProcessLines,
@@ -136,6 +132,7 @@ const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_HTTP_READY_TIMEOUT_MS = 60_000;
 const DEFAULT_HTTP_READY_INTERVAL_MS = 250;
 const DEFAULT_LOG_READY_TIMEOUT_MS = 60_000;
+const READY_STREAM_VALUES = ['stdout', 'stderr', 'both'] as const;
 
 const shellInvocationFor = (script: string): { command: string; args: ReadonlyArray<string> } => {
 	if (process.platform === 'win32') {
@@ -161,7 +158,9 @@ const normalizeReadyProbe = (
 	if (ready === undefined) return undefined;
 	const mkError = configErrorFor(serviceName);
 	if (ready.kind === 'http') {
-		expectOptionalNonEmptyString(ready.url, { field: 'ready.url', mkError });
+		if (ready.url !== undefined) {
+			expectNonEmptyString(ready.url, { field: 'ready.url', mkError });
+		}
 		expectOptionalPositiveInteger(ready.timeoutMs, { field: 'ready.timeoutMs', mkError });
 		expectOptionalPositiveInteger(ready.intervalMs, { field: 'ready.intervalMs', mkError });
 		return ready;
@@ -170,10 +169,10 @@ const normalizeReadyProbe = (
 		if (typeof ready.pattern !== 'string' && !(ready.pattern instanceof RegExp)) {
 			throw mkError({ field: 'ready.pattern', message: 'must be a string or RegExp' });
 		}
-		if (ready.stream !== undefined) {
-			expectOneOf(ready.stream, ['stdout', 'stderr', 'both'] as const, {
+		if (ready.stream !== undefined && !READY_STREAM_VALUES.includes(ready.stream)) {
+			throw mkError({
 				field: 'ready.stream',
-				mkError,
+				message: "must be one of 'stdout', 'stderr', 'both'",
 			});
 		}
 		expectOptionalPositiveInteger(ready.timeoutMs, { field: 'ready.timeoutMs', mkError });
@@ -204,9 +203,34 @@ export const normalizeHostServiceOptions = (
 		throw mkError({ field: 'args', message: 'args are only supported with command' });
 	}
 
-	const preferredPort = expectOptionalPort(options.port, { field: 'port', mkError });
+	if (
+		options.port !== undefined &&
+		!(
+			typeof options.port === 'number' &&
+			Number.isInteger(options.port) &&
+			options.port > 0 &&
+			options.port <= 65_535
+		)
+	) {
+		throw mkError({ field: 'port', message: 'must be an integer between 1 and 65535' });
+	}
+	const preferredPort = options.port;
 	const cwd = resolve(options.cwd ?? process.cwd());
-	const env = expectStringRecord(options.env, { field: 'env', mkError });
+	const rawEnv = options.env;
+	if (rawEnv !== undefined) {
+		if (typeof rawEnv !== 'object' || rawEnv === null || Array.isArray(rawEnv)) {
+			throw mkError({ field: 'env', message: 'must be an object of string values' });
+		}
+		for (const [key, entry] of Object.entries(rawEnv)) {
+			if (key.length === 0) {
+				throw mkError({ field: 'env', message: 'environment variable names must be non-empty' });
+			}
+			if (typeof entry !== 'string') {
+				throw mkError({ field: `env.${key}`, message: 'must be a string' });
+			}
+		}
+	}
+	const env: Readonly<Record<string, string>> = rawEnv ?? {};
 	const shutdownGraceMs =
 		expectOptionalPositiveInteger(options.shutdownGraceMs, {
 			field: 'shutdownGraceMs',

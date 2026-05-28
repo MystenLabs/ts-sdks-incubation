@@ -41,7 +41,6 @@ import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import {
 	credentialedUrl,
@@ -163,11 +162,13 @@ export const resolveOptions = (
 	opts: PostgresServiceOptions,
 ): ResolvedPostgresOptions => {
 	const name = opts.name ?? 'postgres';
-	const databases = expectNonEmptyArray(opts.databases ?? DEFAULT_DATABASES, {
-		field: 'databases',
-		message: 'postgres(): `databases` must be non-empty',
-		mkError: postgresConfigError,
-	});
+	const databases = opts.databases ?? DEFAULT_DATABASES;
+	if (!Array.isArray(databases) || databases.length === 0) {
+		throw postgresConfigError({
+			field: 'databases',
+			message: 'postgres(): `databases` must be non-empty',
+		});
+	}
 	return {
 		name,
 		version: opts.version ?? DEFAULT_VERSION,

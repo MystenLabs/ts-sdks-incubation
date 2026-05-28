@@ -13,7 +13,6 @@
 
 import { Effect, Schedule, type Scope } from 'effect';
 
-import { expectPositiveFiniteNumber } from '../../substrate/runtime/config-validation.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { suiConfigError } from './errors.ts';
 import type { SuiPluginError } from './errors.ts';
@@ -32,12 +31,13 @@ export const DEFAULT_AUTO_TICK_INTERVAL_MS = 1000;
 export const resolveAutoTickIntervalMs = (option?: AutoTickOption): number | undefined => {
 	if (option === undefined || option === false) return undefined;
 	if (option === true) return DEFAULT_AUTO_TICK_INTERVAL_MS;
-	return expectPositiveFiniteNumber(option.intervalMs, {
+	const { intervalMs } = option;
+	if (typeof intervalMs === 'number' && Number.isFinite(intervalMs) && intervalMs > 0) {
+		return intervalMs;
+	}
+	throw suiConfigError({
 		field: 'autoTick.intervalMs',
-		message: `sui: autoTick.intervalMs must be a positive finite number (got ${String(
-			option.intervalMs,
-		)})`,
-		mkError: suiConfigError,
+		message: `sui: autoTick.intervalMs must be a positive finite number (got ${String(intervalMs)})`,
 	});
 };
 

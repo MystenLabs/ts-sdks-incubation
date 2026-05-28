@@ -18,7 +18,6 @@
 import { Effect, FileSystem } from 'effect';
 
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
-import { expectPattern } from '../../substrate/runtime/config-validation.ts';
 import { sealConfigError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { SealSpans } from './spans.ts';
@@ -66,13 +65,14 @@ const DEFAULT_TS_SDK_REQUIREMENT = '>=0.4.5';
 const YAML_INTERP_FIELD_RE = /^[0-9a-zA-Z:/_.\-]+$/;
 const YAML_INTERP_SEMVER_RE = /^[0-9a-zA-Z:/_.\-<>=^~* |!]+$/;
 
-const assertYamlSafe = (field: string, value: string, pattern: RegExp): string =>
-	expectPattern(value, pattern, {
+const assertYamlSafe = (field: string, value: string, pattern: RegExp): string => {
+	if (pattern.test(value)) return value;
+	throw sealConfigError({
 		field,
-		mkError: sealConfigError,
 		message: `seal.config-render: ${field} contains characters that would break YAML quoting`,
 		hint: `allowed characters: ${pattern.source}`,
 	});
+};
 
 /** Render the key-server config yaml.
  *

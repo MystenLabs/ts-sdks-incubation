@@ -1,3 +1,13 @@
+// Compound Schema decode at trust boundaries — JSON / unknown →
+// typed values, with one parse/decode issue shape and typed error
+// projection. Reach for `decodeUnknown(Sync)` /
+// `decodeJsonText(Sync)` when you have a Schema and want to decode
+// a whole shape (multi-field, refinements, transforms).
+//
+// For one-field shape checks ("port must be a positive integer",
+// "name must be a non-empty string") that throw on bad input,
+// reach for the `expect*` helpers in `config-validation.ts` instead.
+
 import { Effect, Schema } from 'effect';
 
 export interface RuntimeDecodeIssue {
