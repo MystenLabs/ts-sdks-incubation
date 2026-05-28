@@ -72,7 +72,10 @@ import {
 	CliInternalError,
 	CliSupervisorLiveError,
 	CliUnavailableError,
+	CliUsageError,
 } from '../surfaces/cli/index.ts';
+import { emitFailure, nodeProcessIO } from '../surfaces/cli/output.ts';
+import { ENV_VARS } from '../surfaces/cli/flags.ts';
 import { probeSupervisorPresence } from '../surfaces/cli/commands/index.ts';
 import { defaultProbes } from './doctor-probes.ts';
 import { nodeConfirmPrompt } from '../surfaces/cli/commands/confirm-node.ts';
@@ -1237,10 +1240,12 @@ export const identityInputsFromArgv = (
 			if (token === `--${name}`) {
 				const next = argv[i + 1];
 				if (next === undefined) {
-					throw new Error(`flag --${name} requires a value`);
+					throw new CliUsageError({ message: `flag --${name} requires a value` });
 				}
 				if (next.startsWith('--')) {
-					throw new Error(`flag --${name} requires a value; got "${next}" which looks like a flag`);
+					throw new CliUsageError({
+						message: `flag --${name} requires a value; got "${next}" which looks like a flag`,
+					});
 				}
 				return next;
 			}
@@ -1269,7 +1274,26 @@ export const runCli = async (
 ): Promise<void> => {
 	const stdinIsTty = Boolean((process.stdin as { isTTY?: boolean }).isTTY);
 	const env: Record<string, string | undefined> = { ...process.env };
-	const identityInputs = identityInputsFromArgv(argv, env);
+	let identityInputs: ReturnType<typeof identityInputsFromArgv>;
+	try {
+		identityInputs = identityInputsFromArgv(argv, env);
+	} catch (cause) {
+		const error =
+			cause instanceof CliUsageError
+				? cause
+				: new CliUsageError({
+						message: cause instanceof Error ? cause.message : String(cause),
+					});
+		const jsonMode = env[ENV_VARS.JSON] === '1' || argv.includes('--json');
+		await Effect.runPromise(
+			emitFailure(nodeProcessIO, jsonMode ? 'json' : 'human', {
+				command: '(parse-argv)',
+				elapsedMs: 0,
+				error,
+			}),
+		);
+		return;
+	}
 	const identity = resolveIdentity({
 		app: identityInputs.app,
 		stack: identityInputs.stack,

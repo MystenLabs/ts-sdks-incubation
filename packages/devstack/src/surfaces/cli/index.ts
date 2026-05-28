@@ -22,7 +22,7 @@ import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './e
 import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
 import { ExitCode } from './sysexits.ts';
 import { parseDevstackNetworkName } from '../../api/inference-network.ts';
-import { type CliIO, emitFailure, nodeProcessIO } from './output.ts';
+import { type CliIO, emitFailure, emitSuccess, nodeProcessIO } from './output.ts';
 import {
 	type CommandResult,
 	type ConfigDeps,
@@ -480,12 +480,15 @@ const schemaCommand = buildCommand<Pick<IdentityFlags, 'json'>, [], DevstackCliC
 	parameters: { flags: { json: identityFlagParams.json } },
 	docs: { brief: 'Emit the CLI schema' },
 	func: function (flags) {
-		const mode = outputModeFrom(flags, this.env);
-		return Effect.runPromise(
-			this.io
-				.writeStdout(JSON.stringify({ ...commandSchema(), outputMode: mode }))
-				.pipe(Effect.andThen(this.io.setExitCode(0))),
-		);
+		return runWithFlags(this, 'schema', flags, [], (global) => {
+			const data = { ...commandSchema(), outputMode: global.outputMode };
+			return emitSuccess(this.io, global.outputMode, {
+				command: 'schema',
+				elapsedMs: 0,
+				data,
+				humanLines: [JSON.stringify(data, null, 2)],
+			}).pipe(Effect.as({ exitCode: 0 }));
+		});
 	},
 });
 

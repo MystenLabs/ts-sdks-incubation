@@ -634,7 +634,10 @@ describe('dispatch', () => {
 		await run(['schema', '--json'], deps, { io: read().io });
 		const h = read();
 		expect(h.exitCode).toBe(0);
-		const schema = JSON.parse(h.stdout[0]!);
+		const envelope = JSON.parse(h.stdout[0]!);
+		expect(envelope.ok).toBe(true);
+		expect(envelope.command).toBe('schema');
+		const schema = envelope.data;
 		expect(schema.verbs).toEqual([
 			'up',
 			'apply',
