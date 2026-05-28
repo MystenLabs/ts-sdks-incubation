@@ -882,19 +882,39 @@ export const acquirePerNameLock = (
 		});
 		if (claimed) return;
 		// Park until the current holder releases and completes our
-		// deferred. Interrupt-cleanup: if we're interrupted while
-		// queued, drop our deferred from the queue so a future
-		// release doesn't transfer ownership to a dead waiter.
+		// deferred. Interrupt-cleanup mirrors the lease-broker pattern
+		// (`substrate/runtime/lease-broker/service.ts:194-216`):
+		//   1. If we're still queued → drop our deferred so a future
+		//      release doesn't transfer ownership to a dead waiter.
+		//   2. If we were already promoted (our deferred was completed
+		//      by a release that raced our interrupt) → release the
+		//      slot on our behalf so the next waiter can proceed. The
+		//      slot's "holder" is implicit: queue entry present + our
+		//      deferred no longer queued means we own it.
 		yield* Deferred.await(waiter).pipe(
 			Effect.onInterrupt(() =>
-				Ref.update(lock, (m) => {
-					const queue = m.get(name);
-					if (queue === undefined) return m;
-					const filtered = queue.filter((d) => d !== waiter);
-					if (filtered.length === queue.length) return m;
-					const next = new Map(m);
-					next.set(name, filtered);
-					return next as PerNameLockState;
+				Effect.gen(function* () {
+					const promotedButInterrupted = yield* Ref.modify(lock, (m) => {
+						const queue = m.get(name);
+						if (queue === undefined) return [false, m] as const;
+						const filtered = queue.filter((d) => d !== waiter);
+						if (filtered.length !== queue.length) {
+							// Still queued → drop ourselves; the holder
+							// will release normally and skip us.
+							const next = new Map(m);
+							next.set(name, filtered);
+							return [false, next as PerNameLockState] as const;
+						}
+						// Not queued. Either (a) we were never queued (we
+						// claimed a free slot above — impossible here, that
+						// path returns before await), or (b) a release
+						// already popped us and our deferred is done. Use
+						// the deferred's completion as the discriminator.
+						return [Deferred.isDoneUnsafe(waiter), m] as const;
+					});
+					if (promotedButInterrupted) {
+						yield* releasePerNameLock(lock, name);
+					}
 				}),
 			),
 		);

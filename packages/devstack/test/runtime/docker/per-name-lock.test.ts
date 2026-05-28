@@ -177,4 +177,57 @@ describe('per-name lock', () => {
 			expect(finalState.size).toBe(0);
 		}),
 	);
+
+	it.effect('cancelled waiter drops out of the queue without stranding the slot', () =>
+		// Regression for the cancelled-waiter cleanup that mirrors the
+		// lease-broker pattern (`substrate/runtime/lease-broker/
+		// service.ts:cleanupCancelledWait`):
+		//   1. Fiber A holds the slot.
+		//   2. Fiber B is queued waiting on its Deferred.
+		//   3. B is interrupted while parked.
+		//   4. B's `onInterrupt` filters its deferred out of the queue
+		//      so a later `releasePerNameLock` finds an empty queue and
+		//      fully releases the slot rather than promoting a dead
+		//      fiber.
+		//   5. C acquires cleanly.
+		//
+		// The narrower "promoted-but-interrupted" race (release pops B's
+		// deferred AND B is interrupted between the pop and B's await
+		// resuming) is covered by the second branch of `onInterrupt` —
+		// it uses `Deferred.isDoneUnsafe(waiter)` to detect promotion
+		// and re-releases on the dead waiter's behalf. That branch is
+		// defensive against an Effect-scheduler-internal timing window
+		// that's hard to deterministically reproduce in a single-
+		// process test; the source code is in place at
+		// `runtime/docker/container.ts:acquirePerNameLock`.
+		Effect.gen(function* () {
+			const lock = yield* Ref.make<PerNameLockState>(new Map());
+
+			// A holds 'shared'.
+			yield* acquirePerNameLock(lock, 'shared');
+
+			// B enqueues; wait until B is actually parked on its Deferred.
+			const fiberB = yield* Effect.forkChild(acquirePerNameLock(lock, 'shared'));
+			yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 1));
+
+			// Interrupt B while it's parked. B's onInterrupt should
+			// filter its deferred out of the queue.
+			yield* Fiber.interrupt(fiberB);
+
+			// Queue should now be empty (A still holds).
+			yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 0));
+
+			// Release A. With no live waiters, the slot fully releases
+			// (map entry deleted).
+			yield* releasePerNameLock(lock, 'shared');
+			const afterRelease = yield* Ref.get(lock);
+			expect(afterRelease.has('shared')).toBe(false);
+
+			// C acquires the now-free slot cleanly.
+			yield* acquirePerNameLock(lock, 'shared');
+			yield* releasePerNameLock(lock, 'shared');
+			const finalState = yield* Ref.get(lock);
+			expect(finalState.size).toBe(0);
+		}),
+	);
 });

@@ -38,7 +38,7 @@
 // stacks and apps that share a state dir.
 
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import {
 	createServer as createNetServer,
 	type AddressInfo,
@@ -49,7 +49,7 @@ import { join } from 'node:path';
 import { Context, Effect, Layer, Ref, Schema, Scope } from 'effect';
 
 import { RosterHolderSchema, type RosterHolder } from '../../cross-process.ts';
-import { atomicWriteFileSync } from '../atomic-write.ts';
+import { atomicWriteFileExclusiveSync } from '../atomic-write.ts';
 import { checkHolderLiveness, ownHolder } from '../cross-process/liveness.ts';
 import { PortBrokerError } from '../errors.ts';
 import { RuntimeRoot } from '../paths.ts';
@@ -208,36 +208,26 @@ const tryWriteReservationSync = (
 	path: string,
 	doc: PortReservationDoc,
 ): ReservationWriteAttempt => {
-	// `atomicWriteFileSync` writes a tempfile under O_EXCL + fsync, then
-	// renames. Rename on POSIX clobbers any pre-existing file at the
-	// target — which would defeat the `wx` "fail if exists" semantic we
-	// rely on for cross-process reservation arbitration. Pre-check for
-	// existence and surface `exists` without touching the file; the
-	// caller (acquirePortReservation) inspects the holder and decides
-	// busy-vs-stale. This isn't atomic with the write — a sibling pid
-	// can land between `existsSync` and `atomicWriteFileSync` — but the
-	// caller's outer retry loop handles the resulting `race` tag the
-	// same way it handles a `wx`-EEXIST race.
-	if (existsSync(path)) {
-		try {
-			return { _tag: 'exists', doc: parseReservationDoc(readFileSync(path, 'utf8')) };
-		} catch {
-			return { _tag: 'exists', doc: null };
-		}
-	}
+	// `atomicWriteFileExclusiveSync` writes a tempfile under O_EXCL +
+	// fsync, then `linkSync`s it onto the final path. POSIX `link(2)`
+	// is atomic AND fails with `EEXIST` if the target exists — that is
+	// the exclusive-create primitive `rename` lacks (rename clobbers).
+	// A sibling pid that wins the race becomes the canonical reservation
+	// at `path`; we observe it via the EEXIST error and surface the
+	// winner's doc to the caller (`acquirePortReservation`), which then
+	// decides busy-vs-stale based on the holder's liveness.
 	try {
-		atomicWriteFileSync(path, `${JSON.stringify(doc)}\n`, { mode: 0o600 });
+		atomicWriteFileExclusiveSync(path, `${JSON.stringify(doc)}\n`, { mode: 0o600 });
 		return { _tag: 'written' };
 	} catch (cause) {
 		const code = (cause as NodeJS.ErrnoException).code;
 		if (code === 'EEXIST') {
-			// A sibling pid won the race during our tempfile create. Same
-			// recovery as the pre-check above.
-			if (!existsSync(path)) return { _tag: 'race' };
 			try {
 				return { _tag: 'exists', doc: parseReservationDoc(readFileSync(path, 'utf8')) };
 			} catch {
-				return { _tag: 'exists', doc: null };
+				// The winning reservation file was removed between our
+				// link-EEXIST and our read (a peer raced release). Retry.
+				return { _tag: 'race' };
 			}
 		}
 		return { _tag: 'failed', cause };

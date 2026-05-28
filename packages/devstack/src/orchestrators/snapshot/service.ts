@@ -233,7 +233,7 @@ const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> =>
 
 const mintSnapshotName = (): string => {
 	const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').slice(0, 15);
-	return `manual-${stamp}-${randomUUID().replace(/-/g, '').slice(0, 4)}`;
+	return `manual-${stamp}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
 };
 
 const validateSnapshotId = (

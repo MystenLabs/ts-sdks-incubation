@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { Cause, Deferred, Effect, Exit, Layer, Ref } from 'effect';
+import { Cause, Deferred, Effect, Exit, Fiber, Layer, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -44,15 +44,23 @@ const stackPathsLayer = (stackRoot: string): Layer.Layer<StackPathsService> =>
 
 describe('layerCrossProcessLockInProcess', () => {
 	it.effect('withLock serializes concurrent fibers (same process)', () =>
+		// Serialization assertion is Deferred-gated (not sleep-gated) so the
+		// test is deterministic and independent of clock semantics: the lock
+		// body inherits the caller's clock per `cross-process-lock.ts`'s
+		// `underLiveClock` narrowing, so any wall-time sleep inside the body
+		// would park indefinitely under `it.effect`'s TestClock and miss the
+		// serialization signal.
 		Effect.gen(function* () {
 			const lock = yield* CrossProcessLock;
 			const log = yield* Ref.make<ReadonlyArray<string>>([]);
 			const append = (s: string) => Ref.update(log, (prev) => [...prev, s]);
+			const release = yield* Deferred.make<void>();
 
 			const a = lock.withLock(
 				Effect.gen(function* () {
 					yield* append('a-in');
-					yield* Effect.sleep('10 millis');
+					// Block until the test fires `release`, holding the lock.
+					yield* Deferred.await(release);
 					yield* append('a-out');
 				}),
 			);
@@ -63,7 +71,14 @@ describe('layerCrossProcessLockInProcess', () => {
 				}),
 			);
 
-			yield* Effect.all([a, b], { concurrency: 'unbounded' });
+			const fiberA = yield* Effect.forkChild(a);
+			const fiberB = yield* Effect.forkChild(b);
+			// Yield so fiber A can acquire and reach the `Deferred.await`.
+			yield* Effect.yieldNow;
+			yield* Effect.yieldNow;
+			yield* Deferred.succeed(release, undefined);
+			yield* Fiber.join(fiberA);
+			yield* Fiber.join(fiberB);
 			const events = yield* Ref.get(log);
 			const aStart = events.indexOf('a-in');
 			const aEnd = events.indexOf('a-out');
@@ -117,6 +132,9 @@ describe('layerCrossProcessLockFlock', () => {
 	});
 
 	it.effect('withLock serializes concurrent fibers via the on-disk lock', () => {
+		// Deferred-gated rather than sleep-gated — see the in-process variant
+		// above for the rationale (body inherits TestClock; wall-time sleeps
+		// would park indefinitely).
 		const root = freshRoot();
 		const stackRoot = join(root, 'app', 'main');
 		return Effect.gen(function* () {
@@ -124,25 +142,32 @@ describe('layerCrossProcessLockFlock', () => {
 				const lock = yield* CrossProcessLock;
 				const log = yield* Ref.make<ReadonlyArray<string>>([]);
 				const append = (s: string) => Ref.update(log, (prev) => [...prev, s]);
+				const release = yield* Deferred.make<void>();
 
-				yield* Effect.all(
-					[
-						lock.withLock(
-							Effect.gen(function* () {
-								yield* append('a-in');
-								yield* Effect.sleep('5 millis');
-								yield* append('a-out');
-							}),
-						),
-						lock.withLock(
-							Effect.gen(function* () {
-								yield* append('b-in');
-								yield* append('b-out');
-							}),
-						),
-					],
-					{ concurrency: 'unbounded' },
+				const fiberA = yield* Effect.forkChild(
+					lock.withLock(
+						Effect.gen(function* () {
+							yield* append('a-in');
+							yield* Deferred.await(release);
+							yield* append('a-out');
+						}),
+					),
 				);
+				const fiberB = yield* Effect.forkChild(
+					lock.withLock(
+						Effect.gen(function* () {
+							yield* append('b-in');
+							yield* append('b-out');
+						}),
+					),
+				);
+
+				yield* Effect.yieldNow;
+				yield* Effect.yieldNow;
+				yield* Deferred.succeed(release, undefined);
+				yield* Fiber.join(fiberA);
+				yield* Fiber.join(fiberB);
+
 				const events = yield* Ref.get(log);
 				const aEnd = events.indexOf('a-out');
 				const bStart = events.indexOf('b-in');
@@ -248,34 +273,53 @@ describe('layerCrossProcessLockFlock', () => {
 		const root = freshRoot();
 		const stackA = join(root, 'app-a', 'main');
 		const stackB = join(root, 'app-b', 'main');
-		const layerA = layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackA)));
-		const layerB = layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackB)));
+		// `Layer.fresh` forces each fiber to materialize its own
+		// CrossProcessLock service instance instead of sharing a memoized
+		// one from the parent runtime — without this, both fibers see the
+		// same lock and serialize despite having separate stack roots.
+		const layerA = Layer.fresh(
+			layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackA))),
+		);
+		const layerB = Layer.fresh(
+			layerCrossProcessLockFlock.pipe(Layer.provide(stackPathsLayer(stackB))),
+		);
 
-		const programA = (gate: Deferred.Deferred<void>) =>
+		const programA = (entered: Deferred.Deferred<void>, release: Deferred.Deferred<void>) =>
 			Effect.gen(function* () {
 				const lock = yield* CrossProcessLock;
 				return yield* lock.withLock(
 					Effect.gen(function* () {
-						yield* Deferred.succeed(gate, undefined);
-						yield* Effect.sleep('20 millis');
+						// Signal we're inside the lock so B can race.
+						yield* Deferred.succeed(entered, undefined);
+						// Hold the lock until the main fiber releases — proves
+						// B isn't blocked by A's lock (different stack root →
+						// different file → no contention).
+						yield* Deferred.await(release);
 						return 'a-done';
 					}),
 				);
 			}).pipe(Effect.provide(layerA));
 
-		const programB = (gate: Deferred.Deferred<void>) =>
+		const programB = (entered: Deferred.Deferred<void>) =>
 			Effect.gen(function* () {
-				yield* Deferred.await(gate);
+				// Wait until A is provably inside its lock.
+				yield* Deferred.await(entered);
 				const lock = yield* CrossProcessLock;
 				return yield* lock.withLock(Effect.succeed('b-done'));
 			}).pipe(Effect.provide(layerB));
 
 		return Effect.gen(function* () {
 			try {
-				const gate = yield* Deferred.make<void>();
-				const [a, b] = yield* Effect.all([programA(gate), programB(gate)], {
-					concurrency: 'unbounded',
-				});
+				const entered = yield* Deferred.make<void>();
+				const release = yield* Deferred.make<void>();
+				const fiberA = yield* Effect.forkChild(programA(entered, release));
+				const fiberB = yield* Effect.forkChild(programB(entered));
+				// B must complete WHILE A still holds its lock — this proves
+				// the two stack roots have independent locks (if they shared
+				// one, B would block until A releases).
+				const b = yield* Fiber.join(fiberB);
+				yield* Deferred.succeed(release, undefined);
+				const a = yield* Fiber.join(fiberA);
 				expect(a).toBe('a-done');
 				expect(b).toBe('b-done');
 			} finally {

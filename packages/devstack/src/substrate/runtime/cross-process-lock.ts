@@ -26,17 +26,21 @@ import {
 import { StackPathsService } from './paths.ts';
 
 /** Live system Clock instance. The lock layers provide this for the
- *  body Effect so the lock's wall-time invariants (timeouts, backoff,
- *  the SHORT-CRITICAL-SECTION discipline from the architecture) hold
- *  even when the surrounding fiber has a `TestClock` installed.
+ *  on-disk acquire/release infrastructure so the lock's wall-time
+ *  invariants (acquire-timeout, exponential backoff, the holder-liveness
+ *  PID/start-time probes) hold even when the surrounding fiber has a
+ *  `TestClock` installed.
  *
  *  Cross-process safety is fundamentally a wall-time property — two
  *  OS processes can't share a virtual test clock, and the holder
  *  liveness probes that reclaim stale locks measure real PID
- *  start-time. Body code running under TestClock that suspends on
- *  `Effect.sleep` would hold the lock indefinitely from the system's
- *  point of view, starving cross-process waiters; pinning the body
- *  to the live clock keeps the lock's semantics coherent. */
+ *  start-time. The user body intentionally does NOT get this clock
+ *  pin: see `underLiveClock` for scope. Body code running under
+ *  TestClock that virtualizes sleeps inside the critical section is a
+ *  test-only concern (no real peers contend in a single-process test
+ *  using TestClock); the SHORT-CRITICAL-SECTION discipline from the
+ *  architecture is enforced by code review rather than by forcing
+ *  wall time on every body. */
 const LIVE_CLOCK: Clock.Clock = {
 	currentTimeMillis: Effect.sync(() => Date.now()),
 	currentTimeMillisUnsafe: () => Date.now(),
@@ -55,7 +59,15 @@ const LIVE_CLOCK: Clock.Clock = {
 };
 
 /** Provide the live Clock for `effect`, overriding any inherited
- *  `TestClock` for the duration of the lock body. See LIVE_CLOCK. */
+ *  `TestClock` for the duration of the wrapped effect.
+ *
+ *  SCOPE: applied ONLY to the acquire/release infrastructure (OS-advisory
+ *  lock retry backoff, holder-liveness PID probes). The user-supplied
+ *  body Effect inherits the caller's clock so tests can `TestClock.adjust`
+ *  past `Effect.sleep` calls inside lock-protected sections without
+ *  being forced to wall time. The lock primitives themselves still get
+ *  the live clock for the wall-time invariants documented on
+ *  `LIVE_CLOCK`. */
 const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 	Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);
 
@@ -119,14 +131,25 @@ export const layerCrossProcessLockFlock: Layer.Layer<CrossProcessLock, never, St
 			const lockPath = paths.stackLockFile;
 			return CrossProcessLock.of({
 				withLock: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-					underLiveClock(
-						semaphore.withPermits(1)(
-							Effect.scoped(
-								Effect.gen(function* () {
-									yield* acquireStackLock(lockPath);
-									return yield* effect;
-								}),
-							),
+					// Acquire/release infrastructure runs under live clock
+					// (OS-advisory lock retry backoff needs wall time — see
+					// LIVE_CLOCK). The user body inherits the caller's
+					// clock so TestClock-driven tests can virtualize
+					// `Effect.sleep` inside the critical section.
+					//
+					// `semaphore.withPermits(1)` keeps SAME-process fibers
+					// serialized before they race for the on-disk artifact;
+					// permit release fires on body completion, failure, AND
+					// interrupt via the semaphore's own finalizer.
+					// `Effect.scoped` owns the on-disk acquire so its
+					// finalizer (registered by `acquireStackLock`) unlinks
+					// `stack.lock` on the same lifecycle.
+					semaphore.withPermits(1)(
+						Effect.scoped(
+							Effect.gen(function* () {
+								yield* underLiveClock(acquireStackLock(lockPath));
+								return yield* effect;
+							}),
 						),
 					),
 			});
@@ -148,7 +171,12 @@ export const layerCrossProcessLockInProcess: Layer.Layer<CrossProcessLock> = Lay
 	Effect.gen(function* () {
 		const semaphore = yield* Semaphore.make(1);
 		return CrossProcessLock.of({
-			withLock: (effect) => underLiveClock(semaphore.withPermits(1)(effect)),
+			// No on-disk acquire here, so there's no wall-time backoff to
+			// pin — `semaphore.withPermits(1)` parks on a queue without
+			// `Effect.sleep`, so it tolerates TestClock natively. The
+			// body inherits the caller's clock by construction; no
+			// `underLiveClock` wrap.
+			withLock: (effect) => semaphore.withPermits(1)(effect),
 		});
 	}),
 );

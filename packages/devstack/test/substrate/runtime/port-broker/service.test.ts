@@ -170,6 +170,81 @@ describe('PortBrokerService', () => {
 		}).pipe(Effect.provide(portBrokerLayer(root)));
 	});
 
+	it.effect('two concurrent brokers racing the same port: exactly one wins the reservation', () => {
+		// Regression: previously `tryWriteReservationSync` used
+		// `existsSync(path)` + `atomicWriteFileSync` (rename clobbers),
+		// leaving a TOCTOU window where two peers could pass the
+		// existence check, both rename their tempfile onto the final
+		// path, and both believe they own the port. The fix replaced
+		// the rename with `linkSync` (POSIX-atomic exclusive-create —
+		// `EEXIST` on collision), so this race is now arbitrated by
+		// the kernel.
+		//
+		// Two SEPARATE broker instances (two `Ref<Map>` scopes, same
+		// runtime root) simulate two `devstack apply` processes sharing
+		// a state dir. They synchronize on a `Deferred` so both pass
+		// any pre-checks at roughly the same instant. Exactly one must
+		// receive the preferred port; the other must reassign.
+		const root = freshRoot();
+		return Effect.gen(function* () {
+			try {
+				// Seed: claim a free OS port, then release so kernel
+				// probes will pass for both brokers.
+				const seed = yield* listenOnRandomPort('127.0.0.1');
+				const preferred = serverPort(seed);
+				yield* closeServer(seed);
+
+				const start = yield* Deferred.make<void>();
+
+				const raceFiber = (owner: string) =>
+					Effect.forkChild(
+						Effect.scoped(
+							Effect.gen(function* () {
+								const broker = yield* PortBrokerService;
+								yield* Deferred.await(start);
+								const allocated = yield* Effect.scoped(
+									broker.allocate({ owner, preferredPort: preferred }),
+								);
+								return allocated.port;
+								// `Layer.fresh` forces each fiber to materialize its
+								// own broker (own in-process `Ref<Map>`) instead of
+								// inheriting a memoized instance from the parent
+								// runtime. The two brokers share the on-disk runtime
+								// root so they contend at the linkSync layer — the
+								// shape this test is designed to exercise.
+							}).pipe(Effect.provide(Layer.fresh(portBrokerLayer(root)))),
+						),
+					);
+
+				const fiberA = yield* raceFiber('racer-a');
+				const fiberB = yield* raceFiber('racer-b');
+
+				// Release both fibers at the same instant.
+				yield* Deferred.succeed(start, undefined);
+
+				const exitA = yield* Fiber.await(fiberA);
+				const exitB = yield* Fiber.await(fiberB);
+
+				// Both fibers must succeed — the loser reassigns
+				// rather than failing.
+				expect(Exit.isSuccess(exitA)).toBe(true);
+				expect(Exit.isSuccess(exitB)).toBe(true);
+				if (!Exit.isSuccess(exitA) || !Exit.isSuccess(exitB)) return;
+
+				const portA = exitA.value;
+				const portB = exitB.value;
+
+				// Exactly one owns the preferred port; the other got a
+				// different port from the scan window.
+				const ownersOfPreferred = [portA, portB].filter((p) => p === preferred);
+				expect(ownersOfPreferred.length).toBe(1);
+				expect(portA).not.toBe(portB);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	});
+
 	it.effect('reassigns when a live peer reservation holds the preferred port', () => {
 		const root = freshRoot();
 
