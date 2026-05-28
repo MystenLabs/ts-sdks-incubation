@@ -44,15 +44,43 @@ export const isPidAlive = (pid: number): boolean => {
 	}
 };
 
+/** Per-sweep cache mapping `pid → start-time stamp` (or `null` when the
+ *  pid is gone/unprobable). Callers that issue many probes in a single
+ *  sweep (roster step-3 stale-eviction, container-claim ledger prune,
+ *  etc.) instantiate one cache per pass and thread it through every
+ *  probe call so the same pid forks `ps`/`tasklist` AT MOST once per
+ *  sweep. Single-shot callers omit the cache and get the no-cache
+ *  behavior.
+ *
+ *  Discriminator is `Map.has(pid)` — a cached `null` is a real result
+ *  (the pid is missing) and skipping it would re-fork pointlessly. */
+export type LivenessCache = Map<number, number | null>;
+
 /** Best-effort start-time stamp for `pid`. Returns `null` when the
  *  process is gone OR the platform can't produce a time. The stamp
  *  itself is opaque text — its only contract is bytewise equality with
  *  a previously-recorded sibling stamp.
  *
  *  Architecture § Cross-process safety protocol §3 — `ps -o lstart` on
- *  macOS/Linux, `tasklist` confirmation on Windows. */
-export const processStartTime = (pid: number): number | null => {
+ *  macOS/Linux, `tasklist` confirmation on Windows.
+ *
+ *  Pass `cache` to reuse a previously-probed result across a sweep
+ *  pass — same `pid` only forks the underlying utility once. */
+export const processStartTime = (pid: number, cache?: LivenessCache): number | null => {
 	if (!Number.isFinite(pid) || pid <= 0) return null;
+	if (cache?.has(pid)) {
+		// Map.get is `T | undefined` — but `has` is true, so the value
+		// is one of the cached results (a `number` or `null`).
+		return cache.get(pid) ?? null;
+	}
+	const probed = probeStartTimeUncached(pid);
+	cache?.set(pid, probed);
+	return probed;
+};
+
+/** Inner probe — always forks the platform utility. Split out so the
+ *  cache branch in `processStartTime` stays a single read/write. */
+const probeStartTimeUncached = (pid: number): number | null => {
 	if (process.platform === 'win32') {
 		try {
 			const out = execFileSync('tasklist', ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
@@ -109,7 +137,11 @@ const hashStartTimeStamp = (stamp: string): number => {
  *  Returns `'alive' | 'dead'`. Never throws. Effect-wrapped so callers
  *  compose under spans. */
 export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolderLiveness')(
-	function* (holder: RosterHolder, ownHost: string = nodeHostname()) {
+	function* (
+		holder: RosterHolder,
+		ownHost: string = nodeHostname(),
+		cache?: LivenessCache,
+	) {
 		// Foreign-host: NFS-safe — we can't verify, assume alive.
 		if (holder.hostname !== ownHost) {
 			return 'alive' as const;
@@ -119,7 +151,7 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
 			'devstack.holder.host': holder.hostname,
 		});
 		if (!isPidAlive(holder.pid)) return 'dead' as const;
-		const probedStart = processStartTime(holder.pid);
+		const probedStart = processStartTime(holder.pid, cache);
 		// pid alive but no stamp probable → conservative: ALIVE
 		// (we have nothing to dispute the recorded startTime with).
 		if (probedStart === null) return 'alive' as const;

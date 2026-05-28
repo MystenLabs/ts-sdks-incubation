@@ -181,6 +181,47 @@ describe('codegen.runEmitCycle — cycle-level stage-and-swap', () => {
 		);
 	});
 
+	it.effect('two concurrent cycles serialize under the codegen lock', () => {
+		// Per-process lock regression: prior to the fix, two `runEmitCycle`
+		// invocations against the same output dir could race on the
+		// shared `<outputDir>.staging.<cycleId>` siblings and the pre-seed
+		// `fs.copy` baseline. The lock serializes them so both produce
+		// their expected output and neither errors.
+		const parent = freshRoot();
+		const outputDir = join(parent, 'concurrent');
+		return Effect.gen(function* () {
+			const cycleA = runEmitCycle({
+				contributions: [
+					successfulDecl({
+						emitterName: 'aaa-a',
+						outputPath: 'a.ts',
+						exports: { who: 'A' },
+					}),
+				],
+			});
+			const cycleB = runEmitCycle({
+				contributions: [
+					successfulDecl({
+						emitterName: 'bbb-b',
+						outputPath: 'b.ts',
+						exports: { who: 'B' },
+					}),
+				],
+			});
+			// Fire both at once; the lock should serialize them. The
+			// second-to-finish pre-seeds from the first's published tree,
+			// so the final state must contain BOTH files. Pre-fix, the
+			// races on the shared `<outputDir>.staging.<cycleId>` siblings
+			// produced lost-update bugs where only one file survived.
+			yield* Effect.all([cycleA, cycleB], { concurrency: 'unbounded' });
+			expect(existsSync(join(outputDir, 'a.ts'))).toBe(true);
+			expect(existsSync(join(outputDir, 'b.ts'))).toBe(true);
+		}).pipe(
+			Effect.provide(baseLayer(outputDir)),
+			Effect.ensuring(Effect.sync(() => rmSync(parent, { recursive: true, force: true }))),
+		);
+	});
+
 	it.effect('first-ever cycle (no prior target) creates the output dir atomically', () => {
 		// No pre-existing output dir → stage-and-swap still works
 		// (the `targetExists` branch in service.ts is skipped) and

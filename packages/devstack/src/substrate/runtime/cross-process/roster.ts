@@ -25,7 +25,13 @@ import { atomicWriteJsonSync } from '../atomic-write.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
 import { acquireStackLock } from './stack-lock.ts';
-import { checkHolderLiveness, isPidAlive, ownHolder, processStartTime } from './liveness.ts';
+import {
+	checkHolderLiveness,
+	isPidAlive,
+	type LivenessCache,
+	ownHolder,
+	processStartTime,
+} from './liveness.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -98,13 +104,19 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 ) {
 	const survivors: RosterHolder[] = [];
 	const evicted: RosterHolder[] = [];
+	// Per-sweep cache — same pid is probed AT MOST once across all
+	// holders in this pass. Two holders sharing a pid (would only
+	// happen on a corrupted roster, but cheap insurance) collapse to
+	// one fork.
+	const livenessCache: LivenessCache = new Map();
+	const ownHost = nodeHostname();
 	for (const holder of doc.holders) {
 		const heartbeatStale = now - holder.heartbeatAt > policy.staleAfterMillis;
 		if (!heartbeatStale) {
 			survivors.push(holder);
 			continue;
 		}
-		const liveness = yield* checkHolderLiveness(holder).pipe(
+		const liveness = yield* checkHolderLiveness(holder, ownHost, livenessCache).pipe(
 			Effect.catch(() => Effect.succeed('alive' as const)),
 		);
 		if (liveness === 'dead') {
@@ -387,19 +399,30 @@ const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
 
 const claimsPath = (rosterFile: string): string => `${dirname(rosterFile)}/container-claims.json`;
 
-const isContainerClaimLive = (claim: ContainerClaim, ownHost: string = nodeHostname()): boolean => {
+const isContainerClaimLive = (
+	claim: ContainerClaim,
+	ownHost: string = nodeHostname(),
+	cache?: LivenessCache,
+): boolean => {
 	if (claim.hostname !== ownHost) return true;
 	if (!isPidAlive(claim.pid)) return false;
 	if (claim.startTime === undefined) return true;
-	const probedStart = processStartTime(claim.pid);
+	const probedStart = processStartTime(claim.pid, cache);
 	if (probedStart === null) return true;
 	return probedStart === claim.startTime;
 };
 
-const liveContainerClaims = (doc: ContainerClaimDocument): ContainerClaimDocument => ({
-	version: 1,
-	claims: doc.claims.filter((claim) => isContainerClaimLive(claim)),
-});
+const liveContainerClaims = (doc: ContainerClaimDocument): ContainerClaimDocument => {
+	// Per-pass cache — bound the `ps`/`tasklist` forks to one per
+	// unique pid across this filter sweep (multiple claims by the
+	// same pid collapse to one probe).
+	const cache: LivenessCache = new Map();
+	const ownHost = nodeHostname();
+	return {
+		version: 1,
+		claims: doc.claims.filter((claim) => isContainerClaimLive(claim, ownHost, cache)),
+	};
+};
 
 const writeClaims = (
 	path: string,

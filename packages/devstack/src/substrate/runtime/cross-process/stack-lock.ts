@@ -24,10 +24,36 @@
 import { mkdirSync, unlinkSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
-import { Data, Effect, Schema, Scope } from 'effect';
+import { Clock, Data, Duration, Effect, Schema, Scope } from 'effect';
 
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
+
+/** Live system Clock instance — mirrors the discipline in
+ *  `cross-process-lock.ts`. The acquire/reclaim sleep loops are
+ *  fundamentally wall-time properties: cross-process safety can't
+ *  share a virtual test clock, and the PID/start-time liveness probes
+ *  measure real time. Pinning sleeps to live clock keeps the lock
+ *  primitive's semantics coherent under `TestClock`-driven callers. */
+const LIVE_CLOCK: Clock.Clock = {
+	currentTimeMillis: Effect.sync(() => Date.now()),
+	currentTimeMillisUnsafe: () => Date.now(),
+	currentTimeNanos: Effect.sync(() => BigInt(Date.now()) * 1_000_000n),
+	currentTimeNanosUnsafe: () => BigInt(Date.now()) * 1_000_000n,
+	sleep: (duration: Duration.Duration) =>
+		Effect.callback<void>((resume) => {
+			const ms = Duration.toMillis(duration);
+			if (ms <= 0) {
+				resume(Effect.void);
+				return;
+			}
+			const handle = setTimeout(() => resume(Effect.void), ms);
+			return Effect.sync(() => clearTimeout(handle));
+		}),
+};
+
+const underLiveClock = <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+	Effect.provideService(effect, Clock.Clock, LIVE_CLOCK);
 import type { RosterHolder } from '../../cross-process.ts';
 
 // -----------------------------------------------------------------------------
@@ -88,6 +114,13 @@ export const DEFAULT_ACQUIRE_TIMEOUT_MILLIS = 5_000;
 /** Per-attempt initial wait. Doubles each retry up to the cap. */
 const INITIAL_BACKOFF_MILLIS = 25;
 const MAX_BACKOFF_MILLIS = 500;
+
+/** Reclaim jitter window: under multi-peer contention, each peer races
+ *  `unlink` + `O_EXCL`-create after detecting a dead holder. Without
+ *  spacing, every loser instantly thrashes the next attempt. 50–150ms
+ *  staggers retries enough to let one winner settle. */
+const RECLAIM_JITTER_BASE_MILLIS = 50;
+const RECLAIM_JITTER_SPREAD_MILLIS = 100;
 
 /**
  * Sync attempt at O_EXCL-create. Returns whether we own the lock now.
@@ -203,11 +236,19 @@ export const acquireStackLock = (
 						},
 						catch: (cause) => new StackLockIoError({ path, cause }),
 					});
-					// Loop again immediately; don't sleep for a reclaim.
+					// Under multi-peer contention, every loser of the
+					// reclaim race would otherwise instantly thrash the
+					// next `O_EXCL`-create. Sleep a small jittered window
+					// so peers stagger; the acquire-window invariant is
+					// still enforced by the elapsed-vs-timeoutMillis
+					// check at the top of the loop.
+					const reclaimJitter =
+						RECLAIM_JITTER_BASE_MILLIS + Math.random() * RECLAIM_JITTER_SPREAD_MILLIS;
+					yield* underLiveClock(Effect.sleep(`${reclaimJitter} millis`));
 					continue;
 				}
 			}
-			yield* Effect.sleep(`${backoff} millis`);
+			yield* underLiveClock(Effect.sleep(`${backoff} millis`));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MILLIS);
 		}
 	}).pipe(Effect.withSpan('cross-process.stack-lock.acquire'));

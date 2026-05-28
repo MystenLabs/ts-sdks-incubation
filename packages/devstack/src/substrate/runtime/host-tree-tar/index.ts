@@ -250,6 +250,18 @@ const processTarValidationChunk = (
 	state: TarValidationState,
 	chunk: Uint8Array,
 ): HostTreeTarError | null => {
+	// Fast path: we're mid-skip over a large file body and this chunk is
+	// fully consumed by the skip. Avoid `concatBytes` (O(N) per call →
+	// O(N²) across a multi-MB body streamed in 64KB chunks). The buffer
+	// must be empty so we don't re-order bytes relative to the parser.
+	if (
+		state.content === null &&
+		state.skipRemaining >= chunk.length &&
+		state.buffer.length === 0
+	) {
+		state.skipRemaining -= chunk.length;
+		return null;
+	}
 	state.buffer = concatBytes(state.buffer, chunk);
 	while (state.buffer.length > 0) {
 		if (state.content !== null) {

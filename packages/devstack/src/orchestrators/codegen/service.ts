@@ -51,6 +51,7 @@ import type {
 	CodegenEmitDone,
 	CodegenEmitContext,
 } from '../../contracts/codegenable.ts';
+import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
 
 import {
@@ -127,7 +128,54 @@ const buildParentModeResolver = (
 // Main entry — one cycle of the codegen pipeline
 // -----------------------------------------------------------------------------
 
+/**
+ * Per-cycle lock acquire timeout. Codegen cycles can be file-system
+ * heavy (multi-emitter, Move-bindings compilation), so we allow more
+ * than the substrate's default 5s for `stack.lock` — a custom CLI
+ * caller that hits a supervisor mid-cycle should wait, not error.
+ * Mirrors `MOVE_BUILD_LOCK_TIMEOUT_MS` (5 minutes).
+ */
+const CODEGEN_CYCLE_LOCK_TIMEOUT_MS = 5 * 60_000;
+
 export const runEmitCycle = (
+	input: RunEmitCycleInput,
+): Effect.Effect<
+	RunEmitCycleResult,
+	CodegenError,
+	FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
+> =>
+	// Per-process lock. The supervisor's serialized post-acquire path
+	// is fine for the normal lifecycle, but custom callers (CLI direct
+	// invocations, future watcher hooks) can call `runCycle`
+	// concurrently. With `stageAndSwap` writing under shared
+	// `<outputDir>.staging.<cycleId>` and `<outputDir>.bak.<cycleId>`
+	// siblings — and with the pre-seed `fs.copy` reading from the
+	// shared `outputDir` — two overlapping cycles can stage from a
+	// half-published tree of the other. The lock serializes them.
+	//
+	// Dedicated `codegenLockFile` (NOT the substrate `stack.lock`):
+	// codegen cycles can run for many seconds when Move bindings
+	// compile, and the substrate's `stack.lock` is reserved for short
+	// critical sections (roster mutations, snapshot reservation). A
+	// dedicated lock isolates codegen contention from those subsystems.
+	Effect.scoped(
+		Effect.gen(function* () {
+			const paths = yield* CodegenPathsService;
+			yield* acquireStackLock(paths.codegenLockFile, CODEGEN_CYCLE_LOCK_TIMEOUT_MS).pipe(
+				Effect.mapError(
+					(cause) =>
+						new CodegenWriteFailed({
+							outputPath: paths.codegenLockFile,
+							stage: 'write',
+							cause,
+						}),
+				),
+			);
+			return yield* runEmitCycleLocked(input);
+		}),
+	);
+
+const runEmitCycleLocked = (
 	input: RunEmitCycleInput,
 ): Effect.Effect<
 	RunEmitCycleResult,
@@ -264,6 +312,11 @@ const rebasePaths = (original: CodegenPaths, stagingDir: string): CodegenPaths =
 		outputDir: stripped,
 		gitignoreFile: rebase(original.gitignoreFile),
 		bindingsDir: rebase(original.bindingsDir),
+		// Lock is acquired ONCE outside the stage-and-swap build, so the
+		// rebased paths never re-read it. Preserve the original so any
+		// future inner-cycle observer (debug logging, telemetry) names
+		// the real lock path, not a staging-rooted ghost.
+		codegenLockFile: original.codegenLockFile,
 		resolve: (outputPath) =>
 			Effect.gen(function* () {
 				yield* assertRelativeCodegenOutputPath(outputPath);

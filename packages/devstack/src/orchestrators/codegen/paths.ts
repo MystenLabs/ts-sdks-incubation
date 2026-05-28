@@ -69,6 +69,14 @@ export interface CodegenPaths {
 	readonly gitignoreFile: string;
 	/** Subtree where Move-to-TS bindings land. */
 	readonly bindingsDir: string;
+	/** Per-process lock file gating `runEmitCycle`. Sibling to
+	 *  `outputDir` so concurrent invocations (e.g. CLI direct-callers
+	 *  racing the supervisor) serialize cleanly without blocking the
+	 *  short-section substrate `stack.lock`. Codegen cycles can be
+	 *  file-system heavy (multi-emitter, Move-bindings compilation);
+	 *  the substrate lock is reserved for short sections per the
+	 *  cross-process safety protocol. */
+	readonly codegenLockFile: string;
 	/** Helper: resolve an emitter's `outputPath` (e.g. `sui/network.ts`)
 	 *  against the output root. Fails with `CodegenPathConflict({kind:
 	 *  'non-relative'})` if the supplied path escapes the root. */
@@ -107,6 +115,9 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 				outputDir,
 				gitignoreFile: path.join(outputDir, '.gitignore'),
 				bindingsDir,
+				// Sibling of `outputDir` (NOT inside it) so the stage-and-swap
+				// rename never sees the lock file as part of the output tree.
+				codegenLockFile: `${outputDir}.codegen.lock`,
 				resolve,
 				resolveBindingsPackage,
 			});
