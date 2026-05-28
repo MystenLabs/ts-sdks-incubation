@@ -14,7 +14,7 @@ import {
 	type CommandContext as StricliCommandContext,
 	type StricliProcess,
 } from '@stricli/core';
-import { Effect } from 'effect';
+import { Effect, type Scope } from 'effect';
 import { readFileSync } from 'node:fs';
 
 import { commandSchema } from './command-tree.ts';
@@ -327,12 +327,45 @@ const makeGlobalFlags = (
 	};
 };
 
-const setNetworkEnv = (flags: GlobalFlags): Effect.Effect<void> =>
-	flags.network === undefined
-		? Effect.void
-		: Effect.sync(() => {
-				process.env[ENV_VARS.NETWORK] = flags.network;
-			});
+/**
+ * Bridge the CLI `--network` flag through `process.env` so config-load-time
+ * factory reads pick it up. This indirection is deliberate, not a leak.
+ *
+ * Why the mutation exists:
+ *   The `deepbook()` factory (`plugins/deepbook/index.ts`) defaults its mode
+ *   by reading `process.env.DEVSTACK_NETWORK` at config import time — before
+ *   any flag value has reached the orchestrator. To make `--network` affect
+ *   the same default, we must mutate the env BEFORE the user's
+ *   `devstack.config.ts` is loaded. The chain is:
+ *     `--network=<net>` flag  →  setNetworkEnv  →  `process.env.DEVSTACK_NETWORK`
+ *                              →  `deepbook()` factory's env read at import.
+ *
+ * Why save/restore (and a scoped finalizer) matters:
+ *   The CLI is also invoked from tests and embedded harnesses inside a single
+ *   process. An unscoped mutation leaks across invocations: a test that runs
+ *   `dispatch(['up','--network=testnet'])` followed by `dispatch(['up'])`
+ *   would see the second call inherit `testnet` from the first. The
+ *   finalizer restores the prior value (or deletes the key if it was unset)
+ *   on success, failure, AND interrupt — `Effect.addFinalizer` guarantees
+ *   the cleanup runs regardless of how the scope closes.
+ */
+const setNetworkEnv = (flags: GlobalFlags): Effect.Effect<void, never, Scope.Scope> => {
+	if (flags.network === undefined) return Effect.void;
+	const next = flags.network;
+	return Effect.gen(function* () {
+		const prior = process.env[ENV_VARS.NETWORK];
+		process.env[ENV_VARS.NETWORK] = next;
+		yield* Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				if (prior === undefined) {
+					delete process.env[ENV_VARS.NETWORK];
+				} else {
+					process.env[ENV_VARS.NETWORK] = prior;
+				}
+			}),
+		);
+	});
+};
 
 // -----------------------------------------------------------------------------
 // Command execution helpers
@@ -344,22 +377,28 @@ const runCommandEffect = async (
 	flags: GlobalFlags,
 	effect: Effect.Effect<CommandResult, CliError>,
 ): Promise<void> => {
-	const program = setNetworkEnv(flags).pipe(
-		Effect.andThen(effect),
-		Effect.catch((error: CliError) =>
-			emitFailure(ctx.io, flags.outputMode, {
-				command,
-				elapsedMs: 0,
-				error,
-			}).pipe(Effect.as({ exitCode: exitCodeFor(error) })),
-		),
-		Effect.catchCause((cause) =>
-			emitFailure(ctx.io, flags.outputMode, {
-				command,
-				elapsedMs: 0,
-				error: new CliInternalError({ message: 'unexpected internal failure' }),
-				cause,
-			}).pipe(Effect.as({ exitCode: ExitCode.SOFTWARE })),
+	// `setNetworkEnv` registers a `process.env[ENV_VARS.NETWORK]` restore as a
+	// scope finalizer; the outer `Effect.scoped` closes that scope after the
+	// command completes (success, failure, or interrupt), preventing env leaks
+	// between concurrent CLI invocations in the same process.
+	const program = Effect.scoped(
+		setNetworkEnv(flags).pipe(
+			Effect.andThen(effect),
+			Effect.catch((error: CliError) =>
+				emitFailure(ctx.io, flags.outputMode, {
+					command,
+					elapsedMs: 0,
+					error,
+				}).pipe(Effect.as({ exitCode: exitCodeFor(error) })),
+			),
+			Effect.catchCause((cause) =>
+				emitFailure(ctx.io, flags.outputMode, {
+					command,
+					elapsedMs: 0,
+					error: new CliInternalError({ message: 'unexpected internal failure' }),
+					cause,
+				}).pipe(Effect.as({ exitCode: ExitCode.SOFTWARE })),
+			),
 		),
 	);
 	const result = await Effect.runPromise(program);

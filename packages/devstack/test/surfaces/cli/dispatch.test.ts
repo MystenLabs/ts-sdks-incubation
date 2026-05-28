@@ -372,6 +372,45 @@ describe('dispatch', () => {
 		expect(h.applyRuns[0]!.network).toBe('mainnet-fork');
 	});
 
+	it('restores process.env[DEVSTACK_NETWORK] after each invocation', async () => {
+		// Guards the documented bridge: `setNetworkEnv` mutates
+		// `process.env.DEVSTACK_NETWORK` so the deepbook factory's
+		// config-load-time env read picks up `--network`. The scoped
+		// finalizer must restore the prior value (or unset it) so
+		// concurrent CLI invocations in the same process — tests,
+		// embedded harnesses — do not leak network state to siblings.
+		const KEY = 'DEVSTACK_NETWORK';
+		const prior = process.env[KEY];
+		delete process.env[KEY];
+		try {
+			// Invocation 1: --network=testnet mutates the env for the
+			// duration of the command, then must restore (unset).
+			const first = makeHarness();
+			await run(['apply', '--network', 'testnet'], first.deps, { io: first.read().io });
+			expect(first.read().exitCode).toBe(0);
+			expect(process.env[KEY]).toBeUndefined();
+
+			// Invocation 2: no --network flag, no env preset.
+			// `flags.network` should be undefined inside the command —
+			// proving the prior invocation did not leak.
+			const second = makeHarness();
+			await run(['apply'], second.deps, { io: second.read().io });
+			expect(second.read().exitCode).toBe(0);
+			expect(second.read().applyRuns[0]!.network).toBeUndefined();
+			expect(process.env[KEY]).toBeUndefined();
+
+			// Invocation 3: a prior value must be restored (not deleted).
+			process.env[KEY] = 'localnet';
+			const third = makeHarness();
+			await run(['apply', '--network', 'testnet'], third.deps, { io: third.read().io });
+			expect(third.read().exitCode).toBe(0);
+			expect(process.env[KEY]).toBe('localnet');
+		} finally {
+			if (prior === undefined) delete process.env[KEY];
+			else process.env[KEY] = prior;
+		}
+	});
+
 	it('lifecycle commands run through attached/direct deps', async () => {
 		const { deps, read } = makeHarness();
 		await run(['up', '--renderer', 'plain', '--config', 'devstack.ci.ts'], deps, {
