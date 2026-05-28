@@ -21,9 +21,10 @@
 
 // ---------------------------------------------------------------------
 // Projection — `makeProjectionRef`, persistence helpers.
-// Consumers: CLI wirings (apply, snapshot, up, main), boot-config-impl.
+// Consumers: CLI wirings (apply, snapshot, up, main), boot-config-impl,
+// api/run-stack (sync variant only).
 // ---------------------------------------------------------------------
-export { makeProjectionRef } from './projection/state-ref.ts';
+export { makeProjectionRef, makeProjectionRefSync } from './projection/state-ref.ts';
 export {
 	persistProjectionChanges,
 	readProjectionSnapshot,

@@ -90,14 +90,14 @@ const parseLockBody = (raw: string): RosterHolder | null => {
  *  ("Block up to 5 seconds; if unavailable, retry with backoff"). */
 export const DEFAULT_ACQUIRE_TIMEOUT_MILLIS = 5_000;
 
-/** Per-attempt initial wait. Doubles each retry up to the cap. */
+/** Per-attempt initial wait. Doubles each retry up to the cap. The
+ *  backoff also resets whenever the holder identity changes — see the
+ *  reclaim loop comment for the contention story (review fix phase
+ *  22f). The cap is intentionally tight (200ms) so peers react quickly
+ *  to a release; combined with the O_EXCL-arbitrated retry on reclaim,
+ *  no staggering jitter is needed. */
 const INITIAL_BACKOFF_MILLIS = 25;
 const MAX_BACKOFF_MILLIS = 200;
-
-/** Reclaim jitter window: under multi-peer contention, each peer races
- *  `unlink` + `O_EXCL`-create after detecting a dead holder. Without
- *  spacing, every loser instantly thrashes the next attempt. 50–150ms
- *  staggers retries enough to let one winner settle. */
 
 /**
  * Sync attempt at O_EXCL-create. Returns whether we own the lock now.
@@ -240,23 +240,14 @@ export const acquireStackLock = (
 					},
 					catch: (cause) => new StackLockIoError({ path, cause }),
 				});
-				// Reset the exponential backoff so the post-reclaim
-				// O_EXCL contest starts fresh — the previous backoff
-				// growth was driven by a now-evicted dead holder.
-				// `O_EXCL` atomicity alone arbitrates the race; no
-				// staggering jitter is needed (review fix phase 22f
-				// reproducer demonstrated that a 50-150ms jitter
-				// under 8-way contention exhausts the 5s budget).
+				// O_EXCL atomicity alone arbitrates the post-reclaim
+				// race; reset the backoff so the contest starts fresh
+				// (the prior growth was driven by a now-evicted dead
+				// holder).
 				backoff = INITIAL_BACKOFF_MILLIS;
 				continue;
 			}
 			// Peer holds an alive lock — back off exponentially.
-			// Reset the backoff if the holder identity changed since
-			// the last loop iteration so a freshly-acquired peer
-			// doesn't inherit a stale waiter's long-saturated backoff
-			// budget. Without this, late waiters under heavy
-			// contention can saturate at MAX_BACKOFF_MILLIS while
-			// each peer holds the lock only briefly.
 			yield* underLiveClock(Effect.sleep(`${backoff} millis`));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MILLIS);
 		}

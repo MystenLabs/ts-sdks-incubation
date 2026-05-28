@@ -22,6 +22,7 @@ import { Effect, Schema, SubscriptionRef } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
+import { eventAtOrNull } from '../../event-time.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type {
 	AccountProjection,
@@ -88,7 +89,7 @@ export const applyEvent = (
 	const withTouched = (next: Partial<SubscribableState>): SubscribableState => ({
 		...state,
 		...next,
-		lastEvent: { seq: state.lastEvent.seq, at: eventAt(event) ?? state.lastEvent.at },
+		lastEvent: { seq: state.lastEvent.seq, at: eventAtOrNull(event) ?? state.lastEvent.at },
 	});
 
 	// Lifecycle-shaped events flow through the typed `LifecycleFact`
@@ -415,22 +416,6 @@ const formatDecodeIssue = (cause: unknown): string => {
 		return cause.message;
 	}
 	return String(cause);
-};
-
-const eventAt = (event: EngineEvent): number | null => {
-	if ('at' in event) return event.at;
-	// Events whose payload nests `at` (endpoint, error, build): pull it
-	// up. Discriminating purely on `tag` keeps this exhaustive.
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		default:
-			return null;
-	}
 };
 
 const upsertRow = (

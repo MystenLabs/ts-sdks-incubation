@@ -40,7 +40,7 @@ import {
 	statusLabel,
 } from './display-derivation.ts';
 import { mountFailed } from './errors.ts';
-import { eventAt } from './event-time.ts';
+import { eventAt } from '../../substrate/event-time.ts';
 
 // -----------------------------------------------------------------------------
 // Line shape — pure formatters

@@ -45,7 +45,7 @@ import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { CapabilitySinksService } from '../substrate/runtime/capability-sinks/index.ts';
-import { makeProjectionRefSync } from '../substrate/runtime/projection/index.ts';
+import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
 	buildProductionOrchestratorSinks,

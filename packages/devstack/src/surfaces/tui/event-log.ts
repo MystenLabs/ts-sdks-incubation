@@ -6,7 +6,7 @@ import {
 	sectionColor,
 	type ColorToken,
 } from './display-derivation.ts';
-import { eventAt } from './event-time.ts';
+import { eventAt } from '../../substrate/event-time.ts';
 
 export interface EventLogLine {
 	readonly id: string;
