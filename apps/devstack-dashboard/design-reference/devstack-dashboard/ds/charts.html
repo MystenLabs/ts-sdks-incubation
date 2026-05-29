@@ -1,0 +1,50 @@
+<!-- @dsCard group="Components" -->
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8" /><meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>devstack · charts</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<script>
+  fetch("../styles.css?v=" + Date.now()).then(function (r){return r.text();}).then(function (css){
+    var s=document.createElement("style");s.type="text/tailwindcss";s.textContent=css;document.head.appendChild(s);
+    var t=document.createElement("script");t.src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4";document.head.appendChild(t);
+  });
+</script></head>
+<body style="padding:28px;">
+  <div id="root"></div>
+  <script>(function(){var e=console.error;console.error=function(m){if(typeof m==="string"&&m.indexOf("defaultProps")!==-1)return;return e.apply(console,arguments);};})();</script>
+  <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/react-is@18.3.1/umd/react-is.production.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/prop-types@15.8.1/prop-types.min.js" crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/recharts@2.12.7/umd/Recharts.js" crossorigin="anonymous"></script>
+  <script src="../mock.js"></script>
+  <script type="text/babel" src="../components.jsx"></script>
+  <script type="text/babel" src="../components-viz.jsx"></script>
+  <script type="text/babel">
+    const { Sparkline, AreaChart, BarChart, DepthChart } = window;
+    const ds = window.DS;
+    function Panel({ title, children }) {
+      return (<div className="panel panel-pad"><div className="eyebrow" style={{ marginBottom: 10 }}>{title}</div>{children}</div>);
+    }
+    function Card() {
+      return (<div style={{ maxWidth: 880 }}>
+        <h1 style={{ fontSize: 18, fontWeight: 600, margin: "0 0 4px" }}>Charts</h1>
+        <p style={{ color: "var(--tx-mid)", fontSize: 13, margin: "0 0 22px" }}>Real Recharts (the engine shadcn/ui charts use), themed with <span className="mono" style={{ color: "var(--accent)" }}>--viz-*</span> tokens. Ports 1:1 to <span className="mono">&lt;ChartContainer&gt;</span>.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <Panel title="AreaChart"><AreaChart data={ds.history.tps} color="var(--viz-1)" height={130} axis /></Panel>
+          <Panel title="BarChart"><BarChart data={ds.history.txPerDay} color="var(--viz-2)" height={130} axis /></Panel>
+          <Panel title="DepthChart · order book"><DepthChart bids={ds.plugins.deepbook.orderBook.bids} asks={ds.plugins.deepbook.orderBook.asks} height={130} /></Panel>
+          <Panel title="Sparkline · inline">
+            <div className="col" style={{ gap: 14 }}>
+              {[["viz-1","TPS"],["c-green","balance"],["c-red","errors"]].map(([c,l]) => (
+                <div key={l} className="row between"><span style={{ fontSize: 12.5, color: "var(--tx-lo)" }}>{l}</span><Sparkline data={ds.history.tps.map(v=>v+Math.random()*3)} color={`var(--${c})`} width={130} height={28} /></div>
+              ))}
+            </div>
+          </Panel>
+        </div>
+      </div>);
+    }
+    ReactDOM.createRoot(document.getElementById("root")).render(<Card />);
+  </script>
+</body></html>

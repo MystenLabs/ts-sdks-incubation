@@ -5,8 +5,9 @@
 // Moved from src/runtime/ to src/orchestrators/ to honor the ARCHITECTURE.md
 // L1-never-imports-from-L2 boundary.
 
-import { Context, Effect, Layer } from 'effect';
+import { Context, Effect, FileSystem, Layer } from 'effect';
 
+import { SnapshotOrchestratorService } from './snapshot/index.ts';
 import { discoverCoinsFromPublish } from '../plugins/coin/discovery.ts';
 import {
 	CoinRegistryService,
@@ -81,15 +82,29 @@ export const extendBuiltInPluginContext = (
 ): Effect.Effect<
 	Context.Context<never>,
 	never,
-	CoinRegistryService | PackageRegistryService | CapabilitySinksService
+	| CoinRegistryService
+	| PackageRegistryService
+	| CapabilitySinksService
+	| SnapshotOrchestratorService
+	| FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
 		const coinRegistry = yield* CoinRegistryService;
 		const packageRegistry = yield* PackageRegistryService;
 		const capabilitySinks = yield* CapabilitySinksService;
+		// Thread the snapshot orchestrator + filesystem into the plugin
+		// runtime context so the supervisor can populate the control-plane
+		// `domain` surface (snapshot list/restore/delete, which never
+		// round-trip through the void `publishCommand`). The
+		// `ContainerRuntimeService` the domain also needs is already in the
+		// base substrate plugin context.
+		const snapshotOrchestrator = yield* SnapshotOrchestratorService;
+		const fileSystem = yield* FileSystem.FileSystem;
 		return ctx.pipe(
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PackageRegistryService, packageRegistry),
 			Context.add(CapabilitySinksService, capabilitySinks),
+			Context.add(SnapshotOrchestratorService, snapshotOrchestrator),
+			Context.add(FileSystem.FileSystem, fileSystem),
 		) as Context.Context<never>;
 	});

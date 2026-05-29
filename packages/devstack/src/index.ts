@@ -283,6 +283,13 @@ export {
 	type WalletRequestPhase,
 } from './plugins/wallet/index.ts';
 
+// --- Dashboard ----------------------------------------------------------
+export {
+	dashboard,
+	type DashboardOptions,
+	type DashboardValue,
+} from './plugins/dashboard/index.ts';
+
 // --- Host Service -------------------------------------------------------
 
 export {

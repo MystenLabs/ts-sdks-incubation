@@ -1,0 +1,451 @@
+/* ============================================================
+   devstack dashboard — Tailwind v4 source (CSS-first)
+   Authored as Tailwind input: @theme tokens + @layer base
+   + @layer components + @utility helpers. Compiled in-browser
+   by @tailwindcss/browser@4 (dev) — mirrors the production
+   apps/devstack-dashboard Vite + Tailwind v4 setup.
+   ============================================================ */
+
+@import "tailwindcss";
+
+/* ------------------------------------------------------------
+   THEME — expose design tokens as Tailwind utilities.
+   `inline` makes utilities reference the raw --bg-*/--tx-*/--c-*
+   vars directly, so light-mode + Tweaks (accent/density) still
+   cascade. e.g. bg-panel / text-mid / border-line / text-green
+   / rounded-lg / shadow-e1.
+   ------------------------------------------------------------ */
+@theme inline {
+  /* surfaces */
+  --color-base:        var(--bg-base);
+  --color-canvas:      var(--bg-canvas);
+  --color-panel:       var(--bg-panel);
+  --color-elev:        var(--bg-elev);
+  --color-elev2:       var(--bg-elev-2);
+  --color-hover:       var(--bg-hover);
+  /* lines */
+  --color-line:        var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-line-faint:  var(--line-faint);
+  /* text */
+  --color-hi:          var(--tx-hi);
+  --color-mid:         var(--tx-mid);
+  --color-lo:          var(--tx-lo);
+  --color-dim:         var(--tx-dim);
+  /* accent */
+  --color-accent:      var(--accent);
+  --color-accent-ink:  var(--accent-ink);
+  /* semantic ColorTokens */
+  --color-green:       var(--c-green);
+  --color-yellow:      var(--c-yellow);
+  --color-red:         var(--c-red);
+  --color-cyan:        var(--c-cyan);
+  --color-magenta:     var(--c-magenta);
+  --color-blue:        var(--c-blue);
+  --color-neutral:     var(--c-white);
+  /* data-viz series (theme-aware) → text/bg/border/stroke/fill-viz-N */
+  --color-viz-1:       var(--viz-1);
+  --color-viz-2:       var(--viz-2);
+  --color-viz-3:       var(--viz-3);
+  --color-viz-4:       var(--viz-4);
+  --color-viz-5:       var(--viz-5);
+  --color-viz-6:       var(--viz-6);
+  --color-viz-grid:    var(--viz-grid);
+  /* radii → rounded-* */
+  --radius-xs:         var(--r-xs);
+  --radius-sm:         var(--r-sm);
+  --radius-md:         var(--r-md);
+  --radius-lg:         var(--r-lg);
+  --radius-xl:         var(--r-xl);
+  /* elevation → shadow-* */
+  --shadow-e1:         var(--sh-1);
+  --shadow-e2:         var(--sh-2);
+  --shadow-e3:         var(--sh-3);
+  --shadow-pop:        var(--sh-pop);
+}
+
+/* fonts (literal stacks so font-mono / font-sans utilities resolve) */
+@theme {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* ============================================================
+   BASE — raw tokens + resets. Raw vars stay the source of truth
+   so inline styles (var(--bg-panel)…) and Tweaks keep working.
+   ============================================================ */
+@layer base {
+  :root {
+    /* surfaces — cool near-black, layered */
+    --bg-base:      #07080b;
+    --bg-canvas:    #0a0c11;
+    --bg-panel:     #0f1219;
+    --bg-elev:      #161a24;
+    --bg-elev-2:    #1d2230;
+    --bg-hover:     rgba(255,255,255,0.04);
+    --bg-active:    rgba(255,255,255,0.07);
+
+    --line:         rgba(255,255,255,0.07);
+    --line-strong:  rgba(255,255,255,0.13);
+    --line-faint:   rgba(255,255,255,0.04);
+
+    --tx-hi:   #e8ebf2;
+    --tx-mid:  #9aa4b6;
+    --tx-lo:   #616b7d;
+    --tx-dim:  #424b5b;
+
+    --accent:       #34d8c4;
+    --accent-ink:   #04201c;
+    --accent-soft:  color-mix(in oklab, var(--accent) 14%, transparent);
+    --accent-line:  color-mix(in oklab, var(--accent) 38%, transparent);
+    --accent-glow:  color-mix(in oklab, var(--accent) 30%, transparent);
+
+    --c-green:   #45d483;
+    --c-yellow:  #f6c454;
+    --c-red:     #fb6f84;
+    --c-cyan:    #46baf5;
+    --c-magenta: #df7aef;
+    --c-blue:    #8893f6;
+    --c-white:   #c6cfde;
+
+    /* data-viz series — cool, vibrant, harmonious on near-black */
+    --viz-1: #34d8c4;
+    --viz-2: #6fa8ff;
+    --viz-3: #c08cff;
+    --viz-4: #f6a94b;
+    --viz-5: #4ade80;
+    --viz-6: #f472b6;
+    --viz-grid: rgba(255,255,255,0.06);
+
+    --glow-green:   color-mix(in oklab, var(--c-green)  55%, transparent);
+    --glow-yellow:  color-mix(in oklab, var(--c-yellow) 55%, transparent);
+    --glow-red:     color-mix(in oklab, var(--c-red)    55%, transparent);
+    --glow-cyan:    color-mix(in oklab, var(--c-cyan)   55%, transparent);
+
+    --r-xs: 4px;  --r-sm: 6px;  --r-md: 9px;  --r-lg: 13px;  --r-xl: 18px;
+
+    --sh-1: 0 1px 2px rgba(0,0,0,.4);
+    --sh-2: 0 6px 22px -8px rgba(0,0,0,.65);
+    --sh-3: 0 24px 64px -16px rgba(0,0,0,.75);
+    --sh-pop: 0 18px 50px -12px rgba(0,0,0,.8), 0 0 0 1px var(--line-strong);
+
+    --d: 1;
+    --row-h: calc(34px * var(--d));
+    --pad-cell: calc(9px * var(--d)) calc(13px * var(--d));
+    --gap: calc(14px * var(--d));
+    --pad-panel: calc(18px * var(--d));
+
+    --font-ui:   "Geist", ui-sans-serif, system-ui, sans-serif;
+
+    --nav-w: 232px;
+    --nav-w-collapsed: 60px;
+    --header-h: 56px;
+    --drawer-h: 280px;
+
+    color-scheme: dark;
+  }
+
+  [data-theme="light"] {
+    --bg-base:      #eef0f4;
+    --bg-canvas:    #f5f6f9;
+    --bg-panel:     #ffffff;
+    --bg-elev:      #ffffff;
+    --bg-elev-2:    #f3f5f9;
+    --bg-hover:     rgba(10,14,24,0.035);
+    --bg-active:    rgba(10,14,24,0.06);
+
+    --line:         rgba(12,18,32,0.10);
+    --line-strong:  rgba(12,18,32,0.17);
+    --line-faint:   rgba(12,18,32,0.055);
+
+    --tx-hi:   #11151d;
+    --tx-mid:  #515b6c;
+    --tx-lo:   #7c8595;
+    --tx-dim:  #aab2c0;
+
+    --accent-ink: #ffffff;
+
+    --c-green:   #18a05a;
+    --c-yellow:  #b3791a;
+    --c-red:     #d83a52;
+    --c-cyan:    #1583cf;
+    --c-magenta: #b13fc9;
+    --c-blue:    #4a57d6;
+    --c-white:   #4a5466;
+
+    /* data-viz series — light variants */
+    --viz-1: #11998e;
+    --viz-2: #2f6fe0;
+    --viz-3: #8b46d4;
+    --viz-4: #c77a18;
+    --viz-5: #1f9d57;
+    --viz-6: #d3447f;
+    --viz-grid: rgba(12,18,32,0.07);
+
+    --sh-1: 0 1px 2px rgba(15,23,42,.08);
+    --sh-2: 0 6px 22px -10px rgba(15,23,42,.20);
+    --sh-3: 0 24px 64px -18px rgba(15,23,42,.28);
+    --sh-pop: 0 18px 50px -14px rgba(15,23,42,.3), 0 0 0 1px var(--line-strong);
+
+    color-scheme: light;
+  }
+
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg-base);
+    color: var(--tx-hi);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: "ss01", "cv01";
+    overflow: hidden;
+  }
+  #root { height: 100%; }
+  ::selection { background: var(--accent-soft); color: var(--tx-hi); }
+  h1,h2,h3,h4 { margin: 0; font-weight: 560; letter-spacing: -0.012em; }
+  button { font-family: inherit; cursor: pointer; }
+  a { color: inherit; text-decoration: none; }
+
+  *::-webkit-scrollbar { width: 10px; height: 10px; }
+  *::-webkit-scrollbar-thumb {
+    background: var(--line-strong); border-radius: 8px;
+    border: 2px solid transparent; background-clip: padding-box;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: var(--tx-dim); background-clip: padding-box; }
+  *::-webkit-scrollbar-track { background: transparent; }
+}
+
+/* ============================================================
+   COMPONENTS — component classes (Tailwind @layer; utilities win
+   over these so converted markup can override with utilities).
+   ============================================================ */
+@layer components {
+  .atmos {
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(900px 600px at 78% -8%, var(--accent-soft), transparent 60%),
+      linear-gradient(var(--line-faint) 1px, transparent 1px) 0 0 / 100% 34px,
+      linear-gradient(90deg, var(--line-faint) 1px, transparent 1px) 0 0 / 34px 100%;
+    mask-image: radial-gradient(120% 100% at 50% 0%, #000 38%, transparent 92%);
+    opacity: .6;
+  }
+
+  .panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--line);
+    border-radius: var(--r-lg);
+    box-shadow: var(--sh-1);
+  }
+  .panel-pad { padding: var(--pad-panel); }
+
+  .eyebrow {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--tx-lo);
+  }
+
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; display: inline-block; }
+  .dot-green   { background: var(--c-green);   box-shadow: 0 0 8px var(--glow-green); }
+  .dot-yellow  { background: var(--c-yellow);  box-shadow: 0 0 8px var(--glow-yellow); }
+  .dot-red     { background: var(--c-red);     box-shadow: 0 0 8px var(--glow-red); }
+  .dot-cyan    { background: var(--c-cyan);    box-shadow: 0 0 8px var(--glow-cyan); }
+  .dot-magenta { background: var(--c-magenta); }
+  .dot-blue    { background: var(--c-blue); }
+  .dot-white   { background: var(--c-white); }
+  .dot-dim     { background: var(--tx-dim); }
+  .dot-pulse   { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 22px; padding: 0 9px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 540; line-height: 1;
+    border: 1px solid var(--line-strong);
+    color: var(--tx-mid); background: var(--bg-elev);
+    white-space: nowrap;
+  }
+  .badge .dot { width: 7px; height: 7px; }
+
+  .chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    height: 24px; padding: 0 8px; border-radius: var(--r-sm);
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--bg-elev); border: 1px solid var(--line);
+    color: var(--tx-mid); cursor: pointer; transition: .12s;
+    max-width: 100%;
+  }
+  .chip:hover { border-color: var(--accent-line); color: var(--tx-hi); background: var(--bg-elev-2); }
+  .chip .copy-ic { opacity: 0; transition: .12s; }
+  .chip:hover .copy-ic { opacity: .7; }
+
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    height: 32px; padding: 0 13px; border-radius: var(--r-sm);
+    font-size: 13px; font-weight: 530; white-space: nowrap;
+    border: 1px solid var(--line-strong); background: var(--bg-elev);
+    color: var(--tx-hi); transition: .12s;
+  }
+  .btn:hover { background: var(--bg-elev-2); border-color: var(--tx-dim); }
+  .btn:active { transform: translateY(.5px); }
+  .btn-sm { height: 27px; padding: 0 10px; font-size: 12px; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; font-weight: 600; }
+  .btn-primary:hover { background: color-mix(in oklab, var(--accent) 88%, white); }
+  .btn-danger { color: var(--c-red); border-color: color-mix(in oklab, var(--c-red) 35%, var(--line-strong)); }
+  .btn-danger:hover { background: color-mix(in oklab, var(--c-red) 12%, transparent); border-color: var(--c-red); }
+  .btn-ghost { background: transparent; border-color: transparent; color: var(--tx-mid); }
+  .btn-ghost:hover { background: var(--bg-hover); color: var(--tx-hi); }
+  .btn[disabled] { opacity: .4; pointer-events: none; }
+  .btn .ic { width: 15px; height: 15px; }
+
+  .iconbtn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px; border-radius: var(--r-sm);
+    border: 1px solid transparent; background: transparent; color: var(--tx-mid);
+    transition: .12s;
+  }
+  .iconbtn:hover { background: var(--bg-hover); color: var(--tx-hi); }
+  .iconbtn .ic { width: 16px; height: 16px; }
+
+  .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .tbl thead th {
+    position: sticky; top: 0; z-index: 1;
+    text-align: left; padding: var(--pad-cell);
+    font-size: 10.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--tx-lo); background: var(--bg-panel);
+    border-bottom: 1px solid var(--line);
+    white-space: nowrap; cursor: default;
+  }
+  .tbl tbody td { padding: var(--pad-cell); border-bottom: 1px solid var(--line-faint); vertical-align: middle; }
+  .tbl tbody tr { transition: background .1s; }
+  .tbl tbody tr:hover { background: var(--bg-hover); }
+  .tbl tbody tr.clickable { cursor: pointer; }
+  .tbl tbody tr:last-child td { border-bottom: none; }
+
+  kbd {
+    font-family: var(--font-mono); font-size: 11px;
+    padding: 2px 6px; border-radius: 5px; line-height: 1;
+    background: var(--bg-elev-2); border: 1px solid var(--line-strong);
+    border-bottom-width: 2px; color: var(--tx-mid);
+  }
+
+  .meter { height: 5px; border-radius: 999px; background: var(--bg-elev-2); overflow: hidden; }
+  .meter > span { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+
+  .live-sweep {
+    background-image: linear-gradient(90deg, transparent, var(--accent-soft), transparent);
+    background-size: 60% 100%; background-repeat: no-repeat;
+    animation: sweep 2.6s linear infinite;
+  }
+
+  .fade-up { opacity: 1; animation: fadeUp .34s cubic-bezier(.2,.7,.3,1) both; }
+
+  .overlay {
+    position: fixed; inset: 0; z-index: 100;
+    background: rgba(4,6,10,.62); backdrop-filter: blur(3px);
+    display: grid; place-items: center; padding: 24px;
+    animation: fadeIn .16s ease both;
+  }
+  .overlay-right { place-items: stretch; justify-content: flex-end; padding: 0; }
+  .sheet {
+    width: 440px; max-width: 92vw; height: 100%;
+    background: var(--bg-panel); border-left: 1px solid var(--line-strong);
+    box-shadow: var(--sh-3); display: flex; flex-direction: column;
+  }
+  .fade-right { animation: slideRight .24s cubic-bezier(.2,.7,.3,1) both; }
+
+  .logbox {
+    background: var(--bg-base); border: 1px solid var(--line); border-radius: var(--r-md);
+    padding: 10px 12px; max-height: 220px; overflow-y: auto; line-height: 1.65;
+  }
+  .logbox-full { background: var(--bg-base); padding: 8px 14px; line-height: 1.7; border-radius: var(--r-lg); }
+  .logline { display: flex; gap: 12px; align-items: baseline; padding: 1.5px 0; }
+  .logline:hover { background: var(--bg-hover); }
+
+  .segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r-md); }
+  .seg { height: 26px; padding: 0 14px; border-radius: var(--r-sm); border: none; background: transparent; color: var(--tx-mid); font-size: 12.5px; font-weight: 530; transition: .12s; }
+  .seg:hover { color: var(--tx-hi); }
+  .seg-on { background: var(--bg-elev-2); color: var(--tx-hi); box-shadow: var(--sh-1); }
+
+  .field {
+    height: 36px; padding: 0 12px; border-radius: var(--r-sm);
+    background: var(--bg-base); border: 1px solid var(--line-strong); color: var(--tx-hi);
+    font-size: 13px; font-family: var(--font-ui); outline: none; transition: .12s;
+  }
+  .field:focus { border-color: var(--accent-line); box-shadow: 0 0 0 3px var(--accent-soft); }
+  select.field { cursor: pointer; }
+
+  .activity-row { gap: 10px; padding: 7px 18px; transition: background .1s; }
+  .activity-row:hover { background: var(--bg-hover); }
+
+  .palette { width: 600px; max-width: 92vw; align-self: flex-start; margin-top: 12vh; animation: popIn .18s ease both; }
+  .palette-input { width: 100%; height: 52px; padding: 0 18px; background: transparent; border: none; outline: none; color: var(--tx-hi); font-size: 16px; font-family: var(--font-ui); }
+  .palette-item { display: flex; align-items: center; gap: 11px; padding: 9px 16px; cursor: pointer; border-radius: var(--r-sm); }
+  .palette-item.on { background: var(--accent-soft); }
+  .palette-item.on .pi-arrow { opacity: 1; }
+
+  .toast-wrap { position: fixed; top: 16px; right: 16px; z-index: 200; display: flex; flex-direction: column; gap: 9px; }
+  .toast {
+    display: flex; align-items: center; gap: 10px; min-width: 250px; max-width: 360px;
+    padding: 11px 14px; border-radius: var(--r-md); background: var(--bg-elev);
+    border: 1px solid var(--line-strong); box-shadow: var(--sh-2);
+    animation: toastIn .24s cubic-bezier(.2,.7,.3,1) both;
+  }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 11px; height: 37px; padding: 0 11px;
+    border-radius: 9px; color: var(--tx-mid); font-size: 13.5px; font-weight: 500;
+    cursor: pointer; transition: .14s; position: relative; white-space: nowrap;
+    background: transparent; border: none; width: 100%; text-align: left;
+  }
+  .nav-item .ic { flex: none; color: var(--tx-lo); transition: .14s; }
+  .nav-item:hover { background: var(--bg-hover); color: var(--tx-hi); }
+  .nav-item:hover .ic { color: var(--tx-mid); }
+  .nav-item.on { background: var(--accent-soft); color: var(--tx-hi); font-weight: 560; }
+  .nav-item.on .ic { color: var(--accent); }
+  .nav-item.on::before {
+    content: ""; position: absolute; left: -12px; top: 9px; bottom: 9px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--accent); box-shadow: 0 0 10px var(--accent-glow);
+  }
+  .nav-badge { margin-left: auto; }
+
+  /* ---- layout helpers ----
+     Authored as plain CSS in @layer components (emitted unconditionally) rather
+     than @utility (which the in-browser compiler generates on-demand via a DOM
+     scan that races React's mount). Keeps flex/scroll/truncation deterministic. */
+  .row { display: flex; align-items: center; }
+  .col { display: flex; flex-direction: column; }
+  .between { justify-content: space-between; }
+  .wrap { flex-wrap: wrap; }
+  .grow { flex: 1 1 0%; }
+  .scroll-y { overflow-y: auto; }
+  .trunc { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tnum { font-variant-numeric: tabular-nums; }
+  .mono { font-family: var(--font-mono); font-feature-settings: "zero" 1; }
+
+  .skel {
+    background: linear-gradient(90deg, var(--bg-elev) 25%, var(--bg-elev-2) 50%, var(--bg-elev) 75%);
+    background-size: 200% 100%;
+    animation: skelSweep 1.4s ease-in-out infinite;
+  }
+}
+
+/* ============================================================
+   THEME UTILITIES (bg-panel / text-mid / text-green / rounded-lg
+   / shadow-e1 / font-mono …) are generated on-demand from @theme
+   when used in markup. The prototype markup intentionally uses the
+   component + helper classes above plus inline var(--*) styles, so
+   none are required at runtime here — but they're available for the
+   production Vite build, where on-demand generation isn't racy.
+   ============================================================ */
+
+/* ============================================================
+   KEYFRAMES (top level)
+   ============================================================ */
+@keyframes pulse-dot { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .45; transform: scale(.82); } }
+@keyframes sweep { from { background-position: -120% 0; } to { background-position: 220% 0; } }
+@keyframes fadeUp { from { transform: translateY(7px); } to { transform: none; } }
+@keyframes popIn { from { opacity: 0; transform: scale(.97) translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideRight { from { transform: translateX(28px); opacity: .4; } to { transform: none; opacity: 1; } }
+@keyframes toastIn { from { transform: translateX(30px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes skelSweep { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }

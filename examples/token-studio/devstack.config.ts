@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	account,
 	coin,
+	dashboard,
 	defineDevstack,
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
@@ -38,6 +39,9 @@ const app = hostService({
 	after: [managedCoin, studioCoin, devWallet] as const,
 });
 
-const stack: Stack = defineDevstack({ members: [localnet, app], stackName: 'token-studio' });
+const stack: Stack = defineDevstack({
+	members: [localnet, app, dashboard()],
+	stackName: 'token-studio',
+});
 
 export default stack;

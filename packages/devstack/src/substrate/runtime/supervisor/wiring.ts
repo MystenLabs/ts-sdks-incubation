@@ -17,7 +17,8 @@ import type { EngineEvent } from '../../events.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
 import { StrategyNotFoundError } from '../errors.ts';
-import type { LoggerShape } from '../observability/index.ts';
+import type { LoggerShape, LogStoreShape } from '../observability/index.ts';
+import { serviceKeyFor } from '../observability/index.ts';
 import { updateRef } from '../projection/update.ts';
 
 // -----------------------------------------------------------------------------
@@ -167,11 +168,29 @@ export const withEventPublishingLogger = (
 	base: LoggerShape,
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	hub: Queue.Enqueue<EngineEvent>,
+	/** Optional cross-service queryable store. Every logged line is teed
+	 *  into it (the SAME source that feeds the projection's per-row tail —
+	 *  see log-store.ts), so the dashboard's "Logs" tab gets a filterable
+	 *  cross-service history without a second log reader. Absent in bare
+	 *  smoke-test paths that don't wire a LogStore. */
+	logStore: LogStoreShape | null = null,
 ): LoggerShape => ({
 	...base,
 	log: (tag, pluginKey, payload) =>
 		Effect.gen(function* () {
 			yield* base.log(tag, pluginKey, payload);
+			// Tee into the cross-service store regardless of plugin key —
+			// the queryable surface keeps supervisor-level lines too (the
+			// projection tail below is row-scoped, so it only takes
+			// plugin-attributed lines).
+			if (logStore !== null) {
+				yield* logStore.append({
+					level: payload.level,
+					service: serviceKeyFor(tag, pluginKey),
+					message: payload.message,
+					fields: payload.fields,
+				});
+			}
 			if (pluginKey === null) return;
 			const level = projectionLevel(payload.level);
 			if (level === null) return;

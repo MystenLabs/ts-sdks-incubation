@@ -1,0 +1,23 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"strict": true,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"jsx": "react-jsx",
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
+		"types": ["vite/client"],
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"plugins": [
+			{
+				"name": "@0no-co/graphqlsp",
+				"schema": "./schema.graphql",
+				"tadaOutputLocation": "./src/lib/graphql-env.d.ts"
+			}
+		]
+	},
+	"include": ["src", "vite.config.ts"]
+}

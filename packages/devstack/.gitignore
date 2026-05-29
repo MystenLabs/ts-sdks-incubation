@@ -1,0 +1,4 @@
+# Built dashboard SPA, bundled into the package at build time
+# (`pnpm build` → `build:dashboard-ui`) and shipped via the `files` array.
+# A build artifact, so kept out of source control like dist/.
+dashboard-ui/
