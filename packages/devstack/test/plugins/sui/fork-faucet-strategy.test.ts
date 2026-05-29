@@ -15,6 +15,7 @@ const WHALE = `0x${'a'.repeat(64)}`;
 const RECIPIENT = `0x${'b'.repeat(64)}`;
 const SMALL_COIN = `0x${'c'.repeat(64)}`;
 const BIG_COIN = `0x${'d'.repeat(64)}`;
+const MID_COIN = `0x${'e'.repeat(64)}`;
 // A valid 32-byte base58 object digest (44 'B's decodes to 32 bytes),
 // matching fork-mode.test.ts — the SDK rejects shorter digests at build.
 const DIGEST = 'B'.repeat(44);
@@ -64,16 +65,19 @@ const okImpersonate =
 		});
 
 describe('suiForkFaucetStrategy', () => {
-	it.effect('builds a split+transfer tx from the whale, paying gas with its largest coin', () =>
+	it.effect('builds a split+transfer tx, paying gas with the first coin that covers request+gas', () =>
 		Effect.gen(function* () {
 			let bytes: Uint8Array | undefined;
 			const strategy = suiForkFaucetStrategy({
 				whale: WHALE,
 				fork: makeFork(okImpersonate((b) => (bytes = b))),
-				// BIG_COIN listed AFTER the small one — selection must rank by
-				// balance, not take the first.
+				// Coins are NOT balance-ordered. The first (SMALL, 1 SUI) is dust
+				// below request+gas (2.1 SUI) and must be skipped; selection takes
+				// the first SUFFICIENT coin (MID, 3 SUI) — NOT objects[0], and NOT
+				// the largest (BIG, 5000 SUI, listed last).
 				sdk: makeSdk([
-					{ objectId: SMALL_COIN, version: '1', digest: DIGEST, balance: '5000000000' },
+					{ objectId: SMALL_COIN, version: '1', digest: DIGEST, balance: '1000000000' },
+					{ objectId: MID_COIN, version: '4', digest: DIGEST, balance: '3000000000' },
 					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
 				]),
 				perRequestCapMist: CAP,
@@ -86,7 +90,7 @@ describe('suiForkFaucetStrategy', () => {
 			expect(data.sender).toBe(WHALE);
 			expect(data.gasData.owner).toBe(WHALE);
 			expect(data.gasData.payment).toEqual([
-				{ objectId: BIG_COIN, version: '7', digest: DIGEST },
+				{ objectId: MID_COIN, version: '4', digest: DIGEST },
 			]);
 			expect(data.gasData.budget).toBe('100000000');
 			// splitCoins(gas, [amount]) + transferObjects([coin], recipient)
@@ -177,7 +181,10 @@ describe('suiForkFaucetStrategy', () => {
 			const err = Exit.findErrorOption(exit);
 			if (Option.isSome(err)) {
 				expect(err.value._tag).toBe('FaucetBodyError');
-				expect(err.value.message).toContain('no SUI coins');
+				// Empty and all-too-small whales collapse to one selection
+				// failure: no SUI coin clears the request + gas floor.
+				expect(err.value.message).toContain('no SUI coin');
+				expect(err.value.message).toContain('request + gas budget');
 			}
 		}),
 	);

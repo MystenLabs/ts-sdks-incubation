@@ -82,11 +82,10 @@ export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;
  *  known to hold a big single SUI coin in the upstream's state, used as
  *  the fork faucet funding source when `faucet.whale` is omitted. `null`
  *  means no default is known (the faucet then requires an explicit
- *  `faucet.whale`). Validated at boot via `selectLargestForkCoin`. */
+ *  `faucet.whale`). Validated at boot via `selectSufficientForkCoin`. */
 export const FORK_DEFAULT_WHALE: Record<'mainnet' | 'testnet' | 'devnet', string | null> = {
-	// Long-lived validator addresses each holding a large single SUI coin,
-	// long-lived validator addresses each holding a large single SUI coin
-	// (validated 2026-05-28). `selectLargestForkCoin` re-queries the address
+	// Long-lived validator addresses each holding a large single SUI coin
+	// (validated 2026-05-28). `selectSufficientForkCoin` re-queries the address
 	// at the fork checkpoint at runtime, so a rotated coin self-heals; a
 	// drained/retired address degrades gracefully — boot validation warns and
 	// disables the default faucet. Override any of these with `faucet.whale`.
@@ -98,10 +97,18 @@ export const FORK_DEFAULT_WHALE: Record<'mainnet' | 'testnet' | 'devnet', string
 	devnet: '0x4296747d0bd91c41b668702bdca0bf769a0e32db66982d986101e7975db55cbe', // ~30M SUI
 };
 
-/** Floor a whale's largest coin must clear at boot to enable the fork
- *  faucet — a default ephemeral fund (~1 SUI) plus the impersonation gas
- *  budget (1 SUI). Per-request checks use the actual requested amount. */
-export const FORK_FAUCET_WHALE_MIN_COIN_MIST = 2n * FORK_IMPERSONATION_GAS_BUDGET;
+/** The common per-account fund the fork faucet must be able to cover. Mirrors
+ *  the account plugin's `DEFAULT_EPHEMERAL_FUND_MIST` (1 SUI) — kept local
+ *  because account → sui already, so importing it here would cycle; a test
+ *  pins the two together. */
+export const FORK_FAUCET_DEFAULT_FUND_MIST = 1_000_000_000n;
+
+/** Floor a single whale SUI coin must clear at boot to enable the fork faucet:
+ *  a default ephemeral fund (1 SUI) plus the impersonation gas budget. Set to
+ *  match the per-request requirement for the default fund so a whale that
+ *  passes boot can actually satisfy the first auto-fund. */
+export const FORK_FAUCET_WHALE_MIN_COIN_MIST =
+	FORK_FAUCET_DEFAULT_FUND_MIST + FORK_IMPERSONATION_GAS_BUDGET;
 
 /** Default per-request funding cap (MIST) — 1000 SUI. */
 export const DEFAULT_FORK_FAUCET_PER_REQUEST_CAP_MIST = 1_000_000_000_000n;

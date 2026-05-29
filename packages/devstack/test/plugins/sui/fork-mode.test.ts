@@ -7,7 +7,10 @@ import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import { chainId, type NetworkConfig } from '../../../src/substrate/index.ts';
 import { sui, suiFor } from '../../../src/plugins/sui/index.ts';
+import { DEFAULT_EPHEMERAL_FUND_MIST } from '../../../src/plugins/account/index.ts';
 import {
+	FORK_FAUCET_DEFAULT_FUND_MIST,
+	FORK_FAUCET_WHALE_MIN_COIN_MIST,
 	forkDataDirKey,
 	forkStartCommand,
 	resolveForkWhale,
@@ -15,6 +18,7 @@ import {
 } from '../../../src/plugins/sui/mode/fork.ts';
 import {
 	buildForkImpersonationTransactionBytes,
+	FORK_IMPERSONATION_GAS_BUDGET,
 	verifyForkImpersonationSender,
 } from '../../../src/plugins/sui/fork-transaction.ts';
 
@@ -211,6 +215,22 @@ describe('sui fork mode', () => {
 		]);
 		expect(data.gasData.budget).toBe('100000000');
 		expect(data.gasData.price).toBe('1000');
+	});
+
+	it('pins the fork faucet default fund to the account ephemeral fund', () => {
+		// fork.ts mirrors the account plugin's DEFAULT_EPHEMERAL_FUND_MIST
+		// locally (account → sui already, so importing it there would cycle).
+		// This pins the two so drifting one without the other fails here.
+		expect(FORK_FAUCET_DEFAULT_FUND_MIST).toBe(DEFAULT_EPHEMERAL_FUND_MIST);
+	});
+
+	it('sets the boot whale floor to the default fund plus the impersonation gas budget', () => {
+		// The boot-time floor must equal the per-request requirement for the
+		// default auto-fund, so a whale that passes boot can satisfy the first
+		// ephemeral-account fund (fund + gas), not just the bare gas budget.
+		expect(FORK_FAUCET_WHALE_MIN_COIN_MIST).toBe(
+			FORK_FAUCET_DEFAULT_FUND_MIST + FORK_IMPERSONATION_GAS_BUDGET,
+		);
 	});
 
 	it('resolves an explicit faucet whale (normalized) and flags it explicit', () => {

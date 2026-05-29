@@ -20,7 +20,7 @@
 // failure is mapped to FaucetBodyError here — otherwise it would escape
 // funding's `catchTags` and surface as an unhandled error.
 //
-// Concurrency: every request selects the whale's largest SUI coin as
+// Concurrency: every request selects one sufficient whale SUI coin as
 // both gas payment and split source. Concurrent requests would race the
 // same coin version, so requests serialize on a chain-scoped lease.
 
@@ -37,7 +37,7 @@ import type { SuiPluginError } from './errors.ts';
 import {
 	FORK_IMPERSONATION_GAS_BUDGET,
 	buildForkImpersonationTransactionBytes,
-	selectLargestForkCoin,
+	selectSufficientForkCoin,
 	type ForkImpersonationGasClient,
 } from './fork-transaction.ts';
 import type { ForkAdminSurface } from './mode/shared.ts';
@@ -130,9 +130,9 @@ export const suiForkFaucetStrategy = (opts: SuiForkFaucetStrategyOptions): Fauce
 				);
 			}
 
-			// The whale's largest SUI coin pays gas AND sources the split, so
+			// A sufficient whale SUI coin (first past any dust) pays gas AND sources the split, so
 			// it must cover amount + the impersonation gas budget.
-			const { coin } = yield* selectLargestForkCoin(
+			const { coin } = yield* selectSufficientForkCoin(
 				gasClient,
 				opts.whale,
 				amount + FORK_IMPERSONATION_GAS_BUDGET,

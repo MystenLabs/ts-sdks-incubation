@@ -122,8 +122,8 @@ Funding flows through the normal faucet pathway, so ephemeral-account auto-fundi
 top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps a single request (default
 1000 SUI); `faucet: { enabled: false }` turns the faucet off. Point `faucet.whale` at any address
 holding a large single SUI coin (an active validator or a treasury address — find one via a block
-explorer); the faucet validates the whale's largest coin at boot and emits an actionable error if
-it's too small to fund a request.
+explorer); at boot the faucet checks that the whale has a SUI coin large enough to cover a default
+fund plus gas, and emits an actionable error if none does.
 
 Faucet-funded **real** (ephemeral) accounts are first-class in fork mode: they can publish packages,
 run actions, mint coins, and transfer value. Because `sui-fork` has no `simulate_transaction`, these

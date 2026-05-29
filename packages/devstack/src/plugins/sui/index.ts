@@ -52,7 +52,7 @@ import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
-import { selectLargestForkCoin } from './fork-transaction.ts';
+import { selectSufficientForkCoin } from './fork-transaction.ts';
 import { FORK_FAUCET_WHALE_MIN_COIN_MIST, resolveForkWhale } from './mode/fork.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
@@ -145,7 +145,7 @@ const resolveForkFaucetStrategy = (
 				owner: `sui-fork-faucet:${client.chain}`,
 			},
 		});
-		return yield* selectLargestForkCoin(
+		return yield* selectSufficientForkCoin(
 			client.sdk.core,
 			resolved.whale,
 			FORK_FAUCET_WHALE_MIN_COIN_MIST,
@@ -373,7 +373,7 @@ export {
 	buildForkImpersonationTransactionBytes,
 	prepareForkImpersonationTransaction,
 	verifyForkImpersonationSender,
-	selectLargestForkCoin,
+	selectSufficientForkCoin,
 	FORK_IMPERSONATION_GAS_BUDGET,
 	FORK_IMPERSONATION_GAS_PRICE,
 	type ForkGasCoin,

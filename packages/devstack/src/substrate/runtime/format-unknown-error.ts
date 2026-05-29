@@ -20,7 +20,7 @@ const MAX_CAUSE_DEPTH = 5;
 // objectCount }`) are skipped here so they don't dump JSON into the
 // headline message; the structured cascade-formatter still renders them.
 const nestedCauseMessage = (cause: unknown, depth: number): string | null => {
-	if (cause instanceof Error) return cause.message;
+	if (cause instanceof Error) return project(cause, depth);
 	if (typeof cause === 'string') return cause.length > 0 ? cause : null;
 	if (typeof cause === 'object' && cause !== null) {
 		const message = (cause as { readonly message?: unknown }).message;
@@ -32,22 +32,26 @@ const nestedCauseMessage = (cause: unknown, depth: number): string | null => {
 };
 
 const project = (cause: unknown, depth: number): string => {
-	if (cause instanceof Error) return cause.message;
 	if (typeof cause === 'string') return cause;
-	if (typeof cause === 'object' && cause !== null) {
-		const tagged = cause as { readonly message?: unknown; readonly cause?: unknown };
-		// Tagged devstack errors (`AccountSignError`, `SuiPluginError`, …)
-		// are plain objects, NOT `Error` instances — `String(obj)` on them
-		// yields `[object Object]`. Prefer their `.message`, then chain the
-		// `.cause` so a generic wrapper ("… submit failed.") still surfaces
-		// the actionable root ("… no SUI gas coins found for 0x…").
-		if (typeof tagged.message === 'string' && tagged.message.length > 0) {
-			const nested =
-				depth < MAX_CAUSE_DEPTH ? nestedCauseMessage(tagged.cause, depth + 1) : null;
-			return nested !== null && !tagged.message.includes(nested)
-				? `${tagged.message} [cause: ${nested}]`
-				: tagged.message;
-		}
+	// `Error` instances AND tagged devstack errors (`AccountSignError`,
+	// `SuiPluginError`, … — plain objects, NOT `Error`s, so `String(obj)`
+	// yields `[object Object]`) both carry a string `.message` and may carry
+	// a `.cause`. Prefer the message, then chain the `.cause` so a generic
+	// wrapper ("… submit failed.") still surfaces the actionable root
+	// ("… no SUI gas coins found for 0x…"). `Error.cause` is read the same
+	// way, so a thrown `new Error(msg, { cause })` chain is walked too.
+	const tagged = cause as { readonly message?: unknown; readonly cause?: unknown };
+	const message =
+		cause instanceof Error
+			? cause.message
+			: typeof cause === 'object' && cause !== null && typeof tagged.message === 'string'
+				? tagged.message
+				: undefined;
+	if (message !== undefined && message.length > 0) {
+		const nested = depth < MAX_CAUSE_DEPTH ? nestedCauseMessage(tagged.cause, depth + 1) : null;
+		return nested !== null && !message.includes(nested)
+			? `${message} [cause: ${nested}]`
+			: message;
 	}
 	try {
 		return JSON.stringify(cause);

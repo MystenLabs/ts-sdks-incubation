@@ -24,10 +24,8 @@ export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;
  *  the account plugin's `SUI_FULL_COIN_TYPE`. */
 const SUI_GAS_COIN_TYPE = '0x2::sui::SUI';
 
-/** Bounds the `listCoins` page scanned by {@link selectLargestForkCoin}.
- *  A treasury/whale with one giant coin lands on the first page; we don't
- *  paginate the whole (possibly huge) coin set just to rank balances. */
-const FORK_COIN_SCAN_LIMIT = 50;
+/** `listCoins` page size while scanning for a sufficient coin. */
+const FORK_COIN_PAGE_SIZE = 50;
 
 /** An object ref usable as gas payment for an impersonation transaction. */
 export interface ForkGasCoin {
@@ -42,6 +40,7 @@ export interface ForkImpersonationGasClient {
 		readonly owner: string;
 		readonly coinType?: string;
 		readonly limit?: number;
+		readonly cursor?: string | null;
 	}) => Promise<{
 		readonly objects: ReadonlyArray<{
 			readonly objectId: string;
@@ -49,8 +48,47 @@ export interface ForkImpersonationGasClient {
 			readonly digest: string;
 			readonly balance?: string | number | bigint;
 		}>;
+		readonly hasNextPage?: boolean;
+		readonly cursor?: string | null;
 	}>;
 }
+
+/** Paginate `owner`'s SUI coins and return the first whose balance covers
+ *  `minBalanceMist` (with that balance), or `undefined` if none across all
+ *  pages. `listCoins` is paginated and NOT balance-ordered, so a sufficient
+ *  coin can sit behind dust on a later page — we must page, never sample
+ *  page 1. Shared by gas selection and the fork faucet. */
+const firstSufficientSuiCoin = async (
+	client: ForkImpersonationGasClient,
+	owner: string,
+	minBalanceMist: bigint,
+): Promise<{ readonly coin: ForkGasCoin; readonly balanceMist: bigint } | undefined> => {
+	let cursor: string | null = null;
+	do {
+		const page = await client.listCoins({
+			owner,
+			coinType: SUI_GAS_COIN_TYPE,
+			cursor,
+			limit: FORK_COIN_PAGE_SIZE,
+		});
+		for (const candidate of page.objects) {
+			if (candidate.balance === undefined) continue;
+			const balanceMist = BigInt(candidate.balance);
+			if (balanceMist >= minBalanceMist) {
+				return {
+					coin: {
+						objectId: candidate.objectId,
+						version: String(candidate.version),
+						digest: candidate.digest,
+					},
+					balanceMist,
+				};
+			}
+		}
+		cursor = page.hasNextPage === true ? (page.cursor ?? null) : null;
+	} while (cursor !== null);
+	return undefined;
+};
 
 export const prepareForkImpersonationTransaction = (
 	tx: Transaction,
@@ -78,7 +116,7 @@ export const buildForkImpersonationTransactionBytes = (
 	client: ForkImpersonationGasClient,
 	/** Pre-selected gas coin. When omitted, the first coin owned by
 	 *  `sender` is used (legacy behaviour). The fork faucet passes the
-	 *  whale's largest SUI coin via {@link selectLargestForkCoin} so a
+	 *  whale's gas coin via {@link selectSufficientForkCoin} so a
 	 *  `splitCoins(tx.gas, …)` funding transfer has enough balance. */
 	gasCoin?: ForkGasCoin,
 ): Effect.Effect<Uint8Array, SuiPluginError> =>
@@ -207,79 +245,44 @@ const selectForkImpersonationGasPayment = async (
 ): Promise<
 	ReadonlyArray<{ readonly objectId: string; readonly version: string; readonly digest: string }>
 > => {
-	const response = await client.listCoins({ owner: sender, limit: 1 });
-	const coin = response.objects[0];
-	if (coin === undefined) {
+	// The gas coin must cover the impersonation gas budget. Pick the first SUI
+	// coin that does (paginating past dust) — not blindly `objects[0]`, which on
+	// an account holding change coins may be below the budget → InsufficientGas
+	// even though a larger coin exists.
+	const found = await firstSufficientSuiCoin(client, sender, FORK_IMPERSONATION_GAS_BUDGET);
+	if (found === undefined) {
 		throw suiPluginError(
 			'fork-impersonate',
-			`sui fork mode: no SUI gas coins found for ${sender}`,
-			{ sender, objectCount: response.objects.length },
+			`sui fork mode: no SUI coin >= ${FORK_IMPERSONATION_GAS_BUDGET} MIST (gas budget) found for ${sender}.`,
+			{ sender, requiredMist: FORK_IMPERSONATION_GAS_BUDGET.toString() },
 		);
 	}
-	return [
-		{
-			objectId: coin.objectId,
-			version: String(coin.version),
-			digest: coin.digest,
-		},
-	];
+	return [found.coin];
 };
 
-/** Pick the largest SUI coin owned by `owner` that covers
- *  `minBalanceMist`, for use as BOTH gas payment and the
- *  `splitCoins(tx.gas, …)` funding source in a fork faucet transfer.
- *  Scans a bounded page (treasury whales keep one giant coin up front).
- *  Fails with an actionable `SuiPluginError` when no coin is large enough —
- *  reused at boot to validate a configured whale before any funding runs. */
-export const selectLargestForkCoin = (
+/** Find a SUI coin owned by `owner` that covers `minBalanceMist`, for use as
+ *  BOTH gas payment and the `splitCoins(tx.gas, …)` funding source in a fork
+ *  faucet transfer. Paginates the coin set (a sufficient coin can sit behind
+ *  dust on a later page) and returns the first that qualifies. Fails with an
+ *  actionable `SuiPluginError` when none exists — reused at boot to validate a
+ *  configured whale before any funding runs. */
+export const selectSufficientForkCoin = (
 	client: ForkImpersonationGasClient,
 	owner: string,
 	minBalanceMist: bigint,
 ): Effect.Effect<{ readonly coin: ForkGasCoin; readonly balanceMist: bigint }, SuiPluginError> =>
 	Effect.tryPromise({
 		try: async () => {
-			const response = await client.listCoins({
-				owner,
-				coinType: SUI_GAS_COIN_TYPE,
-				limit: FORK_COIN_SCAN_LIMIT,
-			});
-			let best: { coin: ForkGasCoin; balanceMist: bigint } | undefined;
-			for (const candidate of response.objects) {
-				if (candidate.balance === undefined) continue;
-				const balanceMist = BigInt(candidate.balance);
-				if (best === undefined || balanceMist > best.balanceMist) {
-					best = {
-						coin: {
-							objectId: candidate.objectId,
-							version: String(candidate.version),
-							digest: candidate.digest,
-						},
-						balanceMist,
-					};
-				}
-			}
-			if (best === undefined) {
+			const found = await firstSufficientSuiCoin(client, owner, minBalanceMist);
+			if (found === undefined) {
 				throw suiPluginError(
 					'fork-impersonate',
-					`sui fork mode: no SUI coins found for ${owner} (scanned up to ${FORK_COIN_SCAN_LIMIT}). ` +
-						`Seed an address holding a large SUI balance, or set a different fork faucet whale.`,
-					{ owner, scanned: response.objects.length },
+					`sui fork mode: no SUI coin >= ${minBalanceMist} MIST (request + gas budget) found for ` +
+						`${owner}. Use a fork faucet whale with a larger single coin, or fund a smaller amount.`,
+					{ owner, requiredMist: minBalanceMist.toString() },
 				);
 			}
-			if (best.balanceMist < minBalanceMist) {
-				throw suiPluginError(
-					'fork-impersonate',
-					`sui fork mode: largest SUI coin for ${owner} is ${best.balanceMist} MIST, below the ` +
-						`required ${minBalanceMist} MIST (request + gas budget). Use a fork faucet whale with a ` +
-						`larger single coin, or fund a smaller amount.`,
-					{
-						owner,
-						largestCoinMist: best.balanceMist.toString(),
-						requiredMist: minBalanceMist.toString(),
-					},
-				);
-			}
-			return best;
+			return found;
 		},
 		catch: (cause) => {
 			if (isSuiPluginError(cause)) return cause;
