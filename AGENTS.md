@@ -138,6 +138,16 @@ Three layers of guidance, in order:
 
 ### Sui SDK documentation (read before guessing)
 
+**Never hand-roll Sui RPC — always go through the SDK.** Any time you talk to a
+Sui node (reads or writes, runtime or dev scripts), use the `@mysten/sui` SDK
+client — `SuiGrpcClient` and its `client.core.*` methods (`listCoins`,
+`getObject`, `executeTransaction`, `waitForTransaction`, …). Do NOT build raw
+JSON-RPC requests (no `fetch` to a fullnode with a `{ jsonrpc, method:
+'suix_*' | 'sui_*' }` body) and do NOT use the legacy JSON-RPC transport — the
+gRPC client is the only sanctioned path, and `sui-fork` doesn't serve JSON-RPC
+at all. The runtime already standardizes on `SuiGrpcClient`; helper scripts
+must too (e.g. `packages/devstack/scripts/find-fork-whale.mjs`).
+
 Every `@mysten/*` package ships LLM-optimized documentation in its own
 `docs/` directory. Before writing or modifying code that touches a `@mysten/*`
 package, find and read the relevant docs locally — **don't guess at API shape,
