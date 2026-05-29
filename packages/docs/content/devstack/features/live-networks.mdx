@@ -55,8 +55,9 @@ devstack up --network testnet-fork
 
 Fork mode runs a local `sui-fork` container against an upstream public network, serving a **gRPC**
 endpoint (not legacy JSON-RPC) on the same devstack Sui RPC route. It does not expose a GraphQL
-endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) intentionally panic in
-fork mode — read balances through `ChainProbe`, and fund accounts through the fork faucet (below).
+endpoint, and the balance APIs (`getBalance` / `listBalances` / `getCoinInfo`) intentionally panic
+in fork mode — read balances through `ChainProbe`, and fund accounts through the fork faucet
+(below).
 
 First boot compiles `sui-fork` from a pinned Sui revision — a one-time, multi-minute build that the
 supervisor row narrates so it doesn't look hung; the content-addressed image is reused on later
