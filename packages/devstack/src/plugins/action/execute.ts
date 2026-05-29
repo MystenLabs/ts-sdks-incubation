@@ -26,6 +26,7 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { AccountSignError, AccountValue, TxResult } from '../account/index.ts';
 import { buildForkImpersonationTransactionBytes, type SuiClient } from '../sui/index.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 
@@ -186,13 +187,17 @@ export const signAndExecute = (params: {
 				});
 
 				// --- 2. Serialise via the mode-appropriate path --------------
-				return account.source === 'impersonate'
+				// Fork mode (impersonate OR real signer) must build offline with
+				// explicit gas: the sui-fork binary has no simulate_transaction,
+				// so the SDK's gas-estimating `tx.build({ client })` fails. The
+				// real-vs-empty-signature split happens later in signAndExecute.
+				return account.source === 'impersonate' || sui.fork !== null
 					? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
 							Effect.mapError(
 								(cause): ActionError =>
 									actionError('sign', {
 										actionName,
-										message: `Action '${actionName}': fork impersonation Transaction.build failed — ${cause.message}.`,
+										message: `Action '${actionName}': fork Transaction.build failed — ${cause.message}.`,
 										cause,
 									}),
 							),
@@ -203,7 +208,7 @@ export const signAndExecute = (params: {
 								actionError('sign', {
 									actionName,
 									message: `Action '${actionName}': Transaction.build failed — ${
-										cause instanceof Error ? cause.message : String(cause)
+										formatUnknownError(cause)
 									}.`,
 									cause,
 								}),

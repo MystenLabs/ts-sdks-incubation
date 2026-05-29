@@ -289,6 +289,7 @@ const buildLocalPlugin = <
 					sdk: sui.sdk,
 					account: publisherAccount,
 					runtime: containerRuntime,
+					forkMode: sui.fork !== null,
 					...(sui.buildImage !== null ? { buildImage: sui.buildImage } : {}),
 				});
 

@@ -14,7 +14,24 @@ import { formatUnknownError } from '../../substrate/runtime/format-unknown-error
 export const FORK_IMPERSONATION_GAS_BUDGET = 1_000_000_000n;
 export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;
 
-interface ForkImpersonationGasClient {
+/** Canonical SUI gas coin type used to filter `listCoins` when picking
+ *  a gas/funding coin. Kept local so the sui plugin needn't depend on
+ *  the account plugin's `SUI_FULL_COIN_TYPE`. */
+const SUI_GAS_COIN_TYPE = '0x2::sui::SUI';
+
+/** Bounds the `listCoins` page scanned by {@link selectLargestForkCoin}.
+ *  A treasury/whale with one giant coin lands on the first page; we don't
+ *  paginate the whole (possibly huge) coin set just to rank balances. */
+const FORK_COIN_SCAN_LIMIT = 50;
+
+/** An object ref usable as gas payment for an impersonation transaction. */
+export interface ForkGasCoin {
+	readonly objectId: string;
+	readonly version: string;
+	readonly digest: string;
+}
+
+export interface ForkImpersonationGasClient {
 	readonly getObject: (input: { readonly objectId: string }) => Promise<unknown>;
 	readonly listCoins: (input: {
 		readonly owner: string;
@@ -54,10 +71,16 @@ export const buildForkImpersonationTransactionBytes = (
 	tx: Transaction,
 	sender: string,
 	client: ForkImpersonationGasClient,
+	/** Pre-selected gas coin. When omitted, the first coin owned by
+	 *  `sender` is used (legacy behaviour). The fork faucet passes the
+	 *  whale's largest SUI coin via {@link selectLargestForkCoin} so a
+	 *  `splitCoins(tx.gas, …)` funding transfer has enough balance. */
+	gasCoin?: ForkGasCoin,
 ): Effect.Effect<Uint8Array, SuiPluginError> =>
 	Effect.tryPromise({
 		try: async () => {
-			const gasPayment = await selectForkImpersonationGasPayment(client, sender);
+			const gasPayment =
+				gasCoin !== undefined ? [gasCoin] : await selectForkImpersonationGasPayment(client, sender);
 			prepareForkImpersonationTransaction(tx, sender, gasPayment);
 			await tx.prepareForSerialization({});
 			const data = tx.getData();
@@ -196,6 +219,72 @@ const selectForkImpersonationGasPayment = async (
 		},
 	];
 };
+
+/** Pick the largest SUI coin owned by `owner` that covers
+ *  `minBalanceMist`, for use as BOTH gas payment and the
+ *  `splitCoins(tx.gas, …)` funding source in a fork faucet transfer.
+ *  Scans a bounded page (treasury whales keep one giant coin up front).
+ *  Fails with an actionable `SuiPluginError` when no coin is large enough —
+ *  reused at boot to validate a configured whale before any funding runs. */
+export const selectLargestForkCoin = (
+	client: ForkImpersonationGasClient,
+	owner: string,
+	minBalanceMist: bigint,
+): Effect.Effect<{ readonly coin: ForkGasCoin; readonly balanceMist: bigint }, SuiPluginError> =>
+	Effect.tryPromise({
+		try: async () => {
+			const response = await client.listCoins({
+				owner,
+				coinType: SUI_GAS_COIN_TYPE,
+				limit: FORK_COIN_SCAN_LIMIT,
+			});
+			let best: { coin: ForkGasCoin; balanceMist: bigint } | undefined;
+			for (const candidate of response.objects) {
+				if (candidate.balance === undefined) continue;
+				const balanceMist = BigInt(candidate.balance);
+				if (best === undefined || balanceMist > best.balanceMist) {
+					best = {
+						coin: {
+							objectId: candidate.objectId,
+							version: String(candidate.version),
+							digest: candidate.digest,
+						},
+						balanceMist,
+					};
+				}
+			}
+			if (best === undefined) {
+				throw suiPluginError(
+					'fork-impersonate',
+					`sui fork mode: no SUI coins found for ${owner} (scanned up to ${FORK_COIN_SCAN_LIMIT}). ` +
+						`Seed an address holding a large SUI balance, or set a different fork faucet whale.`,
+					{ owner, scanned: response.objects.length },
+				);
+			}
+			if (best.balanceMist < minBalanceMist) {
+				throw suiPluginError(
+					'fork-impersonate',
+					`sui fork mode: largest SUI coin for ${owner} is ${best.balanceMist} MIST, below the ` +
+						`required ${minBalanceMist} MIST (request + gas budget). Use a fork faucet whale with a ` +
+						`larger single coin, or fund a smaller amount.`,
+					{
+						owner,
+						largestCoinMist: best.balanceMist.toString(),
+						requiredMist: minBalanceMist.toString(),
+					},
+				);
+			}
+			return best;
+		},
+		catch: (cause) => {
+			if (isSuiPluginError(cause)) return cause;
+			return suiPluginError(
+				'fork-impersonate',
+				`sui fork mode: failed to select a SUI coin for ${owner}: ${formatUnknownError(cause)}`,
+				cause,
+			);
+		},
+	});
 
 export const verifyForkImpersonationSender = (
 	sender: string,

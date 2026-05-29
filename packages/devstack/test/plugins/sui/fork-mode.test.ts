@@ -7,7 +7,12 @@ import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 
 import { chainId, type NetworkConfig } from '../../../src/substrate/index.ts';
 import { sui, suiFor } from '../../../src/plugins/sui/index.ts';
-import { forkDataDirKey, forkStartCommand } from '../../../src/plugins/sui/mode/fork.ts';
+import {
+	forkDataDirKey,
+	forkStartCommand,
+	resolveForkWhale,
+	withForkFaucetSeed,
+} from '../../../src/plugins/sui/mode/fork.ts';
 import {
 	buildForkImpersonationTransactionBytes,
 	verifyForkImpersonationSender,
@@ -206,6 +211,56 @@ describe('sui fork mode', () => {
 		]);
 		expect(data.gasData.budget).toBe('1000000000');
 		expect(data.gasData.price).toBe('1000');
+	});
+
+	it('resolves an explicit faucet whale (normalized) and flags it explicit', () => {
+		const resolved = resolveForkWhale({
+			mode: 'fork',
+			upstream: 'testnet',
+			faucet: { whale: '0xabc' },
+		});
+		expect(resolved).not.toBeNull();
+		expect(resolved?.whale).toBe(normalizedId('0xabc'));
+		expect(resolved?.explicit).toBe(true);
+	});
+
+	it('disables the faucet when explicitly turned off', () => {
+		expect(
+			resolveForkWhale({ mode: 'fork', upstream: 'testnet', faucet: { enabled: false, whale: '0xabc' } }),
+		).toBeNull();
+	});
+
+	it('resolves the per-upstream default whale (non-explicit) when none is configured', () => {
+		const resolved = resolveForkWhale({ mode: 'fork', upstream: 'testnet' });
+		expect(resolved).not.toBeNull();
+		expect(resolved?.explicit).toBe(false);
+		// A normalized 32-byte address from FORK_DEFAULT_WHALE.
+		expect(resolved?.whale).toMatch(/^0x[0-9a-f]{64}$/);
+	});
+
+	it('auto-injects the faucet whale into the fork seed + start command', () => {
+		const seeded = withForkFaucetSeed({
+			mode: 'fork',
+			upstream: 'testnet',
+			faucet: { whale: '0xabc' },
+		});
+		expect(seeded.seed?.addresses).toContain(normalizedId('0xabc'));
+		expect(forkStartCommand(seeded)).toEqual(
+			expect.arrayContaining(['--address', normalizedId('0xabc')]),
+		);
+	});
+
+	it('keys a distinct fork data dir when the faucet whale changes', () => {
+		const base = { mode: 'fork', upstream: 'testnet', checkpoint: 1 } as const;
+		const withWhale = forkDataDirKey(
+			withForkFaucetSeed({ ...base, faucet: { whale: '0xabc' } }),
+		);
+		const withOther = forkDataDirKey(
+			withForkFaucetSeed({ ...base, faucet: { whale: '0xdef' } }),
+		);
+		const without = forkDataDirKey(base);
+		expect(withWhale).not.toBe(without);
+		expect(withWhale).not.toBe(withOther);
 	});
 
 	it('fork image includes the Sui CLI path used by package builds', () => {

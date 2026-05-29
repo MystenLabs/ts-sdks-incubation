@@ -39,6 +39,8 @@
 import { Effect, Schema, Scope } from 'effect';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 
+import { formatUnknownError } from '../format-unknown-error.ts';
+
 // ---------------------------------------------------------------------------
 // Errors — substrate-style Schema.TaggedErrorClass
 // ---------------------------------------------------------------------------
@@ -250,7 +252,7 @@ export const executeSuiTx = (params: {
 							message:
 								`Transaction.build failed for signer '${signer.name}' ` +
 								`(address=${signer.address}): ` +
-								(cause instanceof Error ? cause.message : String(cause)),
+								formatUnknownError(cause),
 							cause,
 						}),
 				});
@@ -290,7 +292,7 @@ export const executeSuiTx = (params: {
 							signerAddress: signer.address,
 							message:
 								`executeTransaction rejected for signer '${signer.name}': ` +
-								(cause instanceof Error ? cause.message : String(cause)),
+								formatUnknownError(cause),
 							cause,
 						}),
 				});

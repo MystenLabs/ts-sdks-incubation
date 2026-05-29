@@ -70,6 +70,23 @@ export interface SuiLiveOptions extends SuiCommonOptions {
 	readonly chain?: string;
 }
 
+/** Fork-mode faucet config. Funds test accounts by impersonating a
+ *  large-reserve "whale" address on the forked upstream and transferring
+ *  SUI from it — there is no real faucet on a fork. Enabled by default
+ *  with a per-upstream default whale; the whale is auto-added to the
+ *  fork seed and validated at boot. */
+export interface SuiForkFaucetOptions {
+	/** Address to impersonate as the funding source. Defaults to a known
+	 *  large-reserve address for the upstream (see `FORK_DEFAULT_WHALE`).
+	 *  Must hold a large single SUI coin in the fork. */
+	readonly whale?: string;
+	/** Upper bound on a single funding request (MIST). Guards against a
+	 *  typo draining the whale. Default `1_000_000_000_000n` (1000 SUI). */
+	readonly perRequestCapMist?: bigint;
+	/** Disable the fork faucet entirely (default: enabled). */
+	readonly enabled?: boolean;
+}
+
 /** Fork mode — sui-fork binary mirroring a real chain at a
  *  checkpoint. */
 export interface SuiForkOptions extends SuiCommonOptions {
@@ -89,6 +106,8 @@ export interface SuiForkOptions extends SuiCommonOptions {
 	};
 	/** Auto-tick clock cadence (or off). */
 	readonly autoTick?: boolean | { readonly intervalMs: number };
+	/** Impersonation-based faucet for funding test accounts. */
+	readonly faucet?: SuiForkFaucetOptions;
 }
 
 /** The discriminated union of all four mode option records. */

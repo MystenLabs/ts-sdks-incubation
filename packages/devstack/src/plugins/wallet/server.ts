@@ -33,6 +33,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { WalletSpans } from './spans.ts';
 import type { AccountValue } from '../account/index.ts';
 import {
@@ -138,7 +139,7 @@ export const startHttpServer = (
 					phase: 'listen',
 					message:
 						`wallet HTTP server listen failed on ${config.bindAddress}:${config.port} — ` +
-						(cause instanceof Error ? cause.message : String(cause)),
+						(formatUnknownError(cause)),
 					hint:
 						'check that the port broker did not hand out a busy port; ' +
 						'a sibling devstack on the same address would also explain this.',
