@@ -14,7 +14,7 @@
 //   - a produce procedure (run on miss / verify-fail),
 //   - a register procedure (fires on EVERY cycle — hit AND miss).
 
-import type { Effect, Schema, Scope } from 'effect';
+import type { Effect, Scope } from 'effect';
 
 import type { ChainId, ContentHash } from '../substrate/brand.ts';
 
@@ -52,8 +52,6 @@ export interface ArtifactSpec<Produced, Verified> {
 	 *  invoking this; callers can therefore assume `cached` is
 	 *  defined on every call. */
 	readonly verify: (cached: Produced) => Effect.Effect<Verified | null, never>;
-	/** Schema for the verified shape (drives decode in `verify`). */
-	readonly verifySchema: Schema.Schema<Verified>;
 	/** Produce procedure — runs on cache miss OR verify-fail. */
 	readonly produce: Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
 	/** Register procedure — fires on EVERY cycle (hit AND miss). The

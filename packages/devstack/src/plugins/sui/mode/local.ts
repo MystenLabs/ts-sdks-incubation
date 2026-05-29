@@ -429,6 +429,9 @@ const ensureLocalValidatorContainerAttempt = (
 // Port mapping — host:container pairs
 // ---------------------------------------------------------------------------
 
+// Exported test entry point: resolves the host:container port pairs
+// without surfacing the release handle (the live boot path uses
+// `resolvePortMappingWithRelease` directly to retain the release).
 export const resolvePortMapping = (
 	portBroker: PortBroker,
 	override: Readonly<Record<number, number>> | undefined,

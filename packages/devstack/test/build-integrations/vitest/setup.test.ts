@@ -62,6 +62,35 @@ describe('runDevstackBeforeAll', () => {
 			expect(getStackContext()).toBeUndefined();
 		}));
 
+	it('resolves the fixture across a beforeAll-writer / it-reader testPath split', () =>
+		// Regression: the writer runs inside `beforeAll`, where vitest has
+		// often not yet bound `expect.getState().testPath` (it lands under
+		// the `<unknown>` sentinel), while the reader runs inside an
+		// `it`/`test` body, where `testPath` IS populated. A keyed lookup
+		// then misses the sentinel slot and silently returns `undefined`,
+		// steering the test at cold-start defaults at the wrong stack.
+		// Drive that exact asymmetry: write with `testPath` undefined, read
+		// with a concrete `testPath`.
+		withTempRootSync('devstack-vitest-split', (root) => {
+			seedManifestUnder(root, 'test');
+			const savedTestPath = expect.getState().testPath;
+			try {
+				// beforeAll window: testPath not yet bound → sentinel key.
+				expect.setState({ testPath: undefined });
+				runDevstackBeforeAll({
+					cwd: root,
+					env: { DEVSTACK_STACK: 'test' },
+					silent: true,
+				});
+				// it/test body: testPath is now a concrete path that differs
+				// from the sentinel the writer used.
+				expect.setState({ testPath: '/abs/path/to/some.test.ts' });
+				expect(getStackContext()?.identity.stack).toBe('test');
+			} finally {
+				expect.setState({ testPath: savedTestPath });
+			}
+		}));
+
 	it('throws VitestManifestNotFoundError when requireDevstack: true', () =>
 		withTempRootSync('devstack-vitest-required', (root) => {
 			expect(() =>

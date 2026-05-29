@@ -34,9 +34,15 @@ import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedNetworkOwnershipLabels,
 	ownershipMismatchDetail,
+	readLabels,
 	renderNetworkLabels,
 } from './labels.ts';
-import { isAlreadyInNetworkStderr, isMissingNetworkStderr, wrapNetworkError } from './wrap.ts';
+import {
+	isAlreadyInNetworkStderr,
+	isMissingNetworkStderr,
+	isNetworkAlreadyExistsStderr,
+	wrapNetworkError,
+} from './wrap.ts';
 
 /** The cross-host shared network name. Architecture-mandated single
  *  bridge per host. Callers can target other networks (per-stack) but
@@ -56,15 +62,6 @@ interface NetworkInspectFacts {
 	readonly id: string;
 	readonly labels: Readonly<Record<string, string>>;
 }
-
-const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
-	if (raw === null || typeof raw !== 'object') return {};
-	const out: Record<string, string> = {};
-	for (const [key, value] of Object.entries(raw)) {
-		if (typeof value === 'string') out[key] = value;
-	}
-	return out;
-};
 
 const NetworkInspectSchema = Schema.Struct({
 	Id: Schema.String,
@@ -161,9 +158,49 @@ export const ensureNetwork = (
 			...gatewayArgs,
 			...labelArgs,
 			name,
-		]).pipe(Effect.mapError(wrapNetworkError('create', name)));
+		]).pipe(
+			Effect.mapError(wrapNetworkError('create', name)),
+			// `docker network create` is NOT name-atomic and — unlike
+			// containers, which lean on `--name` atomicity plus a per-name
+			// lock — networks have no per-name lock. Two processes booting
+			// against the shared `devstack` bridge can both pass the
+			// inspect-miss above and both run `create`; the loser's daemon
+			// stderr ("network with name … already exists" / a `Conflict`
+			// envelope) is classified by `wrapNetworkError` as a generic
+			// `NetworkOperationFailed`. Recover that ONE case here by
+			// re-inspecting and adopting the winner's network — but only if
+			// it carries OUR ownership labels. This mirrors the container
+			// `startAndAdopt` adopt-on-collision shape: recover from the
+			// typed collision error, re-read facts, assert ownership, then
+			// return the existing id; a foreign/unowned network surfaces the
+			// ownership error rather than being silently adopted.
+			Effect.catchTag('NetworkOperationFailed', (err) =>
+				err.op === 'create' && isNetworkAlreadyExistsStderr(err.stderr)
+					? adoptExistingNetwork(name, opts, err)
+					: Effect.fail(err),
+			),
+		);
 		return created.stdout.trim();
 	}).pipe(Effect.withSpan('runtime.docker.network.ensure'));
+
+/** Concurrent-create-loses recovery: a peer created the network between
+ *  our inspect-miss and our `create`. Re-inspect, assert it carries our
+ *  ownership labels, and return its id wrapped as a synthetic create
+ *  `CaptureResult` (so the caller's `.stdout.trim()` reads the adopted
+ *  id). A foreign/unowned network surfaces the ownership error; a vanished
+ *  network (peer pruned it between create and re-inspect) re-surfaces the
+ *  original typed create failure for the boot to retry. */
+const adoptExistingNetwork = (
+	name: string,
+	opts: EnsureNetworkOptions,
+	createFailure: NetworkOperationFailed,
+): Effect.Effect<{ readonly stdout: string }, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const adopted = yield* inspectNetwork(name);
+		if (adopted === null) return yield* Effect.fail(createFailure);
+		yield* assertNetworkOwned(name, adopted, opts);
+		return { stdout: adopted.id };
+	});
 
 // -----------------------------------------------------------------------------
 // Connect / disconnect

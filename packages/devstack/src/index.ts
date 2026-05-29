@@ -88,7 +88,6 @@ export * as RetryPolicy from './substrate/runtime/retry-policy.ts';
 export * as RuntimeDecode from './substrate/runtime/runtime-decode.ts';
 export {
 	Logger,
-	Redactor,
 	type LoggerShape,
 	type LogLevel,
 	type LogLine,
@@ -200,7 +199,6 @@ export {
 	type SuiCliError,
 	type SuiConfigError,
 	type ForkUnsupportedError,
-	type SeedManifestMismatchError,
 	type ChainProbe,
 	type ChainProbeError,
 	type ChainProbeMode,

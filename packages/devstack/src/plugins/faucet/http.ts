@@ -179,7 +179,7 @@ export const requestFundsOnce = (
 		}
 
 		// Invariant #2: 200 OK with body-level Failure MUST raise.
-		// We treat JSON-parse failure as a `malformed-body` raise too —
+		// We treat JSON-parse failure as an `invalid-json` raise too —
 		// during cold boot the faucet very occasionally writes an empty
 		// or truncated body before it's ready, and silently accepting
 		// that mirrors the bug we're explicitly guarding against.

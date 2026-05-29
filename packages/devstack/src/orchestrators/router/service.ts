@@ -705,6 +705,14 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
+						// Re-check after acquiring the dispatch lock: a peer fiber
+						// (parallel plugin acquire) may have finished boot while we
+						// waited for this lock. The O_EXCL lock serializes in-process
+						// fibers too, and the winner sets `bootRef` below while still
+						// holding the lock — so a non-null read here means boot is
+						// done; skip the redundant bootstrap (docker inspect + decision).
+						const bootedByPeer = yield* Ref.get(bootRef);
+						if (bootedByPeer !== null) return bootedByPeer;
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
@@ -773,15 +781,21 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						return yield* bootstrap({
+						const booted = yield* bootstrap({
 							image: cfg.image,
 							entrypoints: registry.all(),
 							profile,
 							protectedRouteLeaseIds,
 						}).pipe(Effect.provideService(TraefikContainerOpsService, traefikOps));
+						// Publish the cached report WHILE still holding the locks so a
+						// peer fiber's post-lock re-check (above) observes it — the
+						// locks release at scope close, which is after this set. On
+						// bootstrap failure we never reach here, so `bootRef` stays
+						// null and a later boot() retries (retry-on-failure preserved).
+						yield* Ref.set(bootRef, booted);
+						return booted;
 					}),
 				);
-				yield* Ref.set(bootRef, report);
 				return report;
 			}).pipe(Effect.withSpan('orchestrator.router.boot'));
 

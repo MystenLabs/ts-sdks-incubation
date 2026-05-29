@@ -72,6 +72,21 @@ export const COMPOSE_UI_VERSION = '2.0.0';
 
 export type ExpectedOwnershipLabels = Readonly<Record<string, string>>;
 
+/** Coerce a `docker inspect` `Labels` field (typed `Schema.Unknown`) into
+ *  a string→string map, dropping any non-string values. Shared by the
+ *  container / network / volume inspect readers — `docker inspect` reports
+ *  labels as an object whose values are always strings in practice, but the
+ *  schema keeps the field `Unknown` so a malformed daemon response cannot
+ *  blow up decode; this reader is the defensive narrowing. */
+export const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
+	if (raw === null || typeof raw !== 'object') return {};
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'string') out[key] = value;
+	}
+	return out;
+};
+
 const normalizeComposeSegment = (value: string): string => {
 	const normalized = value
 		.trim()

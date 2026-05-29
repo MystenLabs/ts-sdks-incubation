@@ -121,7 +121,20 @@ export const acquireNode = (
 			message: 'plugin acquire start',
 			fields: { role: entry.node.member.role },
 		});
-		yield* registry.transition(key, 'acquiring').pipe(Effect.catch(() => Effect.void));
+		// Best-effort claim. `transition` `Effect.die`s on an off-table move,
+		// which a concurrent acquire can trigger: an in-flight initial
+		// `acquireNode` racing a selective-restart re-acquire of the same key
+		// hits `acquiring → acquiring`. `Effect.catch` (used originally here)
+		// cannot catch that DEFECT, so it would escape and kill the
+		// command-loop fiber (supervisor wedge — same class as the lifecycle
+		// reset fix). `Effect.exit` swallows BOTH failure and defect, keeping
+		// this the best-effort transition it was always meant to be.
+		// NOTE: this prevents the wedge but not the underlying double-acquire
+		// (two fibers running one node's `start`). A complete fix must
+		// interrupt a node's in-flight acquire fiber before a restart
+		// re-acquires it — tracked as a follow-up (needs per-node acquire-fiber
+		// handles, which `acquireKeys`' `Effect.all` does not retain today).
+		yield* Effect.exit(registry.transition(key, 'acquiring'));
 		const readDependency = buildDependencyReaderFor(registry, entry.node);
 		const deps = resolvePluginDependencies(entry.node.member, readDependency);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any

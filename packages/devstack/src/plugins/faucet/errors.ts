@@ -90,7 +90,7 @@ export interface FaucetBodyError {
 	readonly address: string;
 	readonly amount: bigint;
 	readonly status: number;
-	readonly reason: 'failure-status' | 'malformed-body' | 'invalid-json';
+	readonly reason: 'failure-status' | 'invalid-json';
 	readonly message: string;
 	/** The raw body payload (truncated where necessary) for diagnostics. */
 	readonly bodySnippet?: string;

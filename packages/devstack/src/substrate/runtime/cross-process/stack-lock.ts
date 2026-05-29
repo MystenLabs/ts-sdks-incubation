@@ -21,16 +21,17 @@
 //   - Acquire retries with exponential backoff up to 5 seconds total
 //     (architecture § Claim protocol step 1).
 
-import { mkdirSync, statSync, unlinkSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, unlinkSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 
 import { Data, Effect, Schema, Scope } from 'effect';
 
-import { DEFAULT_SWEEP_POLICY, type RosterHolder } from '../../cross-process.ts';
+import { type RosterHolder } from '../../cross-process.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
+import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -212,27 +213,46 @@ export const acquireStackLock = (
 			// with the roster sweep). Without this branch, a mid-write
 			// crash keeps every peer blocked for the full 5s claim
 			// window — see review fix phase 22f (cross-process).
-			let shouldReclaim = false;
+			let reclaimed = false;
 			if (lastHolder !== null) {
+				// Dead-PID reclaim: gated on a liveness probe, so the
+				// holder cannot have written a fresh body — a plain
+				// unlink is safe here (no TOCTOU). An alive holder falls
+				// through to the backoff below.
 				const status = yield* checkHolderLiveness(lastHolder).pipe(
 					Effect.catch(() => Effect.succeed('alive' as const)),
 				);
-				shouldReclaim = status === 'dead';
-			} else if (isUnparseableBodyStale(path)) {
-				shouldReclaim = true;
-			}
-			if (shouldReclaim) {
-				yield* Effect.try({
-					try: () => {
-						try {
-							unlinkSync(path);
-						} catch {
-							// Race with another reclaimer — ok.
-						}
-						return null;
-					},
+				if (status === 'dead') {
+					yield* Effect.try({
+						try: () => {
+							try {
+								unlinkSync(path);
+							} catch {
+								// Race with another reclaimer — ok.
+							}
+							return null;
+						},
+						catch: (cause) => new StackLockIoError({ path, cause }),
+					});
+					reclaimed = true;
+				}
+			} else {
+				// Unparseable body: reclaim ONLY through the re-stat
+				// guard. A bare mtime read + unlink races a competitor
+				// who legitimately reclaims the garbage and writes a
+				// fresh valid O_EXCL body in the window — the unlink
+				// would clobber that LIVE lock (two simultaneous
+				// holders). `reclaimUnparseableStaleFile` re-confirms the
+				// file is still the same stale, unparseable inode
+				// immediately before unlinking; any other outcome leaves
+				// the file untouched and we fall through to back off.
+				const outcome = yield* Effect.try({
+					try: () => reclaimUnparseableStaleFile(path, parseLockBody),
 					catch: (cause) => new StackLockIoError({ path, cause }),
 				});
+				reclaimed = outcome === 'reclaimed';
+			}
+			if (reclaimed) {
 				// O_EXCL atomicity alone arbitrates the post-reclaim
 				// race; reset the backoff so the contest starts fresh
 				// (the prior growth was driven by a now-evicted dead
@@ -245,29 +265,3 @@ export const acquireStackLock = (
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MILLIS);
 		}
 	}).pipe(Effect.withSpan('cross-process.stack-lock.acquire'));
-
-/** Stat the lock file and return true when the body is older than the
- *  roster sweep's `staleAfterMillis` window. Used as the fallback
- *  reclaim signal when the on-disk body fails to parse (peer crashed
- *  mid-write): the PID liveness check has nothing to consult, so we
- *  fall back to mtime + the same staleness budget the roster sweep
- *  uses. Returns false on any I/O error so a transient stat failure
- *  doesn't trigger a spurious unlink — the loop's exponential backoff
- *  then naturally retries on the next iteration.
- *
- *  The threshold is `DEFAULT_SWEEP_POLICY.staleAfterMillis` (30s),
- *  matching the roster's eviction window. Anything that crashed mid-
- *  write at least 30s ago is presumed abandoned.
- *
- *  Exported so `snapshot-reservation.ts` reuses the SAME mtime-window
- *  gate for its malformed-body sweep (a half-written reservation body
- *  must not be unlinked the instant it appears — the writer may still
- *  be mid-write). */
-export const isUnparseableBodyStale = (path: string): boolean => {
-	try {
-		const stats = statSync(path);
-		return Date.now() - stats.mtimeMs > DEFAULT_SWEEP_POLICY.staleAfterMillis;
-	} catch {
-		return false;
-	}
-};

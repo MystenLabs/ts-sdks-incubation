@@ -58,6 +58,21 @@ export const isNoSuchContainerStderr = (stderr: string): boolean =>
 export const isAlreadyInNetworkStderr = (stderr: string): boolean =>
 	/already exists in network/i.test(stderr) || /endpoint with name .* already exists/i.test(stderr);
 
+/** Network-create collision — `docker network create` is NOT name-atomic
+ *  and there is no per-name lock for networks, so two processes booting
+ *  against the shared `devstack` bridge can both pass the inspect-miss and
+ *  both run `create`; the loser sees this stderr. Matches the daemon's
+ *  canonical wording `network with name <name> already exists` plus the
+ *  `Conflict` (409) envelope libnetwork returns for the same condition.
+ *  Distinct from `isAlreadyInNetworkStderr` (the connect-side
+ *  endpoint-already-attached case) — this is the network object itself
+ *  already existing, the signal for `ensureNetwork`'s adopt-on-collision
+ *  re-inspect. */
+export const isNetworkAlreadyExistsStderr = (stderr: string): boolean =>
+	/network with name \S+ already exists/i.test(stderr) ||
+	/Conflict.*network/i.test(stderr) ||
+	/network \S+ already exists/i.test(stderr);
+
 /** Docker bridge IPAM exhaustion. This is a stale-network / missing
  *  explicit-subnet policy failure, not a daemon reachability failure. */
 export const isNetworkAddressPoolExhaustedStderr = (stderr: string): boolean =>

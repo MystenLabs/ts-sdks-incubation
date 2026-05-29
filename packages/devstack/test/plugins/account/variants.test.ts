@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit, Option } from 'effect';
@@ -21,6 +21,7 @@ import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
+import { resolveKeystoreVariant } from '../../../src/plugins/account/variants/keystore.ts';
 import { layerLeaseBroker } from '../../../src/substrate/runtime/lease-broker/index.ts';
 import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
 
@@ -149,6 +150,73 @@ describe('account env and private-key variant surface', () => {
 
 		expect(resolved.address).toBe(generated.address);
 	});
+
+	it('inline decode failure does NOT leak the supplied secret into the error', async () => {
+		// A bech32-shaped string that fails to decode. The marker is the
+		// kind of thing a real `suiprivkey1...` body looks like; if the
+		// SDK's reject path echoed it into the error we DROP it, so it
+		// must not survive into `message`, `hint`, or `cause`.
+		const secretMarker = 'suiprivkey1q旧notavalidkeybutsecretlooking0xdeadbeefdeadbeef';
+		const exit = await Effect.runPromiseExit(
+			resolveInlineVariant({ name: 'mallory', privateKey: secretMarker }),
+		);
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(Option.isSome(err)).toBe(true);
+		if (Option.isSome(err)) {
+			expect(err.value._tag).toBe('AccountAcquireError');
+			expect(err.value.phase).toBe('decode-inline');
+			// The whole serialized error (message + hint + cause) must not
+			// echo the supplied secret back.
+			const serialized = JSON.stringify({
+				message: err.value.message,
+				hint: err.value.hint,
+				cause: err.value.cause,
+			});
+			expect(serialized).not.toContain(secretMarker);
+			expect(err.value.cause).toBeUndefined();
+		}
+	});
+
+	it('keystore decode failure does NOT leak secret rows into the error', () =>
+		withTempRootAsync('devstack-account-keystore-leak', async (root) => {
+			// The keystore file IS an array of `suiprivkey1...` private keys.
+			// A file that parses as JSON but fails the `array of strings`
+			// schema produces a ParseError whose rendered "actual" value is
+			// the offending content. We DROP that raw cause, so a
+			// secret-looking value must not survive into message/hint/cause.
+			const secretMarker = 'suiprivkey1qSECRETMARKERdeadbeefdeadbeefdeadbeefdeadbeef';
+			const dir = join(root, '.sui');
+			mkdirSync(dir, { recursive: true });
+			const keystorePath = join(dir, 'sui.keystore');
+			// Bare JSON string (not an array) → schema mismatch whose actual
+			// value is the secret marker.
+			writeFileSync(keystorePath, JSON.stringify(secretMarker));
+
+			const exit = await Effect.runPromiseExit(
+				resolveKeystoreVariant({
+					name: 'mallory',
+					path: keystorePath,
+					aliasOrAddress: 'mallory',
+				}),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const err = Exit.findErrorOption(exit);
+			expect(Option.isSome(err)).toBe(true);
+			if (Option.isSome(err)) {
+				expect(err.value._tag).toBe('AccountAcquireError');
+				expect(err.value.phase).toBe('load-keystore');
+				const serialized = JSON.stringify({
+					message: err.value.message,
+					hint: err.value.hint,
+					cause: err.value.cause,
+				});
+				expect(serialized).not.toContain(secretMarker);
+				expect(err.value.cause).toBeUndefined();
+			}
+		}));
 
 	it('account factory accepts env key and inline privateKey option names', () => {
 		const envAccount = account('prod', {

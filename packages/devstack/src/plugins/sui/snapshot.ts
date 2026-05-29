@@ -23,6 +23,19 @@
 // Chain identity (chainId + per-mode cluster id) is the canonical
 // identity-guard contribution from this plugin. The substrate's
 // pre-restore hook reads it; identity mismatch refuses the restore.
+//
+// The `mode` discriminator is folded INTO the identity record (mirrors
+// walrus's `preRestore` carrying `mode`). It is load-bearing: container
+// `local` mode (committed chain-state artifacts in the writable layer)
+// and `local-rpc` mode (caller-owned external RPC, no container) can
+// resolve to the SAME chain id — e.g. a caller wrapping their own
+// localnet reporting `sui:localnet`, identical to the in-container
+// validator. Without the `mode` key the guard would compare only
+// `{kind, chain}` and let a container-`local` snapshot restore against a
+// `local-rpc` stack (and vice versa): restoring container chain-state
+// against an external RPC is a silent no-op masquerading as success.
+// With `mode` in the record the values differ on the `mode` key and the
+// guard refuses before any mutation.
 
 import { Effect } from 'effect';
 
@@ -60,7 +73,7 @@ export const makeSnapshotable = (
 				subtrees: [],
 				managedContainers: [labels('validator'), labels('postgres')],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain', chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'local' as const, chain }),
 				postRestore: Effect.void,
 			};
 		}
@@ -69,12 +82,15 @@ export const makeSnapshotable = (
 			// No container, no capture. The decl still exists so the
 			// identity guard fires on restore (e.g. restoring a local
 			// snapshot while the resolver says "live testnet" — the
-			// identity-guard refuses).
+			// identity-guard refuses). `mode` flows from the narrowed
+			// parameter (`'local-rpc' | 'live'` here), so a `local-rpc`
+			// snapshot also refuses against a container-`local` stack at
+			// an identical chain id.
 			return {
 				kind: 'snapshotable',
 				subtrees: [],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain', chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode, chain }),
 			};
 		}
 		case 'fork': {
@@ -87,7 +103,7 @@ export const makeSnapshotable = (
 				subtrees: ['sui-fork/'],
 				managedContainers: [labels('fork-validator')],
 				missingTolerance: 'fine',
-				preRestore: Effect.succeed({ kind: 'sui-chain', chain }),
+				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'fork' as const, chain }),
 			};
 		}
 	}

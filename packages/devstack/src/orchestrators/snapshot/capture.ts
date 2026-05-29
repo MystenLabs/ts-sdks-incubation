@@ -48,6 +48,7 @@ import {
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
 import { writeArtifactIntegrity } from './integrity.ts';
+import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
 	requireIdentity,
@@ -138,14 +139,7 @@ export type SnapshotProgressReporter = (
 // Staging — populate a directory; the caller wraps in stage-and-swap.
 // -----------------------------------------------------------------------------
 
-const failPhase =
-	(
-		phase: CapturePhaseError['phase'],
-		detail: string,
-		plugin?: string,
-	): ((cause: unknown) => Effect.Effect<never, CapturePhaseError>) =>
-	(cause) =>
-		Effect.fail(new CapturePhaseError({ phase, plugin, detail, cause }));
+const failPhase = makePhaseFailer(CapturePhaseError);
 
 const failImageBundleTagScan = (
 	cause: ImageBundleTagScanError,

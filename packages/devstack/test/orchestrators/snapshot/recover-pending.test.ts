@@ -266,6 +266,128 @@ describe('recoverPendingRestore', () => {
 		),
 	);
 
+	it.effect(
+		'treats an entry as recovered when both source attempts fail but the target already exists',
+		() =>
+			withTempRoot('devstack-recover-pending', (root) =>
+				Effect.gen(function* () {
+					const stackRoot = join(root, 'stack');
+					writePendingMarkerRaw(stackRoot, [
+						{
+							plugin: 'postgres',
+							role: 'db',
+							targetImageName: 'devstack-build:pg-db',
+							stagedImageTag: 'devstack-snapshot:restore-aaaa',
+							digest: 'sha256:pg-db-digest',
+						},
+					]);
+					// A previous recovery already promoted this entry to
+					// `targetImageName`, then the supervise crashed before the
+					// marker was rewritten. Now both source identities (staged
+					// tag + digest) are gone, so both promote attempts fail
+					// with not-found — but the TARGET is already on the host.
+					// The scanner must probe the target (a self-tag where
+					// `src` resolves to `targetImageName`) and, seeing it
+					// resolve, drop the marker rather than retag forever.
+					const tagCalls: {
+						readonly src: ImageRef;
+						readonly newTag: string;
+					}[] = [];
+					const runtime = stubRuntime({
+						tagImage: (src, newTag) =>
+							Effect.gen(function* () {
+								tagCalls.push({ src, newTag });
+								// The probe self-tags the target onto itself:
+								// `src` resolves (`tag ?? digest`) to `newTag`.
+								const isProbe = (src.tag ?? src.digest) === newTag;
+								if (isProbe) return undefined; // target visible
+								// Both real promote attempts: source missing.
+								return yield* Effect.fail({
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-tag-failed',
+									detail: 'No such image (source promoted by prior recovery)',
+								} as ContainerRuntimeError);
+							}),
+					});
+					const summary = yield* recoverPendingRestore(stackRoot, runtime).pipe(
+						Effect.provide(NodeFileSystem.layer),
+					);
+					expect(summary.recovered).toBe(1);
+					expect(summary.stillPending).toEqual([]);
+					expect(summary.markerCleared).toBe(true);
+					expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(false);
+					// Three runtime calls: staged-tag attempt, digest-only
+					// fallback, then the existence probe (which carries the
+					// target name as `src` with no separate `tag`).
+					expect(tagCalls).toHaveLength(3);
+					expect(tagCalls[2]).toEqual({
+						src: { digest: 'devstack-build:pg-db' },
+						newTag: 'devstack-build:pg-db',
+					});
+					expect(tagCalls[2]?.src.tag).toBeUndefined();
+				}),
+			),
+	);
+
+	it.effect(
+		'keeps an entry pending when both source attempts fail and the target is absent',
+		() =>
+			withTempRoot('devstack-recover-pending', (root) =>
+				Effect.gen(function* () {
+					const stackRoot = join(root, 'stack');
+					writePendingMarkerRaw(stackRoot, [
+						{
+							plugin: 'postgres',
+							role: 'db',
+							targetImageName: 'devstack-build:pg-db',
+							stagedImageTag: 'devstack-snapshot:restore-aaaa',
+							digest: 'sha256:pg-db-digest',
+						},
+					]);
+					// Both source attempts fail AND the target probe fails too
+					// — the canonical transient-daemon-error shape. The scanner
+					// must NOT drop the marker: the entry stays pending so the
+					// next supervise retries instead of silently losing the
+					// in-flight restore.
+					const tagCalls: {
+						readonly src: ImageRef;
+						readonly newTag: string;
+					}[] = [];
+					const runtime = stubRuntime({
+						tagImage: (src, newTag) =>
+							Effect.gen(function* () {
+								tagCalls.push({ src, newTag });
+								return yield* Effect.fail({
+									_tag: 'ContainerRuntimeError',
+									reason: 'daemon-unreachable',
+									detail: 'transient daemon error',
+								} as ContainerRuntimeError);
+							}),
+					});
+					const summary = yield* recoverPendingRestore(stackRoot, runtime).pipe(
+						Effect.provide(NodeFileSystem.layer),
+					);
+					expect(summary.recovered).toBe(0);
+					expect(summary.stillPending).toHaveLength(1);
+					expect(summary.stillPending[0]?.role).toBe('db');
+					expect(summary.markerCleared).toBe(false);
+					expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(true);
+					const rewritten = JSON.parse(
+						readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
+					) as { readonly containers: ReadonlyArray<{ readonly role: string }> };
+					expect(rewritten.containers).toHaveLength(1);
+					expect(rewritten.containers[0]?.role).toBe('db');
+					// All three runtime calls fired: both promote attempts plus
+					// the existence probe; every one failed transiently.
+					expect(tagCalls).toHaveLength(3);
+					expect(tagCalls[2]).toEqual({
+						src: { digest: 'devstack-build:pg-db' },
+						newTag: 'devstack-build:pg-db',
+					});
+				}),
+			),
+	);
+
 	it.effect('warns and leaves a v1 (pre-upgrade) marker untouched', () =>
 		withTempRoot('devstack-recover-pending', (root) =>
 			Effect.gen(function* () {

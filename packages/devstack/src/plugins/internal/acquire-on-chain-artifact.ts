@@ -6,7 +6,7 @@
 //   - the `register: () => Effect.void` no-op (these plugins keep no
 //     in-process registry — the cached payload IS the resolved value),
 //   - the `publish<Produced, Verified>({namespace, chain, contentHash,
-//     verifySchema, verify, produce, register})` skeleton.
+//     verify, produce, register})` skeleton.
 //
 // The helper does NOT touch the `produce` body itself: the three
 // consumers' produce pipelines diverge meaningfully (coin/mint uses
@@ -27,7 +27,7 @@
 // callers project the `Produced` payload to their resolved value
 // themselves.
 
-import { Effect, type Schema, type Scope } from 'effect';
+import { Effect, type Scope } from 'effect';
 
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
 import {
@@ -44,7 +44,6 @@ export interface AcquireOnChainArtifactSpec<Produced, Verified> {
 	readonly namespace: string;
 	readonly chain: ChainId;
 	readonly contentHash: ContentHash;
-	readonly verifySchema: Schema.Schema<Verified>;
 	readonly verify: ArtifactSpec<Produced, Verified>['verify'];
 	readonly produce: ArtifactSpec<Produced, Verified>['produce'];
 }
@@ -65,7 +64,6 @@ export const acquireOnChainArtifact = <Produced, Verified>(
 		namespace: spec.namespace,
 		chain: spec.chain,
 		contentHash: spec.contentHash,
-		verifySchema: spec.verifySchema,
 		verify: spec.verify,
 		produce: spec.produce,
 		// Register on EVERY cycle (hit AND miss) — substrate contract

@@ -238,7 +238,6 @@ describe('release surface static checks', () => {
 			'ActionObjectChange',
 			'SuiExternalOptions',
 			'chainOverride',
-			'ForkMeta',
 			'SeedObjectsAccumulator',
 			'WaitForTransactionsReady',
 			'PackageCaptureCallback',

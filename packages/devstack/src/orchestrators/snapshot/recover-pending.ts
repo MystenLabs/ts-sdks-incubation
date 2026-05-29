@@ -15,12 +15,16 @@
 //      `docker system prune` between crash and restart) — the digest
 //      is the image's content-addressed identity and survives prune.
 //      Successful tag → entry recovered; rewrite the marker with the
-//      entry removed.
+//      entry removed. When BOTH source attempts fail the scanner
+//      probes whether `targetImageName` is already visible (a prior
+//      recovery may have promoted it); if so the entry is treated as
+//      recovered, otherwise it stays pending.
 //   4. When the outstanding list reaches zero, remove the marker.
-//   5. On per-entry failure: keep the entry in the marker so the
-//      next supervise retries. The scanner returns a typed summary
-//      so the supervisor can surface the partial-recovery state
-//      without crashing the boot path.
+//   5. On a genuine per-entry failure (both sources gone AND the
+//      target not yet visible — e.g. a transient daemon error): keep
+//      the entry in the marker so the next supervise retries. The
+//      scanner returns a typed summary so the supervisor can surface
+//      the partial-recovery state without crashing the boot path.
 //
 // Idempotency: a marker with `containers: []` is treated as
 // already-recovered and removed in one call. Re-running the scanner
@@ -216,6 +220,37 @@ const rewriteMarker = (
 		),
 	);
 
+/** Probe whether `targetImageName` already resolves on the host by
+ *  asking the runtime to self-tag it (`docker tag <target> <target>`).
+ *  The contract's docker impl drives this through `docker image
+ *  inspect`-equivalent resolution: a present image self-tags as an
+ *  idempotent no-op (the `removeSourceAfterTag` cleanup is skipped
+ *  because `src === dst`), an absent one fails with the not-found
+ *  error. We reuse `tagImage` rather than reaching past the contract
+ *  for `imageExists` — this is the only existence probe the runtime
+ *  surface exposes, and it is side-effect-free for a name that already
+ *  points at the target image.
+ *
+ *  `true` → target visible; `false` → target absent OR the probe itself
+ *  hit a transient daemon error. The caller treats `false` as
+ *  still-pending, so a transient probe failure errs on the safe side
+ *  (keep the marker, retry next supervise) rather than dropping it. */
+const targetImageResolves = (
+	entry: RestorePendingContainer,
+	runtime: ContainerRuntime,
+): Effect.Effect<boolean> =>
+	runtime
+		// `{ digest }` carrying the target NAME (not the content digest)
+		// is intentional: the contract resolves `tag ?? digest`, so this
+		// addresses the source as `targetImageName`, making `src === dst`
+		// — a self-tag the docker impl short-circuits without removing
+		// anything. `removeSourceAfterTag` is deliberately omitted.
+		.tagImage({ digest: entry.targetImageName }, entry.targetImageName)
+		.pipe(
+			Effect.as(true as const),
+			Effect.catch(() => Effect.succeed(false as const)),
+		);
+
 /** Attempt to re-tag the target image from each known identity in
  *  decreasing-likelihood-of-success order:
  *
@@ -227,12 +262,22 @@ const rewriteMarker = (
  *       any pinned layer keeps the image accessible by digest even
  *       after every tag pointing at it has been removed.
  *
- *  Recovery is best-effort per entry — a fully missing source (both
- *  tag and digest gone) almost always means a previous recovery
- *  already promoted this entry and a stale marker simply hasn't been
- *  rewritten. We swallow the error and leave the entry in
- *  `stillPending` for the next supervise to surface; the supervisor
- *  logs the partial-recovery state via the returned summary. */
+ *  When BOTH source attempts fail we must NOT blindly report the entry
+ *  as still-pending: a fully missing source (both staged tag and digest
+ *  gone) most often means a *previous* recovery already promoted this
+ *  entry to `targetImageName` and a stale marker simply hasn't been
+ *  rewritten. Collapsing that case into "still pending" retags forever
+ *  and never makes progress. So after both attempts fail we PROBE
+ *  whether `targetImageName` is already visible:
+ *
+ *    - target resolves → treat as recovered (drop the marker entry);
+ *    - target absent    → the source genuinely vanished without a
+ *      completed promote (e.g. a transient daemon error on both tag
+ *      attempts, or operator prune of source AND target), so keep the
+ *      entry pending for the next supervise.
+ *
+ *  This stops conflating "absent source because already recovered" with
+ *  "transient daemon error" — only the former drops the marker. */
 const tryRecoverEntry = (
 	entry: RestorePendingContainer,
 	runtime: ContainerRuntime,
@@ -263,7 +308,12 @@ const tryRecoverEntry = (
 				Effect.as(true as const),
 				Effect.catch(() => Effect.succeed(false as const)),
 			);
-		return digestFallback;
+		if (digestFallback) return true;
+		// Both source identities failed. Distinguish "already promoted by
+		// a prior recovery" (target now visible → recovered) from a
+		// genuine transient/missing-both failure (target absent → keep
+		// pending). See the doc comment above.
+		return yield* targetImageResolves(entry, runtime);
 	});
 
 // -----------------------------------------------------------------------------

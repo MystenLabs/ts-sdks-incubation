@@ -20,7 +20,10 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { buildGlobalSetup } from '../../../src/build-integrations/playwright/global-setup.ts';
+import {
+	buildGlobalSetup,
+	decodeWatchedRecord,
+} from '../../../src/build-integrations/playwright/global-setup.ts';
 import { PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY } from '../../../src/build-integrations/runtime/playwright-stack-context-slot.ts';
 import { CURRENT_MANIFEST_VERSION } from '../../../src/substrate/runtime/manifest/manifest.ts';
 import { withTempRootAsync } from '../../helpers/with-temp-root.ts';
@@ -162,6 +165,113 @@ describe('buildGlobalSetup — codegen-fresh ordering invariant', () => {
 			const { manifestPath } = writeStack(root);
 			// No events.ndjson written — `advanceCodegenWatch` openSync
 			// fails each tick and the wait times out.
+			const setup = buildGlobalSetup({ manifestPath, ...SHORT });
+			await expect(setup()).rejects.toThrow(/post-acquire codegen/u);
+		});
+	});
+});
+
+// The pin's contract: a rename of a WATCHED discriminator
+// (`kind` / `event.tag` / `event.endpoint.name`) must FAIL decode loudly
+// rather than decode to `undefined`. The prior `optional(Unknown)` schema
+// silently accepted such records, leaving the matchers unfired and
+// deadlocking global-setup at the 5min readyTimeout. We assert the decode
+// surface directly (the matcher routing keys off these exact fields) plus
+// one end-to-end consequence: a renamed-discriminator stream times out.
+describe('WatchedRecordSchema — drift detection (loud-fail contract)', () => {
+	it('decodes the watched engine records (endpoint.registered + codegen.emitted)', () => {
+		expect(() =>
+			decodeWatchedRecord(JSON.parse(engineLine('endpoint.registered', APP_ENDPOINT_NAME))),
+		).not.toThrow();
+		expect(() => decodeWatchedRecord(JSON.parse(engineLine('codegen.emitted')))).not.toThrow();
+	});
+
+	it('tolerates ack / error reply envelopes (no event field) without throwing', () => {
+		// The supervisor writes correlation replies onto the same
+		// events.ndjson; they are never routed but must not flood
+		// decodeFailures, so the schema absorbs them.
+		expect(() =>
+			decodeWatchedRecord({ kind: 'ack', correlatesTo: 'cmd-1', detail: 'ok' }),
+		).not.toThrow();
+		expect(() =>
+			decodeWatchedRecord({ kind: 'error', correlatesTo: 'cmd-1', message: 'boom' }),
+		).not.toThrow();
+	});
+
+	it('stays permissive about FUTURE engine tag values (open tag, additive-safe)', () => {
+		// A not-yet-modelled engine tag must still decode — pinning the
+		// tag VALUE would force a code change on every EngineEvent addition.
+		expect(() =>
+			decodeWatchedRecord({ kind: 'engine', event: { tag: 'some.future.tag', at: 1 } }),
+		).not.toThrow();
+	});
+
+	it('THROWS when the top-level `kind` KEY is renamed (kind → recordKind)', () => {
+		// The exact silent-stall regression from the bug: optional(Unknown)
+		// decoded this to `{ kind: undefined }`; the required literal throws.
+		expect(() =>
+			decodeWatchedRecord({ recordKind: 'engine', event: { tag: 'codegen.emitted' } }),
+		).toThrow();
+	});
+
+	it('THROWS when the `kind` VALUE is renamed (engine → eng)', () => {
+		expect(() =>
+			decodeWatchedRecord({ kind: 'eng', event: { tag: 'codegen.emitted' } }),
+		).toThrow();
+	});
+
+	it('THROWS when the `event` KEY is renamed (event → payload)', () => {
+		expect(() =>
+			decodeWatchedRecord({ kind: 'engine', payload: { tag: 'codegen.emitted' } }),
+		).toThrow();
+	});
+
+	it('THROWS when the `event.tag` KEY is renamed (tag → eventTag)', () => {
+		expect(() =>
+			decodeWatchedRecord({ kind: 'engine', event: { eventTag: 'codegen.emitted' } }),
+		).toThrow();
+	});
+
+	it('THROWS when `event.endpoint.name` KEY is renamed on an endpoint.registered record', () => {
+		// endpoint is optional across the engine-event union, but WHERE
+		// present its `name` is required — a rename surfaces as a decode
+		// failure instead of silently leaving latestAppEndpointLine unset.
+		expect(() =>
+			decodeWatchedRecord({
+				kind: 'engine',
+				event: { tag: 'endpoint.registered', endpoint: { label: APP_ENDPOINT_NAME } },
+			}),
+		).toThrow();
+	});
+
+	it('THROWS on a brand-new (unmodelled) envelope kind', () => {
+		// Drift signal for a protocol-level change: a new envelope kind is
+		// a deliberate change that must be made alongside updating consumers.
+		expect(() => decodeWatchedRecord({ kind: 'heartbeat', at: 1 })).toThrow();
+	});
+
+	it('end-to-end: a stream of RENAMED-discriminator codegen lines deadlocks (times out)', async () => {
+		await withTempRootAsync('pw-global-setup', async (root) => {
+			const { manifestPath, eventsPath } = writeStack(root);
+			// Both the app-registration and codegen lines have `kind`
+			// renamed. Under the old optional(Unknown) schema these decoded
+			// silently and the matchers no-op'd; under the pin they fail
+			// decode. EITHER way the codegen-fresh signal never fires, so
+			// the wait must time out — this asserts the matchers don't fire
+			// on drifted records (the loud-fail logs separately in debug).
+			const renamedKind = (tag: string, endpointName?: string): string =>
+				JSON.stringify({
+					recordKind: 'engine',
+					event: {
+						tag,
+						...(endpointName !== undefined ? { endpoint: { name: endpointName } } : {}),
+					},
+				});
+			writeEvents(eventsPath, [
+				renamedKind('endpoint.registered', APP_ENDPOINT_NAME),
+				renamedKind('codegen.emitted'),
+			]);
+
 			const setup = buildGlobalSetup({ manifestPath, ...SHORT });
 			await expect(setup()).rejects.toThrow(/post-acquire codegen/u);
 		});

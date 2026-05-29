@@ -41,6 +41,28 @@ const decodeRecord = (raw: unknown): TestRecord => {
 	return { a: raw.a };
 };
 
+interface MultibyteRecord {
+	readonly a: number;
+	readonly detail: string;
+}
+
+// Like `decodeRecord` but also carries a free-text `detail` field. Used
+// by the multibyte-split regression to prove non-ASCII content survives
+// reassembly intact (the test asserts deep equality on `detail`).
+const decodeMultibyteRecord = (raw: unknown): MultibyteRecord => {
+	if (
+		raw === null ||
+		typeof raw !== 'object' ||
+		!('a' in raw) ||
+		typeof raw.a !== 'number' ||
+		!('detail' in raw) ||
+		typeof raw.detail !== 'string'
+	) {
+		throw new Error(`bad record: ${JSON.stringify(raw)}`);
+	}
+	return { a: raw.a, detail: raw.detail };
+};
+
 describe('tailRecords decode-error policy', () => {
 	it.live('onDecodeError:skip drops invalid JSON lines and emits the valid records', () =>
 		withTempRoot('file-channel-tail', (root) =>
@@ -122,6 +144,75 @@ describe('tailRecords decode-error policy', () => {
 				expect(collected._tag).toBe('Success');
 				if (collected._tag === 'Success') {
 					expect(Array.from(collected.value)).toEqual(records);
+				}
+			}),
+		),
+	);
+
+	// Regression: a UTF-8 multibyte codepoint split across a short read
+	// must reassemble byte-for-byte. `drainNewLines` advances by the bytes
+	// `readSync(2)` actually returned (see the test above); the SECOND
+	// hazard is what it does with a trailing fragment. It used to keep the
+	// fragment as a DECODED string (`buf.toString('utf8')`), which emits
+	// U+FFFD for an incomplete trailing multibyte sequence and discards the
+	// straddling bytes — corrupting e.g. `🚀` (F0 9F 9A 80) into four
+	// replacement chars, turning a valid record into one that decodes to
+	// invalid JSON and is then silently dropped (events use
+	// `onDecodeError:'skip'`; a dropped `findReply` ack => spurious 30s
+	// timeout). The fix buffers the fragment as raw BYTES.
+	//
+	// We can't force POSIX `read(2)` to short-return from userland, but the
+	// reader only ever reads up to the current `stat.size`. So we make the
+	// file GROW one byte past a codepoint's lead byte, let a poll observe
+	// it (a controlled short read that bisects the codepoint), then append
+	// the continuation bytes on a later cycle.
+	it.live('reassembles a multibyte codepoint split across a short read', () =>
+		withTempRoot('file-channel-tail', (root) =>
+			Effect.gen(function* () {
+				const file = join(root, 'events.ndjson');
+				writeFileSync(file, '');
+				// `café 🚀 end` exercises both a 2-byte (é = C3 A9) and a
+				// 4-byte (🚀 = F0 9F 9A 80) sequence.
+				const record = { a: 7, detail: 'café 🚀 end' };
+				const lineBytes = Buffer.from(`${JSON.stringify(record)}\n`, 'utf8');
+				// Bisect immediately AFTER the rocket's lead byte (0xf0) so
+				// the first observed chunk ends mid-codepoint. Under the old
+				// string-buffering code this is exactly where the four-char
+				// U+FFFD corruption was introduced.
+				const splitAt = lineBytes.indexOf(0xf0) + 1;
+				const firstSlice = lineBytes.subarray(0, splitAt);
+				const secondSlice = lineBytes.subarray(splitAt);
+
+				const collected = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const fiber = yield* Effect.forkChild(
+							tailRecords<MultibyteRecord>(file, decodeMultibyteRecord, {
+								fromOffset: 'start',
+								pollMillis: 5,
+							}).pipe(Stream.take(1), Stream.runCollect),
+							{ startImmediately: true },
+						);
+						// Make the file grow only to the mid-codepoint boundary
+						// first; a poll reads exactly these bytes (short read).
+						yield* Effect.sleep('15 millis');
+						yield* Effect.sync(() => {
+							appendFileSync(file, firstSlice);
+						});
+						// A few poll cycles observe the truncated tail. Under the
+						// regressed code the lead byte is already lost here.
+						yield* Effect.sleep('20 millis');
+						// Continuation bytes arrive; a correct reader reassembles.
+						yield* Effect.sync(() => {
+							appendFileSync(file, secondSlice);
+						});
+						return yield* Fiber.await(fiber);
+					}),
+				);
+				expect(collected._tag).toBe('Success');
+				if (collected._tag === 'Success') {
+					// The record decodes cleanly (no U+FFFD => no dropped line)
+					// AND the multibyte content is preserved byte-for-byte.
+					expect(Array.from(collected.value)).toEqual([record]);
 				}
 			}),
 		),

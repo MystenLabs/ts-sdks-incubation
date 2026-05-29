@@ -1,16 +1,29 @@
 // Prune — label-scoped orphan sweep.
 //
-// Architecture § 4: the L3 prune orchestrator sweeps snapshot-byproduct
-// images and snapshot-catalog directories whose meta document is missing
-// (partial artifacts) or unreadable. Stack-wide registry pruning (engine
-// resources / stack roster) is a sibling orchestrator and lives elsewhere;
-// this file is scoped to snapshot-adjacent artifacts.
+// Architecture § 4: the L3 prune orchestrator sweeps committed snapshot
+// byproduct images and snapshot-catalog directories whose meta document
+// is missing (partial artifacts) or unreadable. Stack-wide registry
+// pruning (engine resources / stack roster) is a sibling orchestrator and
+// lives elsewhere; this file is scoped to snapshot-adjacent artifacts.
+//
+// Image sweep scope (load-bearing): committed snapshot images are stamped
+// at `docker commit` time with `{managed, app, stack, role:
+// SNAPSHOT_IMAGE_ROLE}` (see `runtime/docker/container.ts`). Prune scopes
+// its sweep to THAT role so it reaps only snapshot byproducts. Plugin
+// BUILD images share `{managed, app, stack}` but carry the source
+// plugin's real role (or none) — never `SNAPSHOT_IMAGE_ROLE` — so the
+// sweep can NEVER untag a live stack's build images and force a silent
+// rebuild. Prune holds only `snapshot.reservation` (not stack liveness)
+// and is CLI-exposed, so this scoping is what keeps it safe against a
+// running stack.
 
 import { Effect, FileSystem, Schema } from 'effect';
 
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { SNAPSHOT_IMAGE_ROLE } from '../../runtime/docker/container.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { SnapshotMetadataSchema, type SnapshotMetadata } from './descriptor.ts';
+import { makePhaseFailer } from './phase-error.ts';
 import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
@@ -31,13 +44,7 @@ export class PrunePhaseError extends Schema.TaggedErrorClass<PrunePhaseError>()(
 	},
 ) {}
 
-const failPhase =
-	(
-		phase: PrunePhaseError['phase'],
-		detail: string,
-	): ((cause: unknown) => Effect.Effect<never, PrunePhaseError>) =>
-	(cause) =>
-		Effect.fail(new PrunePhaseError({ phase, detail, cause }));
+const failPhase = makePhaseFailer(PrunePhaseError);
 
 // -----------------------------------------------------------------------------
 // Inputs
@@ -46,7 +53,10 @@ const failPhase =
 export interface PruneInputs {
 	/** Stack root containing the `snapshots/` catalog. */
 	readonly stackRoot: string;
-	/** Filter for managed image cleanup. */
+	/** App/stack scope for the committed-snapshot-image sweep. Prune
+	 *  narrows this to `role: SNAPSHOT_IMAGE_ROLE` before removing images,
+	 *  so only this stack's snapshot byproducts are swept — never its
+	 *  build images, never a sibling stack. */
 	readonly imageLabelFilter: { readonly app: string; readonly stack: string };
 	readonly runtime: ContainerRuntime;
 }
@@ -59,6 +69,9 @@ export interface PruneResult {
 		 *  (partial artifact with no readable meta document). */
 		readonly classification: 'abandoned';
 	}>;
+	/** Count of committed snapshot byproduct images removed (those stamped
+	 *  with `role: SNAPSHOT_IMAGE_ROLE` in this app/stack). Build images
+	 *  are never included. */
 	readonly imagesSwept: number;
 }
 
@@ -93,8 +106,9 @@ const readMetaOpt = (
  * same catalog are not supported (caller holds `snapshot.reservation`
  * or `stack.lock`).
  *
- * Also removes managed images via the runtime adapter's label-filtered
- * image cleanup.
+ * Also removes committed snapshot byproduct images via the runtime
+ * adapter's label-filtered image cleanup, scoped to `role:
+ * SNAPSHOT_IMAGE_ROLE` so build images are never touched.
  */
 export const runPrune = (
 	inputs: PruneInputs,
@@ -129,12 +143,17 @@ export const runPrune = (
 			}
 		}
 
-		// Sweep snapshot-byproduct images via the runtime adapter's
-		// label-scoped image cleanup. Architecture § Decision §8 —
-		// committed snapshot images accumulate; the orchestrator GCs
-		// alongside catalog prune.
+		// Sweep committed snapshot byproduct images via the runtime
+		// adapter's label-scoped image cleanup. Architecture § Decision §8 —
+		// committed snapshot images accumulate (a hard-killed capture can
+		// leak its temp image before cleanup); the orchestrator GCs them
+		// alongside catalog prune. The `role: SNAPSHOT_IMAGE_ROLE` narrowing
+		// is what distinguishes these byproducts from the live stack's
+		// build images (which share `{app, stack}` but carry a different
+		// role / no role) — without it, prune would untag build images and
+		// force silent rebuilds.
 		const imagesSwept = yield* inputs.runtime
-			.removeManagedImages(inputs.imageLabelFilter)
+			.removeManagedImages({ ...inputs.imageLabelFilter, role: SNAPSHOT_IMAGE_ROLE })
 			.pipe(Effect.catch(failPhase('sweep-images', `image sweep failed`)));
 
 		return {

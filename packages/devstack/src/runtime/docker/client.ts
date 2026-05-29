@@ -70,9 +70,22 @@ const buildEnv = (host: DockerHostShape): Record<string, string> => {
 	return env;
 };
 
+/** Grace period between the scope-close SIGTERM and the escalation
+ *  SIGKILL. Without `forceKillAfter` the Node spawner sends ONE SIGTERM
+ *  on scope close and then waits indefinitely for the child to die — so
+ *  a timeout-interrupt (see `exec.ts` / `dockerRunOneShot` `Effect.timeout`)
+ *  blocks on scope-close if the docker CLI ignores SIGTERM. A few
+ *  seconds lets a well-behaved CLI flush and exit cleanly before we
+ *  force-kill the wedged case. */
+const KILL_GRACE = '5 seconds';
+
 /** Build a `ChildProcess.Command` from `(verb, ...args)`. The verb is
  *  separate so observability span attributes can pin the
- *  high-cardinality `args` separately from the `devstack.op` tag. */
+ *  high-cardinality `args` separately from the `devstack.op` tag.
+ *
+ *  `forceKillAfter` makes scope-close termination escalate
+ *  SIGTERM→SIGKILL so an interrupt (timeout) can't wedge on a docker CLI
+ *  that ignores SIGTERM. */
 export const dockerCommand = (
 	host: DockerHostShape,
 	verb: string,
@@ -81,7 +94,11 @@ export const dockerCommand = (
 ): ChildProcess.Command => {
 	const bin = host.bin ?? 'docker';
 	const env = { ...buildEnv(host), ...overrideEnv };
-	return ChildProcess.make(bin, [verb, ...args], { env, extendEnv: true });
+	return ChildProcess.make(bin, [verb, ...args], {
+		env,
+		extendEnv: true,
+		forceKillAfter: KILL_GRACE,
+	});
 };
 
 // -----------------------------------------------------------------------------

@@ -160,7 +160,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			resolveAccounts: () => Effect.succeed([]),
 			routerFrontedUrl: null,
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const exit = await Effect.runPromiseExit(
@@ -194,7 +193,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			resolveAccounts: () => Effect.succeed([fakeAccount]),
 			routerFrontedUrl: 'http://api.app.localhost:6173',
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const value = await Effect.runPromise(
@@ -223,7 +221,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			resolveAccounts: () => Effect.succeed([fakeAccount]),
 			routerFrontedUrl: null,
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const value = await Effect.runPromise(

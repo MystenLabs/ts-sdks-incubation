@@ -206,6 +206,22 @@ export const makeRegistry = (
 				resolved.delete(key);
 				const readyGate = yield* Deferred.make<ResolvedValue, PluginAcquireFailed>();
 				const scope = yield* Scope.fork(parentScope);
+				// Authoritatively reset the status to `pending`. The
+				// transition table only admits `→ pending` from terminal
+				// states (`failed` / `stopped` / `done`), but a selective
+				// restart can reset a node that is still `acquiring` or
+				// `pending` (its scope close interrupted an in-flight
+				// acquire). Routing that through `transition` would die on
+				// the off-table move — a defect the supervisor's command
+				// loop can't catch — so we set the Ref directly and emit
+				// the `statusChanged` event ourselves to keep the
+				// projection's restart blip and the "every status change
+				// flows through `onTransition`" contract intact. `acquire`
+				// then performs a clean `pending → acquiring` for every
+				// prior node state.
+				const from = yield* Ref.get(entry.statusRef);
+				yield* Ref.set(entry.statusRef, 'pending');
+				if (from !== 'pending') yield* onTransition(key, from, 'pending');
 				mutableEntries.set(key, {
 					node: entry.node,
 					statusRef: entry.statusRef,

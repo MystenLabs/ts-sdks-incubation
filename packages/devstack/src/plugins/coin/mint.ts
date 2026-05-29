@@ -273,7 +273,6 @@ export const performMint = (
 			namespace: 'coin-mint',
 			chain,
 			contentHash: cacheHash,
-			verifySchema: MintedCoinVerifyShape,
 			// Verify probe runs on cache hit. The artifact publisher threads the
 			// cached payload through to its internal probe — our
 			// closure here just hands back a "null = miss" signal

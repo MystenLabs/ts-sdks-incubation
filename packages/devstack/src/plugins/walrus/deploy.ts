@@ -446,7 +446,6 @@ export const deployWalrusContracts = (
 			namespace: 'walrus-deploy',
 			chain: inputs.chainId,
 			contentHash: inputs.contentHash,
-			verifySchema: WalrusDeployVerifyShape,
 			// Verify: lenient probes of the cached system + staking
 			// objects. The Sui chain probe decodes raw `getObject`
 			// responses, so the probe schema matches that envelope and

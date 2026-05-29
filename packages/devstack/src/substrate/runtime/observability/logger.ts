@@ -21,7 +21,6 @@
 import { Context, Effect, Layer, Ref } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { Redactor, redactValue } from './redaction.ts';
 import { SpanAttr } from './spans.ts';
 
 // -----------------------------------------------------------------------------
@@ -108,10 +107,9 @@ export class Logger extends Context.Service<Logger, LoggerShape>()('@devstack/su
 /** Layer that constructs the per-stack Logger. Stateful (holds the
  *  per-tag ring buffers in a Ref); the substrate provides one per
  *  stack-scope. */
-export const layerLogger: Layer.Layer<Logger, never, Redactor> = Layer.effect(
+export const layerLogger: Layer.Layer<Logger> = Layer.effect(
 	Logger,
 	Effect.gen(function* () {
-		const redactor = yield* Redactor;
 		const buffers = yield* Ref.make<ReadonlyMap<string, TagBuffer>>(new Map());
 
 		const truncateLine = (s: string): string =>
@@ -134,15 +132,12 @@ export const layerLogger: Layer.Layer<Logger, never, Redactor> = Layer.effect(
 			pluginKey: PluginKey | null,
 			payload: LogPayload,
 		) {
-			const redactionRules = yield* redactor.rules;
 			const line: LogLine = {
 				tag,
 				pluginKey,
 				level: payload.level,
-				message: truncateLine(yield* redactor.redact(payload.message)),
-				fields: redactValue(payload.fields ?? {}, redactionRules) as Readonly<
-					Record<string, unknown>
-				>,
+				message: truncateLine(payload.message),
+				fields: payload.fields ?? {},
 				at: Date.now(),
 			};
 			yield* appendInternal(line);

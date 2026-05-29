@@ -59,6 +59,7 @@ import {
 	parseSnapshotId,
 } from './descriptor.ts';
 import { verifyArtifactIntegrity } from './integrity.ts';
+import { makePhaseFailer } from './phase-error.ts';
 import {
 	readSnapshotStateDocument,
 	writeSnapshotStateDocument,
@@ -125,14 +126,7 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 	},
 ) {}
 
-const failPhase =
-	(
-		phase: RestorePhaseError['phase'],
-		detail: string,
-		plugin?: string,
-	): ((cause: unknown) => Effect.Effect<never, RestorePhaseError>) =>
-	(cause) =>
-		Effect.fail(new RestorePhaseError({ phase, plugin, detail, cause }));
+const failPhase = makePhaseFailer(RestorePhaseError);
 
 const failRestore = (
 	phase: RestorePhaseError['phase'],

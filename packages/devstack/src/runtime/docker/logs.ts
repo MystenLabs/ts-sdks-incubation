@@ -53,28 +53,3 @@ export const followLogs = (
 	);
 };
 
-/** Best-effort log tail for error enrichment. Returns the last
- *  `tail` lines as a single string; on any failure returns empty. */
-export const logTail = (
-	containerNameOrId: string,
-	tail: number = 50,
-): Effect.Effect<string, never, DockerHost | DockerSpawner> =>
-	Effect.gen(function* () {
-		const host = yield* DockerHost;
-		const spawner = yield* DockerSpawner;
-		const cmd = dockerCommand(host, 'logs', ['--tail', String(tail), containerNameOrId]);
-		const res = yield* Effect.scoped(
-			Effect.gen(function* () {
-				const handle = yield* spawner.spawn(cmd);
-				const [out, err] = yield* Effect.all(
-					[
-						Stream.mkString(Stream.decodeText(handle.stdout)),
-						Stream.mkString(Stream.decodeText(handle.stderr)),
-					],
-					{ concurrency: 'unbounded' },
-				);
-				return `${out}\n${err}`.trim();
-			}),
-		).pipe(Effect.catch(() => Effect.succeed('')));
-		return res;
-	}).pipe(Effect.withSpan('runtime.docker.logs.tail'));

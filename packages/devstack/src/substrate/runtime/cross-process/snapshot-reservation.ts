@@ -29,8 +29,8 @@ import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { checkHolderLiveness } from './liveness.ts';
+import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
 import { selfPid } from './self-pid.ts';
-import { isUnparseableBodyStale } from './stack-lock.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -91,16 +91,20 @@ export const sweepOrphan = (
 		const reservation = parseReservation(raw);
 		if (reservation === null) {
 			// Malformed body — the creator may have written a half-written
-			// file. Gate the unlink behind the SAME mtime staleness window
-			// stack-lock uses: a body younger than the window is presumed
-			// mid-write (the O_EXCL writer is still flushing), so we leave
-			// it; only an aged malformed body is reclaimed as an orphan.
-			if (!isUnparseableBodyStale(path)) return { swept: false };
-			yield* Effect.try({
-				try: () => unlinkSync(path),
+			// file. Reclaim ONLY through the shared re-stat guard: gating a
+			// bare mtime read + unlink races a competitor who legitimately
+			// reclaims the garbage and writes a fresh valid O_EXCL body in
+			// the window — the unlink would clobber that LIVE reservation.
+			// `reclaimUnparseableStaleFile` honors the SAME mtime staleness
+			// window stack-lock uses (a body younger than the window is
+			// presumed mid-write and left alone) AND re-confirms the file
+			// is still the same stale, unparseable inode immediately before
+			// unlinking.
+			const outcome = yield* Effect.try({
+				try: () => reclaimUnparseableStaleFile(path, parseReservation),
 				catch: (cause) => new SnapshotReservationIoError({ path, cause }),
 			});
-			return { swept: true };
+			return { swept: outcome === 'reclaimed' };
 		}
 		// Foreign-host reservation: NFS-safe — we cannot probe a remote
 		// kernel for pid liveness, so treat the peer as alive (matches

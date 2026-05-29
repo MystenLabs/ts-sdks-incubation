@@ -22,7 +22,7 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { SeedManifestMismatchError, SuiConfigError, SuiPluginError } from './errors.ts';
+import type { SuiConfigError, SuiPluginError } from './errors.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type { SuiOptions } from './mode/spec.ts';
@@ -59,7 +59,7 @@ export const bootSuiService = (
 	opts: SuiOptions,
 ): Effect.Effect<
 	SuiBootResult,
-	SuiPluginError | SeedManifestMismatchError | SuiConfigError,
+	SuiPluginError | SuiConfigError,
 	Scope.Scope
 > => {
 	switch (opts.mode) {

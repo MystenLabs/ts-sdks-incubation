@@ -53,6 +53,7 @@ import {
 	expectedContainerOwnershipLabels,
 	LabelKey,
 	ownershipMismatchDetail,
+	readLabels,
 	renderContainerLabels,
 } from './labels.ts';
 import { connect, readIps, waitForIp } from './network.ts';
@@ -312,15 +313,6 @@ const readMounts = (raw: unknown): ReadonlyArray<InspectMount> => {
 const readStringArray = (raw: unknown): ReadonlyArray<string> => {
 	if (!Array.isArray(raw)) return [];
 	return raw.filter((value): value is string => typeof value === 'string');
-};
-
-const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
-	if (raw === null || typeof raw !== 'object') return {};
-	const out: Record<string, string> = {};
-	for (const [key, value] of Object.entries(raw)) {
-		if (typeof value === 'string') out[key] = value;
-	}
-	return out;
 };
 
 const readNetworks = (raw: unknown): ReadonlyArray<string> => {
@@ -1190,14 +1182,64 @@ export const unpause = (
 		yield* dockerRun('unpause', [name]).pipe(Effect.mapError(wrapGeneric('docker.unpause')));
 	}).pipe(Effect.withSpan('runtime.docker.container.unpause'));
 
+/** Reserved `devstack.role` value stamped on every committed snapshot
+ *  byproduct image. Plugin BUILD images carry the source plugin's real
+ *  role (`db`, `validator`, …) or no role at all; committed snapshot
+ *  images carry THIS sentinel instead. Snapshot prune scopes its image
+ *  sweep to `{app, stack, role: SNAPSHOT_IMAGE_ROLE}` so it reaps the
+ *  byproducts WITHOUT ever matching the live stack's build images.
+ *
+ *  This is a label-value protocol token shared with the snapshot prune
+ *  orchestrator (`orchestrators/snapshot/prune.ts`), which imports it. */
+export const SNAPSHOT_IMAGE_ROLE = 'snapshot-image';
+
+/** Render `{managed, app, stack, role}` ownership labels into
+ *  `docker commit --change 'LABEL …'` argv. `docker commit` has no
+ *  `--label` flag, so labels must ride in as `--change` Dockerfile
+ *  instructions. Values are quoted so an app/stack carrying whitespace
+ *  cannot split the instruction. */
+const snapshotImageChangeArgs = (
+	app: string | undefined,
+	stack: string | undefined,
+): ReadonlyArray<string> => {
+	const labels: Array<[string, string]> = [[LabelKey.managed, 'true']];
+	if (app !== undefined) labels.push([LabelKey.app, app]);
+	if (stack !== undefined) labels.push([LabelKey.stack, stack]);
+	labels.push([LabelKey.role, SNAPSHOT_IMAGE_ROLE]);
+	return labels.flatMap(([key, value]) => ['--change', `LABEL "${key}"="${value}"`]);
+};
+
 /** `docker commit <name> <tag>` — writable layer → image. Used by
- *  snapshot capture. */
+ *  snapshot capture.
+ *
+ *  The committed image is stamped with `{managed:'true', app, stack,
+ *  role:SNAPSHOT_IMAGE_ROLE}` ownership labels so label-driven snapshot
+ *  prune can reap leaked byproducts (a hard-killed capture that never
+ *  reached its `removeImage` cleanup) while leaving the stack's build
+ *  images untouched. A bare `docker commit` produces an UNlabelled image
+ *  that no label-driven sweep can find — hence the explicit stamp.
+ *
+ *  `app`/`stack` are recovered from the source container's own ownership
+ *  labels (`docker commit` does NOT copy container labels onto the image).
+ *  Capture only commits containers it owns, so those labels are present;
+ *  if the inspect misses they are simply omitted and prune's app/stack-
+ *  scoped filter will not match — a degenerate case capture cannot reach. */
 export const commit = (
 	name: string,
 	tag: string,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRun('commit', [name, tag]).pipe(
+		// Recover the source container's app/stack so the committed image
+		// inherits the SAME ownership scope. Best-effort: a failed inspect
+		// must not abort the commit (the image is the product; labels are
+		// metadata), so degrade to the role-only stamp.
+		const facts = yield* inspectContainer(name).pipe(Effect.catch(() => Effect.succeed(null)));
+		const sourceLabels = facts?.labels ?? {};
+		const changeArgs = snapshotImageChangeArgs(
+			sourceLabels[LabelKey.app],
+			sourceLabels[LabelKey.stack],
+		);
+		const res = yield* dockerRun('commit', [...changeArgs, name, tag]).pipe(
 			Effect.mapError(wrapGeneric('docker.commit')),
 		);
 		const digest = res.stdout.trim();

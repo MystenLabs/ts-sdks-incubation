@@ -21,7 +21,6 @@
 import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 import { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
 
-export const WALRUS_ENTRYPOINT_PORT = 9185;
 export const WALRUS_NODE_ENDPOINT_PREFIX = 'walrus-node-' as const;
 export const WALRUS_AGGREGATOR_ENDPOINT_NAME = 'walrus-aggregator' as const;
 export const WALRUS_PUBLISHER_ENDPOINT_NAME = 'walrus-publisher' as const;
@@ -36,12 +35,12 @@ export const WALRUS_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
 		{ length: WALRUS_MAX_NODE_COUNT },
 		(_, i): EntrypointDecl => ({
 			name: `${WALRUS_NODE_ENDPOINT_PREFIX}${i}`,
-			port: WALRUS_ENTRYPOINT_PORT,
+			port: WALRUS_ROUTER_PORT,
 			protocol: 'http',
 		}),
 	),
-	{ name: WALRUS_AGGREGATOR_ENDPOINT_NAME, port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
-	{ name: WALRUS_PUBLISHER_ENDPOINT_NAME, port: WALRUS_ENTRYPOINT_PORT, protocol: 'http' },
+	{ name: WALRUS_AGGREGATOR_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
+	{ name: WALRUS_PUBLISHER_ENDPOINT_NAME, port: WALRUS_ROUTER_PORT, protocol: 'http' },
 ];
 
 /** Build the Routable contributions for the local cluster. `nodeCount`

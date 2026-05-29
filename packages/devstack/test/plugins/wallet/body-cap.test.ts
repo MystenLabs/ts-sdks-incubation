@@ -51,7 +51,6 @@ const config: WalletServerConfig = {
 	token: TOKEN,
 	policy,
 	accountsByAddress: accounts,
-	supervisorCtx: null,
 };
 
 describe('wallet dispatcher — listener is the sole body-cap enforcement point', () => {

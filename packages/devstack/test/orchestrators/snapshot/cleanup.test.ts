@@ -35,7 +35,7 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 		}),
 	removeManagedImages: (match: Partial<ContainerLabelTuple>) =>
 		Effect.sync(() => {
-			events.push(`images:${match.app}/${match.stack}`);
+			events.push(`images:${match.app}/${match.stack}:${match.role ?? '<no-role>'}`);
 			return 3;
 		}),
 	removeManagedNetworks: (match: Partial<ContainerLabelTuple>) =>
@@ -120,7 +120,85 @@ describe('snapshot cleanup orchestration', () => {
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(result.imagesSwept).toBe(3);
-				expect(events).toEqual(['images:app/main']);
+				// Prune must narrow the managed-image filter to the reserved
+				// snapshot-image role so it cannot match build images.
+				expect(events).toEqual(['images:app/main:snapshot-image']);
+			}),
+		),
+	);
+
+	it.effect('prune sweeps snapshot-byproduct images and NEVER build images', () =>
+		withTempRoot('snapshot-cleanup-test', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stack');
+				mkdirSync(join(stackRoot, 'snapshots'), { recursive: true });
+
+				// A real `docker images --filter label=…` sweep over a stack
+				// that has BOTH a leaked committed snapshot image and a live
+				// build image. Both share `{managed, app, stack}`; only the
+				// byproduct carries `role=snapshot-image` (stamped at commit).
+				const fixtureImages: ReadonlyArray<{
+					readonly tag: string;
+					readonly labels: Readonly<Record<string, string>>;
+				}> = [
+					{
+						tag: 'devstack-snapshot:postgres-db-abc123',
+						labels: {
+							'devstack.managed': 'true',
+							'devstack.app': 'app',
+							'devstack.stack': 'main',
+							'devstack.role': 'snapshot-image',
+						},
+					},
+					{
+						tag: 'devstack-build:deadbeef0badf00d',
+						labels: {
+							'devstack.managed': 'true',
+							'devstack.app': 'app',
+							'devstack.stack': 'main',
+							'devstack.plugin': 'postgres',
+							'devstack.role': 'db',
+						},
+					},
+				];
+				// Mirror inventory's filter semantics: a managed-image filter
+				// matches an image iff every requested label key/value is
+				// present. Records which tags were actually removed.
+				const removedTags: string[] = [];
+				const filteredRuntime: ContainerRuntime = {
+					...runtimeStub([]),
+					removeManagedImages: (match: Partial<ContainerLabelTuple>) =>
+						Effect.sync(() => {
+							const wanted: Record<string, string> = { 'devstack.managed': 'true' };
+							if (match.app !== undefined) wanted['devstack.app'] = match.app;
+							if (match.stack !== undefined) wanted['devstack.stack'] = match.stack;
+							if (match.plugin !== undefined) wanted['devstack.plugin'] = match.plugin;
+							if (match.role !== undefined) wanted['devstack.role'] = match.role;
+							let removed = 0;
+							for (const image of fixtureImages) {
+								const matches = Object.entries(wanted).every(
+									([key, value]) => image.labels[key] === value,
+								);
+								if (matches) {
+									removedTags.push(image.tag);
+									removed += 1;
+								}
+							}
+							return removed;
+						}),
+				};
+
+				const result = yield* runPrune({
+					stackRoot,
+					imageLabelFilter: { app: 'app', stack: 'main' },
+					runtime: filteredRuntime,
+				}).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(result.imagesSwept).toBe(1);
+				expect(removedTags).toEqual(['devstack-snapshot:postgres-db-abc123']);
+				// The live build image must survive — untagging it would force
+				// a silent rebuild on the next boot.
+				expect(removedTags).not.toContain('devstack-build:deadbeef0badf00d');
 			}),
 		),
 	);

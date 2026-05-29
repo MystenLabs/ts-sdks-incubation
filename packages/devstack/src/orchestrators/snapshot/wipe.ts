@@ -14,6 +14,7 @@ import { Effect, FileSystem, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { makePhaseFailer } from './phase-error.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -33,13 +34,7 @@ export class WipePhaseError extends Schema.TaggedErrorClass<WipePhaseError>()(
 	},
 ) {}
 
-const failPhase =
-	(
-		phase: WipePhaseError['phase'],
-		detail: string,
-	): ((cause: unknown) => Effect.Effect<never, WipePhaseError>) =>
-	(cause) =>
-		Effect.fail(new WipePhaseError({ phase, detail, cause }));
+const failPhase = makePhaseFailer(WipePhaseError);
 
 // -----------------------------------------------------------------------------
 // Inputs

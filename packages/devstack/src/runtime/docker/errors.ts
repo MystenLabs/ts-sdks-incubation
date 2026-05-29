@@ -68,13 +68,6 @@ export class ContainerNameCollisionUnrecoverable extends Data.TaggedError(
 	readonly detail: string;
 }> {}
 
-/** Container exited (non-zero or unexpected) during the run. */
-export class ContainerExited extends Data.TaggedError('ContainerExited')<{
-	readonly name: string;
-	readonly exitCode: number;
-	readonly logTail: string;
-}> {}
-
 /** `docker rm -f` failed while deliberately replacing a managed
  *  container set. Unlike orphan sweep, restore cannot silently leave
  *  the old writable layer in place. */
@@ -211,7 +204,6 @@ export type DockerRuntimeError =
 	| ContainerCreateFailed
 	| ContainerPortPublishConflict
 	| ContainerNameCollisionUnrecoverable
-	| ContainerExited
 	| ContainerRemoveFailed
 	| DockerInspectFailed
 	| DockerInspectDecodeFailed
@@ -266,12 +258,6 @@ export const toContractError = (err: DockerRuntimeError): ContainerRuntimeError 
 				_tag: 'ContainerRuntimeError',
 				reason: 'publish-port-conflict',
 				detail: `${err.name}: ${err.stderr}`,
-			};
-		case 'ContainerExited':
-			return {
-				_tag: 'ContainerRuntimeError',
-				reason: 'ready-probe-failed',
-				detail: `${err.name} exited ${err.exitCode}: ${err.logTail}`,
 			};
 		case 'ContainerRemoveFailed':
 			return {

@@ -3,8 +3,8 @@
 // Architecture (distilled/20-cli.md § Subcommands § Teardown):
 //   "wipe — destroy all state for a stack."
 //
-// `wipe` is the recovery flow `apply` points users at on
-// `SeedManifestMismatchError`. It is tier-2 destructive (requires
+// `wipe` is the recovery flow `apply` points users at when stale
+// on-disk state needs a clean reset. It is tier-2 destructive (requires
 // `--yes` or an interactive TTY confirmation) and refuses to run while
 // a supervisor is live for the target stack (writes to disk while
 // a peer is acquiring a container would race).

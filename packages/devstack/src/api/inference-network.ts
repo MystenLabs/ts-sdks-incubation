@@ -3,7 +3,13 @@ import { dirname, resolve } from 'node:path';
 
 import { Effect } from 'effect';
 
-export const DEFAULT_STACK_NAME = 'main';
+import { DEFAULT_DISCOVERY_STACK } from '../build-integrations/runtime/resolve-discovery-env.ts';
+
+/** Canonical default stack name (`'main'`). Single source of truth lives
+ *  in the discovery ladder's `DEFAULT_DISCOVERY_STACK`; re-exported here
+ *  (and from the vitest env module) so all entry points agree on one
+ *  literal. */
+export const DEFAULT_STACK_NAME = DEFAULT_DISCOVERY_STACK;
 
 export interface StackNameResolutionOptions {
 	readonly explicit?: string;

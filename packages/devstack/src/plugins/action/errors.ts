@@ -27,8 +27,6 @@
  *                         validator but the on-chain execution failed
  *                         (the `$kind: 'FailedTransaction'` variant of
  *                         `account.signAndExecute`'s return value).
- *   - `parse`           — the action's receipt projection (digest /
- *                         objectChanges) was malformed.
  *   - `verify`          — verify probe authoritatively raised (transient
  *                         is masked by the lenient probe — does NOT raise
  *                         this).
@@ -38,7 +36,6 @@ export type ActionPhase =
 	| 'build'
 	| 'sign'
 	| 'execute-failed'
-	| 'parse'
 	| 'verify';
 
 /** Single tagged action error. */

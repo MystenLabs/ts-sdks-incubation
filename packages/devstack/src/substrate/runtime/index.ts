@@ -87,4 +87,3 @@ export type {
 // ---------------------------------------------------------------------
 export { FormatterRegistryService } from './observability/index.ts';
 export { Logger, layerLogger } from './observability/logger.ts';
-export { layerRedactor } from './observability/redaction.ts';

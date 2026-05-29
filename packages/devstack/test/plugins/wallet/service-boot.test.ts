@@ -45,7 +45,6 @@ const makeCtx = (
 	resolveAccounts: () => Effect.succeed(accounts),
 	routerFrontedUrl: null,
 	routedAppOrigin: null,
-	supervisorCtx: undefined,
 });
 
 describe('acquireWallet — duplicate-address guard', () => {

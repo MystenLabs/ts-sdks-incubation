@@ -4,18 +4,12 @@
 // This module owns the DeepBook-specific follow-up transaction: initialize the
 // registry's BalanceManager map and create the requested admin pools.
 
-import { createHash } from 'node:crypto';
-
-import { Effect, Schema, type Scope } from 'effect';
+import { Effect, type Scope } from 'effect';
 import { bcs } from '@mysten/sui/bcs';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 
-import {
-	chainId as brandChainId,
-	contentHash as brandContentHash,
-	type ContentHash,
-} from '../../substrate/brand.ts';
+import { chainId as brandChainId } from '../../substrate/brand.ts';
 import {
 	artifactPublishError,
 	type ArtifactPublishError,
@@ -39,7 +33,9 @@ import {
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import type { DeepbookPhase } from './errors.ts';
+import { stableContentHash } from './hash.ts';
 import { DeepbookSpans } from './spans.ts';
+import { isPoolForPair } from './type-strings.ts';
 import type { DeepbookPool, DeepbookPoolSeedLiquidity } from './types.ts';
 
 // ---------------------------------------------------------------------------
@@ -102,31 +98,6 @@ interface CachedDeepbookSeedResult {
 	readonly balanceManagerId: string;
 	readonly digest: string;
 }
-
-const CachedDeepbookPoolSchema = Schema.Struct({
-	name: Schema.String,
-	poolId: Schema.String,
-	base: Schema.String,
-	quote: Schema.String,
-	baseCoinType: Schema.String,
-	quoteCoinType: Schema.String,
-	tickSize: Schema.String,
-	lotSize: Schema.String,
-	minSize: Schema.String,
-});
-
-const CachedDeepbookPoolsSchema = Schema.Struct({
-	pools: Schema.Array(CachedDeepbookPoolSchema),
-});
-
-const CachedDeepbookSeedResultSchema = Schema.Struct({
-	poolName: Schema.String,
-	balanceManagerId: Schema.String,
-	digest: Schema.String,
-});
-
-const stableContentHash = (input: string): ContentHash =>
-	brandContentHash(createHash('sha256').update(input).digest('hex'));
 
 const fromCachedPools = (cached: CachedDeepbookPoolsResult): DeepbookPoolsResult => ({
 	pools: cached.pools.map((pool) => ({
@@ -295,6 +266,13 @@ const findExistingPools = (
 		return found;
 	});
 
+// All `missingPools` are created in ONE batched transaction, so the
+// receipt's `objectChanges` carries every created `Pool<…>` together.
+// Match each spec by parsing the pool's `Pool<Base, Quote>` generic
+// arguments and comparing them POSITIONALLY against the spec — a plain
+// `type.includes(base) && type.includes(quote)` cross-matches a reversed
+// pair (`DEEP/SUI` + `SUI/DEEP`) or a coin type that is a substring of
+// another, collapsing two specs onto one objectId and dropping a pool.
 const pickCreatedPool = (
 	changes: ReadonlyArray<{
 		readonly objectId: string;
@@ -303,13 +281,10 @@ const pickCreatedPool = (
 	}>,
 	spec: ResolvedDeepbookPoolSpec,
 ): string | null => {
-	const base = normalizeStructTag(spec.baseCoinType);
-	const quote = normalizeStructTag(spec.quoteCoinType);
 	for (const change of changes) {
 		const type = change.objectType;
 		if (change.idOperation !== 'Created' || type === undefined) continue;
-		if (!type.includes('::pool::Pool<')) continue;
-		if (type.includes(base) && type.includes(quote)) {
+		if (isPoolForPair(type, spec.baseCoinType, spec.quoteCoinType)) {
 			return change.objectId;
 		}
 	}
@@ -365,7 +340,6 @@ export const createDeepbookPools = (
 			namespace: 'deepbook/pools',
 			chain: brandChainId(chain),
 			contentHash: poolInputsHash(pkg, signer, pools),
-			verifySchema: CachedDeepbookPoolsSchema,
 			verify: (cached) => buildVerifyProbe(sdk, cached),
 			produce: Effect.gen(function* () {
 				const existingPools = yield* findExistingPools(sdk, signer, pkg, pools);
@@ -715,7 +689,6 @@ export const seedDeepbookPools = (
 				namespace: `deepbook/seed/${spec.name}`,
 				chain: brandChainId(chain),
 				contentHash: seedInputsHash(pkg, signer, spec, pool),
-				verifySchema: CachedDeepbookSeedResultSchema,
 				verify: (cached) => buildSeedVerifyProbe(sdk, cached),
 				produce: Effect.gen(function* () {
 						yield* requestSeedFunding(

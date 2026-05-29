@@ -4,11 +4,8 @@
 // error in one engine file, but consumer boundaries cross service
 // lines. The architecture lets us redistribute: errors raised AND
 // consumed inside the Sui plugin live here. Cross-service errors
-// (`ForkIncompatibleError`, `SeedManifestMismatchError`) live with
-// the plugin that consumes them — Walrus/Seal/Deepbook own
-// `ForkIncompatibleError`; the seed-manifest error stays here
-// because Sui's fork acquire is the only raise site AND the only
-// consumer.
+// (`ForkIncompatibleError`) live with the plugin that consumes them
+// — Walrus/Seal/Deepbook own `ForkIncompatibleError`.
 //
 // Effect v4: errors are plain interfaces with a `_tag` discriminator
 // — we don't subclass an Effect base class; `Effect.catchTag` /
@@ -95,32 +92,12 @@ export const forkUnsupportedError = (surface: string, hint: string): ForkUnsuppo
 	hint,
 });
 
-/** Raised when fork meta-config drifts between supervisor boots.
- *  Carries previous + current snapshots so the doctor / TUI can
- *  diff them. Consumed inside Sui's fork acquire — does NOT cross
- *  plugin boundaries (the recipe is "wipe and re-apply"). */
-export interface SeedManifestMismatchError {
-	readonly _tag: 'SeedManifestMismatchError';
-	readonly previous: {
-		readonly upstream: string;
-		readonly checkpoint?: string;
-		readonly configHash: string;
-	};
-	readonly current: {
-		readonly upstream: string;
-		readonly checkpoint?: string;
-		readonly configHash: string;
-	};
-	readonly hint: string;
-}
-
 /** Union of every error a Sui-plugin caller may encounter. */
 export type SuiError =
 	| SuiPluginError
 	| SuiCliError
 	| SuiConfigError
-	| ForkUnsupportedError
-	| SeedManifestMismatchError;
+	| ForkUnsupportedError;
 
 /** Error tags this plugin contributes — surfaced to the cause
  *  walker via `PluginErrorContribution`. */
@@ -129,5 +106,4 @@ export const SUI_ERROR_TAGS: ReadonlyArray<SuiError['_tag']> = [
 	'SuiCliError',
 	'SuiConfigError',
 	'ForkUnsupportedError',
-	'SeedManifestMismatchError',
 ] as const;

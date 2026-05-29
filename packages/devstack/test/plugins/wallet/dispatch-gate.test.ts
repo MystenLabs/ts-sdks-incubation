@@ -32,7 +32,6 @@ const config: WalletServerConfig = {
 	token: TOKEN,
 	policy,
 	accountsByAddress: accounts,
-	supervisorCtx: null,
 };
 
 describe('wallet dispatcher — path-prefix gate runs before the OPTIONS preflight', () => {

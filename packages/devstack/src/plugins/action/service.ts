@@ -12,8 +12,6 @@
 //   - chain          = Sui dependency's resolved `chain`
 //   - contentHash    = hash of (actionName, upstreamResourceIds[], dynamic
 //                      discriminator if any)
-//   - verifySchema   = `ActionReceiptSchema` — Schema-validated cached
-//                      shape so a corrupt entry surfaces as a miss
 //   - verify         = `chainProbe.get({kind:'transaction', digest},
 //                      VerifyTxShape, 'lenient')` — null on transient
 //                      or not-found, NOT raise.
@@ -264,7 +262,6 @@ export const bootActionService = (
 			namespace: 'action',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
-			verifySchema: VerifyTxShape,
 			verify: (cached) => buildVerifyProbe(probe, cached.digest),
 			produce: wrappedProduce,
 		}).pipe(recoverTypedError);

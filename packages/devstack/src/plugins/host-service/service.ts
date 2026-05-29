@@ -512,62 +512,103 @@ const startHostProcess = (
 		};
 
 		const spawnChild = ctx.spawner ?? nodeProcessSpawner;
-		const child = yield* Effect.try({
-			try: () =>
-				spawnChild(rendered.command, rendered.args, {
-					cwd: options.cwd,
-					env,
-					stdio: 'pipe',
-					detached: process.platform !== 'win32',
-				}),
-			catch: (cause) =>
-				new HostServiceAcquireError({
-					serviceName: options.serviceName,
-					cwd: options.cwd,
-					command: rendered.command,
-					args: rendered.args,
-					phase: 'spawn',
-					message: 'host service spawn failed',
-					cause,
-				}),
-		});
+		// Mutable cells declared before the setup block so the terminator
+		// finalizer below can observe them.
 		let shuttingDown = false;
 		let exitStatus: {
 			readonly code: number | null;
 			readonly signal: NodeJS.Signals | null;
 		} | null = null;
+		// Atomic, deadlock-free process setup.
+		//
+		// Three things happen in one `Effect.uninterruptible` region — spawn,
+		// fork the stdout/stderr line drains (`observeProcessLines`), and
+		// register the kill finalizer — so that:
+		//
+		//  1. No interrupt can land between a successful spawn and the finalizer
+		//     registration. That gap was the original leak window: a SIGINT
+		//     mid-boot could orphan a detached child still holding its port.
+		//
+		//  2. The terminator finalizer is registered *after* the drain fibers,
+		//     so on scope close (LIFO) it runs *before* they are interrupted.
+		//     This ordering is load-bearing: the drains read the child's stdout/
+		//     stderr via `Stream.fromAsyncIterable`, whose `iterator.next()`
+		//     park is NON-interruptible — it only unblocks when the stream ends.
+		//     The child's streams end when the child is killed. So the
+		//     terminator must run first to kill the child (ending the streams),
+		//     which lets the drains drain-to-end and their interrupts complete.
+		//     Registering the terminator *before* the drains (e.g. via
+		//     `acquireRelease` at the top, or any pre-`observeProcessLines`
+		//     finalizer) inverts this and deadlocks scope close: the drain
+		//     interrupt can never complete because the terminator that would end
+		//     its stream is queued to run after it.
+		//
+		// The post-readiness `exited`/`processError` observers below are
+		// registered later still, so they are interrupted before the terminator
+		// runs — their `Effect.promise` waits are interruptible, so that unwinds
+		// cleanly without needing the child to exit first.
+		const child = yield* Effect.uninterruptible(
+			Effect.gen(function* () {
+				const spawned = yield* Effect.try({
+					try: () =>
+						spawnChild(rendered.command, rendered.args, {
+							cwd: options.cwd,
+							env,
+							stdio: 'pipe',
+							detached: process.platform !== 'win32',
+						}),
+					catch: (cause) =>
+						new HostServiceAcquireError({
+							serviceName: options.serviceName,
+							cwd: options.cwd,
+							command: rendered.command,
+							args: rendered.args,
+							phase: 'spawn',
+							message: 'host service spawn failed',
+							cause,
+						}),
+				});
+				yield* observeProcessLines(
+					{
+						stdout: readableToByteStream(
+							spawned.stdout as unknown as AsyncIterable<Uint8Array> | null | undefined,
+						),
+						stderr: readableToByteStream(
+							spawned.stderr as unknown as AsyncIterable<Uint8Array> | null | undefined,
+						),
+					},
+					{
+						logger: ctx.logger,
+						pluginKey: ctx.pluginKey,
+						tag,
+						fields: { [SpanAttr.serviceName]: options.serviceName },
+						onLine: ({ line, stream }) =>
+							Effect.sync(() => {
+								observeReadinessLine(line, stream);
+							}),
+					},
+				);
+				yield* Effect.addFinalizer(() =>
+					Effect.gen(function* () {
+						shuttingDown = true;
+						if (exitStatus !== null) return;
+						yield* terminateChild(
+							spawned,
+							options.shutdownGraceMs,
+							ctx.logger,
+							ctx.pluginKey,
+							tag,
+						);
+					}),
+				);
+				return spawned;
+			}),
+		);
 		const exited = onceProcessExit(child).then((status) => {
 			exitStatus = status;
 			return status;
 		});
 		const processError = onceProcessError(child);
-		yield* observeProcessLines(
-			{
-				stdout: readableToByteStream(
-					child.stdout as unknown as AsyncIterable<Uint8Array> | null | undefined,
-				),
-				stderr: readableToByteStream(
-					child.stderr as unknown as AsyncIterable<Uint8Array> | null | undefined,
-				),
-			},
-			{
-				logger: ctx.logger,
-				pluginKey: ctx.pluginKey,
-				tag,
-				fields: { [SpanAttr.serviceName]: options.serviceName },
-				onLine: ({ line, stream }) =>
-					Effect.sync(() => {
-						observeReadinessLine(line, stream);
-					}),
-			},
-		);
-		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				shuttingDown = true;
-				if (exitStatus !== null) return;
-				yield* terminateChild(child, options.shutdownGraceMs, ctx.logger, ctx.pluginKey, tag);
-			}),
-		);
 
 		const baseError = new HostServiceAcquireError({
 			serviceName: options.serviceName,
@@ -633,7 +674,10 @@ const startHostProcess = (
 		// any failures). Fork into the Scope via `Effect.forkScoped` so
 		// that scope-close interrupts the observer fiber cleanly — the
 		// finalizer flips `shuttingDown` first, so expected-exit cases
-		// still no-op as before.
+		// still no-op as before. These observers are registered after the
+		// terminator finalizer, so on scope close they are interrupted before
+		// it runs; their `Effect.promise` waits are interruptible, so they
+		// unwind cleanly without waiting on the child to exit.
 		yield* Effect.forkScoped(
 			Effect.promise(() => exited).pipe(
 				Effect.flatMap((status) =>

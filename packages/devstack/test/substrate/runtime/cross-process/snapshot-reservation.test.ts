@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, utimesSync, writeFileSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 import { join } from 'node:path';
 
@@ -91,5 +91,80 @@ describe('snapshot reservation PID/start-time safety', () => {
 				expect(existsSync(path)).toBe(false);
 			}),
 		),
+	);
+});
+
+describe('snapshot reservation malformed-body sweep (shared re-stat guard)', () => {
+	// `sweepOrphan`'s malformed-body branch now routes through
+	// `reclaimUnparseableStaleFile`, the same guarded reclaim stack-lock
+	// uses. These cases pin the guard's behavior at the public entry
+	// point: an aged garbage body is reclaimed, but a fresh garbage body
+	// (writer presumed mid-flush) is left alone — and a body that has
+	// since become a VALID live reservation is never swept by this
+	// branch.
+
+	it.effect('sweeps an AGED malformed reservation body (mtime past the staleness window)', () =>
+		withTempRoot('snapshot-reservation-malformed', (root) =>
+			Effect.gen(function* () {
+				const path = reservationPath(root);
+				writeFileSync(path, '{partial-json', { flag: 'wx' });
+				// Backdate 60s — well past the 30s staleness budget.
+				const past = (Date.now() - 60_000) / 1_000;
+				utimesSync(path, past, past);
+
+				const result = yield* sweepOrphan(path);
+				expect(result.swept).toBe(true);
+				expect(existsSync(path)).toBe(false);
+			}),
+		),
+	);
+
+	it.effect('leaves a FRESH malformed reservation body alone (writer presumed mid-flush)', () =>
+		withTempRoot('snapshot-reservation-malformed', (root) =>
+			Effect.gen(function* () {
+				const path = reservationPath(root);
+				// Current mtime — inside the staleness window.
+				writeFileSync(path, '{partial-json', { flag: 'wx' });
+
+				const result = yield* sweepOrphan(path);
+				expect(result.swept).toBe(false);
+				// Untouched — the guard respects the staleness budget rather
+				// than racing a peer that may still be flushing its body.
+				expect(existsSync(path)).toBe(true);
+				expect(readFileSync(path, 'utf8')).toBe('{partial-json');
+			}),
+		),
+	);
+
+	it.effect(
+		'does NOT sweep a body that is now a VALID live reservation, even when its mtime is old',
+		() =>
+			withTempRoot('snapshot-reservation-malformed', (root) =>
+				Effect.gen(function* () {
+					const path = reservationPath(root);
+					const startTime = processStartTime(process.pid) ?? 0;
+					// A well-formed reservation owned by THIS (live) process,
+					// but with an aged mtime — the scenario the TOCTOU guard
+					// protects: a competitor reclaimed the garbage and wrote a
+					// fresh valid body. The malformed branch must not unlink a
+					// parseable body, and the live-holder branch keeps it too.
+					writeFileSync(
+						path,
+						JSON.stringify({
+							version: 1,
+							creatorPid: process.pid,
+							creatorStartTime: startTime,
+							createdAt: Date.now(),
+							hostname: nodeHostname(),
+						}),
+					);
+					const past = (Date.now() - 60_000) / 1_000;
+					utimesSync(path, past, past);
+
+					const result = yield* sweepOrphan(path);
+					expect(result.swept).toBe(false);
+					expect(existsSync(path)).toBe(true);
+				}),
+			),
 	);
 });

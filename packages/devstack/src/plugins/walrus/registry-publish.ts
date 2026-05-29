@@ -53,28 +53,3 @@ export interface WalrusKnownStateEntry {
 }
 
 export type WalrusStateEntry = WalrusLocalStateEntry | WalrusKnownStateEntry;
-
-/** Endpoint contribution shape — what the local-cluster publishes
- *  to the endpoint registry. Mirrors the v3 surface:
- *  `walrus-aggregator` + `walrus-publisher` (1 each) +
- *  `walrus-node-<i>` (N). */
-export interface WalrusEndpointEntry {
-	readonly name: string;
-	readonly url: string;
-	readonly kind: 'http' | 'walrus-node';
-}
-
-/** Package contribution — local-cluster publishes one entry under
- *  `walrus.<name>` with `mvrPlaceholder: '@local/walrus'`.
- *  (Distilled-doc §"Registry writes" + Invariant 6: registers fire
- *  on EVERY cycle.) */
-export interface WalrusPackageEntry {
-	readonly name: string;
-	readonly packageId: string;
-	readonly mvrPlaceholder: string;
-	readonly captured: Readonly<{
-		readonly systemObject: string;
-		readonly stakingObject: string;
-		readonly exchangeObject?: string;
-	}>;
-}

@@ -5,9 +5,7 @@
 // `PriceInfoObject`s for the requested feeds. This is intentionally not a
 // top-level devstack plugin; DeepBook owns the oracle wiring it needs.
 
-import { createHash } from 'node:crypto';
-
-import { Effect, Schema, type Scope } from 'effect';
+import { Effect, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64, fromHex, toHex } from '@mysten/sui/utils';
 
@@ -22,13 +20,10 @@ import {
 	formatExecutedFailure,
 } from '../../../substrate/runtime/sui-execute/index.ts';
 import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
-import {
-	chainId as brandChainId,
-	contentHash as brandContentHash,
-	type ContentHash,
-} from '../../../substrate/brand.ts';
+import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import type { SuiSdkShim } from '../../sui/index.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
+import { stableContentHash } from '../hash.ts';
 import { DeepbookSpans } from '../spans.ts';
 import type { PythFeed, PythHandle, PythPriceFeedId } from '../types.ts';
 
@@ -49,24 +44,8 @@ interface CachedPythHandle {
 	readonly feeds: ReadonlyArray<CachedPythFeed>;
 }
 
-const CachedPythFeedSchema = Schema.Struct({
-	symbol: Schema.String,
-	feedId: Schema.String,
-	priceInfoObjectId: Schema.String,
-	price: Schema.String,
-	expo: Schema.Number,
-});
-
-const CachedPythHandleSchema = Schema.Struct({
-	packageId: Schema.String,
-	feeds: Schema.Array(CachedPythFeedSchema),
-});
-
 const DEFAULT_EXPO = -8;
 const PYTH_GAS_BUDGET = 200_000_000;
-
-const stableContentHash = (input: string): ContentHash =>
-	brandContentHash(createHash('sha256').update(input).digest('hex'));
 
 const normalizeFeedId = (feedId: string): string => feedId.replace(/^0x/i, '').toLowerCase();
 
@@ -254,7 +233,6 @@ export const initLocalPythFeeds = (
 			namespace: 'deepbook/pyth',
 			chain: brandChainId(chain),
 			contentHash: pythInputsHash(pkg, signer, feeds),
-			verifySchema: CachedPythHandleSchema,
 			verify: (entry) => buildVerifyProbe(sdk, entry),
 			produce: Effect.gen(function* () {
 				const result = yield* executeSuiTx({

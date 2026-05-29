@@ -296,7 +296,6 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					resolveAccounts: () => Effect.succeed(resolvedAccounts),
 					routerFrontedUrl,
 					routedAppOrigin,
-					supervisorCtx: undefined,
 				};
 
 				return yield* acquireWallet(resolvedOpts, acquireCtx);

@@ -1,4 +1,9 @@
-import { Context, Effect, Layer, Ref } from 'effect';
+// Pure redaction helpers. These back the inline plugin-level redaction
+// in seal (`redactMasterKey`) and wallet (`redactToken`), and the
+// cascade-formatter's `safeJson` field scrubbing. There is intentionally
+// no engine-wide Redactor service: plugins that surface secret-bearing
+// output defend themselves at the point of emission with a local rule
+// set, which keeps the rules co-located with the thing they protect.
 
 export type RedactionRule =
 	| {
@@ -11,16 +16,6 @@ export type RedactionRule =
 			readonly pattern: RegExp;
 			readonly replacement?: string;
 	  };
-
-export interface RedactorShape {
-	readonly register: (rule: RedactionRule) => Effect.Effect<void>;
-	readonly redact: (text: string) => Effect.Effect<string>;
-	readonly rules: Effect.Effect<ReadonlyArray<RedactionRule>>;
-}
-
-export class Redactor extends Context.Service<Redactor, RedactorShape>()(
-	'@devstack/substrate/Redactor',
-) {}
 
 const DEFAULT_REPLACEMENT = '<redacted>';
 
@@ -64,15 +59,3 @@ export const redactValue = (
 	}
 	return out;
 };
-
-export const layerRedactor: Layer.Layer<Redactor> = Layer.effect(
-	Redactor,
-	Effect.gen(function* () {
-		const ref = yield* Ref.make<ReadonlyArray<RedactionRule>>([]);
-		return Redactor.of({
-			register: (rule) => Ref.update(ref, (rules) => [...rules, rule]),
-			redact: (text) => Ref.get(ref).pipe(Effect.map((rules) => redactText(text, rules))),
-			rules: Ref.get(ref),
-		});
-	}),
-);

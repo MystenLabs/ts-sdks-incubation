@@ -31,7 +31,6 @@ import {
 	Logger,
 	layerCapabilitySinksDefault,
 	layerLogger,
-	layerRedactor,
 	makeProjectionRef,
 	startSupervisor,
 	supervise,
@@ -855,6 +854,92 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
+	it.effect('selective restart of a non-ready (pending) node does not wedge the command loop', () =>
+		// Regression: `resetForRestart` used to leave the node's status
+		// untouched and the restart path then ran `transition(key,
+		// 'pending')`. The transition table only admits `→ pending` from
+		// terminal states (`failed` / `stopped` / `done`), so a node that
+		// was still `pending` (or `acquiring`) when the restart landed hit
+		// `assertTransition('pending', 'pending')` — an off-table move
+		// surfaced as `Effect.die`. Defects are NOT caught by the
+		// `Effect.catch(() => …)` wrappers on the restart path or in the
+		// command loop, so the defect killed the command-loop fiber and
+		// the supervisor wedged (no further commands — including graceful
+		// shutdown — were processed).
+		//
+		// We reproduce the off-table state deterministically by NOT
+		// running the initial acquire: every entry is built `pending` by
+		// `startSupervisor`, and with no acquire fiber the target node
+		// stays `pending`. Firing `selective-restart.requested` then
+		// drives `resetForRestart` from `pending`. The fix makes
+		// `resetForRestart` set the status to `pending` authoritatively
+		// (no `transition` hop), so the subsequent acquire performs a
+		// clean `pending → acquiring`. We assert the restart RUNS the
+		// node's `start` exactly once, reaches `ready`, and that a later
+		// `shutdown.requested` is still processed (the loop survived).
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const restartableKey = pluginKey('test:restart-pending#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-pending',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						yield* Ref.update(starts, (n) => n + 1);
+						return { v: 'restart-pending' as const };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					// NB: deliberately DO NOT call `startup.runInitialAcquire`.
+					// The command loop is forked by `startSupervisor`
+					// regardless, and the node stays `pending`.
+					const startup = yield* startSupervisor(stack, identity, state);
+
+					const pending = yield* SubscriptionRef.get(state);
+					expect(pending.rows.find((r) => r.key === restartableKey)?.status).toBe('pending');
+					expect(yield* Ref.get(starts)).toBe(0);
+
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'selective-restart.requested',
+						pluginKey: restartableKey,
+					});
+
+					// The restart must complete — pre-fix the command-loop
+					// fiber dies on the defect and this event never arrives,
+					// so the test hangs (times out) rather than passing.
+					while (true) {
+						const event = yield* Queue.take(startup.handle.events);
+						if (
+							event.tag === 'restart.completed' &&
+							event.target !== 'stack' &&
+							event.target.pluginKey === restartableKey
+						) {
+							break;
+						}
+					}
+
+					const acquired = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect((acquired as { readonly v: string }).v).toBe('restart-pending');
+					expect(yield* Ref.get(starts)).toBe(1);
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.rows.find((r) => r.key === restartableKey)?.status).toBe('ready');
+
+					// The command loop survived the restart: a subsequent
+					// command is still processed end-to-end.
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					yield* startup.handle.awaitShutdown;
+					const shuttingDown = yield* SubscriptionRef.get(state);
+					expect(shuttingDown.cycle.phase).toBe('shutting-down');
+				}),
+			);
+		}),
+	);
+
 	it.effect('dispatches each CapabilityDecl kind to its OrchestratorSinks slot', () =>
 		Effect.gen(function* () {
 			const { ref, sinks } = yield* makeCapture();
@@ -1262,7 +1347,7 @@ describe('supervisor harvest loop', () => {
 
 			const event = yield* Effect.scoped(
 				Effect.gen(function* () {
-					const loggerContext = yield* Layer.build(layerLogger.pipe(Layer.provide(layerRedactor)));
+					const loggerContext = yield* Layer.build(layerLogger);
 					const logger = Context.get(loggerContext, Logger);
 					const pluginContext = Context.empty().pipe(
 						Context.add(Logger, logger),

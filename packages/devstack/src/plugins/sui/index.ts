@@ -271,7 +271,6 @@ export type {
 	SuiCliError,
 	SuiConfigError,
 	ForkUnsupportedError,
-	SeedManifestMismatchError,
 } from './errors.ts';
 export { SUI_ERROR_TAGS } from './errors.ts';
 
@@ -286,7 +285,6 @@ export {
 export {
 	FORK_UNSUPPORTED_SURFACES,
 	wrapWithForkGuard,
-	type ForkMeta,
 	type ForkLockHolder,
 } from './fork-orchestration.ts';
 export type { SuiProbeKey, SuiSdkShim } from './chain-probe.ts';

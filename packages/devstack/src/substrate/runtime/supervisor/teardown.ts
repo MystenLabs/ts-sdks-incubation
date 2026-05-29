@@ -112,12 +112,14 @@ export const doSelectiveRestart = (
 		// upstream ready gate, so a downstream node in the slice can't
 		// acquire until its upstream is back to `ready`; unrelated
 		// siblings do not act as a level barrier. Nodes outside the
-		// slice are already `ready`. We need to mark slice nodes back
-		// to `pending` so the state
-		// machine accepts the `pending → acquiring` transition.
+		// slice are already `ready`. `resetForRestart` rebuilds each
+		// node's scope + ready gate AND authoritatively resets its
+		// status to `pending` regardless of prior state (a node may
+		// still be `acquiring` when its scope close interrupts it), so
+		// the acquire below performs a clean `pending → acquiring`
+		// transition for every slice node.
 		for (const key of plan.acquireOrder) {
 			yield* registry.resetForRestart(key, parentScope).pipe(Effect.catch(() => Effect.void));
-			yield* registry.transition(key, 'pending').pipe(Effect.catch(() => Effect.void));
 		}
 		yield* acquireKeys(
 			registry,

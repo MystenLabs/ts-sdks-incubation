@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, type Scope } from 'effect';
+import { Deferred, Effect, Exit, Fiber, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
 import { pluginKey } from '../../../src/substrate/brand.ts';
@@ -465,6 +465,61 @@ describe('acquireHostService', () => {
 			),
 		);
 	});
+
+	it.effect(
+		'registers the child terminator atomically with spawn (interrupt mid-boot still tears the child down)',
+		() => {
+			// Regression for the spawn/finalizer atomicity bug: spawn, the
+			// stdout/stderr line-drain fork, and the kill-finalizer
+			// registration are wrapped together in a single
+			// `Effect.uninterruptible` region, so the terminator is bound the
+			// instant the spawn succeeds — no interrupt can land in the gap
+			// between them. Here readiness never fires (a slow boot), the fiber
+			// parks past the spawn in the readiness wait, and an interrupt
+			// landing in exactly the old leak window must still run the
+			// terminator. Pre-fix the finalizer was registered far below the
+			// spawn (after the readiness wait), so an interrupt before that
+			// point would leave the detached child alive with no SIGTERM.
+			//
+			// The terminator is registered AFTER the drain fork (not before, and
+			// not via `acquireRelease`), so on scope close it runs before the
+			// drains are interrupted: it kills the child, ending its streams,
+			// which lets the non-interruptible `Stream.fromAsyncIterable` drains
+			// drain-to-end. Registering it before the drains deadlocks teardown.
+			const child = new FakeChild();
+			const options = normalizeHostServiceOptions({
+				name: 'frontend',
+				command: 'pnpm',
+				args: ['exec', 'vite'],
+				// Pattern intentionally never emitted; large timeout so the
+				// boot stays "in progress" for the whole test window.
+				ready: { kind: 'log', pattern: 'never-emitted-readiness-token', timeoutMs: 60_000 },
+			});
+
+			return Effect.gen(function* () {
+				const spawned = yield* Deferred.make<void>();
+				const fiber = yield* Effect.forkScoped(
+					acquire(options, () => {
+						// Signal the spawn happened without emitting readiness.
+						Deferred.doneUnsafe(spawned, Effect.void);
+						return child;
+					}),
+				);
+
+				// Wait until the child is spawned, then let the forked fiber
+				// park in `observeProcessLines` before interrupting — this is
+				// the exact window the old ordering left unguarded.
+				yield* Deferred.await(spawned);
+				yield* Effect.yieldNow;
+
+				yield* Fiber.interrupt(fiber);
+
+				// Finalizer ran during scope teardown -> child was signalled,
+				// no leaked detached process holding its port.
+				expect(child.signals).toEqual(['SIGTERM']);
+			});
+		},
+	);
 
 	it('fails acquire when the process exits before readiness', async () => {
 		const child = new FakeChild();

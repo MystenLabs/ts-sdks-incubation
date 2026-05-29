@@ -517,14 +517,33 @@ export const runLifecyclePrune = (
 				skippedLiveGroups += 1;
 				continue;
 			}
-			prunableGroups.push(group);
 			if (selection.dryRun) {
+				prunableGroups.push(group);
 				if (selection.resources.containers) containersRemoved += group.containers;
 				if (selection.resources.networks) networksRemoved += group.networks;
 				if (selection.resources.volumes) volumesRemoved += group.volumes;
 				if (selection.resources.images) imagesRemoved += group.images;
 				continue;
 			}
+			// TOCTOU close: `collectLifecyclePruneInventory` probed liveness
+			// ONCE at the top of this run. A stack that booted in the window
+			// between that snapshot and here (a concurrent `devstack up` of a
+			// previously-dead stack) would have its containers/networks/volumes
+			// removed out from under the freshly-started supervisor. Re-probe
+			// each non-router victim's roster via the SAME helper the inventory
+			// pass used (`livePidsForStack`) immediately before committing it to
+			// removal, and skip any group that came alive since. Router groups
+			// carry no per-stack roster (their inventory liveness is
+			// `runningContainers`), so they keep the snapshot classification —
+			// mirroring the `routerGroup` branch in the inventory pass.
+			if (!isRouterGroup(group)) {
+				const livePids = yield* livePidsForStack(options.runtimeRoot, group.stack);
+				if (livePids.length > 0) {
+					skippedLiveGroups += 1;
+					continue;
+				}
+			}
+			prunableGroups.push(group);
 		}
 
 		if (!selection.dryRun && selection.resources.containers) {

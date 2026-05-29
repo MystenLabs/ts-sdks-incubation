@@ -171,6 +171,33 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 						kind: 'strategy-contributor',
 						capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
 						strategy: {
+							// usesAccountSigner: true — the coin strategy mints via
+							// the publisher account's own `withTransactionSigner`,
+							// which acquires the per-address lease
+							// `account:<publisherAddress>` internally (service.ts
+							// mint -> performMint -> signAndDispatch). The account
+							// funding dispatcher must therefore NOT wrap the request
+							// in its own `account:<fundedAddress>` lease. Two reasons:
+							//   1. The funded account is a passive `recipient` in
+							//      `mint_and_transfer` — it neither signs nor
+							//      contributes objects, so the funded-address lease
+							//      serializes nothing; the publisher lease already
+							//      serializes the only account whose gas + treasury
+							//      cap the mint consumes.
+							//   2. When the funded address IS the publisher address
+							//      (fund a publisher with a coin it published), the
+							//      dispatcher's `account:<funded>` lease and the
+							//      mint's `account:<publisher>` lease collapse to the
+							//      same non-reentrant key, so the inner acquire would
+							//      block forever. Owning the lease inside the strategy
+							//      (signalled by this flag) makes self-funding
+							//      single-acquire and deadlock-free while leaving the
+							//      cross-account path's mint + publisher lease
+							//      unchanged.
+							// Mirrors deepbook's DEEP strategy (faucet-strategy.ts),
+							// which sets the same flag and self-acquires via
+							// `req.account.withTransactionSigner`.
+							usesAccountSigner: true,
 							request: (req) =>
 								narrowStrategy.request({ address: req.address, amount: req.amount }),
 						} satisfies AccountFundingStrategy,

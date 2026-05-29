@@ -198,30 +198,79 @@ const createCodegenWatchState = (): CodegenWatchState => ({
 const READ_CHUNK_BYTES = 64 * 1024;
 
 /**
- * Pinned-shape schema for the two ndjson record kinds we care about.
- * The supervisor emits a richer envelope (full `EngineEvent` union
- * payload) but we only need the discriminators — `kind === 'engine'`
- * plus `event.tag` ∈ {`endpoint.registered`, `codegen.emitted`} — to
- * advance the watch. Pinning here keeps the watch tolerant of future
- * tag additions while loudly surfacing a structural drift if the
- * `kind`/`event.tag`/`event.endpoint.name` shape ever changes (a
- * silent miss here would deadlock global-setup at the 5min timeout).
+ * Pinned-shape schema for the ndjson records we tail. The supervisor
+ * emits a richer envelope (`protocol`/`seq`/`at` plus the full
+ * `EngineEvent` union payload — see
+ * `substrate/runtime/cross-process/command-channel/protocol.ts`
+ * `EventRecordSchema`), but the watch only needs the discriminators
+ * that route a record to `latestAppEndpointLine` / `latestCodegenLine`.
+ *
+ * The pin's job is to FAIL LOUDLY if one of those discriminators is
+ * renamed upstream — a silent miss leaves the matchers permanently
+ * unfired and deadlocks global-setup at the 5min `readyTimeout`. An
+ * earlier version declared every field as `optional(Unknown)`, which
+ * defeats that entirely: a `kind`→`recordKind` rename decoded to
+ * `undefined` instead of throwing, so the watch silently stalled. We
+ * therefore pin the stable discriminators as REQUIRED while keeping the
+ * genuinely-variable axis (the engine `tag` value) permissive:
+ *
+ *   - The engine variant requires `kind: 'engine'` (the literal value
+ *     the matchers test against, verified at `channel.ts` `publishEvent`)
+ *     and a required `event.tag` STRING. Renaming `kind`, its `'engine'`
+ *     value, the `event` key, or the `tag` key all fail decode — these
+ *     are the deadlock-class discriminators. The `tag` VALUE stays open,
+ *     so future `EngineEvent` tag additions need no change here.
+ *   - `event.endpoint` is optional (most engine tags carry no endpoint),
+ *     but WHERE present its `name` is REQUIRED. Renaming `name` on an
+ *     `endpoint.registered` record therefore fails decode rather than
+ *     silently leaving `latestAppEndpointLine` unset.
+ *   - `ack` / `error` envelopes carry no `event`; a dedicated variant
+ *     absorbs them so the supervisor's correlation replies don't flood
+ *     `decodeFailures`. They are never routed.
+ *
+ * Deliberately NOT permissive about an unknown `kind`: a brand-new
+ * envelope kind fails decode. That is a rare, intentional protocol
+ * change (and would be made alongside updating consumers), and failing
+ * loudly here is the same drift signal the engine-value pin provides.
  */
-const WatchedRecordSchema = Schema.Struct({
-	kind: Schema.optional(Schema.Unknown),
-	event: Schema.optional(
-		Schema.Struct({
-			tag: Schema.optional(Schema.Unknown),
-			endpoint: Schema.optional(
-				Schema.Struct({
-					name: Schema.optional(Schema.Unknown),
-				}),
-			),
-		}),
-	),
+const WatchedEngineRecordSchema = Schema.Struct({
+	kind: Schema.Literal('engine'),
+	event: Schema.Struct({
+		tag: Schema.String,
+		endpoint: Schema.optional(
+			Schema.Struct({
+				name: Schema.String,
+			}),
+		),
+	}),
 });
 
-const decodeWatchedRecord = Schema.decodeUnknownSync(WatchedRecordSchema);
+const WatchedReplyRecordSchema = Schema.Struct({
+	kind: Schema.Literals(['ack', 'error']),
+});
+
+const WatchedRecordSchema = Schema.Union([WatchedEngineRecordSchema, WatchedReplyRecordSchema]);
+
+type WatchedRecord = Schema.Schema.Type<typeof WatchedRecordSchema>;
+type WatchedEngineRecord = Schema.Schema.Type<typeof WatchedEngineRecordSchema>;
+
+/**
+ * @internal Exported only so the through-surface test can assert the
+ * drift-detection contract directly (a renamed discriminator must
+ * THROW, not decode to `undefined`). Not part of the public API.
+ */
+export const decodeWatchedRecord = Schema.decodeUnknownSync(WatchedRecordSchema);
+
+const isEngineRecord = (record: WatchedRecord): record is WatchedEngineRecord =>
+	record.kind === 'engine';
+
+const isAppEndpointRegistration = (record: WatchedRecord): boolean =>
+	isEngineRecord(record) &&
+	record.event.tag === 'endpoint.registered' &&
+	record.event.endpoint?.name === BUILT_IN_ENDPOINT_ALIASES.app;
+
+const isCodegenEmitted = (record: WatchedRecord): boolean =>
+	isEngineRecord(record) && record.event.tag === 'codegen.emitted';
 
 const DEBUG_ENABLED = (): boolean => process.env.DEVSTACK_PLAYWRIGHT_DEBUG === '1';
 
@@ -253,7 +302,7 @@ const ingestNdjsonLine = (state: CodegenWatchState, line: string): void => {
 		}
 		return;
 	}
-	let record: Schema.Schema.Type<typeof WatchedRecordSchema>;
+	let record: WatchedRecord;
 	try {
 		record = decodeWatchedRecord(parsed);
 	} catch (cause) {
@@ -272,14 +321,10 @@ const ingestNdjsonLine = (state: CodegenWatchState, line: string): void => {
 		}
 		return;
 	}
-	if (
-		record.kind === 'engine' &&
-		record.event?.tag === 'endpoint.registered' &&
-		record.event.endpoint?.name === BUILT_IN_ENDPOINT_ALIASES.app
-	) {
+	if (isAppEndpointRegistration(record)) {
 		state.latestAppEndpointLine = state.lineIndex;
 	}
-	if (record.kind === 'engine' && record.event?.tag === 'codegen.emitted') {
+	if (isCodegenEmitted(record)) {
 		state.latestCodegenLine = state.lineIndex;
 	}
 };

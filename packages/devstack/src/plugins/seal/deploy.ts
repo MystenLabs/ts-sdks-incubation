@@ -97,13 +97,6 @@ export const sealPackageInputsHash = (
 	signerAddress: string,
 ): ContentHash => contentHash(`seal-package|source=${sourceHash}|signer=${signerAddress}`);
 
-export const parseSealPublishOutput = (stdout: string): SealPackageCached | null => {
-	const re = /(?:^|\n)\s*(?:package_id|packageId)\s*[:=]\s*(0x[0-9a-fA-F]+)/;
-	const m = re.exec(stdout);
-	if (!m?.[1]) return null;
-	return { packageId: m[1] };
-};
-
 export interface SealPublishTransactionBuilder<TUpgradeCap = unknown> {
 	readonly setSender: (address: string) => void;
 	readonly publish: (input: {
@@ -250,7 +243,6 @@ export const publishSealPackage = (
 			namespace: SEAL_PACKAGE_NAMESPACE,
 			chain: inputs.chain,
 			contentHash: inputsHash,
-			verifySchema: SealPackageVerifyShape,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.packageId, SealPackageVerifyShape),
 			produce: runSealPublishTransaction(inputs).pipe(
@@ -317,14 +309,6 @@ export const sealRegisterInputsHash = (
 			)
 			.digest('hex')}`,
 	);
-
-export const parseRegisterKeyServerOutput = (stdout: string): SealKeyServerCached | null => {
-	const re =
-		/(?:^|\n)\s*(?:key_server_object_id|object_id|objectId|key_server_id)\s*[:=]\s*(0x[0-9a-fA-F]+)/;
-	const m = re.exec(stdout);
-	if (!m?.[1]) return null;
-	return { objectId: m[1] };
-};
 
 export interface SealRegisterTransactionBuilder<TArgument = unknown> {
 	readonly pure: {
@@ -457,7 +441,6 @@ export const registerKeyServer = (
 			namespace: SEAL_KEY_SERVER_NAMESPACE,
 			chain: inputs.chain,
 			contentHash: inputsHash,
-			verifySchema: SealKeyServerVerifyShape,
 			verify: (cached) =>
 				verifyObjectLenient(inputs.chainProbe, cached.objectId, SealKeyServerVerifyShape),
 			produce: runRegisterKeyServerTransaction(inputs.sdk, inputs.signer, inputs).pipe(

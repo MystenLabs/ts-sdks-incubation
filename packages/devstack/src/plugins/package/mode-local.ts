@@ -290,7 +290,6 @@ export const acquireLocal = (
 			namespace: 'package',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
-			verifySchema: PackageVerifyShape,
 			verify: (cached) =>
 				cached.output === undefined
 					? Effect.succeed(null)

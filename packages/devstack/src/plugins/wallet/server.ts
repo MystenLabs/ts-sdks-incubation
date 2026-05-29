@@ -67,10 +67,6 @@ export interface WalletServerConfig {
 	readonly token: PairingToken;
 	readonly policy: OriginPolicy;
 	readonly accountsByAddress: ReadonlyMap<string, AccountValue>;
-	/** Captured supervisor context — handler errors log under this so
-	 *  the TUI logger sink receives them. Stub: the substrate primitive
-	 *  will hand this in; today the field is opaque. */
-	readonly supervisorCtx: unknown;
 }
 
 /** Opaque server handle. The substrate's scope finalizer chain

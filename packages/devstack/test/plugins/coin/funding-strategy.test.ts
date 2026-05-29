@@ -59,6 +59,45 @@ describe('coin funding strategy contribution', () => {
 		);
 	});
 
+	it('marks the coin funding strategy as usesAccountSigner so the dispatcher does not double-acquire the lease', () => {
+		// Regression (self-funding deadlock): the coin strategy mints via
+		// the publisher account's own `withTransactionSigner`, which
+		// acquires the per-address lease `account:<publisherAddress>`
+		// internally. The account funding dispatcher reads
+		// `strategy.usesAccountSigner` and, when true, does NOT wrap the
+		// request in its own `account:<fundedAddress>` lease. Without this
+		// flag the dispatcher held `account:<fundedAddress>` while the mint
+		// re-acquired `account:<publisherAddress>`; when funded ==
+		// publisher both keys collapse to the same non-reentrant key and
+		// the inner acquire blocks forever. Pin the flag here — the
+		// dispatcher-side behavior is asserted in the account funding test.
+		const pkg = { id: 'package:deep' } as never;
+		const member = coin.fromPackage(pkg, 'DEEP');
+		const fullCoinType = '0xabc::deep::DEEP';
+		const value = {
+			fullCoinType,
+			decimals: 6,
+			source: 'registry',
+			symbol: 'DEEP',
+			treasuryCapId: '0xcap',
+			mint: () => Effect.die('not used'),
+			fundingStrategy: { request: () => Effect.void },
+		} satisfies CoinValue;
+		if (typeof member.capabilities !== 'function') {
+			throw new Error('expected coin capabilities factory');
+		}
+		const capabilities = member.capabilities(value, fakeAcquireContext);
+		const contribution = capabilities.find(
+			(cap) =>
+				cap.kind === 'strategy-contributor' &&
+				cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
+		);
+		if (contribution === undefined || contribution.kind !== 'strategy-contributor') {
+			throw new Error('expected strategy-contributor contribution');
+		}
+		expect((contribution.strategy as AccountFundingStrategy).usesAccountSigner).toBe(true);
+	});
+
 	it('barrel projects the narrow coin strategy to the wide AccountFundingStrategy at the capability boundary', async () => {
 		// Regression: previously the coin barrel built the contribution
 		// with `strategy: resolved.fundingStrategy` (narrow

@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { Effect, Exit, FileSystem } from 'effect';
+import { Effect, Exit, FileSystem, PlatformError } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 
@@ -92,6 +92,80 @@ describe('stageAndSwap', () => {
 				});
 				expect(readFileSync(join(target, 'payload'), 'utf8')).toBe('new-content');
 				expect(existsSync(join(target, 'old'))).toBe(false);
+				expect(existsSync(backup)).toBe(false);
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
+	);
+
+	it.effect('restores backup when the cross-filesystem fallback copy fails', () =>
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
+				const baseFs = yield* FileSystem.FileSystem;
+				const target = join(root, 'target');
+				yield* baseFs.makeDirectory(target, { recursive: true });
+				yield* baseFs.writeFileString(join(target, 'old'), 'old-content');
+				const staging = join(root, 'target.staging');
+				const backup = join(root, 'target.bak');
+
+				// Force the promote rename onto the EXDEV fallback, then make
+				// the fallback copy fail — the previous target must be
+				// restored verbatim, not orphaned at the backup path.
+				//
+				// A real `@effect/platform-node` rename failure is a
+				// PlatformError whose `reason` is a SystemError; the raw Node
+				// errno is preserved as `reason.cause` (see `handleErrnoException`
+				// in platform-node-shared). The errno `code` therefore lives at
+				// `reason.cause.code` (and the constructor hoists it to the
+				// wrapper's `cause.code`) — NOT at the top level. Inject the errno
+				// at that genuine nesting so the test exercises the real detection.
+				const exdevError = PlatformError.systemError({
+					_tag: 'Unknown',
+					module: 'FileSystem',
+					method: 'rename',
+					syscall: 'rename',
+					cause: Object.assign(new Error('cross-device link not permitted'), {
+						code: 'EXDEV',
+						syscall: 'rename',
+						errno: -18,
+					}),
+				});
+				const wrappedFs: FileSystem.FileSystem = {
+					...baseFs,
+					rename: (oldPath, newPath) => {
+						if (oldPath === staging && newPath === target) {
+							return Effect.fail(exdevError);
+						}
+						return baseFs.rename(oldPath, newPath);
+					},
+					copy: (from, to, options) => {
+						if (from === staging && to === target) {
+							return Effect.fail(
+								PlatformError.systemError({
+									_tag: 'Unknown',
+									module: 'FileSystem',
+									method: 'copy',
+									syscall: 'copy',
+								}),
+							);
+						}
+						return baseFs.copy(from, to, options);
+					},
+				};
+
+				const exit = yield* Effect.exit(
+					stageAndSwap({
+						targetPath: target,
+						stagingPath: staging,
+						backupPath: backup,
+						build: buildSucceeds(staging, 'new-content'),
+					}).pipe(Effect.provideService(FileSystem.FileSystem, wrappedFs)),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				// Previous target restored verbatim at its original path…
+				expect(existsSync(target)).toBe(true);
+				expect(readFileSync(join(target, 'old'), 'utf8')).toBe('old-content');
+				// …and NOT left orphaned at the backup path.
 				expect(existsSync(backup)).toBe(false);
 			}).pipe(Effect.provide(NodeFileSystem.layer)),
 		),

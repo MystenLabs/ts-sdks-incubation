@@ -150,9 +150,6 @@ export interface WalletAcquireContext {
 	 *  the wallet allowlist so app+wallet stacks work without repeating
 	 *  router origins in user configs. */
 	readonly routedAppOrigin: string | null;
-	/** Supervisor context captured for log/span propagation on handler
-	 *  fibers (the in-process HTTP server forks per-request from this). */
-	readonly supervisorCtx: unknown;
 }
 
 // ----------------------------------------------------------------------
@@ -254,7 +251,6 @@ export const acquireWallet = (
 			token,
 			policy,
 			accountsByAddress,
-			supervisorCtx: ctx.supervisorCtx,
 		};
 		const server = yield* startHttpServer(serverConfig);
 

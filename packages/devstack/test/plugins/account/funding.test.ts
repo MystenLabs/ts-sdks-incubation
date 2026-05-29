@@ -251,6 +251,104 @@ describe('account cross-cutting funding dispatch', () => {
 			),
 	);
 
+	it.effect(
+		'self-funding (funded address == publisher signer) completes without deadlock and is not double-wrapped',
+		() =>
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						// Regression (coin self-funding hang): a coin funded with a
+						// coin IT published mints via the publisher account's own
+						// `withTransactionSigner`, which self-acquires
+						// `account:<publisherAddress>`. When the funded address IS
+						// the publisher address, the dispatcher's
+						// `account:<fundedAddress>` lease and the mint's
+						// `account:<publisherAddress>` lease collapse to the same
+						// non-reentrant key — the inner acquire would block forever.
+						//
+						// The coin strategy sets `usesAccountSigner: true`, so the
+						// dispatcher must NOT pre-acquire the funded-address lease.
+						// This models the coin flow: the strategy acquires the
+						// SAME `account:<0xalice>` key the dispatcher would have
+						// taken, and asserts (a) the dispatcher did not already
+						// hold it (no double-acquire), and (b) the whole request
+						// completes — a deadlock would surface as a test timeout.
+						const registry = yield* StrategyRegistryService;
+						const broker = yield* LeaseBrokerService;
+						let strategyRan = false;
+						let heldKeysWhenStrategyEntered: ReadonlyArray<string> = [];
+						yield* registry.register('coinType:0xfeed::wal::WAL', {
+							usesAccountSigner: true,
+							request: (req) =>
+								Effect.gen(function* () {
+									// The dispatcher must not be holding the funded
+									// address's lease — otherwise the self-acquire below
+									// (which the real mint's publisher signer performs on
+									// the SAME address) would deadlock.
+									const holders = yield* broker.holders();
+									heldKeysWhenStrategyEntered = [...holders.keys()];
+									// Self-acquire the funded address's lease, exactly as
+									// the coin mint does via the publisher (== funded)
+									// account's `withTransactionSigner`.
+									yield* withAddressLease(broker, 'alice', req.address, Effect.void);
+									strategyRan = true;
+								}),
+						} satisfies AccountFundingStrategy);
+
+						const applied = yield* applyCrossCuttingFunding({
+							accountName: 'alice',
+							address: '0xalice',
+							variant: 'ephemeral',
+							account: fakeAccount,
+							funding: [fundingEntry()],
+							chainId: chainId('sui:localnet'),
+							broker,
+							balanceReader: NULL_BALANCE_READER,
+						});
+
+						expect(strategyRan).toBe(true);
+						expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
+						// No double-acquire: the dispatcher did not hold the funded
+						// address's lease key when the account-signer strategy ran.
+						expect(heldKeysWhenStrategyEntered).not.toContain('account:0xalice');
+					}),
+				),
+			),
+	);
+
+	it.effect(
+		'still wraps strategies that do not use the account signer in the per-address lease',
+		() =>
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						// Non-self / faucet-shaped path is unchanged: a strategy that
+						// does NOT set `usesAccountSigner` is wrapped by the
+						// dispatcher in `account:<fundedAddress>`, so the lease IS
+						// held while the strategy's wire call runs. This locks in the
+						// cross-account behavior the self-funding fix must not regress.
+						const registry = yield* StrategyRegistryService;
+						const broker = yield* LeaseBrokerService;
+						let heldWhenStrategyEntered: ReadonlyMap<string, string> = new Map();
+						yield* registry.register('coinType:0xfeed::wal::WAL', {
+							request: () =>
+								Effect.gen(function* () {
+									heldWhenStrategyEntered = yield* broker.holders();
+								}),
+						} satisfies AccountFundingStrategy);
+
+						const applied = yield* applyFunding([fundingEntry()]);
+
+						expect(applied).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
+						// The dispatcher held the funded-address lease (attributed to
+						// the account name) around the (non-account-signer) wire call.
+						expect([...heldWhenStrategyEntered.keys()]).toContain('account:0xalice');
+						expect(heldWhenStrategyEntered.get('account:0xalice')).toBe('alice');
+					}),
+				),
+			),
+	);
+
 	it.effect('lets account-signer strategies own the per-address lease', () =>
 		withFundingLayers(
 			Effect.scoped(

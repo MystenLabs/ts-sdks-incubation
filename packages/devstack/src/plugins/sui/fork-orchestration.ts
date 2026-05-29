@@ -46,23 +46,6 @@ export interface ForkLockHolder {
 	readonly startTime: number | null;
 }
 
-/** On-disk seed-manifest snapshot. */
-export interface ForkMeta {
-	readonly version: number;
-	readonly createdAt: number;
-	readonly upstream: string;
-	readonly checkpoint?: string;
-	/** Lowercased + sorted (architecture invariant: configHash MUST
-	 *  be stable across orderings). */
-	readonly seedAddresses: ReadonlyArray<string>;
-	/** Lowercased + sorted, same invariant. */
-	readonly seedObjects: ReadonlyArray<string>;
-	/** Digest of the above four fields. `autoTickMs` is NOT folded
-	 *  in (architecture invariant). */
-	readonly configHash: string;
-	readonly runtime?: { readonly autoTickMs?: number };
-}
-
 // -----------------------------------------------------------------------------
 // Data-dir mutual-exclusion holder protocol
 // -----------------------------------------------------------------------------
@@ -99,8 +82,7 @@ const ForkLockHolderSchema = Schema.Struct({
 });
 
 /** Holder file lives inside the data dir so it travels with the dir's
- *  lifecycle (wipe removes it). Sibling-suffixed rather than a
- *  `.lock` subdir so the seed-manifest meta can sit alongside. */
+ *  lifecycle (wipe removes it). */
 export const forkHolderPath = (dataDir: string): string => join(dataDir, 'holder.json');
 
 /** Is an existing holder alive? Mirrors `liveness.checkHolderLiveness`

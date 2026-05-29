@@ -78,6 +78,33 @@ const failStage =
 	(cause) =>
 		Effect.fail(new StageAndSwapError({ stage, targetPath, stagingPath, cause }));
 
+/**
+ * Extract the original Node errno `code` from a `FileSystem.rename` failure.
+ *
+ * Effect v4's `@effect/platform-node` wraps the raw `NodeJS.ErrnoException`
+ * (`handleErrnoException` in `platform-node-shared/internal/utils.ts`) into a
+ * `PlatformError` whose `reason` is a `SystemError`. The raw errno is preserved
+ * as `reason.cause` (the unmodified Node error) — and the `PlatformError`
+ * constructor additionally hoists that to the wrapper's own top-level `cause`.
+ * So a genuine cross-filesystem rename surfaces the code at `reason.cause.code`
+ * (and, equivalently, at `cause.cause.code`), NOT at the top-level `.code`.
+ *
+ * We probe every plausible location defensively: the nested SystemError cause,
+ * the hoisted wrapper cause, and a bare-errno shape (in case a caller injects a
+ * raw `NodeJS.ErrnoException` or the wrapping ever changes).
+ */
+const errnoCode = (cause: unknown): string | undefined => {
+	const codeOf = (value: unknown): string | undefined => {
+		if (typeof value !== 'object' || value === null) return undefined;
+		const code = (value as { code?: unknown }).code;
+		return typeof code === 'string' ? code : undefined;
+	};
+	if (typeof cause !== 'object' || cause === null) return undefined;
+	const reasonCause = (cause as { reason?: { cause?: unknown } }).reason?.cause;
+	const directCause = (cause as { cause?: unknown }).cause;
+	return codeOf(reasonCause) ?? codeOf(directCause) ?? codeOf(cause);
+};
+
 const normalizePreservedRelativePath = (relativePath: string): string | null => {
 	const normalized = normalize(relativePath);
 	if (
@@ -277,8 +304,10 @@ export const stageAndSwap = <A, E>(
 				// 3. Promote staging → target. This is the atomic publish step.
 				yield* fs.rename(stagingPath, targetPath).pipe(
 					Effect.catch((cause) => {
-						const code = (cause as NodeJS.ErrnoException).code;
-						if (code === 'EXDEV') {
+						// A real Effect v4 `rename` failure is a PlatformError whose
+						// raw Node errno lives at `reason.cause.code` (and the hoisted
+						// `cause.cause.code`), NOT the top-level `.code` — see errnoCode.
+						if (errnoCode(cause) === 'EXDEV') {
 							// Cross-filesystem fallback — architecture's documented
 							// exception. Log loudly; copy then rm. The atomicity
 							// guarantee is LOST in this branch.
@@ -290,11 +319,25 @@ export const stageAndSwap = <A, E>(
 										[SpanAttr.errorCode]: 'EXDEV',
 									}),
 								);
-								yield* fs
-									.copy(stagingPath, targetPath, { overwrite: false })
-									.pipe(
-										Effect.catch(failStage('cross-filesystem-fallback', targetPath, stagingPath)),
-									);
+								yield* fs.copy(stagingPath, targetPath, { overwrite: false }).pipe(
+									Effect.catch((copyCause) =>
+										Effect.gen(function* () {
+											// Copy failed mid-fallback. Mirror the same-FS branch:
+											// if we backed a target up, restore it verbatim before
+											// surfacing the original tag (contract item 5).
+											if (targetExists) {
+												yield* fs
+													.rename(backupPath, targetPath)
+													.pipe(Effect.catch(failStage('restore-backup', targetPath, stagingPath)));
+											}
+											return yield* failStage(
+												'cross-filesystem-fallback',
+												targetPath,
+												stagingPath,
+											)(copyCause);
+										}),
+									),
+								);
 								yield* fs.remove(stagingPath, { recursive: true, force: true }).pipe(Effect.ignore);
 							});
 						}

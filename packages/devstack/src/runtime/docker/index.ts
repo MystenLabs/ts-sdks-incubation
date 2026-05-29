@@ -21,7 +21,6 @@ export { DockerHost, DockerSpawner, layerDockerHost, layerDockerHostDefault } fr
 export {
 	BuildFailed,
 	ContainerCreateFailed,
-	ContainerExited,
 	ContainerNameCollisionUnrecoverable,
 	ContainerRemoveFailed,
 	DaemonUnreachable,
@@ -93,7 +92,7 @@ export {
 	type VolumeSummary,
 } from './inventory.ts';
 
-export { followLogs, type FollowLogsOptions, logTail } from './logs.ts';
+export { followLogs, type FollowLogsOptions } from './logs.ts';
 
 export {
 	connect,

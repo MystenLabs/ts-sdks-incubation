@@ -51,12 +51,7 @@ import {
 } from '../runtime/docker/index.ts';
 import { awaitAll } from '../substrate/runtime/lifecycle/index.ts';
 import { makeProjectionRef } from '../substrate/runtime/projection/index.ts';
-import {
-	Logger,
-	Redactor,
-	layerLogger,
-	layerRedactor,
-} from '../substrate/runtime/observability/index.ts';
+import { Logger, layerLogger } from '../substrate/runtime/observability/index.ts';
 import {
 	PostAcquireTasksService,
 	layerPostAcquireTasks,
@@ -109,8 +104,7 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 		Layer.provideMerge(withSpawnerAdapter),
 	);
 	const withPostAcquireTasks = layerPostAcquireTasks.pipe(Layer.provideMerge(withContainerRuntime));
-	const withRedactor = layerRedactor.pipe(Layer.provideMerge(withPostAcquireTasks));
-	return layerLogger.pipe(Layer.provideMerge(withRedactor));
+	return layerLogger.pipe(Layer.provideMerge(withPostAcquireTasks));
 };
 
 /** Build the opaque `Context.Context<never>` the supervisor hands to
@@ -132,7 +126,6 @@ const buildPluginContext = (): Effect.Effect<
 	| LeaseBrokerService
 	| PostAcquireTasksService
 	| Logger
-	| Redactor
 > =>
 	Effect.gen(function* () {
 		const identityCtx = yield* IdentityContext;
@@ -146,7 +139,6 @@ const buildPluginContext = (): Effect.Effect<
 		const leaseBroker = yield* LeaseBrokerService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
 		const logger = yield* Logger;
-		const redactor = yield* Redactor;
 
 		return Context.empty().pipe(
 			Context.add(IdentityContext, identityCtx),
@@ -160,7 +152,6 @@ const buildPluginContext = (): Effect.Effect<
 			Context.add(LeaseBrokerService, leaseBroker),
 			Context.add(PostAcquireTasksService, postAcquireTasks),
 			Context.add(Logger, logger),
-			Context.add(Redactor, redactor),
 		) as Context.Context<never>;
 	});
 
