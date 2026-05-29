@@ -76,19 +76,6 @@ export const takePositional = (
 	return { head: rest[idx], tail };
 };
 
-/** Look up a boolean flag in `rest` by name (long form only). Returns
- *  the matched flag plus the remaining tokens. */
-export const takeBoolFlag = (
-	rest: ReadonlyArray<string>,
-	name: string,
-): { readonly present: boolean; readonly tail: ReadonlyArray<string> } => {
-	const flag = `--${name}`;
-	const idx = rest.indexOf(flag);
-	if (idx === -1) return { present: false, tail: rest };
-	const tail = [...rest.slice(0, idx), ...rest.slice(idx + 1)];
-	return { present: true, tail };
-};
-
 /** Look up a value flag (`--name=val` or `--name val`). */
 export const takeValueFlag = (
 	rest: ReadonlyArray<string>,

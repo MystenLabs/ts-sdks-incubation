@@ -114,12 +114,11 @@ const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
  *     host-gateway address instead of host loopback. The published
  *     wallet URL remains stack-scoped through the router.
  *
- *   - `allowLocalhostVite: false`. The bare `http://localhost:<vite>`
- *     form is OFF by default — opt-in for headless test runners /
- *     custom dev hosts. Defaulting it on would let a sibling stack
- *     running vite on the same port pair with this wallet (because
- *     `localhost` is not stack-scoped). See `origin-policy.ts` for
- *     the rationale.
+ *   - Origin allowlist is the router-fronted dev-server origin for
+ *     this stack plus any explicit `allowedOrigins`. The wallet does
+ *     not auto-allowlist a bare `http://localhost:<vite-port>` form —
+ *     `localhost` is not stack-scoped, so a sibling stack on the same
+ *     port could pair with this wallet. See `origin-policy.ts`.
  *
  *   - Pairing token in URL fragment only (`#token=<32-hex>`). Never
  *     in query params (would land in access logs / referrers).
@@ -267,7 +266,6 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					stack: identity.stack,
 					chain: identity.chain,
 					stateRoot: paths.stackRoot,
-					vitePortForThisStack: null,
 					allocatePort: (preferred, probeHost) =>
 						portBroker
 							.allocate({

@@ -13,12 +13,14 @@
 //                              `{ local: …, live: …, fork: … }`
 //                              narrowed to the network's mode.
 //
-// The plugin emits THREE capability decls:
+// The plugin emits FOUR capability decls:
 //
 //   1. `chain-probe:<chainId>` strategy contributor — the
 //      schema-validated read surface (`makeSuiChainProbe`).
 //   2. Snapshotable — mode-aware container + bind-mount capture.
 //   3. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
+//   4. Faucet strategy contributor — local-coin dispensing for the
+//      mode's chain id.
 //
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
 // local-rpc + live no — the caller fronts their own RPC). They land

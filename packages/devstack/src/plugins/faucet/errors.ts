@@ -101,31 +101,6 @@ export const faucetBodyError = (parts: Omit<FaucetBodyError, '_tag'>): FaucetBod
 	...parts,
 });
 
-/**
- * Unknown coin / chain id at dispatch. The strategy registry held
- * no contributor matching `capabilityKey`. The error names the
- * registered set so users can see "I asked for X, only Y is wired".
- *
- * Distinct from substrate-level `StrategyNotFoundError` — this one
- * is faucet-flavored (carries amount + address) and lives at the
- * plugin's public boundary.
- */
-export interface FaucetStrategyMissing {
-	readonly _tag: 'FaucetStrategyMissing';
-	readonly capabilityKey: string;
-	readonly address: string;
-	readonly amount: bigint;
-	readonly registeredKeys: ReadonlyArray<string>;
-	readonly hint: string;
-}
-
-export const faucetStrategyMissing = (
-	parts: Omit<FaucetStrategyMissing, '_tag'>,
-): FaucetStrategyMissing => ({
-	_tag: 'FaucetStrategyMissing',
-	...parts,
-});
-
 export interface FaucetConfigError extends ConfigIssue {
 	readonly _tag: 'FaucetConfigError';
 }
@@ -137,5 +112,4 @@ export type FaucetError =
 	| FaucetUnreachable
 	| FaucetExhausted
 	| FaucetBodyError
-	| FaucetStrategyMissing
 	| FaucetConfigError;

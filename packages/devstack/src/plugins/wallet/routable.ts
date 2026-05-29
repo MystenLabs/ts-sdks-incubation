@@ -16,32 +16,16 @@
 
 import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 
-// ----------------------------------------------------------------------
-// Endpoint name constant
-// ----------------------------------------------------------------------
+// The routed-endpoint identity constants live in the name-blind
+// contract so L5 build integrations can consume them without importing
+// this L2 plugin module; re-exported here so plugin-internal callers
+// (and the conventional-routes alias table) keep one source of truth.
+export {
+	WALLET_ENDPOINT_NAME,
+	WALLET_ENDPOINT_KEY,
+} from '../../contracts/wallet-protocol.ts';
 
-/** Canonical endpoint name. The router orchestrator surfaces this in
- *  the manifest under `endpoints['wallet-app']`; downstream consumers
- *  (codegen, TUI, doctor) read it by this key.
- *
- *  Stable across rewrite + legacy so existing consumers don't break. */
-export const WALLET_ENDPOINT_NAME = 'wallet-app' as const;
-
-/** Conventional short endpoint key for the wallet plugin. Matches the
- *  substrate's `EndpointKey` brand. Build integrations (Playwright,
- *  vitest helpers) and the conventional-routes alias table look the
- *  endpoint up under this key; the substrate's alias resolver folds
- *  `'wallet'` → `WALLET_ENDPOINT_NAME` (`'wallet-app'`) before
- *  consulting the manifest.
- *
- *  Owned here because the key is a wallet-plugin convention — adding
- *  it next to the canonical name keeps both in lockstep when the
- *  plugin's HTTP server is renamed. The L5 bridge in
- *  `build-integrations/runtime/wallet-paths.ts` re-exports this for
- *  layer-discipline reasons; the conventional-routes table in
- *  `build-integrations/runtime/conventional-routes.ts` consumes the
- *  same constant so there is exactly one source of truth. */
-export const WALLET_ENDPOINT_KEY = 'wallet' as const;
+import { WALLET_ENDPOINT_NAME } from '../../contracts/wallet-protocol.ts';
 
 export const WALLET_ROUTE_ROLE = 'api' as const;
 export const WALLET_ENTRYPOINT_PORT = 6173;

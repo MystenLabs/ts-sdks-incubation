@@ -50,6 +50,17 @@ export const SpanAttr = {
 	serviceName: 'devstack.service.name',
 	stageAndSwapStagingPath: 'stageAndSwap.stagingPath',
 	stageAndSwapTargetPath: 'stageAndSwap.targetPath',
+	cacheCorruption: 'cache.corruption',
+	capabilitySinksKind: 'capability-sinks.kind',
+	strategyKey: 'strategy.key',
+	strategyAutoMounted: 'strategy.autoMounted',
+	artifactPublisherNamespace: 'artifactPublisher.namespace',
+	artifactPublisherChain: 'artifactPublisher.chain',
+	artifactPublisherContentHash: 'artifactPublisher.contentHash',
+	artifactPublisherPath: 'artifactPublisher.path',
+	stackLockPath: 'devstack.stack-lock.path',
+	stackLockTimeoutMillis: 'devstack.stack-lock.timeoutMillis',
+	snapshotReservationPath: 'devstack.snapshot-reservation.path',
 } as const;
 
 export interface StackSpanContext {
@@ -145,6 +156,16 @@ export interface SpanLabels {
  * for this on any span that needs to be filterable or groupable by
  * plugin on the dashboard (i.e. basically every span). Coexists with
  * raw `Effect.withSpan` — migration is incremental, not a flag day.
+ *
+ * Adoption prerequisite: this adds `IdentityContext` to the wrapped
+ * effect's `R`. Only reach for it where `IdentityContext` is already in
+ * scope (or the boot signature can be widened to carry it). Plugin
+ * acquire/boot effects currently do NOT thread `IdentityContext` — they
+ * set `devstack.plugin` directly via `Effect.withSpan` — so migrating
+ * them needs the identity plumbed first. Note also that a span's
+ * app/stack may legitimately differ from the ambient identity (e.g. the
+ * `_per-app_` shared-stack sentinel in `managed-container.ts`), where
+ * this helper is the wrong tool.
  */
 export const spanWithLabels =
 	(name: string, labels: SpanLabels, extras?: Record<string, unknown>) =>

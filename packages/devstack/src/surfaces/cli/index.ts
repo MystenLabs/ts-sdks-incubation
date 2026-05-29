@@ -777,13 +777,7 @@ export const dispatch = (deps: CliDeps, dispatchEnv: DispatchEnv): Effect.Effect
 
 export type { CliIO } from './output.ts';
 export type { GlobalFlags } from './flags.ts';
-export {
-	COMMAND_TREE,
-	commandSchema,
-	formatCommandHelp,
-	VERBS,
-	type Verb,
-} from './command-tree.ts';
+export { COMMAND_TREE, commandSchema, VERBS, type Verb } from './command-tree.ts';
 export type { Envelope, EnvelopeError } from './envelope.ts';
 export {
 	ENVELOPE_SCHEMA_VERSION,

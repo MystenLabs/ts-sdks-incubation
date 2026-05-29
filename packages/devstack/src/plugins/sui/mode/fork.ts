@@ -27,12 +27,19 @@ import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
+import { extractExecuteDigest } from '../../../substrate/runtime/sui-execute/index.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
-import { suiPluginError, type SeedManifestMismatchError, type SuiPluginError } from '../errors.ts';
+import {
+	suiPluginError,
+	type SeedManifestMismatchError,
+	type SuiConfigError,
+	type SuiPluginError,
+} from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
 import { SuiSpans } from '../spans.ts';
-import { wrapWithForkGuard } from '../fork-orchestration.ts';
+import { acquireForkDataDirHolder, wrapWithForkGuard, type ForkMeta } from '../fork-orchestration.ts';
+import { atomicWriteJsonSync } from '../../../substrate/runtime/atomic-write.ts';
 import { verifyForkImpersonationSender } from '../fork-transaction.ts';
 import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
@@ -79,9 +86,13 @@ export const bootForkMode = (
 	portBroker: PortBroker,
 	paths: StackPaths,
 	opts: SuiForkOptions,
-): Effect.Effect<ForkModeBootResult, SuiPluginError | SeedManifestMismatchError, Scope.Scope> =>
+): Effect.Effect<
+	ForkModeBootResult,
+	SuiPluginError | SeedManifestMismatchError | SuiConfigError,
+	Scope.Scope
+> =>
 	Effect.gen(function* () {
-		const autoTickIntervalMs = resolveAutoTickIntervalMs(opts.autoTick);
+		const autoTickIntervalMs = yield* resolveAutoTickIntervalMs(opts.autoTick);
 		const image = yield* resolveForkImage(runtime, identity, opts);
 		const dataDir = yield* ensureForkDataDir(paths, opts);
 
@@ -399,24 +410,80 @@ export const forkDataDirKey = (opts: SuiForkOptions): string =>
 		.digest('hex')
 		.slice(0, 16);
 
+/** Bring the data dir into being, claim it against concurrent stacks
+ *  via the holder protocol, and pin the seed-manifest meta so a later
+ *  boot can detect config drift. The holder claim is scope-bound — it
+ *  heartbeats for the stack's lifetime and releases on teardown. */
 const ensureForkDataDir = (
 	paths: StackPaths,
 	opts: SuiForkOptions,
-): Effect.Effect<string, SuiPluginError> => {
-	const dataDir = resolve(join(paths.stackRoot, 'sui-fork', forkDataDirKey(opts)));
-	return Effect.tryPromise({
-		try: async () => {
-			await mkdir(dataDir, { recursive: true, mode: 0o700 });
-			return dataDir;
+): Effect.Effect<string, SuiPluginError, Scope.Scope> =>
+	Effect.gen(function* () {
+		const dataDir = resolve(join(paths.stackRoot, 'sui-fork', forkDataDirKey(opts)));
+		yield* Effect.tryPromise({
+			try: () => mkdir(dataDir, { recursive: true, mode: 0o700 }),
+			catch: (cause) =>
+				suiPluginError(
+					'fork-data-dir',
+					`sui fork mode: failed to create data directory ${dataDir}: ${formatUnknownError(cause)}`,
+					cause,
+				),
+		});
+		yield* acquireForkDataDirHolder(paths.stackLockFile, dataDir);
+		yield* writeForkMeta(dataDir, opts);
+		return dataDir;
+	});
+
+/** Path of the seed-manifest snapshot inside the data dir. */
+const forkMetaPath = (dataDir: string): string => join(dataDir, 'fork-meta.json');
+
+/** SHA-256 over the four identity fields the manifest pins
+ *  (architecture invariant: `autoTickMs` is NOT folded in). */
+const forkMetaConfigHash = (
+	upstream: string,
+	checkpoint: string | undefined,
+	seed: { readonly addresses: ReadonlyArray<string>; readonly objects: ReadonlyArray<string> },
+): string =>
+	createHash('sha256')
+		.update(
+			JSON.stringify({
+				upstream,
+				checkpoint: checkpoint ?? null,
+				seedAddresses: seed.addresses,
+				seedObjects: seed.objects,
+			}),
+		)
+		.digest('hex');
+
+/** Write the seed-manifest meta once the data dir is claimed. The
+ *  on-disk shape is the gate a later boot diffs to detect fork
+ *  config drift. */
+const writeForkMeta = (
+	dataDir: string,
+	opts: SuiForkOptions,
+): Effect.Effect<void, SuiPluginError> =>
+	Effect.try({
+		try: () => {
+			const seed = normalizeForkSeed(opts);
+			const checkpoint = opts.checkpoint === undefined ? undefined : String(opts.checkpoint);
+			const meta: ForkMeta = {
+				version: 1,
+				createdAt: Date.now(),
+				upstream: opts.upstream,
+				...(checkpoint === undefined ? {} : { checkpoint }),
+				seedAddresses: seed.addresses,
+				seedObjects: seed.objects,
+				configHash: forkMetaConfigHash(opts.upstream, checkpoint, seed),
+			};
+			atomicWriteJsonSync(forkMetaPath(dataDir), meta);
 		},
 		catch: (cause) =>
 			suiPluginError(
 				'fork-data-dir',
-				`sui fork mode: failed to create data directory ${dataDir}: ${formatUnknownError(cause)}`,
+				`sui fork mode: failed to write fork meta under ${dataDir}: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	});
-};
 
 interface ForkStatus {
 	readonly checkpoint: string;
@@ -547,17 +614,6 @@ const routedSuiRpcUrl = (identity: Identity): Effect.Effect<string, SuiPluginErr
 			),
 		),
 	);
-
-const extractExecuteDigest = (raw: unknown): string | undefined => {
-	const env = raw as {
-		readonly $kind?: 'Transaction' | 'FailedTransaction';
-		readonly Transaction?: { readonly digest?: string };
-		readonly FailedTransaction?: { readonly digest?: string };
-	};
-	return env.$kind === 'FailedTransaction'
-		? env.FailedTransaction?.digest
-		: env.Transaction?.digest;
-};
 
 const isFailedTransaction = (raw: unknown): boolean =>
 	(raw as { readonly $kind?: string }).$kind === 'FailedTransaction';

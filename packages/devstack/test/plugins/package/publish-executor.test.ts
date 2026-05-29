@@ -343,13 +343,12 @@ describe('package publish executor', () => {
 			Effect.gen(function* () {
 				// Contract: `getObject` rejecting after a successful publish
 				// is a "tx written but object not yet queryable" race; the
-				// next produce phase (`parse`) inspects the actual output,
-				// so the hint stays silent. Only infrastructural faults
-				// surface as `PublishError('parse')` — and even then, the
-				// throw site is shaped so `packageName` is NEVER overloaded
-				// with the on-chain `packageId` (the regression target).
-				// See the separate unit-test of `publishError('parse', ...)`
-				// below for the throw-site shape guarantee.
+				// next produce phase (`parse`) inspects the actual output, so
+				// the hint is best-effort and ALWAYS succeeds — the read
+				// failure is logged at debug (not silently dropped) and the
+				// hint resolves regardless. The separate unit-test below pins
+				// the `publishError('parse', ...)` shape used by other phases
+				// (packageName optional, on-chain id only in the message).
 				const sdk: SuiSdkShim = {
 					core: {
 						getObject: () => Promise.reject(new Error('hint-rpc-down')),

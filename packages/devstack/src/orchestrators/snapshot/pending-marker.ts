@@ -29,6 +29,7 @@
 
 import { Effect, FileSystem, Schema } from 'effect';
 
+import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import { versionedDocSchema } from '../../substrate/versioned-doc-schema.ts';
 import type { SnapshotMetadata } from './descriptor.ts';
 
@@ -102,9 +103,16 @@ export const writePendingMarker = (
 	doc: RestorePendingDocument,
 ): Effect.Effect<void, RestorePendingMarkerIoError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		const path = pendingMarkerPath(root);
-		yield* fs.writeFileString(path, `${JSON.stringify(doc, null, 2)}\n`).pipe(
+		// The marker is durable cross-process state on the LIVE runtime
+		// root (recovery scanner reads it on the next supervise). Route
+		// through the canonical atomic primitive (STYLE_GUIDE §17) so a
+		// crashed mid-rewrite never leaves the scanner a half-written /
+		// undecodable marker. `atomicWriteFile` (not `atomicWriteJson`)
+		// preserves the exact `JSON.stringify(…, 2)` + trailing-newline
+		// byte shape this writer has always produced.
+		const bytes = new TextEncoder().encode(`${JSON.stringify(doc, null, 2)}\n`);
+		yield* atomicWriteFile(path, bytes).pipe(
 			Effect.catch(
 				(cause): Effect.Effect<never, RestorePendingMarkerIoError> =>
 					Effect.fail(

@@ -33,33 +33,19 @@
 
 import { Schema } from 'effect';
 
-// ----------------------------------------------------------------------
-// Path constants
-// ----------------------------------------------------------------------
-
-/**
- * Canonical path constants under the `/api/v1/devstack/*` prefix.
- *
- * Distilled-doc note (15-wallet.md "Fork-control routes declared but
- * unimplemented"): the legacy server declared four `FORK_*` path
- * constants whose handlers never landed. Per "no compat for never-
- * cases", we drop them from the wire protocol entirely — when the
- * fork-control surface is wired, those routes will be added (and the
- * dev-wallet adapter shipped together). No half-done stubs.
- */
-export const WalletHttpPath = {
-	HEALTH: '/api/v1/devstack/health',
-	ACCOUNTS: '/api/v1/devstack/accounts',
-	SIGN_TRANSACTION: '/api/v1/devstack/sign-transaction',
-	SIGN_PERSONAL_MESSAGE: '/api/v1/devstack/sign-personal-message',
-} as const;
-
-export type WalletHttpPathValue = (typeof WalletHttpPath)[keyof typeof WalletHttpPath];
-
-/** Prefix gate: ANY path under this prefix is treated as protocol traffic
- *  (and subject to mandatory Origin + bearer); anything else is a flat
- *  404. */
-export const WALLET_PROTOCOL_PREFIX = '/api/v1/devstack/' as const;
+// Pure wire constants live in the name-blind contract so L5 build
+// integrations can consume them without importing this L2 plugin
+// module; re-exported here so plugin-internal callers keep their
+// current import sites.
+export {
+	WalletHttpPath,
+	WALLET_PROTOCOL_PREFIX,
+	WALLET_AUTH_HEADER,
+	WALLET_BEARER_PREFIX,
+	WALLET_TOKEN_FRAGMENT_KEY,
+	WALLET_TOKEN_HEX_LENGTH,
+	type WalletHttpPathValue,
+} from '../../contracts/wallet-protocol.ts';
 
 // ----------------------------------------------------------------------
 // Shared primitives
@@ -156,19 +142,5 @@ export const ErrorResponseSchema = Schema.Struct({
 });
 export type ErrorResponse = Schema.Schema.Type<typeof ErrorResponseSchema>;
 
-// ----------------------------------------------------------------------
-// Header constants (shared so the dev-wallet adapter doesn't open-code
-// the same strings).
-// ----------------------------------------------------------------------
-
-export const WALLET_AUTH_HEADER = 'authorization' as const;
-export const WALLET_BEARER_PREFIX = 'Bearer ' as const;
-
-/** URL-fragment key the pair-URL carries the token under
- *  (`<wallet-url>/#token=<32-hex>`). Fragments are not sent to the
- *  server, so the token never appears in access logs / referrers. */
-export const WALLET_TOKEN_FRAGMENT_KEY = 'token' as const;
-
-/** Constant carried token byte length (16 random bytes → 32 hex chars).
- *  The on-disk token file is rejected + re-minted if it doesn't match. */
-export const WALLET_TOKEN_HEX_LENGTH = 32 as const;
+// Header / token constants are re-exported above from
+// `../../contracts/wallet-protocol.ts`.

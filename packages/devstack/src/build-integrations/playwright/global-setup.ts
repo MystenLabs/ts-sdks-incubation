@@ -32,6 +32,7 @@ import { Schema } from 'effect';
 
 import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { discoverSingleStackManifestPath } from '../runtime/discover.ts';
+import { resolveDiscoveryEnv } from '../runtime/resolve-discovery-env.ts';
 import { WALLET_ENDPOINT_KEY } from '../runtime/wallet-paths.ts';
 import {
 	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
@@ -132,10 +133,16 @@ const stackOptionWasExplicit = (options: DefineGlobalSetupOptions): boolean => {
 const findSingleStackManifestPath = (options: DefineGlobalSetupOptions): string | null => {
 	if (stackOptionWasExplicit(options)) return null;
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
-	const stateDir = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR];
+	// Shared ladder (option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
+	// > '.devstack'). Previously read only DEVSTACK_STATE_DIR, dropping
+	// DEVSTACK_RUNTIME_ROOT — aligned via `resolveDiscoveryEnv`. The
+	// single-stack walk only needs the state-dir rung; stack is ignored.
+	const { stateDir } = resolveDiscoveryEnv(env, {
+		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+	});
 	return discoverSingleStackManifestPath({
 		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-		...(stateDir !== undefined && stateDir !== '' ? { stateDir } : {}),
+		stateDir,
 	});
 };
 

@@ -29,6 +29,7 @@ import { Context, Effect, FileSystem, Layer } from 'effect';
 import type { Cache, CacheEntry, CacheKey } from '../../../primitives/cache.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { CacheError } from '../errors.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
 import { CacheEntryDoc } from './schema.ts';
@@ -101,7 +102,7 @@ export const layerCache: Layer.Layer<
 						}),
 					),
 					Effect.catch(() =>
-						Effect.annotateCurrentSpan({ 'cache.corruption': true }).pipe(
+						Effect.annotateCurrentSpan({ [SpanAttr.cacheCorruption]: true }).pipe(
 							Effect.as(null as CacheEntryDoc | null),
 						),
 					),

@@ -638,4 +638,13 @@ const probeSinglePort = (port: number, host: PortProbeHost): Effect.Effect<Probe
 				/* defensive */
 			}
 		}
+		// Interrupt mid-`listen()` must close the transient server so the
+		// probed port isn't held open by an orphaned handle.
+		return Effect.sync(() => {
+			try {
+				server?.close();
+			} catch {
+				/* defensive */
+			}
+		});
 	});

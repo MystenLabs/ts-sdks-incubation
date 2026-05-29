@@ -26,6 +26,14 @@ const DEFAULT_REPLACEMENT = '<redacted>';
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 
+/** A non-global pattern redacts only its FIRST match — every later
+ *  occurrence leaks. Force the global flag so all occurrences are
+ *  redacted; clone (don't mutate the caller's RegExp) and preserve any
+ *  unicode flag. Already-global patterns pass through untouched so we
+ *  don't double-apply. */
+const asGlobalPattern = (pattern: RegExp): RegExp =>
+	pattern.global ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
+
 export const redactText = (text: string, rules: ReadonlyArray<RedactionRule>): string => {
 	let next = text;
 	for (const rule of rules) {
@@ -34,7 +42,7 @@ export const redactText = (text: string, rules: ReadonlyArray<RedactionRule>): s
 			if (rule.value.length === 0) continue;
 			next = next.replace(new RegExp(escapeRegExp(rule.value), 'gu'), replacement);
 		} else {
-			next = next.replace(rule.pattern, replacement);
+			next = next.replace(asGlobalPattern(rule.pattern), replacement);
 		}
 	}
 	return next;

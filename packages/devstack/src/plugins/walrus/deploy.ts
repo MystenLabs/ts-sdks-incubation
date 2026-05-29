@@ -29,7 +29,7 @@
 //        `produce-failed` reason).
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
@@ -40,6 +40,7 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import { atomicWriteFileSync } from '../../substrate/runtime/atomic-write.ts';
 import { hostBindMountOwner } from '../../substrate/runtime/host-bind-mount-owner.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
 import { probeManyLenient } from '../../substrate/runtime/probes.ts';
@@ -149,10 +150,16 @@ const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, Walrus
 	Effect.tryPromise({
 		try: async () => {
 			await mkdir(inputs.outputDirHostPath, { recursive: true });
-			await writeFile(
+			// Route the bind-source marker through the canonical atomic
+			// primitive (STYLE_GUIDE §17) — tempfile + fsync + rename so a
+			// crashed writer can't leave the bind-mount probe reading a
+			// half-written marker. 0o644 so the in-container deploy user can
+			// stat it. Sync variant: the marker is a tiny one-liner and it
+			// keeps the durability boundary the raw `writeFile` lacked.
+			atomicWriteFileSync(
 				join(inputs.outputDirHostPath, '.devstack-bind-source'),
 				'devstack walrus bind source\n',
-				'utf8',
+				{ mode: 0o644 },
 			);
 		},
 		catch: (cause) =>

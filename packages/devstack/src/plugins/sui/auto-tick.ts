@@ -15,7 +15,7 @@ import { Effect, Schedule, type Scope } from 'effect';
 
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { suiConfigError } from './errors.ts';
-import type { SuiPluginError } from './errors.ts';
+import type { SuiConfigError, SuiPluginError } from './errors.ts';
 import { SuiSpans } from './spans.ts';
 
 /** Public knob shape mirroring the user-facing API. */
@@ -24,21 +24,27 @@ export type AutoTickOption = boolean | { readonly intervalMs: number };
 /** Default cadence when caller passes `autoTick: true`. */
 export const DEFAULT_AUTO_TICK_INTERVAL_MS = 1000;
 
-/** Resolve the public option to a numeric interval. Returns
- *  `undefined` when auto-tick is OFF. Throws on a misconfigured
- *  option (0 / negative / non-finite) — the substrate's
- *  acquire-time validation catches this before any I/O. */
-export const resolveAutoTickIntervalMs = (option?: AutoTickOption): number | undefined => {
-	if (option === undefined || option === false) return undefined;
-	if (option === true) return DEFAULT_AUTO_TICK_INTERVAL_MS;
+/** Resolve the public option to a numeric interval. Succeeds with
+ *  `undefined` when auto-tick is OFF. A misconfigured option (0 /
+ *  negative / non-finite) fails the effect with a typed
+ *  `SuiConfigError` so the boot path can `catchTag` it — a synchronous
+ *  `throw` inside the acquire `Effect.gen` would surface as a defect
+ *  (STYLE_GUIDE §2: plugin errors must be catchTag-able). */
+export const resolveAutoTickIntervalMs = (
+	option?: AutoTickOption,
+): Effect.Effect<number | undefined, SuiConfigError> => {
+	if (option === undefined || option === false) return Effect.succeed(undefined);
+	if (option === true) return Effect.succeed(DEFAULT_AUTO_TICK_INTERVAL_MS);
 	const { intervalMs } = option;
 	if (typeof intervalMs === 'number' && Number.isFinite(intervalMs) && intervalMs > 0) {
-		return intervalMs;
+		return Effect.succeed(intervalMs);
 	}
-	throw suiConfigError({
-		field: 'autoTick.intervalMs',
-		message: `sui: autoTick.intervalMs must be a positive finite number (got ${String(intervalMs)})`,
-	});
+	return Effect.fail(
+		suiConfigError({
+			field: 'autoTick.intervalMs',
+			message: `sui: autoTick.intervalMs must be a positive finite number (got ${String(intervalMs)})`,
+		}),
+	);
 };
 
 /** Plugin-internal shim — the minimal admin surface the auto-tick

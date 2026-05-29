@@ -172,12 +172,13 @@ export const runSealPublishTransaction = (
 	inputs: SealPublishInputs,
 ): Effect.Effect<SealPackageCached, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		// The one-shot build path scrubs the mounted package again. Seal's
-		// default source is a shared cache, so a prior container build can
-		// leave Move.lock unwritable to the host.
-		yield* scrubLocksHost(inputs.movePackagePath, '~/.move', {
-			packageLockFailures: inputs.buildImage !== undefined ? 'best-effort' : 'fatal',
-		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));
+		// Scrub the shared Move git cache so a stale pin can't leak into the
+		// build. The package's own Move.lock is scrubbed inside the container
+		// on a disposable copy, so the developer's checked-in source is left
+		// untouched host-side.
+		yield* scrubLocksHost(inputs.movePackagePath, '~/.move').pipe(
+			Effect.mapError((err) => moveBuildToSealError(inputs.name, err)),
+		);
 
 		const buildOutput = yield* runMoveBuild({
 			sourcePath: inputs.movePackagePath,

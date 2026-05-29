@@ -53,10 +53,7 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
-import {
-	deriveSubnetPrefix,
-	withSubnetAddressing,
-} from '../../substrate/runtime/subnet-broker.ts';
+import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
 import { isSealError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
@@ -109,13 +106,6 @@ export interface SealNetworkIdentity {
  *  coordination with walrus. */
 export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string =>
 	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`, 128);
-
-/** Back-compat re-export — `withSubnetAddressing` is the canonical
- *  cross-plugin helper (substrate-side). Kept here so existing seal
- *  callers can keep importing through the seal barrel.
- *  @deprecated Use `withSubnetAddressing` from
- *  `substrate/runtime/subnet-broker.ts` directly. */
-export const sealNetworkCreateSpec = withSubnetAddressing;
 
 /** Per-probe interval inside the bounded retry. */
 const READY_PROBE_INTERVAL_MS = 500;

@@ -92,13 +92,19 @@ describe('sui-move-build helpers', () => {
 		expect(stripPinnedSections(pinned)).toBe(unpinned);
 	});
 
-	it('scrubs lock files after container builds so build-generated pins do not leak', () => {
+	it('copies the package to a scratch dir then scrubs around the build so the mount is untouched', () => {
 		const script = containerInnerScript('demo');
 		const buildOffset = script.indexOf('sui move build');
 		expect(script).not.toContain('exec sui move build');
 		expect(script).toContain('status=$?');
-		expect(script.indexOf('find /workspace')).toBeLessThan(buildOffset);
-		expect(script.lastIndexOf('find /workspace')).toBeGreaterThan(buildOffset);
+		// The package is built from an in-container scratch copy, never the
+		// (possibly bind-mounted) source at /workspace.
+		expect(script).toContain('cp -a /workspace');
+		expect(script).toContain('sui move build --path /tmp/move-build-$$');
+		// The scratch package tree is scrubbed before and after the build.
+		const scratchFind = "find /tmp/move-build-$$/'demo'";
+		expect(script.indexOf(scratchFind)).toBeLessThan(buildOffset);
+		expect(script.lastIndexOf(scratchFind)).toBeGreaterThan(buildOffset);
 		expect(CONTAINER_SCRUB_AWK_SCRIPT).toContain('^\\[env');
 	});
 
@@ -134,58 +140,39 @@ describe('sui-move-build helpers', () => {
 		}
 	});
 
-	it('scrubs package locks while tolerating unwritable Move cache locks', async () => {
+	it('scrubs the shared Move cache while leaving the source tree untouched', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
 		const packageLock = join(root, 'package', 'Move.lock');
 		const cacheLock = join(root, 'move-home', 'git', 'dep', 'Move.lock');
+		const lockedCacheLock = join(root, 'move-home', 'git', 'locked', 'Move.lock');
 		try {
 			await mkdir(join(root, 'package'), { recursive: true });
 			await mkdir(join(root, 'move-home', 'git', 'dep'), { recursive: true });
+			await mkdir(join(root, 'move-home', 'git', 'locked'), { recursive: true });
 			const pinnedLock = '[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n';
 			await writeFile(packageLock, pinnedLock);
 			await writeFile(cacheLock, pinnedLock);
-			await chmod(cacheLock, 0o444);
+			await writeFile(lockedCacheLock, pinnedLock);
+			await chmod(lockedCacheLock, 0o444);
 
 			await Effect.runPromise(
 				scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
 			);
 
-			expect(await readFile(packageLock, 'utf8')).toBe('[move]\nversion = 3');
-			expect(await readFile(cacheLock, 'utf8')).toBe(pinnedLock);
+			// The developer's source tree is never mutated host-side; the package's
+			// own Move.lock is scrubbed inside the container on a staged copy.
+			expect(await readFile(packageLock, 'utf8')).toBe(pinnedLock);
+			// Writable cache locks ARE scrubbed so stale pins don't leak into the build.
+			expect(await readFile(cacheLock, 'utf8')).toBe('[move]\nversion = 3');
+			// Unwritable cache locks are tolerated (the container scrub re-runs inside).
+			expect(await readFile(lockedCacheLock, 'utf8')).toBe(pinnedLock);
 		} finally {
-			await chmod(cacheLock, 0o644).catch(() => {});
+			await chmod(lockedCacheLock, 0o644).catch(() => {});
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it('fails when a package Move.lock cannot be scrubbed', async () => {
-		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
-		const packageLock = join(root, 'package', 'Move.lock');
-		try {
-			await mkdir(join(root, 'package'), { recursive: true });
-			await mkdir(join(root, 'move-home'), { recursive: true });
-			await writeFile(
-				packageLock,
-				'[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n',
-			);
-			await chmod(packageLock, 0o444);
-
-			await expect(
-				Effect.runPromise(
-					scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
-				),
-			).rejects.toMatchObject({
-				_tag: 'MoveBuildError',
-				phase: 'scrub',
-				sourcePath: join(root, 'package'),
-			});
-		} finally {
-			await chmod(packageLock, 0o644).catch(() => {});
-			await rm(root, { recursive: true, force: true });
-		}
-	});
-
-	it('tolerates unwritable package locks when container scrub will run later', async () => {
+	it('never touches the package tree even when its Move.lock is unwritable', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
 		const packageLock = join(root, 'package', 'Move.lock');
 		try {
@@ -196,9 +183,7 @@ describe('sui-move-build helpers', () => {
 			await chmod(packageLock, 0o444);
 
 			await Effect.runPromise(
-				scrubLocksHost(join(root, 'package'), join(root, 'move-home'), {
-					packageLockFailures: 'best-effort',
-				}).pipe(Effect.scoped),
+				scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
 			);
 
 			expect(await readFile(packageLock, 'utf8')).toBe(pinnedLock);

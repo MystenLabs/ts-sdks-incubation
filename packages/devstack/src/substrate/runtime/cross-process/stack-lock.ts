@@ -28,6 +28,7 @@ import { Data, Effect, Schema, Scope } from 'effect';
 
 import { DEFAULT_SWEEP_POLICY, type RosterHolder } from '../../cross-process.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
 
@@ -156,8 +157,8 @@ export const acquireStackLock = (
 ): Effect.Effect<void, StackLockError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'devstack.stack-lock.path': path,
-			'devstack.stack-lock.timeoutMillis': timeoutMillis,
+			[SpanAttr.stackLockPath]: path,
+			[SpanAttr.stackLockTimeoutMillis]: timeoutMillis,
 		});
 		const startedAt = Date.now();
 		let backoff = INITIAL_BACKOFF_MILLIS;
@@ -256,8 +257,13 @@ export const acquireStackLock = (
  *
  *  The threshold is `DEFAULT_SWEEP_POLICY.staleAfterMillis` (30s),
  *  matching the roster's eviction window. Anything that crashed mid-
- *  write at least 30s ago is presumed abandoned. */
-const isUnparseableBodyStale = (path: string): boolean => {
+ *  write at least 30s ago is presumed abandoned.
+ *
+ *  Exported so `snapshot-reservation.ts` reuses the SAME mtime-window
+ *  gate for its malformed-body sweep (a half-written reservation body
+ *  must not be unlinked the instant it appears — the writer may still
+ *  be mid-write). */
+export const isUnparseableBodyStale = (path: string): boolean => {
 	try {
 		const stats = statSync(path);
 		return Date.now() - stats.mtimeMs > DEFAULT_SWEEP_POLICY.staleAfterMillis;

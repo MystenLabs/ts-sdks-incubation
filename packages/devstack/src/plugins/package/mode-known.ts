@@ -8,10 +8,15 @@
 //
 // What we still do:
 //
-//   1. Lenient verify probe (chain reachable + object exists). On
-//      transient RPC failure, lenient mode masks → no abort. On
-//      authoritative not-found we surface a PublishError(phase='verify')
-//      so the user catches the typo / wrong-network mistake at boot.
+//   1. Strict verify probe (chain reachable + object exists). Strict
+//      mode lets the ChainProbe distinguish an authoritative not-found
+//      (`reason: 'not-found'`) from a transient RPC failure
+//      (`reason: 'transient'`): only not-found surfaces a
+//      PublishError(phase='verify') so the user catches the typo /
+//      wrong-network mistake at boot. Transient failures are masked (no
+//      abort) — the id re-verifies on the next cycle rather than failing
+//      boot on a flaky RPC. A `null` strict result means "object exists
+//      but isn't the expected kind"; that too is a verify failure.
 //   2. Register the resolved value on EVERY cycle.
 //
 // Bindings: KnownPackage cannot be bound by `@mysten/codegen` (no
@@ -49,12 +54,13 @@ export interface KnownModeOutputs {
 /**
  * Acquire body for known mode.
  *
- * Runs the lenient ChainProbe verify and registers the resolved value.
- * Lenient mode masks transient RPC failure — the user-visible failure
- * here is "object truly missing on this chain". A `null` probe result
- * does not surface yet: distinguishing transient-vs-missing requires a
- * second strict probe layer that the ChainProbe primitive does not
- * expose.
+ * Runs a strict ChainProbe verify and registers the resolved value.
+ * Strict mode surfaces a typed `ChainProbeError` whose `reason`
+ * discriminates not-found from transient, so we can fail boot on a real
+ * typo / wrong-network mistake (`reason: 'not-found'`, or a `null`
+ * payload meaning the id exists but is the wrong object kind) while
+ * masking transient RPC failures (`reason: 'transient'`) so a flaky RPC
+ * does not abort boot — the verify re-runs on the next cycle.
  */
 export const acquireKnown = (
 	probe: ChainProbe<SuiProbeKey>,
@@ -64,18 +70,39 @@ export const acquireKnown = (
 	Effect.gen(function* () {
 		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
 
-		yield* probe
-			.get({ kind: 'object', objectId: inputs.packageId }, KnownObjectShape, 'lenient')
+		const verifyError = (message: string): PublishError =>
+			publishError('verify', {
+				sourcePath: `known:${inputs.packageId}`,
+				packageName: inputs.packageName,
+				message,
+			});
+		// `'transient'` is a sentinel for "masked transient RPC failure —
+		// skip the verify aborts and re-derive next cycle".
+		const found: { readonly objectId: string } | null | 'transient' = yield* probe
+			.get({ kind: 'object', objectId: inputs.packageId }, KnownObjectShape, 'strict')
 			.pipe(
-				Effect.mapError(
-					(): PublishError =>
-						publishError('verify', {
-							sourcePath: `known:${inputs.packageId}`,
-							packageName: inputs.packageName,
-							message: 'verify probe failed',
-						}),
+				// Transient RPC failure must NOT be misclassified as a typo:
+				// mask it so the id re-verifies next cycle. Only an
+				// authoritative not-found surfaces the verify error.
+				Effect.catch((err) =>
+					err.reason === 'not-found'
+						? Effect.fail(
+								verifyError(
+									`known package id ${inputs.packageId} does not exist on this chain — check for a typo or wrong network.`,
+								),
+							)
+						: Effect.succeed('transient' as const),
 				),
 			);
+		// A `null` strict result means the id exists but is not the
+		// expected object kind — also a verify failure.
+		if (found === null) {
+			return yield* Effect.fail(
+				verifyError(
+					`known package id ${inputs.packageId} resolved to an unexpected object shape on this chain.`,
+				),
+			);
+		}
 
 		const resolved: ResolvedKnownPackage = {
 			kind: 'known',

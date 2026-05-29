@@ -13,7 +13,6 @@ export const WalletSpans = {
 	codegenPairUrl: 'wallet.codegen.pairUrl',
 	codegenWalletUrl: 'wallet.codegen.walletUrl',
 	localPort: 'wallet.localPort',
-	localhostViteEnabled: 'wallet.localhostViteEnabled',
 	origin: 'wallet.origin',
 	requestId: 'wallet.request.id',
 	requestMethod: 'wallet.request.method',

@@ -61,7 +61,7 @@ export const currentLedgerObjectRef = async (
 	objectId: string,
 ): Promise<{
 	readonly objectId: string;
-	readonly version: string | number;
+	readonly version: string;
 	readonly digest: string;
 }> => {
 	const raw = await ledgerObjectClient(sdk).ledgerService.getObject({

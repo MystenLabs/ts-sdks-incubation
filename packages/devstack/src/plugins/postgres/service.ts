@@ -137,9 +137,12 @@ const POSTGRES_PORT = 5432;
  *    the same body, but the hash binds the unambiguous boundary).
  *  - Two checkouts of the SAME `(app, stack)` on the same machine
  *    (different working directories) — folding `stackRoot` into the
- *    hash means each checkout's postgres password is distinct, so a
- *    container started for one checkout cannot be picked up by the
- *    other's `pg_isready` probe with the right credentials.
+ *    hash means each checkout's postgres password is distinct. (Note:
+ *    the `pg_isready` liveness probe does NOT authenticate, so this
+ *    does not gate the probe.) The benefit is that the per-checkout
+ *    CREDENTIALED endpoint URL — and any `psql`/`createdb` that
+ *    actually authenticates — differs per checkout, so one checkout's
+ *    connection string cannot silently land on the other's container.
  *  - The `\x1f` (US, ASCII 31) separator between fields is unambiguous
  *    because identity strings and absolute paths cannot legally
  *    contain it. */

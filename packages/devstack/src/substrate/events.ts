@@ -131,13 +131,13 @@ export type EngineEvent =
 	| {
 			readonly tag: 'snapshot.captureSkipped';
 			readonly reason: 'already-running';
-			readonly snapshotId?: string;
+			readonly snapshotId: string;
 			readonly name?: string;
 			readonly at: number;
 	  }
 	| {
 			readonly tag: 'snapshot.captureFailed';
-			readonly snapshotId?: string;
+			readonly snapshotId: string;
 			readonly name?: string;
 			readonly summary: string;
 			readonly at: number;

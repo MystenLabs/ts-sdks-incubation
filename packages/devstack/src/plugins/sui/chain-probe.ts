@@ -230,10 +230,11 @@ const projectTransactionPayload = (raw: unknown): unknown | null => {
  *  misclassifying network-layer "endpoint does not exist" or generic
  *  "not found" prose as terminal:
  *
- *  - We require the matched phrase to refer to the OBJECT / RPC METHOD
- *    rather than the endpoint. Concretely we look for the SDK's
- *    canonical "object not found" / "no such object" wording and the
- *    JSON-RPC "method ... not found" / "method not exist" wording.
+ *  - We require the matched phrase to refer to the OBJECT or
+ *    TRANSACTION rather than the endpoint. Concretely we look for the
+ *    SDK's canonical "object not found" / "object does not exist" /
+ *    "no such object" wording and the equivalent "transaction not
+ *    found" / "transaction does not exist" wording.
  *  - We DO NOT match the bare substring "not found" alone (that
  *    catches "endpoint does not exist", DNS prose, etc. — all of
  *    which are network-layer transients).
@@ -248,9 +249,8 @@ const isNotFound = (cause: unknown): boolean => {
 		/\bobject\b.*\bnot found\b/u.test(msg) ||
 		/\bobject\b.*\bdoes not exist\b/u.test(msg) ||
 		/\bno such object\b/u.test(msg) ||
-		// JSON-RPC method-not-found ('object not found at the SDK
-		// surface' is functionally equivalent to a missing chain
-		// endpoint dispatch — terminal for this probe).
+		// SDK-side `getTransaction` not-found markers — terminal for
+		// this probe (the queried digest will never materialise).
 		/\btransaction\b.*\bnot found\b/u.test(msg) ||
 		/\btransaction\b.*\bdoes not exist\b/u.test(msg)
 	);

@@ -22,7 +22,7 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { SeedManifestMismatchError, SuiPluginError } from './errors.ts';
+import type { SeedManifestMismatchError, SuiConfigError, SuiPluginError } from './errors.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type { SuiOptions } from './mode/spec.ts';
@@ -57,7 +57,11 @@ export const bootSuiService = (
 	portBroker: PortBroker,
 	paths: StackPaths,
 	opts: SuiOptions,
-): Effect.Effect<SuiBootResult, SuiPluginError | SeedManifestMismatchError, Scope.Scope> => {
+): Effect.Effect<
+	SuiBootResult,
+	SuiPluginError | SeedManifestMismatchError | SuiConfigError,
+	Scope.Scope
+> => {
 	switch (opts.mode) {
 		case 'local':
 			return bootLocalMode(runtime, identity, portBroker, opts).pipe(

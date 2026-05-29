@@ -22,15 +22,12 @@
 // write path. Architecture § Runtime substrate scope: three-way split.
 
 export {
-	discoverBuildIntegrationIdentity,
 	discoverManifestPath,
 	discoverSingleStackManifestPath,
 	readAppName,
 	readAppNameWalkup,
 	type DiscoverManifestPathOptions,
-	type DiscoverBuildIntegrationIdentityOptions,
 	type DiscoverSingleStackManifestPathOptions,
-	type BuildIntegrationIdentity,
 	DEFAULT_STACK,
 	DEFAULT_STATE_DIR,
 } from './discover.ts';
@@ -40,6 +37,14 @@ export {
 	type ReadStackContextOptions,
 	CONSUMER_MANIFEST_VERSION,
 } from './read-stack-context.ts';
+export {
+	DEFAULT_DISCOVERY_STACK,
+	DEFAULT_DISCOVERY_STATE_DIR,
+	DISCOVERY_ENV,
+	resolveDiscoveryEnv,
+	type ResolveDiscoveryEnvOptions,
+	type ResolvedDiscoveryEnv,
+} from './resolve-discovery-env.ts';
 export type { ResolvedEndpoint, StackContext, StackIdentity } from './stack-context.ts';
 export { EndpointRegistry } from './endpoint-registry.ts';
 export {
@@ -59,8 +64,6 @@ export {
 	BUILT_IN_ENDPOINT_ALIASES,
 	DEFAULT_ROUTER_ENTRYPOINT_PORT,
 	builtInConventionalRoutes,
-	conventionalRoutesFromManifest,
-	conventionalRoutesPreferringManifest,
 	resolveBuiltInEndpointAlias,
 } from './conventional-routes.ts';
 export {

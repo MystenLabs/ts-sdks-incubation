@@ -26,6 +26,10 @@ export const versionedDocSchema = <const V extends number, Fields extends Schema
 	version: V,
 	payload: Fields,
 ): Schema.Struct<{ readonly version: Schema.Literal<V> } & Fields> =>
+	// Cast is load-bearing: spreading a generic `Fields` into an object
+	// literal makes TS infer the resulting `Schema.Struct` over a widened
+	// field type, not the precise `{ version } & Fields` intersection, so
+	// the literal-typed `version` discriminator would be lost without it.
 	Schema.Struct({
 		version: Schema.Literal(version),
 		...payload,

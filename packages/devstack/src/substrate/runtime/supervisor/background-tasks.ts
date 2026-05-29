@@ -26,6 +26,16 @@ type HandleCommandRunner = (
 	cmd: EngineCommand,
 ) => Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope>;
 
+/** `snapshot.captureFailed` / `snapshot.captureSkipped` now carry a
+ *  REQUIRED `snapshotId` so surfaces can correlate the outcome with the
+ *  originating command (the CLI's pending-capture map keys on it). When
+ *  the command omitted an id the orchestrator would have minted one
+ *  internally that the failure/skip path never observes, so we stamp a
+ *  best-effort correlation id here. */
+const effectiveSnapshotId = (
+	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
+): string => cmd.snapshotId ?? `snap-${Date.now()}`;
+
 export const runInjectedCommandHandler = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
@@ -49,7 +59,7 @@ export const runInjectedCommandHandler = (
 		if (cmd.tag === 'snapshot.capture') {
 			yield* publish(deps.ref, deps.hub, {
 				tag: 'snapshot.captureFailed',
-				...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+				snapshotId: effectiveSnapshotId(cmd),
 				...(cmd.name === undefined ? {} : { name: cmd.name }),
 				summary: Cause.pretty(exit.cause).split('\n')[0] ?? 'snapshot capture failed',
 				at: Date.now(),
@@ -92,7 +102,7 @@ export const startBackgroundSnapshotCapture = (
 			yield* publish(deps.ref, deps.hub, {
 				tag: 'snapshot.captureSkipped',
 				reason: 'already-running',
-				...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
+				snapshotId: effectiveSnapshotId(cmd),
 				...(cmd.name === undefined ? {} : { name: cmd.name }),
 				at: Date.now(),
 			});

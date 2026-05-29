@@ -12,7 +12,12 @@ import {
 } from '../../../src/build-integrations/runtime/index.ts';
 import { withTempRootSync } from '../../helpers/with-temp-root.ts';
 
-const ENV_KEYS = ['DEVSTACK_MANIFEST_PATH', 'DEVSTACK_STACK', 'DEVSTACK_STATE_DIR'] as const;
+const ENV_KEYS = [
+	'DEVSTACK_MANIFEST_PATH',
+	'DEVSTACK_STACK',
+	'DEVSTACK_STATE_DIR',
+	'DEVSTACK_RUNTIME_ROOT',
+] as const;
 const saved: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 
 beforeEach(() => {
@@ -123,6 +128,43 @@ describe('discoverManifestPath', () => {
 			writeFileSync(path, '{}');
 			process.env.DEVSTACK_STATE_DIR = '.devstack-alt';
 			expect(discoverManifestPath({ cwd: tmp })).toBe(path);
+		}));
+
+	it('honors DEVSTACK_RUNTIME_ROOT for the state-dir override', () =>
+		// `DEVSTACK_RUNTIME_ROOT` is a documented state-dir override that
+		// no existing test exercised — every other state-dir test drives
+		// `DEVSTACK_STATE_DIR`. Pin the precedence wiring (discover.ts
+		// reads `DEVSTACK_RUNTIME_ROOT` BEFORE `DEVSTACK_STATE_DIR`).
+		withTempRootSync('devstack-discover', (tmp) => {
+			const dir = join(tmp, '.devstack-runtime', 'stacks', 'main');
+			mkdirSync(dir, { recursive: true });
+			const path = join(dir, 'manifest.json');
+			writeFileSync(path, '{}');
+			process.env.DEVSTACK_RUNTIME_ROOT = '.devstack-runtime';
+			expect(discoverManifestPath({ cwd: tmp })).toBe(path);
+		}));
+
+	it('DEVSTACK_RUNTIME_ROOT wins over DEVSTACK_STATE_DIR', () =>
+		withTempRootSync('devstack-discover', (tmp) => {
+			// Only the RUNTIME_ROOT path has a manifest on disk; if
+			// STATE_DIR took precedence the lookup would miss (undefined).
+			const runtimeDir = join(tmp, '.devstack-runtime', 'stacks', 'main');
+			mkdirSync(runtimeDir, { recursive: true });
+			const runtimePath = join(runtimeDir, 'manifest.json');
+			writeFileSync(runtimePath, '{}');
+			process.env.DEVSTACK_RUNTIME_ROOT = '.devstack-runtime';
+			process.env.DEVSTACK_STATE_DIR = '.devstack-state';
+			expect(discoverManifestPath({ cwd: tmp })).toBe(runtimePath);
+		}));
+
+	it('explicit stateDir option wins over DEVSTACK_RUNTIME_ROOT', () =>
+		withTempRootSync('devstack-discover', (tmp) => {
+			const optDir = join(tmp, '.devstack-opt', 'stacks', 'main');
+			mkdirSync(optDir, { recursive: true });
+			const optPath = join(optDir, 'manifest.json');
+			writeFileSync(optPath, '{}');
+			process.env.DEVSTACK_RUNTIME_ROOT = '.devstack-runtime';
+			expect(discoverManifestPath({ cwd: tmp, stateDir: '.devstack-opt' })).toBe(optPath);
 		}));
 
 	it('throws ManifestDiscoveryError(phase=walk-up) on miss when required', () =>

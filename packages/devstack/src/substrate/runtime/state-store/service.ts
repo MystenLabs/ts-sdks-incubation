@@ -209,28 +209,36 @@ export const layerStateStore: Layer.Layer<
 			mapLockErrors(
 				lock.withLock(
 					provideEnv(
-						Effect.gen(function* () {
-							// Re-read INSIDE the lock so we don't clobber
-							// foreign writes that landed since our prime.
-							const fresh = yield* readDocument;
-							const { plugin, suffix } = splitKey(key);
-							const next: StateDocument = {
-								version: 1,
-								plugins: {
-									...fresh.plugins,
-									[plugin]: {
-										...fresh.plugins[plugin],
-										[suffix]: {
-											state: 'present',
-											value: value as unknown,
-											updatedAt: Date.now(),
+						// Uninterruptible: an interrupt landing between the
+						// disk write and the cache update would leave the
+						// in-process cache stale vs disk. The section is
+						// short and already serialized by `withLock`, so
+						// masking interruption here costs nothing and keeps
+						// cache/disk coherent.
+						Effect.uninterruptible(
+							Effect.gen(function* () {
+								// Re-read INSIDE the lock so we don't clobber
+								// foreign writes that landed since our prime.
+								const fresh = yield* readDocument;
+								const { plugin, suffix } = splitKey(key);
+								const next: StateDocument = {
+									version: 1,
+									plugins: {
+										...fresh.plugins,
+										[plugin]: {
+											...fresh.plugins[plugin],
+											[suffix]: {
+												state: 'present',
+												value: value as unknown,
+												updatedAt: Date.now(),
+											},
 										},
 									},
-								},
-							};
-							yield* writeDocument(next);
-							yield* Ref.set(cache, next);
-						}),
+								};
+								yield* writeDocument(next);
+								yield* Ref.set(cache, next);
+							}),
+						),
 					),
 				),
 			);
@@ -239,28 +247,32 @@ export const layerStateStore: Layer.Layer<
 			mapLockErrors(
 				lock.withLock(
 					provideEnv(
-						Effect.gen(function* () {
-							const fresh = yield* readDocument;
-							const { plugin, suffix } = splitKey(key);
-							// Tombstone-write — preserves the
-							// "deleted-since" record across snapshots.
-							const next: StateDocument = {
-								version: 1,
-								plugins: {
-									...fresh.plugins,
-									[plugin]: {
-										...fresh.plugins[plugin],
-										[suffix]: {
-											state: 'tombstone',
-											value: null,
-											updatedAt: Date.now(),
+						// Uninterruptible for the same cache/disk coherence
+						// reason as `set` — see the note there.
+						Effect.uninterruptible(
+							Effect.gen(function* () {
+								const fresh = yield* readDocument;
+								const { plugin, suffix } = splitKey(key);
+								// Tombstone-write — preserves the
+								// "deleted-since" record across snapshots.
+								const next: StateDocument = {
+									version: 1,
+									plugins: {
+										...fresh.plugins,
+										[plugin]: {
+											...fresh.plugins[plugin],
+											[suffix]: {
+												state: 'tombstone',
+												value: null,
+												updatedAt: Date.now(),
+											},
 										},
 									},
-								},
-							};
-							yield* writeDocument(next);
-							yield* Ref.set(cache, next);
-						}),
+								};
+								yield* writeDocument(next);
+								yield* Ref.set(cache, next);
+							}),
+						),
 					),
 				),
 			);

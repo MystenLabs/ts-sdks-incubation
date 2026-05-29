@@ -79,7 +79,7 @@ export interface WalletOptions<
 	 *     composer invokes once the account-providing members are
 	 *     known. */
 	readonly accounts: Accounts | typeof WALLET_ACCOUNTS_ALL;
-	/** Extra origins merged on top of the stack-scoped auto-derived
+	/** Extra origins merged on top of the router-fronted dev-server
 	 *  origin. Useful for headless test runners and custom dev hosts. */
 	readonly allowedOrigins?: ReadonlyArray<string>;
 	/** Preferred host port. Substrate's port broker forward-scans if
@@ -90,10 +90,6 @@ export interface WalletOptions<
 	 *  host-gateway address on native Linux. The public wallet URL remains
 	 *  router-fronted and stack-scoped. */
 	readonly bindAddress?: string;
-	/** Opt-in: allowlist the bare `http://localhost:<vite-port>` form.
-	 *  Off by default to close the cross-stack pairing risk (see
-	 *  `origin-policy.ts` for the long-form rationale). */
-	readonly allowLocalhostVite?: boolean;
 }
 
 // ----------------------------------------------------------------------
@@ -135,9 +131,6 @@ export interface WalletAcquireContext {
 	/** State root where `wallet/token` lives. Convention:
 	 *  `<appDir>/.devstack/stacks/<stack>/runtime`. */
 	readonly stateRoot: string;
-	/** Vite port for THIS stack (per-stack scoping — see
-	 *  `origin-policy.ts`). `null` if no vite is mounted. */
-	readonly vitePortForThisStack: number | null;
 	/** Port broker seam — returns the allocated port + a scope-
 	 *  finalizer-installed release. The barrel adapts the substrate's
 	 *  `PortBrokerService.allocate` to this signature so tests can pin
@@ -216,6 +209,19 @@ export const acquireWallet = (
 		}
 		const accountsByAddress = new Map<string, AccountValue>();
 		for (const acct of accounts) {
+			// Two accounts resolving to the same address would silently
+			// last-write-wins the sign-route map, so a sign request for
+			// that address binds to a non-deterministic account. Fail at
+			// boot with the colliding address named.
+			if (accountsByAddress.has(acct.address)) {
+				return yield* Effect.fail(
+					walletBootError({
+						phase: 'bind-account',
+						message: `wallet resolved two accounts at the same address ${acct.address}; each account must own a distinct address.`,
+						hint: 'Remove the duplicate account member, or give the colliding accounts distinct keypairs.',
+					}),
+				);
+			}
 			accountsByAddress.set(acct.address, acct);
 		}
 
@@ -230,15 +236,13 @@ export const acquireWallet = (
 		//    pairing.
 		const token = yield* acquirePairingToken(tokenPath(ctx.stateRoot));
 
-		// 4. Origin policy. Stack-scoped — only allows THIS stack's vite
-		//    port through.
+		// 4. Origin policy. Allowlist is the router-fronted dev-server
+		//    origin for this stack plus any explicit `allowedOrigins`.
 		const policy = yield* resolveOriginPolicy({
 			app: ctx.app,
 			stack: ctx.stack,
-			vitePortForThisStack: ctx.vitePortForThisStack,
 			routedAppOrigin: ctx.routedAppOrigin,
 			extraOrigins: opts.allowedOrigins ?? [],
-			allowLocalhostVite: opts.allowLocalhostVite ?? false,
 		});
 
 		// 5. Start the HTTP server. The dispatcher in `server.ts` owns

@@ -10,10 +10,8 @@ import type {
 	ContainerRuntime,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
-import {
-	deriveWalrusSubnetPrefix,
-	walrusNetworkCreateSpec,
-} from '../../../src/plugins/walrus/index.ts';
+import { deriveWalrusSubnetPrefix } from '../../../src/plugins/walrus/index.ts';
+import { withSubnetAddressing } from '../../../src/substrate/runtime/subnet-broker.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -120,7 +118,7 @@ describe('walrus network addressing', () => {
 	it('requests the explicit Docker subnet matching the derived listening IP prefix', () => {
 		const identity = { app: 'private-content', stack: 'main', walrusName: 'walrus' };
 		const prefix = deriveWalrusSubnetPrefix(identity);
-		const spec = walrusNetworkCreateSpec(
+		const spec = withSubnetAddressing(
 			{
 				name: buildWalrusNetworkName(identity.app, identity.stack, identity.walrusName),
 				app: identity.app,

@@ -23,10 +23,12 @@
 //
 // The `ContainerExec` capability is consumed via the plugin's service
 // body (`service.ts:containerExec`), which thin-wraps the
-// `ContainerRuntime.exec` contract surface. Daemon-level failures
-// project to a synthetic non-zero `ExecResult` so the retry loop
-// observes them and the typed timeout error carries the captured
-// streams.
+// `ContainerRuntime.exec` contract surface. Daemon-level failures (no
+// such container, daemon unreachable) map to a typed
+// `PostgresPluginError({phase: 'container-start'})` rather than a
+// fabricated non-zero `ExecResult`; `waitForProbe` treats that typed
+// failure as retryable and preserves the underlying cause on the
+// timeout error's `lastError` field.
 
 import { Effect } from 'effect';
 

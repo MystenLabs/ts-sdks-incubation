@@ -19,6 +19,7 @@ import {
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
 	resolveBuiltInEndpointAlias,
+	resolveDiscoveryEnv,
 	type DiscoverManifestPathOptions,
 	type EndpointEntry,
 	type ManifestEnvelope,
@@ -107,14 +108,20 @@ const buildRuntimeDiscoverOpts = (
 	options: ResolveStackContextOptions,
 ): DiscoverManifestPathOptions => {
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
-	const stack = options.stack ?? env[PLAYWRIGHT_ENV.STACK] ?? 'main';
-	const stateDir = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR];
+	// Shared ladder: option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
+	// > '.devstack'. This surface previously read only DEVSTACK_STATE_DIR
+	// and silently ignored DEVSTACK_RUNTIME_ROOT — routing through
+	// `resolveDiscoveryEnv` aligns it with the vitest + runtime surfaces.
+	const { stack, stateDir } = resolveDiscoveryEnv(env, {
+		...(options.stack !== undefined ? { stack: options.stack } : {}),
+		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+	});
 	return {
 		env,
 		stack,
+		stateDir,
 		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 		...(options.manifestPath !== undefined ? { override: options.manifestPath } : {}),
-		...(stateDir !== undefined && stateDir !== '' ? { stateDir } : {}),
 	};
 };
 

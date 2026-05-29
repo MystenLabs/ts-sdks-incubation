@@ -320,38 +320,21 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			}),
 		),
 
-	// Post-publish ready HINT — the function ALWAYS succeeds when the
-	// underlying `getObject` infrastructure is reachable. The publish
+	// Post-publish ready HINT — a best-effort second-layer probe. The publish
 	// account's `signAndExecute` already calls `waitForTransaction(digest)`
-	// before returning; the read on `packageId` here is a second-layer
-	// hint to catch the "tx written but object not yet queryable" race.
-	// Transient misses fall through silently — the next produce phase
-	// (parse) only inspects the output. Only infrastructural faults
-	// (the `tryPromise` `catch`) surface as PublishError('parse').
+	// before returning, so the read on `packageId` here only catches the
+	// "tx written but object not yet queryable" race. It MUST NOT fail the
+	// publish: a transient / not-yet-indexed read is expected. The failure is
+	// logged at debug (§18) so the miss stays visible rather than silently
+	// swallowed, then the hint succeeds regardless.
 	postPublishReadyHint: (packageId: string): Effect.Effect<void, PublishError, Scope.Scope> =>
-		Effect.tryPromise({
-			try: async () => {
-				try {
-					await inputs.sdk.core.getObject({ objectId: packageId });
-				} catch {
-					// A stale object read here is non-fatal — the next
-					// produce phase (parse) only inspects the output.
-				}
-			},
-			catch: (cause): PublishError =>
-				// `sourcePath` AND `packageName` are intentionally omitted —
-				// this probe only has the resolved on-chain `packageId` in
-				// scope, NOT the symbolic name. Overloading `packageName`
-				// with `packageId` would mislabel the error display.
-				// The `mode-local` re-stamp pass back-fills `sourcePath`
-				// and `packageName` from the outer inputs when the error
-				// bubbles through. The `packageId` itself is carried in
-				// the message body where it's unambiguous.
-				publishError('parse', {
-					message: `postPublishReadyHint(${packageId}) failed`,
-					cause,
-				}),
-		}).pipe(
+		Effect.tryPromise(() => inputs.sdk.core.getObject({ objectId: packageId })).pipe(
+			Effect.asVoid,
+			Effect.catch((cause) =>
+				Effect.logDebug('package: post-publish ready-hint read failed').pipe(
+					Effect.annotateLogs({ packageId, cause: String(cause) }),
+				),
+			),
 			Effect.withSpan('devstack.plugin.package.post-publish-ready-hint', {
 				attributes: { [PackageSpans.publish.packageId]: packageId },
 			}),

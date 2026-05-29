@@ -33,28 +33,26 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 import { ManifestDiscoveryError } from './errors.ts';
 import {
-	DEFAULT_STACK_NAME,
-	inferPackageNameFromCwd,
-	readPackageName,
-} from '../../api/inference-network.ts';
+	DEFAULT_DISCOVERY_STACK,
+	DEFAULT_DISCOVERY_STATE_DIR,
+	resolveDiscoveryEnv,
+} from './resolve-discovery-env.ts';
+import { inferPackageNameFromCwd, readPackageName } from '../../api/inference-network.ts';
 
 /** Default name of the supervisor's per-user state directory. Mirrors
  *  the L0 path resolver. Held here as a literal so the discover walk
- *  doesn't reach into the substrate package. */
-export const DEFAULT_STATE_DIR = '.devstack';
+ *  doesn't reach into the substrate package. Re-export of the
+ *  shared-resolver default so this module's public surface is stable. */
+export const DEFAULT_STATE_DIR = DEFAULT_DISCOVERY_STATE_DIR;
 
 /** Default stack name when neither `opts.stack` nor `$DEVSTACK_STACK`
  *  yields a useful value. */
-export const DEFAULT_STACK = DEFAULT_STACK_NAME;
+export const DEFAULT_STACK = DEFAULT_DISCOVERY_STACK;
 
 export const resolveBuildIntegrationStack = (
 	explicit: string | undefined,
 	env: Readonly<Record<string, string | undefined>> = process.env,
-): string => {
-	const selected = explicit ?? env.DEVSTACK_STACK;
-	const trimmed = selected?.trim();
-	return trimmed !== undefined && trimmed.length > 0 ? trimmed : DEFAULT_STACK;
-};
+): string => resolveDiscoveryEnv(env, explicit !== undefined ? { stack: explicit } : {}).stack;
 
 export interface DiscoverManifestPathOptions {
 	/** Caller-supplied override path. Bypasses the walk-up but is still
@@ -66,9 +64,10 @@ export interface DiscoverManifestPathOptions {
 	readonly cwd?: string;
 	/** Stack name. Defaults through `$DEVSTACK_STACK`, then `'main'`. */
 	readonly stack?: string;
-	/** State-dir name. Defaults to `$DEVSTACK_STATE_DIR ?? '.devstack'`.
-	 *  Absolute paths are honored — the walk-up degenerates into a
-	 *  single existence check in that case. */
+	/** State-dir name. Defaults through `$DEVSTACK_RUNTIME_ROOT`, then
+	 *  the legacy `$DEVSTACK_STATE_DIR`, then `'.devstack'` (see
+	 *  `resolveDiscoveryEnv`). Absolute paths are honored — the walk-up
+	 *  degenerates into a single existence check in that case. */
 	readonly stateDir?: string;
 	/** Env bag for the env-precedence step. Defaults to `process.env`.
 	 *  Tests pass a fixture (often `{}`) to suppress leaks from the
@@ -78,27 +77,6 @@ export interface DiscoverManifestPathOptions {
 	 *  returning `undefined`. Default `false` (lets callers that treat
 	 *  "no manifest" as cold-start branch cleanly). */
 	readonly required?: boolean;
-}
-
-export interface BuildIntegrationIdentity {
-	readonly app: string | undefined;
-	readonly stack: string;
-	readonly stateDir: string;
-	readonly manifestPath: string;
-}
-
-export interface DiscoverBuildIntegrationIdentityOptions {
-	/** Resolution cwd. Defaults to `process.cwd()`. */
-	readonly cwd?: string;
-	/** Explicit app name. Overrides env + package.json walk-up. */
-	readonly app?: string;
-	/** Explicit stack name. Overrides `DEVSTACK_STACK`; otherwise
-	 *  defaults to `main`. */
-	readonly stack?: string;
-	/** Explicit state-dir name. Overrides `DEVSTACK_STATE_DIR`. */
-	readonly stateDir?: string;
-	/** Env bag for tests and config loaders. Defaults to `process.env`. */
-	readonly env?: Readonly<Record<string, string | undefined>>;
 }
 
 /** Read `name` out of `<dir>/package.json`, strip the `@scope/`
@@ -111,31 +89,6 @@ export const readAppName = readPackageName;
  *  is reachable. Bounded to 32 levels — defense against pathological
  *  symlink loops. */
 export const readAppNameWalkup = inferPackageNameFromCwd;
-
-/** Resolve the framework-neutral identity tuple build integrations
- *  need at config-load time. The manifest path is returned even when
- *  it does not exist yet so cold-start callers can still compute
- *  conventional URLs and watch-ignore paths. */
-export const discoverBuildIntegrationIdentity = (
-	options: DiscoverBuildIntegrationIdentityOptions = {},
-): BuildIntegrationIdentity => {
-	const env = options.env ?? (process.env as Readonly<Record<string, string | undefined>>);
-	const cwd = options.cwd ?? process.cwd();
-	const stack = resolveBuildIntegrationStack(options.stack, env);
-	// `DEVSTACK_RUNTIME_ROOT` takes precedence over `DEVSTACK_STATE_DIR`
-	// to match the vitest layer's `loadStackContext` env ladder; both
-	// are kept for the legacy / dual-name period.
-	const stateDirName =
-		options.stateDir ?? env.DEVSTACK_RUNTIME_ROOT ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
-
-	const discovered = discoverManifestPath({ cwd, stack, stateDir: stateDirName, env });
-	const manifestPath = discovered ?? resolve(cwd, stateDirName, 'stacks', stack, 'manifest.json');
-	const stateDir =
-		discovered !== undefined ? dirname(dirname(dirname(discovered))) : resolve(cwd, stateDirName);
-	const app = options.app ?? env.DEVSTACK_APP ?? readAppNameWalkup(cwd);
-
-	return { app, stack, stateDir, manifestPath };
-};
 
 /**
  * Locate an existing devstack manifest on disk. Sync — Playwright's
@@ -177,19 +130,34 @@ export function discoverManifestPath(opts: DiscoverManifestPathOptions = {}): st
 		});
 	}
 	const startDir = opts.cwd ?? process.cwd();
-	const stack = resolveBuildIntegrationStack(opts.stack, env);
-	const stateDir =
-		opts.stateDir ?? env.DEVSTACK_RUNTIME_ROOT ?? env.DEVSTACK_STATE_DIR ?? DEFAULT_STATE_DIR;
-	let dir = resolve(startDir);
-	while (true) {
-		const candidate = join(dir, stateDir, 'stacks', stack, 'manifest.json');
+	const { stack, stateDir } = resolveDiscoveryEnv(env, {
+		...(opts.stack !== undefined ? { stack: opts.stack } : {}),
+		...(opts.stateDir !== undefined ? { stateDir: opts.stateDir } : {}),
+	});
+	// An absolute `stateDir` / `DEVSTACK_RUNTIME_ROOT` pins the state
+	// root, so the cwd walk-up is meaningless — `path.join` would also
+	// drop the leading `dir` segment and mis-resolve the candidate.
+	// Degenerate to a single existence check, mirroring
+	// `discoverSingleStackManifestPath`.
+	const candidates = isAbsolute(stateDir)
+		? [join(stateDir, 'stacks', stack, 'manifest.json')]
+		: (() => {
+				const acc: string[] = [];
+				let dir = resolve(startDir);
+				while (true) {
+					acc.push(join(dir, stateDir, 'stacks', stack, 'manifest.json'));
+					const parent = dirname(dir);
+					if (parent === dir) return acc;
+					dir = parent;
+				}
+			})();
+	for (const candidate of candidates) {
 		if (existsSync(candidate)) return candidate;
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
 	}
 	if (opts.required === true) {
-		const expected = resolve(startDir, stateDir, 'stacks', stack, 'manifest.json');
+		const expected = isAbsolute(stateDir)
+			? join(stateDir, 'stacks', stack, 'manifest.json')
+			: resolve(startDir, stateDir, 'stacks', stack, 'manifest.json');
 		throw new ManifestDiscoveryError({
 			phase: 'walk-up',
 			path: expected,

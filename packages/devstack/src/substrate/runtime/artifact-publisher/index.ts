@@ -36,6 +36,7 @@ import type {
 	ArtifactSpec,
 } from '../../../primitives/artifact-publisher.ts';
 import { CacheService } from '../cache/index.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { parseJsonTextSync } from '../runtime-decode.ts';
 
 // ---------------------------------------------------------------------------
@@ -84,9 +85,9 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 	): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({
-				'artifactPublisher.namespace': spec.namespace,
-				'artifactPublisher.chain': spec.chain,
-				'artifactPublisher.contentHash': spec.contentHash,
+				[SpanAttr.artifactPublisherNamespace]: spec.namespace,
+				[SpanAttr.artifactPublisherChain]: spec.chain,
+				[SpanAttr.artifactPublisherContentHash]: spec.contentHash,
 			});
 
 			// 1. Cache lookup. Best-effort: a CacheError on lookup
@@ -120,7 +121,7 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 						// probe-only signal that never escapes. Callers
 						// therefore type-narrow trivially against `Produced`.
 						yield* spec.register(cached);
-						yield* Effect.annotateCurrentSpan({ 'artifactPublisher.path': 'hit' });
+						yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'hit' });
 						return cached;
 					}
 				}
@@ -128,7 +129,7 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 
 			// 3. Miss or verify-failed → produce.
 			yield* Effect.annotateCurrentSpan({
-				'artifactPublisher.path': hit === null ? 'miss' : 'verify-failed',
+				[SpanAttr.artifactPublisherPath]: hit === null ? 'miss' : 'verify-failed',
 			});
 			const produced = yield* spec.produce;
 

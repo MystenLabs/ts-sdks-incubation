@@ -36,9 +36,9 @@ import {
 	HOST_GATEWAY_EXTRA_HOSTS,
 	INSIDE_CONFIG_PATH,
 	INSIDE_MASTER_KEY_ENVFILE,
-	sealNetworkCreateSpec,
 	type KeyServerSpecInputs,
 } from '../../../src/plugins/seal/key-server.ts';
+import { withSubnetAddressing } from '../../../src/substrate/runtime/subnet-broker.ts';
 import { SEAL_KEY_SERVER_ENDPOINT_NAME } from '../../../src/plugins/seal/routable.ts';
 
 // Pick a sample service path that matches the substrate's
@@ -101,7 +101,7 @@ describe('seal network addressing', () => {
 			stack: 'main',
 			sealName: 'seal',
 		});
-		const spec = sealNetworkCreateSpec(
+		const spec = withSubnetAddressing(
 			{
 				name: buildSealNetworkName('private-content', 'main', 'seal'),
 				app: 'private-content',

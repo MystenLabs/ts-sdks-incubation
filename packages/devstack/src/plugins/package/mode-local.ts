@@ -307,16 +307,15 @@ export const acquireLocal = (
 				});
 
 				// Produce 1/5 — scrub locks. Distilled doc §Move-specific
-				// concerns + Invariant 14: strip pinned sections from BOTH
-				// the package's own Move.lock AND every
+				// concerns + Invariant 14: strip pinned sections from every
 				// `~/.move/git/**/Move.lock` (vendored dep caches) before
-				// invoking the build. Uses the unified `stripPinnedSections`
-				// (re-exported through `build.ts` → from
-				// `../sui/move-lock-scrub.ts`) — NO duplicate.
+				// invoking the build. The package's own Move.lock is scrubbed
+				// inside the container on a disposable copy, so the developer's
+				// checked-in source is left untouched host-side. Uses the
+				// unified `stripPinnedSections` (re-exported through `build.ts`
+				// → from `../sui/move-lock-scrub.ts`) — NO duplicate.
 				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'scrub' });
-				yield* scrubLocksHost(inputs.sourcePath, '~/.move', {
-					packageLockFailures: inputs.executor.scrubsInsideContainer ? 'best-effort' : 'fatal',
-				});
+				yield* scrubLocksHost(inputs.sourcePath, '~/.move');
 
 				// Produce 2/5 — build. Executor dispatches between (a)
 				// per-app build container, (b) `docker run --rm`, (c) host
@@ -366,23 +365,12 @@ export const acquireLocal = (
 				// `signAndExecute` already awaits `waitForTransaction`, so
 				// the typical race is closed before we reach here.
 				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
-				yield* inputs.executor.postPublishReadyHint(output.packageId).pipe(
-					// Re-stamp sourcePath/packageName — the executor's hint
-					// probe only has the on-chain `packageId` in scope and
-					// intentionally omits the symbolic fields (see
-					// `publish-executor.ts → postPublishReadyHint`). Back-fill
-					// from the outer inputs so the cascade formatter sees
-					// the symbolic context.
-					Effect.catchTag(
-						'PublishError',
-						(err): Effect.Effect<void, PublishError> =>
-							Effect.fail({
-								...err,
-								...(err.sourcePath === undefined ? { sourcePath: inputs.sourcePath } : {}),
-								...(err.packageName === undefined ? { packageName: inputs.packageName } : {}),
-							}),
-					),
-				);
+				// Best-effort only: the executor's hint swallows transient
+				// `getObject` misses and logs at debug, so its error channel
+				// collapses to `never` (see `publish-executor.ts →
+				// postPublishReadyHint`). No re-stamp is needed because no
+				// failure surfaces here.
+				yield* inputs.executor.postPublishReadyHint(output.packageId);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;

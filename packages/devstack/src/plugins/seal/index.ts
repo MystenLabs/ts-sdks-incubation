@@ -56,8 +56,8 @@ import {
 	buildSealNetworkName,
 	DEFAULT_KEY_SERVER_PORT,
 	deriveSealSubnetPrefix,
-	sealNetworkCreateSpec,
 } from './key-server.ts';
+import { withSubnetAddressing } from '../../substrate/runtime/subnet-broker.ts';
 import {
 	bootLocalKeygen,
 	resolveLocalKeygenOptions,
@@ -257,7 +257,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 					sealName: resolved.name,
 				});
 				yield* runtime.ensureNetwork(
-					sealNetworkCreateSpec(
+					withSubnetAddressing(
 						{
 							name: sealNetworkName,
 							app: identity.app,

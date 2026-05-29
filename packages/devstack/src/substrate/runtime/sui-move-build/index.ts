@@ -11,9 +11,9 @@
 // need explicit justification in that section before landing.
 
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join, relative } from 'node:path';
 
 import { Effect, Schema, type Scope } from 'effect';
 
@@ -24,6 +24,7 @@ import type {
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../brand.ts';
+import { mintRandomSuffix } from '../random-suffix.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
@@ -82,10 +83,6 @@ export interface BuildOutput {
 	readonly dependencies: ReadonlyArray<string>;
 }
 
-export interface ScrubLocksHostOptions {
-	readonly packageLockFailures?: 'fatal' | 'best-effort';
-}
-
 export const stripPinnedSections = (source: string): string => {
 	const lines = source.split('\n');
 	const out: Array<string> = [];
@@ -128,8 +125,6 @@ export const containerScrubShellScript = (workspaceRoot: string, moveHomeRoot: s
 	return [stage, findPkg, findCache].join('; ');
 };
 
-export const scrubLocksContainerShellScript = containerScrubShellScript;
-
 export interface MoveBuildInput {
 	readonly packagePath: string;
 	readonly rpcUrl: string;
@@ -152,27 +147,41 @@ export const extractTrailingJson = (text: string): string => {
 	return trimmed.slice(idx);
 };
 
-export const hostBuildArgv = (input: MoveBuildInput): ReadonlyArray<string> => [
-	'move',
-	'build',
-	'--path',
-	input.packagePath,
-	'-e',
-	'testnet',
-	'--no-tree-shaking',
-	'--dump-bytecode-as-base64',
-	'--with-unpublished-dependencies',
-];
-
 export const containerInnerScript = (pkgName: string): string => {
-	const scrub = containerScrubShellScript('/workspace', '/root/.move');
+	// Copy the mounted package into an in-container scratch dir and scrub +
+	// build THERE, never `/workspace/<pkg>` directly. `/workspace` may be a
+	// bind mount of the developer's real source tree (the per-app build
+	// container in `chain-build-container.ts` mounts the app dir as-is), and
+	// the scrub's `gawk -i inplace` rewrite of Move.lock would corrupt their
+	// checked-in pinned deps. The one-shot path already mounts a host-side
+	// staging copy, so this in-container copy is redundant-but-harmless there.
+	// `$$` (the shell PID) scopes the scratch dir per exec so concurrent
+	// builds of the same package don't share a tree.
+	const quotedPkg = shellQuote(pkgName);
+	const scratchPkg = `/tmp/move-build-$$/${quotedPkg}`;
+	const stage = `rm -rf /tmp/move-build-$$ && mkdir -p /tmp/move-build-$$ && cp -a /workspace/${quotedPkg} ${scratchPkg}`;
+	// Scrub the scratch package tree AND the mounted Move git cache. The cache
+	// (`/root/.move/git`) is process-shared mutable state we legitimately want
+	// scrubbed so a stale pin can't leak into the build; only the package tree
+	// must stay confined to the disposable copy.
+	const scrub = containerScrubShellScript(scratchPkg, '/root/.move');
 	const build =
-		`sui move build --path /workspace/${shellQuote(pkgName)} ` +
+		`sui move build --path ${scratchPkg} ` +
 		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
-	return ['set -e', scrub, 'set +e', build, 'status=$?', 'set -e', scrub, 'exit "$status"'].join(
-		'; ',
-	);
+	const cleanup = 'rm -rf /tmp/move-build-$$';
+	return [
+		'set -e',
+		stage,
+		scrub,
+		'set +e',
+		build,
+		'status=$?',
+		'set -e',
+		scrub,
+		cleanup,
+		'exit "$status"',
+	].join('; ');
 };
 
 const isHashedFile = (name: string): boolean =>
@@ -296,26 +305,18 @@ const scrubCachedLockFiles = async (root: string): Promise<void> => {
 	}
 };
 
+// Scrub ONLY the shared Move git cache (`~/.move/git`), never the caller's
+// source tree. The package's own Move.lock is scrubbed inside the container on
+// a disposable copy (see `containerInnerScript`), so rewriting the developer's
+// checked-in Move.lock here would corrupt their pinned deps for no benefit. The
+// cache is process-shared mutable state, so scrubbing it host-side keeps a stale
+// pin from leaking into the build.
 export const scrubLocksHost = (
 	sourcePath: string,
 	moveHomeRoot: string,
-	options: ScrubLocksHostOptions = {},
 ): Effect.Effect<void, MoveBuildError, Scope.Scope> =>
 	Effect.tryPromise({
 		try: async () => {
-			const ownLocks = await findMoveLockFiles(sourcePath);
-			for (const f of ownLocks) {
-				if (options.packageLockFailures === 'best-effort') {
-					try {
-						await scrubOneLockFile(f);
-					} catch {
-						continue;
-					}
-				} else {
-					await scrubOneLockFile(f);
-				}
-			}
-
 			const moveHome = expandHome(moveHomeRoot);
 			const gitCache = join(moveHome, 'git');
 			try {
@@ -369,7 +370,7 @@ export const parseBuildOutput = (
 	});
 
 const promoteNonZero = (
-	op: 'docker exec' | 'docker run --rm' | 'host sui',
+	op: 'docker exec' | 'docker run --rm',
 	result: ExecResult,
 	sourcePath: string,
 	packageName: string,
@@ -431,18 +432,50 @@ const buildViaOneShot = (
 	image: ImageRef,
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const parent = dirname(inputs.sourcePath);
 		const pkgName = basename(inputs.sourcePath);
 		const inner = containerInnerScript(pkgName);
 		const moveHome = join(homedir(), '.move');
 		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
+
+		// Stage a scoped copy of the package and mount THAT, never the user's
+		// source tree. The container scrub (`gawk -i inplace`) rewrites Move.lock
+		// in place; pointing it at the developer's checked-in tree corrupts their
+		// pinned deps. The staging dir is scope-bound (acquireRelease removes it on
+		// scope close) and carries a random suffix so two concurrent builds of the
+		// same package don't share a tree. We keep the `/workspace/<pkgName>` layout
+		// so `containerInnerScript(pkgName)` and the mounted Move cache stay unchanged.
+		const stagingRoot = yield* Effect.acquireRelease(
+			Effect.tryPromise({
+				try: () => mkdtemp(join(tmpdir(), `move-build-${mintRandomSuffix(12)}-`)),
+				catch: (cause): MoveBuildError =>
+					moveBuildError('scrub', {
+						sourcePath: inputs.sourcePath,
+						packageName: inputs.packageName,
+						message: 'failed to create staging dir for Move build copy',
+						cause,
+					}),
+			}),
+			(dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+		);
+		const stagedPackage = join(stagingRoot, pkgName);
+		yield* Effect.tryPromise({
+			try: () => cp(inputs.sourcePath, stagedPackage, { recursive: true }),
+			catch: (cause): MoveBuildError =>
+				moveBuildError('scrub', {
+					sourcePath: inputs.sourcePath,
+					packageName: inputs.packageName,
+					message: `failed to stage package copy for Move build (staging=${stagedPackage})`,
+					cause,
+				}),
+		});
+
 		const result = yield* runtime
 			.runOneShot({
 				image,
 				entrypoint: 'sh',
 				argv: ['-c', inner],
 				mounts: [
-					{ source: parent, target: '/workspace' },
+					{ source: stagingRoot, target: '/workspace' },
 					{ source: moveHome, target: '/root/.move' },
 				],
 				timeoutMillis: 5 * 60_000,

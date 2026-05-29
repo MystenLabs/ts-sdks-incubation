@@ -7,6 +7,7 @@ import type { SubscribableState } from '../../projection.ts';
 import { endpointKey, pluginKey } from '../../brand.ts';
 import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
+import { logWarningAndIgnore } from '../observability/ignore-with-log.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
 export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v4.json';
@@ -197,7 +198,14 @@ export const writeProjectionSnapshot = (
 		state,
 	}).pipe(
 		Effect.provide(NodeFileSystem.layer),
-		Effect.catch(() => Effect.void),
+		// Best-effort: a snapshot write failure must not fail the caller
+		// (the projection is a re-derivable read model). But a bare
+		// `Effect.catch(() => Effect.void)` hid disk-full / permission
+		// faults entirely — leave the cause in the log stream (§18) so a
+		// persistently-failing snapshot is diagnosable.
+		logWarningAndIgnore('projection snapshot write failed', {
+			path: projectionSnapshotPath(stackRoot),
+		}),
 	);
 
 export const persistProjectionChanges = (

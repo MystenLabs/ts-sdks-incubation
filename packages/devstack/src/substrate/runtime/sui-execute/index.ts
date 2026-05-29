@@ -180,6 +180,21 @@ interface RawExecuteEnvelope {
 	};
 }
 
+/** Pull the digest out of a raw `executeTransaction` envelope without
+ *  committing to success vs on-chain failure. `FailedTransaction`
+ *  carries its digest under a sibling key, so callers that only need
+ *  the digest (impersonate / one-shot dispatch paths that don't run
+ *  the full `executeSuiTx` projection) read it through this projector
+ *  rather than re-deriving the `$kind`-branching shape inline.
+ *  Returns `undefined` for a malformed envelope; callers decide
+ *  whether a missing digest is a failure. */
+export const extractExecuteDigest = (raw: unknown): string | undefined => {
+	const env = raw as RawExecuteEnvelope;
+	return env.$kind === 'FailedTransaction'
+		? env.FailedTransaction?.digest
+		: env.Transaction?.digest;
+};
+
 // ---------------------------------------------------------------------------
 // The helper
 // ---------------------------------------------------------------------------

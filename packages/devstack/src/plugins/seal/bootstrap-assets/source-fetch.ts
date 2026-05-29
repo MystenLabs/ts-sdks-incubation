@@ -18,6 +18,7 @@ import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { hostBindMountOwner } from '../../../substrate/runtime/host-bind-mount-owner.ts';
+import { mintRandomSuffix } from '../../../substrate/runtime/random-suffix.ts';
 import { tailOutput } from '../../../substrate/runtime/observability/index.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
@@ -70,16 +71,16 @@ export interface SealSourceFetchInputs<Ref extends string = string> {
 	readonly subdir: typeof DEFAULT_SEAL_MOVE_SUBDIR;
 }
 
-const processId = (): string =>
-	String((globalThis as { process?: { pid?: number } }).process?.pid ?? 'unknown');
-
-let scratchCounter = 0;
-
 const nextScratchPaths = (
 	cacheDir: string,
 ): { readonly stagingPath: string; readonly backupPath: string } => {
-	scratchCounter = scratchCounter + 1;
-	const suffix = `${processId()}.${scratchCounter}`;
+	// 16-char crypto suffix (STYLE_GUIDE §17) — the old
+	// `pid.counter` scheme collided across two concurrent PROCESSES
+	// fetching the same ref (counters reset per-process, so pid A's
+	// `.staging.1` and pid B's `.staging.1` differ only by pid, and
+	// the staging tree corrupts if a pid is reused). A random suffix
+	// makes overlap cryptographically negligible regardless of pid.
+	const suffix = mintRandomSuffix(16);
 	return {
 		stagingPath: `${cacheDir}.staging.${suffix}`,
 		backupPath: `${cacheDir}.backup.${suffix}`,

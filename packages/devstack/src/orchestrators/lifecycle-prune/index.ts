@@ -420,6 +420,24 @@ const selectedGroups = (
 	return inventory.groups.filter((group) => selected.has(group.key));
 };
 
+/** Defensive enforcement of the per-app-shared pinning rule for a
+ *  caller-supplied selection. Resolves `selection.groupKeys` against
+ *  `inventory` and drops any `per-app-shared` group whose app still has
+ *  a live sibling — reusing the SAME predicate as
+ *  `defaultLifecyclePruneSelection` so a selection built outside the
+ *  default path (interactive picker, scripted, programmatic) can never
+ *  remove a shared group a live sibling depends on. Exported so the
+ *  invariant is unit-testable without a Docker daemon. */
+export const enforcePinnedLifecyclePruneSelection = (
+	inventory: LifecyclePruneInventory,
+	selection: LifecyclePruneSelection,
+): ReadonlyArray<LifecyclePruneGroup> => {
+	const pinned = lifecyclePruneAppsWithLiveSiblings(inventory);
+	return selectedGroups(inventory, selection).filter(
+		(group) => !(group.sharedKind === 'per-app-shared' && pinned.has(group.app)),
+	);
+};
+
 /** Default resource scope for the lifecycle-prune orchestrator —
  *  containers + networks + volumes, never images. Surfaces consume
  *  this directly so the default never drifts between L3 and L4. */
@@ -478,7 +496,14 @@ export const runLifecyclePrune = (
 ): Effect.Effect<LifecyclePruneSummary, LifecyclePruneError> =>
 	Effect.gen(function* () {
 		const inventory = yield* collectLifecyclePruneInventory(options);
-		const groups = selectedGroups(inventory, selection);
+		// Defensive enforcement: a caller-supplied selection (interactive
+		// picker, scripted `--all`, or a programmatic caller) must never
+		// remove a `per-app-shared` group pinned by a live sibling. The
+		// default selection already drops these (see
+		// `defaultLifecyclePruneSelection`); re-applying the SAME predicate
+		// here guarantees the rule holds even when the selection was built
+		// elsewhere.
+		const groups = enforcePinnedLifecyclePruneSelection(inventory, selection);
 		let skippedLiveGroups = 0;
 		let containersRemoved = 0;
 		let networksRemoved = 0;
@@ -572,7 +597,9 @@ export const runLifecyclePrune = (
 
 		return {
 			inspectedGroups: groups.length,
-			selectedGroups: groups.length,
+			// Groups actually selected for pruning — `groups.length` minus
+			// the live ones skipped above, NOT the inspected total.
+			selectedGroups: prunableGroups.length,
 			skippedLiveGroups,
 			containersRemoved,
 			networksRemoved,

@@ -30,26 +30,28 @@ import { teardownKeys } from './teardown.ts';
 export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const { graph, registry, ref, shutdownLatch, logger } = deps;
-		yield* requestBackgroundSnapshotInterrupt(deps);
-		yield* setCyclePhase(ref, 'shutting-down');
-		yield* Ref.set(shutdownLatch, true);
-		yield* logger.log('supervisor', null, {
-			level: 'info',
-			message: 'shutdown requested',
-		});
-		yield* requestBackgroundStackRestartInterrupt(deps);
-		const plan = planFullDrain(graph);
 		// Uninterruptible covers the Effect-level interrupt a second
-		// SIGINT would inject between teardownKeys and the
-		// shutdownComplete signal — scope close racing the in-loop
-		// teardown leaks Docker containers. The deferred resolution
-		// lives in the same block so callers blocked on
-		// `awaitShutdown` only release AFTER teardown has run.
+		// SIGINT would inject anywhere between the awaited snapshot/restart
+		// interrupts, the latch set, and the shutdownComplete signal —
+		// scope close racing the in-loop teardown leaks Docker containers,
+		// and a second SIGINT landing during the awaited snapshot-interrupt
+		// must not interrupt the command loop before teardown runs. The
+		// latch set + deferred resolution live in the same block so callers
+		// blocked on `awaitShutdown` only release AFTER teardown has run.
 		// The signal handler's `process.exit` (signals.ts:75-102) is
 		// still a hard kill — that's intentional; double-Ctrl-C is
 		// the operator asking for abort.
 		yield* Effect.uninterruptible(
 			Effect.gen(function* () {
+				yield* requestBackgroundSnapshotInterrupt(deps);
+				yield* setCyclePhase(ref, 'shutting-down');
+				yield* Ref.set(shutdownLatch, true);
+				yield* logger.log('supervisor', null, {
+					level: 'info',
+					message: 'shutdown requested',
+				});
+				yield* requestBackgroundStackRestartInterrupt(deps);
+				const plan = planFullDrain(graph);
 				yield* teardownKeys(graph, registry, plan.teardownOrder);
 				yield* Effect.yieldNow;
 				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);

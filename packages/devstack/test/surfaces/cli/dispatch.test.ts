@@ -411,6 +411,34 @@ describe('dispatch', () => {
 		}
 	});
 
+	it('restores process.env[DEVSTACK_NETWORK] when the wrapped command FAILS', async () => {
+		// The `setNetworkEnv` restore is registered via `Effect.addFinalizer`
+		// inside `Effect.scoped` (surfaces/cli/index.ts), so the prior value
+		// must be restored on the FAILURE path too — not just on success.
+		// A leaked `--network` from a failed invocation would poison a
+		// sibling invocation in the same process (tests / embedded harness).
+		const KEY = 'DEVSTACK_NETWORK';
+		const prior = process.env[KEY];
+		try {
+			process.env[KEY] = 'localnet';
+			const { deps, read } = makeHarness();
+			// Force the wrapped command effect to fail while `--network` is set.
+			const failingDeps: CliDeps = {
+				...deps,
+				apply: {
+					run: () => Effect.fail(new CliNoSupervisorError({ app: 'a', stack: 's' })),
+				},
+			};
+			await run(['apply', '--network', 'testnet'], failingDeps, { io: read().io });
+			// The command failed (non-zero exit) AND the prior env was restored.
+			expect(read().exitCode).not.toBe(0);
+			expect(process.env[KEY]).toBe('localnet');
+		} finally {
+			if (prior === undefined) delete process.env[KEY];
+			else process.env[KEY] = prior;
+		}
+	});
+
 	it('lifecycle commands run through attached/direct deps', async () => {
 		const { deps, read } = makeHarness();
 		await run(['up', '--renderer', 'plain', '--config', 'devstack.ci.ts'], deps, {

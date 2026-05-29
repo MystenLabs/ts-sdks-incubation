@@ -64,9 +64,10 @@ import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type {
-	ExecutedFailure,
-	TransactionSignerScope,
+import {
+	extractExecuteDigest,
+	type ExecutedFailure,
+	type TransactionSignerScope,
 } from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	LeaseBrokerService,
@@ -548,15 +549,6 @@ const projectTxResult = (
 			},
 		};
 	});
-
-const extractExecuteDigest = (raw: unknown): string | undefined => {
-	const r = raw as {
-		$kind?: 'Transaction' | 'FailedTransaction';
-		Transaction?: { readonly digest?: string };
-		FailedTransaction?: { readonly digest?: string };
-	};
-	return r.$kind === 'FailedTransaction' ? r.FailedTransaction?.digest : r.Transaction?.digest;
-};
 
 const projectObjectChanges = (
 	effects: unknown,

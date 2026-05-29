@@ -61,12 +61,20 @@ import type { ResolvedIdentity } from './wirings/identity.ts';
 // -----------------------------------------------------------------------------
 
 /** Resolve identity from flags + env. App and stack fall through the
- *  shared cwd/package metadata resolver before their defaults. */
+ *  shared cwd/package metadata resolver before their defaults.
+ *
+ *  State-dir precedence ladder:
+ *    `--state-dir` flag (`stateDir`) > `config.options.stateDir`
+ *    (`configStateDir`) > `$DEVSTACK_STATE_DIR` > `<cwd>/.devstack`.
+ *  The flag maps to `resolveStateDir`'s top `runtimeRoot` rung and the
+ *  config value to its `stateDir` rung so the flag always wins over a
+ *  config-declared `defineDevstack({ stateDir })`. */
 const resolveIdentity = (params: {
 	readonly app: string | undefined;
 	readonly stack: string | undefined;
 	readonly network: string | undefined;
 	readonly stateDir: string | undefined;
+	readonly configStateDir?: string | undefined;
 	readonly cwd?: string;
 }): ResolvedIdentity => {
 	const cwd = params.cwd ?? process.cwd();
@@ -75,7 +83,8 @@ const resolveIdentity = (params: {
 		cwd,
 	});
 	const runtimeRoot = resolveStateDir({
-		stateDir: params.stateDir,
+		runtimeRoot: params.stateDir,
+		stateDir: params.configStateDir,
 		env: process.env.DEVSTACK_STATE_DIR,
 		cwd,
 	});
@@ -111,7 +120,7 @@ const resolveIdentity = (params: {
 // -----------------------------------------------------------------------------
 
 const projectionStatusReader = (identity: ResolvedIdentity): StatusReader => ({
-	readState: (_app, _stack) =>
+	readState: () =>
 		Effect.sync(() => readProjectionSnapshot(identity.stackRoot) as SubscribableState | null),
 });
 
@@ -168,10 +177,14 @@ export const identityInputsFromArgv = (
 	let app = env.DEVSTACK_APP;
 	let stack = env.DEVSTACK_STACK;
 	let network = env.DEVSTACK_NETWORK;
-	// `stateDir` intentionally captures the `--state-dir` flag ONLY.
-	// Env (`DEVSTACK_STATE_DIR`) precedence is applied at the
-	// `resolveStateDir(...)` call-site in `resolveIdentity` so the
-	// pre-parser stays a thin flag-extractor.
+	// `stateDir` intentionally captures the `--state-dir` flag ONLY. The
+	// full ladder — `--state-dir` flag > `config.options.stateDir`
+	// (`defineDevstack({ stateDir })`) > `$DEVSTACK_STATE_DIR` >
+	// `<cwd>/.devstack` — is assembled at the `resolveStateDir(...)`
+	// call-site in `resolveIdentity`: the flag wins (top `runtimeRoot`
+	// rung), the best-effort config value sits below it (`stateDir`
+	// rung), then env, then the cwd default. Keeping the pre-parser a
+	// thin flag-extractor means config + env precedence live in one place.
 	let stateDir: string | undefined;
 	let configPath = env.DEVSTACK_CONFIG;
 	// Tracks which flags have been seen on the argv side so a second
@@ -225,6 +238,38 @@ const identityCwdFromConfig = (configPath: string | undefined): string => {
 	return resolved === null ? process.cwd() : dirname(resolved);
 };
 
+/** Best-effort read of `config.options.stateDir` (the value a program
+ *  sets via `defineDevstack({ stateDir })`) for the state-dir precedence
+ *  ladder in `resolveIdentity`. Swallows EVERY config-loader failure
+ *  (not-found AND evaluation errors) and returns `undefined`:
+ *
+ *   - No-config verbs (`prune`, `wipe`) MUST keep resolving identity
+ *     without a config, so a missing config silently falls through to
+ *     the flag > env > cwd ladder.
+ *   - A genuinely malformed config is NOT surfaced here — the verbs that
+ *     actually consume config (`up` / `apply` via `makeConfigLoader`)
+ *     re-load it and surface the typed `CliConfig*` error through the
+ *     normal envelope path, so behavior for those verbs is unchanged.
+ *
+ *  This is one redundant config evaluation for `up` / `apply` (the verb
+ *  wiring re-loads via its own loader); threading the loaded value into
+ *  the verb dispatch would require touching the off-limits `wirings/up.ts`
+ *  signature, so the duplicate import is accepted deliberately. */
+const configStateDirBestEffort = async (
+	configPath: string | undefined,
+): Promise<string | undefined> => {
+	const loaded = await Effect.runPromise(
+		makeConfigLoader()
+			.load(configPath)
+			.pipe(Effect.option),
+	);
+	if (loaded._tag === 'None') return undefined;
+	const options = (loaded.value.stack as { readonly options?: { readonly stateDir?: string } })
+		.options;
+	const stateDir = options?.stateDir;
+	return stateDir !== undefined && stateDir.length > 0 ? stateDir : undefined;
+};
+
 // -----------------------------------------------------------------------------
 // Bin entry
 // -----------------------------------------------------------------------------
@@ -254,11 +299,16 @@ export const runCli = async (
 		);
 		return;
 	}
+	// Best-effort config pre-load for the state-dir ladder. Swallows
+	// not-found / malformed configs so no-config verbs (prune/wipe) keep
+	// working; the `--state-dir` flag still wins over the config value.
+	const configStateDir = await configStateDirBestEffort(identityInputs.configPath);
 	const identity = resolveIdentity({
 		app: identityInputs.app,
 		stack: identityInputs.stack,
 		network: identityInputs.network,
 		stateDir: identityInputs.stateDir,
+		configStateDir,
 		cwd: identityCwdFromConfig(identityInputs.configPath),
 	});
 	const deps = buildDirectDeps(identity);

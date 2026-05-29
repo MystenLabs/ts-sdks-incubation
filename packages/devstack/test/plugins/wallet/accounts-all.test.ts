@@ -156,7 +156,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			stack: 'main',
 			chain: 'chain',
 			stateRoot: '/dev/null/fake-wallet-state',
-			vitePortForThisStack: null,
 			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
 			resolveAccounts: () => Effect.succeed([]),
 			routerFrontedUrl: null,
@@ -188,7 +187,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			stack: 'main',
 			chain: 'chain',
 			stateRoot,
-			vitePortForThisStack: null,
 			allocatePort: (preferred, probeHost) => {
 				allocation = { preferred, probeHost };
 				return Effect.succeed(0);
@@ -221,7 +219,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			stack: 'main',
 			chain: 'chain',
 			stateRoot,
-			vitePortForThisStack: null,
 			allocatePort: () => Effect.succeed(0),
 			resolveAccounts: () => Effect.succeed([fakeAccount]),
 			routerFrontedUrl: null,

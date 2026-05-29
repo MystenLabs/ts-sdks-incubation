@@ -82,10 +82,11 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
  * projection any peer surface (TUI, programmable API) sees.
  */
 export interface StatusReader {
-	/** Resolve current projection for `(app, stack)`. Returns `null`
-	 *  if no state has been written yet — that is a normal, tolerated
-	 *  state for a freshly-defined stack. */
-	readonly readState: (app: string, stack: string) => Effect.Effect<SubscribableState | null>;
+	/** Resolve the current projection. Identity is resolved from argv
+	 *  upstream and baked into the reader at wiring time, so this takes no
+	 *  `(app, stack)` params. Returns `null` if no state has been written
+	 *  yet — a normal, tolerated state for a freshly-defined stack. */
+	readonly readState: () => Effect.Effect<SubscribableState | null>;
 }
 
 export interface StatusDeps {
@@ -103,12 +104,12 @@ export const runStatus = (
 ): Effect.Effect<CommandResult, CliError> =>
 	Effect.gen(function* () {
 		const started = Date.now();
-		// Resolve `(app, stack)` from flags. The dispatcher seeds these
-		// from the precedence chain; if both are absent we still render
-		// (the projection reader returns `null`).
+		// `(app, stack)` are read ONLY for the human-readable status line
+		// label below. The reader's identity is resolved from argv upstream
+		// and baked in at wiring time, so it takes no params.
 		const app = ctx.flags.app ?? '';
 		const stack = ctx.flags.stack ?? '';
-		const state = yield* deps.reader.readState(app, stack);
+		const state = yield* deps.reader.readState();
 		const data = buildStatusPayload(state);
 		const elapsedMs = Date.now() - started;
 

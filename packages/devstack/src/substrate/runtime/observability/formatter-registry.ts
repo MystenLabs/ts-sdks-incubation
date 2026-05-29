@@ -20,9 +20,10 @@
 // The supervisor uses `Effect.addFinalizer` at the dispatch site;
 // this service exposes the unregister side as a complement.
 
-import { Context, Effect, Layer, Ref, Scope } from 'effect';
+import { Context, Effect, Layer, Scope } from 'effect';
 
 import type { PluginErrorContribution } from '../../plugin.ts';
+import { makeScopedMultimap } from '../scoped-multimap/index.ts';
 import {
 	emptyFormatterRegistry,
 	type FormatterRegistry,
@@ -50,31 +51,22 @@ export class FormatterRegistryService extends Context.Service<
 	FormatterRegistryShape
 >()('@devstack/substrate/FormatterRegistry') {}
 
-/** Per-tag entry. The registry may track a tag with no formatter
- *  (default rendering is enough) — that's why `formatter` is
- *  optional. We keep a sequence number so multi-plugin registrations
- *  for the same tag can dedup deterministically on scope close. */
-interface Entry {
-	readonly tag: string;
-	readonly formatter: TagFormatter | null;
-	readonly seq: number;
-}
-
-type State = ReadonlyMap<string, ReadonlyArray<Entry>>;
-
 /** Layer constructing the per-stack formatter registry. Stateful;
- *  the substrate provides one per supervisor scope. */
+ *  the substrate provides one per supervisor scope.
+ *
+ *  Storage is the shared scoped-multimap keyed by tag. The per-entry
+ *  value is the (optional) formatter — the registry may track a tag
+ *  with NO formatter (default rendering is enough), so `null` is a
+ *  legitimate value and the seq still tracks the registration. */
 export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Layer.effect(
 	FormatterRegistryService,
 	Effect.gen(function* () {
-		const state = yield* Ref.make<State>(new Map());
-		const seqRef = yield* Ref.make(0);
+		const store = yield* makeScopedMultimap<string, TagFormatter | null>();
 
 		const register = (
 			contribution: PluginErrorContribution,
 		): Effect.Effect<void, never, Scope.Scope> =>
 			Effect.gen(function* () {
-				const baseSeq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
 				// Wrap the optional formatter so the cascade-formatter's
 				// `TagFormatter` shape is consistent regardless of whether
 				// the plugin provided one.
@@ -82,40 +74,14 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 					contribution.formatter !== undefined
 						? (value, recurse) => contribution.formatter!(value, recurse)
 						: null;
-				const newEntries: ReadonlyArray<Entry> = contribution.errorTags.map((tag) => ({
-					tag,
-					formatter: fmt,
-					seq: baseSeq,
-				}));
-				yield* Ref.update(state, (current) => {
-					const next = new Map(current);
-					for (const e of newEntries) {
-						const existing = next.get(e.tag) ?? [];
-						next.set(e.tag, [...existing, e]);
-					}
-					return next;
-				});
-				// Scope finalizer: drop these entries on scope close.
-				// Sequence-number match keeps parallel plugin
-				// registrations isolated — we only drop the entries this
-				// registration added.
-				yield* Effect.addFinalizer((_exit) =>
-					Ref.update(state, (current) => {
-						const next = new Map(current);
-						for (const e of newEntries) {
-							const existing = next.get(e.tag);
-							if (!existing) continue;
-							const filtered = existing.filter((x) => x.seq !== e.seq);
-							if (filtered.length === 0) next.delete(e.tag);
-							else next.set(e.tag, filtered);
-						}
-						return next;
-					}),
-				);
+				// One entry per declared tag, all sharing the multimap's
+				// seq + finalizer — parallel plugin registrations stay
+				// isolated and only drop what they added.
+				yield* store.register(contribution.errorTags.map((tag) => ({ key: tag, value: fmt })));
 			}).pipe(Effect.withSpan('substrate.formatterRegistry.register'));
 
 		const snapshot: Effect.Effect<FormatterRegistry> = Effect.gen(function* () {
-			const current = yield* Ref.get(state);
+			const current = yield* store.snapshot;
 			if (current.size === 0) return emptyFormatterRegistry;
 			const out = new Map<string, TagFormatter>();
 			for (const [tag, entries] of current) {
@@ -126,8 +92,8 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 				let chosen: TagFormatter | null = null;
 				let chosenSeq = -1;
 				for (const e of entries) {
-					if (e.formatter !== null && e.seq > chosenSeq) {
-						chosen = e.formatter;
+					if (e.value !== null && e.seq > chosenSeq) {
+						chosen = e.value;
 						chosenSeq = e.seq;
 					}
 				}
@@ -136,10 +102,7 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 			return out as FormatterRegistry;
 		});
 
-		const tags: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {
-			const current = yield* Ref.get(state);
-			return [...current.keys()];
-		});
+		const tags: Effect.Effect<ReadonlyArray<string>> = store.keys;
 
 		return FormatterRegistryService.of({ register, snapshot, tags });
 	}),

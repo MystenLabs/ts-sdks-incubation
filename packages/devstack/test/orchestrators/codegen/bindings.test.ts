@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -49,6 +49,11 @@ describe('codegen Move summary runner', () => {
 				process.env.HOME = home;
 				mkdirSync(sourcePath, { recursive: true });
 				writeFileSync(join(sourcePath, 'Move.toml'), '[package]\nname = "hello"\n');
+				// A pinned Move.lock proves the runner mounts a disposable COPY at
+				// /workspace, not the developer's real source — `sui move summary`
+				// would rewrite this lock in place otherwise.
+				const sourceLock = '[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n';
+				writeFileSync(join(sourcePath, 'Move.lock'), sourceLock);
 
 				const capturedSpecs: OneShotSpec[] = [];
 				const buildContexts: Parameters<ContainerRuntime['ensureImage']>[0][] = [];
@@ -57,9 +62,16 @@ describe('codegen Move summary runner', () => {
 						Effect.sync(() => {
 							capturedSpecs.push(spec);
 							const summaryMount = spec.mounts?.find((mount) => mount.target === '/summary');
+							const workspaceMount = spec.mounts?.find((mount) => mount.target === '/workspace');
 							const moveMount = spec.mounts?.find((mount) => mount.target === '/root/.move');
 							expect(summaryMount).toBeDefined();
-							expect(existsSync(join(summaryMount!.source, 'Move.toml'))).toBe(true);
+							expect(workspaceMount).toBeDefined();
+							// /workspace is a disposable staged COPY of the package, never the
+							// real source parent — so `sui move summary` rewrites the copy's
+							// Move.lock, not the developer's checked-in tree.
+							expect(workspaceMount!.source).not.toBe(root);
+							expect(existsSync(join(workspaceMount!.source, 'hello', 'Move.toml'))).toBe(true);
+							expect(existsSync(join(workspaceMount!.source, 'hello', 'Move.lock'))).toBe(true);
 							expect(moveMount).toBeDefined();
 							expect(moveMount!.source).toBe(join(home, '.move'));
 							expect(existsSync(moveMount!.source)).toBe(true);
@@ -107,6 +119,8 @@ describe('codegen Move summary runner', () => {
 					summaryJson: { ok: true },
 				});
 				expect(summary.summaryPath).toBeDefined();
+				// The developer's real source Move.lock is never mutated.
+				expect(readFileSync(join(sourcePath, 'Move.lock'), 'utf8')).toBe(sourceLock);
 				expect(capturedSpecs).toHaveLength(1);
 				expect(buildContexts).toEqual([
 					{

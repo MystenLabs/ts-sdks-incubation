@@ -41,8 +41,6 @@ const TOKEN = 'cafebabe'.repeat(4) as PairingToken; // 32 hex chars
 
 const policy: OriginPolicy = {
 	allowed: new Set([ALLOWED_ORIGIN]),
-	localhostViteEnabled: false,
-	stackScopedHost: 'dev.test.localhost',
 };
 
 const accounts: ReadonlyMap<string, AccountValue> = new Map();

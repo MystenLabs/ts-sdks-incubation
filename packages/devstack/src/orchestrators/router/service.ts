@@ -804,6 +804,11 @@ export const layerRouterService: Layer.Layer<
 					// plus files already present in the shared dispatch
 					// directory. The dispatch lock makes the scan + write a
 					// cross-process critical section.
+					// WHY: disabled mode resolves direct-loopback routes with no
+					// proxy dispatch file, so there is no shared resource a
+					// duplicate could clobber — intentionally skip
+					// `detectCollisions` and short-circuit before the
+					// dispatch-dir scan/write below.
 					if (cfg.disabled) return 'direct';
 					if (!cfg.disabled) {
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(

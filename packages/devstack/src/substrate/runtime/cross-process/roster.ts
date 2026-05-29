@@ -425,6 +425,25 @@ const ContainerClaimDocumentSchema = versionedDocSchema(1, {
 
 const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
 
+/** Match a container claim against THIS process's identity using the
+ *  same `(pid, hostname, startTime)` triple that `isOwnEntry` /
+ *  `isContainerClaimLive` apply to roster holders — PID alone is
+ *  insufficient on long-uptime hosts where the kernel recycles PIDs.
+ *  A null/undefined start-time on either side falls back to
+ *  `(pid, hostname)`, matching the conservative policy elsewhere
+ *  (avoids orphaning our own entry when the probe failed). */
+const isOwnContainerClaim = (
+	c: ContainerClaim,
+	containerKey: string,
+	ownPid: number,
+	ownHost: string,
+	ownStartTime: number | undefined,
+): boolean => {
+	if (c.containerKey !== containerKey || c.pid !== ownPid || c.hostname !== ownHost) return false;
+	if (ownStartTime === undefined || c.startTime === undefined) return true;
+	return c.startTime === ownStartTime;
+};
+
 const isContainerClaimLive = (
 	claim: ContainerClaim,
 	probeStartTime: (pid: number) => number | null,
@@ -508,13 +527,17 @@ export const addClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
+			// `liveContainerClaims` pre-filter must run BEFORE the own-claim
+			// scan below: it drops dead peers so a recycled-PID peer can't
+			// shadow our own (pid, hostname, startTime) identity. Ordering
+			// here is load-bearing.
 			const live = yield* liveContainerClaims(current);
 			const ownPid = selfPid();
 			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
 			if (
-				live.claims.some(
-					(c) => c.containerKey === containerKey && c.pid === ownPid && c.hostname === ownHost,
+				live.claims.some((c) =>
+					isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime),
 				)
 			) {
 				if (live.claims.length !== current.claims.length) yield* writeClaims(path, live);
@@ -558,11 +581,16 @@ export const removeClaim = (
 			const current = yield* readClaims(paths).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
 			);
+			// `liveContainerClaims` pre-filter must run BEFORE the own-claim
+			// scan below: it drops dead peers so a recycled-PID peer can't
+			// shadow our own (pid, hostname, startTime) identity. Ordering
+			// here is load-bearing.
 			const live = yield* liveContainerClaims(current);
 			const ownPid = selfPid();
+			const ownStartTime = processStartTime(ownPid) ?? undefined;
 			const ownHost = nodeHostname();
 			const remaining = live.claims.filter(
-				(c) => !(c.containerKey === containerKey && c.pid === ownPid && c.hostname === ownHost),
+				(c) => !isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime),
 			);
 			const stillClaimedByPeer = remaining.some((c) => c.containerKey === containerKey);
 			const next: ContainerClaimDocument = { version: 1, claims: remaining };

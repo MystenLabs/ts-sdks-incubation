@@ -124,13 +124,6 @@ export interface WalrusNetworkIdentity {
 export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string =>
 	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.walrusName}`, 64);
 
-/** Back-compat re-export — `withSubnetAddressing` is the canonical
- *  cross-plugin helper (substrate-side). Kept here so existing walrus
- *  callers can keep importing through the walrus barrel.
- *  @deprecated Use `withSubnetAddressing` from
- *  `substrate/runtime/subnet-broker.ts` directly. */
-export const walrusNetworkCreateSpec = withSubnetAddressing;
-
 const withWalrusNetworkAddressing = (
 	runtime: ContainerRuntime,
 	walrusNetworkName: string,

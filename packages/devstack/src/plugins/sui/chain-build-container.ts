@@ -189,10 +189,11 @@ export const acquireChainBuildContainer = (
 						}),
 					);
 				}
-				// The package's container path = `/workspace/<basename>`;
-				// containerInnerScript stages the awk scrub then exec-s
-				// `sui move build --path /workspace/<pkgName>` with the
-				// invariant flag set.
+				// The package's container path = `/workspace/<basename>`.
+				// containerInnerScript copies that subdir into an in-container
+				// scratch dir and scrubs + builds THERE, so the bind-mounted
+				// appDir source (`spec.appDir` at `/workspace`) is never
+				// rewritten by the build.
 				const pkgName = containerPath.replace(/^\/workspace\//, '').replace(/^\/+|\/+$/g, '');
 				const inner = containerInnerScript(pkgName);
 				const result = yield* Effect.scoped(

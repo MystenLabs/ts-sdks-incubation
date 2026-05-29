@@ -99,7 +99,7 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 					snapshotId,
 					...(args.name === undefined ? {} : { name: args.name }),
 				});
-				const reply = yield* publisher.awaitCompletion(published.id, {
+				const reply = yield* publisher.awaitCompletion(published, {
 					timeoutMillis: LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS,
 				});
 

@@ -27,8 +27,10 @@ import { Data, Effect, Scope } from 'effect';
 
 import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { checkHolderLiveness } from './liveness.ts';
 import { selfPid } from './self-pid.ts';
+import { isUnparseableBodyStale } from './stack-lock.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -80,7 +82,7 @@ export const sweepOrphan = (
 	path: string,
 ): Effect.Effect<{ readonly swept: boolean }, SnapshotReservationError> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.snapshot-reservation.path': path });
+		yield* Effect.annotateCurrentSpan({ [SpanAttr.snapshotReservationPath]: path });
 		if (!existsSync(path)) return { swept: false };
 		const raw = yield* Effect.try({
 			try: () => readFileSync(path, 'utf8'),
@@ -88,9 +90,12 @@ export const sweepOrphan = (
 		});
 		const reservation = parseReservation(raw);
 		if (reservation === null) {
-			// Malformed body — the creator wrote a half-written file then
-			// died. Treat as orphan: unlink it so future acquires don't
-			// fail forever.
+			// Malformed body — the creator may have written a half-written
+			// file. Gate the unlink behind the SAME mtime staleness window
+			// stack-lock uses: a body younger than the window is presumed
+			// mid-write (the O_EXCL writer is still flushing), so we leave
+			// it; only an aged malformed body is reclaimed as an orphan.
+			if (!isUnparseableBodyStale(path)) return { swept: false };
 			yield* Effect.try({
 				try: () => unlinkSync(path),
 				catch: (cause) => new SnapshotReservationIoError({ path, cause }),
@@ -145,7 +150,7 @@ export const acquireReservation = (
 	startTime: number | null,
 ): Effect.Effect<SnapshotReservation, SnapshotReservationError, Scope.Scope> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.snapshot-reservation.path': path });
+		yield* Effect.annotateCurrentSpan({ [SpanAttr.snapshotReservationPath]: path });
 		// One-shot orphan sweep before our O_EXCL attempt. The sweep is
 		// idempotent: if a peer just wrote the reservation while we ran
 		// the sweep, the O_EXCL create fails below and we surface the

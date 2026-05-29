@@ -20,7 +20,7 @@
 //     binary directly via `ChildProcessSpawner`. Useful for
 //     embedders that already have a Sui CLI on PATH.
 
-import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 
@@ -86,6 +86,9 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 							}),
 					});
 					const summaryPath = join(scratchDir, 'package');
+					// Run summary inside a disposable copy of the package, never the
+					// developer's real source — `sui move summary` rewrites Move.lock.
+					const stagedPkg = join(scratchDir, 'src');
 					const cleanupScratch = Effect.promise(() =>
 						rm(scratchDir, { recursive: true, force: true }),
 					).pipe(Effect.ignore);
@@ -93,14 +96,14 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 						yield* Effect.tryPromise({
 							try: async () => {
 								await mkdir(summaryPath, { recursive: true });
-								await copyFile(join(sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml'));
+								await cp(sourcePath, stagedPkg, { recursive: true });
 							},
 							catch: (cause) =>
 								new CodegenBindingsFailed({
 									package: packageName,
 									sourcePath,
 									reason: 'summary-failed',
-									hint: 'Unable to prepare a temporary Move summary package directory.',
+									hint: 'Unable to stage a disposable copy of the Move package for summary.',
 									cause,
 								}),
 						});
@@ -116,7 +119,7 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 								'--output-directory',
 								join(summaryPath, 'package_summaries'),
 							],
-							{ cwd: sourcePath },
+							{ cwd: stagedPkg },
 						);
 						return yield* capture(spawner, cmd, {
 							op: `sui move summary (${sourcePath})`,
@@ -168,8 +171,11 @@ const runSummaryViaDocker = (
 				const image = input.buildImage ?? (yield* resolveDefaultSummaryImage(runtime, input));
 				const moveHome = join(homedir(), '.move');
 				yield* ensureMoveHome(moveHome, input);
-				const packageRoot = dirname(input.sourcePath);
 				const packageDir = basename(input.sourcePath);
+				// Mount a disposable staged copy at /workspace, never the real source
+				// tree — `sui move summary` rewrites Move.lock during resolution.
+				const stagedRoot = join(scratchDir, 'src');
+				yield* stageSummarySource(input, join(stagedRoot, packageDir));
 				const hostUid = typeof process.getuid === 'function' ? process.getuid() : 0;
 				const hostGid = typeof process.getgid === 'function' ? process.getgid() : 0;
 				const command = [
@@ -190,7 +196,7 @@ const runSummaryViaDocker = (
 						entrypoint: 'sh',
 						argv: ['-c', command],
 						mounts: [
-							{ source: packageRoot, target: '/workspace' },
+							{ source: stagedRoot, target: '/workspace' },
 							{ source: summaryPath, target: '/summary' },
 							{ source: moveHome, target: '/root/.move' },
 						],
@@ -254,16 +260,38 @@ const prepareSummaryPackage = (
 	input: MoveSummaryInput,
 ): Effect.Effect<void, CodegenBindingsFailed> =>
 	Effect.tryPromise({
+		// Only create the OUTPUT mount dir; the package itself is mounted from a
+		// disposable staged copy (see `stageSummarySource`), never the real source.
+		try: () => mkdir(summaryPath, { recursive: true }).then(() => undefined),
+		catch: (cause) =>
+			new CodegenBindingsFailed({
+				package: input.packageName,
+				sourcePath: input.sourcePath,
+				reason: 'summary-failed',
+				hint: 'Unable to prepare a temporary Move summary output directory.',
+				cause,
+			}),
+	});
+
+// Stage a disposable copy of the Move package. `sui move summary` rewrites
+// `Move.lock` during dependency resolution, so running it against the
+// developer's real checked-in tree would dirty their working copy. The copy
+// lives under the scoped scratch dir and is reaped with it.
+const stageSummarySource = (
+	input: MoveSummaryInput,
+	stagedPkg: string,
+): Effect.Effect<void, CodegenBindingsFailed> =>
+	Effect.tryPromise({
 		try: async () => {
-			await mkdir(summaryPath, { recursive: true });
-			await copyFile(join(input.sourcePath, 'Move.toml'), join(summaryPath, 'Move.toml'));
+			await mkdir(dirname(stagedPkg), { recursive: true });
+			await cp(input.sourcePath, stagedPkg, { recursive: true });
 		},
 		catch: (cause) =>
 			new CodegenBindingsFailed({
 				package: input.packageName,
 				sourcePath: input.sourcePath,
 				reason: 'summary-failed',
-				hint: 'Unable to prepare a temporary Move summary package directory.',
+				hint: 'Unable to stage a disposable copy of the Move package for summary.',
 				cause,
 			}),
 	});

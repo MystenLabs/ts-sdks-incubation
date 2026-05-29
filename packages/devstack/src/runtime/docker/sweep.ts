@@ -226,6 +226,7 @@ export const removeManagedImages = (
 		const seen = new Set<string>();
 		for (const image of images) {
 			const ref = image.tag;
+			if (ref.endsWith(':<none>')) continue;
 			if (seen.has(ref)) continue;
 			seen.add(ref);
 			const didRemove = yield* removeManagedImage(ref);
@@ -492,8 +493,17 @@ export const removeManagedVolumes = (
 		let removed = 0;
 		for (const volume of volumes) {
 			if (volume.labels[LabelKey.volumeMarker] !== 'true') continue;
-			yield* removeVolume(volume.name);
-			removed += 1;
+			// Best-effort per volume: an in-use/locked volume must not poison
+			// the loop and strand later volumes. Surface the cause via
+			// `logWarning` for operator visibility, then continue.
+			const didRemove = yield* removeVolume(volume.name).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logWarning('sweep: docker volume rm failed', { name: volume.name, cause }),
+				),
+				Effect.as(true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedVolumes'));
@@ -506,8 +516,17 @@ export const removeDevstackVolumes = (
 		let removed = 0;
 		for (const volume of volumes) {
 			if (!labelsMatchAppStack(volume.labels, labelMatch)) continue;
-			yield* removeVolume(volume.name);
-			removed += 1;
+			// Best-effort per volume: an in-use/locked volume must not poison
+			// the loop and strand later volumes. Surface the cause via
+			// `logWarning` for operator visibility, then continue.
+			const didRemove = yield* removeVolume(volume.name).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logWarning('sweep: docker volume rm failed', { name: volume.name, cause }),
+				),
+				Effect.as(true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackVolumes'));

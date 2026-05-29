@@ -18,10 +18,10 @@ import {
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
 	resolveBuiltInEndpointAlias,
+	resolveDiscoveryEnv,
 	type ManifestEnvelope,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
-import { VITEST_ENV_VARS } from './env.ts';
 import {
 	VitestManifestNotFoundError,
 	VitestManifestShapeError,
@@ -108,12 +108,13 @@ const project = (ctx: RuntimeStackContext): StackContext => {
  */
 export const loadStackContext = (opts: LoadStackContextOptions = {}): StackContext | undefined => {
 	const env = opts.env ?? (process.env as Readonly<Record<string, string | undefined>>);
-	const stack = opts.stack ?? env[VITEST_ENV_VARS.STACK] ?? 'main';
-	const runtimeRoot =
-		opts.runtimeRoot ??
-		env[VITEST_ENV_VARS.RUNTIME_ROOT] ??
-		env[VITEST_ENV_VARS.RUNTIME_ROOT_LEGACY] ??
-		'.devstack';
+	// `runtimeRoot` is the vitest-flavored name for the shared resolver's
+	// `stateDir` rung; the ladder (option > DEVSTACK_RUNTIME_ROOT >
+	// DEVSTACK_STATE_DIR > '.devstack') lives in `resolveDiscoveryEnv`.
+	const { stack, stateDir: runtimeRoot } = resolveDiscoveryEnv(env, {
+		...(opts.stack !== undefined ? { stack: opts.stack } : {}),
+		...(opts.runtimeRoot !== undefined ? { stateDir: opts.runtimeRoot } : {}),
+	});
 
 	try {
 		const ctx = readStackContextRuntime({

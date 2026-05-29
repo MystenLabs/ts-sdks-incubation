@@ -191,8 +191,11 @@ export const groupResourceCountForResources = (
 	(resources.images ? group.images : 0);
 
 /** L4 mirror — defers to the orchestrator's pinning predicate so the
- *  shared-resource rule lives in exactly one place. */
-const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> =>
+ *  shared-resource rule lives in exactly one place. Exported so the
+ *  interactive picker enforces the same per-app-shared pinning rule
+ *  the default selection already obeys (manual toggle / select-all must
+ *  not add a `per-app-shared` group pinned by a live sibling). */
+export const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> =>
 	lifecyclePruneAppsWithLiveSiblings(inventory);
 
 /** Delegates to the orchestrator's `defaultLifecyclePruneSelection`.

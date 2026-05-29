@@ -1,10 +1,12 @@
-// Wallet plugin protocol bridge — L5 read surface.
+// Wallet wire-protocol read surface — L5 build-integrations bridge.
 //
 // Architecture (ARCHITECTURE.md § Layer table): L5 (build-integrations)
-// MUST NOT import directly from L2 plugin code. The wallet plugin owns
-// the wire-protocol constants (paths, endpoint name); this module is
-// the substrate-side bridge consumers go through so a future re-layout
-// of the wallet plugin doesn't ripple into Playwright/vitest surfaces.
+// MUST NOT import directly from L2 plugin code. The pure wire-protocol
+// constants (paths, prefix gate, header/token literals, endpoint
+// name/key) live in the name-blind contract `contracts/wallet-protocol.ts`;
+// this module re-exports them so the substrate-side L5 surfaces
+// (Playwright / vitest / conventional-routes) consume one stable read
+// surface and a future re-layout of the wallet plugin doesn't ripple in.
 //
 // Why a re-export module rather than a manifest-extras lookup?
 //
@@ -26,18 +28,6 @@ export {
 	WALLET_TOKEN_FRAGMENT_KEY,
 	WALLET_TOKEN_HEX_LENGTH,
 	type WalletHttpPathValue,
-} from '../../plugins/wallet/protocol.ts';
-
-/**
- * Both the canonical endpoint name and the user-facing key are sourced
- * from the wallet plugin so the key <-> canonical pairing stays in
- * lockstep with the plugin's HTTP server. The L5 surface (Playwright /
- * vitest) and the conventional-routes table both consume these
- * constants — see `WALLET_ENDPOINT_KEY` in the wallet plugin for the
- * convention and `runtime/conventional-routes.ts`
- * `BUILT_IN_ENDPOINT_ALIASES` for the alias fold.
- */
-export {
 	WALLET_ENDPOINT_NAME,
 	WALLET_ENDPOINT_KEY,
-} from '../../plugins/wallet/routable.ts';
+} from '../../contracts/wallet-protocol.ts';

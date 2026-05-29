@@ -358,10 +358,12 @@ const text = (
  * are projected to JSON envelopes via `errorEnvelope` below.
  *
  * The dispatch order matters:
- *   1. OPTIONS preflight (returns 204 + CORS) — no auth required.
- *   2. Path-prefix gate — anything not under `/api/v1/devstack/` is
- *      a flat 404 (text/plain). PROTECTS the auth gate from being
- *      visible on arbitrary URLs.
+ *   1. Path-prefix gate — anything not under `/api/v1/devstack/` is
+ *      a flat 404 (text/plain). PROTECTS the auth gate (and the CORS
+ *      preflight) from being visible on arbitrary URLs.
+ *   2. OPTIONS preflight (returns 204 + CORS) — no auth required, but
+ *      scoped to the protocol prefix by step 1 so an allowed origin
+ *      cannot extract CORS headers for unrelated paths.
  *   3. Origin check (must be in policy.allowed; missing → 403).
  *   4. Bearer check (must constant-time-equal `config.token`).
  *   5. Method+path route to handler.
@@ -378,7 +380,16 @@ export const dispatch = (
 			[WalletSpans.requestUrl]: req.url,
 		});
 
-		// 1. OPTIONS preflight — no auth check, but the origin still has
+		// 1. Path-prefix gate. Runs BEFORE the OPTIONS preflight so an
+		//    allowed origin cannot pull a `204 + CORS` response for an
+		//    arbitrary path — preflight success is scoped to the protocol
+		//    prefix, not the whole host.
+		const path = req.url.split('?')[0] ?? '';
+		if (!path.startsWith(WALLET_PROTOCOL_PREFIX)) {
+			return text(404, 'not found');
+		}
+
+		// 2. OPTIONS preflight — no auth check, but the origin still has
 		//    to be in the allowlist so we don't leak CORS headers to
 		//    arbitrary callers.
 		if (req.method === 'OPTIONS') {
@@ -387,12 +398,6 @@ export const dispatch = (
 				return { status: 204, headers: corsHeadersFor(origin), body: '' };
 			}
 			return text(403, 'forbidden origin');
-		}
-
-		// 2. Path-prefix gate.
-		const path = req.url.split('?')[0] ?? '';
-		if (!path.startsWith(WALLET_PROTOCOL_PREFIX)) {
-			return text(404, 'not found');
 		}
 
 		// 3. Origin check.

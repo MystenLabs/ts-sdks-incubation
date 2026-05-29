@@ -95,7 +95,7 @@ describe('command-channel', () => {
 							at: 0,
 						} satisfies EngineCommand;
 						const published = yield* publisher.publish(command);
-						const reply = yield* publisher.awaitCompletion(published.id, {
+						const reply = yield* publisher.awaitCompletion(published, {
 							timeoutMillis: 2000,
 						});
 						return reply;
@@ -114,7 +114,7 @@ describe('command-channel', () => {
 					Effect.gen(function* () {
 						const publisher = yield* makeCommandChannelPublisher(paths);
 						const published = yield* publisher.publish({ tag: 'shutdown.requested' });
-						return yield* publisher.awaitCompletion(published.id, {
+						return yield* publisher.awaitCompletion(published, {
 							timeoutMillis: 100,
 						});
 					}),
@@ -123,6 +123,70 @@ describe('command-channel', () => {
 				if (!result.ok) {
 					expect(result.message).toMatch(/timed out/);
 				}
+			}),
+		),
+	);
+
+	it.live('awaitCompletion correlates correctly past a large unrelated events backlog', () =>
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
+				const paths = commandChannelPaths(root);
+				const result = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const publisher = yield* makeCommandChannelPublisher(paths);
+						const subscriber = yield* makeCommandChannelSubscriber(paths, {
+							fromOffset: 'start',
+							pollMillis: 20,
+						});
+
+						// Seed a large backlog of unrelated engine events AND a
+						// stale ack that correlates to a DIFFERENT command id.
+						// `publish` snapshots the events-file offset at publish
+						// time, so `awaitCompletion` tails only from there — it
+						// must neither re-scan this backlog nor be fooled by the
+						// stale ack into a wrong correlation.
+						for (let i = 0; i < 200; i++) {
+							yield* subscriber.publishEvent({
+								tag: 'manifest.flushed',
+								manifestVersion: i,
+								at: 0,
+							});
+						}
+						yield* subscriber.ack('not-the-command-we-await', 'stale');
+
+						// Supervisor acks only the command it actually observes,
+						// echoing its id as the correlation key + a payload we can
+						// assert against.
+						yield* Effect.forkChild(
+							subscriber.commands.pipe(
+								Stream.runForEach((rec) =>
+									subscriber
+										.ack(rec.id, 'observed', { echoedId: rec.id })
+										.pipe(Effect.catch(() => Effect.void)),
+								),
+								Effect.catch(() => Effect.void),
+							),
+							{ startImmediately: true },
+						);
+						yield* Effect.sleep('30 millis');
+
+						const published = yield* publisher.publish({ tag: 'apply.requested' });
+						const reply = yield* publisher.awaitCompletion(published, {
+							timeoutMillis: 2000,
+						});
+						return { reply, publishedId: published.id, fromOffset: published.fromOffset };
+					}),
+				);
+
+				// Correct reply despite the 200-event + stale-ack backlog: the
+				// await correlated to THIS command's id, not the stale one.
+				expect(result.reply.ok).toBe(true);
+				if (result.reply.ok) {
+					expect(result.reply.payload).toEqual({ echoedId: result.publishedId });
+				}
+				// The publish-time offset was non-zero — proving the await
+				// started past the seeded backlog rather than from byte 0.
+				expect(result.fromOffset).toBeGreaterThan(0);
 			}),
 		),
 	);

@@ -80,7 +80,7 @@ const runApplyAgainstLiveSupervisor = (
 			Effect.gen(function* () {
 				const publisher = yield* makeCommandChannelPublisher(commandChannelPaths(stackRoot));
 				const published = yield* publisher.publish({ tag: 'apply.requested' });
-				const reply = yield* publisher.awaitCompletion(published.id, {
+				const reply = yield* publisher.awaitCompletion(published, {
 					timeoutMillis: LIVE_APPLY_ACK_TIMEOUT_MILLIS,
 				});
 				if (!reply.ok) {
