@@ -8,6 +8,7 @@ import { useRoute, navigate } from './lib/router.ts';
 import { useProjection } from './lib/useProjection.ts';
 import { summarize } from './lib/derive.ts';
 import { captureSnapshot, restartStack, runCodegen } from './lib/api.ts';
+import { suiRpcUrl } from './lib/chain.ts';
 import { ToastProvider, useToast } from './lib/toast.tsx';
 import { Banner, Button, EmptyState, Icon, IconButton, Input } from './ui/index.ts';
 import { NavRail } from './shell/NavRail.tsx';
@@ -297,11 +298,17 @@ const Shell = () => {
 	// --- Mounted shell --------------------------------------------------------
 
 	const summary = summarize(projection.rows);
+	// Browser-direct chain reads target the stack's `rpc` endpoint; namespace the
+	// react-query cache by network so switching stacks never serves stale hits.
 	const panelProps: PanelProps = {
 		projection,
 		activity: data.activity,
 		endpoint,
 		connection: data.connection,
+		chain: {
+			rpcUrl: suiRpcUrl(projection.endpoints),
+			network: projection.identity.network,
+		},
 		refresh: data.refresh,
 	};
 

@@ -215,11 +215,12 @@ export const fetchLatestTransactions = async (
 		// Newest-first within the checkpoint too.
 		for (const t of [...cp.transactions].reverse()) {
 			if (out.length >= limit) break;
-			const tx = t.transaction;
 			out.push({
 				digest: t.digest ?? '',
-				sender: (tx as { sender?: string } | undefined)?.sender ?? null,
-				kind: (tx as { kind?: { $kind?: string } } | undefined)?.kind?.$kind ?? 'Transaction',
+				sender: t.transaction?.sender ?? null,
+				// Low-level `TransactionKind` carries a `data` oneof — use its
+				// discriminator (`programmableTransaction`, `genesis`, …) as the label.
+				kind: t.transaction?.kind?.data?.oneofKind ?? 'transaction',
 				gas:
 					num(t.effects?.gasUsed?.computationCost) +
 					num(t.effects?.gasUsed?.storageCost) -
@@ -303,10 +304,9 @@ export const fetchDynamicFields = async (
 /** Package detail — modules with their function signatures. */
 export const fetchPackage = async (rpcUrl: string, packageId: string): Promise<PackageDetail> => {
 	const client = await chainClient(rpcUrl);
-	const { response } = await client.movePackageService.getPackage({
-		packageId,
-		readMask: { paths: ['storage_id', 'version', 'modules.name', 'modules.functions'] },
-	});
+	// `GetPackageRequest` in @mysten/sui 2.17.0 has no `read_mask`; the response
+	// always carries the full package (modules + function descriptors).
+	const { response } = await client.movePackageService.getPackage({ packageId });
 	const pkg = response.package;
 	const modules: PackageModuleView[] = (pkg?.modules ?? []).map((m) => ({
 		name: m.name ?? '',

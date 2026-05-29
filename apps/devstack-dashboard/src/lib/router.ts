@@ -19,6 +19,7 @@ export const ROUTE_NAMES = [
 	'activity',
 	'accounts',
 	'faucet',
+	'explorer',
 	'controls',
 	'config',
 ] as const;
@@ -57,3 +58,45 @@ export const useRoute = (): Route => {
 	}, []);
 	return route;
 };
+
+// --- Explorer sub-routes ----------------------------------------------------
+//
+// The Explorer panel browses chain entities (transactions, objects, packages).
+// To stay within the router's single-`param` mechanism, the Explorer sub-view
+// is encoded into the `explorer` route's `param` as `<kind>:<id>`:
+//   `#/explorer`                 → home (latest tx + KPIs)
+//   `#/explorer/tx:<digest>`     → transaction detail
+//   `#/explorer/object:<id>`     → object detail
+//   `#/explorer/package:<id>`    → package detail
+// `parseExplorerView` decodes a route's `param`; the `goto*` helpers navigate.
+
+export type ExplorerViewKind = 'home' | 'tx' | 'object' | 'package';
+
+export interface ExplorerView {
+	readonly kind: ExplorerViewKind;
+	/** Target id (digest / object id / package id); empty for `home`. */
+	readonly id: string;
+}
+
+const EXPLORER_HOME: ExplorerView = { kind: 'home', id: '' };
+
+/** Decode an `explorer` route's `param` into a typed sub-view. */
+export const parseExplorerView = (param?: string): ExplorerView => {
+	if (!param) return EXPLORER_HOME;
+	const colon = param.indexOf(':');
+	if (colon === -1) return EXPLORER_HOME;
+	const kind = param.slice(0, colon);
+	const id = param.slice(colon + 1);
+	if (!id) return EXPLORER_HOME;
+	if (kind === 'tx' || kind === 'object' || kind === 'package') return { kind, id };
+	return EXPLORER_HOME;
+};
+
+/** Navigate to the Explorer home. */
+export const gotoExplorer = (): void => navigate('explorer');
+/** Navigate to a transaction detail in the Explorer. */
+export const gotoTx = (digest: string): void => navigate('explorer', `tx:${digest}`);
+/** Navigate to an object detail in the Explorer. */
+export const gotoObject = (id: string): void => navigate('explorer', `object:${id}`);
+/** Navigate to a package detail in the Explorer. */
+export const gotoPackage = (id: string): void => navigate('explorer', `package:${id}`);

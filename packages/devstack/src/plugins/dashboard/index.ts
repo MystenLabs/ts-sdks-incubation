@@ -23,6 +23,13 @@ export interface DashboardOptions {
 	readonly port?: number;
 	/** Bind address for the loopback listener. Defaults to `127.0.0.1`. */
 	readonly bindAddress?: string;
+	// Note on log retention: the queryable cross-service log store the
+	// dashboard reads is process-scoped and owned by the SUPERVISOR (not this
+	// plugin), so its capacity is configured there. Tune it with the
+	// `DEVSTACK_DASHBOARD_LOG_CAPACITY` (per-service record cap, default 2000)
+	// and `DEVSTACK_DASHBOARD_LOG_MAX_SERVICES` (distinct-ring cap, default
+	// 256) env vars, or programmatically via `SupervisorStartupOptions.logStore`.
+	// See substrate/runtime/observability/log-store.ts.
 }
 
 export interface DashboardValue {

@@ -479,6 +479,26 @@ export interface SpanRecord {
 	readonly attributes: Record<string, unknown>;
 }
 
+// The gql.tada-generated variable types want *mutable* `string[]` for the
+// list filter fields, but the public `LogQueryFilter`/`SpanQueryFilter` expose
+// `readonly` arrays (callers shouldn't mutate them). Project a readonly filter
+// onto the mutable wire shape by spreading each array.
+const logFilterToWire = (filter: LogQueryFilter) => ({
+	sinceMillis: filter.sinceMillis,
+	search: filter.search,
+	limit: filter.limit,
+	services: filter.services ? [...filter.services] : undefined,
+	levels: filter.levels ? [...filter.levels] : undefined,
+});
+
+const spanFilterToWire = (filter: SpanQueryFilter) => ({
+	sinceMillis: filter.sinceMillis,
+	search: filter.search,
+	limit: filter.limit,
+	services: filter.services ? [...filter.services] : undefined,
+	statuses: filter.statuses ? [...filter.statuses] : undefined,
+});
+
 const parseJsonObject = (raw: string): Record<string, unknown> => {
 	try {
 		const parsed = JSON.parse(raw) as unknown;
@@ -531,7 +551,9 @@ export const fetchLogs = async (
 	endpoint: string,
 	filter?: LogQueryFilter,
 ): Promise<LogRecord[]> => {
-	const { logs } = await execute(endpoint, LogsDoc, { filter: filter ?? null });
+	const { logs } = await execute(endpoint, LogsDoc, {
+		filter: filter ? logFilterToWire(filter) : null,
+	});
 	return logs.map((l) => ({
 		seq: l.seq,
 		timestampMillis: l.timestampMillis,
@@ -551,7 +573,9 @@ export const fetchSpans = async (
 	endpoint: string,
 	filter?: SpanQueryFilter,
 ): Promise<SpanRecord[]> => {
-	const { spans } = await execute(endpoint, SpansDoc, { filter: filter ?? null });
+	const { spans } = await execute(endpoint, SpansDoc, {
+		filter: filter ? spanFilterToWire(filter) : null,
+	});
 	return spans.map((s) => ({
 		traceId: s.traceId,
 		spanId: s.spanId,

@@ -13,6 +13,7 @@
 		"@fontsource-variable/geist": "catalog:",
 		"@fontsource-variable/geist-mono": "catalog:",
 		"@mysten/sui": "catalog:",
+		"@tanstack/react-query": "catalog:",
 		"graphql": "catalog:",
 		"gql.tada": "catalog:",
 		"react": "catalog:",

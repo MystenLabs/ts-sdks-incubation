@@ -45,6 +45,7 @@ import {
 	makeSpanStore,
 	withStackSpan,
 	type LoggerShape,
+	type LogStoreConfig,
 } from '../observability/index.ts';
 import { ControlPlaneService } from '../control-plane/service.ts';
 import { controlPlaneDomainFromContext } from '../control-plane/domain.ts';
@@ -117,6 +118,11 @@ export interface SupervisorStartup {
 
 export interface SupervisorStartupOptions {
 	readonly commandLoop?: boolean;
+	/** Per-service log-store tuning. Absent fields fall back to the
+	 *  `DEVSTACK_DASHBOARD_LOG_*` env vars, then the module defaults
+	 *  (2000 records/service, 256 services). Threaded into the
+	 *  process-scoped `makeLogStore` below. */
+	readonly logStore?: LogStoreConfig;
 }
 
 const pendingAccountProjection = (
@@ -236,7 +242,7 @@ export const startSupervisor = (
 		// by a recording Tracer. Both survive `stack.restart` because they
 		// live in this closure (only `cycle.id` bumps on restart). The
 		// dashboard reads them via the control-plane `domain`.
-		const logStore = yield* makeLogStore();
+		const logStore = yield* makeLogStore(options.logStore ?? {});
 		const spanStore = yield* makeSpanStore();
 		const logger = withEventPublishingLogger(baseLogger, state, hub, logStore);
 
