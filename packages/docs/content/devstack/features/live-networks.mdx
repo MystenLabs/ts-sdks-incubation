@@ -101,10 +101,21 @@ intentionally fail.
 
 ### Funding test accounts (fork faucet)
 
-Fork networks have no HTTP faucet, but devstack can fund accounts by **impersonating a large-reserve
-"whale" address** on the forked upstream and transferring SUI from it. Set `faucet.whale` to an
-address holding a large single SUI coin; the whale is auto-added to the fork seed and validated at
-boot.
+Fork networks have no HTTP faucet, so devstack funds accounts by **impersonating a large-reserve
+"whale" address** on the forked upstream and transferring SUI from it. For `testnet`, `mainnet`, and
+`devnet` a default whale ships built in, so **fork funding works with zero config** — ephemeral
+accounts auto-fund exactly like on localnet:
+
+```ts
+const forkedTestnet = sui({ mode: 'fork', upstream: 'testnet' });
+
+// Auto-funded from the default whale — no env vars, pre-funded addresses,
+// or impersonation needed:
+const publisher = account('publisher', { kind: 'ephemeral' });
+```
+
+To use your own funding source — or for an upstream with no default — set `faucet.whale` to an
+address holding a large single SUI coin. It's auto-added to the fork seed and validated at boot:
 
 ```ts
 const forkedTestnet = sui({
@@ -112,10 +123,6 @@ const forkedTestnet = sui({
 	upstream: 'testnet',
 	faucet: { whale: process.env.FORK_WHALE! }, // large-reserve upstream address
 });
-
-// Ephemeral accounts are now auto-funded from the whale — no pre-funded
-// addresses or impersonation needed:
-const publisher = account('publisher', { kind: 'ephemeral' });
 ```
 
 Funding flows through the normal faucet pathway, so ephemeral-account auto-funding and explicit SUI

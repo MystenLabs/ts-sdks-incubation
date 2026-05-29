@@ -36,7 +36,11 @@ import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
-import { buildForkImpersonationTransactionBytes, type ClientWithCoreApi } from '../sui/index.ts';
+import {
+	buildForkImpersonationTransactionBytes,
+	type ClientWithCoreApi,
+	type ForkImpersonationGasClient,
+} from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
 import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
@@ -156,20 +160,10 @@ export interface MintSdkShim {
 	readonly core: {
 		readonly getObject: (args: { readonly objectId: string }) => Promise<unknown>;
 		/** Coin selection for the fork-mode offline build (gas + input
-		 *  resolution). Present so `sdk.core` satisfies the fork impersonation
-		 *  gas client. */
-		readonly listCoins: (input: {
-			readonly owner: string;
-			readonly coinType?: string;
-			readonly limit?: number;
-		}) => Promise<{
-			readonly objects: ReadonlyArray<{
-				readonly objectId: string;
-				readonly version: string | number | bigint;
-				readonly digest: string;
-				readonly balance?: string | number | bigint;
-			}>;
-		}>;
+		 *  resolution). Reuses the fork impersonation gas client's paginating
+		 *  signature so `sdk.core` satisfies it exactly — selection walks the
+		 *  coin set via `cursor`/`hasNextPage`, not a single page. */
+		readonly listCoins: ForkImpersonationGasClient['listCoins'];
 	};
 	/** Client reference for `Transaction.build({ client })`. The Sui
 	 *  barrel hands in the resolved `SuiGrpcClient`. */
