@@ -1,20 +1,25 @@
-// Accounts panel — the configured keypairs from the projection with their live
-// on-chain SUI balance and funding status. Clicking a row opens an inline
-// detail card: full address, balance, an on-demand chain balance check, and a
-// jump to the faucet.
+// Accounts panel — the configured keypairs from the projection, with their live
+// on-chain balances read browser-direct from the node (gRPC via react-query),
+// not the control-plane API. The projection's `funding.balanceMist` is a stale
+// snapshot from the last funding pass and is often null, so the Balance column
+// and the detail drawer both fetch the *current* chain balance per address and
+// fall back to the projection value only while the live read is loading.
 //
-// Honest scope: the projection only carries the native SUI `balanceMist`; there
-// is no per-coin registry here, so no DEEP/USDC rows are shown. The "Check
-// balance" button reads the chain directly from the node over gRPC
-// (`client.core.getBalance`), not via the control-plane API.
+// Clicking a row opens a right detail card: avatar, full address, the live SUI
+// balance plus every other non-zero coin balance, an impersonation warning, and
+// Fund / Explorer / Export actions. There is no dev-wallet integration yet, so
+// the "Connect dev-wallet" button renders disabled with an honest note rather
+// than faking a connection.
 
 import { useState } from 'react';
 import type { PanelProps } from './types.ts';
 import type { AccountProjection } from '../lib/types.ts';
+import type { BalanceView } from '../lib/explorerTypes.ts';
 import { fundingDisplay } from '../lib/derive.ts';
 import { mistToSui } from '../lib/format.ts';
-import { chainClient, suiRpcUrl } from '../lib/chain.ts';
-import { navigate } from '../lib/router.ts';
+import { type ChainSource, useBalances, useSuiBalance } from '../lib/useChain.ts';
+import { useToast } from '../lib/toast.tsx';
+import { gotoObject, navigate } from '../lib/router.ts';
 import {
 	AddressChip,
 	Badge,
@@ -30,12 +35,19 @@ import {
 	Icon,
 	IconButton,
 	Identicon,
-	JsonTree,
 	Kpi,
 	Panel,
 } from '../ui/index.ts';
 
-/** Sum of all known SUI balances (MIST), as a display SUI string. */
+const SUI_TYPE = '0x2::sui::SUI';
+
+/** Symbol from a coin type's trailing `::SYMBOL`, upper-cased (`DEEP`, `WAL`…). */
+const coinSymbol = (coinType: string): string => {
+	const tail = coinType.split('::').pop() ?? coinType;
+	return tail.toUpperCase();
+};
+
+/** Sum of the projection's last-known SUI balances (MIST) as a display string. */
 const totalBalanceSui = (accounts: ReadonlyArray<AccountProjection>): string => {
 	let total = 0n;
 	let any = false;
@@ -51,9 +63,8 @@ const totalBalanceSui = (accounts: ReadonlyArray<AccountProjection>): string => 
 	return any ? mistToSui(total) : '—';
 };
 
-export const AccountsPanel = ({ projection }: PanelProps) => {
+export const AccountsPanel = ({ projection, chain }: PanelProps) => {
 	const { accounts } = projection;
-	const rpcUrl = suiRpcUrl(projection.endpoints);
 	const [selected, setSelected] = useState<string | null>(null);
 	const account = selected ? (accounts.find((a) => a.key === selected) ?? null) : null;
 
@@ -63,7 +74,12 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 		{
 			key: 'account',
 			header: 'Account',
-			render: (a) => <span style={{ color: 'var(--c-magenta)', fontWeight: 550 }}>{a.name}</span>,
+			render: (a) => (
+				<span className="row" style={{ gap: 8 }}>
+					<Identicon address={a.address ?? a.key} size={18} />
+					<span style={{ color: 'var(--c-magenta)', fontWeight: 550 }}>{a.name}</span>
+				</span>
+			),
 			sortVal: (a) => a.name,
 		},
 		{
@@ -76,7 +92,9 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 			header: 'Scheme',
 			render: (a) =>
 				a.scheme ? (
-					<Badge style={{ height: 19, fontSize: 10.5 }}>{a.scheme}</Badge>
+					<span className="mono" style={{ fontSize: 11.5, color: 'var(--tx-lo)' }}>
+						{a.scheme}
+					</span>
 				) : (
 					<span style={{ color: 'var(--tx-dim)' }}>—</span>
 				),
@@ -92,7 +110,7 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 						color: a.source === 'impersonate' ? 'var(--c-yellow)' : 'var(--tx-mid)',
 					}}
 				>
-					{a.source === 'impersonate' ? 'impersonated' : (a.source ?? '—')}
+					{a.source === 'impersonate' ? 'impersonate' : (a.source ?? '—')}
 				</Badge>
 			),
 		},
@@ -100,15 +118,7 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 			key: 'balance',
 			header: 'Balance',
 			align: 'right',
-			render: (a) => <CoinAmount mist={a.funding.balanceMist} />,
-			sortVal: (a) => {
-				if (a.funding.balanceMist === null) return -1;
-				try {
-					return Number(BigInt(a.funding.balanceMist));
-				} catch {
-					return -1;
-				}
-			},
+			render: (a) => <LiveBalance chain={chain} account={a} />,
 		},
 		{
 			key: 'funding',
@@ -129,9 +139,15 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 				<div>
 					<h2 style={{ fontSize: 19 }}>Accounts &amp; Wallet</h2>
 					<p style={{ color: 'var(--tx-mid)', fontSize: 13, margin: '3px 0 0' }}>
-						Configured keypairs with their funding status and live native balance.
+						Configured keypairs with live on-chain balances and funding status.
 					</p>
 				</div>
+				{/* No dev-wallet integration exists yet — render the affordance honestly disabled. */}
+				<span title="Dev-wallet connection isn't wired up yet">
+					<Button variant="primary" sm icon="wallet" disabled>
+						Connect dev-wallet
+					</Button>
+				</span>
 			</div>
 
 			{/* Lead stats */}
@@ -187,7 +203,7 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 					</Panel>
 
 					{account && (
-						<AccountDetail account={account} rpcUrl={rpcUrl} onClose={() => setSelected(null)} />
+						<AccountDetail account={account} chain={chain} onClose={() => setSelected(null)} />
 					)}
 				</div>
 			)}
@@ -195,36 +211,48 @@ export const AccountsPanel = ({ projection }: PanelProps) => {
 	);
 };
 
-// --- Detail card ------------------------------------------------------------
+// --- Live balance cell ------------------------------------------------------
 
-type BalanceState =
-	| { readonly kind: 'idle' }
-	| { readonly kind: 'loading' }
-	| { readonly kind: 'ok'; readonly data: unknown }
-	| { readonly kind: 'error'; readonly message: string };
+interface LiveBalanceProps {
+	readonly chain: ChainSource;
+	readonly account: AccountProjection;
+}
+
+/**
+ * Table Balance cell: the live SUI balance read browser-direct from the node
+ * (react-query, deduped/cached by `[network, suiBalance, owner]`). While the
+ * read is loading it falls back to the projection's last-known `balanceMist`,
+ * so the column is never blank for an already-funded account.
+ */
+const LiveBalance = ({ chain, account }: LiveBalanceProps) => {
+	const query = useSuiBalance(chain, account.address);
+	const mist = query.data ?? account.funding.balanceMist;
+	return <CoinAmount mist={mist} />;
+};
+
+// --- Detail card ------------------------------------------------------------
 
 interface AccountDetailProps {
 	readonly account: AccountProjection;
-	/** The Sui node's gRPC base URL, or null when no node is in the stack. */
-	readonly rpcUrl: string | null;
+	readonly chain: ChainSource;
 	readonly onClose: () => void;
 }
 
-const AccountDetail = ({ account, rpcUrl, onClose }: AccountDetailProps) => {
-	const [balance, setBalance] = useState<BalanceState>({ kind: 'idle' });
+const AccountDetail = ({ account, chain, onClose }: AccountDetailProps) => {
+	const toast = useToast();
 	const fund = fundingDisplay(account.funding.status);
+	const suiQuery = useSuiBalance(chain, account.address);
+	const balancesQuery = useBalances(chain, account.address);
 
-	const checkBalance = async () => {
-		if (!account.address || !rpcUrl) return;
-		setBalance({ kind: 'loading' });
-		try {
-			// Read the chain directly over gRPC — not via the control-plane API.
-			const client = await chainClient(rpcUrl);
-			const { balance: result } = await client.core.getBalance({ owner: account.address });
-			setBalance({ kind: 'ok', data: result });
-		} catch (err) {
-			setBalance({ kind: 'error', message: err instanceof Error ? err.message : String(err) });
-		}
+	const suiMist = suiQuery.data ?? account.funding.balanceMist;
+	// Other non-zero coins (everything but native SUI), if the node returned any.
+	const otherCoins: ReadonlyArray<BalanceView> = (balancesQuery.data ?? []).filter(
+		(b) => b.coinType !== SUI_TYPE,
+	);
+
+	const onExport = (): void => {
+		// Export remains guarded to ephemeral keypairs only (see Faucet/handoff).
+		toast.info('Export guarded — ephemeral keypairs only');
 	};
 
 	return (
@@ -244,19 +272,45 @@ const AccountDetail = ({ account, rpcUrl, onClose }: AccountDetailProps) => {
 
 			<CopyChip text={account.address ?? '—'} display={account.address ?? '—'} />
 
+			{/* Balances — live SUI + every other non-zero coin the node reports. */}
 			<Panel pad style={{ background: 'var(--bg-elev)' }}>
-				<div className="eyebrow" style={{ marginBottom: 8 }}>
-					Balance
-				</div>
-				<div className="row between">
+				<div className="row between" style={{ marginBottom: 8 }}>
+					<span className="eyebrow">Balances</span>
 					<span className="row" style={{ gap: 6 }}>
 						<Dot token={fund.token} pulse={account.funding.status === 'pending'} />
-						<span style={{ fontSize: 12.5, color: `var(--c-${fund.token})` }}>{fund.label}</span>
+						<span style={{ fontSize: 11.5, color: `var(--c-${fund.token})` }}>
+							{account.funding.status === 'funded' ? `✓ ${fund.label}` : fund.label}
+						</span>
 					</span>
-					<span className="row" style={{ gap: 7 }}>
-						<CoinIcon symbol="SUI" size={18} />
-						<CoinAmount mist={account.funding.balanceMist} />
-					</span>
+				</div>
+				<div className="col" style={{ gap: 7 }}>
+					<div className="row between">
+						<span className="row" style={{ gap: 7 }}>
+							<CoinIcon symbol="SUI" size={18} />
+							<span className="mono" style={{ fontSize: 12 }}>SUI</span>
+						</span>
+						<CoinAmount mist={suiMist} />
+					</div>
+					{otherCoins.map((b) => {
+						const symbol = coinSymbol(b.coinType);
+						return (
+							<div key={b.coinType} className="row between">
+								<span className="row" style={{ gap: 7 }}>
+									<CoinIcon symbol={symbol} size={18} />
+									<span className="mono" style={{ fontSize: 12 }}>{symbol}</span>
+								</span>
+								<CoinAmount mist={b.balance} symbol={symbol} />
+							</div>
+						);
+					})}
+					{balancesQuery.isLoading && otherCoins.length === 0 && (
+						<span style={{ fontSize: 11.5, color: 'var(--tx-dim)' }}>Loading balances…</span>
+					)}
+					{balancesQuery.isError && (
+						<span style={{ fontSize: 11.5, color: 'var(--c-red)' }}>
+							Couldn't read balances from the node.
+						</span>
+					)}
 				</div>
 			</Panel>
 
@@ -276,35 +330,20 @@ const AccountDetail = ({ account, rpcUrl, onClose }: AccountDetailProps) => {
 				</Panel>
 			)}
 
-			<div className="col" style={{ gap: 8 }}>
-				<Button
-					sm
-					icon="search"
-					onClick={() => void checkBalance()}
-					disabled={!account.address || !rpcUrl || balance.kind === 'loading'}
-				>
-					{balance.kind === 'loading' ? 'Checking…' : 'Check balance'}
+			<div className="row" style={{ gap: 8 }}>
+				<Button variant="primary" className="grow" icon="drop" onClick={() => navigate('faucet')}>
+					Fund
 				</Button>
-				{balance.kind === 'ok' && (
-					<div
-						className="scroll-y"
-						style={{
-							maxHeight: 180,
-							padding: '8px 10px',
-							background: 'var(--bg-base)',
-							borderRadius: 'var(--r-sm)',
-						}}
-					>
-						<JsonTree data={balance.data} />
-					</div>
-				)}
-				{balance.kind === 'error' && (
-					<div style={{ fontSize: 12, color: 'var(--c-red)' }}>{balance.message}</div>
-				)}
+				<Button
+					disabled={!account.address}
+					onClick={() => account.address && gotoObject(account.address)}
+				>
+					View on explorer
+				</Button>
 			</div>
 
-			<Button variant="primary" icon="drop" onClick={() => navigate('faucet')}>
-				Fund
+			<Button variant="danger" sm onClick={onExport}>
+				Export keypair
 			</Button>
 		</Panel>
 	);

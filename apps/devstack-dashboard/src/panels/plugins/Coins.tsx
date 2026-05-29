@@ -1,18 +1,276 @@
-// Coins plugin view — scaffold only. Round-3 agent fills the real content
-// (treasury caps, symbols, decimals, coin types) via `fetchCoinCaps`.
+// Coins plugin view — the coin registry + treasury-cap surface.
+//
+// Real data: `fetchCoinCaps(endpoint)` (control-plane GraphQL) gives each
+// coin's full type, decimals, symbol, source, packageId, and treasuryCapId
+// (the cap that *would* drive a mint). Per-coin metadata (name / icon-symbol)
+// is read browser-direct from the chain via `useCoinMeta`. Total supply is NOT
+// reachable from the available chain helpers (the `getCoinMetadata` read
+// returns metadata, not the treasury-cap supply), so the Supply column renders
+// an honest "—" with a tooltip rather than a fabricated number.
+//
+// Mint: there is NO `mint` GraphQL mutation in the control-plane schema
+// (`src/lib/api.ts` exposes none; the backend `coin/mint.ts` capability is not
+// surfaced over GraphQL). So the Mint form renders, but submit is disabled with
+// an inline note — we never fake a successful mint.
 
-import { EmptyState } from '../../ui/index.ts';
+import { useEffect, useMemo, useState } from 'react';
+import { type CoinCap, fetchCoinCaps, restartPlugin } from '../../lib/api.ts';
+import { truncateMiddle } from '../../lib/format.ts';
+import { useCoinMeta } from '../../lib/useChain.ts';
+import { useToast } from '../../lib/toast.tsx';
+import {
+	Badge,
+	Banner,
+	type Column,
+	CoinIcon,
+	CopyChip,
+	DataTable,
+	EmptyState,
+	Field,
+	Icon,
+	NumberInput,
+	Panel,
+	SectionHead,
+	Select,
+	Tooltip,
+} from '../../ui/index.ts';
+import type { ChainSource } from '../../lib/useChain.ts';
+import type { Projection } from '../../lib/types.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-export const CoinsView = ({ row }: PluginViewProps) => (
-	<PluginScaffold label="Coins" icon="coins" row={row} subtitle="Minted coins + treasury caps.">
-		{/* TODO(panel): real coins content */}
-		<div className="panel">
-			<EmptyState
-				icon="coins"
-				title="Coins panel coming soon"
-				hint="Treasury caps, symbols, decimals, and coin types land here."
-			/>
-		</div>
-	</PluginScaffold>
-);
+export const CoinsView = ({ row, pluginKey, endpoint, projection, refresh, chain }: PluginViewProps) => {
+	const { success, error } = useToast();
+
+	const [caps, setCaps] = useState<ReadonlyArray<CoinCap>>([]);
+	const [loadErr, setLoadErr] = useState<string | null>(null);
+	const [loading, setLoading] = useState(true);
+	const [mintFor, setMintFor] = useState<CoinCap | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	useEffect(() => {
+		let alive = true;
+		setLoading(true);
+		setLoadErr(null);
+		fetchCoinCaps(endpoint)
+			.then((list) => {
+				if (alive) setCaps(list);
+			})
+			.catch((err) => {
+				if (alive) setLoadErr(err instanceof Error ? err.message : String(err));
+			})
+			.finally(() => {
+				if (alive) setLoading(false);
+			});
+		return () => {
+			alive = false;
+		};
+	}, [endpoint, chain.network]);
+
+	const onRestart = async () => {
+		if (busy) return;
+		setBusy(true);
+		try {
+			const result = await restartPlugin(endpoint, row?.key ?? pluginKey);
+			if (result.ok) success(result.message ?? 'Coin plugin restart requested');
+			else error(result.message ?? 'Coin plugin restart failed');
+			await refresh();
+		} catch (err) {
+			error(err instanceof Error ? err.message : String(err));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	return (
+		<PluginScaffold label="Coins" icon="coins" row={row} subtitle="Coin registry · treasury caps.">
+			<div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+				<button className="btn btn-sm" disabled={busy} onClick={() => void onRestart()}>
+					<Icon name="refresh" size={13} /> Restart
+				</button>
+			</div>
+
+			{loadErr ? (
+				<Banner tone="danger" title="Coin registry unavailable">
+					Couldn't load coin treasury caps from the control plane: {loadErr}
+				</Banner>
+			) : loading ? (
+				<Panel pad>
+					<span style={{ color: 'var(--tx-dim)', fontSize: 12.5 }}>Loading coin registry…</span>
+				</Panel>
+			) : caps.length === 0 ? (
+				<Panel>
+					<EmptyState
+						icon="coins"
+						title="No coins registered"
+						hint="This stack hasn't registered any coin treasury caps yet."
+					/>
+				</Panel>
+			) : (
+				<>
+					<Panel header={<SectionHead title="Coin registry" count={caps.length} />}>
+						<CoinTable
+							caps={caps}
+							chain={chain}
+							onMint={(cap) => setMintFor((cur) => (cur?.fullCoinType === cap.fullCoinType ? null : cap))}
+							activeMint={mintFor?.fullCoinType ?? null}
+						/>
+					</Panel>
+
+					{mintFor && (
+						<MintForm
+							cap={mintFor}
+							accounts={projection.accounts}
+							onCancel={() => setMintFor(null)}
+						/>
+					)}
+				</>
+			)}
+		</PluginScaffold>
+	);
+};
+
+interface CoinTableProps {
+	readonly caps: ReadonlyArray<CoinCap>;
+	readonly chain: ChainSource;
+	readonly onMint: (cap: CoinCap) => void;
+	readonly activeMint: string | null;
+}
+
+const CoinTable = ({ caps, chain, onMint, activeMint }: CoinTableProps) => {
+	const columns: ReadonlyArray<Column<CoinCap>> = [
+		{
+			key: 'coin',
+			header: 'Coin',
+			render: (c) => <CoinCell cap={c} chain={chain} />,
+		},
+		{
+			key: 'type',
+			header: 'Type',
+			render: (c) => <CopyChip text={c.fullCoinType} display={c.fullCoinType} />,
+		},
+		{
+			key: 'decimals',
+			header: 'Decimals',
+			align: 'right',
+			width: 90,
+			sortVal: (c) => c.decimals,
+			render: (c) => (
+				<span className="mono tnum" style={{ color: 'var(--tx-lo)' }}>
+					{c.decimals}
+				</span>
+			),
+		},
+		{
+			key: 'supply',
+			header: 'Supply',
+			align: 'right',
+			width: 110,
+			render: () => (
+				<Tooltip label="Total supply isn't exposed by the available chain reads.">
+					<span style={{ color: 'var(--tx-dim)' }}>—</span>
+				</Tooltip>
+			),
+		},
+		{
+			key: 'source',
+			header: 'Source',
+			width: 110,
+			render: (c) => <Badge style={{ height: 19, fontSize: 10.5 }}>{c.source}</Badge>,
+		},
+		{
+			key: 'treasury',
+			header: 'Treasury cap',
+			render: (c) =>
+				c.treasuryCapId ? (
+					<CopyChip text={c.treasuryCapId} display={truncateMiddle(c.treasuryCapId, 5, 3)} />
+				) : (
+					<span style={{ color: 'var(--tx-dim)' }}>—</span>
+				),
+		},
+		{
+			key: 'action',
+			header: '',
+			width: 110,
+			render: (c) =>
+				c.treasuryCapId ? (
+					<button
+						className={`btn btn-sm ${activeMint === c.fullCoinType ? 'btn-primary' : ''}`.trimEnd()}
+						onClick={(e) => {
+							e.stopPropagation();
+							onMint(c);
+						}}
+					>
+						<Icon name="coins" size={13} /> Mint
+					</button>
+				) : (
+					<span style={{ color: 'var(--tx-dim)', fontSize: 11.5 }}>no cap</span>
+				),
+		},
+	];
+	return <DataTable columns={columns} rows={caps} rowKey={(c) => c.fullCoinType} activeKey={activeMint ?? undefined} />;
+};
+
+/** Coin glyph + symbol cell. Resolves the display symbol from chain metadata,
+ *  falling back to the control-plane symbol (or the type's last segment). */
+const CoinCell = ({ cap, chain }: { cap: CoinCap; chain: ChainSource }) => {
+	const meta = useCoinMeta(chain, cap.fullCoinType);
+	const fallback = cap.symbol ?? cap.fullCoinType.split('::').pop() ?? '?';
+	const symbol = meta.data?.symbol ?? fallback;
+	return (
+		<span className="row" style={{ gap: 8 }}>
+			<CoinIcon symbol={symbol} size={20} />
+			<span style={{ fontWeight: 550 }}>{symbol}</span>
+		</span>
+	);
+};
+
+interface MintFormProps {
+	readonly cap: CoinCap;
+	readonly accounts: Projection['accounts'];
+	readonly onCancel: () => void;
+}
+
+const MintForm = ({ cap, accounts, onCancel }: MintFormProps) => {
+	const named = useMemo(() => accounts.filter((a) => a.address), [accounts]);
+	const [recipient, setRecipient] = useState(named[0]?.address ?? '');
+	const [amount, setAmount] = useState(1000);
+	const symbol = cap.symbol ?? cap.fullCoinType.split('::').pop() ?? 'coin';
+
+	return (
+		<Panel pad className="fade-up" style={{ maxWidth: 480 }}>
+			<SectionHead title={`Mint ${symbol}`} />
+			<div className="col" style={{ gap: 12 }}>
+				<Field label="Recipient">
+					<Select value={recipient} onChange={(e) => setRecipient(e.target.value)}>
+						{named.length === 0 && <option value="">No funded accounts</option>}
+						{named.map((a) => (
+							<option key={a.key} value={a.address ?? ''}>
+								{a.name} · {truncateMiddle(a.address ?? '')}
+							</option>
+						))}
+					</Select>
+				</Field>
+				<Field label="Amount" hint={`Base units (${cap.decimals} decimals)`}>
+					<NumberInput value={amount} min={0} onChange={setAmount} />
+				</Field>
+
+				<Banner tone="warn" title="Minting isn't wired yet">
+					Minting needs a backend signer — the control plane doesn't expose a mint mutation, so
+					this form can't submit. (The <span className="mono">coin/mint</span> capability exists in
+					devstack but isn't surfaced over GraphQL.)
+				</Banner>
+
+				<div className="row" style={{ gap: 8 }}>
+					<Tooltip label="Disabled: no backend mint mutation is available.">
+						<button className="btn btn-primary grow" disabled>
+							Mint {amount.toLocaleString()} {symbol}
+						</button>
+					</Tooltip>
+					<button className="btn" onClick={onCancel}>
+						Cancel
+					</button>
+				</div>
+			</div>
+		</Panel>
+	);
+};

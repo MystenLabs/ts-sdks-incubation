@@ -3,7 +3,15 @@
 // Endpoints + Recent activity on the right). Everything is derived from the
 // live `projection` + client `activity` feed via the `lib/` seams; no values
 // are fabricated.
+//
+// Live chain KPIs (Checkpoint + checkpoint-rate) read browser-direct from the
+// node via `useChainHead`. There is no historical series source today, so the
+// only trend visuals are HONEST rolling mini-series accumulated from live head
+// ticks while this panel is mounted — empty on first paint, filling as the head
+// advances. The design's "tx / day" bar + "active accounts" area charts are
+// omitted: no real series feeds them (see TODO below).
 
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
 	groupRows,
 	healthToken,
@@ -15,6 +23,7 @@ import {
 } from '../lib/derive.ts';
 import { displayHost, timeAgo } from '../lib/format.ts';
 import { navigate } from '../lib/router.ts';
+import { useChainHead } from '../lib/useChain.ts';
 import {
 	CopyChip,
 	Dot,
@@ -24,13 +33,37 @@ import {
 	Kpi,
 	Panel,
 	SectionHead,
+	Sparkline,
 } from '../ui/index.ts';
 import type { PanelProps } from './types.ts';
 
 const RECENT_ACTIVITY_LIMIT = 7;
 const ENDPOINTS_PREVIEW = 6;
+const SERIES_CAP = 24;
 
-export const OverviewPanel = ({ projection, activity }: PanelProps) => {
+/**
+ * A short rolling numeric series accumulated from live ticks. `sample` is fed a
+ * fresh value on each head update; identical consecutive values are skipped so
+ * the series only grows when the underlying metric actually moves. Resets when
+ * `resetKey` changes (e.g. switching networks). Honest by construction — it only
+ * ever holds values observed while this panel was mounted.
+ */
+const useRollingSeries = (resetKey: string): readonly [ReadonlyArray<number>, (v: number) => void] => {
+	const [series, setSeries] = useState<ReadonlyArray<number>>([]);
+	const last = useRef<number | null>(null);
+	useEffect(() => {
+		last.current = null;
+		setSeries([]);
+	}, [resetKey]);
+	const sample = (v: number) => {
+		if (!Number.isFinite(v) || last.current === v) return;
+		last.current = v;
+		setSeries((prev) => [...prev, v].slice(-SERIES_CAP));
+	};
+	return [series, sample];
+};
+
+export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 	const { rows, endpoints, accounts, packages, errors, cycle } = projection;
 
 	const health = summarize(rows);
@@ -41,9 +74,39 @@ export const OverviewPanel = ({ projection, activity }: PanelProps) => {
 	const bannerError = failed[0]?.lastError ?? errors[0] ?? null;
 	const recent = activity.slice(0, RECENT_ACTIVITY_LIMIT);
 
+	// Live head — refetches every ~2s (see useChain). We roll checkpoint numbers
+	// into one mini-series and derive a checkpoint-rate (cp/s) from consecutive
+	// (Δcheckpoint / Δt) deltas into a second. True tx/s is unavailable from the
+	// head read, so we surface the honest checkpoint rate rather than fake TPS.
+	const head = useChainHead(chain);
+	const [cpSeries, sampleCp] = useRollingSeries(chain.network);
+	const [rateSeries, sampleRate] = useRollingSeries(chain.network);
+	const prev = useRef<{ cp: number; t: number } | null>(null);
+	const [rate, setRate] = useState<number | null>(null);
+
+	const checkpoint = head.data?.checkpoint ?? null;
+	const headTs = head.data?.timestampMs ?? null;
+	useEffect(() => {
+		if (checkpoint === null) return;
+		sampleCp(checkpoint);
+		const now = headTs ?? Date.now();
+		const last = prev.current;
+		if (last && now > last.t) {
+			const cps = ((checkpoint - last.cp) * 1000) / (now - last.t);
+			if (Number.isFinite(cps) && cps >= 0) {
+				setRate(cps);
+				sampleRate(Number(cps.toFixed(2)));
+			}
+		}
+		prev.current = { cp: checkpoint, t: now };
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample fns are stable enough; keyed off checkpoint movement only
+	}, [checkpoint, headTs]);
+
+	const chainLive = chain.rpcUrl !== null;
+
 	return (
 		<div className="col" style={{ gap: 22 }}>
-			{/* KPI row — 4 tiles backed by real projection counts. */}
+			{/* KPI row — projection counts + live browser-direct chain head. */}
 			<div
 				style={{
 					display: 'grid',
@@ -58,6 +121,30 @@ export const OverviewPanel = ({ projection, activity }: PanelProps) => {
 					token={healthToken(health.health)}
 					icon="layers"
 				/>
+				{chainLive && (
+					<LiveKpi spark={cpSeries.length > 1 ? cpSeries : null} sparkType="line" sparkColor="var(--c-cyan)">
+						<Kpi
+							label="Checkpoint"
+							value={checkpoint !== null ? checkpoint.toLocaleString() : '—'}
+							sub={head.data ? `epoch ${head.data.epoch}` : 'connecting…'}
+							token="cyan"
+							icon="box"
+							live={checkpoint !== null}
+						/>
+					</LiveKpi>
+				)}
+				{chainLive && (
+					<LiveKpi spark={rateSeries.length > 1 ? rateSeries : null} sparkColor="var(--c-green)">
+						<Kpi
+							label="Throughput"
+							value={rate !== null ? rate.toFixed(2) : '—'}
+							sub="cp / s"
+							token="green"
+							icon="activity"
+							live={rate !== null}
+						/>
+					</LiveKpi>
+				)}
 				<Kpi
 					label="Accounts"
 					value={`${fundedAccounts}/${accounts.length}`}
@@ -73,6 +160,12 @@ export const OverviewPanel = ({ projection, activity }: PanelProps) => {
 					icon="clock"
 				/>
 			</div>
+
+			{/* TODO(overview-charts): the design shows a "tx / day" BarChart and an
+			    "active accounts" AreaChart. Both need a real historical series the
+			    node/projection does not expose today (no per-day tx counts, no
+			    active-account history). Omitted rather than fabricated — wire them
+			    once a real time-series source (indexer rollup) lands. */}
 
 			{/* Failed-services banner. */}
 			{showBanner && (
@@ -231,3 +324,38 @@ export const OverviewPanel = ({ projection, activity }: PanelProps) => {
 		</div>
 	);
 };
+
+/**
+ * Overlays a live rolling Sparkline into the bottom-right of a `Kpi` tile. The
+ * `Kpi` atom takes no children, so we wrap it in a relative container and pin
+ * the trend chart over the tile's lower corner — only rendered once the rolling
+ * series has more than one observed sample.
+ */
+const LiveKpi = ({
+	children,
+	spark,
+	sparkColor,
+	sparkType = 'area',
+}: {
+	readonly children: ReactNode;
+	readonly spark: ReadonlyArray<number> | null;
+	readonly sparkColor: string;
+	readonly sparkType?: 'area' | 'line';
+}) => (
+	<div style={{ position: 'relative', minWidth: 0 }}>
+		{children}
+		{spark && (
+			<div
+				style={{
+					position: 'absolute',
+					right: 12,
+					bottom: 10,
+					pointerEvents: 'none',
+					opacity: 0.85,
+				}}
+			>
+				<Sparkline data={spark} type={sparkType} color={sparkColor} width={84} height={26} />
+			</div>
+		)}
+	</div>
+);
