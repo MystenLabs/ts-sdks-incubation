@@ -8,7 +8,7 @@ Fork mode: impersonation-based faucet + setup/usability fixes.
   accounts by impersonating a large-reserve "whale" address on the forked upstream and transferring SUI
   from it. Wired through the existing faucet-strategy pathway, so ephemeral-account auto-funding and
   cross-cutting SUI funding work in fork mode exactly like localnet. The whale is auto-seeded into fork
-  state and its largest SUI coin is validated at boot. `scripts/find-fork-whale.mjs` helps source one.
+  state and its largest SUI coin is validated at boot (an actionable error fires if it's too small).
 - **Error surfacing** — `formatUnknownError` now unwraps a tagged error's `.message` and chains its
   `.cause`, and the publish / action / wallet / sui-execute transaction paths route through it. Fixes
   `account.signAndExecute failed … [object Object]`, which had swallowed the real cause (e.g.

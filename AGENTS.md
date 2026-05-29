@@ -145,8 +145,8 @@ client — `SuiGrpcClient` and its `client.core.*` methods (`listCoins`,
 JSON-RPC requests (no `fetch` to a fullnode with a `{ jsonrpc, method:
 'suix_*' | 'sui_*' }` body) and do NOT use the legacy JSON-RPC transport — the
 gRPC client is the only sanctioned path, and `sui-fork` doesn't serve JSON-RPC
-at all. The runtime already standardizes on `SuiGrpcClient`; helper scripts
-must too (e.g. `packages/devstack/scripts/find-fork-whale.mjs`).
+at all. The runtime already standardizes on `SuiGrpcClient`; any helper or
+script that reaches a Sui node must do the same.
 
 Every `@mysten/*` package ships LLM-optimized documentation in its own
 `docs/` directory. Before writing or modifying code that touches a `@mysten/*`

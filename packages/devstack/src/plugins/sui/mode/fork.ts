@@ -85,8 +85,8 @@ export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;
  *  `faucet.whale`). Validated at boot via `selectLargestForkCoin`. */
 export const FORK_DEFAULT_WHALE: Record<'mainnet' | 'testnet' | 'devnet', string | null> = {
 	// Long-lived validator addresses each holding a large single SUI coin,
-	// long-lived validator addresses, validated via `scripts/find-fork-whale.mjs`
-	// (SuiGrpcClient, 2026-05-28). `selectLargestForkCoin` re-queries the address
+	// long-lived validator addresses each holding a large single SUI coin
+	// (validated 2026-05-28). `selectLargestForkCoin` re-queries the address
 	// at the fork checkpoint at runtime, so a rotated coin self-heals; a
 	// drained/retired address degrades gracefully — boot validation warns and
 	// disables the default faucet. Override any of these with `faucet.whale`.
