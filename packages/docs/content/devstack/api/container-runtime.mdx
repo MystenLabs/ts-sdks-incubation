@@ -1,6 +1,8 @@
 ---
 title: Container Runtime
-description: The substrate-facing container-runtime contract that backs Docker today and is designed to admit podman or sandbox backends without touching plugin code.
+description:
+  The substrate-facing container-runtime contract that backs Docker today and is designed to admit
+  podman or sandbox backends without touching plugin code.
 ---
 
 `ContainerRuntime` is a substrate capability contract — a backend-agnostic, container-shaped
@@ -64,8 +66,8 @@ rather than calling `ensureContainer` directly — the helper stamps the `Contai
 - `followLogs(handle)` — `Stream<string, ContainerRuntimeError>`.
 - `pause(handle)`, `unpause(handle)`, `stop(handle, grace)` — explicit lifecycle.
 - `pauseAndCommit(handle)` — snapshot commit; running containers are paused first.
-- `saveImage(ref, opts?)`, `saveImages(refs, opts?)`, `loadImage(tar)`, `tagImage(src, newTag, opts?)`,
-  `removeImage(ref)` — snapshot image transport.
+- `saveImage(ref, opts?)`, `saveImages(refs, opts?)`, `loadImage(tar)`,
+  `tagImage(src, newTag, opts?)`, `removeImage(ref)` — snapshot image transport.
 - `sweepOrphans(labelMatch)`, `removeManagedContainers(labelMatch)`,
   `removeManagedImages(labelMatch)`, `removeManagedNetworks(labelMatch)`,
   `removeManagedVolumes(labelMatch)` — `prune` and `wipe` use these. Implementations MUST enumerate

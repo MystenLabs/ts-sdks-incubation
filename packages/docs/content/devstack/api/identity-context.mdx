@@ -1,6 +1,8 @@
 ---
 title: Identity Context
-description: The validated app/stack/chain triple devstack threads through plugin context for the lifetime of a running stack.
+description:
+  The validated app/stack/chain triple devstack threads through plugin context for the lifetime of a
+  running stack.
 ---
 
 `Identity` is the closed identity triple — `(app, stack, chain)` — that devstack resolves once at
@@ -63,8 +65,8 @@ body runs. Inside a plugin you can rely on the values being final.
   alias so siblings in the same stack can dial each other while parallel stacks coexist.
 - **Faucet capability keys.** `faucet:request:<chain>` is computed from `identity.chain`, so two
   stacks pointed at different chains route to different strategies automatically.
-- **Snapshot metadata.** Snapshots record the full identity triple; `restore` refuses identity
-  drift before destructive changes.
+- **Snapshot metadata.** Snapshots record the full identity triple; `restore` refuses identity drift
+  before destructive changes.
 - **Generated bindings.** Per-stack generated output is keyed by identity so two stacks generate
   into different paths without collision.
 

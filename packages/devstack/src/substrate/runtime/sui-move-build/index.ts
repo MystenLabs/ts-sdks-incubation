@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join, relative } from 'node:path';
+import { basename, join, relative, resolve, sep } from 'node:path';
 
 import { Effect, Schema, type Scope } from 'effect';
 
@@ -170,6 +170,47 @@ export const containerInnerScript = (pkgName: string): string => {
 		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
 	const cleanup = 'rm -rf /tmp/move-build-$$';
+	return [
+		'set -e',
+		stage,
+		scrub,
+		'set +e',
+		build,
+		'status=$?',
+		'set -e',
+		scrub,
+		cleanup,
+		'exit "$status"',
+	].join('; ');
+};
+
+/** One-shot-path inner script. Unlike {@link containerInnerScript} (used by
+ *  the per-app exec build, where `/workspace` is the developer's real tree
+ *  and must NOT be scrubbed in place), the one-shot path mounts a disposable
+ *  host-side staging copy at `/workspace`. So we scrub + build the package
+ *  IN PLACE rather than re-copying just `/workspace/<pkg>` into a scratch dir
+ *  — that re-copy would drop sibling local dependencies (`{ local = "../token" }`),
+ *  failing the build with "Invalid directory at ../…". The staging tree carries
+ *  the package's transitive local deps (see `stageLocalMoveDeps`), so the
+ *  in-place relative references resolve. */
+export const containerInnerScriptOneShot = (pkgName: string): string => {
+	const quotedPkg = shellQuote(pkgName);
+	const scratchRoot = '/tmp/move-build-$$';
+	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
+	// Copy the WHOLE staging mount (package + its staged local `../` deps) into
+	// an in-container scratch tree and scrub + build THERE — never the mounted
+	// host staging dir. Building in the mount leaves root-owned `build/` +
+	// scrubbed Move.lock files behind that the (non-root) host can't remove,
+	// failing scope cleanup with EACCES. Copying ALL of /workspace (vs
+	// containerInnerScript, which copies only `/workspace/<pkg>`) keeps sibling
+	// local deps like `{ local = "../token" }` present in the scratch tree.
+	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
+	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
+	const build =
+		`sui move build --path ${scratchPkg} ` +
+		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
+		`--with-unpublished-dependencies`;
+	const cleanup = `rm -rf ${scratchRoot}`;
 	return [
 		'set -e',
 		stage,
@@ -426,6 +467,69 @@ const buildViaContainerExec = (
 		return yield* parseBuildOutput(result.stdout, inputs.sourcePath, inputs.packageName);
 	}).pipe(Effect.withSpan('sui-move-build.via-exec'));
 
+/** `{ local = "../path" }` dependency paths, harvested from a Move.toml. */
+const LOCAL_MOVE_DEP_RE = /\blocal\s*=\s*"([^"]+)"/g;
+
+/** Copy a package's transitive local-path Move dependencies into a staging
+ *  tree, preserving each dep's path RELATIVE to the staged package so
+ *  references like `{ local = "../token" }` resolve. Without this, a scoped
+ *  copy of only the package fails `sui move build` / `sui move summary` with
+ *  "Invalid directory at ../…". Throws if a dep resolves outside `stagingRoot`
+ *  (the single-mount layout can't represent it). Promise-based so the build
+ *  (`MoveBuildError`) and summary (`CodegenBindingsFailed`) call sites can
+ *  wrap it in their own error type. */
+export const copyLocalMoveDeps = async (
+	packageSrc: string,
+	stagedPackage: string,
+	stagingRoot: string,
+): Promise<void> => {
+	const staged = new Set<string>([packageSrc]);
+	const walk = async (srcDir: string, stagedDir: string): Promise<void> => {
+		let toml: string;
+		try {
+			toml = await readFile(join(srcDir, 'Move.toml'), 'utf8');
+		} catch {
+			return;
+		}
+		for (const match of toml.matchAll(LOCAL_MOVE_DEP_RE)) {
+			const rel = match[1]!;
+			const depSrc = resolve(srcDir, rel);
+			const depStaged = resolve(stagedDir, rel);
+			if (depStaged !== stagingRoot && !depStaged.startsWith(stagingRoot + sep)) {
+				throw new Error(
+					`local Move dependency "${rel}" of "${basename(srcDir)}" resolves outside the ` +
+						`staging root; vendor it under the package tree so it can be staged.`,
+				);
+			}
+			if (staged.has(depSrc)) {
+				continue;
+			}
+			staged.add(depSrc);
+			await cp(depSrc, depStaged, { recursive: true });
+			await walk(depSrc, depStaged);
+		}
+	};
+	await walk(packageSrc, stagedPackage);
+};
+
+/** Build-path wrapper around {@link copyLocalMoveDeps}. */
+export const stageLocalMoveDeps = (
+	packageSrc: string,
+	stagedPackage: string,
+	stagingRoot: string,
+	inputs: BuildInputs,
+): Effect.Effect<void, MoveBuildError> =>
+	Effect.tryPromise({
+		try: () => copyLocalMoveDeps(packageSrc, stagedPackage, stagingRoot),
+		catch: (cause): MoveBuildError =>
+			moveBuildError('scrub', {
+				sourcePath: inputs.sourcePath,
+				packageName: inputs.packageName,
+				message: 'failed to stage local Move dependencies for the one-shot build',
+				cause,
+			}),
+	});
+
 const buildViaOneShot = (
 	inputs: BuildInputs,
 	runtime: ContainerRuntime,
@@ -433,7 +537,7 @@ const buildViaOneShot = (
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const pkgName = basename(inputs.sourcePath);
-		const inner = containerInnerScript(pkgName);
+		const inner = containerInnerScriptOneShot(pkgName);
 		const moveHome = join(homedir(), '.move');
 		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
 
@@ -468,6 +572,10 @@ const buildViaOneShot = (
 					cause,
 				}),
 		});
+		// Bring the package's transitive local `../` deps into the staging tree
+		// so the in-place one-shot build resolves them (the scoped copy alone
+		// would omit siblings like `{ local = "../token" }`).
+		yield* stageLocalMoveDeps(inputs.sourcePath, stagedPackage, stagingRoot, inputs);
 
 		const result = yield* runtime
 			.runOneShot({

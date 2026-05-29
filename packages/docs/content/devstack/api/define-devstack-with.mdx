@@ -1,6 +1,8 @@
 ---
 title: defineDevstackWith
-description: Callback-form composer that threads a resolved-narrow NetworkConfig through a BuildCtx so mode-narrowed plugin factories type-check at the call site.
+description:
+  Callback-form composer that threads a resolved-narrow NetworkConfig through a BuildCtx so
+  mode-narrowed plugin factories type-check at the call site.
 ---
 
 `defineDevstackWith` is the callback-form devstack composer. Use it instead of `defineDevstack` when
@@ -57,8 +59,8 @@ illegal-mode factory access at the call site, before the stack runs.
   the returned tuple.
 - A `MissingProviders<...>` branded error surfaces at the call site if any plugin's `dependsOn`
   reference is not provided by the tuple.
-- A defensive runtime check verifies every element returned by the builder carries the plugin
-  brand. If you reach for `as unknown as AnyPlugin` and skip `definePlugin`, the composer throws
+- A defensive runtime check verifies every element returned by the builder carries the plugin brand.
+  If you reach for `as unknown as AnyPlugin` and skip `definePlugin`, the composer throws
   immediately with a clear message.
 
 ## When to use which composer
@@ -68,5 +70,5 @@ illegal-mode factory access at the call site, before the stack runs.
 - `defineDevstackWith({ network, ... }, ({ network }) => [...])` — callback form. The canonical
   surface when one or more plugins narrow on the resolved network mode (live, fork).
 
-The two return the same `Stack<...>` shape and are consumed identically by `runStack`, `devstack
-up`, and the build-integration subpaths.
+The two return the same `Stack<...>` shape and are consumed identically by `runStack`,
+`devstack up`, and the build-integration subpaths.

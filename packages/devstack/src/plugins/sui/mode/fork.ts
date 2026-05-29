@@ -26,6 +26,7 @@ import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
+import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { extractExecuteDigest } from '../../../substrate/runtime/sui-execute/index.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
@@ -34,7 +35,7 @@ import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
 import { SuiSpans } from '../spans.ts';
 import { acquireForkDataDirHolder, wrapWithForkGuard } from '../fork-orchestration.ts';
-import { verifyForkImpersonationSender } from '../fork-transaction.ts';
+import { FORK_IMPERSONATION_GAS_BUDGET, verifyForkImpersonationSender } from '../fork-transaction.ts';
 import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
 import { toDockerHostGatewayUrl } from './shared.ts';
@@ -52,6 +53,21 @@ export const DEFAULT_FORK_READY_TIMEOUT = Duration.seconds(180);
 /** Default Sui repository revision used by the bundled `sui-fork` image build. */
 export const DEFAULT_SUI_FORK_REV = '62ee6ada958cd61b3c8a4466dd33c9aba3cdff8a';
 
+/** Published prebuilt `sui-fork` image to pull instead of compiling from
+ *  source. `undefined` until CI publishes one (e.g. `ghcr.io/mysten/sui-fork:<rev>`);
+ *  overridable per-run via `DEVSTACK_SUI_FORK_IMAGE`. When set and the
+ *  runtime can pull, `resolveForkImage` tries it first and falls back to a
+ *  source build, sparing users the ~10-minute cold compile. */
+export const DEFAULT_FORK_IMAGE_REF: string | undefined = undefined;
+
+/** Env var that overrides {@link DEFAULT_FORK_IMAGE_REF} for a single run. */
+export const FORK_IMAGE_ENV_VAR = 'DEVSTACK_SUI_FORK_IMAGE';
+
+const prebuiltForkImageRef = (): string | undefined => {
+	const fromEnv = process.env[FORK_IMAGE_ENV_VAR]?.trim();
+	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : DEFAULT_FORK_IMAGE_REF;
+};
+
 /** Map upstream literal to the canonical "live" chain id known by wallet-standard / MVR. */
 export const FORK_UPSTREAM_TO_KNOWN_NETWORK = {
 	mainnet: 'sui:mainnet',
@@ -61,6 +77,87 @@ export const FORK_UPSTREAM_TO_KNOWN_NETWORK = {
 
 export const DEFAULT_FORK_HOST_RPC_PORT = 51002;
 export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;
+
+/** Default impersonation "whale" per upstream — a large-reserve address
+ *  known to hold a big single SUI coin in the upstream's state, used as
+ *  the fork faucet funding source when `faucet.whale` is omitted. `null`
+ *  means no default is known (the faucet then requires an explicit
+ *  `faucet.whale`). Validated at boot via `selectSufficientForkCoin`. */
+export const FORK_DEFAULT_WHALE: Record<'mainnet' | 'testnet' | 'devnet', string | null> = {
+	// Long-lived validator addresses each holding a large single SUI coin
+	// (validated 2026-05-28). `selectSufficientForkCoin` re-queries the address
+	// at the fork checkpoint at runtime, so a rotated coin self-heals; a
+	// drained/retired address degrades gracefully — boot validation warns and
+	// disables the default faucet. Override any of these with `faucet.whale`.
+	mainnet: '0xbc7e7537564bd939b62e5b24477ac00ba8cef33ccec72d63090a080a1253b725', // ~273k SUI
+	testnet: '0xc397477d8b445e6295bc34e593b9a95d5d233cec1a8fe3740d0ab86012a460f6', // ~127k SUI
+	// devnet resets periodically; this genesis validator may go stale after a
+	// reset, at which point the default faucet disables itself until a
+	// `faucet.whale` is supplied.
+	devnet: '0x4296747d0bd91c41b668702bdca0bf769a0e32db66982d986101e7975db55cbe', // ~30M SUI
+};
+
+/** The common per-account fund the fork faucet must be able to cover. Mirrors
+ *  the account plugin's `DEFAULT_EPHEMERAL_FUND_MIST` (1 SUI) — kept local
+ *  because account → sui already, so importing it here would cycle; a test
+ *  pins the two together. */
+export const FORK_FAUCET_DEFAULT_FUND_MIST = 1_000_000_000n;
+
+/** Floor a single whale SUI coin must clear at boot to enable the fork faucet:
+ *  a default ephemeral fund (1 SUI) plus the impersonation gas budget. Set to
+ *  match the per-request requirement for the default fund so a whale that
+ *  passes boot can actually satisfy the first auto-fund. */
+export const FORK_FAUCET_WHALE_MIN_COIN_MIST =
+	FORK_FAUCET_DEFAULT_FUND_MIST + FORK_IMPERSONATION_GAS_BUDGET;
+
+/** Default per-request funding cap (MIST) — 1000 SUI. */
+export const DEFAULT_FORK_FAUCET_PER_REQUEST_CAP_MIST = 1_000_000_000_000n;
+
+/** Resolved fork faucet funding source. */
+export interface ResolvedForkWhale {
+	readonly whale: string;
+	readonly perRequestCapMist: bigint;
+	/** `true` when the user set `faucet.whale` explicitly — a validation
+	 *  failure then hard-fails boot; a default whale only warns + disables
+	 *  the faucet so the fork still boots. */
+	readonly explicit: boolean;
+}
+
+/** Resolve the fork faucet whale from options + per-upstream defaults,
+ *  or `null` when the faucet is disabled / no whale is known. */
+export const resolveForkWhale = (opts: SuiForkOptions): ResolvedForkWhale | null => {
+	if (opts.faucet?.enabled === false) {
+		return null;
+	}
+	const perRequestCapMist =
+		opts.faucet?.perRequestCapMist ?? DEFAULT_FORK_FAUCET_PER_REQUEST_CAP_MIST;
+	const explicit = opts.faucet?.whale?.trim();
+	if (explicit !== undefined && explicit.length > 0) {
+		return { whale: normalizeSuiAddress(explicit), perRequestCapMist, explicit: true };
+	}
+	const fallback = FORK_DEFAULT_WHALE[opts.upstream];
+	return fallback === null
+		? null
+		: { whale: normalizeSuiAddress(fallback), perRequestCapMist, explicit: false };
+};
+
+/** Inject the resolved faucet whale into the fork seed so its coins exist
+ *  in fork state. MUST run before the data-dir key / container config
+ *  hash are computed (both fold the seed) so enabling the faucet doesn't
+ *  silently reuse a whale-less fork data dir. */
+export const withForkFaucetSeed = (opts: SuiForkOptions): SuiForkOptions => {
+	const resolved = resolveForkWhale(opts);
+	if (resolved === null) {
+		return opts;
+	}
+	return {
+		...opts,
+		seed: {
+			...(opts.seed ?? {}),
+			addresses: [...(opts.seed?.addresses ?? []), resolved.whale],
+		},
+	};
+};
 
 const DOCKER_PUBLISH_HOST = '0.0.0.0' as const;
 const CONTAINER_RPC_PORT = SUI_RPC_ENTRYPOINT_PORT;
@@ -87,8 +184,12 @@ export const bootForkMode = (
 > =>
 	Effect.gen(function* () {
 		const autoTickIntervalMs = yield* resolveAutoTickIntervalMs(opts.autoTick);
+		// Fold the faucet whale into the seed BEFORE the data-dir key /
+		// container config hash are derived, so enabling the faucet keys a
+		// distinct fork state rather than reusing a whale-less data dir.
+		const seededOpts = withForkFaucetSeed(opts);
 		const image = yield* resolveForkImage(runtime, identity, opts);
-		const dataDir = yield* ensureForkDataDir(paths, opts);
+		const dataDir = yield* ensureForkDataDir(paths, seededOpts);
 
 		const labels: ContainerLabelTuple = {
 			app: identity.app,
@@ -104,7 +205,7 @@ export const bootForkMode = (
 			labels,
 			containerName,
 			dataDir,
-			opts,
+			opts: seededOpts,
 		});
 
 		const published = pickPublishedPort(ports, handle.ports);
@@ -168,33 +269,65 @@ export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
 	buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
 });
 
+/** Pull a prebuilt fork image, narrating progress on the supervisor row.
+ *  Fails with a `SuiPluginError` if the runtime can't pull or the pull errors. */
+const pullForkImage = (
+	runtime: ContainerRuntime,
+	pullRef: string,
+): Effect.Effect<ImageRef, SuiPluginError> =>
+	Effect.gen(function* () {
+		if (runtime.pullImage === undefined) {
+			return yield* Effect.fail(
+				suiPluginError(
+					'image-build',
+					`sui fork mode cannot pull image '${pullRef}' because the configured container runtime does not expose image pulls.`,
+				),
+			);
+		}
+		yield* setCurrentPluginPhase(`pulling sui-fork image ${pullRef}…`);
+		return yield* runtime.pullImage(pullRef).pipe(
+			Effect.mapError((cause) =>
+				suiPluginError(
+					'image-build',
+					`sui fork mode failed to pull image '${pullRef}': ${cause.reason}: ${cause.detail}`,
+					cause,
+				),
+			),
+			Effect.ensuring(setCurrentPluginPhase(null)),
+		);
+	});
+
+/** Build the bundled `sui-fork` image from source, narrating the cold
+ *  compile so the row doesn't look hung for ~10 minutes on first run. */
+const buildForkImage = (
+	runtime: ContainerRuntime,
+	buildCtx: Parameters<ContainerRuntime['ensureImage']>[0],
+): Effect.Effect<ImageRef, SuiPluginError> =>
+	Effect.gen(function* () {
+		yield* setCurrentPluginPhase(
+			'building sui-fork image — first run compiles sui-fork from source (~10+ min); cached after',
+		);
+		return yield* runtime.ensureImage(buildCtx).pipe(
+			Effect.mapError((cause) =>
+				suiPluginError(
+					'image-build',
+					`sui fork image build failed: ${cause.reason}: ${cause.detail}`,
+					cause,
+				),
+			),
+			Effect.ensuring(setCurrentPluginPhase(null)),
+		);
+	});
+
 export const resolveForkImage = (
 	runtime: ContainerRuntime,
 	identity: Identity,
 	opts: SuiForkOptions,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
+		// Explicit image override always wins.
 		if (opts.image && 'pull' in opts.image) {
-			const pullRef = opts.image.pull;
-			if (runtime.pullImage === undefined) {
-				return yield* Effect.fail(
-					suiPluginError(
-						'image-build',
-						`sui fork mode cannot pull image '${pullRef}' because the configured container runtime does not expose image pulls.`,
-					),
-				);
-			}
-			return yield* runtime
-				.pullImage(pullRef)
-				.pipe(
-					Effect.mapError((cause) =>
-						suiPluginError(
-							'image-build',
-							`sui fork mode failed to pull image '${pullRef}': ${cause.reason}: ${cause.detail}`,
-							cause,
-						),
-					),
-				);
+			return yield* pullForkImage(runtime, opts.image.pull);
 		}
 		const rev = opts.version ?? DEFAULT_SUI_FORK_REV;
 		const owner = {
@@ -203,26 +336,30 @@ export const resolveForkImage = (
 			plugin: 'sui',
 			role: 'validator',
 		} as const;
-		const buildCtx =
-			opts.image && 'build' in opts.image
-				? {
-						contextPath: opts.image.build.context,
-						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
-						buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
-						owner,
-					}
-				: { ...suiForkImageBuildContext(rev), owner };
-		return yield* runtime
-			.ensureImage(buildCtx)
-			.pipe(
-				Effect.mapError((cause) =>
-					suiPluginError(
-						'image-build',
-						`sui fork image build failed: ${cause.reason}: ${cause.detail}`,
-						cause,
-					),
+		if (opts.image && 'build' in opts.image) {
+			return yield* buildForkImage(runtime, {
+				contextPath: opts.image.build.context,
+				dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
+				buildArgs: { SUI_FORK_REV: rev, SUI_CLI_VERSION: DEFAULT_SUI_CLI_VERSION },
+				owner,
+			});
+		}
+		// No explicit image: prefer a prebuilt ref (env / published default) to
+		// skip the cold source compile, falling back to building on any miss.
+		const prebuilt = prebuiltForkImageRef();
+		if (prebuilt !== undefined && runtime.pullImage !== undefined) {
+			return yield* pullForkImage(runtime, prebuilt).pipe(
+				Effect.catchTag('SuiPluginError', (cause) =>
+					Effect.gen(function* () {
+						yield* Effect.logWarning(
+							`sui fork mode: prebuilt image '${prebuilt}' unavailable (${cause.message}); building from source.`,
+						);
+						return yield* buildForkImage(runtime, { ...suiForkImageBuildContext(rev), owner });
+					}),
 				),
 			);
+		}
+		return yield* buildForkImage(runtime, { ...suiForkImageBuildContext(rev), owner });
 	}).pipe(Effect.withSpan('devstack.plugin.sui.fork.resolveImage'));
 
 interface ForkContainerResult {
@@ -449,7 +586,9 @@ const waitForForkReady = (
 				cause instanceof ProbeTimeoutError
 					? suiPluginError(
 							'fork-status-probe',
-							`sui fork mode: ForkingService.GetStatus did not become ready within ${readyTimeoutMs}ms.`,
+							`sui fork mode: ForkingService.GetStatus did not become ready within ${readyTimeoutMs}ms. ` +
+								`Inspect the sui-fork container logs (\`docker logs\`); if the image is still ` +
+								`building or the upstream checkpoint is large, raise the \`readyTimeout\` option.`,
 							cause.lastError ?? cause.lastNotReady ?? cause,
 						)
 					: suiPluginError(

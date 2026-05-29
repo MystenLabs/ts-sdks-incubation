@@ -86,7 +86,7 @@ export type {
 	FaucetBodyError,
 	FaucetConfigError,
 } from './errors.ts';
-export { faucetConfigError } from './errors.ts';
+export { faucetBodyError, faucetConfigError } from './errors.ts';
 export { requestFundsWithRetry, type RetryOptions } from './http.ts';
 export {
 	FAUCET_CAPABILITY_KEY_PREFIX,

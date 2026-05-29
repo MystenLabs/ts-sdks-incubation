@@ -208,8 +208,7 @@ function walkMetaDirs(dir: string): void {
 			const mdxFile = path.join(dir, `${entry}.mdx`);
 			const indexFile = path.join(dir, entry, 'index.mdx');
 			const subMeta = path.join(dir, entry, 'meta.json');
-			const resolved =
-				fs.existsSync(mdxFile) || fs.existsSync(indexFile) || fs.existsSync(subMeta);
+			const resolved = fs.existsSync(mdxFile) || fs.existsSync(indexFile) || fs.existsSync(subMeta);
 			if (!resolved) {
 				const relDir = path.relative(CONTENT_DIR, dir) || '.';
 				console.error(

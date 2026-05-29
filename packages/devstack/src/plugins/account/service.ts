@@ -335,11 +335,40 @@ export interface AccountAcquireContext {
 	readonly projectedFunding?: ProjectedFunding;
 }
 
-const makeFundingBalanceReader = (sdk: SuiSdkShim): FundingBalanceReader => ({
+/** Sum an owner's coin balances for `coinType` via `listCoins`. Used in
+ *  fork mode, where `getBalance` / `listBalances` panic under the fork
+ *  guard — `listCoins` is the only balance-bearing read fork mode allows. */
+const sumBalanceViaListCoins = async (
+	sdk: SuiSdkShim,
+	owner: string,
+	coinType: string | undefined,
+): Promise<bigint> => {
+	let total = 0n;
+	let cursor: string | null = null;
+	do {
+		const page = await sdk.core.listCoins({
+			owner,
+			coinType: coinType ?? '0x2::sui::SUI',
+			cursor,
+			limit: 200,
+		});
+		for (const coin of page.objects) {
+			total += BigInt(coin.balance);
+		}
+		cursor = page.hasNextPage ? page.cursor : null;
+	} while (cursor !== null);
+	return total;
+};
+
+const makeFundingBalanceReader = (sdk: SuiSdkShim, forkMode: boolean): FundingBalanceReader => ({
 	readBalance: ({ owner, coinType }) =>
 		Effect.promise(async () => {
 			try {
-				return balanceAmountFromSdkResponse(await sdk.core.getBalance({ owner, coinType }));
+				// Fork mode forbids getBalance/listBalances (they panic under the
+				// fork guard); sum coins via the fork-safe listCoins instead.
+				return forkMode
+					? await sumBalanceViaListCoins(sdk, owner, coinType)
+					: balanceAmountFromSdkResponse(await sdk.core.getBalance({ owner, coinType }));
 			} catch {
 				return null;
 			}
@@ -847,7 +876,7 @@ export const acquireAccount = (
 		//     callers serialize through the substrate broker's per-key
 		//     FIFO queue) -------------------------------------------
 		const broker = yield* LeaseBrokerService;
-		const balanceReader = makeFundingBalanceReader(ctx.sui.sdk);
+		const balanceReader = makeFundingBalanceReader(ctx.sui.sdk, ctx.sui.mode === 'fork');
 
 		const defaultFunding: ProjectedFundingEntry | null =
 			opts.kind === 'ephemeral' && opts.funding === undefined

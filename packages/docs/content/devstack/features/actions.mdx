@@ -1,6 +1,8 @@
 ---
 title: Actions
-description: Declare one-shot on-chain effects (mint, create-singleton, seed-config) that run once after their dependencies are ready.
+description:
+  Declare one-shot on-chain effects (mint, create-singleton, seed-config) that run once after their
+  dependencies are ready.
 ---
 
 The `action()` plugin declares a one-shot on-chain effect — a mint, a singleton-object creation, a
@@ -8,17 +10,11 @@ seed-config call — that runs after its declared upstream refs (typically a sig
 or more published packages) are ready. The result is an `ActionReceipt` carrying the real
 transaction digest and projected object changes.
 
-Actions are `role: 'task'`: the body runs once at acquire and reaches "done" after `start`
-resolves. They are not long-lived services.
+Actions are `role: 'task'`: the body runs once at acquire and reaches "done" after `start` resolves.
+They are not long-lived services.
 
 ```ts title="devstack.config.ts"
-import {
-	account,
-	action,
-	defineDevstack,
-	localPackage,
-	sui,
-} from '@mysten-incubation/devstack';
+import { account, action, defineDevstack, localPackage, sui } from '@mysten-incubation/devstack';
 
 const localnet = sui();
 const alice = account('alice');
@@ -71,8 +67,8 @@ cache key folds:
 - a dynamic discriminator (literal or callback-supplied) when present.
 
 This means re-running the same stack against the same chain reuses the recorded receipt unless the
-discriminator changes. Supplying a callback `discriminator` is how you force re-execution on
-mutable upstream state (e.g. a counter on a singleton object).
+discriminator changes. Supplying a callback `discriminator` is how you force re-execution on mutable
+upstream state (e.g. a counter on a singleton object).
 
 ## Failure surface
 

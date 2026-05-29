@@ -14,6 +14,8 @@ export const SuiSpans = {
 	// the faucet plugin only sees the strategy dispatch.
 	localFaucetLeaseKey: 'faucet.lease.key',
 	localFaucetLeaseOwner: 'faucet.lease.owner',
+	// Fork-faucet impersonation source (the "whale" address).
+	forkFaucetWhale: 'sui.fork.faucet.whale',
 	liveFaucetUrl: 'sui.live.faucetUrl',
 	liveNetwork: 'sui.live.network',
 	liveRpcUrl: 'sui.live.rpcUrl',

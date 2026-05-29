@@ -36,6 +36,7 @@ import { Transaction } from '@mysten/sui/transactions';
 import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
@@ -162,6 +163,10 @@ export interface PublishExecutorInputs {
 	 *  (`docker run --rm`). Absent → path-(c) (host CLI). */
 	readonly runtime?: ContainerRuntime | undefined;
 	readonly buildImage?: ImageRef | undefined;
+	/** Fork mode — real signers (not just impersonate) must build offline
+	 *  with explicit gas, because the sui-fork binary has no
+	 *  `simulate_transaction` for the SDK's gas-estimating `tx.build`. */
+	readonly forkMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,10 +244,13 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			const { digest, objectChanges } = yield* signAndDispatch({
 				signerSource: inputs.account,
 				buildTxBytes: () =>
-					// Serialise while the account lease is held. Real signers use the SDK resolver;
-					// fork impersonation must build offline with explicit gas fields because the
-					// fork binary does not support the normal gas-selection simulation path.
-					inputs.account.source === 'impersonate'
+					// Serialise while the account lease is held. Non-fork real
+					// signers use the SDK resolver. Fork mode (impersonate OR real
+					// signer) must build offline with explicit gas fields: the
+					// sui-fork binary has no simulate_transaction, so the SDK's
+					// gas-estimating build path fails. The real-vs-empty-signature
+					// split happens later in the account's signAndExecute.
+					inputs.account.source === 'impersonate' || inputs.forkMode === true
 						? buildForkImpersonationTransactionBytes(
 								tx,
 								inputs.account.address,
@@ -268,7 +276,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 										packageName,
 										message:
 											`Transaction.build failed for package '${packageName}': ` +
-											(cause instanceof Error ? cause.message : String(cause)),
+											(formatUnknownError(cause)),
 										cause,
 									}),
 							}),
@@ -279,7 +287,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 						message:
 							`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
 							`(address=${inputs.account.address}): ${
-								cause instanceof Error ? cause.message : String(cause)
+								formatUnknownError(cause)
 							}`,
 						cause,
 					}),

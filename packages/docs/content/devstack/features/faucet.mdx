@@ -1,6 +1,7 @@
 ---
 title: Faucet and Funding Strategies
-description: How devstack funds accounts and how plugin authors register a faucet strategy for a chain.
+description:
+  How devstack funds accounts and how plugin authors register a faucet strategy for a chain.
 ---
 
 Devstack funds accounts through capability-keyed faucet strategies. There is no public `faucet()`
@@ -22,9 +23,9 @@ request through it; otherwise SUI funding fails loudly with `FaucetStrategyMissi
 registered keys so you can see "I asked for X, only Y is wired".
 
 Non-SUI coin funding (managed local-package coins, `walCoin(localWalrus)`, etc.) uses the same
-mechanism with a `coinType:<fullCoinType>` capability key. Missing non-SUI strategies are treated
-as a no-op so optional service funding is ergonomic; missing SUI is an error because default
-account funding depends on it.
+mechanism with a `coinType:<fullCoinType>` capability key. Missing non-SUI strategies are treated as
+a no-op so optional service funding is ergonomic; missing SUI is an error because default account
+funding depends on it.
 
 ## Contribution-sink invariant
 
@@ -35,12 +36,12 @@ account funding tries to read it.
 
 What breaks when this is bypassed:
 
-- Skipping the capability decl and calling into a faucet HTTP endpoint directly means **the
-  registry never learns about the strategy**. Account funding for the affected chain raises
+- Skipping the capability decl and calling into a faucet HTTP endpoint directly means **the registry
+  never learns about the strategy**. Account funding for the affected chain raises
   `FaucetStrategyMissing` even though the plugin "works". Snapshot capture also misses the
   contribution metadata.
-- Mounting at boot but not through the capability path means the supervisor's harvest loop does
-  not see the contribution, so the dashboard and the manifest projection do not list it. Operators
+- Mounting at boot but not through the capability path means the supervisor's harvest loop does not
+  see the contribution, so the dashboard and the manifest projection do not list it. Operators
   cannot tell from `devstack status` which faucet they are actually pointed at.
 - Mounting with a stale chain id (e.g. hardcoded `'sui:localnet'` when the stack is in
   `mainnet-fork` mode) registers the wrong key, the registry resolves the wrong strategy, and the
@@ -72,8 +73,8 @@ export const myFaucet = (chainId: `sui:${string}`) =>
 	});
 ```
 
-`defineFaucetStrategy` packages a `{ chainId, strategy }` pair into a `StrategyContributorDecl`.
-The capability key is computed from the chain id automatically; the substrate auto-registers the
+`defineFaucetStrategy` packages a `{ chainId, strategy }` pair into a `StrategyContributorDecl`. The
+capability key is computed from the chain id automatically; the substrate auto-registers the
 strategy as the contributing plugin acquires.
 
 Defaults:
@@ -90,9 +91,9 @@ load-bearing rules:
 - A non-2xx HTTP status MUST raise `FaucetUnreachable` or `FaucetBodyError`. The Sui faucet binary
   binds its socket before its validator can transfer coins, so the warm-up window returns 5xx; a
   permissive implementation marks accounts funded when no coins moved.
-- A 200 OK body carrying `{ status: { Failure: ... } }` MUST raise `FaucetBodyError`. During
-  warm-up the faucet accepts requests it cannot execute; treating those bodies as success is the
-  most common silent-funding failure.
+- A 200 OK body carrying `{ status: { Failure: ... } }` MUST raise `FaucetBodyError`. During warm-up
+  the faucet accepts requests it cannot execute; treating those bodies as success is the most common
+  silent-funding failure.
 
 A custom strategy is responsible for raising the right tagged error on each failure path; the
 substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2xx surfaces as

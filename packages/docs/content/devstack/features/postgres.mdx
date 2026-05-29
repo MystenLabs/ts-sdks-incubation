@@ -1,6 +1,8 @@
 ---
 title: Postgres
-description: Run a managed Postgres container alongside the stack and consume it from app code via generated bindings.
+description:
+  Run a managed Postgres container alongside the stack and consume it from app code via generated
+  bindings.
 ---
 
 The `postgres()` plugin runs one Postgres container per `(stack, name)` pair, ensures the requested
@@ -8,8 +10,8 @@ databases, and emits typed connection bindings into `src/generated` so app code 
 `DATABASE_URL` strings without hard-coding credentials.
 
 Postgres is a topological leaf — it does not depend on Sui or any other plugin. Single mode: only
-the local container exists today. The plain-endpoint shape anticipates a future live mode
-(Cloud SQL / Neon / RDS) without a code-shape change at the call site.
+the local container exists today. The plain-endpoint shape anticipates a future live mode (Cloud SQL
+/ Neon / RDS) without a code-shape change at the call site.
 
 ```ts title="devstack.config.ts"
 import { defineDevstack, postgres, sui } from '@mysten-incubation/devstack';
@@ -39,10 +41,10 @@ All fields are optional. The defaults track the distilled-doc recommendation (Po
 - `databases` — non-empty array of database names to ensure. The plugin runs `createdb` idempotently
   via `psql -tAc` existence checks, so repeat boots are no-ops.
 - `hostPort` — optional host-port publication (e.g. `5432`). Mutually exclusive with `route: true`.
-- `route` — when `true`, contribute a TCP routable on the `postgres-tcp` Traefik entrypoint
-  (host port 5432 by default). Default `false`. Only one stack on the host may set `route: true` at
-  a time — TCP entrypoints serve one backend at a time and the router collision detector fails fast
-  on the second contribution.
+- `route` — when `true`, contribute a TCP routable on the `postgres-tcp` Traefik entrypoint (host
+  port 5432 by default). Default `false`. Only one stack on the host may set `route: true` at a time
+  — TCP entrypoints serve one backend at a time and the router collision detector fails fast on the
+  second contribution.
 - `readyTimeoutMs` — `pg_isready` budget, default ample for cold-boot.
 - `stopGraceSeconds` — WAL-flush window on `docker stop`, default `20` (10s risks SIGKILL on busy
   databases and recovery mode on next boot).
@@ -59,8 +61,8 @@ interface Postgres {
 	readonly host: string;
 	readonly port: number;
 	readonly databases: ReadonlyArray<string>;
-	readonly endpoint: string;        // credentialed cluster URL
-	readonly plainEndpoint: string;   // manifest-safe (no password)
+	readonly endpoint: string; // credentialed cluster URL
+	readonly plainEndpoint: string; // manifest-safe (no password)
 	readonly url: (db: string) => string;
 	readonly containerNetwork: string;
 	readonly networkAlias: string;
@@ -97,7 +99,8 @@ captured Postgres image must roundtrip the database contents.
 
 Postgres-plugin callers may encounter:
 
-- `PostgresPluginError` — `phase: 'network-create' | 'image-build' | 'container-start' | 'ready-probe' | 'db-ensure' | 'unknown'`.
+- `PostgresPluginError` —
+  `phase: 'network-create' | 'image-build' | 'container-start' | 'ready-probe' | 'db-ensure' | 'unknown'`.
 - `PostgresConnectionTimeout` — `pg_isready` did not succeed before the deadline.
 - `DatabaseCreateFailed` — `op: 'exists-check' | 'createdb'`. Typical root cause: case-sensitivity
   collision in Postgres identifier folding.

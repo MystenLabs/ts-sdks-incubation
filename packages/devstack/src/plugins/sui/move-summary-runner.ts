@@ -37,6 +37,7 @@ import { CodegenBindingsFailed } from '../../orchestrators/codegen/errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
 import {
+	copyLocalMoveDeps,
 	shellQuote,
 	suiCliImageBuildContext,
 } from '../../substrate/runtime/sui-move-build/index.ts';
@@ -97,6 +98,8 @@ export const layerSuiMoveSummaryRunnerHost: Layer.Layer<
 							try: async () => {
 								await mkdir(summaryPath, { recursive: true });
 								await cp(sourcePath, stagedPkg, { recursive: true });
+								// Stage local relative deps so `sui move summary` resolves them.
+								await copyLocalMoveDeps(sourcePath, stagedPkg, dirname(stagedPkg));
 							},
 							catch: (cause) =>
 								new CodegenBindingsFailed({
@@ -181,8 +184,8 @@ const runSummaryViaDocker = (
 				const command = [
 					'set -e',
 					'cleanup_summary() { status=$?; ' +
-						'chmod -R a+rwX /summary 2>/dev/null || true; ' +
-						`chown -R ${hostUid}:${hostGid} /summary 2>/dev/null || true; ` +
+						'chmod -R a+rwX /summary /workspace 2>/dev/null || true; ' +
+						`chown -R ${hostUid}:${hostGid} /summary /workspace 2>/dev/null || true; ` +
 						'exit "$status"; }',
 					'trap cleanup_summary EXIT',
 					'mkdir -p /summary/package_summaries',
@@ -285,6 +288,9 @@ const stageSummarySource = (
 		try: async () => {
 			await mkdir(dirname(stagedPkg), { recursive: true });
 			await cp(input.sourcePath, stagedPkg, { recursive: true });
+			// Bring local `../` deps (`{ local = "../token" }`) into the staged
+			// tree so `sui move summary` resolves them (mirrors the build path).
+			await copyLocalMoveDeps(input.sourcePath, stagedPkg, dirname(stagedPkg));
 		},
 		catch: (cause) =>
 			new CodegenBindingsFailed({
