@@ -11,7 +11,12 @@ import { normalizeSuiAddress } from '@mysten/sui/utils';
 import { suiPluginError, type SuiPluginError } from './errors.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 
-export const FORK_IMPERSONATION_GAS_BUDGET = 1_000_000_000n;
+// 0.1 SUI. Deliberately well below the faucet's default per-account fund
+// (1 SUI) so a faucet-funded account keeps headroom to move value:
+// `setGasBudget` reserves the whole gas coin, so a budget equal to the
+// coin balance leaves nothing for `splitCoins(tx.gas, …)` / transfers
+// (InsufficientCoinBalance). 0.1 SUI still covers package publishes.
+export const FORK_IMPERSONATION_GAS_BUDGET = 100_000_000n;
 export const FORK_IMPERSONATION_GAS_PRICE = 1_000n;
 
 /** Canonical SUI gas coin type used to filter `listCoins` when picking

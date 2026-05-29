@@ -209,7 +209,7 @@ describe('sui fork mode', () => {
 				digest: 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB',
 			},
 		]);
-		expect(data.gasData.budget).toBe('1000000000');
+		expect(data.gasData.budget).toBe('100000000');
 		expect(data.gasData.price).toBe('1000');
 	});
 

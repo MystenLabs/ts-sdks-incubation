@@ -126,8 +126,11 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
 	core: {
 		getObject: sui.sdk.core.getObject,
 		getCoinMetadata: (args) => sui.sdk.client.core.getCoinMetadata(args),
+		listCoins: sui.sdk.core.listCoins,
 	},
 	client: sui.sdk.client,
+	// Fork mode mints offline with explicit gas (sui-fork has no simulate).
+	forkMode: sui.fork !== null,
 });
 
 // ---------------------------------------------------------------------------

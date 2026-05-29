@@ -16,13 +16,16 @@ Fork mode: impersonation-based faucet + setup/usability fixes.
 - **Image build UX** — the first-run `sui-fork` source build now narrates progress on the supervisor
   row instead of appearing hung; `image: { pull }` or `DEVSTACK_SUI_FORK_IMAGE` skip the build with a
   prebuilt image, falling back to a source build on miss.
-- **Fork-mode real accounts** — faucet-funded *real* (ephemeral) accounts can now publish and run
-  actions in fork mode, not just impersonate accounts. Two pieces: (1) funding-settlement balance reads
-  use `listCoins` in fork mode, since `getBalance`/`listBalances` panic under the fork guard; (2) the
-  publish and action transaction paths build offline with explicit gas in fork mode (real signers too,
-  not only impersonate), because the `sui-fork` binary has no `simulate_transaction` for the SDK's
-  gas-estimating build. End-to-end: a fork stack of ephemeral accounts auto-funds and publishes a Move
-  package with no pre-funded addresses.
+- **Fork-mode real accounts** — faucet-funded *real* (ephemeral) accounts can now publish, run actions,
+  mint coins, AND move value in fork mode, not just impersonate accounts. Pieces: (1) funding-settlement
+  balance reads use `listCoins` in fork mode, since `getBalance`/`listBalances` panic under the fork
+  guard; (2) the publish, action, and coin-mint transaction paths build offline with explicit gas in
+  fork mode (real signers too, not only impersonate), because the `sui-fork` binary has no
+  `simulate_transaction`; (3) the fork gas budget is lowered to 0.1 SUI so a faucet-funded account's
+  coin isn't fully reserved by gas — leaving headroom to split/transfer value. End-to-end verified: a
+  fork stack of ephemeral accounts auto-funds, publishes a Move package, and runs a value-transfer
+  action with no pre-funded addresses. (Deepbook pool deploy + its DEEP-funding faucet remain
+  local/known-only in fork — out of scope here.)
 - **Readiness** — the fork ready-probe timeout message now points at the container logs and the
   `readyTimeout` option.
 

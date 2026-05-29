@@ -123,6 +123,11 @@ top-ups behave exactly as on localnet. `faucet.perRequestCapMist` caps a single 
 `scripts/find-fork-whale.mjs` to find and validate a whale's largest coin on a live network before
 committing to it.
 
+Faucet-funded **real** (ephemeral) accounts are first-class in fork mode: they can publish packages,
+run actions, mint coins, and transfer value. Because `sui-fork` has no `simulate_transaction`, these
+transactions are built offline with an explicit gas budget (0.1 SUI), which also leaves a funded
+account headroom to move value rather than reserving its whole coin for gas.
+
 Network names accepted by `--network` and `DEVSTACK_NETWORK` are `localnet`, `testnet`, `mainnet`,
 `devnet`, `testnet-fork`, `mainnet-fork`, and `devnet-fork`; the same names are accepted with a
 `sui:` prefix. The `local` alias maps to `localnet`.

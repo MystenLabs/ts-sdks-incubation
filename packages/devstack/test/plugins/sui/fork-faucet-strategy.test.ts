@@ -88,7 +88,7 @@ describe('suiForkFaucetStrategy', () => {
 			expect(data.gasData.payment).toEqual([
 				{ objectId: BIG_COIN, version: '7', digest: DIGEST },
 			]);
-			expect(data.gasData.budget).toBe('1000000000');
+			expect(data.gasData.budget).toBe('100000000');
 			// splitCoins(gas, [amount]) + transferObjects([coin], recipient)
 			expect(data.commands).toHaveLength(2);
 		}),

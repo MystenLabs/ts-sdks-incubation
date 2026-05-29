@@ -33,9 +33,10 @@ import {
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
 import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
-import type { ClientWithCoreApi } from '../sui/index.ts';
+import { buildForkImpersonationTransactionBytes, type ClientWithCoreApi } from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
 import { CoinSpans } from './spans.ts';
 import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
@@ -154,10 +155,28 @@ export interface MintResult {
 export interface MintSdkShim {
 	readonly core: {
 		readonly getObject: (args: { readonly objectId: string }) => Promise<unknown>;
+		/** Coin selection for the fork-mode offline build (gas + input
+		 *  resolution). Present so `sdk.core` satisfies the fork impersonation
+		 *  gas client. */
+		readonly listCoins: (input: {
+			readonly owner: string;
+			readonly coinType?: string;
+			readonly limit?: number;
+		}) => Promise<{
+			readonly objects: ReadonlyArray<{
+				readonly objectId: string;
+				readonly version: string | number | bigint;
+				readonly digest: string;
+				readonly balance?: string | number | bigint;
+			}>;
+		}>;
 	};
 	/** Client reference for `Transaction.build({ client })`. The Sui
 	 *  barrel hands in the resolved `SuiGrpcClient`. */
 	readonly client: ClientWithCoreApi;
+	/** Fork mode — build offline with explicit gas (the sui-fork binary has
+	 *  no `simulate_transaction` for the SDK's gas-estimating `tx.build`). */
+	readonly forkMode?: boolean;
 }
 
 /** Verify probe — checks the cached minted-coin still exists. Lenient:
@@ -318,18 +337,32 @@ export const performMint = (
 									tx.pure.address(inputs.recipient),
 								],
 							});
-							// 2. Serialize the tx to BCS bytes while the account lease
-							//    is held. `Transaction.build` resolves gas + object-version
-							//    placeholders via the client.
-							return yield* Effect.tryPromise({
-								try: () => tx.build({ client: sdk.client }),
-								catch: (cause): ArtifactPublishError =>
-									artifactPublishError(
-										'produce-failed',
-										`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ` +
-											`${cause instanceof Error ? cause.message : String(cause)}`,
-									),
-							});
+							// 2. Serialize the tx to BCS bytes while the account lease is
+							//    held. Fork mode must build offline with explicit gas (the
+							//    sui-fork binary has no simulate_transaction); other modes
+							//    use the SDK resolver, which fills gas + object versions.
+							return sdk.forkMode === true
+								? yield* buildForkImpersonationTransactionBytes(
+										tx,
+										signer.address,
+										sdk.core,
+									).pipe(
+										Effect.mapError(
+											(cause): ArtifactPublishError =>
+												artifactPublishError(
+													'produce-failed',
+													`coin.mint(${inputs.fullCoinType}): fork Transaction.build failed — ${cause.message}`,
+												),
+										),
+									)
+								: yield* Effect.tryPromise({
+										try: () => tx.build({ client: sdk.client }),
+										catch: (cause): ArtifactPublishError =>
+											artifactPublishError(
+												'produce-failed',
+												`coin.mint(${inputs.fullCoinType}): Transaction.build failed — ${formatUnknownError(cause)}`,
+											),
+									});
 						}),
 					// 3. Sign + execute via the Account-supplied signer. Map
 					//    `AccountSignError` → `ArtifactPublishError`. The
