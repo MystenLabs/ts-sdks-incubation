@@ -36,6 +36,7 @@ import type {
 	ArtifactSpec,
 } from '../../../primitives/artifact-publisher.ts';
 import { CacheService } from '../cache/index.ts';
+import { setCurrentPluginPhase } from '../current-plugin.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { parseJsonTextSync } from '../runtime-decode.ts';
 
@@ -122,15 +123,51 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 						// therefore type-narrow trivially against `Produced`.
 						yield* spec.register(cached);
 						yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'hit' });
+						// Reuse is the quiet, expected warm-restart path — debug
+						// only. The interesting (and noisy) case is a *re-run*,
+						// logged below.
+						yield* Effect.logDebug(
+							`artifact-publisher: reusing cached '${spec.namespace}' on chain ${spec.chain} ` +
+								`(cache hit; no re-deploy).`,
+						);
 						return cached;
 					}
 				}
 			}
 
-			// 3. Miss or verify-failed → produce.
-			yield* Effect.annotateCurrentSpan({
-				[SpanAttr.artifactPublisherPath]: hit === null ? 'miss' : 'verify-failed',
-			});
+			// 3. Miss or verify-failed → produce. State WHEN and WHY loudly:
+			//    on a restart this is the line that explains why an on-chain
+			//    id is about to change. A fresh chain genesis misses every
+			//    cache key (keyed by chain id), so packages / key servers /
+			//    walrus all get brand-new ids, and content bound to the old
+			//    ids (e.g. Seal-encrypted blobs) can no longer be resolved.
+			if (hit === null) {
+				yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'miss' });
+				yield* Effect.logInfo(
+					`artifact-publisher: producing '${spec.namespace}' on chain ${spec.chain} — ` +
+						`no cached artifact for this chain + content hash ` +
+						`(first deploy on this chain, fresh genesis after a restart, or changed inputs).`,
+				);
+			} else {
+				yield* Effect.annotateCurrentSpan({
+					[SpanAttr.artifactPublisherPath]: 'verify-failed',
+				});
+				yield* Effect.logWarning(
+					`artifact-publisher: re-deploying '${spec.namespace}' on chain ${spec.chain} — ` +
+						`a cached artifact existed but failed on-chain verification ` +
+						`(object missing, or RPC unavailable during restart); a new id will replace ` +
+						`the prior deployment.`,
+				);
+				// Effect logs are dropped under the `up` TUI (Logger.layer([])).
+				// The verify-failed re-deploy is the anomalous restart case — a
+				// cached id existed but is no longer resolvable — so narrate it
+				// on the supervised plugin's row, the channel the TUI renders.
+				// (A plain cache miss stays quiet here: on a cold boot every
+				// artifact misses, and the plugin narrates its own publish.)
+				yield* setCurrentPluginPhase(
+					`re-deploying ${spec.namespace} (cached artifact failed verification on restart)`,
+				);
+			}
 			const produced = yield* spec.produce;
 
 			// 4. Cache write — best-effort. Architecture: a write

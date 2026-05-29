@@ -11,6 +11,15 @@ import { accounts } from '../src/generated/accounts.js';
  * Seal key server — no mocks. Exercises the full SealClient.encrypt →
  * upload_entry → grant_entry → SessionKey.create → seal_approve dry-run →
  * fetchKeys → SealClient.decrypt round trip.
+ *
+ * SCOPE: this spec runs entirely within a single devstack lifecycle —
+ * Playwright's `webServer` owns the stack, so we cannot tear it down and
+ * bring it back up mid-test. The "old content stops decrypting after a
+ * restart" failure (a warm restart must reuse the same vault packageId,
+ * Seal key-server objectId, Walrus systemObjectId, and Sui chainId rather
+ * than republish) is therefore covered at the devstack e2e layer instead:
+ * see `packages/devstack/test/e2e/private-content-boot.test.ts`, which does
+ * a real cold→warm boot cycle and pins those ids stable across the restart.
  */
 
 const PLAINTEXT = `secret · ${new Date().toISOString()}`;
