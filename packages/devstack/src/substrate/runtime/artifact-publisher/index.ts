@@ -7,7 +7,7 @@
 //
 // Plugins call `publisher.publish(spec)` with their per-cycle
 // `ArtifactSpec<Produced, Verified>` (namespace, chain,
-// contentHash, verifySchema, verify, produce, register). The
+// contentHash, verify, produce, register). The
 // substrate handles:
 //
 //   1. `cache.lookup({namespace, chain, contentHash})`. Hit AND

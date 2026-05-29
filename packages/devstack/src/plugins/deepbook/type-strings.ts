@@ -45,10 +45,14 @@ export const isPoolForPair = (
 ): boolean => {
 	const parsed = parsePoolGenericArgs(objectType);
 	if (parsed === null) return false;
-	return (
-		normalizeStructTagSafe(parsed.base) === normalizeStructTagSafe(baseCoinType) &&
-		normalizeStructTagSafe(parsed.quote) === normalizeStructTagSafe(quoteCoinType)
-	);
+	const base = normalizeStructTagSafe(parsed.base);
+	const quote = normalizeStructTagSafe(parsed.quote);
+	const wantBase = normalizeStructTagSafe(baseCoinType);
+	const wantQuote = normalizeStructTagSafe(quoteCoinType);
+	// A malformed tag normalizes to `null`; never let two nulls compare
+	// equal — a doubly-malformed side must NOT spuriously pair.
+	if (base === null || quote === null || wantBase === null || wantQuote === null) return false;
+	return base === wantBase && quote === wantQuote;
 };
 
 /** Split a generic-argument list on top-level commas, respecting nested
