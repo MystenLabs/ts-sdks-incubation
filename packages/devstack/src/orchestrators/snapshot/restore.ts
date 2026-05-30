@@ -89,7 +89,7 @@ import {
 	readImageBundleTags,
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
-import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
+import { CACHE_DIR_NAME, SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -780,6 +780,31 @@ const restoreHostTree = (
 		);
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
 
+// Per-plugin deploy/mint artifact-cache namespaces whose cached payload is an
+// on-chain identity (package id, system/staking object, key-server object,
+// pool id, coin treasury/metadata). The snapshot captures the CHAIN state that
+// already contains these deploys, so on restore the cache must come along too —
+// otherwise the post-restore boot cache-MISSES, re-runs deploy/mint with FRESH
+// ids, and orphans every pre-snapshot object that referenced the old ids
+// (a blob's storage package, a coin holder's coin type, …). A warm restart
+// keeps this cache on disk and stays id-stable; restore's stage-and-swap would
+// drop it unless preserved here, so this is the restore-side half of the same
+// id-stability contract. Source of truth for each string is the plugin's
+// `publish({ namespace })` call (walrus/deploy.ts, package/mode-local.ts,
+// seal/deploy.ts, deepbook/deploy.ts + pyth, coin/mint.ts, action/service.ts);
+// a slash-prefixed namespace (`seal/package`, `deepbook/pools`) nests under its
+// root dir, so preserving the root (`cache/seal`, `cache/deepbook`) covers all
+// of that plugin's namespaces. The generic per-call `cache/entry` is NOT a
+// deploy namespace and stays dropped (restore.test.ts pins that rollback).
+const DEPLOY_CACHE_PRESERVED_NAMESPACES: ReadonlyArray<string> = [
+	'walrus-deploy',
+	'package',
+	'seal',
+	'deepbook',
+	'coin-mint',
+	'action',
+];
+
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: SNAPSHOTS_DIR_NAME, kind: 'directory' },
 	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME, kind: 'file' },
@@ -787,6 +812,12 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
 	{ relativePath: 'snapshot.reservation', kind: 'file' },
+	...DEPLOY_CACHE_PRESERVED_NAMESPACES.map(
+		(namespace): StageAndSwapPreservedPath => ({
+			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
+			kind: 'directory',
+		}),
+	),
 ];
 
 // -----------------------------------------------------------------------------

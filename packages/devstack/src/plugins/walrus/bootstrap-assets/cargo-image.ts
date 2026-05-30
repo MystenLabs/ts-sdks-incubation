@@ -74,17 +74,32 @@ const vendoredDockerfileContext = (): string =>
 	fileURLToPath(new URL('../../../../images/walrus/', import.meta.url));
 
 /** Resolve the walrus image. Path (a) trusts an env-override tag; path
- *  (b) builds the vendored Dockerfile via `runtime.ensureImage`. */
+ *  (b) builds the vendored Dockerfile via `runtime.ensureImage`.
+ *
+ *  `expectedTag`, when given, is the on-host tag the resolved image is
+ *  published under (the build itself is content-cached, so multiple distinct
+ *  tags of the SAME build are cheap re-tags). The storage-node committee uses
+ *  this to give each node its OWN image tag — otherwise all N nodes share one
+ *  tag and snapshot-restore's per-container image promote collapses N committed
+ *  writable layers onto that single tag (last-write-wins), losing N-1 nodes'
+ *  RocksDB. `ensureImage` reuses an existing tag without rebuilding, so a tag
+ *  the restore already promoted to a committed layer is preserved on reboot. */
 export const resolveCargoImage = (
 	runtime: ContainerRuntime,
 	inputs: WalrusCargoImageInputs,
+	expectedTag?: string,
 ): Effect.Effect<WalrusCargoImageResolved, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const override = readEnv(WALRUS_CARGO_IMAGE_OVERRIDE_ENV);
 		if (override && override.length > 0) {
 			// Trust-the-tag path. The digest is opaque (substrate's
 			// content-addressed cache will re-resolve via `docker inspect`
-			// when it materializes the image).
+			// when it materializes the image). The per-node `expectedTag`
+			// aliasing is build-path only (it relies on `ensureImage`'s
+			// reuse-if-tag-exists to stay restore-safe across reboots);
+			// override images keep the shared tag, so override + multi-node +
+			// snapshot/restore is not committee-distinct (a documented niche —
+			// the e2e matrix forces the build path).
 			return { digest: override, tag: override };
 		}
 
@@ -104,8 +119,15 @@ export const resolveCargoImage = (
 			},
 		};
 
+		// `expected.tag`, when present, is the on-host tag ensureImage publishes
+		// (and REUSES without rebuilding if it already exists — so a per-node tag
+		// the restore promoted to a committed layer survives reboot). The build
+		// itself is content-cached, so N per-node tags of one build are cheap.
 		const built = yield* runtime
-			.ensureImage(buildCtx)
+			.ensureImage(
+				buildCtx,
+				expectedTag !== undefined ? { digest: expectedTag, tag: expectedTag } : undefined,
+			)
 			.pipe(
 				Effect.mapError((cause) =>
 					walrusPluginError(

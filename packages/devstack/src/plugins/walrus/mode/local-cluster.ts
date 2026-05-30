@@ -320,6 +320,34 @@ export const bootLocalCluster = (
 			state.exchangeObject ?? 'no-exchange',
 		].join('|');
 
+		// Per-node image tags. Each storage node runs under its OWN tag (a cheap
+		// re-tag of the one content-cached cargo build) so its committed writable
+		// layer — the RocksDB holding that node's slivers — promotes to a DISTINCT
+		// image on snapshot restore. A single shared tag would make the restore
+		// image-promote collapse all N committed layers onto one tag
+		// (last-write-wins): N-1 nodes boot on the wrong layer and every
+		// pre-snapshot blob is orphaned. The tag is scoped by the deployed
+		// `walrusPackageId` — stable across boot1 -> restore -> boot2 (the deploy
+		// cache reuses the same id, so the restore's promote target matches what
+		// boot2 requests), but DISTINCT per fresh deployment, so a later cold boot
+		// on a new chain never inherits a prior run's committed node layers (which
+		// carry a stale committee and would reject writes). The base `walrusImage`
+		// (shared) still backs the transient deploy one-shot (`--rm`, unsnapshotted).
+		const nodeImageScope = state.walrusPackageId.replace(/^0x/, '').slice(0, 12);
+		const nodeImages = yield* Effect.forEach(
+			Array.from({ length: opts.nodeCount }, (_, i) => i),
+			(i) =>
+				resolveCargoImage(
+					deps.runtime,
+					{
+						walrusRef: opts.version,
+						suiVersion: opts.suiVersion,
+						owner: { app: deps.app, stack: deps.stack },
+					},
+					`${walrusImage.tag}-${nodeImageScope}-node-${i}`,
+				),
+		);
+
 		// ---- storage nodes — parallel boot ----------------------
 		yield* setCurrentPluginPhase(
 			`starting ${opts.nodeCount} Walrus storage node${opts.nodeCount === 1 ? '' : 's'}`,
@@ -328,7 +356,7 @@ export const bootLocalCluster = (
 			app: deps.app,
 			stack: deps.stack,
 			walrusName: opts.name,
-			image: walrusImage,
+			images: nodeImages,
 			nodeCount: opts.nodeCount,
 			subnetPrefix: deps.subnetPrefix,
 			containerApiPort: opts.containerApiPort,

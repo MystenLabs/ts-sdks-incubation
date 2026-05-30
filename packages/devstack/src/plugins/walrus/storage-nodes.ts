@@ -80,7 +80,12 @@ export interface StorageNodesSpec {
 	readonly app: string;
 	readonly stack: string;
 	readonly walrusName: string;
-	readonly image: ImageRef;
+	/** One image ref PER node (`images[i]` for node `i`; length MUST equal
+	 *  `nodeCount`). Each node runs under its own tag so its committed writable
+	 *  layer (RocksDB slivers) promotes to a DISTINCT image on snapshot restore;
+	 *  a single shared tag collapses N committed layers -> 1 on the restore
+	 *  image-promote, orphaning N-1 nodes' blobs. */
+	readonly images: ReadonlyArray<ImageRef>;
 	readonly nodeCount: number;
 	/** Pre-allocated /24 prefix from `subnetForStack`. Example:
 	 *  `'10.42.7'` (the third octet is hashed per stack). */
@@ -194,6 +199,14 @@ export const startStorageNodes = (
 				),
 			);
 		}
+		if (spec.images.length !== spec.nodeCount) {
+			return yield* Effect.fail(
+				walrusPluginError(
+					'storage-node',
+					`storage-nodes: images length (${spec.images.length}) must equal nodeCount (${spec.nodeCount}) — one distinct per-node image tag is required for restore-safe commits`,
+				),
+			);
+		}
 
 		// Fork a parallel stop-scope. Per-node `ensureContainer` finalizers
 		// fire here on outer teardown; closing the parallel scope races
@@ -242,7 +255,9 @@ export const startStorageNodes = (
 						role: `storage-node-${i}`,
 						spec: {
 							name: containerName,
-							image: spec.image,
+							// Node `i`'s own image tag — distinct per node so its
+							// committed RocksDB layer survives snapshot restore.
+							image: spec.images[i]!,
 							recreate: 'on-config-change',
 							configHash: storageNodeConfigHash({
 								deployConfigHash: spec.deployConfigHash,
