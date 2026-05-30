@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	account,
 	action,
+	dashboard,
 	defineDevstack,
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
@@ -54,6 +55,6 @@ const app = hostService({
 	after: [greet, devWallet] as const,
 });
 
-const stack: Stack = defineDevstack({ members: [localnet, app], stackName: 'template' });
+const stack: Stack = defineDevstack({ members: [localnet, app, dashboard()], stackName: 'template' });
 
 export default stack;

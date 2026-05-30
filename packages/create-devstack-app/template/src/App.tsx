@@ -4,7 +4,7 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQueryClient, type UseMutationResult } from '@tanstack/react-query';
 import { useState } from 'react';
-import { packages } from './generated/packages.js';
+import { packages } from '@generated/packages.js';
 
 // `devstack apply` emits this generated package metadata after hello is
 // published, so no deployment guard is needed here.
