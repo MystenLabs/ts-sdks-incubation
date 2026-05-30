@@ -2,9 +2,12 @@
 //
 // Unlike `chain.ts` (which talks gRPC `client.core.*`), Walrus's interesting
 // state lives in on-chain *events* and *transactions* that the Sui GraphQL RPC
-// exposes with first-class filters — so these reads are plain `fetch` POSTs to
-// the stack's `graphql` endpoint (CORS-open, same browser-direct pattern as the
-// gRPC reads). No Walrus indexer is involved.
+// exposes with first-class filters — so these reads go through the SDK's typed
+// GraphQL client (`suiGraphqlClient`, from `sui-graphql.ts`) against the stack's
+// `graphql` endpoint (CORS-open, same browser-direct pattern as the gRPC reads).
+// The query documents are written with the SDK's schema-typed `graphql()` tag,
+// so each selection is checked against the real Sui schema at compile time and
+// its result type is inferred. No Walrus indexer is involved.
 //
 // What's reachable, and how:
 //   - Recent blobs   — `transactions(filter: { function })` on the Walrus
@@ -24,13 +27,17 @@
 // substrate publishes the deployed Walrus package as a `walrus.<name>` entry);
 // it is never hardcoded, since it changes per deploy.
 
-import type { Endpoint, PackageProjection } from './types.ts';
+import { graphql, type ResultOf } from '@mysten/sui/graphql/schema';
+import type { PackageProjection } from './types.ts';
+import { isoToMillis, suiGraphqlClient, suiGraphqlUrl } from './sui-graphql.ts';
 
 // --- Endpoint + package resolution ------------------------------------------
 
-/** The stack's Sui GraphQL base URL (the `graphql` endpoint), or null. */
-export const walrusGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null =>
-	endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url ?? null;
+/**
+ * The stack's Sui GraphQL base URL (the `graphql` endpoint), or null. Re-exported
+ * from the shared Sui-GraphQL helper so Walrus call sites keep importing it here.
+ */
+export const walrusGraphqlUrl = suiGraphqlUrl;
 
 /**
  * The deployed Walrus Move package id, read from the projection's packages. The
@@ -46,35 +53,6 @@ export const walrusPackageId = (packages: ReadonlyArray<PackageProjection>): str
 	return any?.packageId ?? null;
 };
 
-// --- GraphQL transport ------------------------------------------------------
-
-interface GraphqlError {
-	readonly message: string;
-}
-interface GraphqlResponse<T> {
-	readonly data?: T;
-	readonly errors?: ReadonlyArray<GraphqlError>;
-}
-
-/** POST a GraphQL query to the node and return `data`, throwing on errors. */
-const gql = async <T>(
-	url: string,
-	query: string,
-	variables?: Record<string, unknown>,
-): Promise<T> => {
-	const res = await fetch(url, {
-		method: 'POST',
-		mode: 'cors',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ query, variables }),
-	});
-	if (!res.ok) throw new Error(`GraphQL HTTP ${res.status}`);
-	const body = (await res.json()) as GraphqlResponse<T>;
-	if (body.errors?.length) throw new Error(body.errors.map((e) => e.message).join('; '));
-	if (body.data === undefined) throw new Error('GraphQL response had no data');
-	return body.data;
-};
-
 // --- Event payload helpers --------------------------------------------------
 
 const asString = (v: unknown): string | null =>
@@ -87,13 +65,6 @@ const asNumber = (v: unknown): number | null => {
 };
 
 const asBool = (v: unknown): boolean | null => (typeof v === 'boolean' ? v : null);
-
-/** Parse a `DateTime` (ISO string) to epoch-millis, or null. */
-const isoToMillis = (iso: string | null | undefined): number | null => {
-	if (!iso) return null;
-	const t = Date.parse(iso);
-	return Number.isFinite(t) ? t : null;
-};
 
 // --- Recent blobs -----------------------------------------------------------
 
@@ -121,36 +92,42 @@ export interface RecentBlob {
 	readonly sender: string | null;
 }
 
-interface TxEventNode {
-	readonly contents: { readonly type: { readonly repr: string }; readonly json: unknown } | null;
-}
-interface TxNode {
-	readonly digest: string | null;
-	readonly sender: { readonly address: string } | null;
-	readonly effects: {
-		readonly timestamp: string | null;
-		readonly events: { readonly nodes: ReadonlyArray<TxEventNode> };
-	} | null;
-}
-interface TxConnection {
-	readonly transactions: { readonly nodes: ReadonlyArray<TxNode> };
-}
-
 // `last: N` returns the most recent N matching transactions (oldest→newest);
 // we reverse client-side so the table reads newest-first. Each tx pulls its
 // emitted blob event so we can read id/size/epochs without a second round-trip.
-const RECENT_BLOBS_QUERY = `query WalrusBlobTxs($fn: String!, $limit: Int!) {
-  transactions(last: $limit, filter: { function: $fn }) {
-    nodes {
-      digest
-      sender { address }
-      effects {
-        timestamp
-        events { nodes { contents { type { repr } json } } }
-      }
-    }
-  }
-}`;
+// The selection is type-checked against the Sui schema by `graphql()`:
+// `effects.events.nodes.contents` is a `MoveValue` with `type { repr }` (the
+// fully-qualified event type) + `json` (the parsed Move struct).
+const RECENT_BLOBS_QUERY = graphql(`
+	query WalrusBlobTxs($fn: String!, $limit: Int!) {
+		transactions(last: $limit, filter: { function: $fn }) {
+			nodes {
+				digest
+				sender {
+					address
+				}
+				effects {
+					timestamp
+					events {
+						nodes {
+							contents {
+								type {
+									repr
+								}
+								json
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+`);
+
+/** One transaction node from `RECENT_BLOBS_QUERY` (schema-inferred). */
+type TxNode = NonNullable<
+	NonNullable<ResultOf<typeof RECENT_BLOBS_QUERY>['transactions']>['nodes']
+>[number];
 
 /** Mutable accumulator while merging register + certify events per blob. */
 interface BlobAcc {
@@ -180,8 +157,8 @@ const foldTx = (
 	suffix: 'BlobRegistered' | 'BlobCertified',
 ): void => {
 	const ts = isoToMillis(tx.effects?.timestamp);
-	for (const ev of tx.effects?.events.nodes ?? []) {
-		const repr = ev.contents?.type.repr ?? '';
+	for (const ev of tx.effects?.events?.nodes ?? []) {
+		const repr = ev.contents?.type?.repr ?? '';
 		if (!repr.endsWith(`::events::${suffix}`)) continue;
 		const json = (ev.contents?.json ?? {}) as Record<string, unknown>;
 		const blobId = asString(json.blob_id);
@@ -227,19 +204,21 @@ export const fetchRecentBlobs = async (
 	packageId: string,
 	limit = 25,
 ): Promise<ReadonlyArray<RecentBlob>> => {
+	const client = suiGraphqlClient(graphqlUrl);
+	const run = (fn: string) =>
+		client
+			.query({ query: RECENT_BLOBS_QUERY, variables: { fn, limit } })
+			.then(({ data, errors }) => {
+				if (errors?.length) throw new Error(errors.map((e) => e.message).join('; '));
+				return data?.transactions?.nodes ?? [];
+			});
 	const [registers, certifies] = await Promise.all([
-		gql<TxConnection>(graphqlUrl, RECENT_BLOBS_QUERY, {
-			fn: `${packageId}::system::register_blob`,
-			limit,
-		}),
-		gql<TxConnection>(graphqlUrl, RECENT_BLOBS_QUERY, {
-			fn: `${packageId}::system::certify_blob`,
-			limit,
-		}),
+		run(`${packageId}::system::register_blob`),
+		run(`${packageId}::system::certify_blob`),
 	]);
 	const acc = new Map<string, BlobAcc>();
-	for (const tx of registers.transactions.nodes) foldTx(acc, tx, 'register', 'BlobRegistered');
-	for (const tx of certifies.transactions.nodes) foldTx(acc, tx, 'certify', 'BlobCertified');
+	for (const tx of registers) foldTx(acc, tx, 'register', 'BlobRegistered');
+	for (const tx of certifies) foldTx(acc, tx, 'certify', 'BlobCertified');
 	return [...acc.entries()]
 		.map(([blobId, b]) => ({ blobId, ...b }))
 		.sort((a, b) => (b.timestampMs ?? 0) - (a.timestampMs ?? 0))
@@ -248,19 +227,18 @@ export const fetchRecentBlobs = async (
 
 // --- Storage epoch ----------------------------------------------------------
 
-interface EventJsonNode {
-	readonly contents: { readonly json: unknown } | null;
-	readonly timestamp: string | null;
-}
-interface EventConnection {
-	readonly events: { readonly nodes: ReadonlyArray<EventJsonNode> };
-}
-
-const LATEST_EVENT_QUERY = `query WalrusLatestEvent($type: String!) {
-  events(last: 1, filter: { type: $type }) {
-    nodes { contents { json } timestamp }
-  }
-}`;
+const LATEST_EVENT_QUERY = graphql(`
+	query WalrusLatestEvent($type: String!) {
+		events(last: 1, filter: { type: $type }) {
+			nodes {
+				contents {
+					json
+				}
+				timestamp
+			}
+		}
+	}
+`);
 
 /** The current Walrus storage epoch + when it last advanced. */
 export interface WalrusEpoch {
@@ -278,11 +256,14 @@ export const fetchWalrusEpoch = async (
 	graphqlUrl: string,
 	packageId: string,
 ): Promise<WalrusEpoch | null> => {
+	const client = suiGraphqlClient(graphqlUrl);
 	for (const name of ['EpochChangeDone', 'EpochChangeStart'] as const) {
-		const data = await gql<EventConnection>(graphqlUrl, LATEST_EVENT_QUERY, {
-			type: `${packageId}::events::${name}`,
+		const { data, errors } = await client.query({
+			query: LATEST_EVENT_QUERY,
+			variables: { type: `${packageId}::events::${name}` },
 		});
-		const node = data.events.nodes[0];
+		if (errors?.length) throw new Error(errors.map((e) => e.message).join('; '));
+		const node = data?.events?.nodes[0];
 		if (!node?.contents) continue;
 		const epoch = asNumber((node.contents.json as Record<string, unknown>).epoch);
 		if (epoch !== null) return { epoch, changedAtMs: isoToMillis(node.timestamp) };
@@ -307,11 +288,17 @@ export interface ShardAssignment {
 // `ShardsReceived` is emitted once per node when an epoch's shard set is handed
 // over; reading the most recent N (one per node, a few epochs deep) and keeping
 // the highest-epoch batch yields the current shard distribution.
-const SHARDS_QUERY = `query WalrusShards($type: String!) {
-  events(last: 32, filter: { type: $type }) {
-    nodes { contents { json } }
-  }
-}`;
+const SHARDS_QUERY = graphql(`
+	query WalrusShards($type: String!) {
+		events(last: 32, filter: { type: $type }) {
+			nodes {
+				contents {
+					json
+				}
+			}
+		}
+	}
+`);
 
 /**
  * Per-node shard assignments for the current epoch, derived from the
@@ -322,12 +309,15 @@ export const fetchShardAssignments = async (
 	graphqlUrl: string,
 	packageId: string,
 ): Promise<ShardAssignment | null> => {
-	const data = await gql<EventConnection>(graphqlUrl, SHARDS_QUERY, {
-		type: `${packageId}::events::ShardsReceived`,
+	const client = suiGraphqlClient(graphqlUrl);
+	const { data, errors } = await client.query({
+		query: SHARDS_QUERY,
+		variables: { type: `${packageId}::events::ShardsReceived` },
 	});
+	if (errors?.length) throw new Error(errors.map((e) => e.message).join('; '));
 	let maxEpoch = -1;
 	const counts: number[] = [];
-	for (const node of data.events.nodes) {
+	for (const node of data?.events?.nodes ?? []) {
 		const json = (node.contents?.json ?? {}) as Record<string, unknown>;
 		const epoch = asNumber(json.epoch);
 		const shards = Array.isArray(json.shards) ? json.shards.length : null;

@@ -11,13 +11,26 @@
 // is in flight.
 //
 // "Selective restart" lists a chip per managed row, each gated behind its own
-// confirm → `restartPlugin`. The
-// "Snapshots" panel captures (naming dialog), shows live capture progress from
-// the projection's build stream, and renders the real snapshot catalog from
-// `fetchSnapshots` with Restore / delete (both confirmed) → `restoreSnapshot` /
-// `deleteSnapshot`.
+// confirm → `restartPlugin`.
+//
+// "Snapshots" panel captures (naming dialog) and renders the real snapshot
+// catalog from `fetchSnapshots` with Restore / delete (both confirmed) →
+// `restoreSnapshot` / `deleteSnapshot`.
+//
+// Capture completion is REAL, not instant. `captureSnapshot` goes through the
+// supervisor's command queue (fire-and-forget) because capture must register
+// in the supervisor's `snapshotCaptureTask` interrupt-handle so a concurrent
+// shutdown/restart can interrupt it mid-`pauseAndCommit` — coordination a
+// direct domain call would bypass. So the mutation only ACKs "capture started";
+// the engine's capture-progress events are engine-internal and carry no
+// projection slice (they never reach the dashboard). The ONLY real completion
+// signal the dashboard can observe is the new artifact appearing in the
+// snapshot catalog. We therefore drive a `capturing → done/failed` state
+// machine off `fetchSnapshots`: enter `capturing` on a successful ack, poll the
+// catalog, resolve to success when an entry with the captured label appears, or
+// to failure on a timeout / non-ok ack.
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
 	type CommandResult,
@@ -52,7 +65,6 @@ import {
 	type IconName,
 	IconButton,
 	Input,
-	Meter,
 	NumberInput,
 	Panel,
 	SectionHead,
@@ -65,6 +77,12 @@ import type { PanelProps } from './types.ts';
 // enough that the grid gate + table reflect reality without hammering.
 const MODE_POLL_MS = 10_000;
 const SNAPSHOT_POLL_MS = 5_000;
+// While a capture is in flight we poll the catalog faster (the new artifact is
+// the only real completion signal) and give up after the timeout. Captures of a
+// large stack can take a while — pausing containers, committing writable layers,
+// saving images, taring host trees — so the ceiling is generous.
+const CAPTURE_POLL_MS = 1_500;
+const CAPTURE_TIMEOUT_MS = 180_000;
 
 /** A single command tile in the grid. */
 interface Command {
@@ -175,6 +193,28 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 	const [naming, setNaming] = useState<string | null>(null);
 	// Target epoch-millis while the advance-clock dialog is open, or null.
 	const [clockTarget, setClockTarget] = useState<number | null>(null);
+	// In-flight capture, tracked to REAL completion off the snapshot catalog.
+	// `null` when idle. The fire-and-forget mutation only acks "capture
+	// started"; we resolve to done/failed when the artifact appears (or times
+	// out). `startedAt` drives the timeout; `label` is matched against catalog
+	// entries (the supervisor normalizes/echoes the label, so we match the
+	// trimmed name we sent). `knownIds` is the catalog snapshot at start-of-
+	// capture so a NEW entry — not a pre-existing same-label one — counts.
+	const [capture, setCapture] = useState<{
+		readonly label: string;
+		readonly startedAt: number;
+		readonly knownIds: ReadonlySet<string>;
+	} | null>(null);
+	// In-flight restore. Unlike capture, `restoreSnapshot` is a REAL domain
+	// action — the mutation AWAITS the restore and returns a real `{ok, detail}`,
+	// so the true progress is simply "the mutation is in flight". We surface a
+	// "Restoring <label>…" banner + indeterminate bar for that whole duration and
+	// toast the real result on completion. `label` drives the banner copy;
+	// `startedAt` drives the elapsed readout.
+	const [restoring, setRestoring] = useState<{
+		readonly label: string;
+		readonly startedAt: number;
+	} | null>(null);
 
 	// Resolved stack mode gates the advance-clock command (fork-only).
 	const modeQuery = useQuery({
@@ -184,11 +224,12 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 	});
 	const isFork = modeQuery.data === 'fork';
 
-	// Real snapshot catalog.
+	// Real snapshot catalog. While a capture is in flight we poll faster — the
+	// catalog is the only signal that tells us the capture actually finished.
 	const snapshotsQuery = useQuery({
 		queryKey: ['snapshots', endpoint],
 		queryFn: () => fetchSnapshots(endpoint),
-		refetchInterval: SNAPSHOT_POLL_MS,
+		refetchInterval: capture !== null ? CAPTURE_POLL_MS : SNAPSHOT_POLL_MS,
 	});
 	const snapshots = snapshotsQuery.data ?? [];
 
@@ -228,17 +269,32 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 		);
 	};
 
-	const onCapture = (name: string): void => {
+	const onCapture = (rawName: string): void => {
+		const label = rawName.trim();
 		setNaming(null);
+		if (!label || capture !== null) return;
+		// Fire the command. A successful result means "capture STARTED" (the
+		// supervisor queued it), NOT "capture done" — so we don't toast success
+		// here. We snapshot the current catalog ids, then hand off to the
+		// catalog-watching effect below, which resolves to done/failed for real.
+		setBusy('capture');
 		void (async () => {
-			await dispatch('capture', 'Capture snapshot', () => captureSnapshot(endpoint, name));
-			// The capture mutation resolves before the orchestrator finishes writing
-			// the snapshot catalog, so the immediate refetch in `dispatch` can miss the
-			// new entry. Re-poll a few times (backing off) so the snapshot appears
-			// automatically without a manual reload.
-			for (const delayMs of [600, 1200, 2400]) {
-				await new Promise((r) => setTimeout(r, delayMs));
-				await snapshotsQuery.refetch();
+			try {
+				const result = await captureSnapshot(endpoint, label);
+				if (!result.ok) {
+					toast.error(result.message ?? 'Capture snapshot failed');
+					setBusy(null);
+					return;
+				}
+				toast.info(`Capturing "${label}"…`);
+				setCapture({
+					label,
+					startedAt: Date.now(),
+					knownIds: new Set(snapshots.map((s) => s.id)),
+				});
+			} catch (err) {
+				toast.error(err instanceof Error ? err.message : 'Capture snapshot failed');
+				setBusy(null);
 			}
 		})();
 	};
@@ -255,6 +311,9 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 		const { kind, snap } = action;
 		const label = snap.label || snap.id;
 		setBusy(`snapshot/${kind}`);
+		// Restore awaits a REAL mutation — surface an in-flight banner for the
+		// whole duration so the UI isn't silent while the stack is rolled back.
+		if (kind === 'restore') setRestoring({ label, startedAt: Date.now() });
 		try {
 			const result =
 				kind === 'restore'
@@ -270,16 +329,58 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 		} catch (err) {
 			toast.error(err instanceof Error ? err.message : `Snapshot ${kind} failed`);
 		} finally {
+			setRestoring(null);
 			setBusy(null);
 		}
 	};
 
-	// Live capture progress is read off the projection's build stream — the
-	// engine emits a `stackBuild` entry tagged as a snapshot capture while the
-	// checkpoint is in flight. No backing entry → no progress bar.
-	const captureBuild = projection.stackBuild.find((b) =>
-		/snapshot|capture/i.test(`${b.pluginKey ?? ''} ${b.phase}`),
-	);
+	// Resolve an in-flight capture against REAL state. The capture-progress
+	// engine events never reach the dashboard (engine-internal, no projection
+	// slice), so the snapshot catalog is the source of truth: a NEW entry
+	// (not in `knownIds`) whose label matches what we sent means the capture
+	// landed. If no such entry appears before the timeout, surface a failure —
+	// the capture errored or was interrupted (e.g. by a concurrent shutdown).
+	// The `refresh`/toast surface is read through a ref so this effect depends
+	// only on the data it actually watches.
+	const captureSideRef = useRef({ toast, refresh });
+	captureSideRef.current = { toast, refresh };
+	useEffect(() => {
+		if (capture === null) return;
+		const landed = snapshots.find(
+			(s) => !capture.knownIds.has(s.id) && (s.label ?? '') === capture.label,
+		);
+		if (landed) {
+			captureSideRef.current.toast.success(`Snapshot "${capture.label}" captured`);
+			setCapture(null);
+			setBusy(null);
+			void captureSideRef.current.refresh();
+			return;
+		}
+		if (Date.now() - capture.startedAt >= CAPTURE_TIMEOUT_MS) {
+			captureSideRef.current.toast.error(
+				`Capture "${capture.label}" did not complete — it may have failed or been interrupted.`,
+			);
+			setCapture(null);
+			setBusy(null);
+		}
+	}, [capture, snapshots]);
+
+	// Hard timeout. React-query's structural sharing can hand back the SAME
+	// catalog array when nothing changed, so the catalog effect above may not
+	// re-run to observe the deadline. This dedicated timer guarantees an
+	// in-flight capture resolves to a failure if the artifact never appears.
+	useEffect(() => {
+		if (capture === null) return;
+		const remaining = Math.max(0, capture.startedAt + CAPTURE_TIMEOUT_MS - Date.now());
+		const timer = setTimeout(() => {
+			captureSideRef.current.toast.error(
+				`Capture "${capture.label}" did not complete — it may have failed or been interrupted.`,
+			);
+			setCapture(null);
+			setBusy(null);
+		}, remaining);
+		return () => clearTimeout(timer);
+	}, [capture]);
 
 	// Snapshot catalog table columns.
 	const snapColumns: ReadonlyArray<Column<SnapshotEntry>> = [
@@ -492,7 +593,7 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 							</Button>
 						}
 					/>
-					{captureBuild && (
+					{capture && (
 						<div
 							className="panel panel-pad fade-up"
 							style={{ background: 'var(--bg-elev)', marginTop: 12 }}
@@ -500,13 +601,52 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 							<div className="row between" style={{ marginBottom: 8 }}>
 								<span className="row" style={{ gap: 8 }}>
 									<span className="dot dot-blue dot-pulse" />
-									<span style={{ fontSize: 13 }}>Capturing — {captureBuild.phase}</span>
+									<span style={{ fontSize: 13 }}>
+										Capturing <span className="mono">"{capture.label}"</span>…
+									</span>
 								</span>
 								<span className="mono tnum" style={{ fontSize: 12, color: 'var(--tx-lo)' }}>
-									{captureBuild.progress}
+									{timeAgo(capture.startedAt)}
 								</span>
 							</div>
-							<Meter value={parseProgress(captureBuild.progress)} token="blue" />
+							{/* No granular phase/percent reaches the dashboard (the engine's
+							    capture-progress events carry no projection slice), so this is
+							    an indeterminate bar — it resolves when the artifact lands in
+							    the catalog or the capture times out. */}
+							<IndeterminateMeter token="blue" />
+							<span
+								style={{ fontSize: 11.5, color: 'var(--tx-dim)', marginTop: 6, display: 'block' }}
+							>
+								Pausing containers, committing layers and saving images — this can take a moment.
+							</span>
+						</div>
+					)}
+					{restoring && (
+						<div
+							className="panel panel-pad fade-up"
+							style={{ background: 'var(--bg-elev)', marginTop: 12 }}
+						>
+							<div className="row between" style={{ marginBottom: 8 }}>
+								<span className="row" style={{ gap: 8 }}>
+									<span className="dot dot-blue dot-pulse" />
+									<span style={{ fontSize: 13 }}>
+										Restoring <span className="mono">"{restoring.label}"</span>…
+									</span>
+								</span>
+								<span className="mono tnum" style={{ fontSize: 12, color: 'var(--tx-lo)' }}>
+									{timeAgo(restoring.startedAt)}
+								</span>
+							</div>
+							{/* `restoreSnapshot` awaits the real restore, but the mutation
+							    exposes no intermediate phase/percent — so, like capture, this
+							    is an honest indeterminate bar for the whole in-flight duration. */}
+							<IndeterminateMeter token="blue" />
+							<span
+								style={{ fontSize: 11.5, color: 'var(--tx-dim)', marginTop: 6, display: 'block' }}
+							>
+								Rolling the chain and containers back to this checkpoint — the stack is briefly
+								unavailable.
+							</span>
 						</div>
 					)}
 				</div>
@@ -689,19 +829,27 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 };
 
 /**
- * Coerce a build `progress` string ("3/5", "60%", "0.6") into a 0..1 fraction
- * for the Meter. Unrecognized shapes fall back to an indeterminate-looking full
- * bar (the pulse + phase text already signal in-flight).
+ * Indeterminate progress bar matching the design handoff's snapshot meter (a
+ * full-width token-colored `.meter` fill with a sweeping highlight). Used for
+ * capture and restore, where REAL phase/percent never reaches the dashboard —
+ * capture's progress events are engine-internal and carry no projection slice,
+ * and restore is a single awaited mutation with no intermediate readout — so an
+ * honest indeterminate animation is the truthful viz (no fabricated percent).
+ *
+ * Reuses the existing `sweep` keyframe (the same one driving `.live-sweep`)
+ * rather than the proportional `Meter` atom, which only renders a fixed 0..1
+ * fraction.
  */
-const parseProgress = (raw: string): number => {
-	const ratio = raw.match(/(\d+)\s*\/\s*(\d+)/);
-	if (ratio) {
-		const total = Number(ratio[2]);
-		return total > 0 ? Number(ratio[1]) / total : 1;
-	}
-	const pct = raw.match(/(\d+(?:\.\d+)?)\s*%/);
-	if (pct) return Number(pct[1]) / 100;
-	const frac = Number(raw);
-	if (Number.isFinite(frac)) return frac > 1 ? frac / 100 : frac;
-	return 1;
-};
+const IndeterminateMeter = ({ token = 'blue' }: { readonly token?: StatusToken }) => (
+	<div className="meter">
+		<span
+			style={{
+				width: '100%',
+				background: `linear-gradient(90deg, color-mix(in oklab, var(--c-${token}) 55%, transparent), var(--c-${token}), color-mix(in oklab, var(--c-${token}) 55%, transparent))`,
+				backgroundSize: '50% 100%',
+				backgroundRepeat: 'no-repeat',
+				animation: 'sweep 1.4s linear infinite',
+			}}
+		/>
+	</div>
+);
