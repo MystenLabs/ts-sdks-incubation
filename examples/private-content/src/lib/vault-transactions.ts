@@ -1,6 +1,6 @@
 import { Transaction } from '@mysten/sui/transactions';
 
-import * as vault from '../generated/bindings/vault/vault.js';
+import * as vault from '@generated/bindings/vault/vault.js';
 
 export function buildVaultUploadTransaction(input: {
 	readonly packageId: string;

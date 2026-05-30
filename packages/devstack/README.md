@@ -98,7 +98,7 @@ and logs stay under `.devstack/`.
 - Root API: stack composition, built-in factories, plugin-author helpers, and public types.
 - CLI: `devstack up`, `apply`, `status`, `doctor`, `config`, `schema`, `snapshot`, `prune`, and
   `wipe`. `--json` is a global flag that switches any verb to JSON output.
-- Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, and `/runtime`.
+- Build integrations: `@mysten-incubation/devstack/vitest`, `/playwright`, `/vite`, and `/runtime`.
 
 App code should consume generated files and the runtime manifest. It should not import devstack
 engine internals directly.

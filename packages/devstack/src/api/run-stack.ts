@@ -53,6 +53,7 @@ import {
 	layerProductionOrchestrators,
 	type ProductionCodegenOptions,
 } from '../orchestrators/runtime-composition.ts';
+import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
 import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
@@ -243,11 +244,26 @@ export const runStack = (
 	// signal. `awaitShutdown` re-raises whatever this ref captured.
 	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
+	// Resolve the per-stack codegen output location: home run (effective
+	// stack === config `stackName`) → `src/generated/`; a non-home
+	// embedding → `.devstack/stacks/<stack>/generated/`. An explicit
+	// `opts.codegen.outputDir` (or the stack's own
+	// `codegen.outputDir`) is honored verbatim by the resolver. Both the
+	// home stack (`engineStack.options.stackName`) and the effective
+	// stack (the resolved `identity.stack`) are in scope here, mirroring
+	// the CLI's `buildVerbLayers` seam.
+	const codegenOutput = resolveCodegenOutput({
+		appRoot,
+		effectiveStack: String(identity.stack),
+		homeStack: engineStack.options.stackName,
+		explicitOutputDir: codegen?.outputDir,
+		explicitStackSubdir: codegen?.stackSubdir ?? null,
+	});
 	const substrate = layerProductionOrchestrators({
 		codegen: {
 			appRoot,
-			outputDir: codegen?.outputDir,
-			stackSubdir: codegen?.stackSubdir ?? null,
+			outputDir: codegenOutput.outputDir,
+			stackSubdir: codegenOutput.stackSubdir,
 		},
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 

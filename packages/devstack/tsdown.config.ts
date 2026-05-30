@@ -11,6 +11,7 @@ export default defineConfig({
 		'src/build-integrations/vitest/setup.ts',
 		'src/build-integrations/playwright/index.ts',
 		'src/build-integrations/playwright/global-setup.ts',
+		'src/build-integrations/vite/index.ts',
 		'src/build-integrations/runtime/index.ts',
 		'src/cli/main.ts',
 	],

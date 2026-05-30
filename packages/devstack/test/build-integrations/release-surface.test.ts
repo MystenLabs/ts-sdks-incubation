@@ -42,6 +42,9 @@ const REQUIRED_EXPORTS: ReadonlyArray<readonly [string, string]> = [
 	// `DEFAULT_GLOBAL_SETUP`. Stripping this silently breaks the default
 	// playwright preset for every consumer.
 	['./playwright/global-setup', 'playwright global setup (DEFAULT_GLOBAL_SETUP target)'],
+	// Vite preset barrel — `devstackVitePlugin()` aliases `@generated` at
+	// the active stack's codegen output dir (per-stack codegen design).
+	['./vite', 'vite preset barrel — @generated alias plugin'],
 	// Build-integration runtime surface consumed by user app code that
 	// reads the stack context emitted by `supervise()`.
 	['./runtime', 'build-integration runtime — stack-context reader'],
@@ -96,7 +99,9 @@ describe('release surface static checks', () => {
 		expect(pkg.files).not.toContain('src');
 		expect(pkg.exports).not.toHaveProperty('./samples');
 		expect(pkg.exports).toHaveProperty('./vitest/setup');
-		expect(pkg.exports).not.toHaveProperty('./vite');
+		// `./vite` is now a first-class public subpath (per-stack codegen
+		// `@generated` alias plugin) — see REQUIRED_EXPORTS above.
+		expect(pkg.exports).toHaveProperty('./vite');
 		expect(pkg.exports).not.toHaveProperty('./browser');
 		expect(pkg.exports).not.toHaveProperty('./browser/setup');
 	});
@@ -187,7 +192,9 @@ describe('release surface static checks', () => {
 	it('build entries match the public release surface', () => {
 		const config = readText('tsdown.config.ts');
 
-		expect(config).not.toContain("'src/build-integrations/vite/index.ts'");
+		// `./vite` IS now a first-class public build entry (per-stack codegen
+		// `@generated` alias plugin) — its tsdown entry is expected/required.
+		expect(config).toContain("'src/build-integrations/vite/index.ts'");
 		expect(config).not.toContain("'src/build-integrations/browser/index.ts'");
 		expect(config).not.toContain("'src/build-integrations/browser/setup.ts'");
 		expect(config).not.toContain("'src/samples/index.ts'");

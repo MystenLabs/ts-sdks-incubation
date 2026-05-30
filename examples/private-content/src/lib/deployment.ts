@@ -1,10 +1,10 @@
 // App-level projection of generated stack bindings.
 
-import { accounts } from '../generated/accounts.js';
-import { packages } from '../generated/packages.js';
-import { sealBindings } from '../generated/seal/seal.js';
-import { services } from '../generated/services.js';
-import { walrus } from '../generated/walrus/network.js';
+import { accounts } from '@generated/accounts.js';
+import { packages } from '@generated/packages.js';
+import { sealBindings } from '@generated/seal/seal.js';
+import { services } from '@generated/services.js';
+import { walrus } from '@generated/walrus/network.js';
 
 export interface SealView {
 	keyServerObjectId: string;

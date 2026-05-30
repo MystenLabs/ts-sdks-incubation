@@ -479,6 +479,14 @@ export const buildProductionPostAcquireHook = (
 					contributions: [],
 					endpoints,
 					extras,
+					// Record the EXACT dir codegen emits into for this stack so
+					// the read-side `@generated` alias (the Vite plugin) points
+					// where the files actually are — one decision, one source of
+					// truth (notes/per-stack-codegen-design.md §"Resolved: read
+					// and write share one gate"). `paths.outputDir` is already
+					// the resolved, stack-subdir-applied absolute path the emit
+					// pipeline writes to.
+					codegen: { generatedDir: paths.outputDir },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
 				yield* writeManifest(envelope, manifestPath).pipe(

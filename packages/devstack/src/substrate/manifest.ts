@@ -41,6 +41,22 @@ export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestE
 	},
 ) {}
 
+/** Codegen metadata recorded per stack. The supervisor writes the
+ *  resolved absolute output dir here at manifest-flush time so the
+ *  read-side build integrations (the Vite plugin) point an `@generated`
+ *  alias at the EXACT dir codegen emitted into for THIS stack — read
+ *  and write share one decision (see
+ *  `orchestrators/codegen/output-location.ts`). Optional + additive:
+ *  manifests written before this field existed (and stacks that somehow
+ *  flush without it) still decode; consumers fall back to
+ *  `src/generated/`. */
+export interface ManifestCodegen {
+	/** Absolute path to the directory codegen emitted into for this
+	 *  stack (home → `<appRoot>/src/generated`; non-home →
+	 *  `<appRoot>/.devstack/stacks/<stack>/generated`). */
+	readonly generatedDir: string;
+}
+
 /** Manifest envelope. The `services` slot is open (`unknown`) at
  *  the envelope level; each plugin's Codegenable contribution
  *  emits a typed file the consumer imports for the typed shape.
@@ -55,6 +71,9 @@ export interface ManifestEnvelope {
 	readonly services: Readonly<Record<string, unknown>>;
 	readonly endpoints: Readonly<Record<string, EndpointEntry>>;
 	readonly extras: Readonly<Record<string, unknown>>;
+	/** Per-stack codegen metadata. Optional — absent in older
+	 *  manifests; the reader falls back to `src/generated/`. */
+	readonly codegen?: ManifestCodegen;
 }
 
 export type ManifestExtras = Readonly<Record<string, unknown>>;
@@ -146,4 +165,13 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		}),
 	),
 	extras: Schema.Record(Schema.String, Schema.Unknown),
+	// Optional + additive — a manifest written before this field
+	// existed still decodes (the key is simply absent). The Vite plugin
+	// reads `codegen.generatedDir` to point its `@generated` alias; on a
+	// miss it falls back to `src/generated/`.
+	codegen: Schema.optional(
+		Schema.Struct({
+			generatedDir: Schema.String,
+		}),
+	),
 });

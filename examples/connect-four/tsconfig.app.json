@@ -6,7 +6,8 @@
 		"types": ["vite/client"],
 		"baseUrl": ".",
 		"paths": {
-			"@/*": ["./src/*"]
+			"@/*": ["./src/*"],
+			"@generated/*": ["./src/generated/*"]
 		}
 	},
 	"include": ["src/**/*"],

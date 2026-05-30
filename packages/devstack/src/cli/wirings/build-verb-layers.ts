@@ -13,25 +13,46 @@ import { Layer } from 'effect';
 import type { Identity } from '../../substrate/identity.ts';
 import { buildSubstrateLayers } from '../../orchestrators/run.ts';
 import { layerProductionOrchestrators } from '../../orchestrators/runtime-composition.ts';
+import { resolveCodegenOutput } from '../../orchestrators/codegen/output-location.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 
 /** Compose substrate + orchestrator Layers for a verb that knows its
  *  stack-config (i.e. has a `loaded` config and can pass codegen
  *  options). Use `buildDirectSnapshotLayers` when the verb does NOT
- *  load a config (e.g. restore/delete/wipe). */
+ *  load a config (e.g. restore/delete/wipe).
+ *
+ *  Resolves the per-stack codegen output location HERE — the one boot
+ *  seam where both the home stack (`stack.options.stackName`) and the
+ *  EFFECTIVE stack (`String(identity.stack)`, already run through the
+ *  explicit-`--stack` > `config.stackName` > inferred precedence ladder
+ *  by `resolvedIdentityForStack`/`identityValueFor` upstream) are in
+ *  scope. The home run emits into `src/generated/`; a non-home run
+ *  (concurrent `--stack e2e`/etc.) emits into
+ *  `.devstack/stacks/<stack>/generated/` so the two never clobber. The
+ *  resolved literal `outputDir`/`stackSubdir` flow into
+ *  `layerProductionOrchestrators` unchanged — `paths.ts` keeps consuming
+ *  a literal, minimal blast radius. */
 export const buildVerbLayers = (params: {
 	readonly identity: Identity;
 	readonly stack: SupervisedStack;
 	readonly appRoot: string;
 	readonly runtimeRoot: string;
-}) =>
-	layerProductionOrchestrators({
+}) => {
+	const codegenOutput = resolveCodegenOutput({
+		appRoot: params.appRoot,
+		effectiveStack: String(params.identity.stack),
+		homeStack: params.stack.options.stackName,
+		explicitOutputDir: params.stack.options.codegen?.outputDir,
+		explicitStackSubdir: params.stack.options.codegen?.stackSubdir ?? null,
+	});
+	return layerProductionOrchestrators({
 		codegen: {
 			appRoot: params.appRoot,
-			outputDir: params.stack.options.codegen?.outputDir,
-			stackSubdir: params.stack.options.codegen?.stackSubdir ?? null,
+			outputDir: codegenOutput.outputDir,
+			stackSubdir: codegenOutput.stackSubdir,
 		},
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(params.identity, params.runtimeRoot)));
+};
 
 /** Substrate + (default-codegen) orchestrator Layers for verbs that
  *  don't load a config. */

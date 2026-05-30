@@ -9,10 +9,10 @@
 // `packages/devstack/notes/coin-auto-discovery.md`); the generated key
 // follows the witness struct name.
 
-import { accounts } from '../generated/accounts.js';
-import { coins } from '../generated/coins.js';
-import { packages } from '../generated/packages.js';
-import { services } from '../generated/services.js';
+import { accounts } from '@generated/accounts.js';
+import { coins } from '@generated/coins.js';
+import { packages } from '@generated/packages.js';
+import { services } from '@generated/services.js';
 
 const managedCoin = packages.managed_coin;
 const packageId = managedCoin?.packageId ?? '0x0';

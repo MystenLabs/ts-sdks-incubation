@@ -24,6 +24,7 @@ export {
 	ManifestExtrasInvalid,
 	ManifestExtrasLookupError,
 	type EndpointEntry,
+	type ManifestCodegen,
 	type ManifestEnvelope,
 	type ManifestExtras,
 	type ManifestExtrasContext,

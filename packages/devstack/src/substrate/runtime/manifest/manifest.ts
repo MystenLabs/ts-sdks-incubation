@@ -32,6 +32,7 @@ import { FileSystem } from 'effect';
 import type { EndpointKey, PluginKey } from '../../brand.ts';
 import {
 	type EndpointEntry,
+	type ManifestCodegen,
 	type ManifestExtras,
 	type ManifestEnvelope,
 	ManifestEnvelopeSchema,
@@ -106,6 +107,10 @@ export interface WriteManifestInput {
 	readonly contributions: ReadonlyArray<PluginManifestContribution>;
 	readonly endpoints?: ReadonlyArray<EndpointEntry>;
 	readonly extras?: ManifestExtras;
+	/** Per-stack codegen metadata (the resolved absolute `generatedDir`).
+	 *  Optional + additive — omitting it produces an envelope without the
+	 *  `codegen` key, identical to a pre-field manifest. */
+	readonly codegen?: ManifestCodegen;
 }
 
 /**
@@ -180,6 +185,10 @@ export const buildEnvelope = (
 			services,
 			endpoints,
 			extras,
+			// Spread only when present so an omitted `codegen` yields the
+			// exact same envelope (and serialized bytes) as a pre-field
+			// manifest — additive, no churn for stacks that don't record it.
+			...(input.codegen !== undefined ? { codegen: input.codegen } : {}),
 		};
 	});
 
@@ -271,5 +280,5 @@ export const readManifest = (
 // directly.
 // -----------------------------------------------------------------------------
 
-export type { EndpointEntry, EndpointKey, ManifestEnvelope, PluginKey };
+export type { EndpointEntry, EndpointKey, ManifestCodegen, ManifestEnvelope, PluginKey };
 export { ManifestEnvelopeSchema };
