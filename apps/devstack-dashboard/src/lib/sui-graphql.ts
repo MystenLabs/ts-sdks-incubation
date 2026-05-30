@@ -23,9 +23,16 @@ import type { Endpoint } from './types.ts';
 
 // --- Endpoint resolution ----------------------------------------------------
 
-/** The stack's Sui GraphQL base URL (the `graphql` endpoint), or null. */
-export const suiGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null =>
-	endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url ?? null;
+/** The stack's Sui GraphQL query URL, or null. The `graphql` endpoint is
+ *  registered as the bare host:port base, but the Sui GraphQL server serves
+ *  queries under `/graphql` — so normalise the base onto that path (the SDK's
+ *  `SuiGraphQLClient` POSTs to the URL verbatim, it does not append a path). */
+export const suiGraphqlUrl = (endpoints: ReadonlyArray<Endpoint>): string | null => {
+	const base = endpoints.find((e) => e.name.toLowerCase() === 'graphql')?.url;
+	if (base === undefined) return null;
+	const trimmed = base.replace(/\/+$/, '');
+	return trimmed.endsWith('/graphql') ? trimmed : `${trimmed}/graphql`;
+};
 
 // --- GraphQL client ---------------------------------------------------------
 
