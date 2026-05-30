@@ -36,13 +36,14 @@ import type {
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
 import type { FaucetStrategy } from '../../contracts/faucet-strategy.ts';
 import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 // The faucet capability-key prefix is owned by the faucet plugin (single
 // source of truth). The dashboard plugin layer is allowed to name plugins,
 // so importing the key constructor is the same cross-plugin reference the
 // account funding pass (`plugins/account/funding.ts`) uses — NOT a resolved
-// plugin-VALUE import (those stay structurally narrowed below).
-import { FAUCET_CAPABILITY_KEY_PREFIX } from '../faucet/dispatcher.ts';
+// plugin-VALUE import (those stay structurally narrowed below). Imported via
+// the sibling's barrel to satisfy the plugin-boundary invariant.
+import { FAUCET_CAPABILITY_KEY_PREFIX } from '../faucet/index.ts';
 
 // -----------------------------------------------------------------------------
 // App-agnostic domain shapes the GraphQL schema renders.
