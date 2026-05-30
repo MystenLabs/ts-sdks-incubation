@@ -148,28 +148,45 @@ export const extractTrailingJson = (text: string): string => {
 };
 
 export const containerInnerScript = (pkgName: string): string => {
-	// Copy the mounted package into an in-container scratch dir and scrub +
-	// build THERE, never `/workspace/<pkg>` directly. `/workspace` may be a
-	// bind mount of the developer's real source tree (the per-app build
-	// container in `chain-build-container.ts` mounts the app dir as-is), and
-	// the scrub's `gawk -i inplace` rewrite of Move.lock would corrupt their
-	// checked-in pinned deps. The one-shot path already mounts a host-side
-	// staging copy, so this in-container copy is redundant-but-harmless there.
+	// Copy the WHOLE mounted tree into an in-container scratch dir and scrub +
+	// build the package THERE, never `/workspace/<pkg>` directly. `/workspace`
+	// is a bind mount of the developer's real source tree (the per-app build
+	// container in `chain-build-container.ts` mounts the app dir as-is), and the
+	// scrub's `gawk -i inplace` rewrite of Move.lock would corrupt their
+	// checked-in pinned deps if run against the mount.
+	//
+	// Two reasons we copy `/workspace/.` (the whole tree) rather than only
+	// `/workspace/<pkgName>`:
+	//   1. NESTED PACKAGES. `pkgName` is the package path RELATIVE to the
+	//      bind-mounted app dir (e.g. `packages/demo`), so it can contain a
+	//      slash. Copying only `/workspace/<pkgName>` into
+	//      `/tmp/move-build-$$/<pkgName>` would need the intermediate
+	//      `packages/` dir to exist first — it doesn't, and `set -e` would
+	//      abort the build before `sui move build` ran.
+	//   2. SIBLING LOCAL DEPS. A package can reference siblings via
+	//      `{ local = "../token" }`. A scoped copy of only the package subtree
+	//      drops those, failing the build with "Invalid directory at ../…".
+	// Copying the whole tree both materialises the nested path AND carries the
+	// sibling `../` deps. The mount itself is never rewritten (mirrors
+	// `containerInnerScriptOneShot`, whose host-side staging tree is the disposable
+	// copy there; here the in-container copy is the disposable one).
+	//
 	// `$$` (the shell PID) scopes the scratch dir per exec so concurrent
 	// builds of the same package don't share a tree.
 	const quotedPkg = shellQuote(pkgName);
-	const scratchPkg = `/tmp/move-build-$$/${quotedPkg}`;
-	const stage = `rm -rf /tmp/move-build-$$ && mkdir -p /tmp/move-build-$$ && cp -a /workspace/${quotedPkg} ${scratchPkg}`;
-	// Scrub the scratch package tree AND the mounted Move git cache. The cache
+	const scratchRoot = '/tmp/move-build-$$';
+	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
+	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
+	// Scrub the whole scratch tree AND the mounted Move git cache. The cache
 	// (`/root/.move/git`) is process-shared mutable state we legitimately want
-	// scrubbed so a stale pin can't leak into the build; only the package tree
-	// must stay confined to the disposable copy.
-	const scrub = containerScrubShellScript(scratchPkg, '/root/.move');
+	// scrubbed so a stale pin can't leak into the build; the scratch tree is the
+	// disposable copy, so scrubbing all of it (package + staged siblings) is safe.
+	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
 	const build =
 		`sui move build --path ${scratchPkg} ` +
 		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
-	const cleanup = 'rm -rf /tmp/move-build-$$';
+	const cleanup = `rm -rf ${scratchRoot}`;
 	return [
 		'set -e',
 		stage,
@@ -184,15 +201,15 @@ export const containerInnerScript = (pkgName: string): string => {
 	].join('; ');
 };
 
-/** One-shot-path inner script. Unlike {@link containerInnerScript} (used by
- *  the per-app exec build, where `/workspace` is the developer's real tree
- *  and must NOT be scrubbed in place), the one-shot path mounts a disposable
- *  host-side staging copy at `/workspace`. So we scrub + build the package
- *  IN PLACE rather than re-copying just `/workspace/<pkg>` into a scratch dir
- *  — that re-copy would drop sibling local dependencies (`{ local = "../token" }`),
- *  failing the build with "Invalid directory at ../…". The staging tree carries
- *  the package's transitive local deps (see `stageLocalMoveDeps`), so the
- *  in-place relative references resolve. */
+/** One-shot-path inner script. Mirrors {@link containerInnerScript} — both copy
+ *  the WHOLE `/workspace` tree into an in-container scratch dir and scrub + build
+ *  THERE, never the mount in place. The difference is only WHAT is mounted at
+ *  `/workspace`: the exec path bind-mounts the developer's real app dir (so the
+ *  whole-tree copy naturally carries nested packages + sibling `../` deps),
+ *  whereas the one-shot path mounts a disposable host-side staging copy whose
+ *  transitive local deps were pre-staged (see `stageLocalMoveDeps`). Copying only
+ *  `/workspace/<pkg>` would drop sibling local dependencies
+ *  (`{ local = "../token" }`), failing the build with "Invalid directory at ../…". */
 export const containerInnerScriptOneShot = (pkgName: string): string => {
 	const quotedPkg = shellQuote(pkgName);
 	const scratchRoot = '/tmp/move-build-$$';
@@ -201,9 +218,9 @@ export const containerInnerScriptOneShot = (pkgName: string): string => {
 	// an in-container scratch tree and scrub + build THERE — never the mounted
 	// host staging dir. Building in the mount leaves root-owned `build/` +
 	// scrubbed Move.lock files behind that the (non-root) host can't remove,
-	// failing scope cleanup with EACCES. Copying ALL of /workspace (vs
-	// containerInnerScript, which copies only `/workspace/<pkg>`) keeps sibling
-	// local deps like `{ local = "../token" }` present in the scratch tree.
+	// failing scope cleanup with EACCES. Copying ALL of /workspace (like
+	// containerInnerScript) keeps sibling local deps like `{ local = "../token" }`
+	// present in the scratch tree.
 	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
 	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
 	const build =

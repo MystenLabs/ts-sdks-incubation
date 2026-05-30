@@ -9,7 +9,7 @@
 //
 // Split out of the monolith per backlog #38 + #40.
 
-import { Context, Effect, Option, Queue, SubscriptionRef } from 'effect';
+import { Context, Effect, type Exit, Option, Queue, SubscriptionRef } from 'effect';
 
 import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../../brand.ts';
@@ -19,6 +19,26 @@ import type { SubscribableState } from '../../projection.ts';
 import { StrategyNotFoundError } from '../errors.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import { updateRef } from '../projection/update.ts';
+
+// -----------------------------------------------------------------------------
+// Best-effort lifecycle mutation
+// -----------------------------------------------------------------------------
+
+/**
+ * Swallow BOTH the typed failure and any defect of a best-effort
+ * effect, discarding its outcome. Lifecycle mutations
+ * (`registry.transition` / `markReady` / `markFailed`) validate against
+ * the transition table via `assertTransition`, which `Effect.die`s (a
+ * DEFECT, not a typed failure) on an off-table move — reachable when a
+ * concurrent selective-restart races an in-flight acquire. `Effect.catch`
+ * only intercepts the typed `E` channel, so a die would escape and bubble
+ * unguarded through the unbounded acquire fan-out (supervisor wedge).
+ * `Effect.exit` captures failure AND defect into an `Exit` we discard,
+ * keeping these mutations genuinely best-effort.
+ */
+export const bestEffort = <A, E, R>(
+	effect: Effect.Effect<A, E, R>,
+): Effect.Effect<Exit.Exit<A, E>, never, R> => Effect.exit(effect);
 
 // -----------------------------------------------------------------------------
 // OptionalService<T> — substrate-wide "service-or-default" helper

@@ -3,10 +3,11 @@
 // Distilled doc 16-action.md "Failure modes": signing failure routes
 // through `PublishError({ phase: 'publish-tx' })`. The rewrite splits
 // the user-facing action error from `package`'s `PublishError` because
-// action-specific phases (build, sign, parse) carry different semantics
-// — `build` here is the user-supplied transaction-builder Effect,
-// `sign` is the `signAndExecute` invocation, `parse` covers downstream
-// receipt projection.
+// action-specific phases carry different semantics — `build` here is the
+// user-supplied transaction-builder Effect, `sign` is the build/sign/
+// submit transport (the `signAndExecute` invocation, including the
+// Account plugin's `no-digest` envelope violation surfaced via `cause`),
+// and `execute-failed` is the on-chain `FailedTransaction` outcome.
 //
 // Per architecture §Effect, errors are plain interfaces with a `_tag`
 // discriminator; `Effect.catchTag` / `catchTags` match on the literal.

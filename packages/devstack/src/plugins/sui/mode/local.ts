@@ -67,7 +67,7 @@ import {
 	DEFAULT_SUI_CLI_VERSION,
 	suiCliImageBuildContext,
 } from '../../../substrate/runtime/sui-move-build/index.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -142,7 +142,7 @@ export const bootLocalMode = (
 	identity: Identity,
 	portBroker: PortBroker,
 	opts: SuiLocalOptions,
-): Effect.Effect<LocalModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LocalModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
 		yield* setCurrentPluginPhase('resolving Sui local image');
@@ -207,7 +207,7 @@ export const bootLocalMode = (
 		// SAME image we built/resolved here. Without this the package
 		// plugin would have to re-resolve the image, doubling the
 		// build-context hash work and risking digest drift.
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl,

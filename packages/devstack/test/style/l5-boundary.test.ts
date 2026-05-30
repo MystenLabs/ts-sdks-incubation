@@ -14,6 +14,17 @@
 // under `build-integrations/` and assert no `import ... from
 // '../../plugins/...'` (or the `export ... from` re-export variant)
 // survives.
+//
+// MATCHING NOTE (mirror l4, not weaker): the scan is line-by-line, and
+// the project's formatter routinely splits a named import/re-export so
+// its `from` clause lands on its OWN physical line (`} from '...'`).
+// Keying the regex on `import`/`export` on the SAME line as `from`
+// therefore MISSES every multi-line import — a real L5→L2 edge written
+// as `import {\n  X,\n} from '../../plugins/...'` would slip through.
+// l4-boundary keys on bare `from` precisely to catch that wrapped tail,
+// so we do the same here: the primary patterns match on `from '…plugins…'`
+// alone, independent of which keyword introduced the statement, plus a
+// separate bare side-effect pattern for `import '…plugins…'`.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -29,18 +40,17 @@ const FORBIDDEN_IMPORT_PATTERNS: ReadonlyArray<{
 	readonly regex: RegExp;
 }> = [
 	{
-		// `import ... from '../../plugins/...'` — the L5→L2 edge.
-		description: 'L2 plugin module via import (../../plugins/...)',
-		regex: /import\s+(?:type\s+)?[^'"]*\sfrom\s+['"](?:\.\.\/)+plugins\//,
+		// Any `... from '../../plugins/...'` clause — covers `import`,
+		// `import type`, and `export ... from` re-exports, AND (crucially)
+		// the wrapped tail of a multi-line import whose `} from '...'` sits
+		// on its own line. Keyed on bare `from` to mirror l4-boundary
+		// rather than regress to single-line-only matching.
+		description: 'L2 plugin module via import/re-export (... from ../../plugins/...)',
+		regex: /from\s+['"](?:\.\.\/)+plugins\//,
 	},
 	{
-		// `export ... from '../../plugins/...'` — the re-export variant of
-		// the same L5→L2 edge.
-		description: 'L2 plugin module via re-export (export ... from ../../plugins/...)',
-		regex: /export\s+[^'"]*\sfrom\s+['"](?:\.\.\/)+plugins\//,
-	},
-	{
-		// Bare side-effect import `import '../../plugins/...'`.
+		// Bare side-effect import `import '../../plugins/...'` (no `from`
+		// clause, so the pattern above cannot catch it).
 		description: 'L2 plugin module via side-effect import (import ../../plugins/...)',
 		regex: /import\s+['"](?:\.\.\/)+plugins\//,
 	},

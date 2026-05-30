@@ -6,9 +6,13 @@
 // `ContainerRuntimeError`) come from the substrate's primitives — we
 // don't redeclare those.
 //
-// `ForkIncompatibleError` is a cross-cutting mode-refusal shape
-// owned by `substrate/runtime/mode-errors.ts`; deepbook contributes
-// the `deepbookLocal` variant via the factory in `index.ts`.
+// `ForkIncompatibleError` is a cross-cutting mode-refusal shape owned by
+// `substrate/runtime/mode-errors.ts`. Deepbook does NOT raise it itself
+// (there is no deepbook-side factory) and the local/known/override modes
+// never refuse on it directly; it stays in this plugin's error union +
+// `DEEPBOOK_ERROR_TAGS` as defense-in-depth so the cause walker still
+// attributes a mode-refusal surfaced through a deepbook dependency to the
+// deepbook plugin rather than wrapping it as an opaque `'publish'` error.
 //
 // Effect v4: plain interfaces with `_tag` discriminator (per
 // surrounding L2 subsystem style — STYLE_GUIDE §2). `Effect.catchTag`

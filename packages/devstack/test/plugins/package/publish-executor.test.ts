@@ -169,14 +169,14 @@ const makePublishSdk = (
 				objectTypes: {
 					[`0xcap${label}`]: '0x2::package::UpgradeCap',
 				},
-				objectChanges: [
-					{ type: 'published', objectId: `0xpkg${label}` },
-					{
-						type: 'created',
-						objectId: `0xcap${label}`,
-						objectType: '0x2::package::UpgradeCap',
-					},
-				],
+				// NB: the publish path projects object changes from the account
+				// plugin's `projectTxResult`, which derives them from
+				// `effects.changedObjects` + `objectTypes` (above) — NOT from a
+				// top-level `Transaction.objectChanges`. So no such array is
+				// declared here; adding one would be dead (the SDK-driven path
+				// never reads it). The impersonation test below DOES declare
+				// `Transaction.objectChanges` because its stub bypasses
+				// `projectTxResult` and is consumed by `signAndDispatch` directly.
 			},
 		};
 	};

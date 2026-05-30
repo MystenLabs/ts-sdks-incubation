@@ -820,17 +820,33 @@ export const acquirePerNameLock = (
 		// (`substrate/runtime/lease-broker/service.ts:194-216`):
 		//   1. If we're still queued → drop our deferred so a future
 		//      release doesn't transfer ownership to a dead waiter.
-		//   2. If we were already promoted (our deferred was completed
-		//      by a release that raced our interrupt) → release the
-		//      slot on our behalf so the next waiter can proceed. The
-		//      slot's "holder" is implicit: queue entry present + our
-		//      deferred no longer queued means we own it.
+		//   2. If we are NO LONGER queued → a `releasePerNameLock`
+		//      already popped us as head (the ONLY way a queued waiter
+		//      leaves the queue) and transferred ownership to us, so we
+		//      release on our behalf to hand off to the next waiter.
+		//
+		// We discriminate on queue membership ALONE, not on
+		// `Deferred.isDoneUnsafe(waiter)`: release pops the head (step 1
+		// of releasePerNameLock's two-step transfer) and only THEN signals
+		// the deferred (step 2). Between those steps the popped waiter is
+		// already absent from the queue but its deferred is still pending;
+		// keying on the signal would (incorrectly) classify us as "still
+		// queued" and skip the release, orphaning the slot permanently.
+		// A waiter that reached this await is only ever removed by a
+		// release popping it, so "not queued ⇒ promoted" is exact —
+		// matching the lease-broker, which keys off its explicit `holder`
+		// field set atomically with the pop rather than the signal.
 		yield* Deferred.await(waiter).pipe(
 			Effect.onInterrupt(() =>
 				Effect.gen(function* () {
 					const promotedButInterrupted = yield* Ref.modify(lock, (m) => {
 						const queue = m.get(name);
-						if (queue === undefined) return [false, m] as const;
+						if (queue === undefined) {
+							// Entry gone entirely → a release fully drained
+							// the slot (empty-queue delete) after popping us.
+							// We held it; nothing to hand off.
+							return [false, m] as const;
+						}
 						const filtered = queue.filter((d) => d !== waiter);
 						if (filtered.length !== queue.length) {
 							// Still queued → drop ourselves; the holder
@@ -839,17 +855,16 @@ export const acquirePerNameLock = (
 							next.set(name, filtered);
 							return [false, next as PerNameLockState] as const;
 						}
-						// Not queued. Either (a) we were never queued (we
-						// claimed a free slot above — impossible here, that
-						// path returns before await), or (b) a release
-						// already popped us and our deferred is done. Use
-						// the deferred's completion as the discriminator.
-						return [Deferred.isDoneUnsafe(waiter), m] as const;
+						// Not queued, entry still present. A release already
+						// popped us as head and transferred ownership; the
+						// rest of the queue is waiting on us. Release on our
+						// behalf so the next waiter proceeds.
+						return [true, m] as const;
 					});
 					if (promotedButInterrupted) {
 						yield* releasePerNameLock(lock, name);
 					}
-				}),
+				}).pipe(Effect.uninterruptible),
 			),
 		);
 	});
@@ -914,10 +929,19 @@ export const ensureContainer = (
 		// label-driven sweep ran later (per-scope contract: one
 		// `Effect.scoped` ⇒ one container managed).
 		//
-		// Also: post-`docker run` work (network attach → IP readback →
-		// inspect → `addClaim`) runs uninterruptibly so an interrupt cannot
-		// land between "container started" and "finalizer armed". The
-		// finalizer itself is uninterruptible (Architecture §13).
+		// The uninterruptible window is NARROWED to the orphan-safety
+		// prefix: inspect → applyAction → ensureEffectivePublishedPorts →
+		// `registerStopFinalizer`. That prefix MUST be uninterruptible so an
+		// interrupt cannot land between "container started" and "finalizer
+		// armed" (which would strand a running container with no scope-bound
+		// cleanup). Once the stop-on-scope-close finalizer is armed, the
+		// remaining work (assertOwned → secondary network attach → IP
+		// readback → refresh inspect → `addClaim`) runs INTERRUPTIBLY via
+		// `restore(...)`: an interrupt there simply triggers the armed
+		// finalizer (stop + idempotent removeClaim), which is the desired
+		// cleanup — so keeping that ~8s tail uninterruptible would only defer
+		// Ctrl-C/shutdown for a bounded window with no orphan-safety benefit.
+		// The finalizer itself is uninterruptible (Architecture §13).
 		const desiredImageRef = spec.image.tag ?? spec.image.digest;
 		const paths = yield* StackPathsService;
 		// Preserve the substrate-side error taxonomy by surfacing a
@@ -1011,8 +1035,12 @@ export const ensureContainer = (
 		const { id, ips, ports } = yield* withSerializedContainerOp(
 			spec.name,
 			deps.perNameLock,
-			Effect.uninterruptible(
+			Effect.uninterruptibleMask((restore) =>
 				Effect.gen(function* () {
+					// --- Orphan-safety prefix (uninterruptible) ---
+					// inspect → applyAction → publish-ports → finalizer-arm
+					// must run atomically: a stranded running container with
+					// no scope-bound cleanup is the failure this guards.
 					const facts = yield* inspectContainer(spec.name);
 					if (facts !== null) {
 						yield* assertOwnedFacts(spec.name, facts, spec.labels);
@@ -1032,50 +1060,64 @@ export const ensureContainer = (
 
 					// Arm the stop-on-scope-close finalizer BEFORE we
 					// release the per-name lock and BEFORE we call
-					// `addClaim`. If anything below this point fails
-					// (assert, network attach, addClaim) the container
-					// will still be stopped at scope close.
+					// `addClaim`. If anything below this point fails OR is
+					// interrupted (assert, network attach, addClaim) the
+					// container will still be stopped at scope close.
 					yield* registerStopFinalizer(id);
 
-					yield* assertContainerHandleOwned({
-						id,
-						name: spec.name,
-						labels: spec.labels,
-						imageName: spec.image.tag ?? spec.image.digest,
-						status: 'running',
-						ips: [],
-					});
+					// --- Interruptible tail (restore) ---
+					// The finalizer is now armed, so an interrupt here is
+					// safe: it triggers the scope finalizer (stop + idempotent
+					// removeClaim). Running this ~8s tail interruptibly keeps
+					// Ctrl-C/shutdown responsive during bring-up.
+					const tail = yield* restore(
+						Effect.gen(function* () {
+							yield* assertContainerHandleOwned({
+								id,
+								name: spec.name,
+								labels: spec.labels,
+								imageName: spec.image.tag ?? spec.image.digest,
+								status: 'running',
+								ips: [],
+							});
 
-					// Architecture §5 — secondary network attaches (any
-					// beyond the first, which is wired in via `--network`
-					// on create) must wait for IP allocation before we
-					// declare ready.
-					const secondaries = (spec.networkAttach ?? []).slice(1).map(normalizeNetworkAttachment);
-					for (const net of secondaries) {
-						yield* connect(spec.name, net.name, net.aliases);
-						yield* waitForIp(spec.name, net.name);
-					}
+							// Architecture §5 — secondary network attaches (any
+							// beyond the first, which is wired in via `--network`
+							// on create) must wait for IP allocation before we
+							// declare ready.
+							const secondaries = (spec.networkAttach ?? [])
+								.slice(1)
+								.map(normalizeNetworkAttachment);
+							for (const net of secondaries) {
+								yield* connect(spec.name, net.name, net.aliases);
+								yield* waitForIp(spec.name, net.name);
+							}
 
-					const ips = yield* readIps(spec.name);
-					const refreshedFacts = yield* inspectContainer(spec.name);
-					const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+							const ips = yield* readIps(spec.name);
+							const refreshedFacts = yield* inspectContainer(spec.name);
+							const ports =
+								refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
 
-					// Record cross-process claim. The scope finalizer
-					// (already registered) will release it on scope
-					// close. If this fails, the container is still
-					// cleaned up at scope close.
-					yield* mapSubstrateClaimError(
-						addClaim(
-							{
-								stackLockFile: paths.stackLockFile,
-								rosterFile: paths.rosterFile,
-								containerClaimsFile: paths.containerClaimsFile,
-							},
-							spec.name,
-						),
+							// Record cross-process claim. The scope finalizer
+							// (already registered) will release it on scope
+							// close. If this fails, the container is still
+							// cleaned up at scope close.
+							yield* mapSubstrateClaimError(
+								addClaim(
+									{
+										stackLockFile: paths.stackLockFile,
+										rosterFile: paths.rosterFile,
+										containerClaimsFile: paths.containerClaimsFile,
+									},
+									spec.name,
+								),
+							);
+
+							return { ips, ports };
+						}),
 					);
 
-					return { id, ips, ports };
+					return { id, ips: tail.ips, ports: tail.ports };
 				}),
 			),
 		);

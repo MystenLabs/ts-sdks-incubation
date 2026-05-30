@@ -351,21 +351,42 @@ export const account = <const N extends string, const Funding extends AccountFun
 	});
 };
 
-const fundingProjectionForResult = (funding: AccountFundingResult): AccountRegistryFunding => {
+/** @internal — exported only for the projection regression test
+ *  (`test/plugins/account/funding-projection.test.ts`). Projects the runtime
+ *  `AccountFundingResult` (requested + applied) into the registry's
+ *  per-row funded/already-satisfied/skipped status. */
+export const fundingProjectionForResult = (
+	funding: AccountFundingResult,
+): AccountRegistryFunding => {
 	if (funding.requested.length === 0) {
 		return { status: 'skipped', balanceMist: null, requestedMist: null, entries: [] };
 	}
 
-	// Outcome-keyed lookup so the projection can distinguish a real
-	// faucet call (`funded`) from the pre-existing-balance short-circuit
-	// (`already-satisfied`). An entry that the funding pass never
-	// reached at all (zero-amount, or wholly absent from `applied`)
-	// projects as `skipped`.
-	const appliedOutcomes = new Map(
-		funding.applied.map((entry) => [fundingEntryKey(entry), entry.outcome] as const),
-	);
+	// Positional outcome consume so the projection can distinguish a
+	// real faucet call (`funded`) from the pre-existing-balance
+	// short-circuit (`already-satisfied`). `applied` is an
+	// order-preserving SUBSEQUENCE of `requested`:
+	// `applyCrossCuttingFunding` (and the default-funding pass) iterate
+	// `requested` in order and only push a processed entry onto
+	// `applied`, dropping zero-amount and no-strategy entries. So we
+	// walk a cursor through `applied` and adopt its outcome for the
+	// matching requested row by (fullCoinType, amount) — a keyed Map
+	// would collapse duplicate (coin, amount) entries and mislabel the
+	// genuinely-funded first row as `already-satisfied`. An entry the
+	// funding pass never reached (zero-amount, or absent from `applied`)
+	// does not match the cursor and projects as `skipped` without
+	// advancing it.
+	let appliedCursor = 0;
 	const entries = funding.requested.map((entry) => {
-		const outcome = appliedOutcomes.get(fundingEntryKey(entry));
+		const candidate = funding.applied[appliedCursor];
+		const matches =
+			candidate !== undefined &&
+			candidate.fullCoinType === entry.fullCoinType &&
+			candidate.amount === entry.amount;
+		const outcome = matches ? candidate.outcome : undefined;
+		if (matches) {
+			appliedCursor += 1;
+		}
 		return {
 			coin: entry.coin,
 			fullCoinType: entry.fullCoinType,
@@ -397,9 +418,6 @@ const fundingProjectionForResult = (funding: AccountFundingResult): AccountRegis
 		entries,
 	};
 };
-
-const fundingEntryKey = (entry: ProjectedFundingEntry): string =>
-	`${entry.fullCoinType}:${entry.amount}`;
 
 // ---------------------------------------------------------------------------
 // Re-exports for advanced callers (Coin, Wallet, Package)

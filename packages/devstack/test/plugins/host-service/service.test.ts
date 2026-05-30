@@ -29,6 +29,7 @@ import {
 	type HostServiceResolvedOptions,
 	type HostServiceValue,
 } from '../../../src/plugins/host-service/index.ts';
+import { logReady } from '../../../src/plugins/host-service/service.ts';
 import {
 	layerPostAcquireTasks,
 	PostAcquireTasksService,
@@ -261,13 +262,17 @@ describe('acquireHostService', () => {
 		expect(value.url).toBe('http://127.0.0.1:6173');
 	});
 
-	it.live('treats sub-5xx HTTP responses as host-service readiness', () =>
+	it.live('treats any HTTP response (including 5xx) as host-service readiness', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const port = yield* Effect.promise(findFreePort);
-				// 404 at `/` is fine — the framework is up; a route just
-				// isn't bound to root. 5xx would (correctly) be rejected
-				// as "server wedged" and is exercised by the next test.
+				// The host-service contract is "listener up", NOT "app logic
+				// healthy". A 500 at `/` is the canonical "Vite/Next SSR route
+				// threw during initial compile" case — the listener is bound and
+				// the framework is up. Such a server MUST satisfy readiness;
+				// rejecting 5xx (an `r => r.status < 500` validator) would kill
+				// it after the timeout. This case fails if that regression
+				// returns, pinning the listener-up readiness contract.
 				const options = normalizeHostServiceOptions({
 					name: 'frontend',
 					command: process.execPath,
@@ -276,8 +281,8 @@ describe('acquireHostService', () => {
 						[
 							"const http = require('node:http');",
 							'const server = http.createServer((_req, res) => {',
-							'  res.statusCode = 404;',
-							"  res.end('not found');",
+							'  res.statusCode = 500;',
+							"  res.end('compiling');",
 							'});',
 							"server.listen(Number(process.env.PORT), '127.0.0.1');",
 						].join(' '),
@@ -554,22 +559,26 @@ describe('acquireHostService', () => {
 });
 
 describe('logReady fallback wrapper preserves non-tagged causes', () => {
-	// Regression for the `service.ts:382` review-fix-phase-22e: when the
-	// `Effect.tryPromise` catch on the log-readiness path receives a
-	// non-tagged Error (e.g. a future code path where the readiness
-	// Promise rejects with a stream / EventEmitter error rather than a
-	// pre-tagged `HostServiceAcquireError`), the fallback wrap MUST
-	// thread the original cause through the new `HostServiceAcquireError`
-	// instead of dropping it and only preserving the closed-over
-	// template error.
+	// Regression for the `logReady` `Effect.tryPromise` catch arm: when the
+	// log-readiness Promise rejects with a NON-tagged cause (a stream /
+	// EventEmitter error rather than the pre-tagged timeout
+	// `HostServiceAcquireError`), the catch MUST thread that raw cause
+	// through the surfaced `HostServiceAcquireError.cause` instead of
+	// dropping it and only preserving the closed-over template error.
 	//
-	// We assert the shape of `HostServiceAcquireError`'s construction
-	// here rather than driving the live `logReady` path because the
-	// log-readiness Promise today only ever resolves (never rejects with
-	// a non-tagged cause). The fix is defensive against future code
-	// changes that introduce a rejection source on that Promise.
-	it('threads `cause` through the wrapped HostServiceAcquireError', () => {
-		const templateError = new HostServiceAcquireError({
+	// These cases DRIVE THE REAL `logReady` — we hand it a `readySignal`
+	// Promise that rejects (the production `readySignal.then(onRejected)`
+	// arm routes that rejection into the inner Promise's `rejectReady`) and
+	// assert against the failure `logReady` actually surfaces. `exit` /
+	// `processError` are never-resolving so the `ready` arm is the only one
+	// that can win the race. Falsifiable: dropping the `cause:` threading in
+	// service.ts, or dropping the new `readySignal` rejection wiring (so the
+	// timeout would fire instead), breaks the first case; dropping the
+	// `instanceof` short-circuit breaks the second.
+	const never = <A>(): Promise<A> => new Promise<A>(() => {});
+
+	const templateError = (): HostServiceAcquireError =>
+		new HostServiceAcquireError({
 			serviceName: 'frontend',
 			cwd: '/cwd',
 			command: 'pnpm',
@@ -578,36 +587,62 @@ describe('logReady fallback wrapper preserves non-tagged causes', () => {
 			message: 'host service readiness failed',
 		});
 
-		const rawCause = new Error('stream closed before readiness signal');
-		// This mirrors the `catch:` arm in `service.ts:382` post-fix.
-		const wrapped =
-			rawCause instanceof HostServiceAcquireError
-				? rawCause
-				: new HostServiceAcquireError({
-						serviceName: templateError.serviceName,
-						cwd: templateError.cwd,
-						command: templateError.command,
-						args: templateError.args,
-						phase: templateError.phase,
-						message: templateError.message,
-						exitCode: templateError.exitCode,
-						signal: templateError.signal,
-						cause: rawCause,
-					});
+	// A readiness signal whose rejection we control. We fork `logReady`
+	// FIRST so its `Effect.tryPromise` body runs and attaches the
+	// `readySignal.then(onFulfilled, onRejected)` handler, THEN reject —
+	// this avoids both an unhandled-rejection window and any race over
+	// which arm of `awaitManagedProcessReady` resolves first.
+	const drive = (rejectWith: unknown) =>
+		Effect.gen(function* () {
+			let rejectSignal: ((cause: unknown) => void) | undefined;
+			const readySignal = new Promise<void>((_resolve, reject) => {
+				rejectSignal = reject;
+			});
+			const fiber = yield* Effect.forkChild(
+				Effect.exit(
+					logReady(
+						{ kind: 'log', pattern: 'ready', timeoutMs: 60_000 },
+						readySignal,
+						never<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>(),
+						never<unknown>(),
+						templateError(),
+					),
+				),
+			);
+			// Let the forked fiber step into `tryPromise` and attach its
+			// rejection handler before we trip the signal.
+			yield* Effect.yieldNow;
+			rejectSignal?.(rejectWith);
+			return yield* Fiber.join(fiber);
+		});
 
-		expect(wrapped).toBeInstanceOf(HostServiceAcquireError);
-		expect(wrapped.serviceName).toBe('frontend');
-		expect(wrapped.phase).toBe('ready');
-		expect(wrapped.message).toBe('host service readiness failed');
-		// The load-bearing assertion: original cause is preserved.
-		expect(wrapped.cause).toBe(rawCause);
-		expect((wrapped.cause as Error)?.message).toBe('stream closed before readiness signal');
+	it.live('threads a non-tagged `cause` through the surfaced HostServiceAcquireError', () => {
+		const rawCause = new Error('stream closed before readiness signal');
+		return Effect.gen(function* () {
+			const exit = yield* drive(rawCause);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value).toBeInstanceOf(HostServiceAcquireError);
+				// Template fields are preserved...
+				expect(error.value.serviceName).toBe('frontend');
+				expect(error.value.phase).toBe('ready');
+				expect(error.value.message).toBe('host service readiness failed');
+				// ...and the load-bearing assertion: the raw, non-tagged cause is
+				// threaded through (NOT dropped). This is the exact regression the
+				// catch arm guards.
+				expect(error.value.cause).toBe(rawCause);
+			}
+		});
 	});
 
-	it('passes through pre-tagged HostServiceAcquireError unchanged', () => {
-		// The existing `setTimeout` rejection path produces a
-		// `HostServiceAcquireError` directly — the fallback wrap must
-		// NOT re-wrap (would double-stamp the template).
+	it.live('passes a pre-tagged HostServiceAcquireError through unchanged', () => {
+		// The timeout path produces a `HostServiceAcquireError` directly — the
+		// catch arm must NOT re-wrap it (that would double-stamp the template
+		// and bury the real message under `cause`). We drive this by rejecting
+		// the readiness signal with an already-tagged error.
 		const tagged = new HostServiceAcquireError({
 			serviceName: 'frontend',
 			cwd: '/cwd',
@@ -616,12 +651,19 @@ describe('logReady fallback wrapper preserves non-tagged causes', () => {
 			phase: 'ready',
 			message: 'host service did not emit readiness log within 5ms',
 		});
+		return Effect.gen(function* () {
+			const exit = yield* drive(tagged);
 
-		const result =
-			(tagged as unknown) instanceof HostServiceAcquireError ? tagged : new Error('unreachable');
-
-		expect(result).toBe(tagged);
-		expect((result as HostServiceAcquireError).message).toContain('did not emit readiness log');
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				// Same identity — not re-wrapped, not buried under `.cause`.
+				expect(error.value).toBe(tagged);
+				expect(error.value.message).toContain('did not emit readiness log');
+				expect(error.value.cause).toBeUndefined();
+			}
+		});
 	});
 });
 

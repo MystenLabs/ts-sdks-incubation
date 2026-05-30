@@ -28,9 +28,8 @@ import type { SuiGrpcClient } from '@mysten/sui/grpc';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
-import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
-import { suiConfigError, suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiConfigError, suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -236,7 +235,14 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
  *  `chain` is accepted as a bare string and branded to `ChainId` at
  *  this single boundary — every consumer downstream reads the
  *  branded shape so capability-key constructors (`chainProbe…`,
- *  `faucet…`) accept it without a cast. */
+ *  `faucet…`) accept it without a cast.
+ *
+ *  Returns an `Effect` on the `SuiConfigError` channel: the empty-chain
+ *  guard must surface as a typed, `catchTag`-able failure. Calling it
+ *  un-yielded as a sync function (as it once was) turned a thrown
+ *  `SuiConfigError` into a DEFECT inside the mode-boot `Effect.gen`
+ *  bodies — a hidden crash the channel could never recover (mirrors the
+ *  fix already applied to `auto-tick.ts`; STYLE_GUIDE §2). */
 export const assembleSuiClient = (parts: {
 	readonly sdkClient: SuiGrpcClient;
 	readonly chain: string;
@@ -253,41 +259,51 @@ export const assembleSuiClient = (parts: {
 	 *  through the router but sibling containers still need direct
 	 *  host-gateway URLs during boot. */
 	readonly hostGateway?: SuiClient['hostGateway'];
-}): {
-	readonly client: SuiClient;
-	readonly sdkShim: SuiSdkShim;
-	readonly chainProbe: ChainProbe<SuiProbeKey>;
-} => {
-	// Defense-in-depth — `fetchChainId` should never resolve to an
-	// empty string (RPC rejects that earlier), but a branded empty
-	// string would silently fold into every downstream cache key.
-	const chain = expectNonEmptyString(parts.chain, {
-		field: 'chain',
-		mkError: suiConfigError,
-		message: 'sui.assembleSuiClient: chain id must be a non-empty string',
-		hint: 'check fetchChainId / network resolver returned a real chain id',
+}): Effect.Effect<
+	{
+		readonly client: SuiClient;
+		readonly sdkShim: SuiSdkShim;
+		readonly chainProbe: ChainProbe<SuiProbeKey>;
+	},
+	SuiConfigError
+> =>
+	Effect.gen(function* () {
+		// Defense-in-depth — `fetchChainId` should never resolve to an
+		// empty string (RPC rejects that earlier), but a branded empty
+		// string would silently fold into every downstream cache key. A
+		// caller-pinned `chain: ''` (e.g. `.live.custom({ chain: '' })`)
+		// reaches here, so fail on the typed channel rather than throw.
+		if (typeof parts.chain !== 'string' || parts.chain.length === 0) {
+			return yield* Effect.fail(
+				suiConfigError({
+					field: 'chain',
+					message: 'sui.assembleSuiClient: chain id must be a non-empty string',
+					hint: 'check fetchChainId / network resolver returned a real chain id',
+				}),
+			);
+		}
+		const chain = parts.chain;
+		const sdkShim = makeSdkShim(parts.sdkClient);
+		const chainProbe = makeSuiChainProbe(sdkShim, chain);
+		const client: SuiClient = {
+			sdk: sdkShim,
+			rpcUrl: parts.rpcUrl,
+			faucetUrl: parts.faucetUrl ?? null,
+			fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
+			graphqlUrl: parts.graphqlUrl ?? null,
+			hostGateway: parts.hostGateway ?? {
+				rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
+				faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
+				graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
+			},
+			chain: brandChainId(chain),
+			waitForTransactionsReady: parts.waitForTransactionsReady,
+			chainProbe,
+			fork: null,
+			buildImage: parts.buildImage ?? null,
+		};
+		return { client, sdkShim, chainProbe };
 	});
-	const sdkShim = makeSdkShim(parts.sdkClient);
-	const chainProbe = makeSuiChainProbe(sdkShim, chain);
-	const client: SuiClient = {
-		sdk: sdkShim,
-		rpcUrl: parts.rpcUrl,
-		faucetUrl: parts.faucetUrl ?? null,
-		fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
-		graphqlUrl: parts.graphqlUrl ?? null,
-		hostGateway: parts.hostGateway ?? {
-			rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
-			faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
-			graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
-		},
-		chain: brandChainId(chain),
-		waitForTransactionsReady: parts.waitForTransactionsReady,
-		chainProbe,
-		fork: null,
-		buildImage: parts.buildImage ?? null,
-	};
-	return { client, sdkShim, chainProbe };
-};
 
 /** Shape the resolved network record the boot builders all hand
  *  back. The substrate-network mapping is uniform per mode. Brands

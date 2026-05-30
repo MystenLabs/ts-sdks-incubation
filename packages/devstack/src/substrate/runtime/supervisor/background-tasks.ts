@@ -15,7 +15,7 @@ import { prettyErrorStructured } from '../observability/index.ts';
 import { PostAcquireTaskFailed } from '../post-acquire-tasks.ts';
 import { SupervisorPostAcquireFailed } from './errors.ts';
 import type { SnapshotCaptureTaskState, StackRestartTaskState, SupervisorState } from './state.ts';
-import { publish } from './wiring.ts';
+import { bestEffort, publish } from './wiring.ts';
 
 // Forward reference: the stack-restart background task runs through
 // the same `handleCommand` dispatch path that the command loop uses;
@@ -26,12 +26,14 @@ type HandleCommandRunner = (
 	cmd: EngineCommand,
 ) => Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope>;
 
-/** `snapshot.captureFailed` / `snapshot.captureSkipped` now carry a
- *  REQUIRED `snapshotId` so surfaces can correlate the outcome with the
- *  originating command (the CLI's pending-capture map keys on it). When
- *  the command omitted an id the orchestrator would have minted one
- *  internally that the failure/skip path never observes, so we stamp a
- *  best-effort correlation id here. */
+/** `snapshot.captureFailed` / `snapshot.captureSkipped` carry a REQUIRED
+ *  `snapshotId`. When the originating command carried an id, surfaces
+ *  correlate the outcome with it (the CLI's pending-capture map keys on
+ *  it). When the command omitted an id there is nothing to correlate
+ *  against — the CLI's bridge does NOT register a pending-capture entry
+ *  for an id-less capture (`cli/wirings/up.ts` falls through to a
+ *  legacy auto-ack and never keys this synthetic id) — so the minted
+ *  `snap-<ts>` here only satisfies the event's required field. */
 const effectiveSnapshotId = (
 	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
 ): string => cmd.snapshotId ?? `snap-${Date.now()}`;
@@ -261,9 +263,7 @@ export const runPostAcquireHook = (
 		}
 		const taskFailure = findPostAcquireTaskFailure(exit.cause);
 		if (taskFailure !== null) {
-			yield* deps.registry
-				.markFailed(taskFailure.pluginKey, taskFailure.cause)
-				.pipe(Effect.catch(() => Effect.void));
+			yield* bestEffort(deps.registry.markFailed(taskFailure.pluginKey, taskFailure.cause));
 		}
 		yield* publishHookFailure(
 			deps,

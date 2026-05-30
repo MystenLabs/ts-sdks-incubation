@@ -76,9 +76,10 @@ upstream state (e.g. a counter on a singleton object).
 
 - `'discriminator'` — the dynamic discriminator failed.
 - `'build'` — substrate dependency wiring failed before the body ran.
-- `'sign'` — the body itself raised (or signing failed).
-- `'execute-failed'` — the transaction was submitted but the chain returned an error envelope.
-- `'parse'` — receipt projection failed.
+- `'sign'` — the body itself raised, or signing/submit transport failed (also covers a missing
+  digest).
+- `'execute-failed'` — the transaction was delivered and executed but the validator returned a
+  `FailedTransaction` envelope.
 - `'verify'` — substrate-side cache verify exhausted retries.
 
 See [Errors](/devstack/errors) for the full catalog.

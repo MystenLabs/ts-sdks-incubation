@@ -86,34 +86,62 @@ describe('wallet dispatcher — listener is the sole body-cap enforcement point'
 		}),
 	);
 
-	it.effect('accepts a UTF-8-multi-byte body whose JS-string length is under the cap', () =>
-		Effect.gen(function* () {
-			// Emoji and astral plane runes are 2 UTF-16 code units each
-			// in a JS string, but 4 bytes each on the wire. A body that
-			// is ~32 KiB of JS-string length corresponds to ~64 KiB of
-			// UTF-8 bytes. The OLD `body.length` check would have
-			// happily accepted this oversized-on-the-wire payload. The
-			// new contract is that the dispatcher doesn't gate at all
-			// — the LISTENER's byte counter is authoritative — so any
-			// reachable dispatcher call by definition has been pre-
-			// gated, regardless of UTF-8 vs UTF-16 unit count.
-			const astralRune = '\u{1F600}'; // 4 UTF-8 bytes, 2 UTF-16 code units
-			const body = astralRune.repeat(1024); // ~2 KiB string length, ~4 KiB bytes
-			const response = yield* dispatch(config, {
-				method: 'POST',
-				url: WalletHttpPath.SIGN_TRANSACTION,
-				headers: {
-					origin: ALLOWED_ORIGIN,
-					[WALLET_AUTH_HEADER]: `Bearer ${TOKEN}`,
-				},
-				body,
-			});
+	it.effect(
+		'accepts a multi-byte body that is UNDER the cap in UTF-16 units but OVER it in UTF-8 bytes',
+		() =>
+			Effect.gen(function* () {
+				// This is the DISCRIMINATING case for the bug. Astral-plane
+				// runes are 2 UTF-16 code units in a JS string but 4 UTF-8
+				// bytes on the wire. We size the body so it straddles the cap
+				// on exactly the axis the old code got wrong:
+				//
+				//   UTF-16 length = 2 * n   (what `String.length`/`body.length`
+				//                            counts — the OLD check's axis)
+				//   UTF-8 bytes   = 4 * n   (the real wire size — the cap's
+				//                            intended axis)
+				//
+				// Choose n so `2n < MAX_BODY_BYTES < 4n` — i.e. the body looks
+				// SMALL to a UTF-16 `.length` check but is genuinely OVER the
+				// byte cap. With MAX_BODY_BYTES = 64 KiB, any n in
+				// (16384, 32768) works; n = 20000 gives 40000 UTF-16 units
+				// (< 65536) and 80000 UTF-8 bytes (> 65536).
+				const astralRune = '\u{1F600}'; // 4 UTF-8 bytes, 2 UTF-16 code units
+				const runeCount = 20_000;
+				const body = astralRune.repeat(runeCount);
 
-			// Again: schema-decode failure (non-JSON), not body-cap.
-			expect(response.status).toBe(400);
-			const parsed = JSON.parse(response.body) as { readonly error: string; readonly code: string };
-			expect(parsed.code).toBe('body-invalid');
-			expect(parsed.error).not.toMatch(/byte cap/i);
-		}),
+				// Pin the straddle precondition so the test's discriminating
+				// power can't silently erode if MAX_BODY_BYTES is retuned.
+				expect(body.length).toBeLessThan(MAX_BODY_BYTES); // UTF-16 units under cap
+				expect(Buffer.byteLength(body, 'utf8')).toBeGreaterThan(MAX_BODY_BYTES); // bytes over cap
+
+				const response = yield* dispatch(config, {
+					method: 'POST',
+					url: WalletHttpPath.SIGN_TRANSACTION,
+					headers: {
+						origin: ALLOWED_ORIGIN,
+						[WALLET_AUTH_HEADER]: `Bearer ${TOKEN}`,
+					},
+					body,
+				});
+
+				// The OLD dispatcher's `body.length > MAX_BODY_BYTES` check
+				// would have ACCEPTED this body (40000 UTF-16 units < cap) and
+				// then schema-decoded it. The buggy outcome and the correct
+				// outcome are indistinguishable on THIS body — which is the
+				// point: the regression sentinel is that a CORRECT byte-cap
+				// check reintroduced at the dispatcher (the over-correction)
+				// would reject this 80 KiB-on-the-wire body with a
+				// `byte cap` message. The current contract — listener is the
+				// sole gate, dispatcher has NO cap check — surfaces the
+				// non-JSON body as a schema `body-invalid` instead.
+				expect(response.status).toBe(400);
+				const parsed = JSON.parse(response.body) as {
+					readonly error: string;
+					readonly code: string;
+				};
+				expect(parsed.code).toBe('body-invalid');
+				expect(parsed.error).toBe('invalid JSON body');
+				expect(parsed.error).not.toMatch(/byte cap/i);
+			}),
 	);
 });

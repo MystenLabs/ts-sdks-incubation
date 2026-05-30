@@ -404,8 +404,10 @@ const removeManagedNetworkBestEffort = (
 		// helper (substrate `NETWORK_REMOVE_RETRY_PROFILE`). User-
 		// supplied `options.retryAttempts` / `retryDelayMillis`
 		// override the profile defaults. `Schedule.recurs(N)` allows
-		// N additional recurrences, so total calls = 1 + retryAttempts,
-		// matching the prior `for` loop's call count.
+		// N additional recurrences, so this retry block makes
+		// `1 + retryAttempts` rm calls when persistently in-use. Counting
+		// the pre-eviction `first` probe above, the worst-case in-use
+		// total for this function is `2 + retryAttempts` rm invocations.
 		const lastStep: NetworkRemoveStep = yield* removeManagedNetworkOnce(name).pipe(
 			Effect.repeat({
 				schedule: makeSpacedRetrySchedule(options.retryDelayMillis, options.retryAttempts),

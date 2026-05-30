@@ -16,9 +16,13 @@
 //      is the image's content-addressed identity and survives prune.
 //      Successful tag → entry recovered; rewrite the marker with the
 //      entry removed. When BOTH source attempts fail the scanner
-//      probes whether `targetImageName` is already visible (a prior
-//      recovery may have promoted it); if so the entry is treated as
-//      recovered, otherwise it stays pending.
+//      probes whether the EXPECTED image (addressed by its content
+//      digest) is still resolvable — a prior recovery may have promoted
+//      it and left the digest resident; if so it (re)points
+//      `targetImageName` at that image and treats the entry as
+//      recovered, otherwise it stays pending. The probe addresses the
+//      digest, NOT the target name, so a colliding unrelated image at
+//      `targetImageName` cannot false-positive a drop.
 //   4. When the outstanding list reaches zero, remove the marker.
 //   5. On a genuine per-entry failure (both sources gone AND the
 //      target not yet visible — e.g. a transient daemon error): keep
@@ -220,32 +224,54 @@ const rewriteMarker = (
 		),
 	);
 
-/** Probe whether `targetImageName` already resolves on the host by
- *  asking the runtime to self-tag it (`docker tag <target> <target>`).
- *  The contract's docker impl drives this through `docker image
- *  inspect`-equivalent resolution: a present image self-tags as an
- *  idempotent no-op (the `removeSourceAfterTag` cleanup is skipped
- *  because `src === dst`), an absent one fails with the not-found
- *  error. We reuse `tagImage` rather than reaching past the contract
- *  for `imageExists` — this is the only existence probe the runtime
- *  surface exposes, and it is side-effect-free for a name that already
- *  points at the target image.
+/** Probe whether the snapshot's EXPECTED image (addressed by its
+ *  content digest) is resolvable on the host, and if so (re)point
+ *  `targetImageName` at it.
  *
- *  `true` → target visible; `false` → target absent OR the probe itself
- *  hit a transient daemon error. The caller treats `false` as
- *  still-pending, so a transient probe failure errs on the safe side
- *  (keep the marker, retry next supervise) rather than dropping it. */
+ *  We deliberately do NOT self-tag the target NAME here. A self-tag of
+ *  `targetImageName` onto itself succeeds for ANY image that happens to
+ *  sit at that name — including a wholly unrelated managed/base/pulled
+ *  image that merely collides with the recorded name. In the prune
+ *  scenario (source pruned out-of-band) that name-existence check would
+ *  false-positive: it drops the marker as "recovered" while the
+ *  snapshot's committed image was never promoted, booting the container
+ *  from the WRONG image with the marker silently cleared.
+ *
+ *  Instead we address the marker's `digest` (the loaded image's
+ *  content-addressed `{{.Id}}`, written by the restore promote loop).
+ *  The contract resolves `tag ?? digest`, so `tagImage({ digest }, …)`
+ *  tags the EXPECTED image onto `targetImageName`:
+ *
+ *    - expected image still resident by digest (a prior recovery
+ *      promoted it; the digest survives `docker system prune` while any
+ *      pinned layer keeps it accessible) → tag succeeds, the name is
+ *      (idempotently) repaired to point at exactly the snapshot image →
+ *      genuinely recovered, drop the marker entry;
+ *    - expected image genuinely gone (digest absent) → tag fails →
+ *      keep the entry pending.
+ *
+ *  This is strictly stronger than the old name-existence probe: a
+ *  colliding unrelated image at `targetImageName` can no longer trigger
+ *  a false drop, because the probe never addresses the name as a source
+ *  — only the expected content digest can satisfy it. It also closes
+ *  the silent-wrong-image hole by leaving `targetImageName` pointing at
+ *  the right image when it does succeed.
+ *
+ *  `true` → expected image promoted/confirmed at the target name;
+ *  `false` → expected image absent OR the probe hit a transient daemon
+ *  error. The caller treats `false` as still-pending, so a transient
+ *  probe failure errs on the safe side (keep the marker, retry next
+ *  supervise) rather than dropping it. */
 const targetImageResolves = (
 	entry: RestorePendingContainer,
 	runtime: ContainerRuntime,
 ): Effect.Effect<boolean> =>
 	runtime
-		// `{ digest }` carrying the target NAME (not the content digest)
-		// is intentional: the contract resolves `tag ?? digest`, so this
-		// addresses the source as `targetImageName`, making `src === dst`
-		// — a self-tag the docker impl short-circuits without removing
-		// anything. `removeSourceAfterTag` is deliberately omitted.
-		.tagImage({ digest: entry.targetImageName }, entry.targetImageName)
+		// Address the EXPECTED image by its content digest (NOT the target
+		// name). `{ digest }` with `tag` omitted forces the contract's
+		// `tag ?? digest` resolution onto the digest, so only the snapshot's
+		// committed image can satisfy this — a name collision cannot.
+		.tagImage({ digest: entry.digest }, entry.targetImageName)
 		.pipe(
 			Effect.as(true as const),
 			Effect.catch(() => Effect.succeed(false as const)),
@@ -264,20 +290,25 @@ const targetImageResolves = (
  *
  *  When BOTH source attempts fail we must NOT blindly report the entry
  *  as still-pending: a fully missing source (both staged tag and digest
- *  gone) most often means a *previous* recovery already promoted this
- *  entry to `targetImageName` and a stale marker simply hasn't been
- *  rewritten. Collapsing that case into "still pending" retags forever
- *  and never makes progress. So after both attempts fail we PROBE
- *  whether `targetImageName` is already visible:
+ *  gone as *named/tagged* refs) can mean a *previous* recovery already
+ *  promoted this entry to `targetImageName` and a stale marker simply
+ *  hasn't been rewritten. Collapsing that case into "still pending"
+ *  retags forever and never makes progress. So after both attempts fail
+ *  we PROBE whether the EXPECTED image is still resolvable BY ITS
+ *  CONTENT DIGEST (see `targetImageResolves`) — not by the target name:
  *
- *    - target resolves → treat as recovered (drop the marker entry);
- *    - target absent    → the source genuinely vanished without a
- *      completed promote (e.g. a transient daemon error on both tag
- *      attempts, or operator prune of source AND target), so keep the
- *      entry pending for the next supervise.
+ *    - expected image resolves → (re)point `targetImageName` at it and
+ *      treat the entry as recovered (drop the marker entry);
+ *    - expected image absent    → the snapshot image genuinely vanished
+ *      without a completed promote (e.g. a transient daemon error on
+ *      both tag attempts, or operator prune of source AND target), so
+ *      keep the entry pending for the next supervise.
  *
- *  This stops conflating "absent source because already recovered" with
- *  "transient daemon error" — only the former drops the marker. */
+ *  Probing the digest rather than the name is what makes this safe: it
+ *  stops conflating "absent source because already recovered" with
+ *  "transient daemon error", AND prevents an unrelated image that
+ *  happens to occupy `targetImageName` from masquerading as a completed
+ *  recovery (the wrong-image hole a bare name-existence check left open). */
 const tryRecoverEntry = (
 	entry: RestorePendingContainer,
 	runtime: ContainerRuntime,

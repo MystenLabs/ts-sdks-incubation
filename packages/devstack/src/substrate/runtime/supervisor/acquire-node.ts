@@ -39,7 +39,7 @@ import {
 } from '../lifecycle/index.ts';
 import { operationalEndpointEventsFromResolvedValue } from '../projection/operational-endpoints.ts';
 import { dispatchContributions, resolveCapabilities } from './dispatch-contributions.ts';
-import { publish } from './wiring.ts';
+import { bestEffort, publish } from './wiring.ts';
 
 // -----------------------------------------------------------------------------
 // Boot the registry from a graph
@@ -101,7 +101,7 @@ export const acquireNode = (
 			Effect.matchEffect({
 				onFailure: (cause) =>
 					Effect.gen(function* () {
-						yield* registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void));
+						yield* bestEffort(registry.markFailed(key, cause));
 						return false as const;
 					}),
 				onSuccess: () => Effect.succeed(true as const),
@@ -162,7 +162,7 @@ export const acquireNode = (
 			Effect.matchEffect({
 				onFailure: (cause) =>
 					Effect.gen(function* () {
-						yield* registry.markFailed(key, cause).pipe(Effect.catch(() => Effect.void));
+						yield* bestEffort(registry.markFailed(key, cause));
 						yield* publish(ref, hub, {
 							tag: 'error.reported',
 							error: prettyErrorStructured(Cause.fail(cause), {
@@ -195,7 +195,7 @@ export const acquireNode = (
 				),
 			);
 			if (Exit.isFailure(capsExit)) {
-				yield* registry.markFailed(key, capsExit.cause).pipe(Effect.catch(() => Effect.void));
+				yield* bestEffort(registry.markFailed(key, capsExit.cause));
 				yield* publish(ref, hub, {
 					tag: 'error.reported',
 					error: prettyErrorStructured(capsExit.cause, {
@@ -234,7 +234,7 @@ export const acquireNode = (
 					// reflects an unexpected defect — keep the legacy
 					// markFailed projection so the unknown shape doesn't
 					// silently degrade the plugin.
-					yield* registry.markFailed(key, dispatchExit.cause).pipe(Effect.catch(() => Effect.void));
+					yield* bestEffort(registry.markFailed(key, dispatchExit.cause));
 					yield* publish(ref, hub, {
 						tag: 'error.reported',
 						error: prettyErrorStructured(dispatchExit.cause, {
@@ -267,9 +267,9 @@ export const acquireNode = (
 				phase: null,
 				at: Date.now(),
 			});
-			yield* registry.markReady(key, result.value).pipe(Effect.catch(() => Effect.void));
+			yield* bestEffort(registry.markReady(key, result.value));
 			if (entry.node.member.role === 'task') {
-				yield* registry.transition(key, 'done').pipe(Effect.catch(() => Effect.void));
+				yield* bestEffort(registry.transition(key, 'done'));
 			}
 			yield* logger.log(`supervisor/${key}`, key, {
 				level: 'debug',

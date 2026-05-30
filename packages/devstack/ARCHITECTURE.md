@@ -48,8 +48,8 @@ is mechanical and was copied 80% verbatim by two plugin authors: `substrate/runt
 projection). New L1-adjacent exceptions need explicit justification in this section.
 
 The supervisor's projection vocabulary carries one additional documented exception: projection-key
-prefixes `account/`, `package/`, and `wallet/` are named in
-`substrate/runtime/supervisor/projection.ts` (and matched as a `'account/'` prefix in
+prefixes `account/` and `package/` are named in the closed projection field shape at
+`substrate/projection.ts` (and the `'account/'` prefix is matched in
 `substrate/runtime/supervisor/start-supervisor.ts`'s `pendingAccountProjection` declaration) because
 the supervisor maintains the closed-set projection registry as part of the engine's read-model. The
 plugin-domain names are a closed exception, not a contract for new prefixes; new projection kinds
@@ -99,8 +99,8 @@ Infrastructure contracts (outside the capability-decl union):
 `StrategyContributorDecl`. A plugin that wants to FUND an account at acquire-time MUST contribute
 its strategy through this sink before the account plugin asks for it — direct calls to
 `fundingStrategy.request(...)` without a sibling registration silently leave the registry empty and
-the account starves on a `StrategyNotFoundError` (caught as a no-op for cross-cutting funds —
-`plugins/account/funding.ts:478`).
+the account starves on a `StrategyNotFoundError` (caught as a no-op for optional per-coin funds —
+`plugins/account/funding.ts:510`; the SUI gas-faucet path at `:483` instead fails loudly).
 
 Who contributes:
 

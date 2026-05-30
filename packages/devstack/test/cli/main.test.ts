@@ -1158,16 +1158,6 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 		}
 	});
 
-	// Regression for the Phase B3 fix: an attached supervisor receiving
-	// `prune.requested` MUST dispatch to the lifecycle-prune orchestrator
-	// (the same code path the offline `devstack prune` verb uses), NOT to
-	// `params.snapshot.prune({})`. The snapshot-orchestrator prune only
-	// cleans the snapshot catalog; routing prune.requested there would
-	// silently leave stale containers/networks/volumes/images behind.
-	//
-	// The handler is a closed-over local in `cli/main.ts`, so this is a
-	// static-text guard against accidental regression — same style as the
-	// other source-level invariants pinned by `test/style/*`.
 	// Regression: `identityInputsFromArgv` must REJECT `--flag` with no
 	// following value AND `--flag --next-flag` (where the next token looks
 	// like a flag). Silently absorbing `--next-flag` as the value would
@@ -1196,6 +1186,67 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 		});
 	});
 
+	// Regression: a malformed `--network` value reaches `resolveIdentity`
+	// -> `resolveNetworkSync`, which THROWS `DevstackNetworkParseError` (a
+	// plain Error, not a CliError) OUTSIDE the argv pre-parse try/catch and
+	// BEFORE dispatch. Without the in-`runCli` guard this escapes to the
+	// bin entry's generic `.catch` (raw stderr, exit 1, no envelope),
+	// violating the sysexits contract. `flags.test.ts` only exercises the
+	// dispatcher's own `--network` validation via `dispatch()` directly, so
+	// only a `runCli`-level assertion covers the real bin path.
+	it('malformed --network exits USAGE (64) with a JSON envelope, not generic 1', async () => {
+		const previousExitCode = process.exitCode;
+		const previousNetwork = process.env.DEVSTACK_NETWORK;
+		const previousJson = process.env.DEVSTACK_JSON;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_JSON;
+
+			await runCli(['status', '--network', 'bogus', '--json']);
+
+			// Exactly USAGE (64) — never the disallowed generic exit 1.
+			expect(process.exitCode).toBe(64);
+			// Envelope is on stdout, NOT a raw stderr line.
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: { readonly code: string; readonly exitCode: number; readonly summary: string };
+			};
+			expect(envelope.ok).toBe(false);
+			expect(envelope.error.code).toBe('USAGE');
+			expect(envelope.error.exitCode).toBe(64);
+			expect(envelope.error.summary).toContain('bogus');
+		} finally {
+			process.exitCode = previousExitCode;
+			if (previousNetwork === undefined) delete process.env.DEVSTACK_NETWORK;
+			else process.env.DEVSTACK_NETWORK = previousNetwork;
+			if (previousJson === undefined) delete process.env.DEVSTACK_JSON;
+			else process.env.DEVSTACK_JSON = previousJson;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	// Regression for the Phase B3 fix: an attached supervisor receiving
+	// `prune.requested` MUST dispatch to the lifecycle-prune orchestrator
+	// (the same code path the offline `devstack prune` verb uses), NOT to
+	// `params.snapshot.prune({})`. The snapshot-orchestrator prune only
+	// cleans the snapshot catalog; routing prune.requested there would
+	// silently leave stale containers/networks/volumes/images behind.
+	//
+	// The handler is a closed-over local in `cli/wirings/up.ts`, so this is
+	// a static-text guard against accidental regression — same style as the
+	// other source-level invariants pinned by `test/style/*`.
 	it('attached prune.requested routes to runLifecyclePrune, never params.snapshot.prune', () => {
 		// The attached supervisor command handler lives in `cli/wirings/up.ts`
 		// (was inline in `cli/main.ts` before Phase 15).

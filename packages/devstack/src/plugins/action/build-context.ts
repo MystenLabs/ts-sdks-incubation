@@ -28,8 +28,9 @@ import type { ActionReceipt } from './service.ts';
  *     `ActionReceipt`. Folds the SDK boundary cast +
  *     `include: {effects, objectTypes}` execute + finality wait +
  *     envelope projection into a single call. Errors surface as
- *     `ActionError` (phase `sign` for transport / RPC failures;
- *     `parse` for envelope-shape failures). */
+ *     `ActionError` (phase `sign` for build / sign / submit transport
+ *     failures; `execute-failed` for an on-chain `FailedTransaction`
+ *     outcome). */
 export interface ActionBuildContext {
 	/** Resolved SuiClient. suiResource is part of action's hard upstream so
 	 *  this is always populated. */

@@ -21,7 +21,7 @@ import {
 	type RestartTargetMissing,
 } from '../lifecycle/index.ts';
 import { acquireKeys } from './acquire-node.ts';
-import { publish } from './wiring.ts';
+import { bestEffort, publish } from './wiring.ts';
 
 // -----------------------------------------------------------------------------
 // Teardown
@@ -70,13 +70,19 @@ export const teardownNode = (
 			.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('pending')));
 		// Only `ready` plugins need stopping. `acquiring` plugins are
 		// interrupted by the scope close. `failed` / `stopped` / `done`
-		// are no-ops.
+		// are no-ops. `status` is a snapshot read above, so a concurrent
+		// off-table move (e.g. a racing restart driving the node to
+		// `failed`) can make `transition` hit `assertTransition` and
+		// `Effect.die` — `bestEffort` (Effect.exit) swallows that defect
+		// as well as the typed channel, keeping teardown's unbounded
+		// fan-out from bubbling an unguarded die through the scope-close
+		// finalizer.
 		if (status === 'ready') {
-			yield* registry.transition(key, 'stopping').pipe(Effect.catch(() => Effect.void));
+			yield* bestEffort(registry.transition(key, 'stopping'));
 		}
 		yield* Scope.close(entry.scope, Exit.void).pipe(Effect.catch(() => Effect.void));
 		if (status === 'ready') {
-			yield* registry.transition(key, 'stopped').pipe(Effect.catch(() => Effect.void));
+			yield* bestEffort(registry.transition(key, 'stopped'));
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.teardownNode'));
 

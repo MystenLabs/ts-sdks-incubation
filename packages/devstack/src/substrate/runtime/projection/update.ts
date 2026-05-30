@@ -138,10 +138,11 @@ export const applyEvent = (
 			// canonical Schema; on failure, drop the slice update
 			// (`lastEvent.at` still advances so the renderer sees the
 			// event was observed). Warning emission is handled by the
-			// Effect-aware seam at the `updateRef` call site so the
-			// logger Layer + redaction apply — the reducer itself
-			// remains pure-data sync, just signaling a decode failure
-			// via the `null` return.
+			// Effect-aware seam at the `updateRef` call site so it runs
+			// inside the fiber's structured-logging context — the
+			// reducer itself stays pure-data sync (no logger access),
+			// just signaling a decode failure via a non-`ok` decode
+			// result.
 			if (event.kind === 'account') {
 				const decoded =
 					prevalidated ?? tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
@@ -328,10 +329,10 @@ export const declarePackage = (
  *
  * Side-channel: when the event is a `projection.updated` with a
  * malformed payload, the reducer drops the slice and we emit a
- * structured warning through the surrounding fiber's logger Layer (so
- * redaction rules apply). This is the only place in the reducer where
- * a warning is emitted; the pure `applyEvent` reducer never touches
- * the logger.
+ * structured warning here, inside the surrounding fiber, so it lands
+ * on the fiber's structured-logging path (`Effect.logWarning`). This
+ * is the only place in the reducer where a warning is emitted; the
+ * pure `applyEvent` reducer never touches the logger.
  */
 export const updateRef = (
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
@@ -375,14 +376,14 @@ export const updateRef = (
 
 /**
  * Sync per-kind validator for `projection.updated` payloads. Returns
- * the decoded value on success or `null` on decode failure. Pure-data
- * sync: no logger access, no `Effect.runSync` — the reducer is
- * documented as pure, and earlier versions of this seam called
- * `Effect.runSync(Effect.logWarning(...))` outside any fiber context,
- * which bypassed the supervisor's logger Layer + redaction. The
- * Effect-aware `updateRef` wrapper now emits the warning inside the
- * fiber so redactionRules apply consistently with the rest of the
- * supervisor.
+ * an `ok` decode result on success or a non-`ok` one on decode
+ * failure. Pure-data sync: no logger access, no `Effect.runSync` —
+ * the reducer is documented as pure, and earlier versions of this
+ * seam called `Effect.runSync(Effect.logWarning(...))` outside any
+ * fiber context, which logged off-fiber (bypassing the supervisor's
+ * structured-logging context). The Effect-aware `updateRef` wrapper
+ * now emits the warning inside the fiber so the warning is captured
+ * consistently with the rest of the supervisor's logs.
  *
  * On success callers still pass `event.payload` to the upsert (not the
  * decoded copy) — the runtime brand types (`account/${string}`,

@@ -6,28 +6,64 @@
 // semantics guarantee the lock finalizer (unlinkSync) fires only when
 // the scoped block closes — which is AFTER both operations complete.
 //
-// The original `concurrent-contribute-route.test.ts` exercised this
-// invariant by racing real fibers under `it.live + Promise gates +
-// Effect.forkScoped` — that harness starved sibling vitest workers
-// under parallel scheduling and was deleted (Phase 2 #10 closing
-// notes). A behavior-mocking test would either need vi.mock of the
-// substrate lock module (brittle and module-load-order sensitive) or a
-// `StackLockService` refactor (architecturally desirable but out of
-// scope for a regression cover).
+// This file carries TWO layers of cover:
 //
-// This file pins the invariant STRUCTURALLY: the source-level shape
-// "acquireStackLock + publishRouteFile + waitForPublicRouteReadiness
-// inside a single Effect.scoped block" IS what makes Effect.Scope
-// semantics carry the lock across the probe. A future refactor that
-// breaks this shape — releasing the lock before the probe, splitting
-// scopes, or hoisting the probe outside the scoped block — fails this
-// test before it can hit production.
+//   1. A BEHAVIORAL regression (the primary cover, at the bottom of the
+//      file) that drives the REAL `contributeRoute` production path —
+//      real `acquireStackLock` writing a real on-disk lock file, real
+//      dispatch-file write, real scope finalizers. It parks the
+//      readiness probe on a Deferred (the probe `fetch` is already a
+//      first-class injectable seam) so a fiber is provably suspended
+//      INSIDE the scoped lock block, mid-probe, and then asserts the
+//      runtime guarantee directly: the on-disk dispatch lock file
+//      EXISTS while the probe runs, and a concurrent contributor for a
+//      different route cannot acquire the lock until the first releases.
+//      If a refactor hoisted the probe outside the scoped block (the
+//      exact regression), the lock would already be released when the
+//      probe runs → the lock file would be absent → the test fails.
+//
+//      The original `concurrent-contribute-route.test.ts` raced real
+//      fibers under `it.live + Promise gates + Effect.forkScoped` with
+//      NO deterministic park — its readiness budget churned the live
+//      clock and starved sibling vitest workers (Phase 2 #10 closing
+//      notes). The behavioral cover below avoids that by parking on a
+//      Deferred (the boot-concurrency.test.ts deterministic-park
+//      technique): no fiber spins, the probe budget is generous, and the
+//      lock contender blocks on the OS lock rather than busy-retrying.
+//
+//   2. A STRUCTURAL grep (kept as a cheap supplement) that pins the
+//      source-level shape "acquireStackLock + publishRouteFile +
+//      waitForPublicRouteReadiness inside a single Effect.scoped block".
+//      It catches a probe hoisted outside the scoped block at the
+//      cheapest possible cost and also guards the `boot()` two-lock
+//      single-scope shape, which has no behavioral cover here.
 //
 // See STYLE_GUIDE §18 cross-process protocol for the codified rule.
 
-import { readFileSync } from 'node:fs';
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
+import { Deferred, Effect, Fiber, Layer, SubscriptionRef } from 'effect';
+import { afterAll, describe, expect, it } from '@effect/vitest';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { layerEntrypointRegistry } from '../../../src/orchestrators/router/entrypoints.ts';
+import {
+	dispatchFilename,
+	ROUTE_READINESS_HEADER,
+} from '../../../src/orchestrators/router/file-provider.ts';
+import { dispatchFileId } from '../../../src/orchestrators/router/hostname.ts';
+import type { RouterProfile } from '../../../src/orchestrators/router/profile.ts';
+import {
+	layerRouterConfigLiteral,
+	layerRouterService,
+	RouterService,
+	UpstreamResolverService,
+} from '../../../src/orchestrators/router/service.ts';
+import { layerTraefikContainerOpsStub } from '../../../src/orchestrators/router/traefik-container.ts';
+import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
+import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
 const ROUTER_SERVICE_PATH = new URL('../../../src/orchestrators/router/service.ts', import.meta.url)
 	.pathname;
@@ -233,4 +269,303 @@ describe('router boot dispatch-lock-spans-bootstrap invariant', () => {
 			}
 		}
 	});
+});
+
+// ---------------------------------------------------------------------------
+// BEHAVIORAL cover — drive the real contributeRoute lock-across-probe path.
+// ---------------------------------------------------------------------------
+//
+// Seam parked: the route-readiness probe `fetch`. `contributeRoute` calls
+// it from inside the SAME `Effect.scoped` block that acquired the dispatch
+// lock (service.ts ~933-957). Parking that fetch on a Deferred suspends a
+// fiber PROVABLY inside the scoped lock block, after `publishRouteFile`
+// wrote the dispatch file, while `waitForPublicRouteReadiness` runs. The
+// lock here is the REAL `acquireStackLock` — an O_EXCL file on disk at
+// `profile.dispatchLockFile`. So "is the lock held across the probe?"
+// reduces to a directly observable filesystem fact: does the lock file
+// exist while the probe is parked?
+//
+// Falsifiability against backlog #10a: if a refactor releases the lock
+// before the probe (splitting the scope, or hoisting
+// waitForPublicRouteReadiness out of the scoped block), the scope
+// finalizer unlinks `dispatchLockFile` BEFORE the probe parks — so the
+// `existsSync(dispatchLockFile)` assertion fails, AND the forked second
+// contributor would no longer be blocked. Both assertions flip red on the
+// regression the grep above only catches by source spelling.
+
+const allocatedTmpDirs: Array<string> = [];
+afterAll(() => {
+	for (const dir of allocatedTmpDirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+const makeTmpDir = (): string => {
+	const dir = mkdtempSync(join(tmpdir(), 'devstack-router-lock-behavior-'));
+	allocatedTmpDirs.push(dir);
+	return dir;
+};
+
+const behaviorIdentity = {
+	app: appName('my-app'),
+	stack: stackName('main'),
+	chain: chainId('sui:localnet'),
+};
+
+const behaviorUpstreams = Layer.succeed(UpstreamResolverService)({
+	resolveContainer: (target) => Effect.succeed({ host: '172.20.0.5', port: target.containerPort }),
+	resolveHostLoopback: (target) => Effect.succeed({ host: '127.0.0.1', port: target.port }),
+});
+
+const behaviorRegistry = layerEntrypointRegistry([
+	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+]);
+
+const makeBehaviorProfile = (dispatchDir: string): RouterProfile => ({
+	version: 1,
+	id: 'lock-behavior-profile',
+	userId: 'test-user',
+	dockerContextId: 'test-docker',
+	stateDir: join(dispatchDir, '..'),
+	dispatchDir,
+	containerName: 'devstack-router-lock-behavior',
+	networkName: 'devstack-router-lock-behavior',
+	bootstrapLockFile: join(dispatchDir, 'locks', 'bootstrap.lock'),
+	dispatchLockFile: join(dispatchDir, 'locks', 'dispatch.lock'),
+});
+
+const makeBehaviorLayer = (profile: RouterProfile, fetch: HttpProbeFetch) =>
+	layerRouterService.pipe(
+		Layer.provideMerge(
+			Layer.mergeAll(
+				layerIdentity(behaviorIdentity),
+				behaviorRegistry,
+				layerTraefikContainerOpsStub,
+				behaviorUpstreams,
+				NodeFileSystem.layer,
+				layerRouterConfigLiteral({
+					disabled: false,
+					profile,
+					image: 'traefik:v3.5',
+					// Generous timeout so the parked probe never times out while
+					// we make assertions; the probe returns ready immediately
+					// once we release it.
+					routeReadinessProbe: {
+						enabled: true,
+						timeoutMs: 30_000,
+						intervalMs: 5,
+						requestTimeoutMs: 30_000,
+						fetch,
+					},
+				}),
+			),
+		),
+	);
+
+// Two distinct routes: distinct `role` → distinct hostname (so they do
+// NOT collide on the same entrypoint port) AND distinct serviceKey →
+// distinct dispatchFileId (so they write different dispatch files). They
+// share the SAME per-profile dispatch lock file, which is the resource
+// whose hold-across-probe we are proving. `aggregatorDispatch` is the
+// SECOND contributor; it must block on the lock A holds.
+const walletApiDispatch = { serviceKey: 'wallet.my-app.main', role: 'api' };
+const aggregatorDispatch = { serviceKey: 'walrus.my-app.main', role: 'aggregator' };
+
+describe('router contributeRoute holds the real dispatch lock across the readiness probe (behavioral)', () => {
+	// `it.live`: the production `acquireStackLock` backoff sleeps under
+	// `underLiveClock` and the probe `fetch` is a real Promise, so this
+	// path needs the wall clock. The Deferred park keeps it deterministic
+	// (no spin, no timing flake) — the same property boot-concurrency.test.ts
+	// relies on. (The finding suggested it.effect+TestClock; the parked
+	// real-Promise + live-clock lock makes it.live the precise fit, mirroring
+	// every sibling readiness-probe test in service.test.ts.)
+	it.live(
+		'lock file is present on disk while the probe is parked, and a concurrent contributor is blocked until release',
+		() =>
+			Effect.gen(function* () {
+				const dir = makeTmpDir();
+				const profile = makeBehaviorProfile(dir);
+
+				// Parked probe: signal `aEntered` on fiber A's first probe call
+				// (A is now inside the scoped lock block, mid-probe), then await
+				// `release`. Once released it reports the route ready so A
+				// completes cleanly. Fiber B's route uses a different
+				// dispatchFileId; if B ever reaches its own probe it sets
+				// `bEntered` — which must NOT happen while A holds the lock.
+				const aEntered = yield* Deferred.make<void>();
+				const release = yield* Deferred.make<void>();
+				const bEntered = yield* Deferred.make<void>();
+
+				// Post-publish handshakes. Each contributor signals `published`
+				// once `contributeRoute` has returned (its dispatch lock has
+				// already been released by the service-internal scope, and its
+				// route is now in `applied`), then PARKS on `holdOpen` so its
+				// OUTER test-wrapper scope stays open. Keeping the wrapper scope
+				// open is what defers the contributeRoute scope-finalizer that
+				// removes the route from `applied` — so the test can observe both
+				// routes applied simultaneously before tearing the scopes down.
+				const aPublished = yield* Deferred.make<void>();
+				const bPublished = yield* Deferred.make<void>();
+				const holdOpen = yield* Deferred.make<void>();
+
+				const readyHeaderRef = { a: '', b: '' };
+				const fetch: HttpProbeFetch = (_input, init) =>
+					Effect.runPromise(
+						Effect.gen(function* () {
+							const host = new Headers(init?.headers).get('host');
+							const isA = host === 'api.my-app.localhost';
+							if (isA) {
+								yield* Deferred.succeed(aEntered, undefined);
+								yield* Deferred.await(release);
+								return new Response('ready', {
+									status: 200,
+									headers: { [ROUTE_READINESS_HEADER]: readyHeaderRef.a },
+								});
+							}
+							// Fiber B's probe — should only ever run AFTER A released
+							// the lock. Mark that it started so the test can assert it
+							// did NOT start while A was parked.
+							yield* Deferred.succeed(bEntered, undefined);
+							return new Response('ready', {
+								status: 200,
+								headers: { [ROUTE_READINESS_HEADER]: readyHeaderRef.b },
+							});
+						}),
+					);
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const router = yield* RouterService;
+						yield* router.boot();
+						readyHeaderRef.a = yield* dispatchFileId({
+							identity: behaviorIdentity,
+							dispatch: walletApiDispatch,
+						});
+						readyHeaderRef.b = yield* dispatchFileId({
+							identity: behaviorIdentity,
+							dispatch: aggregatorDispatch,
+						});
+
+						// Fiber A: contributes the wallet route, parks inside the
+						// scoped lock block mid-probe (holding the dispatch lock).
+						// After contributeRoute returns it signals `aPublished` and
+						// parks on `holdOpen` — its wrapper scope stays open so the
+						// route remains in `applied`.
+						const fiberA = yield* Effect.forkChild(
+							Effect.scoped(
+								Effect.gen(function* () {
+									const endpoint = yield* router.contributeRoute({
+										kind: 'routable',
+										endpointName: 'wallet-app',
+										dispatchId: walletApiDispatch,
+										upstream: { type: 'host-loopback', port: 6173 },
+										cors: true,
+										wireProtocol: 'http',
+									});
+									yield* Deferred.succeed(aPublished, undefined);
+									yield* Deferred.await(holdOpen);
+									return endpoint;
+								}),
+							),
+						);
+
+						// Wait until A is provably parked inside its readiness probe
+						// — i.e. inside the scoped lock block, after the dispatch
+						// file write.
+						yield* Deferred.await(aEntered);
+
+						// (1) The dispatch file A owns is on disk (publishRouteFile
+						// ran before the probe).
+						expect(readdirSync(dir)).toContain(dispatchFilename(readyHeaderRef.a));
+
+						// (2) THE INVARIANT: the real O_EXCL dispatch lock file is
+						// present on disk while the probe is parked. This is only
+						// true if `acquireStackLock`'s scope has NOT yet closed —
+						// i.e. the lock is genuinely held ACROSS the probe. A
+						// refactor that released the lock before the probe makes
+						// this file absent and fails the test.
+						expect(existsSync(profile.dispatchLockFile)).toBe(true);
+
+						// Fiber B: a SECOND contributor for a different route. It
+						// must block contending for the SAME dispatch lock (one lock
+						// file per profile) that A holds. We give it room to run; it
+						// cannot reach its own probe while A holds the lock, so
+						// `bEntered` stays unfulfilled.
+						const fiberB = yield* Effect.forkChild(
+							Effect.scoped(
+								Effect.gen(function* () {
+									const endpoint = yield* router.contributeRoute({
+										kind: 'routable',
+										endpointName: 'wallet-app',
+										dispatchId: aggregatorDispatch,
+										upstream: { type: 'host-loopback', port: 6173 },
+										cors: true,
+										wireProtocol: 'http',
+									});
+									yield* Deferred.succeed(bPublished, undefined);
+									yield* Deferred.await(holdOpen);
+									return endpoint;
+								}),
+							),
+						);
+						yield* Effect.sleep('100 millis');
+
+						// (3) B has NOT reached its probe — it is blocked on the lock
+						// A holds. (If A released the lock before its probe, B would
+						// have acquired it and reached `bEntered` by now.)
+						const bReachedProbe = yield* Deferred.isDone(bEntered);
+						expect(bReachedProbe).toBe(false);
+
+						// (3b) And B has NOT published its route yet — it is still
+						// blocked on the lock, so `applied` holds at most A's route.
+						expect(yield* Deferred.isDone(bPublished)).toBe(false);
+
+						// Release A's probe. A finishes its probe, publishes to
+						// `applied`, and its SERVICE-INTERNAL scope closes → dispatch
+						// lock released → B wins the lock and runs to completion. A
+						// then signals `aPublished` and parks (wrapper scope open).
+						yield* Deferred.succeed(release, undefined);
+
+						// Both contributors have now returned from contributeRoute
+						// (A after release, B after winning the freed lock) and are
+						// parked on `holdOpen`, so BOTH wrapper scopes are still open
+						// and BOTH routes are live in `applied`.
+						yield* Deferred.await(aPublished);
+						yield* Deferred.await(bPublished);
+
+						// B did reach its probe once the lock freed up.
+						expect(yield* Deferred.isDone(bEntered)).toBe(true);
+
+						// Both routes are applied simultaneously (observed while both
+						// wrapper scopes are still open).
+						const applied = yield* SubscriptionRef.get(router.applied);
+						expect(applied).toHaveLength(2);
+
+						// While both contributors are parked-open the lock has been
+						// released by both service-internal scopes — the hold-across-
+						// probe window is the probe window only, not the lifetime of
+						// the route.
+						expect(existsSync(profile.dispatchLockFile)).toBe(false);
+
+						// Release both contributors → wrapper scopes close →
+						// scope-finalizers drop both routes from `applied` and unlink
+						// the dispatch files.
+						yield* Deferred.succeed(holdOpen, undefined);
+
+						const endpointA = yield* Fiber.join(fiberA);
+						const endpointB = yield* Fiber.join(fiberB);
+						expect(endpointA.url).toBe('http://api.my-app.localhost:6173');
+						expect(endpointB.url).toBe('http://aggregator.my-app.localhost:6173');
+
+						// Both wrapper scopes closed → finalizers drained `applied`.
+						const afterRelease = yield* SubscriptionRef.get(router.applied);
+						expect(afterRelease).toHaveLength(0);
+
+						// And the dispatch lock file is gone — every scoped lock
+						// block closed, finalizers unlinked it.
+						expect(existsSync(profile.dispatchLockFile)).toBe(false);
+					}).pipe(Effect.provide(makeBehaviorLayer(profile, fetch))),
+				);
+			}),
+	);
 });

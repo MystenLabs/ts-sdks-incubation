@@ -39,6 +39,7 @@ import type { StatusReader } from '../surfaces/cli/commands/status.ts';
 import { ExitCode } from '../surfaces/cli/sysexits.ts';
 import { makeSnapshotReader } from './snapshot-reader.ts';
 import {
+	DevstackNetworkParseError,
 	resolveAppName,
 	resolveNetworkSync,
 	resolveStackName,
@@ -262,6 +263,35 @@ const identityCwdFromConfig = (configPath: string | undefined): string => {
 	return resolved === null ? process.cwd() : dirname(resolved);
 };
 
+/** Whether the resolved argv is a purely-informational invocation that
+ *  never consumes `identity.runtimeRoot` (the only value the config
+ *  pre-load feeds). For these we SKIP `configStateDirBestEffort` so we
+ *  don't dynamic-import (and run the top-level side effects of) the
+ *  user's `devstack.config.ts` — plus walk parent dirs — for commands
+ *  the file header itself says must stay cheap:
+ *
+ *   - empty argv  → Stricli prints root help
+ *   - `--help`/`-h` or `--version`/`-v` anywhere → Stricli short-circuits
+ *   - first token `schema` → emits the static CLI schema (no state dir)
+ *
+ *  An unknown verb also never reaches a state-dir consumer (Stricli
+ *  fails the parse), but we keep pre-loading on the general path: the
+ *  pre-parser already accepted the identity flags, and gating on a
+ *  closed verb set here would duplicate the dispatcher's route table.
+ *  The two flagged-as-wasteful informational paths (help/version/schema)
+ *  are the ones with a registered short-circuit, so skipping exactly
+ *  those removes the eager-import surprise without re-deriving routes. */
+const argvSkipsConfigPreload = (argv: ReadonlyArray<string>): boolean => {
+	if (argv.length === 0) return true;
+	for (const token of argv) {
+		if (token === '--help' || token === '-h' || token === '--version' || token === '-v') {
+			return true;
+		}
+	}
+	const firstVerb = argv.find((token) => !token.startsWith('-'));
+	return firstVerb === 'schema';
+};
+
 /** Best-effort read of `config.options.stateDir` (the value a program
  *  sets via `defineDevstack({ stateDir })`) for the state-dir precedence
  *  ladder in `resolveIdentity`. Swallows EVERY config-loader failure
@@ -326,15 +356,51 @@ export const runCli = async (
 	// Best-effort config pre-load for the state-dir ladder. Swallows
 	// not-found / malformed configs so no-config verbs (prune/wipe) keep
 	// working; the `--state-dir` flag still wins over the config value.
-	const configStateDir = await configStateDirBestEffort(identityInputs.configPath);
-	const identity = resolveIdentity({
-		app: identityInputs.app,
-		stack: identityInputs.stack,
-		network: identityInputs.network,
-		stateDir: identityInputs.stateDir,
-		configStateDir,
-		cwd: identityCwdFromConfig(identityInputs.configPath),
-	});
+	// Skipped for informational invocations (help/version/schema/empty)
+	// that never read `identity.runtimeRoot`, so those commands don't
+	// dynamic-import the user's config (and run its top-level side
+	// effects) just to print help.
+	const configStateDir = argvSkipsConfigPreload(argv)
+		? undefined
+		: await configStateDirBestEffort(identityInputs.configPath);
+	let identity: ResolvedIdentity;
+	try {
+		identity = resolveIdentity({
+			app: identityInputs.app,
+			stack: identityInputs.stack,
+			network: identityInputs.network,
+			stateDir: identityInputs.stateDir,
+			configStateDir,
+			cwd: identityCwdFromConfig(identityInputs.configPath),
+		});
+	} catch (cause) {
+		// `resolveIdentity` -> `resolveNetworkSync` throws
+		// `DevstackNetworkParseError` (a plain Error, NOT a CliError) on a
+		// malformed `--network`/`$DEVSTACK_NETWORK` value. This runs OUTSIDE
+		// the argv pre-parse try/catch above and BEFORE dispatch, so without
+		// this guard the throw escapes to the bin entry's generic `.catch`
+		// (exit 1, no envelope). Convert to `CliUsageError` and route through
+		// the same envelope path the parse-argv block uses so a bad value
+		// exits USAGE (64) with a JSON envelope in `--json` mode — never the
+		// disallowed generic exit 1.
+		const error =
+			cause instanceof DevstackNetworkParseError
+				? new CliUsageError({ message: cause.message })
+				: cause instanceof CliUsageError
+					? cause
+					: new CliUsageError({
+							message: cause instanceof Error ? cause.message : String(cause),
+						});
+		const jsonMode = env[ENV_VARS.JSON] === '1' || argv.includes('--json');
+		await Effect.runPromise(
+			emitFailure(nodeProcessIO, jsonMode ? 'json' : 'human', {
+				command: '(resolve-identity)',
+				elapsedMs: 0,
+				error,
+			}),
+		);
+		return;
+	}
 	const deps = buildDirectDeps(identity);
 	await Effect.runPromise(
 		dispatch(deps, {

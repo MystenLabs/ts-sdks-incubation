@@ -2,16 +2,22 @@
 //
 // `acquireKnown` runs a STRICT ChainProbe verify against the declared
 // `packageId`. The strict surface returns a typed `ChainProbeError`
-// whose `reason` discriminates an authoritative `'not-found'` (the id
-// is a typo / wrong network) from a transient RPC failure
-// (`'transient'`). The classifier wiring is load-bearing:
+// whose `reason` discriminates an authoritative miss from a transient
+// RPC failure. The classifier wiring is load-bearing:
 //
 //   - `reason: 'not-found'` MUST surface `PublishError('verify')` so the
 //     user catches the mistake at boot.
-//   - `reason: 'transient'` MUST be masked (NO abort) so a flaky RPC
-//     does not fail boot — the id re-verifies next cycle.
-//   - a `null` strict payload (object exists but wrong kind) is also a
-//     `PublishError('verify')`.
+//   - `reason: 'decode-failed'` MUST surface `PublishError('verify')`:
+//     an object exists at the id but its on-chain shape does not satisfy
+//     `KnownObjectShape` (a wrong-kind object — the real Sui probe THROWS
+//     this rather than returning `null`). This is the typo / wrong-network
+//     mistake strict mode exists to catch, so it must NOT be masked as
+//     transient.
+//   - `reason: 'transient'` (and `'no-probe-registered'`) MUST be masked
+//     (NO abort) so a flaky RPC does not fail boot — the id re-verifies
+//     next cycle.
+//   - a `null` strict payload (probe reports absence after decode) is also
+//     a `PublishError('verify')`.
 //
 // We drive `acquireKnown` through a stubbed `ChainProbe` that yields
 // each reason and pin the resulting outcome.
@@ -90,6 +96,55 @@ describe('acquireKnown — strict verify classifier', () => {
 			const registered = yield* registry.find('my_pkg');
 			expect(registered).toBeNull();
 		}).pipe(Effect.provide(layerPackageRegistry)),
+	);
+
+	it.effect(
+		"decode-failed (wrong object kind) surfaces PublishError('verify'), NOT masked-transient",
+		() =>
+			// Falsifiable against the prior classifier, which masked every
+			// non-`not-found` reason as `'transient'` and resolved/registered
+			// the id. The real Sui probe THROWS `ChainProbeError{reason:
+			// 'decode-failed'}` for a wrong-shape id, so a knownPackage
+			// pointing at a genuinely-wrong on-chain object MUST abort boot.
+			Effect.gen(function* () {
+				const registry = yield* PackageRegistryService;
+				const exit = yield* Effect.scoped(
+					acquireKnown(failingProbe('decode-failed'), registry, KNOWN_INPUTS) as Effect.Effect<
+						unknown,
+						PublishError,
+						Scope.Scope
+					>,
+				).pipe(Effect.exit);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Option.getOrThrow(Exit.findErrorOption(exit));
+				expect(error._tag).toBe('PublishError');
+				expect(error.phase).toBe('verify');
+				expect(error.packageName).toBe('my_pkg');
+				expect(error.message).toContain('unexpected object shape');
+
+				// A wrong-kind verify failure must NOT register the id.
+				const registered = yield* registry.find('my_pkg');
+				expect(registered).toBeNull();
+			}).pipe(Effect.provide(layerPackageRegistry)),
+	);
+
+	it.effect(
+		'no-probe-registered is masked like transient (id registers, re-verifies next cycle)',
+		() =>
+			// Pins the widened mask: only genuinely-transient reasons are
+			// masked. A naive `=== 'not-found' ? fail : succeed` would still
+			// pass this, but it cheaply distinguishes the decode-failed
+			// widening from an over-broad `!== 'not-found'` mask.
+			Effect.gen(function* () {
+				const registry = yield* PackageRegistryService;
+				const result = yield* Effect.scoped(
+					acquireKnown(failingProbe('no-probe-registered'), registry, KNOWN_INPUTS),
+				);
+				expect(result.resolved.kind).toBe('known');
+				const registered = yield* registry.find('my_pkg');
+				expect(registered?.kind).toBe('known');
+			}).pipe(Effect.provide(layerPackageRegistry)),
 	);
 
 	it.effect('transient does NOT abort — id is registered and re-verifies next cycle', () =>

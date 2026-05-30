@@ -4,7 +4,8 @@
 // Every plugin factory, every option type, every plugin-author primitive
 // flows through this file. The only additional public subpaths are the
 // L5 build-integration entrypoints declared in `package.json:exports`
-// (`/playwright`, `/playwright/global-setup`, `/runtime`, `/vitest`).
+// (`/playwright`, `/playwright/global-setup`, `/runtime`, `/vitest`,
+// `/vitest/setup`).
 // See ARCHITECTURE.md §"Layer composition lives at L3, not L0" for the
 // L0–L5 layering this barrel projects.
 

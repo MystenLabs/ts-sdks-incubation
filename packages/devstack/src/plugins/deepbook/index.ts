@@ -53,6 +53,7 @@ import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
 	deepbookPluginError,
+	type DeepbookConfigError,
 	type DeepbookError,
 	type DeepbookPluginError,
 } from './errors.ts';
@@ -313,48 +314,67 @@ const requirePoolCoinValue = (
 	poolName: string,
 	side: 'base' | 'quote',
 	coinRefId: string,
-): CoinValue => {
+): Effect.Effect<CoinValue, DeepbookConfigError> => {
 	const value = coinValuesByRefId.get(coinRefId);
 	if (value === undefined) {
 		// Compose-time bug — `dependsOn`/`poolCoinRefs` dropped this coin.
 		// Surface a typed config error naming the missing coin id rather
 		// than letting a double-cast `undefined` slip into the resolved
-		// pool spec (mirrors the action plugin's miss-guard pattern at
-		// `src/plugins/action/service.ts`).
-		throw deepbookConfigError(
-			'pools',
-			`deepbook: pool '${poolName}' ${side} coin '${coinRefId}' was not resolved by the dependency tuple.`,
-			'This is a compose-time bug — ensure the coin member is included in `dependsOn`/`poolCoinRefs`.',
+		// pool spec. Lands on the typed E channel (not a sync throw, which
+		// inside Effect.gen would become an uncaught DEFECT that
+		// `passthroughOrWrap` could not see); `DeepbookConfigError` is in
+		// `DEEPBOOK_ERROR_TAGS`, so the outer pipeline passes it through
+		// untouched.
+		return Effect.fail(
+			deepbookConfigError(
+				'pools',
+				`deepbook: pool '${poolName}' ${side} coin '${coinRefId}' was not resolved by the dependency tuple.`,
+				'This is a compose-time bug — ensure the coin member is included in `dependsOn`/`poolCoinRefs`.',
+			),
 		);
 	}
-	return value;
+	return Effect.succeed(value);
 };
 
 const resolvePoolSpecs = (
 	pools: ReadonlyArray<DeepbookPoolSpec>,
 	coinValuesByRefId: ReadonlyMap<string, CoinValue>,
-): ReadonlyArray<ResolvedDeepbookPoolSpec> =>
-	pools.map((pool) => {
-		const base = requirePoolCoinValue(coinValuesByRefId, pool.name, 'base', pool.base.coin.id);
-		const quote = requirePoolCoinValue(coinValuesByRefId, pool.name, 'quote', pool.quote.coin.id);
-		return {
-			name: pool.name,
-			base: pool.base.key,
-			quote: pool.quote.key,
-			baseCoinType: base.fullCoinType,
-			quoteCoinType: quote.fullCoinType,
-			...(base.fundingStrategy === undefined ? {} : { baseFundingStrategy: base.fundingStrategy }),
-			...(quote.fundingStrategy === undefined
-				? {}
-				: { quoteFundingStrategy: quote.fundingStrategy }),
-			tickSize: pool.tickSize,
-			lotSize: pool.lotSize,
-			minSize: pool.minSize,
-			whitelisted: pool.whitelisted ?? true,
-			stablePool: pool.stablePool ?? false,
-			...(pool.seed === undefined ? {} : { seed: pool.seed }),
-		};
-	});
+): Effect.Effect<ReadonlyArray<ResolvedDeepbookPoolSpec>, DeepbookConfigError> =>
+	Effect.forEach(pools, (pool) =>
+		Effect.gen(function* () {
+			const base = yield* requirePoolCoinValue(
+				coinValuesByRefId,
+				pool.name,
+				'base',
+				pool.base.coin.id,
+			);
+			const quote = yield* requirePoolCoinValue(
+				coinValuesByRefId,
+				pool.name,
+				'quote',
+				pool.quote.coin.id,
+			);
+			return {
+				name: pool.name,
+				base: pool.base.key,
+				quote: pool.quote.key,
+				baseCoinType: base.fullCoinType,
+				quoteCoinType: quote.fullCoinType,
+				...(base.fundingStrategy === undefined
+					? {}
+					: { baseFundingStrategy: base.fundingStrategy }),
+				...(quote.fundingStrategy === undefined
+					? {}
+					: { quoteFundingStrategy: quote.fundingStrategy }),
+				tickSize: pool.tickSize,
+				lotSize: pool.lotSize,
+				minSize: pool.minSize,
+				whitelisted: pool.whitelisted ?? true,
+				stablePool: pool.stablePool ?? false,
+				...(pool.seed === undefined ? {} : { seed: pool.seed }),
+			};
+		}),
+	);
 
 const assertUniquePoolNames = (name: string, pools: ReadonlyArray<DeepbookPoolSpec>) => {
 	const seen = new Set<string>();
@@ -528,7 +548,7 @@ const buildLocalPlugin = <
 						coinValuesByRefId.set(ref.id, value);
 					}
 				}
-				const poolSpecs = resolvePoolSpecs(opts.pools, coinValuesByRefId);
+				const poolSpecs = yield* resolvePoolSpecs(opts.pools, coinValuesByRefId);
 				const artifactPublisher = yield* ArtifactPublisherService;
 				yield* setCurrentPluginPhase(
 					opts.pyth === undefined ? 'creating pools' : 'initializing Pyth feeds',

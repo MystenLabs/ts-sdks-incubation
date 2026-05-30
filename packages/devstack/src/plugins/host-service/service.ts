@@ -342,12 +342,17 @@ const httpReady = (
 			endpoint: url,
 			timeoutMs,
 			intervalMs,
-			// Host services need to prove their listener is up AND that the
-			// framework isn't crashing on every request. 4xx is acceptable
-			// (route may legitimately not exist at `/`), but 5xx indicates
-			// the server is wedged and shouldn't count as ready. Matches
-			// the postgres/sui plugins' probe validators.
-			validate: (response) => response.status < 500,
+			// The host-service readiness contract is "listener up", NOT "app
+			// logic healthy" — we are proving the dev server bound its port,
+			// not that every route returns 2xx. App-level 4xx/5xx responses
+			// can be transient while devstack writes generated files: real
+			// dev servers (Vite/Next SSR routes that throw during the initial
+			// compile) legitimately return 500 at `/` while the listener is up
+			// and the framework is healthy. Rejecting 5xx here would kill such
+			// a server after the readiness timeout. Any HTTP response proves
+			// the listener; accept it. Callers needing app-health gating should
+			// use a `log` probe keyed on their framework's ready line.
+			validate: () => true,
 		}).pipe(
 			Effect.mapError(
 				(cause) =>
@@ -378,7 +383,7 @@ const httpReady = (
 			}),
 	});
 
-const logReady = (
+export const logReady = (
 	ready: Extract<HostServiceReadyProbe, { readonly kind: 'log' }>,
 	readySignal: Promise<void>,
 	exit: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>,
@@ -398,10 +403,22 @@ const logReady = (
 							}),
 						);
 					}, ready.timeoutMs ?? DEFAULT_LOG_READY_TIMEOUT_MS);
-					readySignal.then(() => {
-						clearTimeout(timeout);
-						resolveReady();
-					});
+					readySignal.then(
+						() => {
+							clearTimeout(timeout);
+							resolveReady();
+						},
+						// Thread a rejecting readiness signal through as the
+						// inner-Promise rejection (a non-tagged cause). Without
+						// this `onRejected` handler a rejected signal would be an
+						// unhandled rejection and the `catch:` arm below could
+						// never see it. The `catch` arm preserves this raw cause
+						// on `HostServiceAcquireError.cause`.
+						(cause: unknown) => {
+							clearTimeout(timeout);
+							rejectReady(cause);
+						},
+					);
 				}),
 			catch: (cause) =>
 				cause instanceof HostServiceAcquireError
@@ -484,7 +501,10 @@ const startHostProcess = (
 				fields: {
 					[SpanAttr.serviceName]: options.serviceName,
 					[SpanAttr.event]: 'host-service.ready-pattern.redos-warning',
-					pattern: options.ready.pattern.source,
+					// Namespaced diagnostic field (the offending pattern source),
+					// consistent with the `event` name above. A bare `pattern`
+					// key collides with the generic attribute vocabulary.
+					'host-service.ready-pattern.source': options.ready.pattern.source,
 				},
 			});
 		}

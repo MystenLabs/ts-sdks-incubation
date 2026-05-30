@@ -40,7 +40,7 @@ import { Duration, Effect, type Scope } from 'effect';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -69,7 +69,7 @@ export interface LocalRpcModeBootResult {
  *  conditional on `faucetUrl`. */
 export const bootLocalRpcMode = (
 	opts: SuiLocalRpcOptions,
-): Effect.Effect<LocalRpcModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LocalRpcModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Construct the grpc client ----------------------------------
 		// `network: 'localnet'` is semantically correct: external is a
@@ -107,7 +107,7 @@ export const bootLocalRpcMode = (
 				: noopWaitForTransactionsReady;
 
 		// ----- 4. Assemble + return ------------------------------------------
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl: opts.rpcUrl,

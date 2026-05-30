@@ -15,7 +15,7 @@
 // surface exists for explicit "I want to know if the chain is
 // reachable" callers (the doctor command, debugging).
 
-import { Effect, Schema } from 'effect';
+import { Effect } from 'effect';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type {
@@ -36,51 +36,14 @@ export type SuiProbeKey =
 	| { readonly kind: 'object'; readonly objectId: string }
 	| { readonly kind: 'transaction'; readonly digest: string };
 
-/** Validated subset of `client.core.getObject(...).object`. We
- *  narrow to the fields verify probes actually consult — the SDK
- *  exposes more (digest, content, json, display) but those are
- *  out of scope here. Variants mirror `SuiClientTypes.ObjectOwner`
- *  from `@mysten/sui/client`. */
-const ObjectOwnerSchema = Schema.Union([
-	Schema.Struct({
-		$kind: Schema.Literal('AddressOwner'),
-		AddressOwner: Schema.String,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('ObjectOwner'),
-		ObjectOwner: Schema.String,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Shared'),
-		Shared: Schema.Struct({ initialSharedVersion: Schema.String }),
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Immutable'),
-		Immutable: Schema.Literal(true),
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('ConsensusAddressOwner'),
-		ConsensusAddressOwner: Schema.Unknown,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Unknown'),
-	}),
-]);
-
-/** Validated SDK response shape: `{ object: { objectId, type, ... } }`.
- *  Substrate-redesign note: today's code validates `version` as a
- *  string but it's semantically a bigint — branded type recommendation
- *  carried in the Opportunities section. */
-export const SuiObjectShapeSchema = Schema.Struct({
-	objectId: Schema.String,
-	type: Schema.String,
-	version: Schema.String,
-	owner: ObjectOwnerSchema,
-});
-
-export const SuiGetObjectResponseSchema = Schema.Struct({
-	object: SuiObjectShapeSchema,
-});
+// Note: this probe decodes against the CALLER-supplied `schema`
+// argument (see `makeSuiChainProbe`), never a local literal. Earlier
+// revisions also exported `SuiObjectShapeSchema` /
+// `SuiGetObjectResponseSchema` to "document the SDK shape", but they
+// had zero consumers (the contract's `ChainProbeSchema<Shape>` is what
+// validates), so per STYLE_GUIDE §5 (no orphan exports) they were
+// removed. Re-add a concrete object schema only if a caller actually
+// decodes through it.
 
 /** Plugin-internal SDK shim — the type the plugin's acquire body
  *  hands to the probe factory + the account's sign/execute closure.

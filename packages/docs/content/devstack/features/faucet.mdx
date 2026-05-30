@@ -19,8 +19,8 @@ faucet:request:<chainId>
 
 where `<chainId>` is the resolved network identifier — `sui:localnet`, `sui:testnet`,
 `sui:mainnet-fork@<height>`, etc. If a strategy is registered for that key, devstack dispatches the
-request through it; otherwise SUI funding fails loudly with `FaucetStrategyMissing`, listing the
-registered keys so you can see "I asked for X, only Y is wired".
+request through it; otherwise SUI funding fails loudly with the substrate `StrategyNotFoundError`,
+listing the registered keys so you can see "I asked for X, only Y is wired".
 
 Non-SUI coin funding (managed local-package coins, `walCoin(localWalrus)`, etc.) uses the same
 mechanism with a `coinType:<fullCoinType>` capability key. Missing non-SUI strategies are treated as
@@ -37,8 +37,8 @@ account funding tries to read it.
 What breaks when this is bypassed:
 
 - Skipping the capability decl and calling into a faucet HTTP endpoint directly means **the registry
-  never learns about the strategy**. Account funding for the affected chain raises
-  `FaucetStrategyMissing` even though the plugin "works". Snapshot capture also misses the
+  never learns about the strategy**. Account funding for the affected chain raises the substrate
+  `StrategyNotFoundError` even though the plugin "works". Snapshot capture also misses the
   contribution metadata.
 - Mounting at boot but not through the capability path means the supervisor's harvest loop does not
   see the contribution, so the dashboard and the manifest projection do not list it. Operators
@@ -59,6 +59,7 @@ export const myFaucet = (chainId: `sui:${string}`) =>
 	definePlugin({
 		id: 'my-faucet-strategy',
 		role: 'service',
+		section: 'service',
 		start: () => Effect.succeed({}),
 		capabilities: [
 			defineFaucetStrategy({
@@ -105,9 +106,11 @@ substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2
 The faucet error union is:
 
 - `FaucetUnreachable` — transport-level (ECONNREFUSED, DNS, TLS, AbortSignal timeout).
-- `FaucetExhausted` — `kind: 'wall-clock' | 'attempts'`. Carries `lastCause`.
-- `FaucetBodyError` — `reason: 'failure-status' | 'malformed-body' | 'invalid-json'`.
-- `FaucetStrategyMissing` — no strategy registered for the requested capability key.
+- `FaucetExhausted` — wall-clock budget exhausted; carries `attempts: number` and `lastCause`.
+- `FaucetBodyError` — `reason: 'failure-status' | 'invalid-json'`.
 - `FaucetConfigError` — invalid strategy config.
+
+A missing strategy for the requested chain is **not** a faucet tag — it surfaces as the substrate
+`StrategyNotFoundError` (carrying `capabilityKey` + `registeredKeys`).
 
 See [Errors](/devstack/errors).

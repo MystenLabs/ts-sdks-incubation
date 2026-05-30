@@ -366,12 +366,10 @@ export const startSupervisor = (
 					}
 				}
 				if (matched.size === 0) return;
-				yield* Queue.offer(commands, {
-					tag: 'selective-restart.requested',
-					pluginKey: [...matched][0]!,
-				} satisfies EngineCommand);
-				const rest = [...matched].slice(1);
-				for (const key of rest) {
+				// One `selective-restart.requested` per matched plugin, in
+				// match order. (Previously the head was offered separately
+				// from the tail — identical behaviour, one fewer branch.)
+				for (const key of matched) {
 					yield* Queue.offer(commands, {
 						tag: 'selective-restart.requested',
 						pluginKey: key,

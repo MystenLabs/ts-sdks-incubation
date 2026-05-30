@@ -10,8 +10,13 @@
 // (one `Effect.scoped` ⇒ one container managed).
 //
 // Fix: register the stop-on-scope-close finalizer BEFORE `addClaim`
-// (and BEFORE the per-name lock release), and run the post-`docker run`
-// block uninterruptibly.
+// (and BEFORE the per-name lock release). Only the orphan-safety prefix
+// (inspect → applyAction → publish-ports → finalizer-arm) runs
+// uninterruptibly; the post-finalizer tail (assertOwned → network attach
+// → IP readback → addClaim) runs interruptibly under `restore(...)`,
+// since an interrupt there is safely handled by the now-armed finalizer.
+// This test exercises the FAILURE (not interrupt) path: `addClaim` fails
+// after the finalizer is armed, so scope close must still `docker stop`.
 //
 // This test forces an `addClaim` failure by pointing the roster file at
 // a path under an existing regular file (so `mkdirSync(dirname(path))`
@@ -112,7 +117,7 @@ describe('ensureContainer orphan-container window', () => {
 				// Regular file used to poison the roster path so that
 				// `mkdirSync(dirname(stackLockFile))` throws ENOTDIR inside
 				// addClaim's withStackLock → addClaim fails → ensureContainer
-				// fails INSIDE the uninterruptible block. The finalizer must
+				// fails in the post-finalizer tail. The finalizer must
 				// already be armed by that point.
 				const rosterBlocker = join(root, 'roster-blocker');
 				writeFileSync(rosterBlocker, 'not a directory');
@@ -191,9 +196,10 @@ describe('ensureContainer orphan-container window', () => {
 				const err = Exit.findErrorOption(exit);
 				expect(err._tag).toBe('Some');
 
-				// The post-`docker run` block was uninterruptible and the
-				// finalizer was armed BEFORE addClaim, so scope close must
-				// have run `docker stop` on the container.
+				// The finalizer was armed BEFORE addClaim (in the
+				// uninterruptible prefix), so even though addClaim fails in
+				// the interruptible tail, scope close must have run
+				// `docker stop` on the container.
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				const stopInvocations = lines.filter(
 					(line) => line.startsWith('stop ') && line.includes('devstack-orphan'),

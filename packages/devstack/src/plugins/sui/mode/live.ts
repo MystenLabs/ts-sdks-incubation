@@ -39,7 +39,7 @@ import { Duration, Effect, type Scope } from 'effect';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -127,7 +127,7 @@ const resolveEndpoints = (
 /** Build the live-mode boot Effect. */
 export const bootLiveMode = (
 	opts: SuiLiveOptions,
-): Effect.Effect<LiveModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LiveModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve endpoints ------------------------------------------
 		const endpoints = yield* resolveEndpoints(opts);
@@ -173,7 +173,7 @@ export const bootLiveMode = (
 				: noopWaitForTransactionsReady;
 
 		// ----- 5. Assemble + return ------------------------------------------
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl: endpoints.rpcUrl,

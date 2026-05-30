@@ -4,7 +4,7 @@
 // spawning Docker. Sui's local mode uses `probeHost: '0.0.0.0'` because
 // Docker host publishing binds all interfaces.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { join } from 'node:path';
 
@@ -12,6 +12,7 @@ import { Deferred, Effect, Exit, Fiber, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
+	DEFAULT_PORT_WINDOW,
 	PortBrokerService,
 	layerPortBroker,
 } from '../../../../src/substrate/runtime/port-broker/index.ts';
@@ -49,6 +50,9 @@ const serverPort = (server: Server): number => {
 	}
 	return address.port;
 };
+
+const portLockPath = (root: string, port: number): string =>
+	join(root, 'port-locks', `${port}.json`);
 
 const portBrokerLayer = (root: string) =>
 	layerPortBroker.pipe(Layer.provide(layerRuntimeRoot(root)));
@@ -146,6 +150,14 @@ describe('PortBrokerService', () => {
 				const exit = yield* Fiber.await(fiber);
 				expect(Exit.isFailure(exit)).toBe(true);
 
+				// On-disk reservation must NOT leak. If the interrupt landed
+				// after acquirePortReservation wrote port-locks/<preferred>.json
+				// but before finishAllocation armed its finalizer, the
+				// uninterruptible release step of attemptSlot must have unlinked
+				// it. A leaked file (holder = this still-alive process) would
+				// otherwise mark the port busy forever.
+				expect(existsSync(portLockPath(root, preferred))).toBe(false);
+
 				// Slot must be freed. A second allocate for the same
 				// `preferredPort` should NOT surface `preferred-busy`.
 				const allocated = yield* Effect.scoped(
@@ -154,6 +166,91 @@ describe('PortBrokerService', () => {
 						preferredPort: preferred,
 					}),
 				);
+				expect(allocated.port).toBe(preferred);
+			}).pipe(Effect.provide(portBrokerLayer(root))),
+		),
+	);
+
+	it.effect('releases the on-disk reservation when the bind probe misses', () =>
+		// Regression (interrupt-leak fix): attemptSlot writes
+		// port-locks/<port>.json BEFORE the kernel probe, then only
+		// keeps it on the `kept` path. On any non-`kept` exit the
+		// uninterruptible release step must unlink the file. We force a
+		// deterministic probe-miss: a live loopback listener occupies
+		// `preferred`, and we allocate with probeHost '0.0.0.0' (which
+		// probes loopback first). The broker reassigns; the reservation
+		// file for `preferred` must NOT be left behind. If the release
+		// path stopped unlinking the reservation, the stale file (holder
+		// = this process) would persist and the next allocate of
+		// `preferred` would see it busy.
+		withTempRoot('port-broker-test', (root) =>
+			Effect.acquireUseRelease(
+				listenOnRandomPort('127.0.0.1'),
+				(server) =>
+					Effect.gen(function* () {
+						const broker = yield* PortBrokerService;
+						const preferred = serverPort(server);
+						const allocated = yield* Effect.scoped(
+							broker.allocate({
+								owner: 'probe-miss',
+								preferredPort: preferred,
+								probeHost: '0.0.0.0',
+							}),
+						);
+
+						// Reassigned away from the occupied preferred port ...
+						expect(allocated.port).not.toBe(preferred);
+						// ... and crucially, no orphaned reservation file remains for
+						// the preferred port we briefly reserved before the probe.
+						expect(existsSync(portLockPath(root, preferred))).toBe(false);
+					}).pipe(Effect.provide(portBrokerLayer(root))),
+				closeServer,
+			),
+		),
+	);
+
+	it.effect('self-heals an undecodable leftover reservation and keeps the preferred port', () =>
+		// Regression (incompatible-shape leftover): a reservation file
+		// written by an incompatible-version supervisor (here the old
+		// `{ version: 1, kind, ... }` shape that lacks the now-required
+		// `owner`) fails decode. Its ownerId/holder are unreadable, so
+		// the owner-id and liveness reclaim paths can NEVER clear it.
+		// acquirePortReservation must treat an undecodable EEXIST body as
+		// a stale artifact, unlink it, and retry the exclusive create so
+		// the allocate STILL wins `preferred`. Without the self-heal the
+		// broker maps the undecodable file to `busy` and reassigns,
+		// skipping that port for the supervisor's whole lifetime.
+		withTempRoot('port-broker-test', (root) =>
+			Effect.gen(function* () {
+				const seed = yield* listenOnRandomPort('127.0.0.1');
+				const preferred = serverPort(seed);
+				yield* closeServer(seed);
+
+				// Plant an OLD-SHAPE (undecodable under the current schema)
+				// reservation file at the preferred port.
+				mkdirSync(join(root, 'port-locks'), { recursive: true });
+				writeFileSync(
+					portLockPath(root, preferred),
+					`${JSON.stringify({
+						version: 1,
+						port: preferred,
+						kind: 'wallet',
+						ownerId: 'legacy-process',
+						holder: ownHolder(),
+					})}\n`,
+					{ mode: 0o600 },
+				);
+
+				const broker = yield* PortBrokerService;
+				const allocated = yield* Effect.scoped(
+					broker.allocate({
+						owner: 'after-self-heal',
+						preferredPort: preferred,
+					}),
+				);
+
+				// The undecodable leftover was reclaimed, so the preferred
+				// port is recovered rather than permanently skipped.
 				expect(allocated.port).toBe(preferred);
 			}).pipe(Effect.provide(portBrokerLayer(root))),
 		),
@@ -264,4 +361,15 @@ describe('PortBrokerService', () => {
 			}).pipe(Effect.provide(portBrokerLayer(root))),
 		),
 	);
+
+	it('DEFAULT_PORT_WINDOW pins the wallet-shared scan window', () => {
+		// `DEFAULT_PORT_WINDOW` is the canonical scan window, imported by
+		// the wallet plugin so its UX-pinned auto-connect range stays
+		// structurally tied to the broker default. These literals are the
+		// wallet adapter's hardcoded range (plugins/wallet/index.ts
+		// windowHint { start: 39200, size: 1000 }); retuning the broker
+		// default without updating the wallet must fail HERE, not drift
+		// silently.
+		expect(DEFAULT_PORT_WINDOW).toEqual({ start: 39200, size: 1000 });
+	});
 });

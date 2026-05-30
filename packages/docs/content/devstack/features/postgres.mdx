@@ -36,7 +36,7 @@ All fields are optional. The defaults track the distilled-doc recommendation (Po
 - `version` — image tag (default tracks 17-alpine).
 - `user` — superuser name, default `'devstack'`.
 - `password` — credential. If omitted, devstack derives a deterministic per-stack password from the
-  identity `(app, stack, name)` so the value is stable across cold boots without leaking through
+  identity `(app, stack, stackRoot)` so the value is stable across cold boots without leaking through
   config.
 - `databases` — non-empty array of database names to ensure. The plugin runs `createdb` idempotently
   via `psql -tAc` existence checks, so repeat boots are no-ops.

@@ -117,6 +117,7 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'post-restore-hook',
 			'pre-cleanup',
 			'write-restore-pending',
+			'read-restore-pending',
 			'clear-restore-pending',
 			'missing-subtree-fatal',
 		]),
@@ -394,12 +395,12 @@ const readRestorePendingMarker = (
 		if (!exists) return null;
 		const text = yield* fs
 			.readFileString(path)
-			.pipe(Effect.catch(failPhase('write-restore-pending', `read ${RESTORE_PENDING_FILE_NAME}`)));
+			.pipe(Effect.catch(failPhase('read-restore-pending', `read ${RESTORE_PENDING_FILE_NAME}`)));
 		const raw = yield* parseJsonText(text, {
 			source: path,
 			mkError: (issue) =>
 				new RestorePhaseError({
-					phase: 'write-restore-pending',
+					phase: 'read-restore-pending',
 					detail: `${RESTORE_PENDING_FILE_NAME} is not valid JSON`,
 					cause: issue.cause,
 				}),
@@ -408,7 +409,7 @@ const readRestorePendingMarker = (
 			source: path,
 			mkError: (issue) =>
 				new RestorePhaseError({
-					phase: 'write-restore-pending',
+					phase: 'read-restore-pending',
 					detail: `${RESTORE_PENDING_FILE_NAME} failed schema decode`,
 					cause: issue.cause,
 				}),

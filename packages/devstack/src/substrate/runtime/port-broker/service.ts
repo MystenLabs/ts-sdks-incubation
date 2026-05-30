@@ -163,6 +163,15 @@ interface Holder {
 
 type State = ReadonlyMap<number, Holder>;
 
+// Reservation-doc shape. NOTE: this changed incompatibly from an
+// earlier `{ version: 1, kind, ... }` to `{ version: 1, owner, ... }`
+// without bumping the version. A version bump alone would NOT recover
+// a SIGKILL'd prior-version leftover (an old body still fails decode
+// under any new schema and would block its port forever). Instead the
+// recovery is behavioural: `acquirePortReservation` treats an EEXIST
+// file it cannot decode as a stale artifact and self-heals it
+// (best-effort unlink + retry), so a leftover incompatible reservation
+// clears itself on the next allocate of that port.
 const PORT_RESERVATION_VERSION = 1 as const;
 
 const PortReservationDocSchema = versionedDocSchema(PORT_RESERVATION_VERSION, {
@@ -258,6 +267,27 @@ const reclaimReservationIfOwnerSync = (path: string, ownerId: string): boolean =
 	}
 };
 
+/** Best-effort removal of an EXISTING reservation file whose body
+ *  cannot be decoded (a leftover from an incompatible-version
+ *  supervisor, or a torn write). Such a file carries no readable
+ *  `ownerId`/`holder`, so neither `reclaimReservationIfOwnerSync` nor
+ *  liveness can ever clear it; without this it would skip that one
+ *  port for every future process for the supervisor's lifetime. We
+ *  treat an undecodable body as a stale artifact and unlink it so the
+ *  next exclusive-create can win. Returns whether the unlink ran
+ *  (false if the file vanished first, i.e. a peer already cleared it)
+ *  so the caller can bound its retry. */
+const reclaimUndecodableReservationSync = (path: string): boolean => {
+	try {
+		unlinkSync(path);
+		return true;
+	} catch {
+		// Already gone (peer reclaimed it) or unremovable; either way
+		// the next loop turn re-evaluates via exclusive-create.
+		return false;
+	}
+};
+
 const acquirePortReservation = (
 	root: string,
 	port: number,
@@ -275,6 +305,10 @@ const acquirePortReservation = (
 			holder,
 		};
 
+		// Bounds the self-heal: an undecodable EEXIST body is reclaimed at
+		// most once. If we see another undecodable body after that (a peer
+		// keeps rewriting garbage), give up with `busy` rather than spin.
+		let reclaimedUndecodable = false;
 		while (true) {
 			const attempt = tryWriteReservationSync(path, doc);
 			if (attempt._tag === 'written') {
@@ -295,7 +329,16 @@ const acquirePortReservation = (
 					cause: attempt.cause,
 				} as const;
 			}
-			if (attempt.doc === null) return { _tag: 'busy' } as const;
+			if (attempt.doc === null) {
+				// EEXIST file we cannot decode (stale incompatible-version
+				// leftover or torn write). Self-heal once: unlink it and retry
+				// the exclusive-create so a live port is not lost permanently.
+				if (!reclaimedUndecodable && reclaimUndecodableReservationSync(path)) {
+					reclaimedUndecodable = true;
+					continue;
+				}
+				return { _tag: 'busy' } as const;
+			}
 
 			const liveness = yield* checkHolderLiveness(attempt.doc.holder).pipe(
 				Effect.catch(() => Effect.succeed('alive' as const)),
@@ -366,22 +409,46 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 			| { readonly _tag: 'probe-failed'; readonly cause: unknown };
 
 		/** Reserve `port` in the in-process Map, run the probe+reservation
-		 *  chain uninterruptibly through to either (a) `finishAllocation`
-		 *  arming its scope finalizer or (b) a clean release of the slot.
+		 *  chain through to either (a) `finishAllocation` arming its scope
+		 *  finalizer or (b) a clean release of BOTH the in-process slot
+		 *  AND the on-disk reservation file.
 		 *
 		 *  Interrupt safety: the critical region is wrapped in
-		 *  `Effect.acquireUseRelease`. If an interrupt or a typed failure
-		 *  lands between `tryReserve` and `finishAllocation`, the release
-		 *  step drops the slot — the only path that intentionally keeps
-		 *  the slot is the `kept` outcome where ownership has been
-		 *  transferred to the scope finalizer (see `finishAllocation`).
+		 *  `Effect.acquireUseRelease`, whose `release` step is
+		 *  uninterruptible while its `use` step is NOT (Effect v4). The
+		 *  acquired `PortReservation` is created INSIDE `use` (after the
+		 *  on-disk file is written), so the `use` body stashes it in
+		 *  `reservationCell`; the uninterruptible `release` reads that cell
+		 *  and unlinks the reservation file on ANY non-`kept` exit —
+		 *  interrupt, typed failure, or a non-`kept` success outcome.
+		 *  Without this, an interrupt landing between the reservation write
+		 *  (in `acquirePortReservation`) and the finalizer arm (in
+		 *  `finishAllocation`) left the file on disk while the old release
+		 *  only dropped the in-process slot — leaking
+		 *  `port-locks/<port>.json`. Its `holder` is this still-alive
+		 *  process, so every future `allocate` of that port then saw
+		 *  `checkHolderLiveness` report `alive`, marking it busy for the
+		 *  whole supervisor lifetime.
+		 *
+		 *  The only path that intentionally KEEPS both the slot and the
+		 *  file is the `kept` outcome, where ownership transfers to the
+		 *  scope finalizer (see `finishAllocation`); `reservationCell` is
+		 *  cleared there so `release` is a no-op for it.
+		 *  (`unlinkReservationIfOwnerSync` is owner-id-guarded and
+		 *  idempotent, so a stray double-release is harmless — clearing
+		 *  the cell just avoids the redundant stat.)
 		 */
 		const attemptSlot = (
 			port: number,
 			owner: string,
 			probeHost: PortProbeHost,
-		): Effect.Effect<SlotOutcome | null, never, Scope.Scope> =>
-			Effect.acquireUseRelease(
+		): Effect.Effect<SlotOutcome | null, never, Scope.Scope> => {
+			// Visible to BOTH the `use` body (fills it once the reservation
+			// file exists) and the uninterruptible `release` callback
+			// (unlinks it on any non-`kept` exit). On-disk analogue of the
+			// in-process slot.
+			let reservationCell: PortReservation | null = null;
+			return Effect.acquireUseRelease(
 				tryReserve(port, owner),
 				(reserved): Effect.Effect<SlotOutcome | null, never, Scope.Scope> => {
 					if (!reserved) return Effect.succeed(null);
@@ -395,15 +462,22 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 								cause: reservation.cause,
 							};
 						}
+						// File is now on disk. Hand it to the uninterruptible
+						// `release` step so an interrupt at the `probePort` /
+						// `finishAllocation` boundary cannot leak it.
+						reservationCell = reservation.reservation;
 						const ok = yield* probePort(port, probeHost);
 						if (ok._tag === 'ok') {
 							const allocated = yield* finishAllocation(port, owner, drop, reservation.reservation);
+							// Ownership transferred to the scope finalizer; the
+							// `release` step must NOT also unlink the file.
+							reservationCell = null;
 							return { _tag: 'kept' as const, allocated };
 						}
-						// Probe missed — release the cross-process reservation
-						// before exit. The in-process slot is dropped by the
-						// `release` step of acquireUseRelease.
-						yield* reservation.reservation.release;
+						// Probe missed. The uninterruptible `release` step below
+						// unlinks the reservation file (via `reservationCell`) and
+						// drops the in-process slot, so a single owner cleans up
+						// both even if an interrupt preempts us right here.
 						if (ok._tag === 'probe-failed') {
 							return { _tag: 'probe-failed' as const, cause: ok.cause };
 						}
@@ -411,18 +485,23 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					});
 				},
 				(reserved, exit) => {
-					// Slot release: drop the in-process entry UNLESS we
-					// successfully transferred ownership to a scope finalizer
-					// (the `kept` outcome). Interrupts and typed failures
-					// both flow through this release, closing the gap that
-					// previously leaked the Map entry until Layer scope close.
+					// Slot + reservation release (uninterruptible). Drop the
+					// in-process entry AND unlink the on-disk reservation
+					// UNLESS we transferred ownership to a scope finalizer
+					// (the `kept` outcome, which cleared `reservationCell`).
+					// Interrupts, typed failures, and non-`kept` success
+					// outcomes all flow through here, closing both the Map
+					// leak and the port-locks/*.json leak (the latter
+					// previously persisted until the supervisor exited).
 					if (!reserved) return Effect.void;
-					if (exit._tag === 'Success' && exit.value?._tag === 'kept') {
-						return Effect.void;
-					}
-					return drop(port);
+					const kept = exit._tag === 'Success' && exit.value?._tag === 'kept';
+					if (kept) return Effect.void;
+					const releaseReservation =
+						reservationCell !== null ? reservationCell.release : Effect.void;
+					return Effect.all([drop(port), releaseReservation], { discard: true });
 				},
 			);
+		};
 
 		const allocate: PortBroker['allocate'] = (opts = {}) =>
 			Effect.gen(function* () {

@@ -279,8 +279,27 @@ const installCommandChannelBridge = (params: {
 		// the matching completion event flows through `publishEvent`.
 		const pendingCaptures = yield* Ref.make<ReadonlyMap<string, PendingSnapshotCapture>>(new Map());
 
-		yield* Effect.forkScoped(
-			subscriber.commands.pipe(
+		// Drive the command stream so a stream-LEVEL failure does not
+		// permanently wedge cross-process IPC. The subscriber's `commands`
+		// tail decodes with the `onDecodeError: 'fail'` default, so ONE
+		// malformed/truncated NDJSON line (CLI killed mid-append, partial
+		// disk write) raises `CommandChannelError` and terminates the
+		// stream. If `runForEach` were the only consumer, the live
+		// supervisor would then process NO further commands for the rest of
+		// the `up` session (a sibling `snapshot save`/`apply`/`prune`
+		// appends but is never read, and its `awaitCompletion` times out
+		// with no diagnostic). Instead we log the failure and RE-SUBSCRIBE:
+		// `subscriber.commands` is `tailRecords(... fromOffset: 'current')`,
+		// and each subscription re-runs its builder, re-anchoring the tail
+		// at the file's current EOF — so the corrupt line (and any records
+		// that were buffered alongside it) are skipped and subsequent
+		// commands are processed again. A short delay before resume avoids a
+		// busy spin if the tail keeps failing. The publisher's reply-tail
+		// already uses `onDecodeError: 'skip'` for the same NDJSON-tolerance
+		// reason; this gives the command-subscriber side equivalent
+		// resilience without touching the shared subscriber.
+		const consumeCommands: Effect.Effect<void, never, Scope.Scope> = subscriber.commands
+			.pipe(
 				Stream.runForEach((record) =>
 					Effect.gen(function* () {
 						if (!isEngineCommand(record.command)) {
@@ -353,15 +372,34 @@ const installCommandChannelBridge = (params: {
 						);
 					}),
 				),
-				Effect.catchCause((cause) =>
-					Effect.sync(() => {
+			)
+			.pipe(
+				Effect.catchCause((cause): Effect.Effect<void, never, Scope.Scope> => {
+					// Scope-close interrupts this forked fiber via an interrupt
+					// cause. Re-raise it so the fork stops cleanly on `up`
+					// teardown — resuming here would leak the fiber and spam
+					// stderr forever.
+					if (Cause.hasInterrupts(cause as Cause.Cause<unknown>)) {
+						return Effect.failCause(cause as Cause.Cause<never>);
+					}
+					// Otherwise a stream-level failure (e.g. a corrupt NDJSON
+					// line tripping the subscriber's `onDecodeError: 'fail'`
+					// default). Log it, pause briefly to avoid a busy spin, then
+					// re-subscribe by recursing — a fresh tail re-anchors at the
+					// file's current EOF, so the next command is processed
+					// instead of IPC wedging for the session.
+					return Effect.sync(() => {
 						process.stderr.write(
-							`command channel failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
+							`command channel decode failed; resuming tail: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
 						);
-					}),
-				),
-			),
-		);
+					}).pipe(
+						Effect.andThen(Effect.sleep('200 millis')),
+						Effect.andThen(Effect.suspend(() => consumeCommands)),
+					);
+				}),
+			);
+
+		yield* Effect.forkScoped(consumeCommands);
 
 		const publishEvent = (event: EngineEvent): Effect.Effect<void> =>
 			Effect.gen(function* () {

@@ -12,11 +12,26 @@
 // process can legitimately reclaim the garbage lock and write a FRESH,
 // VALID O_EXCL body. The unconditional `unlinkSync` would then clobber
 // that live lock, producing two simultaneous holders (a mutual-
-// exclusion break). This module closes the window by RE-STATTING the
-// file immediately before the unlink and confirming it is STILL the
-// same stale inode (same mtime + ino + dev) AND still unparseable. If
-// anything changed, the reclaim bails and the caller falls back to its
-// normal backoff/retry path so the competitor's fresh body survives.
+// exclusion break). This module NARROWS the window — it does not fully
+// eliminate it — by RE-STATTING the file immediately before the unlink
+// and confirming it is STILL the same stale inode (same mtime + ino +
+// dev) AND still unparseable. If anything changed, the reclaim bails
+// and the caller falls back to its normal backoff/retry path so the
+// competitor's fresh body survives.
+//
+// Residual race (deliberately accepted): the final `unlinkSync` is
+// path-based and UNCONDITIONAL, so between the re-stat/re-read and the
+// syscall a competing reclaimer can still unlink+O_EXCL-create a fresh
+// body that this unlink then deletes. Closing it fully would need an
+// atomic, inode-pinned delete (`renameat2(RENAME_EXCHANGE)` or an fd
+// held across the check) that `node:fs` does not portably expose — a
+// plain `rename(path, …)` is itself path-based and would relocate the
+// competitor's fresh body just as readily, so it buys nothing. The
+// re-stat shrinks the window from "mtime read → unlink" (a parse +
+// staleness comparison wide) to "re-read → unlink" (a couple of
+// syscalls), making a real collision require both racers mid-reclaim of
+// the SAME file with sub-microsecond timing. Given that, the residual
+// is left open rather than papered over with an equally-racy rename.
 //
 // The dead-PID liveness reclaim path is NOT routed through here: that
 // branch is gated on a holder-liveness probe (see liveness.ts) and is
@@ -81,8 +96,10 @@ const readOrNull = (path: string): string | null => {
 };
 
 /** Reclaim `path` IFF it is an aged, unparseable orphan — with a re-stat
- *  guard that closes the TOCTOU window between the staleness check and
- *  the unlink.
+ *  guard that NARROWS (not closes) the TOCTOU window between the
+ *  staleness check and the unlink. See the module header for the
+ *  deliberately-accepted sub-microsecond residual between the final
+ *  re-read and the path-based unlink.
  *
  *  `parse` is the caller's body decoder; it returns a non-null value for
  *  a well-formed body and `null` for an unparseable one. We never look
@@ -113,10 +130,12 @@ export const reclaimUnparseableStaleFile = (
 	const isStale = Date.now() - before.mtimeMs > staleAfterMillis;
 	if (!isStale) return 'fresh';
 
-	// 2. Re-stat guard — the TOCTOU close. Between the read above and the
-	//    unlink below, a competitor may have reclaimed the garbage and
-	//    written a FRESH valid O_EXCL body. Re-confirm the file is STILL
-	//    the same stale inode AND still unparseable before unlinking.
+	// 2. Re-stat guard — NARROWS (does not close) the TOCTOU. Between the
+	//    read above and the unlink below, a competitor may have reclaimed
+	//    the garbage and written a FRESH valid O_EXCL body. Re-confirm the
+	//    file is STILL the same stale inode AND still unparseable before
+	//    unlinking. A sub-microsecond residual remains between this
+	//    re-read and the path-based unlink (see header) — accepted.
 	const after = identityOf(path);
 	if (after === null) {
 		// Vanished from under us — a sibling reclaimer won the unlink. The

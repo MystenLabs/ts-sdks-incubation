@@ -73,6 +73,16 @@ const FORK_HOLDER_HEARTBEAT_INTERVAL_MILLIS = 10_000;
  *  I/O — a tight budget keeps peers reacting quickly to a release. */
 const FORK_HOLDER_LOCK_TIMEOUT_MILLIS = 5_000;
 
+// No `version` field by design. `parseVersionedDocumentBodyOrNull`
+// decodes the raw body against this schema and treats ANY decode miss
+// (including a future shape change) as `null` ⇒ "no live holder",
+// which the acquire path handles by reclaiming. Because the holder file
+// is transient (it lives inside the data dir and a wipe removes it —
+// see `forkHolderPath` below), a leftover old-shape body self-heals on
+// the next acquire rather than blocking it. This mirrors stack-lock's
+// precedent for short-lived holder files; persistent docs that must
+// survive a format change use `versionedDocSchema` with a bumped
+// version stamp instead.
 const ForkLockHolderSchema = Schema.Struct({
 	pid: Schema.Number,
 	host: Schema.String,

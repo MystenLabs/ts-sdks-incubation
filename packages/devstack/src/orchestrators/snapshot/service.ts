@@ -95,15 +95,6 @@ export type SnapshotOrchestratorError =
 	| SnapshotIdError
 	| SnapshotDescriptorError;
 
-/** Tagged failure when the substrate's startTime probe could not be
- *  reduced to a number. */
-export class SnapshotBootError extends Schema.TaggedErrorClass<SnapshotBootError>()(
-	'SnapshotBootError',
-	{
-		detail: Schema.String,
-	},
-) {}
-
 export class SnapshotIdError extends Schema.TaggedErrorClass<SnapshotIdError>()('SnapshotIdError', {
 	operation: Schema.Literals(['capture', 'restore', 'delete']),
 	field: Schema.Literals(['id', 'name']),

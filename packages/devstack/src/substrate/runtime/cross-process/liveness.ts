@@ -17,18 +17,10 @@
 import { execFileSync } from 'node:child_process';
 import { hostname as nodeHostname } from 'node:os';
 
-import { Context, Data, Effect, Layer } from 'effect';
+import { Context, Effect, Layer } from 'effect';
 
 import type { RosterHolder } from '../../cross-process.ts';
 import { selfPid } from './self-pid.ts';
-
-/** Tagged failure when the start-time probe itself errored unexpectedly
- *  (timeout, missing utility, etc.). Distinguished from "pid absent",
- *  which is signaled by `processStartTime` returning `null`. */
-export class StartTimeProbeError extends Data.TaggedError('StartTimeProbeError')<{
-	readonly pid: number;
-	readonly cause: unknown;
-}> {}
 
 /** Cheap "send signal 0" pid liveness. ESRCH → dead; EPERM → alive
  *  (foreign-user pid on shared dev hosts). Any other errno is
@@ -70,18 +62,28 @@ export type LivenessCache = Map<number, number | null>;
 export const processStartTime = (pid: number, cache?: LivenessCache): number | null => {
 	if (!Number.isFinite(pid) || pid <= 0) return null;
 	// Our own pid's startTime never changes during the process
-	// lifetime — cache the first probe forever. Eliminates the `ps`
-	// spawn under high in-process contention (e.g. N fibers fighting
-	// over a single cross-process lock all probing each other's
-	// shared pid). Without this cache, 8 concurrent fibers each fork
-	// `ps -o lstart` with a 2s timeout, compounding into seconds of
-	// latency that exhaust the claim budget (review fix phase 22f
-	// reclaim-stress reproducer caught it).
+	// lifetime — cache the first SUCCESSFUL probe forever. Eliminates
+	// the `ps` spawn under high in-process contention (e.g. N fibers
+	// fighting over a single cross-process lock all probing each
+	// other's shared pid). Without this cache, 8 concurrent fibers
+	// each fork `ps -o lstart` with a 2s timeout, compounding into
+	// seconds of latency that exhaust the claim budget (review fix
+	// phase 22f reclaim-stress reproducer caught it).
+	//
+	// Only a non-null result is memoized: a `null` here means the
+	// probe transiently FAILED (spawn hiccup / 2s timeout under load),
+	// not that the pid is gone — it's our own pid, which is alive by
+	// definition. Caching that null forever would surrender this
+	// process's PID-reuse protection (it would write `startTime: null`
+	// to disk for its whole lifetime) on a single flaky fork. Leaving
+	// the cache UNSET re-probes on the next call; an occasional extra
+	// `ps` on a previously-failing probe is negligible versus losing
+	// reuse protection for the lifetime.
 	if (pid === selfPid()) {
-		if (ownStartTimeCache === UNSET) {
-			ownStartTimeCache = probeStartTimeUncached(pid);
-		}
-		return ownStartTimeCache;
+		if (ownStartTimeCache !== UNSET) return ownStartTimeCache;
+		const probed = probeStartTimeUncached(pid);
+		if (probed !== null) ownStartTimeCache = probed;
+		return probed;
 	}
 	if (cache?.has(pid)) {
 		// Map.get is `T | undefined` — but `has` is true, so the value
@@ -94,7 +96,9 @@ export const processStartTime = (pid: number, cache?: LivenessCache): number | n
 };
 
 const UNSET: unique symbol = Symbol('UNSET');
-let ownStartTimeCache: number | null | typeof UNSET = UNSET;
+// Only a successful (non-null) self-pid probe is ever stored here; a
+// failed probe leaves this UNSET so the next call re-probes.
+let ownStartTimeCache: number | typeof UNSET = UNSET;
 
 /** Inner probe — always forks the platform utility. Split out so the
  *  cache branch in `processStartTime` stays a single read/write. */

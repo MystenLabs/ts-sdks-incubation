@@ -222,7 +222,7 @@ export const bootForkMode = (
 		});
 
 		const fork = makeForkAdminSurface(sdkClient);
-		const assembled = assembleSuiClient({
+		const assembled = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl,

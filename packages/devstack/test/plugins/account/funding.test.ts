@@ -1,4 +1,5 @@
-import { Effect, Exit } from 'effect';
+import { Effect, Exit, Fiber } from 'effect';
+import * as TestClock from 'effect/testing/TestClock';
 import { describe, expect, it } from '@effect/vitest';
 
 import { chainId } from '../../../src/substrate/brand.ts';
@@ -467,5 +468,121 @@ describe('account cross-cutting funding dispatch', () => {
 				}),
 			),
 		),
+	);
+
+	it.effect(
+		'fails with a settlement-timeout error when the funded balance never becomes visible',
+		() =>
+			// Regression for the rewritten `waitForBalanceAtLeast`: a
+			// production reader that always reports BELOW the requested
+			// amount must drive the bounded spaced poll to its 30s wall-clock
+			// bound (`Schedule.during`) and then fail on the typed channel
+			// with the settlement-timeout `AccountAcquireError` — not loop
+			// forever and not succeed. `it.effect` installs a TestClock, so
+			// the spaced sleeps only advance via `TestClock.adjust`; we fork
+			// the poll loop and drive the virtual clock past the bound. If a
+			// future refactor broke the `until` predicate or the `during`
+			// bound (e.g. an always-true exit), the fork would succeed and
+			// this assertion would fail.
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const registry = yield* StrategyRegistryService;
+						let reads = 0;
+						yield* registry.register('coinType:0xfeed::wal::WAL', {
+							request: () => Effect.void,
+						} satisfies AccountFundingStrategy);
+
+						// Always below the requested 123n — the funded coin
+						// never settles.
+						const stuckReader: FundingBalanceReader = {
+							readBalance: () =>
+								Effect.sync(() => {
+									reads += 1;
+									return 0n;
+								}),
+						};
+
+						const fiber = yield* Effect.forkChild(
+							applyFunding([fundingEntry()], stuckReader).pipe(Effect.exit),
+						);
+						// Let the forked poll loop reach its first parked sleep
+						// (pre-check read → fund → first in-wait read → park on
+						// the 250ms spaced delay) before driving the clock.
+						yield* Effect.yieldNow;
+						yield* Effect.yieldNow;
+						// Advance well past the 30s settlement budget so the
+						// bounded schedule (`during 30000 millis`) halts; the
+						// always-below reader re-parks each poll, so a single
+						// large adjust cascades through every poll up to the bound.
+						yield* TestClock.adjust('60 seconds');
+						const exit = yield* Fiber.join(fiber);
+
+						expect(Exit.isFailure(exit)).toBe(true);
+						const error = Exit.findErrorOption(exit);
+						expect(error._tag).toBe('Some');
+						if (error._tag === 'Some') {
+							expect(error.value.phase).toBe('fund-cross-cutting');
+							expect(error.value.message).toContain('settlement timeout');
+						}
+						// The poll loop actually polled more than once before the
+						// bound (pre-check read + at least one in-wait read).
+						expect(reads).toBeGreaterThan(1);
+					}),
+				),
+			),
+	);
+
+	it.effect(
+		'spans the 250ms inter-poll delay across multiple reads before settlement',
+		() =>
+			// Pins the spaced-delay path of the rewritten wait: the funded
+			// balance only becomes visible after the inter-poll delay
+			// elapses, so the wait must re-read across a `TestClock.adjust`.
+			// A regression dropping the spaced delay (single read) or
+			// breaking the `until` predicate would not satisfy on the later
+			// read and would fall through to the timeout branch instead.
+			withFundingLayers(
+				Effect.scoped(
+					Effect.gen(function* () {
+						const registry = yield* StrategyRegistryService;
+						yield* registry.register('coinType:0xfeed::wal::WAL', {
+							request: () => Effect.void,
+						} satisfies AccountFundingStrategy);
+
+						// Read #1 is the `applyCrossCuttingFunding` pre-check
+						// (below → proceed to fund). Read #2 is the first in-wait
+						// poll (still below → schedule parks on the 250ms sleep).
+						// Read #3 (after the clock advances) satisfies `until`.
+						let reads = 0;
+						const settlingReader: FundingBalanceReader = {
+							readBalance: () =>
+								Effect.sync(() => {
+									reads += 1;
+									return reads >= 3 ? 123n : 0n;
+								}),
+						};
+
+						const fiber = yield* Effect.forkChild(
+							applyFunding([fundingEntry()], settlingReader).pipe(Effect.exit),
+						);
+						// Let the loop reach the first in-wait poll and park on the
+						// 250ms spaced sleep before we release it.
+						yield* Effect.yieldNow;
+						yield* Effect.yieldNow;
+						// Release the parked 250ms inter-poll sleep so the wait
+						// re-reads and observes the settled balance.
+						yield* TestClock.adjust('250 millis');
+						const exit = yield* Fiber.join(fiber);
+
+						expect(Exit.isSuccess(exit)).toBe(true);
+						if (Exit.isSuccess(exit)) {
+							expect(exit.value).toEqual([{ ...fundingEntry(), outcome: 'funded' }]);
+						}
+						// Settlement required re-reading across the spaced delay.
+						expect(reads).toBeGreaterThanOrEqual(3);
+					}),
+				),
+			),
 	);
 });

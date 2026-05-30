@@ -9,7 +9,7 @@
 //   4. The `error-contribution` sink folds plugin error contributions
 //      into the FormatterRegistry the cascade formatter consumes.
 
-import { Effect, Ref } from 'effect';
+import { Deferred, Effect, Exit, Fiber, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -46,6 +46,19 @@ const ctxFor = (key: string): HarvestContext => ({
 const orchestratorSink = <K extends ContributionKind, TDecl>(
 	sink: CapabilitySink<K, TDecl>,
 ): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
+
+/** Extract the failure error `_tag`s from a failed `Exit` cause. Mirrors
+ *  the inline cause-walking the other dispatch tests use: each `Fail`
+ *  reason carries the typed error under `.error`. */
+const failureTags = (exit: Exit.Exit<unknown, unknown>): ReadonlyArray<string | undefined> => {
+	if (exit._tag !== 'Failure') return [];
+	const reasons = (
+		exit.cause as unknown as {
+			reasons: ReadonlyArray<{ _tag: string; error?: { _tag: string } }>;
+		}
+	).reasons;
+	return reasons.map((r) => (r._tag === 'Fail' ? r.error?._tag : r._tag));
+};
 
 const snapDecl: SnapshotableDecl = {
 	kind: 'snapshotable',
@@ -251,51 +264,128 @@ describe('CapabilitySinksService', () => {
 		}),
 	);
 
-	// Regression for Phase B1: registerSink wraps the Ref.modify +
-	// addFinalizer pair in `Effect.uninterruptible`. An interrupt arriving
-	// after the slot swap but before the finalizer landed would leak the
-	// sink past scope close. After the fix, the sink is reaped on scope
-	// close even if the surrounding fiber was interrupted right after the
-	// registration completed.
-	it.effect('registerSink finalizer reaps the sink on scope close (atomicity guard)', () =>
+	// Regression for Phase B1: registerSink lands its drop-by-seq
+	// finalizer on the AMBIENT scope (the `Scope.Scope` in its R-channel),
+	// not on the registry layer's own scope. So when a transient inner
+	// scope closes, the sink it registered MUST be reaped while the
+	// registry itself (and any sibling registration) survives.
+	//
+	// Falsifiability: this test provides the registry layer ONCE at the
+	// OUTER level so the registry `Ref` outlives the inner scope, then
+	// drives the SAME service instance after the inner scope closes. If
+	// the drop-by-seq finalizer were deleted, the sink would survive the
+	// inner-scope close and the post-close dispatch would route to it
+	// (succeeding) instead of failing with `UnknownContributionKind` —
+	// failing this test. (The previous version of this block provided the
+	// layer INSIDE `Effect.scoped`, so the registry itself died with the
+	// inner scope and a vacuous "fresh registry lacks the sink" check
+	// passed regardless of the finalizer.)
+	it.effect('registerSink finalizer reaps the sink on inner-scope close', () =>
 		Effect.gen(function* () {
 			const captured = yield* Ref.make<ReadonlyArray<string>>([]);
-			interface CustomDecl {
-				readonly kind: 'atomicity-probe';
-				readonly value: string;
-			}
-			const customSink: CapabilitySink<'atomicity-probe', CustomDecl> = {
-				kind: 'atomicity-probe',
+			const customSink: CapabilitySink<'reaped-probe', { kind: 'reaped-probe'; value: string }> = {
+				kind: 'reaped-probe',
 				accept: (decl) => Ref.update(captured, (xs) => [...xs, decl.value]),
 			};
 
-			// Open a transient scope, register the sink, then close it. The
-			// finalizer MUST restore the prior (absent) sink so dispatch
-			// thereafter fails with `UnknownContributionKind`.
+			const sinks = yield* CapabilitySinksService;
+
+			// Open a transient inner scope, register the sink, dispatch
+			// through it while the scope is open, then let the scope close.
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					const sinks = yield* CapabilitySinksService;
 					yield* sinks.registerSink(customSink);
-					// While the scope is open, dispatch routes to the sink.
+					expect(yield* sinks.knownKinds).toContain('reaped-probe');
 					yield* sinks.dispatch(
 						{
 							source: 'capability',
-							decl: { kind: 'atomicity-probe', value: 'in-scope' } as unknown as never,
+							decl: { kind: 'reaped-probe', value: 'in-scope' } as unknown as never,
 						},
-						ctxFor('plug-atomicity'),
+						ctxFor('plug-reaped'),
 					);
-				}).pipe(Effect.provide(layerCapabilitySinksDefault())),
+				}),
 			);
 
-			// After the inner scope closes, the registry must not have leaked
-			// the sink. Drive a fresh scope and verify dispatch on the same
-			// kind would fail with UnknownContributionKind — but only when
-			// we re-enter a fresh registry (each layer instance is fresh, so
-			// this test is really checking that the sink finalizer ran without
-			// throwing, by verifying that the in-scope dispatch fired exactly
-			// once).
+			// The in-scope dispatch fired exactly once...
 			expect(yield* Ref.get(captured)).toEqual(['in-scope']);
-		}),
+			// ...and the inner-scope close reaped the registration on the
+			// STILL-LIVE registry: the kind is gone and a post-close
+			// dispatch now lands on the empty registry, raising the typed
+			// UnknownContributionKind rather than re-invoking the (leaked)
+			// sink.
+			expect(yield* sinks.knownKinds).not.toContain('reaped-probe');
+			const exit = yield* Effect.exit(
+				sinks.dispatch(
+					{
+						source: 'capability',
+						decl: { kind: 'reaped-probe', value: 'post-close' } as unknown as never,
+					},
+					ctxFor('plug-reaped'),
+				),
+			);
+			expect(failureTags(exit)).toContain('UnknownContributionKind');
+			// The sink was NOT re-invoked after its scope closed.
+			expect(yield* Ref.get(captured)).toEqual(['in-scope']);
+		}).pipe(Effect.scoped, Effect.provide(layerCapabilitySinksDefault())),
+	);
+
+	// Companion: the register body is `Effect.uninterruptible` and arms
+	// its drop-by-seq finalizer atomically with the append. Driving the
+	// REAL interrupt path: fork a fiber that registers inside an inner
+	// scope and then parks; once registration is observed (handshake
+	// Deferred), interrupt the fiber. Interruption closes the forked
+	// fiber's inner scope, which MUST run the finalizer and reap the sink.
+	// Falsifiable: delete the finalizer and the sink survives the
+	// interrupt, so the post-interrupt dispatch succeeds instead of
+	// raising UnknownContributionKind.
+	it.effect('interrupting the registering fiber still reaps the sink', () =>
+		Effect.gen(function* () {
+			const captured = yield* Ref.make<ReadonlyArray<string>>([]);
+			const registered = yield* Deferred.make<void>();
+			const customSink: CapabilitySink<
+				'interrupt-probe',
+				{ kind: 'interrupt-probe'; value: string }
+			> = {
+				kind: 'interrupt-probe',
+				accept: (decl) => Ref.update(captured, (xs) => [...xs, decl.value]),
+			};
+
+			const sinks = yield* CapabilitySinksService;
+
+			// The forked fiber registers, signals `registered`, then parks
+			// forever inside the inner scope. Interrupting it closes that
+			// scope and triggers the registration finalizer.
+			const fiber = yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* sinks.registerSink(customSink);
+					yield* Deferred.succeed(registered, undefined);
+					yield* Effect.never;
+				}),
+			).pipe(Effect.forkChild);
+
+			// Wait until the sink is live, then interrupt the fiber.
+			yield* Deferred.await(registered);
+			expect(yield* sinks.knownKinds).toContain('interrupt-probe');
+			yield* Fiber.interrupt(fiber);
+			const exit = yield* Fiber.await(fiber);
+			expect(Exit.hasInterrupts(exit)).toBe(true);
+
+			// The interrupt-closed scope reaped the sink: the kind is gone
+			// and a fresh dispatch raises the typed miss.
+			expect(yield* sinks.knownKinds).not.toContain('interrupt-probe');
+			const dispatchExit = yield* Effect.exit(
+				sinks.dispatch(
+					{
+						source: 'capability',
+						decl: { kind: 'interrupt-probe', value: 'after-interrupt' } as unknown as never,
+					},
+					ctxFor('plug-interrupt'),
+				),
+			);
+			expect(failureTags(dispatchExit)).toContain('UnknownContributionKind');
+			// The parked sink never accepted anything.
+			expect(yield* Ref.get(captured)).toEqual([]);
+		}).pipe(Effect.scoped, Effect.provide(layerCapabilitySinksDefault())),
 	);
 
 	// Unregistered-kind pin (Task C1 §4): emitting a custom capability decl

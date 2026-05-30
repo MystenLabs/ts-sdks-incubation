@@ -31,7 +31,7 @@ import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
+import { DEFAULT_PORT_WINDOW, PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { suiResource } from '../sui/index.ts';
 import type { AccountResourceId } from '../account/index.ts';
@@ -271,9 +271,14 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 							.allocate({
 								owner: 'wallet',
 								// Pin the wallet's UX-meaningful range so the dev wallet
-								// adapter's auto-connect-port heuristic (39200..40200)
-								// keeps working even after a fallback scan.
-								windowHint: { start: 39200, size: 1000 },
+								// adapter's auto-connect-port heuristic keeps working even
+								// after a fallback scan. The broker scan window is half-open
+								// `[start, start + size)`, so `DEFAULT_PORT_WINDOW`
+								// (start 39200, size 1000) covers 39200..40199 inclusive.
+								// Reuse the broker's exported default rather than a local
+								// literal so the two cannot silently drift (pinned by
+								// `test/plugins/wallet/port-window-pin.test.ts`).
+								windowHint: DEFAULT_PORT_WINDOW,
 								preferredPort: preferred,
 								...(probeHost === undefined ? {} : { probeHost }),
 							})

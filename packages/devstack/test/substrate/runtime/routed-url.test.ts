@@ -10,6 +10,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
+import { DEFAULT_DISCOVERY_STACK } from '../../../src/build-integrations/runtime/resolve-discovery-env.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
@@ -109,5 +110,24 @@ describe('routedHostname', () => {
 describe('normalizeServiceSegment', () => {
 	it('lower-cases and replaces dots', () => {
 		expect(normalizeServiceSegment('Walrus.Node.0')).toBe('walrus-node-0');
+	});
+});
+
+describe('DEFAULT_STACK pin', () => {
+	// `routed-url.ts` is the authoritative source for routing hostnames
+	// and omits the stack segment exactly when `stack === DEFAULT_STACK`.
+	// The discovery ladder reconstructs the hostname using its own
+	// `DEFAULT_DISCOVERY_STACK` (and `cold-start-url.ts`/`storage-nodes.ts`
+	// branch on `=== 'main'`). If these literals ever drift, a
+	// default-stack boot would mint a hostname WITH a stack segment while
+	// discovery reconstructs WITHOUT it — silently breaking route
+	// resolution.
+	//
+	// We can't import `DEFAULT_DISCOVERY_STACK` into the substrate module
+	// itself (that would be a substrate → build-integrations upward edge,
+	// the kind of boundary violation the l5/l4 guards forbid), so this
+	// pin lives in the test layer where cross-layer imports are allowed.
+	it('matches the discovery ladder default (no silent drift)', () => {
+		expect(DEFAULT_STACK).toBe(DEFAULT_DISCOVERY_STACK);
 	});
 });

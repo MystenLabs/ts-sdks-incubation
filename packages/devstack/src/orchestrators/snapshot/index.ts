@@ -8,7 +8,6 @@
 // Service surface
 export {
 	layerSnapshotOrchestrator,
-	SnapshotBootError,
 	SnapshotIdError,
 	SnapshotOrchestratorService,
 	type SnapshotOrchestrator,

@@ -50,6 +50,43 @@ describe('coldStartUrl', () => {
 		expect(url).toBe('http://sui-rpc.feat.demo.localhost:5174');
 	});
 
+	it('reads DEVSTACK_APP from the injected env bag for app identity', () =>
+		// Hermetic: the env bag is passed explicitly, so `process.env` is
+		// never consulted. `cwd` points at a temp dir with NO package.json,
+		// so `readAppName(cwd)` misses and the only remaining fallback is
+		// `basename(cwd)` (the mkdtemp name) — distinct from `injected`.
+		// A regression that ignored `env.DEVSTACK_APP` would surface the
+		// basename instead, failing this assertion.
+		withTempRootSync('devstack-cold-start', (tmp) => {
+			const url = coldStartUrl('sui-rpc', {
+				routes,
+				cwd: tmp,
+				env: { DEVSTACK_APP: 'injected' },
+			});
+			expect(url).toBe('http://sui-rpc.injected.localhost:5174');
+		}));
+
+	it('env.DEVSTACK_APP wins over a package.json present in cwd', () =>
+		// The precedence rung is `opts.app ?? env.DEVSTACK_APP ?? readAppName(cwd)`.
+		// Write a package.json whose name differs from the injected value so
+		// the two app-name sources genuinely disagree, then assert the env
+		// bag wins. The control assertion (no env bag → package metadata)
+		// proves the override is real, not a coincidence of a missing file.
+		withTempRootSync('devstack-cold-start', (tmp) => {
+			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/from-package' }));
+			const injected = coldStartUrl('sui-rpc', {
+				routes,
+				cwd: tmp,
+				env: { DEVSTACK_APP: 'injected' },
+			});
+			expect(injected).toBe('http://sui-rpc.injected.localhost:5174');
+			// Control: drop the env bag and the same cwd resolves to the
+			// package.json name — confirming the env value above overrode a
+			// present, differing `readAppName(cwd)`.
+			const fromPackage = coldStartUrl('sui-rpc', { routes, cwd: tmp, env: {} });
+			expect(fromPackage).toBe('http://sui-rpc.from-package.localhost:5174');
+		}));
+
 	it('uses package metadata for app identity but keeps the default stack at main', () =>
 		withTempRootSync('devstack-cold-start', (tmp) => {
 			writeFileSync(join(tmp, 'package.json'), JSON.stringify({ name: '@org/wallet-demo' }));

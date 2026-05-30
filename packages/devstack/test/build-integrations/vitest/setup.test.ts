@@ -7,7 +7,8 @@
 //   - requireDevstack: true escalates a no-manifest condition to a
 //     thrown VitestManifestNotFoundError.
 //   - The captured fixture is populated on beforeAll and cleared on
-//     afterAll (no stale handle survives between watch runs).
+//     afterAll, so a file's fixture never bleeds into a later file that
+//     forgot the setup (the cross-file isolation guarantee).
 //   - useDevstackTestSetup wires both hooks via the injected
 //     beforeAll / afterAll seam.
 
@@ -62,33 +63,55 @@ describe('runDevstackBeforeAll', () => {
 			expect(getStackContext()).toBeUndefined();
 		}));
 
-	it('resolves the fixture across a beforeAll-writer / it-reader testPath split', () =>
-		// Regression: the writer runs inside `beforeAll`, where vitest has
-		// often not yet bound `expect.getState().testPath` (it lands under
-		// the `<unknown>` sentinel), while the reader runs inside an
-		// `it`/`test` body, where `testPath` IS populated. A keyed lookup
-		// then misses the sentinel slot and silently returns `undefined`,
-		// steering the test at cold-start defaults at the wrong stack.
-		// Drive that exact asymmetry: write with `testPath` undefined, read
-		// with a concrete `testPath`.
-		withTempRootSync('devstack-vitest-split', (root) => {
+	it('a fixture written by beforeAll is readable from a (test-body) reader regardless of testPath', () =>
+		// The reader (`getStackContext`, called from `it`/`test` bodies)
+		// must see the fixture the writer (`runDevstackBeforeAll`, called
+		// from `beforeAll`) captured — independent of vitest's per-file
+		// `expect.getState().testPath` binding, which is frequently still
+		// undefined inside `beforeAll`. Drive the real production path with
+		// a perturbed `testPath` and assert the read still resolves: this
+		// would have failed under the prior per-testPath Map keying when the
+		// writer/reader keys diverged.
+		withTempRootSync('devstack-vitest-readback', (root) => {
 			seedManifestUnder(root, 'test');
 			const savedTestPath = expect.getState().testPath;
 			try {
-				// beforeAll window: testPath not yet bound → sentinel key.
+				// Writer window: testPath not yet bound.
 				expect.setState({ testPath: undefined });
 				runDevstackBeforeAll({
 					cwd: root,
 					env: { DEVSTACK_STACK: 'test' },
 					silent: true,
 				});
-				// it/test body: testPath is now a concrete path that differs
-				// from the sentinel the writer used.
+				// Reader window: testPath is now a concrete, different path.
 				expect.setState({ testPath: '/abs/path/to/some.test.ts' });
 				expect(getStackContext()?.identity.stack).toBe('test');
 			} finally {
 				expect.setState({ testPath: savedTestPath });
 			}
+		}));
+
+	it('afterAll clears the fixture so it does not bleed into a later file', () =>
+		// Cross-file isolation guarantee: vitest reuses one worker (one
+		// module-level binding) across files run sequentially. A file that
+		// captured a fixture must NOT leave it readable for a later file
+		// that forgot the setup. Drive the real path — capture, run the
+		// afterAll body, then assert a subsequent read is undefined.
+		// Falsifiable: deleting the `captured = undefined` reset in
+		// `clearStackContext`/`runDevstackAfterAll` makes the second read
+		// return the stale 'test' fixture and this fails.
+		withTempRootSync('devstack-vitest-isolation', (root) => {
+			seedManifestUnder(root, 'test');
+			runDevstackBeforeAll({
+				cwd: root,
+				env: { DEVSTACK_STACK: 'test' },
+				silent: true,
+			});
+			expect(getStackContext()?.identity.stack).toBe('test');
+			// Simulate end-of-file teardown for the first file.
+			runDevstackAfterAll();
+			// A later file that forgot the setup reads cold: no stale handle.
+			expect(getStackContext()).toBeUndefined();
 		}));
 
 	it('throws VitestManifestNotFoundError when requireDevstack: true', () =>
@@ -152,32 +175,6 @@ describe('runDevstackAfterAll', () => {
 			expect(getStackContext()).toBeDefined();
 			runDevstackAfterAll();
 			expect(getStackContext()).toBeUndefined();
-		}));
-
-	it('registers a process.exit listener so worker shutdown drains the slot map', () =>
-		// Regression: the per-test-path slot map used to accumulate
-		// forever in `--watch` mode because vitest workers reuse the
-		// module-level binding across test files. The first call to
-		// `runDevstackBeforeAll` now installs an `exit` listener that
-		// clears the map on worker shutdown, bounding the leak.
-		withTempRootSync('devstack-vitest-exit', (root) => {
-			seedManifestUnder(root, 'test');
-			const before = process.listenerCount('exit');
-			runDevstackBeforeAll({
-				cwd: root,
-				env: { DEVSTACK_STACK: 'test' },
-				silent: true,
-			});
-			runDevstackBeforeAll({
-				cwd: root,
-				env: { DEVSTACK_STACK: 'test' },
-				silent: true,
-			});
-			const after = process.listenerCount('exit');
-			// The listener is `once`-installed, idempotent across many
-			// beforeAll calls — only one extra listener (or zero if a
-			// previous test in the same worker already registered it).
-			expect(after - before).toBeLessThanOrEqual(1);
 		}));
 });
 

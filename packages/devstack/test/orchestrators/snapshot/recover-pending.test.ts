@@ -283,25 +283,30 @@ describe('recoverPendingRestore', () => {
 					]);
 					// A previous recovery already promoted this entry to
 					// `targetImageName`, then the supervise crashed before the
-					// marker was rewritten. Now both source identities (staged
-					// tag + digest) are gone, so both promote attempts fail
-					// with not-found — but the TARGET is already on the host.
-					// The scanner must probe the target (a self-tag where
-					// `src` resolves to `targetImageName`) and, seeing it
-					// resolve, drop the marker rather than retag forever.
+					// marker was rewritten. The two `removeSourceAfterTag`
+					// promote attempts (staged tag, digest-with-remove) fail —
+					// from the daemon's view those source REFS are gone — but
+					// the EXPECTED image is still resident by content digest.
+					// The scanner must probe the expected digest (no
+					// `removeSourceAfterTag`), see it resolve, (re)point the
+					// target name at it, and drop the marker rather than retag
+					// forever.
 					const tagCalls: {
 						readonly src: ImageRef;
 						readonly newTag: string;
+						readonly removeSource: boolean;
 					}[] = [];
 					const runtime = stubRuntime({
-						tagImage: (src, newTag) =>
+						tagImage: (src, newTag, opts) =>
 							Effect.gen(function* () {
-								tagCalls.push({ src, newTag });
-								// The probe self-tags the target onto itself:
-								// `src` resolves (`tag ?? digest`) to `newTag`.
-								const isProbe = (src.tag ?? src.digest) === newTag;
-								if (isProbe) return undefined; // target visible
-								// Both real promote attempts: source missing.
+								const removeSource = opts?.removeSourceAfterTag === true;
+								tagCalls.push({ src, newTag, removeSource });
+								// The identity probe is the ONLY call that omits
+								// `removeSourceAfterTag` and addresses the expected
+								// content digest with no staged tag. It must succeed.
+								const isProbe = !removeSource;
+								if (isProbe) return undefined; // expected image resident
+								// Both promote attempts: source REFs gone.
 								return yield* Effect.fail({
 									_tag: 'ContainerRuntimeError',
 									reason: 'image-tag-failed',
@@ -317,12 +322,14 @@ describe('recoverPendingRestore', () => {
 					expect(summary.markerCleared).toBe(true);
 					expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(false);
 					// Three runtime calls: staged-tag attempt, digest-only
-					// fallback, then the existence probe (which carries the
-					// target name as `src` with no separate `tag`).
+					// fallback, then the identity probe. The probe addresses the
+					// EXPECTED content digest (NOT the target name) so a name
+					// collision cannot satisfy it, and omits removeSourceAfterTag.
 					expect(tagCalls).toHaveLength(3);
 					expect(tagCalls[2]).toEqual({
-						src: { digest: 'devstack-build:pg-db' },
+						src: { digest: 'sha256:pg-db-digest' },
 						newTag: 'devstack-build:pg-db',
+						removeSource: false,
 					});
 					expect(tagCalls[2]?.src.tag).toBeUndefined();
 				}),
@@ -378,10 +385,81 @@ describe('recoverPendingRestore', () => {
 					expect(rewritten.containers).toHaveLength(1);
 					expect(rewritten.containers[0]?.role).toBe('db');
 					// All three runtime calls fired: both promote attempts plus
-					// the existence probe; every one failed transiently.
+					// the identity probe (expected content digest → target
+					// name); every one failed transiently.
 					expect(tagCalls).toHaveLength(3);
 					expect(tagCalls[2]).toEqual({
-						src: { digest: 'devstack-build:pg-db' },
+						src: { digest: 'sha256:pg-db-digest' },
+						newTag: 'devstack-build:pg-db',
+					});
+				}),
+			),
+	);
+
+	it.effect(
+		'keeps an entry pending when the expected image is gone but an unrelated image collides on the target name',
+		() =>
+			withTempRoot('devstack-recover-pending', (root) =>
+				Effect.gen(function* () {
+					const stackRoot = join(root, 'stack');
+					writePendingMarkerRaw(stackRoot, [
+						{
+							plugin: 'postgres',
+							role: 'db',
+							targetImageName: 'devstack-build:pg-db',
+							stagedImageTag: 'devstack-snapshot:restore-aaaa',
+							digest: 'sha256:pg-db-digest',
+						},
+					]);
+					// The wrong-image hole: the snapshot's committed image was
+					// pruned out-of-band (BOTH staged tag and the expected
+					// content digest are gone), but a DIFFERENT, unrelated image
+					// happens to sit at `targetImageName` (a managed build-image
+					// name / shared base / pulled image that collides). A bare
+					// name-existence probe (`docker tag <target> <target>`) would
+					// succeed and FALSELY drop the marker as recovered — booting
+					// the container from the wrong, un-restored image. The
+					// digest-addressed probe must NOT be fooled: only a source
+					// resolving to the EXPECTED digest may satisfy it, so the
+					// entry stays pending.
+					const tagCalls: {
+						readonly src: ImageRef;
+						readonly newTag: string;
+					}[] = [];
+					const runtime = stubRuntime({
+						tagImage: (src, newTag) =>
+							Effect.gen(function* () {
+								tagCalls.push({ src, newTag });
+								// Anything addressing the (collided) target NAME as a
+								// source resolves — simulating an unrelated image at
+								// that name. The expected content digest does NOT.
+								const resolvesTargetName =
+									src.tag === newTag || (src.tag === undefined && src.digest === newTag);
+								if (resolvesTargetName) return undefined;
+								return yield* Effect.fail({
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-tag-failed',
+									detail: `No such image: ${src.tag ?? src.digest}`,
+								} as ContainerRuntimeError);
+							}),
+					});
+					const summary = yield* recoverPendingRestore(stackRoot, runtime).pipe(
+						Effect.provide(NodeFileSystem.layer),
+					);
+					// The expected image is genuinely absent, so the entry MUST
+					// remain pending and the marker MUST survive — never dropped
+					// on a mere name collision.
+					expect(summary.recovered).toBe(0);
+					expect(summary.stillPending).toHaveLength(1);
+					expect(summary.stillPending[0]?.role).toBe('db');
+					expect(summary.markerCleared).toBe(false);
+					expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(true);
+					// Three calls: staged-tag attempt, digest-with-remove
+					// fallback, then the identity probe addressing the EXPECTED
+					// digest (which the collided name does not satisfy).
+					expect(tagCalls).toHaveLength(3);
+					expect(tagCalls[2]).toEqual({
+						src: { digest: 'sha256:pg-db-digest' },
 						newTag: 'devstack-build:pg-db',
 					});
 				}),

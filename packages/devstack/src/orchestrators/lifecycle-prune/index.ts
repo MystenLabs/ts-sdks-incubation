@@ -51,7 +51,12 @@ import {
 import { PER_APP_SHARED_STACK } from '../../substrate/runtime/managed-container.ts';
 import { logDebugAndFallback } from '../../substrate/runtime/observability/index.ts';
 import { ROUTER_SHARED_APP, removeRouterProfileStateForDockerStack } from '../router/cleanup.ts';
-import { ROUTER_KIND_LABEL_VALUE } from '../router/traefik-container.ts';
+// Import the kind sentinel from its canonical source rather than the
+// `traefik-container.ts` re-export — the router-singleton label literals
+// live in `sentinels.ts`, and lifecycle-prune only needs the constant
+// (not the container ops), so depending on the sentinel module keeps the
+// import edge minimal and the source-of-truth direct.
+import { ROUTER_KIND_LABEL_VALUE } from '../router/sentinels.ts';
 import { failPhase, type LifecyclePruneError } from './errors.ts';
 
 export { LifecyclePruneError, LifecyclePrunePhase } from './errors.ts';
@@ -546,58 +551,63 @@ export const runLifecyclePrune = (
 			prunableGroups.push(group);
 		}
 
-		if (!selection.dryRun && selection.resources.containers) {
-			for (const group of prunableGroups) {
-				if (isRouterGroup(group)) {
-					containersRemoved += yield* removeDevstackContainersByKindAndName(
-						ROUTER_KIND_LABEL_VALUE,
-						group.stack,
-					).pipe(Effect.provide(dockerLayer), Effect.mapError(failPhase('remove-containers')));
-				} else {
-					const match = { app: group.app, stack: group.stack };
-					containersRemoved += yield* removeDevstackContainers(match).pipe(
-						Effect.provide(dockerLayer),
-						Effect.mapError(failPhase('remove-containers')),
+		const foreignNetworkHolders: Array<ForeignNetworkHolder> = [];
+		const staleNetworkEndpoints: Array<StaleNetworkEndpoint> = [];
+		// Provide `dockerLayer` ONCE around the whole removal section rather
+		// than re-providing it per group per resource. The inventory pass
+		// already provides it once for its parallel scan; the removal loops
+		// mirror that so the layer's docker-host resolution is built a single
+		// time, not rebuilt for every container/network/volume/image removal.
+		// The per-call `Effect.mapError(failPhase(...))` stays inside each
+		// loop so each removal still carries its phase-specific tag.
+		yield* Effect.gen(function* () {
+			if (!selection.dryRun && selection.resources.containers) {
+				for (const group of prunableGroups) {
+					if (isRouterGroup(group)) {
+						containersRemoved += yield* removeDevstackContainersByKindAndName(
+							ROUTER_KIND_LABEL_VALUE,
+							group.stack,
+						).pipe(Effect.mapError(failPhase('remove-containers')));
+					} else {
+						const match = { app: group.app, stack: group.stack };
+						containersRemoved += yield* removeDevstackContainers(match).pipe(
+							Effect.mapError(failPhase('remove-containers')),
+						);
+					}
+				}
+			}
+
+			if (!selection.dryRun && selection.resources.networks) {
+				for (const group of prunableGroups) {
+					const match = matchTupleForGroup(group);
+					const result = yield* removeDevstackNetworksBestEffort(match).pipe(
+						Effect.mapError(failPhase('remove-networks')),
+					);
+					networksRemoved += result.removed;
+					networksSkipped += result.skippedInUse;
+					for (const holder of result.foreignHolders) foreignNetworkHolders.push(holder);
+					for (const ep of result.staleEndpoints) staleNetworkEndpoints.push(ep);
+				}
+			}
+
+			if (!selection.dryRun && selection.resources.volumes) {
+				for (const group of prunableGroups) {
+					const match = matchTupleForGroup(group);
+					volumesRemoved += yield* removeDevstackVolumes(match).pipe(
+						Effect.mapError(failPhase('remove-volumes')),
 					);
 				}
 			}
-		}
 
-		const foreignNetworkHolders: Array<ForeignNetworkHolder> = [];
-		const staleNetworkEndpoints: Array<StaleNetworkEndpoint> = [];
-		if (!selection.dryRun && selection.resources.networks) {
-			for (const group of prunableGroups) {
-				const match = matchTupleForGroup(group);
-				const result = yield* removeDevstackNetworksBestEffort(match).pipe(
-					Effect.provide(dockerLayer),
-					Effect.mapError(failPhase('remove-networks')),
-				);
-				networksRemoved += result.removed;
-				networksSkipped += result.skippedInUse;
-				for (const holder of result.foreignHolders) foreignNetworkHolders.push(holder);
-				for (const ep of result.staleEndpoints) staleNetworkEndpoints.push(ep);
+			if (!selection.dryRun && selection.resources.images) {
+				for (const group of prunableGroups) {
+					const match = matchTupleForGroup(group);
+					imagesRemoved += yield* removeDevstackImages(match).pipe(
+						Effect.mapError(failPhase('remove-images')),
+					);
+				}
 			}
-		}
-
-		if (!selection.dryRun && selection.resources.volumes) {
-			for (const group of prunableGroups) {
-				const match = matchTupleForGroup(group);
-				volumesRemoved += yield* removeDevstackVolumes(match).pipe(
-					Effect.provide(dockerLayer),
-					Effect.mapError(failPhase('remove-volumes')),
-				);
-			}
-		}
-
-		if (!selection.dryRun && selection.resources.images) {
-			for (const group of prunableGroups) {
-				const match = matchTupleForGroup(group);
-				imagesRemoved += yield* removeDevstackImages(match).pipe(
-					Effect.provide(dockerLayer),
-					Effect.mapError(failPhase('remove-images')),
-				);
-			}
-		}
+		}).pipe(Effect.provide(dockerLayer));
 
 		if (!selection.dryRun) {
 			yield* Effect.gen(function* () {

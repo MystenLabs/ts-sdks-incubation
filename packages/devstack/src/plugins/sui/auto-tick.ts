@@ -1,10 +1,11 @@
-// Auto-tick clock — local-mode-only.
+// Auto-tick clock — fork-mode-only.
 //
-// Architecture invariant: "Auto-tick is local-mode-only" — the
-// public option is exposed only on fork (where it advances the
-// fork binary's clock + checkpoint) AND local (where it nudges
-// localnet's consensus to commit pending txs in tests that don't
-// produce traffic).
+// Architecture invariant: "Auto-tick is fork-mode-only" — the
+// `autoTick` option lives on `SuiForkOptions` alone, and only the
+// fork boot wires `runAutoTickClock` (against the fork binary's
+// `ForkingService.advanceClock`). Localnet's validator advances its
+// own clock and commits pending txs without prompting, so no
+// equivalent knob exists there.
 //
 // The fiber is `forkScoped` against the plugin's acquire scope:
 // teardown happens automatically on wipe/restart/Ctrl-C. Failure
@@ -48,10 +49,11 @@ export const resolveAutoTickIntervalMs = (
 };
 
 /** Plugin-internal shim — the minimal admin surface the auto-tick
- *  fiber needs. Local-mode wires this to a no-op (localnet's
- *  validator advances its own clock); fork-mode wires it to the
- *  `ForkingService.advanceClock` gRPC method. Stub: the concrete
- *  gRPC binding lands when the Mysten Sui SDK is introduced. */
+ *  fiber needs. Fork-mode wires this to the fork admin surface, whose
+ *  `advanceClock` calls the binary's `ForkingService.advanceClock`
+ *  gRPC method (see `makeForkAdminSurface` in `mode/fork.ts`). The
+ *  `ForkAdminSurface` is structurally a `ClockAdvancer`, so the boot
+ *  hands it through directly. */
 export interface ClockAdvancer {
 	readonly advanceClock: (intervalMs: number) => Effect.Effect<void, SuiPluginError>;
 }

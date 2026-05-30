@@ -7,11 +7,15 @@
 // resolved value whose tags are eager `Layer.succeed(...)` constants.
 //
 // Distilled-doc invariants honored:
-//   - 15: `WalrusProxyTag` only when ALL three URLs (proxy,
-//         aggregator, publisher) are present. Encoded as
-//         `proxyUrl / aggregatorUrl / publisherUrl: string | null`
-//         in the resolved shape; the plugin's projection step
-//         hides the proxy tag when any is missing.
+//   - 15: each of `proxyUrl / aggregatorUrl / publisherUrl` surfaces
+//         INDEPENDENTLY. Encoded as `string | null` in the resolved
+//         shape — a given field is null only when THAT specific URL
+//         is unresolved (registry default + explicit override both
+//         absent). The plugin's projection step publishes each tag
+//         when its own URL is present; a missing publisher URL no
+//         longer suppresses an available proxy/aggregator URL. (The
+//         earlier all-or-nothing gate that nullified all three when
+//         any single URL was missing was removed.)
 //   - 16: throw synchronously when `nodes` is missing for a
 //         registered network. Testnet has 100+ nodes that the
 //         `@mysten/walrus` SDK fetches dynamically; pinning them
@@ -51,8 +55,10 @@ export interface KnownDeploymentBootResult {
 	readonly stakingPoolId: string;
 	readonly exchangeIds: ReadonlyArray<string>;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	/** Null when any of the three URLs are missing — distilled-doc
-	 *  invariant 15. */
+	/** Null only when the proxy URL itself is unresolved (no explicit
+	 *  `proxyUrl` override and no registry/aggregator/publisher
+	 *  fallback). Surfaces independently of `aggregatorUrl` /
+	 *  `publisherUrl` — distilled-doc invariant 15. */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;

@@ -33,8 +33,18 @@
 //
 // No teardown of the devstack itself — that's the supervisor's job;
 // the preset is a pure reader.
-
-import { expect } from 'vitest';
+//
+// NOTE: this module must NOT import `vitest` at the top level. The
+// public `./vitest` barrel re-exports this file, and the build is
+// unbundled — so a bare `import … from 'vitest'` here would land a
+// runtime `import { … } from 'vitest'` at barrel module-init. `vitest`
+// is an OPTIONAL peer (declared in package.json's
+// `peerDependenciesMeta`), and the documented way to consume the config
+// helpers is from a `vitest.config.ts`; a consumer who legitimately
+// lacks `vitest` and imports the barrel would otherwise get a hard
+// `Cannot find package 'vitest'` at barrel evaluation. The
+// `VitestLifecycleHooks` shape below is matched STRUCTURALLY for the
+// same reason.
 
 import {
 	loadStackContext,
@@ -45,85 +55,32 @@ import { resolveVitestEnv, VITEST_ENV_VARS, RECOMMENDED_TEST_STACK } from './env
 import { VitestSetupPreconditionError } from './errors.ts';
 
 // -----------------------------------------------------------------------------
-// Captured fixture — per-test-file handle
+// Captured fixture — single per-worker handle
 // -----------------------------------------------------------------------------
 //
 // Vitest workers reuse a single module-level binding across the test
-// files they run. A bare `let captured` would carry a stale fixture from
-// the prior file into a later file that forgot `useDevstackTestSetup`,
-// silently steering `getStackContext()` at the wrong stack. Key by the
-// vitest test path so each file gets its own slot.
+// files they run, and run those files strictly sequentially
+// (`beforeAll → its → afterAll`, then the next file). The isolation
+// guarantee that matters is therefore narrow: a file's fixture must not
+// bleed into a LATER file that forgot `useDevstackTestSetup`. That is
+// satisfied by `runDevstackAfterAll` clearing the binding at end-of-file
+// — no per-test-path keying is needed (and keying would require reading
+// `expect.getState().testPath`, forcing the forbidden top-level `vitest`
+// import; see the module header). A single binding cleared on `afterAll`
+// is both sufficient and keeps the barrel's transitive graph free of any
+// runtime `vitest` import.
 
-const UNKNOWN_TEST_PATH_SENTINEL = '<unknown>';
-
-// `expect.getState().testPath` is undefined outside an `it`/`test` body
-// (e.g. in module-init or top-level `beforeAll` before vitest binds the
-// per-file state). Reads in that window fall through the sentinel and
-// still resolve so the pre-test-file setup path stays usable.
-const currentTestPath = (): string => expect.getState().testPath ?? UNKNOWN_TEST_PATH_SENTINEL;
-
-const capturedByPath = new Map<string, StackContext | undefined>();
-
-// The writer (`runDevstackBeforeAll`) runs inside `beforeAll`, where
-// `expect.getState().testPath` is frequently still `undefined` — so the
-// fixture lands under the `<unknown>` sentinel. The reader
-// (`getStackContext`) runs inside `it`/`test` bodies, where `testPath`
-// IS populated — so a naive keyed lookup misses the sentinel slot and
-// silently returns `undefined`, steering the test at cold-start defaults
-// pointing at the wrong stack. Vitest runs a worker's files strictly
-// sequentially (beforeAll → its → afterAll, then the next file), so the
-// most-recent write is unambiguously the live file's fixture. Record it
-// and let the reader fall back to it when its own path-derived key
-// misses, making the beforeAll/it timing split correct regardless of
-// when vitest binds `testPath`. `afterAll` resets the pointer so a stale
-// handle never bleeds into a later file (the original keying intent).
-let lastWrittenKey: string | undefined;
-
-// Worker-lifecycle hygiene: vitest in --watch reuses the same Node
-// worker across many test-file runs; without an exit-time cleanup, the
-// per-test-path slots accumulate until the worker is recycled (typically
-// only when vitest's pool-isolation rotates it). Wire a one-shot
-// `process.exit` listener at module load so worker shutdown drains the
-// map deterministically. The listener is idempotent and side-effect-only
-// — it touches no other module state.
-let processExitListenerInstalled = false;
-const ensureProcessExitListener = (): void => {
-	if (processExitListenerInstalled) return;
-	processExitListenerInstalled = true;
-	const drain = (): void => {
-		capturedByPath.clear();
-		lastWrittenKey = undefined;
-	};
-	process.once('exit', drain);
-	// Defensive: SIGINT / SIGTERM paths route through Node's signal
-	// handling rather than `exit`, but vitest's worker termination is
-	// graceful in practice. We register `exit` only to keep the listener
-	// surface minimal — the process is going away regardless.
-};
+let captured: StackContext | undefined;
 
 /** Return the StackContext captured by `runDevstackBeforeAll`. Returns
  *  `undefined` until `beforeAll` has run (or when the suite ran with
  *  `requireDevstack: false` and no manifest exists). */
-export const getStackContext = (): StackContext | undefined => {
-	const key = currentTestPath();
-	// The reader's `testPath`-derived key won't always match the key the
-	// writer used (the writer often runs before vitest binds `testPath`,
-	// landing under the sentinel). Fall back to the last write so the
-	// beforeAll/it split resolves the live file's fixture instead of
-	// silently returning `undefined`.
-	if (capturedByPath.has(key)) return capturedByPath.get(key);
-	if (lastWrittenKey !== undefined) return capturedByPath.get(lastWrittenKey);
-	return undefined;
-};
+export const getStackContext = (): StackContext | undefined => captured;
 
 /** Reset the captured fixture. Called by `runDevstackAfterAll`; also
  *  exported so test helpers can wipe between describe-block setups. */
 export const clearStackContext = (): void => {
-	capturedByPath.delete(currentTestPath());
-	if (lastWrittenKey !== undefined) {
-		capturedByPath.delete(lastWrittenKey);
-		lastWrittenKey = undefined;
-	}
+	captured = undefined;
 };
 
 // -----------------------------------------------------------------------------
@@ -179,10 +136,7 @@ export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 		});
 	}
 
-	ensureProcessExitListener();
-	const key = currentTestPath();
-	capturedByPath.set(key, ctx);
-	lastWrittenKey = key;
+	captured = ctx;
 };
 
 /** `afterAll` body. Currently just clears the captured fixture; the

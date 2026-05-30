@@ -102,7 +102,10 @@ export const suiCliProbe: Probe = {
 		}),
 };
 
-/** Probe: a TCP port is reachable on localhost. */
+/** Probe: a TCP port is FREE on localhost (resolves `true` when nothing
+ *  is listening — connection refused/timeout — and `false` when a
+ *  listener answers). Backs `routerProfileProbe`'s entrypoint-listener
+ *  check. */
 const probePortFree = (port: number, timeoutMs = 500): Promise<boolean> =>
 	new Promise((resolve) => {
 		const socket = createConnection({ host: '127.0.0.1', port });
@@ -120,35 +123,6 @@ const probePortFree = (port: number, timeoutMs = 500): Promise<boolean> =>
 			finish(true);
 		});
 	});
-
-/** Probe: caller-selected TCP ports are currently free. Router checks
- *  use `routerProfileProbe`, which reads the configured entrypoints. */
-export const portProbe = (ports: ReadonlyArray<number>): Probe => ({
-	name: 'ports',
-	description: 'selected TCP ports',
-	required: false,
-	run: () =>
-		Effect.gen(function* () {
-			const results = yield* Effect.tryPromise({
-				try: () =>
-					Promise.all(
-						ports.map(async (port) => ({
-							port,
-							free: await probePortFree(port),
-						})),
-					),
-				catch: () => 'port probe failed',
-			}).pipe(Effect.catch(() => Effect.succeed(ports.map((port) => ({ port, free: true })))));
-			const used = results.filter((r) => !r.free);
-			if (used.length === 0) {
-				return okOutcome(`free: ${ports.join(', ')}`);
-			}
-			return {
-				status: 'warn',
-				detail: `in use: ${used.map((u) => u.port).join(', ')}`,
-			};
-		}),
-});
 
 export type DoctorCommandRunner = typeof captureCommand;
 export type PortAvailabilityProbe = typeof probePortFree;
