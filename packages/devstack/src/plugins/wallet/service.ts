@@ -27,7 +27,7 @@
 import { Effect } from 'effect';
 import type { FileSystem, Scope } from 'effect';
 
-import type { AccountValue } from '../account/service.ts';
+import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import type { DappKitConfigBindings } from './codegen.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
 import { resolveOriginPolicy } from './origin-policy.ts';
@@ -40,8 +40,7 @@ import { WalletHttpPath } from './protocol.ts';
 // ----------------------------------------------------------------------
 
 import type { ResourceRef } from '../../api/define-plugin.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
-import type { AccountResourceId } from '../account/index.ts';
+import { WalletSpans } from './spans.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
  *  member in the stack. Expanded by the composer at `defineDevstack`
@@ -80,7 +79,7 @@ export interface WalletOptions<
 	 *     composer invokes once the account-providing members are
 	 *     known. */
 	readonly accounts: Accounts | typeof WALLET_ACCOUNTS_ALL;
-	/** Extra origins merged on top of the stack-scoped auto-derived
+	/** Extra origins merged on top of the router-fronted dev-server
 	 *  origin. Useful for headless test runners and custom dev hosts. */
 	readonly allowedOrigins?: ReadonlyArray<string>;
 	/** Preferred host port. Substrate's port broker forward-scans if
@@ -91,10 +90,6 @@ export interface WalletOptions<
 	 *  host-gateway address on native Linux. The public wallet URL remains
 	 *  router-fronted and stack-scoped. */
 	readonly bindAddress?: string;
-	/** Opt-in: allowlist the bare `http://localhost:<vite-port>` form.
-	 *  Off by default to close the cross-stack pairing risk (see
-	 *  `origin-policy.ts` for the long-form rationale). */
-	readonly allowLocalhostVite?: boolean;
 }
 
 // ----------------------------------------------------------------------
@@ -136,9 +131,6 @@ export interface WalletAcquireContext {
 	/** State root where `wallet/token` lives. Convention:
 	 *  `<appDir>/.devstack/stacks/<stack>/runtime`. */
 	readonly stateRoot: string;
-	/** Vite port for THIS stack (per-stack scoping — see
-	 *  `origin-policy.ts`). `null` if no vite is mounted. */
-	readonly vitePortForThisStack: number | null;
 	/** Port broker seam — returns the allocated port + a scope-
 	 *  finalizer-installed release. The barrel adapts the substrate's
 	 *  `PortBrokerService.allocate` to this signature so tests can pin
@@ -158,9 +150,6 @@ export interface WalletAcquireContext {
 	 *  the wallet allowlist so app+wallet stacks work without repeating
 	 *  router origins in user configs. */
 	readonly routedAppOrigin: string | null;
-	/** Supervisor context captured for log/span propagation on handler
-	 *  fibers (the in-process HTTP server forks per-request from this). */
-	readonly supervisorCtx: unknown;
 }
 
 // ----------------------------------------------------------------------
@@ -190,9 +179,9 @@ export const acquireWallet = (
 ): Effect.Effect<WalletValue, WalletBootError, Scope.Scope | FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'wallet.app': ctx.app,
-			'wallet.stack': ctx.stack,
-			'wallet.chain': ctx.chain,
+			[WalletSpans.app]: ctx.app,
+			[WalletSpans.stack]: ctx.stack,
+			[WalletSpans.chain]: ctx.chain,
 		});
 
 		// 1. Resolve the dependency account values. The barrel sets up
@@ -203,7 +192,7 @@ export const acquireWallet = (
 		//    resolved-array length is the load-bearing value.
 		const accounts = yield* ctx.resolveAccounts();
 		yield* Effect.annotateCurrentSpan({
-			'wallet.accountCount': accounts.length,
+			[WalletSpans.accountCount]: accounts.length,
 		});
 		if (accounts.length === 0) {
 			return yield* Effect.fail(
@@ -217,6 +206,19 @@ export const acquireWallet = (
 		}
 		const accountsByAddress = new Map<string, AccountValue>();
 		for (const acct of accounts) {
+			// Two accounts resolving to the same address would silently
+			// last-write-wins the sign-route map, so a sign request for
+			// that address binds to a non-deterministic account. Fail at
+			// boot with the colliding address named.
+			if (accountsByAddress.has(acct.address)) {
+				return yield* Effect.fail(
+					walletBootError({
+						phase: 'bind-account',
+						message: `wallet resolved two accounts at the same address ${acct.address}; each account must own a distinct address.`,
+						hint: 'Remove the duplicate account member, or give the colliding accounts distinct keypairs.',
+					}),
+				);
+			}
 			accountsByAddress.set(acct.address, acct);
 		}
 
@@ -231,15 +233,13 @@ export const acquireWallet = (
 		//    pairing.
 		const token = yield* acquirePairingToken(tokenPath(ctx.stateRoot));
 
-		// 4. Origin policy. Stack-scoped — only allows THIS stack's vite
-		//    port through.
+		// 4. Origin policy. Allowlist is the router-fronted dev-server
+		//    origin for this stack plus any explicit `allowedOrigins`.
 		const policy = yield* resolveOriginPolicy({
 			app: ctx.app,
 			stack: ctx.stack,
-			vitePortForThisStack: ctx.vitePortForThisStack,
 			routedAppOrigin: ctx.routedAppOrigin,
 			extraOrigins: opts.allowedOrigins ?? [],
-			allowLocalhostVite: opts.allowLocalhostVite ?? false,
 		});
 
 		// 5. Start the HTTP server. The dispatcher in `server.ts` owns
@@ -251,7 +251,6 @@ export const acquireWallet = (
 			token,
 			policy,
 			accountsByAddress,
-			supervisorCtx: ctx.supervisorCtx,
 		};
 		const server = yield* startHttpServer(serverConfig);
 
@@ -271,20 +270,19 @@ export const acquireWallet = (
 				accounts: WalletHttpPath.ACCOUNTS,
 				signTransaction: WalletHttpPath.SIGN_TRANSACTION,
 				signPersonalMessage: WalletHttpPath.SIGN_PERSONAL_MESSAGE,
-				execute: WalletHttpPath.EXECUTE,
 			},
 		};
 
 		yield* Effect.annotateCurrentSpan({
-			'wallet.url': walletUrl,
-			'wallet.localPort': port,
+			[WalletSpans.url]: walletUrl,
+			[WalletSpans.localPort]: port,
 		});
 
 		// Defensive: NEVER log `pairUrl` directly. It carries the token.
 		yield* Effect.logInfo('wallet ready').pipe(
 			Effect.annotateLogs({
-				[SpanAttr.walletUrl]: walletUrl,
-				[SpanAttr.walletToken]: 'redacted-fragment',
+				[WalletSpans.url]: walletUrl,
+				[WalletSpans.token]: 'redacted-fragment',
 			}),
 		);
 

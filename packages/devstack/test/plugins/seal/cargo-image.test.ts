@@ -21,7 +21,6 @@ import type {
 	ImageRef,
 } from '../../../src/contracts/container-runtime.ts';
 import {
-	DEFAULT_SEAL_RUST_TOOLCHAIN,
 	resolveDefaultSealCargoImage,
 	resolveSealCargoImage,
 } from '../../../src/plugins/seal/bootstrap-assets/cargo-image.ts';
@@ -66,7 +65,9 @@ describe('resolveSealCargoImage — override fast path', () => {
 			Effect.die('ensureImage should not be called when override is set'),
 		);
 		const result = await Effect.runPromise(
-			Effect.scoped(resolveDefaultSealCargoImage(runtime)) as Effect.Effect<ImageRef, unknown>,
+			Effect.scoped(
+				resolveDefaultSealCargoImage(runtime, { app: 'test-app', stack: 'test-stack' }),
+			) as Effect.Effect<ImageRef, unknown>,
 		);
 		expect(result.tag).toBe('seal-test-stub:latest');
 		expect(result.digest).toBe('seal-test-stub:latest');
@@ -80,7 +81,9 @@ describe('resolveSealCargoImage — override fast path', () => {
 			return Effect.succeed({ digest: 'sha256:built', tag: 'built:latest' });
 		});
 		const result = await Effect.runPromise(
-			Effect.scoped(resolveDefaultSealCargoImage(runtime)) as Effect.Effect<ImageRef, unknown>,
+			Effect.scoped(
+				resolveDefaultSealCargoImage(runtime, { app: 'test-app', stack: 'test-stack' }),
+			) as Effect.Effect<ImageRef, unknown>,
 		);
 		expect(buildCalledWith).not.toBeNull();
 		expect(result.digest).toBe('sha256:built');
@@ -110,7 +113,7 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 				resolveSealCargoImage(runtime, {
 					sealRepo: DEFAULT_SEAL_REPO,
 					sealRef: 'seal-v0.7.0',
-					rustToolchain: DEFAULT_SEAL_RUST_TOOLCHAIN,
+					owner: { app: 'test-app', stack: 'test-stack' },
 				}),
 			) as Effect.Effect<ImageRef, unknown>,
 		);
@@ -126,6 +129,12 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 			'_shared/signal-forward.sh',
 		]);
 		expect(captured!.buildArgs).toEqual({ SEAL_VERSION: 'seal-v0.7.0' });
+		expect(captured!.owner).toEqual({
+			app: 'test-app',
+			stack: 'test-stack',
+			plugin: 'seal',
+			role: 'key-server',
+		});
 		// Sanity: the resolved contextPath points at the vendored
 		// `images/` dir. We don't pin the absolute path (varies per
 		// dev machine + CI sandbox) but we do confirm it contains the
@@ -140,7 +149,9 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 			return Effect.succeed({ digest: 'sha256:test', tag: 'devstack-seal:test' });
 		});
 		await Effect.runPromise(
-			Effect.scoped(resolveDefaultSealCargoImage(runtime)) as Effect.Effect<ImageRef, unknown>,
+			Effect.scoped(
+				resolveDefaultSealCargoImage(runtime, { app: 'test-app', stack: 'test-stack' }),
+			) as Effect.Effect<ImageRef, unknown>,
 		);
 		expect(captured!.buildArgs).toEqual({ SEAL_VERSION: DEFAULT_SEAL_VERSION });
 	});
@@ -154,7 +165,9 @@ describe('resolveSealCargoImage — build path passes SEAL_VERSION + Dockerfile'
 			}),
 		);
 		const exit = await Effect.runPromiseExit(
-			Effect.scoped(resolveDefaultSealCargoImage(runtime)) as Effect.Effect<ImageRef, unknown>,
+			Effect.scoped(
+				resolveDefaultSealCargoImage(runtime, { app: 'test-app', stack: 'test-stack' }),
+			) as Effect.Effect<ImageRef, unknown>,
 		);
 		expect(exit._tag).toBe('Failure');
 	});

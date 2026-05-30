@@ -21,7 +21,7 @@
 // import path along; the helpers below are wire-only and have NO
 // substrate-context dependencies.
 
-import { Duration, Effect, Ref, type Scope } from 'effect';
+import { Duration, Effect, SynchronizedRef, type Scope } from 'effect';
 
 import type { SuiGrpcClient } from '@mysten/sui/grpc';
 
@@ -29,8 +29,15 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import {
+	suiConfigError,
+	suiPluginError,
+	type SuiConfigError,
+	type SuiPluginError,
+} from '../errors.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';
 
 // ---------------------------------------------------------------------------
@@ -63,7 +70,7 @@ export const fetchChainId = (
 		catch: (cause): SuiPluginError =>
 			suiPluginError(
 				'chain-id-fetch',
-				`sui chain-id fetch failed: ${stringifyCause(cause)}`,
+				`sui chain-id fetch failed: ${formatUnknownError(cause)}`,
 				cause,
 			),
 	}).pipe(
@@ -77,7 +84,7 @@ export const fetchChainId = (
 					),
 				),
 		}),
-		Effect.tap((id: string) => Effect.annotateCurrentSpan({ 'sui.chain': id })),
+		Effect.tap((id: string) => Effect.annotateCurrentSpan({ [SuiSpans.chain]: id })),
 		Effect.withSpan(opts?.span ?? 'devstack.plugin.sui.fetchChainId'),
 	);
 };
@@ -118,7 +125,11 @@ export const buildWaitForTransactionsReady = (
 	Effect.gen(function* () {
 		const retrySpacing = opts?.retrySpacing ?? FUNDS_READY_RETRY_SPACING;
 		const timeout = opts?.timeout ?? FUNDS_READY_TIMEOUT;
-		const ref = yield* Ref.make<Effect.Effect<void, SuiPluginError> | null>(null);
+		// SynchronizedRef serialises the get-or-init transition so two
+		// concurrent callers can't both observe `null` and both build
+		// their own `Effect.cached` instance (CAS-style guard against
+		// the build-once race).
+		const ref = yield* SynchronizedRef.make<Effect.Effect<void, SuiPluginError> | null>(null);
 
 		const makeProbe = (): Effect.Effect<void, SuiPluginError> =>
 			waitForHttpEndpoint({
@@ -150,23 +161,26 @@ export const buildWaitForTransactionsReady = (
 							'wait-funds-ready',
 							`sui faucet at ${faucetUrl} did not become funds-transferable within ` +
 								`${Duration.toMillis(timeout)}ms (still returning body-level Failure or 5xx): ` +
-								stringifyCause(cause),
+								formatUnknownError(cause),
 							cause,
 						),
 				),
 			);
 
-		const getOrInit: Effect.Effect<Effect.Effect<void, SuiPluginError>> = Effect.gen(function* () {
-			const existing = yield* Ref.get(ref);
-			if (existing !== null) return existing;
-			const cached = yield* Effect.cached(makeProbe());
-			yield* Ref.set(ref, cached);
-			return cached;
-		});
+		// `modifyEffect` atomically observes-then-updates inside a
+		// serialised critical section: at most one fiber builds the
+		// memoised probe, every other caller reads it back. This
+		// closes the read-build-write race the plain Ref had.
+		const getOrInit: Effect.Effect<Effect.Effect<void, SuiPluginError>> =
+			SynchronizedRef.modifyEffect(ref, (existing) =>
+				existing !== null
+					? Effect.succeed([existing, existing] as const)
+					: Effect.cached(makeProbe()).pipe(Effect.map((cached) => [cached, cached] as const)),
+			);
 
 		return {
 			wait: getOrInit.pipe(Effect.flatMap((eff) => eff)),
-			invalidate: Ref.set(ref, null),
+			invalidate: SynchronizedRef.set(ref, null),
 		};
 	});
 
@@ -177,108 +191,6 @@ export const noopWaitForTransactionsReady: WaitForTransactionsReady = {
 	invalidate: Effect.void,
 };
 
-const SUI_RPC_READ_TIMEOUT_MS = 10_000;
-
-const postJsonRpc = async <A>(
-	rpcUrl: string,
-	method: string,
-	params: ReadonlyArray<unknown>,
-): Promise<A> => {
-	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), SUI_RPC_READ_TIMEOUT_MS);
-	timeout.unref?.();
-	try {
-		const response = await fetch(rpcUrl, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-			signal: controller.signal,
-		});
-		if (!response.ok) throw new Error(`Sui RPC HTTP ${response.status}`);
-		const payload = (await response.json()) as {
-			readonly result?: A;
-			readonly error?: { readonly message?: string };
-		};
-		if (payload.error !== undefined) {
-			throw new Error(payload.error.message ?? JSON.stringify(payload.error));
-		}
-		if (payload.result === undefined) throw new Error(`Sui RPC ${method} returned no result`);
-		return payload.result;
-	} finally {
-		clearTimeout(timeout);
-	}
-};
-
-const normalizeJsonOwner = (owner: unknown): unknown => {
-	if (owner === 'Immutable') return { $kind: 'Immutable', Immutable: true };
-	if (typeof owner !== 'object' || owner === null) return { $kind: 'Unknown', Unknown: owner };
-	const record = owner as {
-		readonly AddressOwner?: unknown;
-		readonly ObjectOwner?: unknown;
-		readonly Shared?: {
-			readonly initial_shared_version?: unknown;
-			readonly initialSharedVersion?: unknown;
-		};
-		readonly ConsensusAddressOwner?: unknown;
-	};
-	if (typeof record.AddressOwner === 'string') {
-		return { $kind: 'AddressOwner', AddressOwner: record.AddressOwner };
-	}
-	if (record.ObjectOwner !== undefined) {
-		return { $kind: 'Parent', Parent: record.ObjectOwner };
-	}
-	if (record.Shared !== undefined) {
-		const initialSharedVersion =
-			record.Shared.initialSharedVersion ?? record.Shared.initial_shared_version;
-		return {
-			$kind: 'Shared',
-			Shared: { initialSharedVersion: String(initialSharedVersion) },
-		};
-	}
-	if (record.ConsensusAddressOwner !== undefined) {
-		return { $kind: 'ConsensusAddressOwner', ConsensusAddressOwner: record.ConsensusAddressOwner };
-	}
-	return { $kind: 'Unknown', Unknown: owner };
-};
-
-const getObjectViaJsonRpc = async (
-	rpcUrl: string,
-	args: {
-		readonly objectId: string;
-		readonly include?: {
-			readonly content?: boolean;
-			readonly json?: boolean;
-		};
-	},
-): Promise<unknown> => {
-	const showContent = args.include?.content === true || args.include?.json === true;
-	const result = await postJsonRpc<{
-		readonly data?: {
-			readonly objectId?: string;
-			readonly version?: string | number;
-			readonly type?: string;
-			readonly owner?: unknown;
-			readonly content?: {
-				readonly fields?: unknown;
-			};
-		};
-	}>('' + rpcUrl, 'sui_getObject', [
-		args.objectId,
-		{ showType: true, showOwner: true, showContent },
-	]);
-	const data = result.data;
-	if (data?.objectId === undefined) throw new Error(`object ${args.objectId} not found`);
-	const object = {
-		objectId: data.objectId,
-		version: String(data.version ?? ''),
-		type: data.type ?? 'unknown',
-		owner: normalizeJsonOwner(data.owner),
-		...(args.include?.json === true ? { json: data.content?.fields } : {}),
-		...(args.include?.content === true ? { content: data.content } : {}),
-	};
-	return { ...object, object };
-};
-
 // ---------------------------------------------------------------------------
 // SuiClient assembly — collapses the per-mode boilerplate
 // ---------------------------------------------------------------------------
@@ -286,36 +198,38 @@ const getObjectViaJsonRpc = async (
 /** Build the `SuiSdkShim` over a constructed grpc client.
  *  Account/Coin/Wallet read through this seam, so we expose
  *  `executeTransaction` + `waitForTransaction` in addition to the
- *  read methods needed by the chain probe. */
-export const makeSdkShim = (sdkClient: SuiGrpcClient, rpcUrl: string): SuiSdkShim => ({
+ *  read methods needed by the chain probe.
+ *
+ *  Every read/write goes through `sdkClient.core.*` — the gRPC
+ *  TransportMethods surface from `@mysten/sui`. JSON-RPC is
+ *  deprecated; do not reintroduce it. */
+export const makeSdkShim = (sdkClient: SuiGrpcClient): SuiSdkShim => ({
 	core: {
-		getObject: (args) => getObjectViaJsonRpc(rpcUrl, args),
+		getObject: (args) => sdkClient.core.getObject(args),
 		getTransaction: (args) => sdkClient.core.getTransaction(args),
 		getBalance: (args) => sdkClient.core.getBalance(args),
 		listCoins: (args) => sdkClient.core.listCoins(args),
 		// Extended surfaces — used by the account plugin's sign + execute
-		// closure. Local mode keeps the `sdkClient.executeTransaction` /
-		// `sdkClient.waitForTransaction` instance methods reachable on
-		// the shim so consumers don't have to know about the grpc client
-		// constructor. The SDK accepts a mutable `signatures: string[]`
-		// shape; the shim's readonly signature is widened with a copy at
-		// the boundary.
+		// closure. Routes through `client.core.*` (the cross-transport
+		// canonical surface per STYLE_GUIDE §16). The SDK accepts a
+		// mutable `signatures: string[]`; the shim's readonly signature
+		// is widened with a copy at the boundary.
 		executeTransaction: (args) =>
-			sdkClient.executeTransaction({
+			sdkClient.core.executeTransaction({
 				transaction: args.transaction,
 				signatures: [...args.signatures],
 				...(args.include !== undefined ? { include: args.include } : {}),
 			}),
 		waitForTransaction: (args) =>
-			sdkClient.waitForTransaction({
+			sdkClient.core.waitForTransaction({
 				digest: args.digest,
 				...(args.timeout !== undefined ? { timeout: args.timeout } : {}),
 			}),
 	},
-	// Opaque client passthrough — the Package plugin's publish-tx
-	// builder hands this to `Transaction.build({ client })`. The shim
-	// layer doesn't type-narrow it; downstream consumers cast at the
-	// `tx.build` call site (mirrors coin/mint.ts).
+	// Client passthrough — Package's publish-tx builder hands this to
+	// `Transaction.build({ client })`; sibling plugins reach
+	// `client.core.*` directly through this slot. Typed as
+	// ClientWithCoreApi via SuiSdkShim.client.
 	client: sdkClient,
 });
 
@@ -326,12 +240,18 @@ export const makeSdkShim = (sdkClient: SuiGrpcClient, rpcUrl: string): SuiSdkShi
  *  `chain` is accepted as a bare string and branded to `ChainId` at
  *  this single boundary — every consumer downstream reads the
  *  branded shape so capability-key constructors (`chainProbe…`,
- *  `faucet…`) accept it without a cast. */
+ *  `faucet…`) accept it without a cast.
+ *
+ *  Returns an `Effect` on the `SuiConfigError` channel: the empty-chain
+ *  guard must surface as a typed, `catchTag`-able failure. Calling it
+ *  un-yielded as a sync function (as it once was) turned a thrown
+ *  `SuiConfigError` into a DEFECT inside the mode-boot `Effect.gen`
+ *  bodies — a hidden crash the channel could never recover (mirrors the
+ *  fix already applied to `auto-tick.ts`; STYLE_GUIDE §2). */
 export const assembleSuiClient = (parts: {
 	readonly sdkClient: SuiGrpcClient;
 	readonly chain: string;
 	readonly rpcUrl: string;
-	readonly sdkRpcUrl?: string;
 	readonly faucetUrl?: string;
 	readonly fundingFaucetUrl?: string;
 	readonly graphqlUrl?: string;
@@ -344,32 +264,52 @@ export const assembleSuiClient = (parts: {
 	 *  through the router but sibling containers still need direct
 	 *  host-gateway URLs during boot. */
 	readonly hostGateway?: SuiClient['hostGateway'];
-}): {
-	readonly client: SuiClient;
-	readonly sdkShim: SuiSdkShim;
-	readonly chainProbe: ChainProbe<SuiProbeKey>;
-} => {
-	const sdkShim = makeSdkShim(parts.sdkClient, parts.sdkRpcUrl ?? parts.rpcUrl);
-	const chainProbe = makeSuiChainProbe(sdkShim, parts.chain);
-	const client: SuiClient = {
-		sdk: sdkShim,
-		rpcUrl: parts.rpcUrl,
-		faucetUrl: parts.faucetUrl ?? null,
-		fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
-		graphqlUrl: parts.graphqlUrl ?? null,
-		hostGateway: parts.hostGateway ?? {
-			rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
-			faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
-			graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
-		},
-		chain: brandChainId(parts.chain),
-		waitForTransactionsReady: parts.waitForTransactionsReady,
-		chainProbe,
-		fork: null,
-		buildImage: parts.buildImage ?? null,
-	};
-	return { client, sdkShim, chainProbe };
-};
+}): Effect.Effect<
+	{
+		readonly client: SuiClient;
+		readonly sdkShim: SuiSdkShim;
+		readonly chainProbe: ChainProbe<SuiProbeKey>;
+	},
+	SuiConfigError
+> =>
+	Effect.gen(function* () {
+		// Defense-in-depth — `fetchChainId` should never resolve to an
+		// empty string (RPC rejects that earlier), but a branded empty
+		// string would silently fold into every downstream cache key. A
+		// caller-pinned `chain: ''` (e.g. `.live.custom({ chain: '' })`)
+		// reaches here, so fail on the typed channel rather than throw.
+		if (typeof parts.chain !== 'string' || parts.chain.length === 0) {
+			return yield* Effect.fail(
+				suiConfigError({
+					field: 'chain',
+					message: 'sui.assembleSuiClient: chain id must be a non-empty string',
+					hint: 'check fetchChainId / network resolver returned a real chain id',
+				}),
+			);
+		}
+		const chain = parts.chain;
+		const sdkShim = makeSdkShim(parts.sdkClient);
+		const chainProbe = makeSuiChainProbe(sdkShim, chain);
+		const client: SuiClient = {
+			sdk: sdkShim,
+			rpcUrl: parts.rpcUrl,
+			faucetUrl: parts.faucetUrl ?? null,
+			fundingFaucetUrl: parts.fundingFaucetUrl ?? parts.faucetUrl ?? null,
+			graphqlUrl: parts.graphqlUrl ?? null,
+			hostGateway: parts.hostGateway ?? {
+				rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
+				faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
+				graphqlUrl:
+					parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
+			},
+			chain: brandChainId(chain),
+			waitForTransactionsReady: parts.waitForTransactionsReady,
+			chainProbe,
+			fork: null,
+			buildImage: parts.buildImage ?? null,
+		};
+		return { client, sdkShim, chainProbe };
+	});
 
 /** Shape the resolved network record the boot builders all hand
  *  back. The substrate-network mapping is uniform per mode. Brands
@@ -395,17 +335,3 @@ export const makeResolvedNetwork = (parts: {
 	...(parts.checkpoint !== undefined ? { checkpoint: parts.checkpoint } : {}),
 	...(parts.forkUpstream !== undefined ? { forkUpstream: parts.forkUpstream } : {}),
 });
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

@@ -177,4 +177,120 @@ describe('per-name lock', () => {
 			expect(finalState.size).toBe(0);
 		}),
 	);
+
+	// Narrower "promoted-but-interrupted" race — deterministically
+	// reproduced. `releasePerNameLock` transfers ownership in TWO steps
+	// with a yield between: (1) a `Ref.modify` pops the head waiter
+	// (ownership transferred), then (2) `Deferred.succeed` signals it.
+	// If an interrupt fires in the window AFTER (1) but BEFORE (2), the
+	// interrupted waiter finds itself already absent from the queue while
+	// its deferred is still pending.
+	//
+	// We hit that window deterministically by performing release's POP
+	// STEP by hand (mirroring `releasePerNameLock`'s `Ref.modify`) WITHOUT
+	// the subsequent signal, then interrupting B. This drives the REAL
+	// `acquirePerNameLock` onInterrupt branch — the load-bearing code
+	// under test — against the exact mid-transfer state, with no reliance
+	// on Effect-scheduler timing.
+	//
+	// Falsifiability: the previous `Deferred.isDoneUnsafe(waiter)`
+	// discriminator returns false here (the deferred was popped but never
+	// signaled), so the buggy branch would NOT re-release — leaving
+	// `{ 'shared': [] }` with no holder. C's acquire would then enqueue
+	// behind a slot no code path ever pops and HANG past the test timeout.
+	// The fix discriminates on queue membership (not queued ⇒ promoted),
+	// so it re-releases, drains the slot, and C acquires cleanly.
+	it.effect(
+		'promoted-but-interrupted: release re-runs on dead waiter so next acquire proceeds',
+		() =>
+			Effect.gen(function* () {
+				const lock = yield* Ref.make<PerNameLockState>(new Map());
+
+				// A holds 'shared' (entry present, empty queue).
+				yield* acquirePerNameLock(lock, 'shared');
+
+				// B enqueues; wait until B is parked on its Deferred.
+				const fiberB = yield* Effect.forkChild(acquirePerNameLock(lock, 'shared'));
+				yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 1));
+
+				// Perform ONLY release's pop step: remove B's deferred from
+				// the head of the queue (transferring ownership to B) but do
+				// NOT signal it. State is now `{ 'shared': [] }`, B still
+				// parked on a pending Deferred, B absent from the queue —
+				// exactly the pop/signal window of `releasePerNameLock`.
+				yield* Ref.modify(lock, (m) => {
+					const queue = m.get('shared') ?? [];
+					const [, ...rest] = queue;
+					const next = new Map(m);
+					next.set('shared', rest);
+					return [undefined, next as PerNameLockState] as const;
+				});
+
+				// Interrupt B. Its onInterrupt sees: queue present, B not in
+				// it ⇒ promoted ⇒ re-release on B's behalf.
+				yield* Fiber.interrupt(fiberB);
+
+				// With the fix the slot is fully drained, so C acquires
+				// cleanly. With the buggy isDoneUnsafe discriminator the
+				// empty-queue entry would persist with no holder and this
+				// acquire would park forever (test timeout = failure).
+				yield* acquirePerNameLock(lock, 'shared');
+				yield* releasePerNameLock(lock, 'shared');
+				const finalState = yield* Ref.get(lock);
+				expect(finalState.size).toBe(0);
+			}),
+	);
+
+	it.effect('cancelled waiter drops out of the queue without stranding the slot', () =>
+		// Regression for the cancelled-waiter cleanup that mirrors the
+		// lease-broker pattern (`substrate/runtime/lease-broker/
+		// service.ts:cleanupCancelledWait`):
+		//   1. Fiber A holds the slot.
+		//   2. Fiber B is queued waiting on its Deferred.
+		//   3. B is interrupted while parked.
+		//   4. B's `onInterrupt` filters its deferred out of the queue
+		//      so a later `releasePerNameLock` finds an empty queue and
+		//      fully releases the slot rather than promoting a dead
+		//      fiber.
+		//   5. C acquires cleanly.
+		//
+		// The narrower "promoted-but-interrupted" race (release pops B's
+		// deferred AND B is interrupted between the pop and B's await
+		// resuming) is covered by the second branch of `onInterrupt` —
+		// it uses `Deferred.isDoneUnsafe(waiter)` to detect promotion
+		// and re-releases on the dead waiter's behalf. That branch is
+		// defensive against an Effect-scheduler-internal timing window
+		// that's hard to deterministically reproduce in a single-
+		// process test; the source code is in place at
+		// `runtime/docker/container.ts:acquirePerNameLock`.
+		Effect.gen(function* () {
+			const lock = yield* Ref.make<PerNameLockState>(new Map());
+
+			// A holds 'shared'.
+			yield* acquirePerNameLock(lock, 'shared');
+
+			// B enqueues; wait until B is actually parked on its Deferred.
+			const fiberB = yield* Effect.forkChild(acquirePerNameLock(lock, 'shared'));
+			yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 1));
+
+			// Interrupt B while it's parked. B's onInterrupt should
+			// filter its deferred out of the queue.
+			yield* Fiber.interrupt(fiberB);
+
+			// Queue should now be empty (A still holds).
+			yield* waitFor(Effect.map(queueLength(lock, 'shared'), (n) => n === 0));
+
+			// Release A. With no live waiters, the slot fully releases
+			// (map entry deleted).
+			yield* releasePerNameLock(lock, 'shared');
+			const afterRelease = yield* Ref.get(lock);
+			expect(afterRelease.has('shared')).toBe(false);
+
+			// C acquires the now-free slot cleanly.
+			yield* acquirePerNameLock(lock, 'shared');
+			yield* releasePerNameLock(lock, 'shared');
+			const finalState = yield* Ref.get(lock);
+			expect(finalState.size).toBe(0);
+		}),
+	);
 });

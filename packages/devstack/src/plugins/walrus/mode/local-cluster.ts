@@ -43,12 +43,15 @@ import type {
 } from '../../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
-import type { SuiProbeKey } from '../../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../../sui/index.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
 import type { ChainId } from '../../../substrate/brand.ts';
 import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
+import { WALRUS_MAX_NODE_COUNT } from '../routable.ts';
+import { WalrusSpans } from '../spans.ts';
 import type { WalrusStorageNode } from '../storage-nodes.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -149,6 +152,14 @@ export const resolveLocalClusterOptions = (
 			),
 		hint: 'set nodeCount to a positive integer (default 1)',
 	});
+	if (nodeCount > WALRUS_MAX_NODE_COUNT) {
+		throw walrusConfigError(
+			'nodeCount',
+			`walrusLocalCluster: nodeCount (${nodeCount}) exceeds the maximum ${WALRUS_MAX_NODE_COUNT} ` +
+				`pre-declared Traefik entrypoints (walrus-node-0..${WALRUS_MAX_NODE_COUNT - 1}).`,
+			`reduce nodeCount or raise WALRUS_MAX_NODE_COUNT in plugins/walrus/routable.ts`,
+		);
+	}
 	const shards = expectPositiveInteger(opts.shards ?? 100, {
 		field: 'shards',
 		mkError: ({ field, message, hint }) =>
@@ -195,6 +206,10 @@ export interface LocalClusterDeps {
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  walrus bind-mount is computed off this; `deployHostMountPath`
+	 *  MUST live under it. */
+	readonly stackRoot: string;
 }
 
 /** Boot the local cluster. Returns the resolved value the plugin
@@ -236,6 +251,7 @@ export const bootLocalCluster = (
 		const walrusImage = yield* resolveCargoImage(deps.runtime, {
 			walrusRef: opts.version,
 			suiVersion: opts.suiVersion,
+			owner: { app: deps.app, stack: deps.stack },
 		});
 
 		// ---- docker network ensure ------------------------------
@@ -284,6 +300,7 @@ export const bootLocalCluster = (
 				`walrus|${opts.version}|${opts.suiVersion}|${opts.nodeCount}|${opts.shards}|${opts.epochDuration}`,
 			),
 			outputDirHostPath: deps.deployHostMountPath,
+			stackRoot: deps.stackRoot,
 			suiRpcUrlInNetwork: deps.suiRpcUrlInNetwork,
 			walrusFaucetUrlInNetwork: deps.walrusFaucetUrlInNetwork,
 			waitForFundsReady: deps.waitForFundsReady,
@@ -318,6 +335,7 @@ export const bootLocalCluster = (
 			walrusNetworkName: deps.walrusNetworkName,
 			suiNetworkName: deps.suiNetworkName,
 			deployHostMountPath: deps.deployHostMountPath,
+			stackRoot: deps.stackRoot,
 			deployConfigHash,
 			readyTimeoutMs: opts.readyTimeoutMs,
 		});
@@ -369,10 +387,10 @@ export const bootLocalCluster = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.localCluster.boot', {
 			attributes: {
-				'devstack.plugin': 'walrus',
-				'walrus.name': opts.name,
-				'walrus.nodeCount': opts.nodeCount,
-				'walrus.shards': opts.shards,
+				[SpanAttr.plugin]: 'walrus',
+				[WalrusSpans.name]: opts.name,
+				[WalrusSpans.nodeCount]: opts.nodeCount,
+				[WalrusSpans.shards]: opts.shards,
 			},
 		}),
 	);

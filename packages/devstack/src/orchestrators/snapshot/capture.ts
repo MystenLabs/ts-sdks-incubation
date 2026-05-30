@@ -48,7 +48,14 @@ import {
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
 import { writeArtifactIntegrity } from './integrity.ts';
-import { requireIdentity, type IdentityGuardError } from './identity-guard.ts';
+import { makePhaseFailer } from './phase-error.ts';
+import {
+	mergeContributions,
+	requireIdentity,
+	type IdentityContribution,
+	type IdentityContributionConflictError,
+	type IdentityGuardError,
+} from './identity-guard.ts';
 import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
 
 // -----------------------------------------------------------------------------
@@ -132,14 +139,7 @@ export type SnapshotProgressReporter = (
 // Staging — populate a directory; the caller wraps in stage-and-swap.
 // -----------------------------------------------------------------------------
 
-const failPhase =
-	(
-		phase: CapturePhaseError['phase'],
-		detail: string,
-		plugin?: string,
-	): ((cause: unknown) => Effect.Effect<never, CapturePhaseError>) =>
-	(cause) =>
-		Effect.fail(new CapturePhaseError({ phase, plugin, detail, cause }));
+const failPhase = makePhaseFailer(CapturePhaseError);
 
 const failImageBundleTagScan = (
 	cause: ImageBundleTagScanError,
@@ -480,7 +480,11 @@ export interface CaptureInputs {
  */
 export const runCapture = (
 	inputs: CaptureInputs,
-): Effect.Effect<SnapshotMetadata, CapturePhaseError | IdentityGuardError, FileSystem.FileSystem> =>
+): Effect.Effect<
+	SnapshotMetadata,
+	CapturePhaseError | IdentityGuardError | IdentityContributionConflictError,
+	FileSystem.FileSystem
+> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		yield* Effect.annotateCurrentSpan({
@@ -500,19 +504,42 @@ export const runCapture = (
 				//    tar, scalar state, and contribution metadata share one
 				//    consistent snapshot window.
 				const capturedContainers: CapturedContainer[] = [];
-				const paused: ContainerHandle[] = [];
+				// Two buckets:
+				//
+				//   `pauseIntended` — every container the orchestrator
+				//   ASKED Docker to pause, recorded BEFORE the pause
+				//   syscall. The finalizer attempts `unpause` for every
+				//   one of these so a `docker pause` failure that left
+				//   the engine in a half-paused state (race: SIGSTOP
+				//   delivered, then `pause` returns non-zero on a
+				//   downstream check; ambiguous Docker daemon behavior —
+				//   `pause` is a multi-step engine op against cgroups +
+				//   the freezer) still gets `unpause`'d on the way out.
+				//
+				//   `pauseConfirmed` — entries Docker confirmed paused
+				//   (i.e. pause returned success). Used only for progress
+				//   reporting so the operator sees the same count that
+				//   the engine acknowledged.
+				//
+				// The `unpause` finalizer treats this as best-effort:
+				// `unpause` against a non-paused container is the typical
+				// Docker "container not paused" error which we silently
+				// swallow. Any other failure is logged but does not
+				// interrupt the finalizer.
+				const pauseIntended: ContainerHandle[] = [];
+				const pauseConfirmed: ContainerHandle[] = [];
 				yield* Effect.addFinalizer(() =>
 					Effect.gen(function* () {
-						if (paused.length > 0) {
+						if (pauseIntended.length > 0) {
 							yield* report({
 								phase: 'resuming',
-								detail: `unpausing ${paused.length} container${paused.length === 1 ? '' : 's'}`,
-								pausedContainers: paused.length,
-								totalContainers: paused.length,
+								detail: `unpausing ${pauseIntended.length} container${pauseIntended.length === 1 ? '' : 's'}`,
+								pausedContainers: pauseConfirmed.length,
+								totalContainers: pauseIntended.length,
 							});
 						}
 						yield* Effect.forEach(
-							paused,
+							pauseIntended,
 							(handle) =>
 								inputs.runtime
 									.unpause(handle)
@@ -566,6 +593,17 @@ export const runCapture = (
 				for (const entry of plannedContainers) {
 					const { handle, unpauseAfterCapture } = entry;
 					if (unpauseAfterCapture) {
+						// Stamp INTENT before issuing the pause. If
+						// `pause` fails partway through (Docker daemon
+						// may have already moved the freezer into a
+						// transitional state before returning non-zero),
+						// the addFinalizer above will still attempt
+						// `unpause(handle)` — `unpause` is a no-op for a
+						// non-paused container so the worst case is a
+						// swallowed "container not paused" log line.
+						// Without this stamp, a half-paused container is
+						// silently abandoned to its frozen state.
+						pauseIntended.push(handle);
 						yield* inputs.runtime
 							.pause(handle)
 							.pipe(
@@ -573,7 +611,7 @@ export const runCapture = (
 									failPhase('pause', `pause failed for ${handle.name}`, entry.participant.plugin),
 								),
 							);
-						paused.push(handle);
+						pauseConfirmed.push(handle);
 					}
 					readyContainers.push({
 						...entry,
@@ -583,8 +621,8 @@ export const runCapture = (
 				if (runningContainers.length > 0) {
 					yield* report({
 						phase: 'paused',
-						detail: `stack paused for snapshot (${paused.length}/${runningContainers.length} containers)`,
-						pausedContainers: paused.length,
+						detail: `stack paused for snapshot (${pauseConfirmed.length}/${runningContainers.length} containers)`,
+						pausedContainers: pauseConfirmed.length,
 						totalContainers: runningContainers.length,
 					});
 				}
@@ -598,7 +636,7 @@ export const runCapture = (
 						detail: `committing ${readyContainers.length} container${
 							readyContainers.length === 1 ? '' : 's'
 						}`,
-						pausedContainers: paused.length,
+						pausedContainers: pauseConfirmed.length,
 						totalContainers: runningContainers.length,
 					});
 				}
@@ -622,7 +660,7 @@ export const runCapture = (
 						detail: `saving ${committedContainers.length} committed image${
 							committedContainers.length === 1 ? '' : 's'
 						}`,
-						pausedContainers: paused.length,
+						pausedContainers: pauseConfirmed.length,
 						totalContainers: runningContainers.length,
 					});
 				}
@@ -643,7 +681,7 @@ export const runCapture = (
 					yield* report({
 						phase: 'capturing-host-tree',
 						detail: `archiving ${subtrees.length} host subtree${subtrees.length === 1 ? '' : 's'}`,
-						pausedContainers: paused.length,
+						pausedContainers: pauseConfirmed.length,
 						totalContainers: runningContainers.length,
 					});
 					yield* writeHostTreeTar(
@@ -662,7 +700,7 @@ export const runCapture = (
 					yield* report({
 						phase: 'saving-state',
 						detail: 'copying runtime state',
-						pausedContainers: paused.length,
+						pausedContainers: pauseConfirmed.length,
 						totalContainers: runningContainers.length,
 					});
 					const stateDoc = yield* readSnapshotStateDocument(inputs.stateFilePath).pipe(
@@ -680,7 +718,7 @@ export const runCapture = (
 					detail: `writing ${inputs.participants.length} contribution document${
 						inputs.participants.length === 1 ? '' : 's'
 					}`,
-					pausedContainers: paused.length,
+					pausedContainers: pauseConfirmed.length,
 					totalContainers: runningContainers.length,
 				});
 				yield* fs
@@ -688,18 +726,28 @@ export const runCapture = (
 						recursive: true,
 					})
 					.pipe(Effect.catch(failPhase('write-contribution', `mkdir contributions dir failed`)));
-				const identityMerged: Record<string, string> = {};
+				// Collect per-participant identity slices first so the same
+				// `mergeContributions` predicate the restore-side guard uses
+				// rejects intra-capture conflicts here too. A capture that
+				// silently last-write-wins would hide a conflict the
+				// downstream restore would later reject as
+				// `IdentityContributionConflictError` — surface it AT THE
+				// CAPTURE SITE instead so the operator can fix the offending
+				// plugins before the broken artifact is even written.
+				const identityContributions: IdentityContribution[] = [];
+				const stateByParticipant = new Map<string, unknown>();
 				const participantKeys: string[] = [];
 				for (const participant of inputs.participants) {
 					const identity = yield* participant.captureIdentity;
-					for (const [k, v] of Object.entries(identity)) {
-						// Conflict-on-same-key handled by identity-guard's
-						// `mergeContributions` on the restore side; on capture we
-						// last-write-wins (typical: only one plugin contributes
-						// each key on capture).
-						identityMerged[k] = v;
-					}
+					identityContributions.push({ plugin: participant.plugin, slice: identity });
 					const state = yield* participant.captureContribution;
+					stateByParticipant.set(participant.plugin, state);
+				}
+				const identityMerged = yield* mergeContributions(identityContributions);
+				for (const participant of inputs.participants) {
+					const identity =
+						identityContributions.find((c) => c.plugin === participant.plugin)?.slice ?? {};
+					const state = stateByParticipant.get(participant.plugin);
 					const doc: ContributionDoc = {
 						version: SNAPSHOT_CONTRIBUTION_VERSION,
 						plugin: participant.plugin,
@@ -737,7 +785,7 @@ export const runCapture = (
 				yield* report({
 					phase: 'writing-metadata',
 					detail: 'finalizing snapshot artifact',
-					pausedContainers: paused.length,
+					pausedContainers: pauseConfirmed.length,
 					totalContainers: runningContainers.length,
 				});
 				const meta: SnapshotMetadata = {

@@ -10,6 +10,8 @@
 
 import type { Effect, Scope } from 'effect';
 
+import type { StrategyNotFoundError } from '../substrate/runtime/errors.ts';
+
 /**
  * Contribution declaration. `Key` is the literal capability key
  * (preserved as a string-literal type so consumers picking by key
@@ -51,11 +53,4 @@ export interface StrategyRegistry {
 		strategy: S,
 		options?: { readonly autoMounted?: boolean; readonly priority?: number },
 	) => Effect.Effect<void, never, Scope.Scope>;
-}
-
-/** Tagged error for missing strategy lookups. */
-export interface StrategyNotFoundError {
-	readonly _tag: 'StrategyNotFoundError';
-	readonly capabilityKey: string;
-	readonly registeredKeys: ReadonlyArray<string>;
 }

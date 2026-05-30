@@ -13,17 +13,14 @@
 //                              `{ local: …, live: …, fork: … }`
 //                              narrowed to the network's mode.
 //
-// The plugin emits FIVE capability decls:
+// The plugin emits FOUR capability decls:
 //
 //   1. `chain-probe:<chainId>` strategy contributor — the
 //      schema-validated read surface (`makeSuiChainProbe`).
-//   2. `gate:funds-ready` strategy contributor — the funds-
-//      transferable gate. No-op on faucet-less networks.
-//   3. `sui:seed-objects` strategy contributor — the per-instance
-//      seed-objects accumulator (fork mode only; emits an empty
-//      accumulator on other modes for shape uniformity).
-//   4. Snapshotable — mode-aware container + bind-mount capture.
-//   5. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
+//   2. Snapshotable — mode-aware container + bind-mount capture.
+//   3. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
+//   4. Faucet strategy contributor — local-coin dispensing for the
+//      mode's chain id.
 //
 // Routable contributions are MODE-DEPENDENT (local + fork yes;
 // local-rpc + live no — the caller fronts their own RPC). They land
@@ -39,30 +36,24 @@ import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import { FUNDS_READY_GATE_KEY } from '../../contracts/network-resolver.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import {
-	LeaseBrokerService,
-	type LeaseBroker,
-} from '../../substrate/runtime/lease-broker/index.ts';
+import { LeaseBrokerService, type LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import {
-	makeSeedObjectsAccumulator,
-	SEED_OBJECTS_CAPABILITY_KEY,
-	type SeedObjectsAccumulator,
-} from './seed-objects.ts';
 import { bootSuiService } from './service.ts';
 import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
-import { faucetCapabilityKey } from '../faucet/dispatcher.ts';
-import { suiLocalStrategy } from '../faucet/strategies/sui-local.ts';
+import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
+import { suiLocalStrategy } from './local-faucet-strategy.ts';
+import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
+import { selectSufficientForkCoin } from './fork-transaction.ts';
+import { FORK_FAUCET_WHALE_MIN_COIN_MIST, resolveForkWhale } from './mode/fork.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
 	SuiForkOptions,
@@ -78,15 +69,18 @@ import type {
 
 type SuiResolved = SuiClient & {
 	readonly mode: SuiOptions['mode'];
-	readonly seedObjects: SeedObjectsAccumulator;
 };
 
-const fundingFaucetLeaseBrokerSymbol: unique symbol = Symbol(
-	'@mysten-incubation/devstack/sui/fundingFaucetLeaseBroker',
-);
-
+/** Internal extension of `SuiResolved` carrying the pre-built funding
+ *  faucet strategy. `start` owns the `LeaseBrokerService` instance for
+ *  serialization; building the strategy at start-time (where the broker
+ *  is reachable) lets the capabilities factory consume a flat value
+ *  without threading the broker through a side channel. Local/live wrap
+ *  the HTTP faucet; fork impersonates a whale; `null` on networks with
+ *  no faucet (live-mainnet, external-rpc-without-faucet, faucet-disabled
+ *  fork). */
 type SuiResolvedRuntime = SuiResolved & {
-	readonly [fundingFaucetLeaseBrokerSymbol]: LeaseBroker;
+	readonly fundingFaucetStrategy: FaucetStrategy | null;
 };
 
 /** The Sui plugin's resource identity. The id is `'sui'` (singular). */
@@ -97,10 +91,82 @@ const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 // Plugin construction (internal — used by sui() + suiFor())
 // ---------------------------------------------------------------------------
 
+/** Build the funds-ready faucet strategy for the resolved network, or
+ *  `null` when the network has none. Local/live wrap the HTTP faucet;
+ *  fork mode impersonates a whale (resolved + validated here). */
+const resolveFundingFaucetStrategy = (
+	opts: SuiOptions,
+	client: SuiClient,
+	broker: LeaseBroker,
+): Effect.Effect<FaucetStrategy | null, SuiPluginError> => {
+	if (opts.mode === 'fork') {
+		return resolveForkFaucetStrategy(opts, client, broker);
+	}
+	if (client.fundingFaucetUrl === null) {
+		return Effect.succeed(null);
+	}
+	return Effect.succeed(
+		suiLocalStrategy({
+			faucetUrl: client.fundingFaucetUrl,
+			serialization: {
+				broker,
+				key: `sui-faucet:${client.chain}`,
+				owner: `sui-faucet:${client.chain}`,
+			},
+		}),
+	);
+};
+
+/** Fork-mode faucet: resolve the whale, validate it holds a large enough
+ *  SUI coin, then build the impersonation strategy. A whale the user set
+ *  explicitly that fails validation hard-fails the boot; a per-upstream
+ *  default whale only warns and disables the faucet so the fork still
+ *  comes up (account funding then surfaces the "no faucet strategy"
+ *  error only if something actually needs SUI). */
+const resolveForkFaucetStrategy = (
+	opts: SuiForkOptions,
+	client: SuiClient,
+	broker: LeaseBroker,
+): Effect.Effect<FaucetStrategy | null, SuiPluginError> =>
+	Effect.gen(function* () {
+		const resolved = resolveForkWhale(opts);
+		const fork = client.fork;
+		if (resolved === null || fork === null) {
+			return null;
+		}
+		const strategy = suiForkFaucetStrategy({
+			whale: resolved.whale,
+			fork,
+			sdk: client.sdk,
+			perRequestCapMist: resolved.perRequestCapMist,
+			serialization: {
+				broker,
+				key: `sui-fork-faucet:${client.chain}`,
+				owner: `sui-fork-faucet:${client.chain}`,
+			},
+		});
+		return yield* selectSufficientForkCoin(
+			client.sdk.core,
+			resolved.whale,
+			FORK_FAUCET_WHALE_MIN_COIN_MIST,
+		).pipe(
+			Effect.as(strategy),
+			Effect.catchTag('SuiPluginError', (cause) =>
+				resolved.explicit
+					? Effect.fail(cause)
+					: Effect.logWarning(
+							`sui fork mode: default faucet whale ${resolved.whale} is unusable ` +
+								`(${cause.message}); disabling the fork faucet. Set faucet.whale to override.`,
+						).pipe(Effect.as(null)),
+			),
+		);
+	});
+
 const buildPlugin = (opts: SuiOptions) => {
 	return definePlugin({
 		id: suiResource.id,
 		role: 'service',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// The substrate threads `ContainerRuntime` + `IdentityContext`
@@ -113,12 +179,15 @@ const buildPlugin = (opts: SuiOptions) => {
 				const fundingFaucetLeaseBroker = yield* LeaseBrokerService;
 				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
 
-				const seedObjects = yield* makeSeedObjectsAccumulator();
+				const fundingFaucetStrategy = yield* resolveFundingFaucetStrategy(
+					opts,
+					client,
+					fundingFaucetLeaseBroker,
+				);
 				return {
 					...client,
 					mode: opts.mode,
-					seedObjects,
-					[fundingFaucetLeaseBrokerSymbol]: fundingFaucetLeaseBroker,
+					fundingFaucetStrategy,
 				} satisfies SuiResolvedRuntime;
 			}),
 		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
@@ -165,43 +234,14 @@ const makePluginCapabilities = (
 		autoMounted: true,
 	};
 
-	const fundsReadyContribution: StrategyContributorDecl<
-		typeof FUNDS_READY_GATE_KEY,
-		{
-			readonly waitFundsReady: Effect.Effect<void, SuiPluginError>;
-		}
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: FUNDS_READY_GATE_KEY,
-		strategy: { waitFundsReady: resolved.waitForTransactionsReady.wait },
-		autoMounted: true,
-	};
-
-	const seedObjectsContribution: StrategyContributorDecl<
-		typeof SEED_OBJECTS_CAPABILITY_KEY,
-		SeedObjectsAccumulator
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: SEED_OBJECTS_CAPABILITY_KEY,
-		strategy: resolved.seedObjects,
-		autoMounted: true,
-	};
-
 	const faucetContribution =
-		resolved.fundingFaucetUrl === null
+		resolvedRuntime.fundingFaucetStrategy === null
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: suiLocalStrategy({
-							faucetUrl: resolved.fundingFaucetUrl,
-							serialization: {
-								broker: resolvedRuntime[fundingFaucetLeaseBrokerSymbol],
-								key: `sui-faucet:${realChain}`,
-								owner: `sui-faucet:${realChain}`,
-							},
-						}),
+						strategy: resolvedRuntime.fundingFaucetStrategy,
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<
 						`faucet:request:${string}`,
@@ -228,8 +268,6 @@ const makePluginCapabilities = (
 		codegen,
 		chainProbeContribution,
 		...faucetContribution,
-		fundsReadyContribution,
-		seedObjectsContribution,
 		...localRoutables,
 		...forkRoutables,
 	] as const;
@@ -302,8 +340,6 @@ export type {
 	SuiCliError,
 	SuiConfigError,
 	ForkUnsupportedError,
-	SeedManifestMismatchError,
-	SuiFundsReadyError,
 } from './errors.ts';
 export { SUI_ERROR_TAGS } from './errors.ts';
 
@@ -316,15 +352,43 @@ export {
 	type ChainProbeMode,
 } from '../../contracts/chain-probe.ts';
 export {
-	FUNDS_READY_GATE_KEY,
-	type FundsReadyStrategy,
-	type FundsReadyError,
-} from '../../contracts/network-resolver.ts';
-export { SEED_OBJECTS_CAPABILITY_KEY, type SeedObjectsAccumulator } from './seed-objects.ts';
-export {
 	FORK_UNSUPPORTED_SURFACES,
 	wrapWithForkGuard,
-	type ForkMeta,
 	type ForkLockHolder,
 } from './fork-orchestration.ts';
-export type { SuiProbeKey } from './chain-probe.ts';
+export type { SuiProbeKey, SuiSdkShim } from './chain-probe.ts';
+export { SuiSpans } from './spans.ts';
+
+/** The shape `Transaction.build({ client })` and every `sdk.core.*` call
+ *  accepts. Re-exported from `@mysten/sui/client` so callers cast
+ *  `sui.sdk.client as ClientWithCoreApi` without each having to know the
+ *  SDK subpath. */
+export type { ClientWithCoreApi } from '@mysten/sui/client';
+// Cross-plugin seams: fork impersonation + chain-build container.
+// Consumed by `action` (Move-call execution against fork) and
+// `package` (publish-to-fork + Move-build orchestration). Wave 2
+// switches consumer plugins from internal-module imports to these
+// barrel entries.
+export {
+	buildForkImpersonationTransactionBytes,
+	prepareForkImpersonationTransaction,
+	verifyForkImpersonationSender,
+	selectSufficientForkCoin,
+	FORK_IMPERSONATION_GAS_BUDGET,
+	FORK_IMPERSONATION_GAS_PRICE,
+	type ForkGasCoin,
+	type ForkImpersonationGasClient,
+} from './fork-transaction.ts';
+export {
+	suiForkFaucetStrategy,
+	type SuiForkFaucetStrategyOptions,
+	type SuiForkFaucetSerialization,
+} from './fork-faucet-strategy.ts';
+export {
+	acquireChainBuildContainer,
+	containerNameForApp,
+	moveBuildLockPathFor,
+	MOVE_BUILD_LOCK_TIMEOUT_MS,
+	type ChainBuildContainer,
+	type ChainBuildContainerSpec,
+} from './chain-build-container.ts';

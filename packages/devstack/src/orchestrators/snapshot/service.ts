@@ -20,14 +20,14 @@
 // each plugin's scope so the registry entry is reaped on plugin
 // teardown.
 
-import { randomUUID } from 'node:crypto';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 
 import { Context, Effect, FileSystem, Layer, Ref, Schema, Scope } from 'effect';
 
-import type { LivenessClassifierDecl } from '../../contracts/liveness-classifier.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/index.ts';
+import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
 import {
 	acquireReservation,
@@ -45,6 +45,7 @@ import {
 	type SnapshotProgressReporter,
 } from './capture.ts';
 import {
+	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_ID_RULE,
@@ -57,18 +58,18 @@ import {
 	type IdentityContributionConflictError,
 	type IdentityGuardError,
 } from './identity-guard.ts';
+import { runPrune, type PruneResult, type PrunePhaseError } from './prune.ts';
 import {
-	runPrune,
-	type ClassifierDispatch,
-	type PruneResult,
-	type PrunePhaseError,
-} from './prune.ts';
+	recoverPendingRestore,
+	type RestorePendingRecoveryError,
+	type RestorePendingRecoverySummary,
+} from './recover-pending.ts';
 import { runRestore, type RestoreParticipant, type RestorePhaseError } from './restore.ts';
 import {
 	stageAndSwap,
 	type StageAndSwapError,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
-import { runWipe, type WipePhaseError } from './wipe.ts';
+import { planWipe, runWipe, type WipePhaseError, type WipeTargets } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
 // The service shape
@@ -79,6 +80,7 @@ import { runWipe, type WipePhaseError } from './wipe.ts';
 export type SnapshotOrchestratorError =
 	| CapturePhaseError
 	| RestorePhaseError
+	| RestorePendingRecoveryError
 	| WipePhaseError
 	| PrunePhaseError
 	| IdentityGuardError
@@ -86,16 +88,8 @@ export type SnapshotOrchestratorError =
 	| StageAndSwapError
 	| SnapshotReservationError
 	| StackLockError
-	| SnapshotIdError;
-
-/** Tagged failure when the substrate's startTime probe could not be
- *  reduced to a number. */
-export class SnapshotBootError extends Schema.TaggedErrorClass<SnapshotBootError>()(
-	'SnapshotBootError',
-	{
-		detail: Schema.String,
-	},
-) {}
+	| SnapshotIdError
+	| SnapshotDescriptorError;
 
 export class SnapshotIdError extends Schema.TaggedErrorClass<SnapshotIdError>()('SnapshotIdError', {
 	operation: Schema.Literals(['capture', 'restore', 'delete']),
@@ -123,13 +117,6 @@ export interface SnapshotOrchestrator {
 			readonly captureContribution?: Effect.Effect<unknown>;
 			readonly liveIdentity?: Effect.Effect<Readonly<Record<string, string>>>;
 		},
-	) => Effect.Effect<void, never, Scope.Scope>;
-
-	/** Register a plugin-emitted `LivenessClassifier`. The decl is
-	 *  consumed by `prune()`. Scope-bound. */
-	readonly registerClassifier: (
-		pluginKey: string,
-		decl: LivenessClassifierDecl,
 	) => Effect.Effect<void, never, Scope.Scope>;
 
 	/** Capture a new snapshot. The id MAY be caller-supplied; if
@@ -174,18 +161,40 @@ export interface SnapshotOrchestrator {
 		readonly keepCache?: boolean;
 	}) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Prune the snapshot catalog + byproduct images via plugin-
-	 *  contributed classifiers. `classifiers` overrides the registered
-	 *  set; omit to consume registered classifiers. */
-	readonly prune: (args: {
-		readonly classifiers?: ReadonlyArray<ClassifierDispatch>;
-	}) => Effect.Effect<PruneResult, SnapshotOrchestratorError, FileSystem.FileSystem>;
+	/** Enumerate the concrete teardown targets a `wipe` of the same
+	 *  `(app, stack)` would remove WITHOUT removing anything — the
+	 *  read-only preview behind `devstack wipe --dry-run`. Same args as
+	 *  `wipe` so the preview honors the same `keepSnapshots`/`keepCache`
+	 *  preservation policy the real wipe applies. */
+	readonly wipePlan: (args: {
+		readonly keepSnapshots?: boolean;
+		readonly keepCache?: boolean;
+	}) => Effect.Effect<WipeTargets, SnapshotOrchestratorError, FileSystem.FileSystem>;
+
+	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
+	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
+	readonly prune: () => Effect.Effect<
+		PruneResult,
+		SnapshotOrchestratorError,
+		FileSystem.FileSystem
+	>;
+
+	/** Recover from a snapshot-restore that crashed mid-way through the
+	 *  post-publish Docker handoff. Reads the on-disk pending marker,
+	 *  retries each outstanding image promote, and clears the marker.
+	 *  Idempotent — safe to call on every supervise startup; a no-op
+	 *  when no marker is present. */
+	readonly recoverPendingRestore: Effect.Effect<
+		RestorePendingRecoverySummary,
+		SnapshotOrchestratorError,
+		FileSystem.FileSystem
+	>;
 }
 
 export class SnapshotOrchestratorService extends Context.Service<
 	SnapshotOrchestratorService,
 	SnapshotOrchestrator
->()('@devstack-rewrite/orchestrators/Snapshot') {}
+>()('@devstack/orchestrators/Snapshot') {}
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -194,20 +203,25 @@ export class SnapshotOrchestratorService extends Context.Service<
 /** Mint a snapshot id when the caller didn't pass one. Carries an
  *  8-hex random suffix from `crypto.randomUUID()` (STYLE_GUIDE §17) so
  *  concurrent saves don't silently overwrite. */
-const mintId = (prefix = 'snap'): string =>
-	`${prefix}-${Date.now()}-${randomUUID().replace(/-/g, '').slice(0, 8)}`;
+const mintId = (prefix = 'snap'): string => `${prefix}-${Date.now()}-${mintRandomSuffix(8)}`;
 
-const mintSnapshotId = (): SnapshotId => {
-	const id = parseSnapshotId(mintId());
-	if (id === null) {
-		throw new Error('internal snapshot id minting produced an invalid id');
-	}
-	return id;
+const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> => {
+	const raw = mintId();
+	const id = parseSnapshotId(raw);
+	return id === null
+		? Effect.fail(
+				new SnapshotDescriptorError({
+					kind: 'invalid-id',
+					detail: 'internal snapshot id minting produced an invalid id',
+					value: raw,
+				}),
+			)
+		: Effect.succeed(id);
 };
 
 const mintSnapshotName = (): string => {
 	const stamp = new Date().toISOString().replaceAll('-', '').replaceAll(':', '').slice(0, 15);
-	return `manual-${stamp}-${randomUUID().replace(/-/g, '').slice(0, 4)}`;
+	return `manual-${stamp}-${mintRandomSuffix(8)}`;
 };
 
 const validateSnapshotId = (
@@ -248,8 +262,11 @@ const normalizeSnapshotName = (
 };
 
 /** Read this process's canonical startTime stamp for the snapshot
- *  reservation liveness check. */
-const ownStartTime = (): number => ownHolder('snapshot').startTime;
+ *  reservation liveness check. Returns `null` when the kernel-probe
+ *  couldn't determine startTime — matches `RosterHolderSchema.startTime`
+ *  semantics and is honored by the sweep's `checkHolderLiveness`
+ *  null-conservative short-circuit. */
+const ownStartTime = (): number | null => ownHolder('snapshot').startTime;
 
 const normalizeIdentityValue = (value: unknown): unknown => {
 	if (Array.isArray(value)) return value.map(normalizeIdentityValue);
@@ -301,11 +318,6 @@ interface RegisteredParticipantEntry {
 	readonly seq: number;
 }
 
-interface RegisteredClassifierEntry {
-	readonly dispatch: ClassifierDispatch;
-	readonly seq: number;
-}
-
 export const layerSnapshotOrchestrator: Layer.Layer<
 	SnapshotOrchestratorService,
 	never,
@@ -317,13 +329,12 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 		const identity = yield* IdentityContext;
 		const runtime: ContainerRuntime = yield* ContainerRuntimeService;
 
-		// Scope-local participant + classifier registries. The supervisor
-		// adds entries from each plugin's acquire scope; finalizers
-		// remove them on scope close. Sequence number protects against
-		// the parallel-registration-same-key race when two stack
-		// instances register concurrently.
+		// Scope-local participant registry. The supervisor adds entries
+		// from each plugin's acquire scope; finalizers remove them on
+		// scope close. Sequence number protects against the parallel-
+		// registration-same-key race when two stack instances register
+		// concurrently.
 		const participantsRef = yield* Ref.make<ReadonlyArray<RegisteredParticipantEntry>>([]);
-		const classifiersRef = yield* Ref.make<ReadonlyArray<RegisteredClassifierEntry>>([]);
 		const seqRef = yield* Ref.make(0);
 
 		const registerParticipant: SnapshotOrchestrator['registerParticipant'] = (
@@ -360,32 +371,23 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				Scope.Scope
 			>;
 
-		const registerClassifier: SnapshotOrchestrator['registerClassifier'] = (pluginKey, decl) =>
-			Effect.gen(function* () {
-				const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
-				const dispatch: ClassifierDispatch = { plugin: pluginKey, decl };
-				const entry: RegisteredClassifierEntry = { dispatch, seq };
-				yield* Ref.update(classifiersRef, (xs) => [...xs, entry]);
-				yield* Effect.addFinalizer(() =>
-					Ref.update(classifiersRef, (xs) => xs.filter((e) => e.seq !== seq)),
-				);
-				yield* Effect.annotateCurrentSpan({
-					'snapshot.classifier.plugin': pluginKey,
-				});
-			}).pipe(Effect.withSpan('orchestrator.snapshot.registerClassifier')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
-
 		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, onProgress }) =>
 			Effect.gen(function* () {
 				const snapshotId =
-					id === undefined ? mintSnapshotId() : yield* validateSnapshotId('capture', id);
+					id === undefined ? yield* mintSnapshotId() : yield* validateSnapshotId('capture', id);
 				const snapshotName = yield* normalizeSnapshotName('capture', label);
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.capture);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
+				// Snapshot stages at the SNAPSHOT-DIR level (siblings of
+				// other artifact dirs, NOT siblings of `artifactDir`) so
+				// the `list` walker's `.staging.` / `.bak.` prefix skip
+				// at line 517 keeps transient dirs invisible without
+				// having to descend a level. This layout is structurally
+				// distinct from `${target}.staging.<id>` so we pass
+				// explicit `stagingPath`/`backupPath` instead of
+				// `idSuffix` (the substrate primitive supports both
+				// shapes — see `stageAndSwap`'s union arg).
 				const stagingDir = `${paths.snapshotDir}/.staging.${snapshotId}`;
 				const backupDir = `${paths.snapshotDir}/.bak.${snapshotId}`;
 
@@ -409,6 +411,27 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								}),
 							);
 						}
+						// O(N) catalog scan for label uniqueness — acceptable
+						// because N (snapshot count per stack) is small in
+						// practice and capture is a rare, human-paced verb. A
+						// future optimization could maintain a sibling name-
+						// index (e.g. `${snapshotDir}/.names/${label}` empty
+						// marker files) that lets uniqueness collapse to a
+						// single `fs.exists`, but that would need a paired
+						// cleanup-on-delete pathway + a corruption-tolerance
+						// story for the sidecar, which is outside this scope.
+						//
+						// Forward-reference safety: `list` is declared LATER
+						// in this outer `Effect.gen` body. No TDZ fires
+						// because `capture` is an arrow function returned
+						// from the gen — by the time any caller invokes it,
+						// the outer gen has fully resolved and all `const`
+						// bindings (including `list`) are bound. The
+						// regression guard at
+						// test/orchestrators/snapshot/capture-collision-tdz.test.ts
+						// pins this; if a future refactor wraps `list` in
+						// an `Effect.fn` decorator or extracts it through a
+						// hoisting-sensitive path, the guard will fail.
 						const existing = yield* list;
 						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
 							return yield* Effect.fail(
@@ -510,17 +533,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					entries.push({ id, directory: dir, metadata: null });
 					continue;
 				}
-				const raw = yield* Effect.try({
-					try: () => JSON.parse(text) as unknown,
-					catch: () => null,
+				const decoded = yield* decodeJsonText(SnapshotMetadataSchema, text, {
+					source: metaPath,
+					mkError: () => null,
 				}).pipe(Effect.catch(() => Effect.succeed(null)));
-				if (raw === null) {
-					entries.push({ id, directory: dir, metadata: null });
-					continue;
-				}
-				const decoded = yield* Schema.decodeUnknownEffect(SnapshotMetadataSchema)(raw).pipe(
-					Effect.catch(() => Effect.succeed(null)),
-				);
 				if (decoded !== null && parseSnapshotId(decoded.id) === null) {
 					yield* Effect.logWarning(`ignoring snapshot metadata with unsafe id: ${decoded.id}`);
 					entries.push({ id, directory: dir, metadata: null });
@@ -561,32 +577,48 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				);
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
 
-		const prune: SnapshotOrchestrator['prune'] = ({ classifiers }) =>
-			Effect.gen(function* () {
-				const effectiveClassifiers =
-					classifiers ?? (yield* Ref.get(classifiersRef)).map((e) => e.dispatch);
-				return yield* Effect.scoped(
-					Effect.gen(function* () {
-						yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
-						return yield* runPrune({
-							stackRoot: paths.stackRoot,
-							imageLabelFilter: { app: identity.app, stack: identity.stack },
-							classifiers: effectiveClassifiers,
-							runtime,
-						});
-					}),
-				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
+		const wipePlan: SnapshotOrchestrator['wipePlan'] = (args) =>
+			// Read-only: no stack-lock / reservation. `planWipe` only lists
+			// matching containers and reads the stack-root directory, so it
+			// is safe to run without serializing against peers (a concurrent
+			// mutation just makes the preview slightly stale — acceptable for
+			// a dry-run estimate).
+			planWipe({
+				labelMatch: { app: identity.app, stack: identity.stack },
+				stackRoot: paths.stackRoot,
+				stateFilePath: paths.stateFile,
+				runtime,
+				keepSnapshots: args.keepSnapshots,
+				keepCache: args.keepCache,
+			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
+
+		const prune: SnapshotOrchestrator['prune'] = () =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					yield* acquireReservation(paths.snapshotReservationFile, ownStartTime());
+					return yield* runPrune({
+						stackRoot: paths.stackRoot,
+						imageLabelFilter: { app: identity.app, stack: identity.stack },
+						runtime,
+					});
+				}),
+			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
+
+		const recoverPendingRestoreImpl: SnapshotOrchestrator['recoverPendingRestore'] =
+			recoverPendingRestore(paths.stackRoot, runtime).pipe(
+				Effect.withSpan('orchestrator.snapshot.recover-pending.entry'),
+			);
 
 		return SnapshotOrchestratorService.of({
 			registerParticipant,
-			registerClassifier,
 			capture,
 			restore,
 			list,
 			delete: del,
 			wipe,
+			wipePlan,
 			prune,
+			recoverPendingRestore: recoverPendingRestoreImpl,
 		});
 	}),
 );

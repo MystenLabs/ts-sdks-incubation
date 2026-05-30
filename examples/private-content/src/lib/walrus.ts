@@ -4,7 +4,7 @@ import type { Signer } from '@mysten/sui/cryptography';
 import { WalrusClient } from '@mysten/walrus';
 import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
 
-import { walrus } from '../generated/walrus/network.js';
+import { walrus } from '@generated/walrus/network.js';
 
 const DEFAULT_EPOCHS = 1;
 

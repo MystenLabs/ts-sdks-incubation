@@ -13,7 +13,8 @@
 import { Effect } from 'effect';
 
 import {
-	checkHolderLiveness,
+	layerLivenessProbeScope,
+	LivenessProbeScope,
 	readRoster,
 	type RosterError,
 } from '../../../substrate/runtime/cross-process/index.ts';
@@ -36,19 +37,22 @@ export interface SupervisorPresence {
 export const probeSupervisorPresence = (
 	rosterFile: string,
 ): Effect.Effect<SupervisorPresence, RosterError> =>
+	// Yield a fresh `LivenessProbeScope` so a corrupted-roster edge case
+	// with multiple holders sharing one pid forks `ps`/`tasklist` once.
 	Effect.gen(function* () {
 		const doc = yield* readRoster(rosterFile).pipe(
 			Effect.catchTag('RosterCorruptError', () =>
 				Effect.succeed({ version: 1 as const, holders: [] }),
 			),
 		);
+		const probe = yield* LivenessProbeScope;
 		for (const holder of doc.holders) {
-			const liveness = yield* checkHolderLiveness(holder).pipe(
-				Effect.catch(() => Effect.succeed('alive' as const)),
-			);
+			const liveness = yield* probe
+				.probeHolderLiveness(holder)
+				.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 			if (liveness === 'alive') {
 				return { live: true, pid: holder.pid, hostname: holder.hostname };
 			}
 		}
 		return { live: false, pid: null, hostname: null };
-	});
+	}).pipe(Effect.provide(layerLivenessProbeScope));

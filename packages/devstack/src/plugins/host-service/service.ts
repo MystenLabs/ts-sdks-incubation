@@ -7,11 +7,7 @@ import type { PluginKey } from '../../substrate/brand.ts';
 import type { AnyResourceRef } from '../../api/define-plugin.ts';
 import {
 	expectNonEmptyString,
-	expectOneOf,
-	expectOptionalNonEmptyString,
-	expectOptionalPort,
 	expectOptionalPositiveInteger,
-	expectStringRecord,
 } from '../../substrate/runtime/config-validation.ts';
 import {
 	observeProcessLines,
@@ -47,6 +43,14 @@ export type HostServiceReadyProbe =
 	  }
 	| {
 			readonly kind: 'log';
+			/** Pattern matched against each stdout/stderr line. `string` is a
+			 *  fast substring match. `RegExp` is evaluated via `.test(line)`
+			 *  per line and runs synchronously on the observer fiber —
+			 *  AVOID catastrophic-backtracking shapes like `(a+)+b` or
+			 *  `(a|a)*c` which can wedge the fiber on adversarial output.
+			 *  Prefer anchored, non-nested-quantifier patterns. The
+			 *  plugin emits a one-time warning at registration if it
+			 *  detects nested-quantifier shapes. */
 			readonly pattern: string | RegExp;
 			readonly stream?: 'stdout' | 'stderr' | 'both';
 			readonly timeoutMs?: number;
@@ -101,7 +105,20 @@ export interface HostServiceValue {
 	readonly command: string;
 	readonly args: ReadonlyArray<string>;
 	readonly cwd: string;
+	/** The real loopback port the child (Vite) binds. Always the bound
+	 *  port, regardless of how `url` is shaped — readiness probes and
+	 *  direct host tooling read this. */
 	readonly port: number;
+	/** Canonical URL for this service: the router-fronted routed origin
+	 *  (`http://<endpoint>.<stack?>.<app>.localhost:5175`) when the
+	 *  supervisor derived one, the raw `http://127.0.0.1:<port>` loopback
+	 *  bind otherwise. The routed form is what the dev-wallet CORS
+	 *  allowlist accepts, so any consumer that hands this URL to a browser
+	 *  — `devstack up` output, an app or build integration holding the
+	 *  resolved `HostServiceValue` — gets a working wallet pairing.
+	 *  Consumers that need the bind target read `port`. Mirrors
+	 *  `WalletValue.url` ("router-fronted when available, loopback
+	 *  otherwise"). */
 	readonly url: string;
 }
 
@@ -122,12 +139,55 @@ export interface HostServiceAcquireContext {
 	readonly pluginKey: PluginKey;
 	readonly spawner?: HostProcessSpawner;
 	readonly processEnv?: NodeJS.ProcessEnv;
+	/**
+	 * Stack identity to publish into the spawned child's environment so
+	 * that in-process build integrations running INSIDE that child (the
+	 * `devstack` Vite plugin in particular) can re-discover the active
+	 * stack's manifest. `--stack` is a CLI flag, not an env var, and the
+	 * supervisor process does not mutate its own `process.env`, so without
+	 * this the child would inherit no `DEVSTACK_STACK` /
+	 * `DEVSTACK_RUNTIME_ROOT` and the Vite plugin's
+	 * `resolveDiscoveryEnv(process.env)` would fall back to the `main`
+	 * stack — aliasing `@generated` at the wrong stack's codegen output.
+	 *
+	 * `stack` is the effective stack name (`Identity.stack`); `runtimeRoot`
+	 * is the absolute on-disk runtime root (`RuntimeRoot.root`). The two
+	 * map directly onto the `<runtimeRoot>/stacks/<stack>/manifest.json`
+	 * path the supervisor writes and `discoverManifestPath` reads. Optional
+	 * so non-supervised callers (and tests) can omit them.
+	 */
+	readonly discoveryIdentity?: {
+		readonly stack: string;
+		readonly runtimeRoot: string;
+	};
+	/**
+	 * Canonical router-fronted URL for this host-service's endpoint, e.g.
+	 * `http://dev.<stack>.<app>.localhost:5175`. When supplied it becomes
+	 * the published `HostServiceValue.url` so every consumer that reads
+	 * "the host-service's URL" (`devstack up` output, an app / build
+	 * integration holding the resolved value) is pointed at the URL that
+	 * actually works end-to-end — in particular the one whose Origin the
+	 * dev-wallet CORS allowlist accepts. The raw `http://127.0.0.1:<port>` loopback
+	 * bind is kept INTERNAL (Vite's listen + the readiness probe, which
+	 * derives its own loopback literal) and remains the fallback here when
+	 * no routed URL is available (router disabled, or a hostname-validation
+	 * failure in the caller's best-effort derivation). Optional + nullable
+	 * so non-supervised callers and tests fall back to loopback exactly as
+	 * before.
+	 *
+	 * Mirrors the wallet's own `WalletValue.url` rule ("router-fronted URL
+	 * when available, loopback otherwise") and the ARCHITECTURE.md
+	 * "Host-service = endpoint-defaults bus" intent that the ROUTED origin
+	 * is canonical.
+	 */
+	readonly routedUrl?: string | null;
 }
 
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
 const DEFAULT_HTTP_READY_TIMEOUT_MS = 60_000;
 const DEFAULT_HTTP_READY_INTERVAL_MS = 250;
 const DEFAULT_LOG_READY_TIMEOUT_MS = 60_000;
+const READY_STREAM_VALUES = ['stdout', 'stderr', 'both'] as const;
 
 const shellInvocationFor = (script: string): { command: string; args: ReadonlyArray<string> } => {
 	if (process.platform === 'win32') {
@@ -153,7 +213,9 @@ const normalizeReadyProbe = (
 	if (ready === undefined) return undefined;
 	const mkError = configErrorFor(serviceName);
 	if (ready.kind === 'http') {
-		expectOptionalNonEmptyString(ready.url, { field: 'ready.url', mkError });
+		if (ready.url !== undefined) {
+			expectNonEmptyString(ready.url, { field: 'ready.url', mkError });
+		}
 		expectOptionalPositiveInteger(ready.timeoutMs, { field: 'ready.timeoutMs', mkError });
 		expectOptionalPositiveInteger(ready.intervalMs, { field: 'ready.intervalMs', mkError });
 		return ready;
@@ -162,10 +224,10 @@ const normalizeReadyProbe = (
 		if (typeof ready.pattern !== 'string' && !(ready.pattern instanceof RegExp)) {
 			throw mkError({ field: 'ready.pattern', message: 'must be a string or RegExp' });
 		}
-		if (ready.stream !== undefined) {
-			expectOneOf(ready.stream, ['stdout', 'stderr', 'both'] as const, {
+		if (ready.stream !== undefined && !READY_STREAM_VALUES.includes(ready.stream)) {
+			throw mkError({
 				field: 'ready.stream',
-				mkError,
+				message: "must be one of 'stdout', 'stderr', 'both'",
 			});
 		}
 		expectOptionalPositiveInteger(ready.timeoutMs, { field: 'ready.timeoutMs', mkError });
@@ -196,9 +258,34 @@ export const normalizeHostServiceOptions = (
 		throw mkError({ field: 'args', message: 'args are only supported with command' });
 	}
 
-	const preferredPort = expectOptionalPort(options.port, { field: 'port', mkError });
+	if (
+		options.port !== undefined &&
+		!(
+			typeof options.port === 'number' &&
+			Number.isInteger(options.port) &&
+			options.port > 0 &&
+			options.port <= 65_535
+		)
+	) {
+		throw mkError({ field: 'port', message: 'must be an integer between 1 and 65535' });
+	}
+	const preferredPort = options.port;
 	const cwd = resolve(options.cwd ?? process.cwd());
-	const env = expectStringRecord(options.env, { field: 'env', mkError });
+	const rawEnv = options.env;
+	if (rawEnv !== undefined) {
+		if (typeof rawEnv !== 'object' || rawEnv === null || Array.isArray(rawEnv)) {
+			throw mkError({ field: 'env', message: 'must be an object of string values' });
+		}
+		for (const [key, entry] of Object.entries(rawEnv)) {
+			if (key.length === 0) {
+				throw mkError({ field: 'env', message: 'environment variable names must be non-empty' });
+			}
+			if (typeof entry !== 'string') {
+				throw mkError({ field: `env.${key}`, message: 'must be a string' });
+			}
+		}
+	}
+	const env: Readonly<Record<string, string>> = rawEnv ?? {};
 	const shutdownGraceMs =
 		expectOptionalPositiveInteger(options.shutdownGraceMs, {
 			field: 'shutdownGraceMs',
@@ -229,6 +316,23 @@ export const normalizeHostServiceOptions = (
 const renderPortToken = (value: string, port: number): string =>
 	value.replaceAll(HOST_SERVICE_PORT_TOKEN, String(port));
 
+/** Heuristic: catastrophic-backtracking patterns typically nest a
+ *  quantifier inside another quantifier (e.g. `(a+)+`, `(a*)*`,
+ *  `(a|a)*`). This is intentionally conservative — it flags clearly
+ *  risky shapes without trying to be a real ReDoS analyzer. The
+ *  guard runs once at host-service start and only emits a warning,
+ *  not a fail-stop. */
+const looksRedosProne = (pattern: RegExp): boolean => {
+	const source = pattern.source;
+	// `(...)<quant><quant>` — quantifier directly after a group's quantifier.
+	if (/\)[*+?](?:\{[^}]*\})?[*+?]/.test(source)) return true;
+	// `(...<quant>...)<quant>` — quantifier inside a group that itself is quantified.
+	if (/\([^()]*[*+?][^()]*\)[*+?]/.test(source)) return true;
+	// `(a|a)*` style — alternation with overlapping branches under a quantifier.
+	if (/\([^()]*\|[^()]*\)[*+]/.test(source)) return true;
+	return false;
+};
+
 const renderCommand = (
 	options: HostServiceResolvedOptions,
 	port: number,
@@ -252,6 +356,7 @@ const hostServiceValue = (
 	options: HostServiceResolvedOptions,
 	port: number,
 	rendered: { readonly command: string; readonly args: ReadonlyArray<string> },
+	routedUrl: string | null,
 ): HostServiceValue => ({
 	name: options.serviceName,
 	endpointName: options.endpointName,
@@ -259,7 +364,11 @@ const hostServiceValue = (
 	args: rendered.args,
 	cwd: options.cwd,
 	port,
-	url: `http://127.0.0.1:${port}`,
+	// Canonical routed URL when the supervisor derived one, raw loopback
+	// otherwise. `port` above always stays the real bound loopback port —
+	// callers that need the bind target (readiness, direct host tooling)
+	// read `.port`, not `.url`.
+	url: routedUrl ?? `http://127.0.0.1:${port}`,
 });
 
 const terminateChild = (
@@ -293,9 +402,16 @@ const httpReady = (
 			endpoint: url,
 			timeoutMs,
 			intervalMs,
-			// Host services only need to prove their listener is up. App-level
-			// 4xx/5xx responses can be transient while devstack writes generated files.
-			validate: () => true,
+			// HTTP readiness is a health check: require a 200 from the probed
+			// `url` ITSELF. `redirect: 'manual'` means a 3xx is not followed —
+			// it reads as `status 0`, so a server that 302s to a 200 login page
+			// is NOT counted as ready off the redirect target. Point `url` at an
+			// endpoint that returns 200 when the service is up (default: the
+			// service root). Anything else — a still-compiling dev server, a
+			// 5xx, a redirect — keeps polling until the readiness timeout. Use a
+			// `log` probe instead when 200-at-a-URL isn't the right signal.
+			requestInit: { redirect: 'manual' },
+			validate: (response) => response.status === 200,
 		}).pipe(
 			Effect.mapError(
 				(cause) =>
@@ -326,7 +442,7 @@ const httpReady = (
 			}),
 	});
 
-const logReady = (
+export const logReady = (
 	ready: Extract<HostServiceReadyProbe, { readonly kind: 'log' }>,
 	readySignal: Promise<void>,
 	exit: Promise<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>,
@@ -346,12 +462,37 @@ const logReady = (
 							}),
 						);
 					}, ready.timeoutMs ?? DEFAULT_LOG_READY_TIMEOUT_MS);
-					readySignal.then(() => {
-						clearTimeout(timeout);
-						resolveReady();
-					});
+					readySignal.then(
+						() => {
+							clearTimeout(timeout);
+							resolveReady();
+						},
+						// Thread a rejecting readiness signal through as the
+						// inner-Promise rejection (a non-tagged cause). Without
+						// this `onRejected` handler a rejected signal would be an
+						// unhandled rejection and the `catch:` arm below could
+						// never see it. The `catch` arm preserves this raw cause
+						// on `HostServiceAcquireError.cause`.
+						(cause: unknown) => {
+							clearTimeout(timeout);
+							rejectReady(cause);
+						},
+					);
 				}),
-			catch: (cause) => (cause instanceof HostServiceAcquireError ? cause : error),
+			catch: (cause) =>
+				cause instanceof HostServiceAcquireError
+					? cause
+					: new HostServiceAcquireError({
+							serviceName: error.serviceName,
+							cwd: error.cwd,
+							command: error.command,
+							args: error.args,
+							phase: error.phase,
+							message: error.message,
+							exitCode: error.exitCode,
+							signal: error.signal,
+							cause,
+						}),
 		}),
 		exit,
 		processError,
@@ -398,12 +539,52 @@ const startHostProcess = (
 ): Effect.Effect<void, HostServiceAcquireError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const rendered = renderCommand(options, port);
+		// Per-stack discovery identity for in-child build integrations
+		// (the `devstack` Vite plugin). These are a LOW-precedence base
+		// layer: the inherited process env and the user's explicit
+		// `options.env` both spread on top, so a user-set
+		// `DEVSTACK_STACK` / `DEVSTACK_RUNTIME_ROOT` always wins. The
+		// literal var names + the `RUNTIME_ROOT`-over-`STATE_DIR`
+		// preference mirror `resolveDiscoveryEnv` (the plugin's reader);
+		// `runtimeRoot` is absolute, so `discoverManifestPath` resolves
+		// `<runtimeRoot>/stacks/<stack>/manifest.json` directly — exactly
+		// where the supervisor writes the manifest.
+		const discoveryEnv: NodeJS.ProcessEnv =
+			ctx.discoveryIdentity === undefined
+				? {}
+				: {
+						DEVSTACK_STACK: ctx.discoveryIdentity.stack,
+						DEVSTACK_RUNTIME_ROOT: ctx.discoveryIdentity.runtimeRoot,
+					};
 		const env: NodeJS.ProcessEnv = {
+			...discoveryEnv,
 			...(ctx.processEnv ?? process.env),
 			...rendered.env,
 			PORT: String(port),
 		};
 		const tag = `host-service/${options.serviceName}`;
+		// One-time ReDoS-shape warning. The log observer runs `RegExp.test`
+		// synchronously per stdout/stderr line; a catastrophic-backtracking
+		// pattern would wedge the observer fiber on adversarial output.
+		if (
+			options.ready?.kind === 'log' &&
+			options.ready.pattern instanceof RegExp &&
+			looksRedosProne(options.ready.pattern)
+		) {
+			yield* ctx.logger.log(tag, ctx.pluginKey, {
+				level: 'warn',
+				message:
+					'host service readiness pattern has a nested-quantifier shape that may exhibit catastrophic backtracking on adversarial output; prefer anchored, non-nested patterns',
+				fields: {
+					[SpanAttr.serviceName]: options.serviceName,
+					[SpanAttr.event]: 'host-service.ready-pattern.redos-warning',
+					// Namespaced diagnostic field (the offending pattern source),
+					// consistent with the `event` name above. A bare `pattern`
+					// key collides with the generic attribute vocabulary.
+					'host-service.ready-pattern.source': options.ready.pattern.source,
+				},
+			});
+		}
 		let resolveLogReady: (() => void) | undefined;
 		const logReadySignal =
 			options.ready?.kind === 'log'
@@ -428,62 +609,97 @@ const startHostProcess = (
 		};
 
 		const spawnChild = ctx.spawner ?? nodeProcessSpawner;
-		const child = yield* Effect.try({
-			try: () =>
-				spawnChild(rendered.command, rendered.args, {
-					cwd: options.cwd,
-					env,
-					stdio: 'pipe',
-					detached: process.platform !== 'win32',
-				}),
-			catch: (cause) =>
-				new HostServiceAcquireError({
-					serviceName: options.serviceName,
-					cwd: options.cwd,
-					command: rendered.command,
-					args: rendered.args,
-					phase: 'spawn',
-					message: 'host service spawn failed',
-					cause,
-				}),
-		});
+		// Mutable cells declared before the setup block so the terminator
+		// finalizer below can observe them.
 		let shuttingDown = false;
 		let exitStatus: {
 			readonly code: number | null;
 			readonly signal: NodeJS.Signals | null;
 		} | null = null;
+		// Atomic, deadlock-free process setup.
+		//
+		// Three things happen in one `Effect.uninterruptible` region — spawn,
+		// fork the stdout/stderr line drains (`observeProcessLines`), and
+		// register the kill finalizer — so that:
+		//
+		//  1. No interrupt can land between a successful spawn and the finalizer
+		//     registration. That gap was the original leak window: a SIGINT
+		//     mid-boot could orphan a detached child still holding its port.
+		//
+		//  2. The terminator finalizer is registered *after* the drain fibers,
+		//     so on scope close (LIFO) it runs *before* they are interrupted.
+		//     This ordering is load-bearing: the drains read the child's stdout/
+		//     stderr via `Stream.fromAsyncIterable`, whose `iterator.next()`
+		//     park is NON-interruptible — it only unblocks when the stream ends.
+		//     The child's streams end when the child is killed. So the
+		//     terminator must run first to kill the child (ending the streams),
+		//     which lets the drains drain-to-end and their interrupts complete.
+		//     Registering the terminator *before* the drains (e.g. via
+		//     `acquireRelease` at the top, or any pre-`observeProcessLines`
+		//     finalizer) inverts this and deadlocks scope close: the drain
+		//     interrupt can never complete because the terminator that would end
+		//     its stream is queued to run after it.
+		//
+		// The post-readiness `exited`/`processError` observers below are
+		// registered later still, so they are interrupted before the terminator
+		// runs — their `Effect.promise` waits are interruptible, so that unwinds
+		// cleanly without needing the child to exit first.
+		const child = yield* Effect.uninterruptible(
+			Effect.gen(function* () {
+				const spawned = yield* Effect.try({
+					try: () =>
+						spawnChild(rendered.command, rendered.args, {
+							cwd: options.cwd,
+							env,
+							stdio: 'pipe',
+							detached: process.platform !== 'win32',
+						}),
+					catch: (cause) =>
+						new HostServiceAcquireError({
+							serviceName: options.serviceName,
+							cwd: options.cwd,
+							command: rendered.command,
+							args: rendered.args,
+							phase: 'spawn',
+							message: 'host service spawn failed',
+							cause,
+						}),
+				});
+				yield* observeProcessLines(
+					{
+						stdout: readableToByteStream(
+							spawned.stdout as unknown as AsyncIterable<Uint8Array> | null | undefined,
+						),
+						stderr: readableToByteStream(
+							spawned.stderr as unknown as AsyncIterable<Uint8Array> | null | undefined,
+						),
+					},
+					{
+						logger: ctx.logger,
+						pluginKey: ctx.pluginKey,
+						tag,
+						fields: { [SpanAttr.serviceName]: options.serviceName },
+						onLine: ({ line, stream }) =>
+							Effect.sync(() => {
+								observeReadinessLine(line, stream);
+							}),
+					},
+				);
+				yield* Effect.addFinalizer(() =>
+					Effect.gen(function* () {
+						shuttingDown = true;
+						if (exitStatus !== null) return;
+						yield* terminateChild(spawned, options.shutdownGraceMs, ctx.logger, ctx.pluginKey, tag);
+					}),
+				);
+				return spawned;
+			}),
+		);
 		const exited = onceProcessExit(child).then((status) => {
 			exitStatus = status;
 			return status;
 		});
 		const processError = onceProcessError(child);
-		yield* observeProcessLines(
-			{
-				stdout: readableToByteStream(
-					child.stdout as unknown as AsyncIterable<Uint8Array> | null | undefined,
-				),
-				stderr: readableToByteStream(
-					child.stderr as unknown as AsyncIterable<Uint8Array> | null | undefined,
-				),
-			},
-			{
-				logger: ctx.logger,
-				pluginKey: ctx.pluginKey,
-				tag,
-				fields: { [SpanAttr.serviceName]: options.serviceName },
-				onLine: ({ line, stream }) =>
-					Effect.sync(() => {
-						observeReadinessLine(line, stream);
-					}),
-			},
-		);
-		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				shuttingDown = true;
-				if (exitStatus !== null) return;
-				yield* terminateChild(child, options.shutdownGraceMs, ctx.logger, ctx.pluginKey, tag);
-			}),
-		);
 
 		const baseError = new HostServiceAcquireError({
 			serviceName: options.serviceName,
@@ -542,36 +758,53 @@ const startHostProcess = (
 			return yield* Effect.failCause(readinessExit.cause);
 		}
 
-		void exited.then((status) => {
-			if (shuttingDown) return;
-			void Effect.runPromise(
-				ctx.logger.log(tag, ctx.pluginKey, {
-					level: 'error',
-					message: 'host service exited after readiness',
-					fields: {
-						[SpanAttr.event]: 'process.exited',
-						[SpanAttr.serviceName]: options.serviceName,
-						[SpanAttr.exitCode]: status.code,
-						[SpanAttr.exitSignal]: status.signal,
-						[SpanAttr.exitStatus]: describeProcessExitStatus(status),
-					},
-				}),
-			).catch(() => {});
-		});
-		void processError.then((cause) => {
-			if (shuttingDown) return;
-			void Effect.runPromise(
-				ctx.logger.log(tag, ctx.pluginKey, {
-					level: 'error',
-					message: 'host service process emitted an error after readiness',
-					fields: {
-						[SpanAttr.event]: 'process.error',
-						[SpanAttr.serviceName]: options.serviceName,
-						[SpanAttr.errorCause]: cause,
-					},
-				}),
-			).catch(() => {});
-		});
+		// Post-readiness observers. These previously used `void
+		// promise.then(() => Effect.runPromise(...))` which could fire
+		// AFTER the surrounding Scope had already closed (running logger
+		// effects outside any scope, with `.catch(() => {})` swallowing
+		// any failures). Fork into the Scope via `Effect.forkScoped` so
+		// that scope-close interrupts the observer fiber cleanly — the
+		// finalizer flips `shuttingDown` first, so expected-exit cases
+		// still no-op as before. These observers are registered after the
+		// terminator finalizer, so on scope close they are interrupted before
+		// it runs; their `Effect.promise` waits are interruptible, so they
+		// unwind cleanly without waiting on the child to exit.
+		yield* Effect.forkScoped(
+			Effect.promise(() => exited).pipe(
+				Effect.flatMap((status) =>
+					shuttingDown
+						? Effect.void
+						: ctx.logger.log(tag, ctx.pluginKey, {
+								level: 'error',
+								message: 'host service exited after readiness',
+								fields: {
+									[SpanAttr.event]: 'process.exited',
+									[SpanAttr.serviceName]: options.serviceName,
+									[SpanAttr.exitCode]: status.code,
+									[SpanAttr.exitSignal]: status.signal,
+									[SpanAttr.exitStatus]: describeProcessExitStatus(status),
+								},
+							}),
+				),
+			),
+		);
+		yield* Effect.forkScoped(
+			Effect.promise(() => processError).pipe(
+				Effect.flatMap((cause) =>
+					shuttingDown
+						? Effect.void
+						: ctx.logger.log(tag, ctx.pluginKey, {
+								level: 'error',
+								message: 'host service process emitted an error after readiness',
+								fields: {
+									[SpanAttr.event]: 'process.error',
+									[SpanAttr.serviceName]: options.serviceName,
+									[SpanAttr.errorCause]: cause,
+								},
+							}),
+				),
+			),
+		);
 	});
 
 export const prepareHostService = (
@@ -589,7 +822,7 @@ export const prepareHostService = (
 		});
 
 		return {
-			value: hostServiceValue(options, port, rendered),
+			value: hostServiceValue(options, port, rendered, ctx.routedUrl ?? null),
 			start,
 		};
 	});

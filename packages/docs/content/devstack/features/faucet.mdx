@@ -1,0 +1,116 @@
+---
+title: Faucet and Funding Strategies
+description:
+  How devstack funds accounts and how plugin authors register a faucet strategy for a chain.
+---
+
+Devstack funds accounts through capability-keyed faucet strategies. There is no public `faucet()`
+stack member to compose — the built-in `sui()` plugin registers a `sui:localnet` strategy
+automatically, and `defineFaucetStrategy(...)` is the plugin-author surface for contributing more.
+
+## How funding finds its strategy
+
+When `account('alice', { funding: [{ coin: 'sui', amount: 1_000_000_000n }] })` resolves, the
+account plugin looks up a strategy in the substrate registry by capability key:
+
+```txt
+faucet:request:<chainId>
+```
+
+where `<chainId>` is the resolved network identifier — `sui:localnet`, `sui:testnet`,
+`sui:mainnet-fork@<height>`, etc. If a strategy is registered for that key, devstack dispatches the
+request through it; otherwise SUI funding fails loudly with the substrate `StrategyNotFoundError`,
+listing the registered keys so you can see "I asked for X, only Y is wired".
+
+Non-SUI coin funding (managed local-package coins, `walCoin(localWalrus)`, etc.) uses the same
+mechanism with a `coinType:<fullCoinType>` capability key. Missing non-SUI strategies are treated as
+a no-op so optional service funding is ergonomic; missing SUI is an error because default account
+funding depends on it.
+
+## Contribution-sink invariant
+
+The substrate-level strategy registry is the **single sink** through which funding contributions
+flow. A plugin author registers a strategy by adding a capability decl to its `capabilities` array,
+and the supervisor's plugin acquisition path mounts the contribution into the registry before any
+account funding tries to read it.
+
+What breaks when this is bypassed:
+
+- Skipping the capability decl and calling into a faucet HTTP endpoint directly means **the registry
+  never learns about the strategy**. Account funding for the affected chain raises the substrate
+  `StrategyNotFoundError` even though the plugin "works". Snapshot capture also misses the
+  contribution metadata.
+- Mounting at boot but not through the capability path means the supervisor's harvest loop does not
+  see the contribution, so the dashboard and the manifest projection do not list it. Operators
+  cannot tell from `devstack status` which faucet they are actually pointed at.
+- Mounting with a stale chain id (e.g. hardcoded `'sui:localnet'` when the stack is in
+  `mainnet-fork` mode) registers the wrong key, the registry resolves the wrong strategy, and the
+  account silently funds against the wrong network.
+
+Always contribute through `defineFaucetStrategy(...)` and pass the real resolved `chainId`.
+
+## `defineFaucetStrategy`
+
+```ts title="my-faucet/index.ts"
+import { Effect } from 'effect';
+import { defineFaucetStrategy, definePlugin } from '@mysten-incubation/devstack';
+
+export const myFaucet = (chainId: `sui:${string}`) =>
+	definePlugin({
+		id: 'my-faucet-strategy',
+		role: 'service',
+		section: 'service',
+		start: () => Effect.succeed({}),
+		capabilities: [
+			defineFaucetStrategy({
+				chainId,
+				strategy: {
+					request: ({ address, amount }) =>
+						// ... close over the actual faucet wire here.
+						Effect.succeed({ address, amount }),
+				},
+			}),
+		],
+	});
+```
+
+`defineFaucetStrategy` packages a `{ chainId, strategy }` pair into a `StrategyContributorDecl`. The
+capability key is computed from the chain id automatically; the substrate auto-registers the
+strategy as the contributing plugin acquires.
+
+Defaults:
+
+- `autoMounted: false` — third-party contributions show up in the dashboard so operators can see
+  what is wired. Pass `true` for built-ins the orchestrator includes automatically.
+- `priority: 1` — user strategies win over the built-in's `0`. Higher wins.
+
+## Wire-level invariants
+
+A faucet strategy MUST surface failure as a tagged error, not as silent success. The two
+load-bearing rules:
+
+- A non-2xx HTTP status MUST raise `FaucetUnreachable` or `FaucetBodyError`. The Sui faucet binary
+  binds its socket before its validator can transfer coins, so the warm-up window returns 5xx; a
+  permissive implementation marks accounts funded when no coins moved.
+- A 200 OK body carrying `{ status: { Failure: ... } }` MUST raise `FaucetBodyError`. During warm-up
+  the faucet accepts requests it cannot execute; treating those bodies as success is the most common
+  silent-funding failure.
+
+A custom strategy is responsible for raising the right tagged error on each failure path; the
+substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2xx surfaces as
+`FaucetUnreachable` or `FaucetBodyError` and so 200 OK with `{ status: { Failure } }` surfaces as
+`FaucetBodyError({ reason: 'failure-status' })`.
+
+## Failure surface
+
+The faucet error union is:
+
+- `FaucetUnreachable` — transport-level (ECONNREFUSED, DNS, TLS, AbortSignal timeout).
+- `FaucetExhausted` — wall-clock budget exhausted; carries `attempts: number` and `lastCause`.
+- `FaucetBodyError` — `reason: 'failure-status' | 'invalid-json'`.
+- `FaucetConfigError` — invalid strategy config.
+
+A missing strategy for the requested chain is **not** a faucet tag — it surfaces as the substrate
+`StrategyNotFoundError` (carrying `capabilityKey` + `registeredKeys`).
+
+See [Errors](/devstack/errors).

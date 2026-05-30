@@ -12,7 +12,5 @@ export * from './format.ts';
 export * from './emit.ts';
 export * from './gitignore.ts';
 export * from './manifest-bridge.ts';
-export * from './extras.ts';
 export * from './bindings.ts';
-export * from './watcher.ts';
 export * from './service.ts';

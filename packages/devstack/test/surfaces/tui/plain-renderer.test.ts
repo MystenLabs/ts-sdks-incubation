@@ -54,6 +54,7 @@ describe('plain-renderer formatters', () => {
 			tag: 'endpoint.registered',
 			endpoint: {
 				endpointKey: endpointKey('e1'),
+				pluginKey: pluginKey('demo#0'),
 				name: 'aggregator',
 				url: 'http://localhost:9000',
 				displayUrl: 'https://devstack.local/agg',
@@ -68,10 +69,12 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('url=http://localhost:9000');
 	});
 
-	it('formats account.updated with copyable account facts', () => {
+	it('formats projection.updated[account] with copyable account facts', () => {
 		const line = formatEventLine({
-			tag: 'account.updated',
-			account: {
+			tag: 'projection.updated',
+			kind: 'account',
+			key: 'account/alice',
+			payload: {
 				key: 'account/alice',
 				rowKey: pluginKey('account/alice#1'),
 				name: 'alice',
@@ -96,7 +99,7 @@ describe('plain-renderer formatters', () => {
 			},
 			at: STATIC_AT,
 		});
-		expect(line).toContain('account.updated');
+		expect(line).toContain('projection.updated');
 		expect(line).toContain('key=account/alice');
 		expect(line).toContain('row=account/alice#1');
 		expect(line).toContain('address=0xabc');
@@ -107,10 +110,12 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('requestedMist=1000000000');
 	});
 
-	it('formats package.updated with copyable package facts', () => {
+	it('formats projection.updated[package] with copyable package facts', () => {
 		const line = formatEventLine({
-			tag: 'package.updated',
-			package: {
+			tag: 'projection.updated',
+			kind: 'package',
+			key: 'package/vault',
+			payload: {
 				key: 'package/vault',
 				rowKey: pluginKey('package/vault#1'),
 				name: 'vault',
@@ -123,7 +128,7 @@ describe('plain-renderer formatters', () => {
 			},
 			at: STATIC_AT,
 		});
-		expect(line).toContain('package.updated');
+		expect(line).toContain('projection.updated');
 		expect(line).toContain('key=package/vault');
 		expect(line).toContain('row=package/vault#1');
 		expect(line).toContain('kind=local');
@@ -147,6 +152,39 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('error.reported');
 		expect(line).toContain('tag=BootError');
 		expect(line).toContain('cause="stderr: private content failed | exit code: 1"');
+	});
+
+	it('formats engine.orchestrator.dispatchFailed as a WARN line carrying the cause discriminator', () => {
+		// Observability regression: a non-fatal capability sink (e.g.
+		// `routable`) rejecting leaves the plugin `ready`, so this WARN line
+		// is the operator's only signal that RPC/wallet routing is dead. It
+		// must render above INFO and name the failing sink + cause `_tag`.
+		const line = formatEventLine({
+			tag: 'engine.orchestrator.dispatchFailed',
+			pluginKey: pluginKey('sui'),
+			kind: 'routable',
+			message: "capability sink 'routable' failed",
+			causeType: 'RouterBootFailed',
+			at: STATIC_AT,
+		});
+		expect(line.startsWith('2026-05-19T20:11:32.001Z WARN')).toBe(true);
+		expect(line).toContain('engine.orchestrator.dispatchFailed');
+		expect(line).toContain('key=sui');
+		expect(line).toContain('kind=routable');
+		expect(line).toContain('causeType=RouterBootFailed');
+		expect(line).toContain('summary="capability sink \'routable\' failed"');
+	});
+
+	it('omits causeType on dispatchFailed when the cause is untagged', () => {
+		const line = formatEventLine({
+			tag: 'engine.orchestrator.dispatchFailed',
+			pluginKey: pluginKey('sui'),
+			kind: 'routable',
+			message: 'sink failed',
+			at: STATIC_AT,
+		});
+		expect(line).toContain('WARN');
+		expect(line).not.toContain('causeType=');
 	});
 
 	it('formats restart.requested for stack-wide target', () => {
@@ -193,6 +231,7 @@ describe('plain-renderer formatters', () => {
 
 		const endpoint = {
 			endpointKey: endpointKey('e1'),
+			pluginKey: pluginKey('demo#0'),
 			name: 'dev',
 			url: 'http://127.0.0.1:5173',
 			displayUrl: 'http://dev.app.localhost:5175',
@@ -227,7 +266,13 @@ describe('plain-renderer formatters', () => {
 			walletVisible: false,
 			updatedAt: STATIC_AT,
 		} as const;
-		const accountPlain = formatEventLine({ tag: 'account.updated', account, at: STATIC_AT });
+		const accountPlain = formatEventLine({
+			tag: 'projection.updated',
+			kind: 'account',
+			key: account.key,
+			payload: account,
+			at: STATIC_AT,
+		});
 		expect(accountPlain).toContain(`address=${accountCells(account).address}`);
 		expect(accountPlain).toContain(`scheme=${accountCells(account).scheme}`);
 		expect(accountPlain).toContain('fundingEntries=SUI:1000000000:funded');
@@ -243,7 +288,13 @@ describe('plain-renderer formatters', () => {
 			sourcePath: 'move/vault',
 			updatedAt: STATIC_AT,
 		} as const;
-		const packagePlain = formatEventLine({ tag: 'package.updated', package: pkg, at: STATIC_AT });
+		const packagePlain = formatEventLine({
+			tag: 'projection.updated',
+			kind: 'package',
+			key: pkg.key,
+			payload: pkg,
+			at: STATIC_AT,
+		});
 		expect(packagePlain).toContain(`packageId=${packageCells(pkg).packageId}`);
 		expect(packagePlain).toContain(`kind=${packageCells(pkg).kind}`);
 	});

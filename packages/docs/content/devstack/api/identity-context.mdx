@@ -1,0 +1,79 @@
+---
+title: Identity Context
+description:
+  The validated app/stack/chain triple devstack threads through plugin context for the lifetime of a
+  running stack.
+---
+
+`Identity` is the closed identity triple — `(app, stack, chain)` — that devstack resolves once at
+boot and threads through Effect Context for the lifetime of the stack. Plugins yield
+`IdentityContext` inside `start` to read it; the values are stable for the run.
+
+```ts
+import type { AppName, ChainId, StackName } from '@mysten-incubation/devstack';
+
+interface Identity {
+	readonly app: AppName;
+	readonly stack: StackName;
+	readonly chain: ChainId;
+}
+```
+
+The three fields are brand-typed string aliases so they cannot be confused with each other at the
+type level.
+
+## Where identity comes from
+
+- `app` — inferred from the nearest package.json `name` (the unscoped tail) unless
+  `defineDevstack({ appName })` or the `--app` CLI flag overrides it.
+- `stack` — `defineDevstack({ stackName })` or the `--stack` CLI flag. Defaults to `'main'`.
+- `chain` — resolved by the `NetworkResolver` substrate primitive after the `sui()` plugin
+  contributes its mode. `'sui:localnet'`, `'sui:testnet'`, `'sui:mainnet-fork@<height>'`, etc.
+
+The triple is validated once before any plugin body runs. Invalid identities (empty app name,
+illegal characters, conflicting `--app` / package.json values) surface as typed config errors at
+boot, not as runtime defects mid-stack.
+
+## Yielding `IdentityContext` from a plugin
+
+```ts
+import { Effect } from 'effect';
+import { IdentityContext, definePlugin } from '@mysten-incubation/devstack';
+
+export const mything = () =>
+	definePlugin({
+		id: 'mything',
+		role: 'service',
+		start: () =>
+			Effect.gen(function* () {
+				const identity = yield* IdentityContext;
+				// Use identity.app, identity.stack, identity.chain to build
+				// per-stack resource names, faucet capability keys, etc.
+				return { containerName: `${identity.app}-${identity.stack}-mything` };
+			}),
+	});
+```
+
+The supervisor provides `IdentityContext` via `layerIdentity(identity)` before any plugin's start
+body runs. Inside a plugin you can rely on the values being final.
+
+## What identity threads into
+
+- **Container labels.** The Docker runtime stamps `{managed:'true', app, stack, plugin, role}` on
+  every managed container, image, and network. `prune` / `wipe` enumerate by these labels.
+- **DNS aliases.** Per-stack containers register under `<app>-<stack>-<name>` plus an in-network
+  alias so siblings in the same stack can dial each other while parallel stacks coexist.
+- **Faucet capability keys.** `faucet:request:<chain>` is computed from `identity.chain`, so two
+  stacks pointed at different chains route to different strategies automatically.
+- **Snapshot metadata.** Snapshots record the full identity triple; `restore` refuses identity drift
+  before destructive changes.
+- **Generated bindings.** Per-stack generated output is keyed by identity so two stacks generate
+  into different paths without collision.
+
+## Runtime root vs identity
+
+`Identity` is the symbolic triple. The on-disk runtime root (`.devstack/stacks/<stack>/...`) is a
+separate substrate concern — plugin bodies that need a filesystem location for manifests,
+projections, snapshots, or per-plugin runtime state receive it through the substrate paths service
+the supervisor provides alongside `IdentityContext`. Most plugins yield both inside the same
+`Effect.gen`, then derive their on-disk paths from the resolved stack root.

@@ -111,13 +111,17 @@ export const decodeBech32Secret = (
 	Effect.gen(function* () {
 		const parsed = yield* Effect.try({
 			try: () => decodeSuiPrivateKey(bech32),
-			catch: (cause): AccountAcquireError =>
+			// Secret-leak guard: the thrown error from `decodeSuiPrivateKey`
+			// can echo the rejected bech32 string back in its message, so we
+			// deliberately DROP the raw `cause`. The typed `message` already
+			// names the failure; a malformed-secret error carries no
+			// actionable diagnostic beyond "it was malformed".
+			catch: (): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'decode-inline',
 					accountName,
 					variant,
 					message: `Account '${accountName}': decodeSuiPrivateKey() rejected the supplied bech32 secret.`,
-					cause,
 				}),
 		});
 		const scheme = yield* normalizeScheme(parsed.scheme, accountName, variant);
@@ -141,13 +145,14 @@ export const decodeBech32Secret = (
 				const kp = Ed25519Keypair.fromSecretKey(parsed.secretKey);
 				return resolvedKeypairFromEd25519(kp);
 			},
-			catch: (cause): AccountAcquireError =>
+			// Secret-leak guard: `fromSecretKey` can echo the decoded
+			// secret-key bytes in its error — DROP the raw `cause`.
+			catch: (): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'decode-inline',
 					accountName,
 					variant,
 					message: `Account '${accountName}': Ed25519Keypair.fromSecretKey() rejected the decoded secret.`,
-					cause,
 				}),
 		});
 	});
@@ -165,13 +170,15 @@ export const resolvedKeypairFromEd25519Bytes = (
 			const kp = Ed25519Keypair.fromSecretKey(secretKey);
 			return resolvedKeypairFromEd25519(kp);
 		},
-		catch: (cause): AccountAcquireError =>
+		// Secret-leak guard: `fromSecretKey` can echo the raw secret-key
+		// bytes in its error — DROP the raw `cause`. (Mirrors the
+		// bech32 path in `decodeBech32Secret`.)
+		catch: (): AccountAcquireError =>
 			accountAcquireError({
 				phase: 'decode-inline',
 				accountName,
 				variant,
 				message: `Account '${accountName}': Ed25519Keypair.fromSecretKey() rejected the supplied raw bytes.`,
-				cause,
 			}),
 	});
 

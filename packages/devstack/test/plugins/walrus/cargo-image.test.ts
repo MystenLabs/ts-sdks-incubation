@@ -12,7 +12,7 @@ import type {
 import {
 	DEFAULT_SUI_VERSION,
 	DEFAULT_WALRUS_REF,
-	resolveDefaultCargoImage,
+	resolveCargoImage,
 } from '../../../src/plugins/walrus/bootstrap-assets/cargo-image.ts';
 
 const ORIGINAL_WALRUS_CARGO_IMAGE_OVERRIDE = process.env.WALRUS_CARGO_IMAGE_OVERRIDE;
@@ -86,7 +86,13 @@ describe('walrus cargo image resolver', () => {
 	});
 });
 
-describe('resolveDefaultCargoImage — native release-binary policy', () => {
+describe('resolveCargoImage — native release-binary policy (default inputs)', () => {
+	const defaultInputs = {
+		walrusRef: DEFAULT_WALRUS_REF,
+		suiVersion: DEFAULT_SUI_VERSION,
+		owner: { app: 'test-app', stack: 'test-stack' },
+	};
+
 	it.effect('uses the native Docker build path without a platform override', () =>
 		Effect.gen(function* () {
 			delete process.env.WALRUS_CARGO_IMAGE_OVERRIDE;
@@ -96,7 +102,7 @@ describe('resolveDefaultCargoImage — native release-binary policy', () => {
 				return Effect.succeed({ digest: 'sha256:built', tag: 'devstack-walrus:test' });
 			});
 
-			const image = yield* Effect.scoped(resolveDefaultCargoImage(runtime));
+			const image = yield* Effect.scoped(resolveCargoImage(runtime, defaultInputs));
 
 			expect(image).toEqual({ digest: 'sha256:built', tag: 'devstack-walrus:test' });
 			expect(captured).not.toBeNull();
@@ -106,6 +112,12 @@ describe('resolveDefaultCargoImage — native release-binary policy', () => {
 			expect(captured!.buildArgs).toEqual({
 				WALRUS_VERSION: DEFAULT_WALRUS_REF,
 				SUI_VERSION: DEFAULT_SUI_VERSION,
+			});
+			expect(captured!.owner).toEqual({
+				app: 'test-app',
+				stack: 'test-stack',
+				plugin: 'walrus',
+				role: 'cluster',
 			});
 		}),
 	);
@@ -117,7 +129,7 @@ describe('resolveDefaultCargoImage — native release-binary policy', () => {
 				Effect.die('ensureImage should not be called when override is set'),
 			);
 
-			const image = yield* Effect.scoped(resolveDefaultCargoImage(runtime));
+			const image = yield* Effect.scoped(resolveCargoImage(runtime, defaultInputs));
 
 			expect(image).toEqual({
 				digest: 'walrus-compatible:latest',

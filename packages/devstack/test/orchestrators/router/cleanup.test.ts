@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
@@ -68,7 +69,7 @@ describe('router cleanup', () => {
 					runtimeRoot: root,
 					app: 'private-content',
 					stack: 'private-content',
-				});
+				}).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(removed).toBe(1);
 				expect(existsSync(routeFile)).toBe(false);
@@ -89,7 +90,7 @@ describe('router cleanup', () => {
 				const removed = yield* removeRouterProfileStateForDockerStack({
 					runtimeRoot: root,
 					routerStack: 'devstack-router-deadbeef',
-				});
+				}).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(removed).toBe(1);
 				expect(existsSync(stateDir)).toBe(false);

@@ -1,12 +1,12 @@
 // `runStack(stack, opts?)` — top-level programmatic embedding.
 //
-// Cutover blocker #3 (api-surface-design.md § Stack handle, parity-
-// matrix.md "Programmatic embedding"): `defineDevstack(...)` returns a
-// static `Stack<Members>` manifest with no runnable surface. Library
-// consumers (vitest setup, custom hosts, Effect-native apps, embedded
-// fixtures) had to re-implement `cli/main.ts:runUpLive`'s substrate
-// Layer composition. `runStack` is the single seam — it consumes the
-// shared `substrate/runtime/run.ts` helper the CLI also consumes.
+// `defineDevstack(...)` returns a static `Stack<Members>` manifest with
+// no runnable surface. Library consumers (vitest setup, custom hosts,
+// Effect-native apps, embedded fixtures) would otherwise have to
+// re-implement `cli/wirings/up.ts:runUpLive`'s substrate Layer composition.
+// `runStack` is the single embedder seam — it consumes the same
+// `orchestrators/runtime-composition.ts` helper the CLI consumes. See
+// ARCHITECTURE.md §"Layer composition lives at L3, not L0".
 //
 // Shape:
 //
@@ -26,6 +26,7 @@
 
 import {
 	Cause,
+	Context,
 	Deferred,
 	Effect,
 	Exit,
@@ -33,6 +34,8 @@ import {
 	Layer,
 	Logger,
 	Queue,
+	Ref,
+	Scope,
 	Stream,
 	SubscriptionRef,
 } from 'effect';
@@ -41,21 +44,28 @@ import { appName, chainId, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
-import { makeProjectionRef } from '../substrate/runtime/projection/index.ts';
-import { buildSubstrateLayers, superviseStackEffect } from '../substrate/runtime/run.ts';
+import { CapabilitySinksService } from '../substrate/runtime/capability-sinks/index.ts';
+import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
+import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
 	buildProductionOrchestratorSinks,
 	buildProductionPostAcquireHook,
 	layerProductionOrchestrators,
 	type ProductionCodegenOptions,
 } from '../orchestrators/runtime-composition.ts';
+import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
 import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../runtime/built-in-plugin-layers.ts';
+} from '../orchestrators/built-in-plugin-layers.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
-import { resolveAppName, resolveStackName } from './inference-network.ts';
+import {
+	resolveAppName,
+	resolveNetworkSync,
+	resolveStackName,
+	resolveStateDir,
+} from './inference-network.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -79,12 +89,22 @@ export interface RunStackOptions {
 	readonly codegen?: Omit<ProductionCodegenOptions, 'appRoot'>;
 	/** Filesystem root under which the substrate stores per-stack
 	 *  artifacts (cache, snapshots, manifest, projection, etc.).
-	 *  Defaults to `$DEVSTACK_STATE_DIR` then `<cwd>/.devstack`. */
+	 *  Precedence: `runtimeRoot` > `stateDir` (this option or
+	 *  `DevstackOptions.stateDir` on the stack) > `$DEVSTACK_STATE_DIR`
+	 *  > `<cwd>/.devstack`. */
 	readonly runtimeRoot?: string;
-	/** Extra Layer composition. Reserved for plugin-author overlays
-	 *  (e.g. custom `CapabilitySinks`, Logger) per ARCHITECTURE.md
-	 *  § Plugin-author extension via Layer composition. */
-	readonly layers?: Layer.Layer<never>;
+	/** Sibling of `runtimeRoot` — the `DevstackOptions.stateDir` field
+	 *  threaded through `runStack` so a stack-level default can be
+	 *  overridden per-embedding without forcing every call site to
+	 *  flip between `runtimeRoot` and `stateDir`. Same semantics as
+	 *  `runtimeRoot`; lower precedence. */
+	readonly stateDir?: string;
+	/** Extend the plugin execution context after built-in plugin
+	 *  services are installed. Use this for custom plugin-author
+	 *  services, capability sinks, or logger overrides. */
+	readonly extendContext?: (
+		ctx: Context.Context<never>,
+	) => Effect.Effect<Context.Context<never>, never, Scope.Scope | CapabilitySinksService>;
 }
 
 /** Boot error surfaced by `RunHandle.start`. Wraps the supervisor's
@@ -105,9 +125,11 @@ export interface RunHandle {
 	/** Trigger graceful shutdown: enqueues `shutdown.requested` onto
 	 *  the supervisor's command channel, then awaits the fiber. */
 	readonly stop: Effect.Effect<void, never, never>;
-	/** Resolve when the supervisor fiber exits. Always succeeds — any
-	 *  errors surface via `start`. */
-	readonly awaitShutdown: Effect.Effect<void, never, never>;
+	/** Resolve when the supervisor fiber exits. Succeeds on a clean
+	 *  shutdown; fails with the captured `Cause` if the supervisor died
+	 *  mid-run after boot completed (e.g. a plugin scope finalizer
+	 *  defect). Boot-time failures still surface via `start`. */
+	readonly awaitShutdown: Effect.Effect<void, unknown, never>;
 	/** Tail of typed engine events from the supervisor's hub. The
 	 *  upstream is a `Queue.Dequeue`; consume via `Stream.run...`. */
 	readonly events: Stream.Stream<EngineEvent, never, never>;
@@ -133,19 +155,21 @@ const resolveIdentity = (
 		explicit: opts?.stack ?? stack.options.stackName,
 		cwd,
 	});
-	const network = opts?.network ?? process.env.DEVSTACK_NETWORK ?? 'sui:local';
+	// Parse + validate up-front so a malformed value fails here rather
+	// than downstream when a plugin probes the chain id. We keep the
+	// raw input string (`'sui:local'`, `'sui:testnet'`, …) for the
+	// chain-id brand so existing on-disk cache namespaces and plugin
+	// equality checks (`chain === 'sui:testnet'`) remain stable.
+	const resolved = resolveNetworkSync({
+		explicit: opts?.network,
+		env: process.env.DEVSTACK_NETWORK,
+		explicitSource: 'runStack({ identity.network })',
+	});
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: chainId(network),
+		chain: chainId(resolved.raw),
 	};
-};
-
-const resolveRuntimeRoot = (override: string | undefined): string => {
-	if (override !== undefined) return override;
-	const envRoot = process.env.DEVSTACK_STATE_DIR;
-	if (envRoot !== undefined && envRoot.length > 0) return envRoot;
-	return `${process.cwd()}/.devstack`;
 };
 
 const toBootError = (cause: Cause.Cause<unknown>): BootError => ({
@@ -181,7 +205,12 @@ export const runStack = (
 	opts: RunStackOptions = {},
 ): RunHandle => {
 	const engineStack = readStackEngine(stack);
-	const runtimeRoot = resolveRuntimeRoot(opts.runtimeRoot);
+	const runtimeRoot = resolveStateDir({
+		runtimeRoot: opts.runtimeRoot,
+		stateDir: opts.stateDir ?? engineStack.options.stateDir,
+		env: process.env.DEVSTACK_STATE_DIR,
+		cwd: process.cwd(),
+	});
 	const appRoot = opts.appRoot ?? process.cwd();
 	const identity = resolveIdentity(stack, opts.identity, appRoot);
 	const codegen = opts.codegen ?? engineStack.options.codegen;
@@ -194,19 +223,47 @@ export const runStack = (
 
 	// State + handle slots are created at `runStack(...)` time so the
 	// caller can subscribe to `state.changes` BEFORE `start` runs.
-	// `SubscriptionRef.make` and `Deferred.make` are both sync-effects
-	// (no side-effects, no async); `Effect.runSync` is safe here.
-	const state = Effect.runSync(makeProjectionRef());
+	// `Deferred.make` is sync-effect (no side-effects, no async);
+	// `Effect.runSync` is safe for it. The projection ref is allocated
+	// via the explicit `makeProjectionRefSync` so the sync contract is
+	// pinned at the substrate constructor — if `makeProjectionRef`
+	// ever picks up an async/Layer wrapper (`withSpan`, annotation),
+	// `makeProjectionRefSync` must remain sync-only or be replaced by
+	// a Deferred-handoff seam at this boot-time call site.
+	const state = makeProjectionRefSync();
 	const bootDeferred = Effect.runSync(Deferred.make<void, BootError>());
 	const stopRequested = Effect.runSync(Deferred.make<void>());
 	const eventQueueRef = Effect.runSync(Deferred.make<Queue.Dequeue<EngineEvent>>());
 	const fiberRef = Effect.runSync(Deferred.make<Fiber.Fiber<void, never>>());
+	const startClaim = Effect.runSync(Ref.make(false));
+	// Tee for mid-run defects/failures. `Deferred.fail(bootDeferred, …)`
+	// below is a no-op once `bootDeferred` has succeeded (post-boot), so
+	// without this sibling ref a late scope-finalizer defect would
+	// otherwise leave the supervised fiber exiting `Success(void)` and
+	// `awaitShutdown` resolving clean — the operator would have no
+	// signal. `awaitShutdown` re-raises whatever this ref captured.
+	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
+	// Resolve the per-stack codegen output location: home run (effective
+	// stack === config `stackName`) → `src/generated/`; a non-home
+	// embedding → `.devstack/stacks/<stack>/generated/`. An explicit
+	// `opts.codegen.outputDir` (or the stack's own
+	// `codegen.outputDir`) is honored verbatim by the resolver. Both the
+	// home stack (`engineStack.options.stackName`) and the effective
+	// stack (the resolved `identity.stack`) are in scope here, mirroring
+	// the CLI's `buildVerbLayers` seam.
+	const codegenOutput = resolveCodegenOutput({
+		appRoot,
+		effectiveStack: String(identity.stack),
+		homeStack: engineStack.options.stackName,
+		explicitOutputDir: codegen?.outputDir,
+		explicitStackSubdir: codegen?.stackSubdir ?? null,
+	});
 	const substrate = layerProductionOrchestrators({
 		codegen: {
 			appRoot,
-			outputDir: codegen?.outputDir,
-			stackSubdir: codegen?.stackSubdir ?? null,
+			outputDir: codegenOutput.outputDir,
+			stackSubdir: codegenOutput.stackSubdir,
 		},
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 
@@ -216,11 +273,33 @@ export const runStack = (
 		yield* superviseStackEffect(supervisedStack, identity, state, {
 			orchestratorSinks,
 			postAcquireHook,
-			extendContext: extendBuiltInPluginContext,
+			extendContext: (ctx) =>
+				Effect.gen(function* () {
+					const builtInContext = yield* extendBuiltInPluginContext(ctx);
+					return opts.extendContext === undefined
+						? builtInContext
+						: yield* opts.extendContext(builtInContext);
+				}),
+			beforeInitialAcquire: (handle) =>
+				Effect.gen(function* () {
+					yield* Deferred.succeed(eventQueueRef, handle.events).pipe(
+						Effect.catch(() => Effect.void),
+					);
+
+					// Bridge `stop` requests onto the supervisor's command
+					// channel before acquire starts so a boot failure cannot
+					// leave the public handle without an event/command bridge.
+					yield* Effect.forkScoped(
+						Effect.gen(function* () {
+							yield* Deferred.await(stopRequested);
+							yield* Queue.offer(handle.commands, {
+								tag: 'shutdown.requested',
+							});
+						}),
+					);
+				}),
 			withinScope: (handle) =>
 				Effect.gen(function* () {
-					yield* Deferred.succeed(eventQueueRef, handle.events);
-
 					// Watch every plugin for `ready`; resolve `bootDeferred` once
 					// every node has reached ready (or one fails). The
 					// `awaitReady` callbacks resolve from the per-plugin
@@ -245,62 +324,63 @@ export const runStack = (
 							}
 						}),
 					);
-
-					// Bridge `stop` requests onto the supervisor's command
-					// channel. The supervisor's command loop treats
-					// `shutdown.requested` as the graceful-shutdown signal.
-					yield* Effect.forkScoped(
-						Effect.gen(function* () {
-							yield* Deferred.await(stopRequested);
-							yield* Queue.offer(handle.commands, {
-								tag: 'shutdown.requested',
-							});
-						}),
-					);
 				}),
 		}).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
 	});
 
 	const loggerLayer = Logger.layer([]);
-	const layered =
-		opts.layers === undefined
-			? supervised.pipe(Effect.provide(substrate), Effect.provide(loggerLayer))
-			: supervised.pipe(
-					Effect.provide(substrate),
-					Effect.provide(loggerLayer),
-					Effect.provide(opts.layers),
-				);
+	const layered = supervised.pipe(Effect.provide(substrate), Effect.provide(loggerLayer));
 
 	// Convert any uncaught cause into a boot failure if the deferred
-	// hasn't completed. The cause is preserved via the fiber's exit for
-	// `awaitShutdown` consumers that need to inspect it.
+	// hasn't completed. If `bootDeferred` HAS already succeeded then
+	// `Deferred.fail` is a no-op — the cause is a mid-run failure
+	// (e.g. a plugin scope finalizer defect) and would otherwise be
+	// silently dropped: the fiber exits `Success(void)` and
+	// `awaitShutdown` resolves clean. Tee the cause into
+	// `midRunCauseRef` so `awaitShutdown` can re-surface it, AND emit
+	// `Effect.logError(Cause.pretty(cause))` so observability stays
+	// loud regardless of whether anyone awaits. Boot failures (still in
+	// the bootDeferred-pending window) only surface via `start`, not
+	// here — we'd otherwise re-raise them on `awaitShutdown` after
+	// `start` already rejected.
 	const supervisedProgram: Effect.Effect<void, never, never> = layered.pipe(
 		Effect.catchCause((cause) =>
-			Deferred.fail(bootDeferred, toBootError(cause)).pipe(
-				Effect.asVoid,
-				Effect.catch(() => Effect.void),
-			),
+			Effect.gen(function* () {
+				const bootAlreadyCompleted = yield* Deferred.isDone(bootDeferred);
+				yield* Deferred.fail(bootDeferred, toBootError(cause)).pipe(
+					Effect.asVoid,
+					Effect.catch(() => Effect.void),
+				);
+				if (bootAlreadyCompleted) {
+					yield* Ref.set(midRunCauseRef, cause);
+				}
+				yield* Effect.logError(`devstack runStack: supervisor died\n${Cause.pretty(cause)}`);
+			}),
 		),
 	);
 
-	const start: Effect.Effect<void, BootError, never> = Effect.gen(function* () {
-		const alreadyStarted = yield* Deferred.isDone(fiberRef);
-		if (!alreadyStarted) {
-			// `forkDetach` (v4 spelling of v3's `forkDaemon`) decouples the
-			// supervisor fiber from the `start` fiber's scope. `forkChild`
-			// would tie the supervisor to whatever fiber runs `start`, and
-			// once `start` resolves (after `bootDeferred` succeeds) the
-			// runtime would interrupt the supervisor — transitioning every
-			// plugin `ready → stopping → stopped` before the caller can
-			// read post-ready state or call `handle.stop`. The handle's
-			// explicit `stop` + `awaitShutdown` paths are the only
-			// shutdown signals; the captured `Fiber` reference is how the
-			// daemon stays releasable.
-			const fiber = yield* Effect.forkDetach(supervisedProgram);
-			yield* Deferred.succeed(fiberRef, fiber);
-		}
-		yield* Deferred.await(bootDeferred);
-	});
+	const start: Effect.Effect<void, BootError, never> = Effect.uninterruptibleMask((restore) =>
+		Effect.gen(function* () {
+			const shouldStart = yield* Ref.modify(startClaim, (started) =>
+				started ? [false, true] : [true, true],
+			);
+			if (shouldStart) {
+				// `forkDetach` (v4 spelling of v3's `forkDaemon`) decouples the
+				// supervisor fiber from the `start` fiber's scope. `forkChild`
+				// would tie the supervisor to whatever fiber runs `start`, and
+				// once `start` resolves (after `bootDeferred` succeeds) the
+				// runtime would interrupt the supervisor — transitioning every
+				// plugin `ready → stopping → stopped` before the caller can
+				// read post-ready state or call `handle.stop`. The handle's
+				// explicit `stop` + `awaitShutdown` paths are the only
+				// shutdown signals; the captured `Fiber` reference is how the
+				// daemon stays releasable.
+				const fiber = yield* Effect.forkDetach(supervisedProgram);
+				yield* Deferred.succeed(fiberRef, fiber);
+			}
+			yield* restore(Deferred.await(bootDeferred));
+		}),
+	);
 
 	const stop: Effect.Effect<void, never, never> = Effect.gen(function* () {
 		yield* Deferred.succeed(stopRequested, undefined).pipe(Effect.catch(() => Effect.void));
@@ -316,13 +396,22 @@ export const runStack = (
 		yield* Fiber.await(fiber);
 	});
 
-	const awaitShutdown: Effect.Effect<void, never, never> = Effect.gen(function* () {
+	const awaitShutdown: Effect.Effect<void, unknown, never> = Effect.gen(function* () {
 		const alreadyStarted = yield* Deferred.isDone(fiberRef);
 		if (!alreadyStarted) {
 			return;
 		}
 		const fiber = yield* Deferred.await(fiberRef);
 		yield* Fiber.await(fiber);
+		// Re-surface any mid-run defect/failure captured by the
+		// supervised body's `catchCause` (boot failures are already
+		// surfaced via `start`). Without this re-raise a plugin scope
+		// finalizer defect would silently drop and operators get no
+		// signal — see the comment on `midRunCauseRef` above.
+		const midRunCause = yield* Ref.get(midRunCauseRef);
+		if (midRunCause !== null) {
+			return yield* Effect.failCause(midRunCause);
+		}
 	});
 
 	const events: Stream.Stream<EngineEvent, never, never> = Stream.unwrap(

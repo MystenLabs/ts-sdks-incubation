@@ -9,19 +9,23 @@
 // endpoint-name accessors in-spec helpers use.
 
 import {
+	DEFAULT_ROUTER_ENTRYPOINT_PORT,
+	builtInConventionalRoutes,
 	discoverManifestPath as runtimeDiscoverManifestPath,
 	coldStartUrl as runtimeColdStartUrl,
-	conventionalRoutesFromHints,
 	EndpointRegistry,
 	manifestEnvelopeFromStackContext,
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	resolveBuiltInEndpointAlias,
+	resolveDiscoveryEnv,
 	type DiscoverManifestPathOptions,
+	type EndpointEntry,
+	type ManifestEnvelope,
 	type ResolvedEndpoint as RuntimeResolvedEndpoint,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
-import type { EndpointEntry, ManifestEnvelope } from '../../substrate/manifest.ts';
 import {
 	PlaywrightEndpointNotFoundError,
 	PlaywrightManifestDiscoveryError,
@@ -69,20 +73,17 @@ export interface ResolvedEndpoint {
 	readonly endpointName: string;
 }
 
-const PLAYWRIGHT_ENDPOINT_ALIASES: Readonly<Record<string, string>> = {
-	app: 'dev',
-	wallet: 'wallet-app',
-};
+// Endpoint aliases + default port live in `runtime/conventional-routes.ts`
+// so vitest / Playwright / any future build integration share one table.
+// Playwright contributes nothing of its own here — every per-endpoint
+// fact is substrate-supplied.
 
-const PLAYWRIGHT_DEFAULT_ROUTER_PORTS: Readonly<Record<string, number>> = {
-	app: 5175,
-	dev: 5175,
-	wallet: 5175,
-	'wallet-app': 5175,
-};
-
+/** Resolve a user-typed endpoint name or alias to the canonical
+ *  endpoint name the manifest stores. Delegates to the canonical
+ *  alias resolver in `runtime/conventional-routes.ts` so vitest and
+ *  Playwright share one alias table. */
 export const playwrightEndpointNameFor = (endpointNameOrAlias: string): string =>
-	PLAYWRIGHT_ENDPOINT_ALIASES[endpointNameOrAlias] ?? endpointNameOrAlias;
+	resolveBuiltInEndpointAlias(endpointNameOrAlias);
 
 const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegistry => {
 	const entries: RuntimeResolvedEndpoint[] = [];
@@ -92,8 +93,8 @@ const endpointRegistryFromEnvelope = (envelope: ManifestEnvelope): EndpointRegis
 			url: raw.url,
 			displayUrl: raw.displayUrl,
 			wireProtocol: raw.wireProtocol,
-			pluginKey: raw.pluginKey as string,
-			endpointKey: raw.endpointKey as string,
+			pluginKey: raw.pluginKey,
+			endpointKey: raw.endpointKey,
 		});
 	}
 	return new EndpointRegistry(entries);
@@ -107,14 +108,20 @@ const buildRuntimeDiscoverOpts = (
 	options: ResolveStackContextOptions,
 ): DiscoverManifestPathOptions => {
 	const env = options.env ?? (process.env as Record<string, string | undefined>);
-	const stack = options.stack ?? env[PLAYWRIGHT_ENV.STACK] ?? 'main';
-	const stateDir = options.stateDir ?? env[PLAYWRIGHT_ENV.STATE_DIR];
+	// Shared ladder: option > DEVSTACK_RUNTIME_ROOT > DEVSTACK_STATE_DIR
+	// > '.devstack'. This surface previously read only DEVSTACK_STATE_DIR
+	// and silently ignored DEVSTACK_RUNTIME_ROOT — routing through
+	// `resolveDiscoveryEnv` aligns it with the vitest + runtime surfaces.
+	const { stack, stateDir } = resolveDiscoveryEnv(env, {
+		...(options.stack !== undefined ? { stack: options.stack } : {}),
+		...(options.stateDir !== undefined ? { stateDir: options.stateDir } : {}),
+	});
 	return {
 		env,
 		stack,
+		stateDir,
 		...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
 		...(options.manifestPath !== undefined ? { override: options.manifestPath } : {}),
-		...(stateDir !== undefined && stateDir !== '' ? { stateDir } : {}),
 	};
 };
 
@@ -168,14 +175,18 @@ export const readManifestSync = (manifestPath: string): ManifestEnvelope => {
 			});
 		}
 		if (cause instanceof ManifestDiscoveryError) {
-			throw new PlaywrightManifestShapeError({
-				message: `failed to read manifest at ${manifestPath}`,
-				manifestPath,
-				phase: 'parse',
+			// A discovery error (missing file at a known path) is NOT a
+			// shape error — surface the typed discovery tag so callers
+			// can `catchTag` the two failure modes independently.
+			throw new PlaywrightManifestDiscoveryError({
+				message:
+					cause.message !== ''
+						? cause.message
+						: `manifest at ${manifestPath} could not be read`,
+				searchedPaths: cause.path !== undefined ? [cause.path] : [manifestPath],
 				recoveryHint:
 					`Confirm the file exists and is readable. Run \`devstack up\` to ` +
 					`regenerate it if the supervisor was interrupted mid-write.`,
-				cause,
 			});
 		}
 		throw cause;
@@ -213,27 +224,13 @@ export const conventionalUrlFor = (
 	const resolvedPort =
 		opts.port ??
 		(Number.isFinite(envPort) && envPort > 0 ? envPort : undefined) ??
-		PLAYWRIGHT_DEFAULT_ROUTER_PORTS[endpointKey];
+		DEFAULT_ROUTER_ENTRYPOINT_PORT;
 
-	if (resolvedPort === undefined || !Number.isFinite(resolvedPort) || resolvedPort <= 0) {
+	if (!Number.isFinite(resolvedPort) || resolvedPort <= 0) {
 		return null;
 	}
-	const port = resolvedPort;
 
-	const routes = conventionalRoutesFromHints(
-		[
-			{ endpoint: 'app', service: 'dev' },
-			{ endpoint: 'dev', service: 'dev' },
-			{ endpoint: 'sui-rpc', service: 'sui-rpc' },
-			{ endpoint: 'sui-faucet', service: 'sui-faucet' },
-			{ endpoint: 'walrus-aggregator', service: 'walrus-aggregator' },
-			{ endpoint: 'walrus-publisher', service: 'walrus-publisher' },
-			{ endpoint: 'seal', service: 'seal' },
-			{ endpoint: 'wallet', service: 'api' },
-			{ endpoint: 'wallet-app', service: 'api' },
-		],
-		port,
-	);
+	const routes = builtInConventionalRoutes(resolvedPort);
 	if (!routes.has(endpointKey)) return null;
 
 	return runtimeColdStartUrl(endpointKey, {
@@ -242,6 +239,10 @@ export const conventionalUrlFor = (
 		...(opts.app !== undefined ? { app: opts.app } : {}),
 		...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
 		...(opts.hostSuffix !== undefined ? { hostSuffix: opts.hostSuffix } : {}),
+		// Thread the caller env bag so `runtimeColdStartUrl` resolves
+		// `DEVSTACK_STACK` / `DEVSTACK_APP` from the test-injected
+		// fixture rather than silently falling back to `process.env`.
+		...(opts.env !== undefined ? { env: opts.env } : {}),
 	});
 };
 
@@ -316,7 +317,7 @@ export const makeStackContext = (
 		const byMapKey = envelope.endpoints[resolved.endpointKey];
 		if (byMapKey !== undefined) return byMapKey;
 		const byEntryKey = Object.values(envelope.endpoints).find(
-			(entry) => (entry.endpointKey as string) === resolved.endpointKey,
+			(entry) => entry.endpointKey === resolved.endpointKey,
 		);
 		if (byEntryKey !== undefined) return byEntryKey;
 		return {
@@ -324,8 +325,8 @@ export const makeStackContext = (
 			url: resolved.url,
 			displayUrl: resolved.displayUrl,
 			wireProtocol: resolved.wireProtocol,
-			pluginKey: resolved.pluginKey as never,
-			endpointKey: resolved.endpointKey as never,
+			pluginKey: resolved.pluginKey,
+			endpointKey: resolved.endpointKey,
 		};
 	};
 

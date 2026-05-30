@@ -20,6 +20,10 @@ import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { readClaims, type ContainerClaim } from '../../substrate/runtime/cross-process/roster.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
+import {
+	makeSpacedRetrySchedule,
+	NETWORK_REMOVE_RETRY_PROFILE,
+} from '../../substrate/runtime/retry-policy.ts';
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
 import {
 	ContainerRemoveFailed,
@@ -31,17 +35,46 @@ import {
 import {
 	listContainers,
 	listDevstackContainers,
+	listDevstackContainersByKind,
 	listDevstackImages,
 	listDevstackNetworks,
-	listDevstackRouterContainers,
 	listDevstackVolumes,
 	listImages,
 	listNetworks,
 	listVolumes,
 } from './inventory.ts';
 import { LabelKey } from './labels.ts';
+import {
+	forceDisconnect,
+	listAttachedContainers,
+	type NetworkAttachedEndpoint,
+} from './network.ts';
 import { removeVolume } from './volume.ts';
-import { isNoSuchContainerStderr, wrapGeneric } from './wrap.ts';
+import {
+	isMissingImageStderr,
+	isMissingNetworkStderr,
+	isNetworkInUseStderr,
+	isNoSuchContainerStderr,
+	wrapGeneric,
+} from './wrap.ts';
+
+const removeManagedContainer = (
+	name: string,
+): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
+			Effect.mapError(wrapGeneric('docker.rm')),
+		);
+		if (res.exitCode === 0) return true;
+		if (isNoSuchContainerStderr(res.stderr)) return false;
+		return yield* Effect.fail(
+			new ContainerRemoveFailed({
+				name,
+				stderr: res.stderr,
+				exitCode: res.exitCode,
+			}),
+		);
+	});
 
 /** Sweep orphan containers matching the partial label tuple. Returns
  *  the number of containers removed.
@@ -86,43 +119,33 @@ export const sweepOrphans = (
 				const doc = yield* readClaims({
 					stackLockFile: paths.stackLockFile,
 					rosterFile: paths.rosterFile,
+					containerClaimsFile: paths.containerClaimsFile,
 				}).pipe(Effect.mapError(mapSubstrateError));
 				return new Set(doc.claims.map((c: ContainerClaim) => c.containerKey));
 			}),
 		);
 
 		// Sweep — best-effort per container. Individual rm failures
-		// don't poison the whole sweep.
+		// don't poison the whole sweep, but they DO need operator
+		// visibility: a broken docker socket would otherwise silently
+		// swallow every entry. Surface the cause via `logWarning` so the
+		// supervisor's cascade and structured-log consumers can investigate.
+		// We reuse `removeManagedContainer` so the idempotent "no such
+		// container" path (a container reaped between list+rm) doesn't
+		// trip the warning logger.
 		let removed = 0;
 		for (const c of containers) {
 			if (claimNames.has(c.name)) continue;
-			const res = yield* dockerRunOk('rm', ['-f', c.name]).pipe(
-				Effect.catch(() =>
-					Effect.succeed({ exitCode: 1, stdout: '', stderr: 'sweep rm spawn failed' }),
+			const didRemove = yield* removeManagedContainer(c.name).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logWarning('sweep: docker rm -f failed', { name: c.name, cause }),
 				),
+				Effect.catch(() => Effect.succeed(false)),
 			);
-			if (res.exitCode === 0) removed += 1;
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.sweep'));
-
-const removeManagedContainer = (
-	name: string,
-): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
-	Effect.gen(function* () {
-		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.rm')),
-		);
-		if (res.exitCode === 0) return true;
-		if (isNoSuchContainerStderr(res.stderr)) return false;
-		return yield* Effect.fail(
-			new ContainerRemoveFailed({
-				name,
-				stderr: res.stderr,
-				exitCode: res.exitCode,
-			}),
-		);
-	});
 
 /** Explicit teardown. Unlike `sweepOrphans`, this does not consult the
  *  claim ledger; wipe/restore are intentional destructive operations. */
@@ -158,11 +181,15 @@ export const removeDevstackContainers = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainers'));
 
-export const removeDevstackRouterContainers = (
+/** Remove devstack-managed containers whose generic `kind` label matches
+ *  AND whose name matches. The L1 helper is plugin-blind: orchestrators
+ *  pass the kind value they themselves stamp at create time. */
+export const removeDevstackContainersByKindAndName = (
+	kind: string,
 	containerName: string,
 ): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const containers = yield* listDevstackRouterContainers();
+		const containers = yield* listDevstackContainersByKind(kind);
 		let removed = 0;
 		for (const c of containers) {
 			if (c.name !== containerName) continue;
@@ -170,10 +197,7 @@ export const removeDevstackRouterContainers = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackRouterContainers'));
-
-const isMissingImageStderr = (stderr: string): boolean =>
-	/no such image|not found|reference does not exist/i.test(stderr);
+	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainersByKindAndName'));
 
 const removeManagedImage = (
 	ref: string,
@@ -202,6 +226,7 @@ export const removeManagedImages = (
 		const seen = new Set<string>();
 		for (const image of images) {
 			const ref = image.tag;
+			if (ref.endsWith(':<none>')) continue;
 			if (seen.has(ref)) continue;
 			seen.add(ref);
 			const didRemove = yield* removeManagedImage(ref);
@@ -228,9 +253,6 @@ export const removeDevstackImages = (
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackImages'));
-
-const isMissingNetworkStderr = (stderr: string): boolean =>
-	/no such network|network .* not found|not found/i.test(stderr);
 
 const removeManagedNetwork = (
 	name: string,
@@ -260,14 +282,59 @@ export const removeManagedNetworks = (
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedNetworks'));
 
-const isNetworkInUseStderr = (stderr: string): boolean =>
-	/active endpoints|has active endpoint|network .* is in use/i.test(stderr);
+/** Parse `network X has active endpoints (name:"A" id:"B")` stderr —
+ *  Docker enumerates each blocking endpoint as a `(name:"…" id:"…")`
+ *  tuple. Returns an empty array on non-matching stderr. */
+const parseActiveEndpointsFromStderr = (
+	stderr: string,
+): ReadonlyArray<{ readonly name: string; readonly id: string }> => {
+	const out: Array<{ name: string; id: string }> = [];
+	const re = /\(name:"([^"]+)"\s+id:"([^"]+)"\)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(stderr)) !== null) {
+		out.push({ name: m[1]!, id: m[2]! });
+	}
+	return out;
+};
 
-type NetworkRemoveOutcome = 'removed' | 'missing' | 'in-use';
+/** One foreign endpoint preventing a network from being removed —
+ *  surfaced in the prune summary so the operator can investigate. */
+export interface ForeignNetworkHolder {
+	readonly network: string;
+	readonly container: NetworkAttachedEndpoint;
+}
+
+/** A `(name, id)` reference that appears in Docker's `network rm`
+ *  "active endpoints" error but is NOT addressable via `network
+ *  disconnect -f` and does NOT appear in `network inspect`'s
+ *  Containers map. Symptom of a Docker engine bug where the bridge
+ *  driver leaks endpoint metadata for a container that no longer
+ *  exists. Only a Docker daemon restart reclaims these. */
+export interface StaleNetworkEndpoint {
+	readonly network: string;
+	readonly name: string;
+	readonly id: string;
+}
+
+type NetworkRemoveStep =
+	| { readonly kind: 'removed' }
+	| { readonly kind: 'missing' }
+	| { readonly kind: 'in-use'; readonly stderr: string };
+
+type NetworkRemoveOutcome =
+	| { readonly kind: 'removed' }
+	| { readonly kind: 'missing' }
+	| {
+			readonly kind: 'in-use';
+			readonly foreignHolders: ReadonlyArray<NetworkAttachedEndpoint>;
+			readonly staleEndpoints: ReadonlyArray<{ readonly name: string; readonly id: string }>;
+	  };
 
 export interface DevstackNetworkRemovalSummary {
 	readonly removed: number;
 	readonly skippedInUse: number;
+	readonly foreignHolders: ReadonlyArray<ForeignNetworkHolder>;
+	readonly staleEndpoints: ReadonlyArray<StaleNetworkEndpoint>;
 }
 
 interface DevstackNetworkRemovalOptions {
@@ -277,32 +344,102 @@ interface DevstackNetworkRemovalOptions {
 
 const removeManagedNetworkOnce = (
 	name: string,
-): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
+): Effect.Effect<NetworkRemoveStep, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		const res = yield* dockerRunOk('network', ['rm', name]).pipe(
 			Effect.mapError(wrapGeneric('docker.network.rm')),
 		);
-		if (res.exitCode === 0) return 'removed' as const;
-		if (isMissingNetworkStderr(res.stderr)) return 'missing' as const;
-		if (isNetworkInUseStderr(res.stderr)) return 'in-use' as const;
+		if (res.exitCode === 0) return { kind: 'removed' as const };
+		if (isMissingNetworkStderr(res.stderr)) return { kind: 'missing' as const };
+		if (isNetworkInUseStderr(res.stderr)) {
+			return { kind: 'in-use' as const, stderr: res.stderr };
+		}
 		return yield* Effect.fail(
 			new NetworkOperationFailed({ op: 'remove', network: name, stderr: res.stderr }),
 		);
 	});
 
+/** Best-effort network removal that actively evicts our own endpoints
+ *  before declaring "in-use". Strategy on first in-use response:
+ *    1. inspect the network for attached endpoints
+ *    2. for each endpoint we own (`devstack.managed=true`), force-
+ *       disconnect it
+ *    3. retry `network rm`
+ *  Anything still holding the network after that is reported as a
+ *  foreign holder — typically a non-devstack container, a test fixture,
+ *  or a sibling stack we deliberately left alone. */
 const removeManagedNetworkBestEffort = (
 	name: string,
 	options: Required<DevstackNetworkRemovalOptions>,
 ): Effect.Effect<NetworkRemoveOutcome, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		for (let attempt = 0; attempt < options.retryAttempts; attempt += 1) {
-			const outcome = yield* removeManagedNetworkOnce(name);
-			if (outcome !== 'in-use') return outcome;
-			if (attempt < options.retryAttempts - 1) {
-				yield* Effect.sleep(`${options.retryDelayMillis} millis`);
+		const first = yield* removeManagedNetworkOnce(name);
+		if (first.kind !== 'in-use') return first;
+		// Investigate, evict our own endpoints, retry.
+		const attachments = yield* listAttachedContainers(name).pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<NetworkAttachedEndpoint>)),
+		);
+		if (attachments.length > 0) {
+			const ownedNames = new Set<string>();
+			const all = yield* listDevstackContainers().pipe(
+				Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly name: string }>)),
+			);
+			for (const c of all) ownedNames.add(c.name);
+			for (const attached of attachments) {
+				if (!ownedNames.has(attached.name)) continue;
+				yield* forceDisconnect(attached.name, name).pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('prune: force-disconnect failed; will retry rm anyway', {
+							network: name,
+							container: attached.name,
+							cause,
+						}),
+					),
+					Effect.catch(() => Effect.void),
+				);
 			}
 		}
-		return 'in-use' as const;
+		// Retry `network rm` after eviction — Effect.repeat with a
+		// spaced schedule per §16 "Balance / poll loop" canonical
+		// helper (substrate `NETWORK_REMOVE_RETRY_PROFILE`). User-
+		// supplied `options.retryAttempts` / `retryDelayMillis`
+		// override the profile defaults. `Schedule.recurs(N)` allows
+		// N additional recurrences, so this retry block makes
+		// `1 + retryAttempts` rm calls when persistently in-use. Counting
+		// the pre-eviction `first` probe above, the worst-case in-use
+		// total for this function is `2 + retryAttempts` rm invocations.
+		const lastStep: NetworkRemoveStep = yield* removeManagedNetworkOnce(name).pipe(
+			Effect.repeat({
+				schedule: makeSpacedRetrySchedule(options.retryDelayMillis, options.retryAttempts),
+				until: (step): boolean => step.kind !== 'in-use',
+			}),
+		);
+		if (lastStep.kind === 'removed') return { kind: 'removed' as const };
+		if (lastStep.kind === 'missing') return { kind: 'missing' as const };
+		const lastStderr = lastStep.stderr;
+		// Still in-use after our best effort — diagnose what's holding it.
+		const finalAttachments = yield* listAttachedContainers(name).pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<NetworkAttachedEndpoint>)),
+		);
+		const ownedNames = new Set<string>();
+		const all = yield* listDevstackContainers().pipe(
+			Effect.catch(() => Effect.succeed([] as ReadonlyArray<{ readonly name: string }>)),
+		);
+		for (const c of all) ownedNames.add(c.name);
+		const foreign = finalAttachments.filter((a) => !ownedNames.has(a.name));
+		// Endpoints Docker mentions in the rm error but which DON'T
+		// appear in inspect → stale metadata. The bridge driver kept
+		// the endpoint record around after the container was reaped;
+		// no CLI/API path can remove it. Operator must restart Docker.
+		const attachedNames = new Set(finalAttachments.map((a) => a.name));
+		const stale = parseActiveEndpointsFromStderr(lastStderr).filter(
+			(ep) => !attachedNames.has(ep.name),
+		);
+		return {
+			kind: 'in-use' as const,
+			foreignHolders: foreign,
+			staleEndpoints: stale,
+		};
 	});
 
 export const removeDevstackNetworks = (
@@ -326,18 +463,28 @@ export const removeDevstackNetworksBestEffort = (
 	Effect.gen(function* () {
 		const networks = yield* listDevstackNetworks();
 		const retryOptions = {
-			retryAttempts: options.retryAttempts ?? 6,
-			retryDelayMillis: options.retryDelayMillis ?? 250,
+			retryAttempts: options.retryAttempts ?? NETWORK_REMOVE_RETRY_PROFILE.attempts,
+			retryDelayMillis: options.retryDelayMillis ?? NETWORK_REMOVE_RETRY_PROFILE.delayMs,
 		};
 		let removed = 0;
 		let skippedInUse = 0;
+		const foreignHolders: Array<ForeignNetworkHolder> = [];
+		const staleEndpoints: Array<StaleNetworkEndpoint> = [];
 		for (const network of networks) {
 			if (!labelsMatchAppStack(network.labels, labelMatch)) continue;
 			const outcome = yield* removeManagedNetworkBestEffort(network.name, retryOptions);
-			if (outcome === 'removed') removed += 1;
-			if (outcome === 'in-use') skippedInUse += 1;
+			if (outcome.kind === 'removed') removed += 1;
+			else if (outcome.kind === 'in-use') {
+				skippedInUse += 1;
+				for (const container of outcome.foreignHolders) {
+					foreignHolders.push({ network: network.name, container });
+				}
+				for (const ep of outcome.staleEndpoints) {
+					staleEndpoints.push({ network: network.name, name: ep.name, id: ep.id });
+				}
+			}
 		}
-		return { removed, skippedInUse };
+		return { removed, skippedInUse, foreignHolders, staleEndpoints };
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworksBestEffort'));
 
 export const removeManagedVolumes = (
@@ -348,8 +495,17 @@ export const removeManagedVolumes = (
 		let removed = 0;
 		for (const volume of volumes) {
 			if (volume.labels[LabelKey.volumeMarker] !== 'true') continue;
-			yield* removeVolume(volume.name);
-			removed += 1;
+			// Best-effort per volume: an in-use/locked volume must not poison
+			// the loop and strand later volumes. Surface the cause via
+			// `logWarning` for operator visibility, then continue.
+			const didRemove = yield* removeVolume(volume.name).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logWarning('sweep: docker volume rm failed', { name: volume.name, cause }),
+				),
+				Effect.as(true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeManagedVolumes'));
@@ -362,8 +518,17 @@ export const removeDevstackVolumes = (
 		let removed = 0;
 		for (const volume of volumes) {
 			if (!labelsMatchAppStack(volume.labels, labelMatch)) continue;
-			yield* removeVolume(volume.name);
-			removed += 1;
+			// Best-effort per volume: an in-use/locked volume must not poison
+			// the loop and strand later volumes. Surface the cause via
+			// `logWarning` for operator visibility, then continue.
+			const didRemove = yield* removeVolume(volume.name).pipe(
+				Effect.tapCause((cause) =>
+					Effect.logWarning('sweep: docker volume rm failed', { name: volume.name, cause }),
+				),
+				Effect.as(true),
+				Effect.catch(() => Effect.succeed(false)),
+			);
+			if (didRemove) removed += 1;
 		}
 		return removed;
 	}).pipe(Effect.withSpan('runtime.docker.removeDevstackVolumes'));

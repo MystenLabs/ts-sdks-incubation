@@ -4,12 +4,13 @@ import { resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, type Scope } from 'effect';
+import { Deferred, Effect, Exit, Fiber, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
-import { pluginKey } from '../../../src/substrate/brand.ts';
+import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
+import { IdentityContext, RuntimeRoot } from '../../../src/substrate/runtime/paths.ts';
 import {
 	PortBrokerService,
 	type AllocateOptions,
@@ -29,7 +30,11 @@ import {
 	type HostServiceResolvedOptions,
 	type HostServiceValue,
 } from '../../../src/plugins/host-service/index.ts';
-import { layerPostAcquireTasks } from '../../../src/substrate/runtime/post-acquire-tasks.ts';
+import { logReady } from '../../../src/plugins/host-service/service.ts';
+import {
+	layerPostAcquireTasks,
+	PostAcquireTasksService,
+} from '../../../src/substrate/runtime/post-acquire-tasks.ts';
 
 class FakeChild extends EventEmitter implements HostProcessChild {
 	readonly stdout = new PassThrough();
@@ -106,6 +111,7 @@ const findFreePort = (): Promise<number> =>
 const neededMember = definePlugin({
 	id: 'test/needed',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ok: true } as const),
 });
 
@@ -257,10 +263,12 @@ describe('acquireHostService', () => {
 		expect(value.url).toBe('http://127.0.0.1:6173');
 	});
 
-	it.live('treats any HTTP response as host-service readiness', () =>
+	it.live('readies an HTTP host-service when its health check returns 200', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const port = yield* Effect.promise(findFreePort);
+				// A server that returns 200 at `/` satisfies the health-check
+				// readiness contract and readies promptly.
 				const options = normalizeHostServiceOptions({
 					name: 'frontend',
 					command: process.execPath,
@@ -269,8 +277,8 @@ describe('acquireHostService', () => {
 						[
 							"const http = require('node:http');",
 							'const server = http.createServer((_req, res) => {',
-							'  res.statusCode = 500;',
-							"  res.end('generated files not ready yet');",
+							'  res.statusCode = 200;',
+							"  res.end('ready');",
 							'});',
 							"server.listen(Number(process.env.PORT), '127.0.0.1');",
 						].join(' '),
@@ -288,6 +296,102 @@ describe('acquireHostService', () => {
 				expect(value.url).toBe(`http://127.0.0.1:${port}`);
 			}),
 		),
+	);
+
+	it.live(
+		'does NOT ready an HTTP host-service that never returns 200 (health check requires 200)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const port = yield* Effect.promise(findFreePort);
+					// Readiness is a 200 health check. A server that is "listener up"
+					// but only ever returns 500 (a dev server still compiling at `/`)
+					// must NOT be treated as ready — it keeps polling and the acquire
+					// fails at the readiness timeout. Pins the require-200 contract: a
+					// listener-up `() => true` validator would wrongly pass here.
+					const options = normalizeHostServiceOptions({
+						name: 'frontend',
+						command: process.execPath,
+						args: [
+							'-e',
+							[
+								"const http = require('node:http');",
+								'const server = http.createServer((_req, res) => {',
+								'  res.statusCode = 500;',
+								"  res.end('compiling');",
+								'});',
+								"server.listen(Number(process.env.PORT), '127.0.0.1');",
+							].join(' '),
+						],
+						ready: { kind: 'http', timeoutMs: 600, intervalMs: 50 },
+					});
+
+					const exit = yield* Effect.exit(
+						acquireHostService(options, {
+							allocatePort: () => Effect.succeed(port),
+							logger: fakeLogger,
+							pluginKey: pluginKey('host-service-test#1'),
+							processEnv: { PATH: '/usr/bin' },
+						}),
+					);
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(Option.isSome(error)).toBe(true);
+					if (Option.isSome(error)) {
+						expect(error.value.phase).toBe('ready');
+						expect(error.value.message).toContain('did not become ready');
+					}
+				}),
+			),
+	);
+
+	it.live(
+		'does NOT ready an HTTP host-service that only 3xx-redirects (redirects are not followed)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const port = yield* Effect.promise(findFreePort);
+					// `redirect: 'manual'` — the readiness probe does NOT follow a 3xx.
+					// A server that 302s at `/` (even to a would-be 200 target) must
+					// NOT be treated as ready: the probed URL itself returned a
+					// redirect, not a 200. Pins that fetch's default redirect-following
+					// can't sneak a redirect target's 200 past the health check.
+					const options = normalizeHostServiceOptions({
+						name: 'frontend',
+						command: process.execPath,
+						args: [
+							'-e',
+							[
+								"const http = require('node:http');",
+								'const server = http.createServer((_req, res) => {',
+								'  res.statusCode = 302;',
+								"  res.setHeader('Location', '/ready');",
+								"  res.end('redirecting');",
+								'});',
+								"server.listen(Number(process.env.PORT), '127.0.0.1');",
+							].join(' '),
+						],
+						ready: { kind: 'http', timeoutMs: 600, intervalMs: 50 },
+					});
+
+					const exit = yield* Effect.exit(
+						acquireHostService(options, {
+							allocatePort: () => Effect.succeed(port),
+							logger: fakeLogger,
+							pluginKey: pluginKey('host-service-test#2'),
+							processEnv: { PATH: '/usr/bin' },
+						}),
+					);
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(Option.isSome(error)).toBe(true);
+					if (Option.isSome(error)) {
+						expect(error.value.phase).toBe('ready');
+					}
+				}),
+			),
 	);
 
 	it('fails acquire when the process emits an error before readiness', async () => {
@@ -324,11 +428,10 @@ describe('acquireHostService', () => {
 		loggerLines.length = 0;
 		const allocations: AllocateOptions[] = [];
 		const broker: PortBroker = {
-			allocate: (opts) => {
+			allocate: (opts = {}) => {
 				allocations.push(opts);
 				return Effect.succeed({
 					port: 6173,
-					kind: 'http',
 					release: Effect.void,
 				});
 			},
@@ -338,22 +441,40 @@ describe('acquireHostService', () => {
 			port: 5170,
 			command: process.execPath,
 			args: ['-e', `console.log('ready'); setInterval(() => {}, 1000);`],
-			ready: { kind: 'log', pattern: 'ready', timeoutMs: 1_000 },
+			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5_000 },
 		});
 
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member
-					.start(undefined)
-					.pipe(
-						Effect.provideService(PortBrokerService, broker),
-						Effect.provideService(Logger, fakeLogger),
-						Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
-						Effect.provide(layerPostAcquireTasks),
-					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
+				const start = member.start(undefined).pipe(
+					Effect.provideService(PortBrokerService, broker),
+					Effect.provideService(Logger, fakeLogger),
+					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
+					// The host-service start now reads Identity + RuntimeRoot to publish
+					// DEVSTACK_STACK / DEVSTACK_RUNTIME_ROOT into the spawned child's env
+					// (so the in-child Vite plugin re-discovers the active stack's manifest).
+					Effect.provideService(IdentityContext, {
+						app: appName('host-service-test'),
+						stack: stackName('host-service-test'),
+						chain: chainId('localnet'),
+					}),
+					Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
+				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
-				expect(value.url).toBe('http://127.0.0.1:6173');
-				expect(allocations).toEqual([{ kind: 'http', preferredPort: 5170, probeHost: '0.0.0.0' }]);
+				// With a real Identity in context the supervised host-service
+				// publishes its CANONICAL routed URL (not the raw loopback bind):
+				// role = endpointName (`dev`), stack ≠ `main` so it's included,
+				// port = the shared Traefik entrypoint (5175). This is the URL the
+				// dev-wallet CORS allowlist accepts — see `value.url` doc + the
+				// wallet origin-policy. `.port` still reports the real bound
+				// loopback port (6173) for readiness / direct host tooling.
+				expect(value.url).toBe('http://dev.host-service-test.host-service-test.localhost:5175');
+				expect(value.port).toBe(6173);
+				expect(allocations).toEqual([
+					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
+				]);
+				const postAcquireTasks = yield* PostAcquireTasksService;
+				yield* postAcquireTasks.runAll;
 				yield* Effect.promise<void>(
 					() => new Promise((resolveReady) => setTimeout(resolveReady, 0)),
 				);
@@ -362,7 +483,7 @@ describe('acquireHostService', () => {
 					pluginKey: 'host-service-test#0',
 				});
 			}),
-		);
+		).pipe(Effect.provide(layerPostAcquireTasks));
 	});
 
 	it.effect('starts a prepared process once', () => {
@@ -404,6 +525,69 @@ describe('acquireHostService', () => {
 					expect(child.signals).toEqual(['SIGTERM']);
 				}),
 			),
+		);
+	});
+
+	it.effect(
+		'publishes the supplied routed URL as value.url while keeping the bound loopback port',
+		() => {
+			// The supervisor hands `routedUrl` (the canonical router-fronted
+			// origin, e.g. `http://dev.<stack>.<app>.localhost:5175`) into the
+			// acquire context so the host-service's published `value.url` is the
+			// URL the dev-wallet CORS allowlist actually accepts. `.port` stays
+			// the real bound loopback port for readiness / direct host tooling.
+			const options = normalizeHostServiceOptions({
+				name: 'frontend',
+				command: 'pnpm',
+				args: ['exec', 'vite', '--port', HOST_SERVICE_PORT_TOKEN],
+				ready: { kind: 'log', pattern: 'ready' },
+			});
+
+			return Effect.scoped(
+				Effect.gen(function* () {
+					const prepared = yield* prepareHostService(options, {
+						allocatePort: () => Effect.succeed(6173),
+						logger: fakeLogger,
+						pluginKey: pluginKey('host-service-test#0'),
+						spawner: () => new FakeChild(),
+						processEnv: { PATH: '/usr/bin' },
+						routedUrl: 'http://dev.demo.demo.localhost:5175',
+					});
+
+					expect(prepared.value.url).toBe('http://dev.demo.demo.localhost:5175');
+					expect(prepared.value.port).toBe(6173);
+				}),
+			);
+		},
+	);
+
+	it.effect('falls back to the raw loopback value.url when no routed URL is supplied', () => {
+		// No `routedUrl` (router disabled, or a hostname-validation failure in
+		// the supervisor's best-effort derivation collapsed it to null) → the
+		// raw `http://127.0.0.1:<port>` loopback bind remains the published URL,
+		// exactly as before this change. A `null` routedUrl behaves identically
+		// to an absent one.
+		const options = normalizeHostServiceOptions({
+			name: 'frontend',
+			command: 'pnpm',
+			args: ['exec', 'vite', '--port', HOST_SERVICE_PORT_TOKEN],
+			ready: { kind: 'log', pattern: 'ready' },
+		});
+
+		return Effect.scoped(
+			Effect.gen(function* () {
+				const prepared = yield* prepareHostService(options, {
+					allocatePort: () => Effect.succeed(6173),
+					logger: fakeLogger,
+					pluginKey: pluginKey('host-service-test#0'),
+					spawner: () => new FakeChild(),
+					processEnv: { PATH: '/usr/bin' },
+					routedUrl: null,
+				});
+
+				expect(prepared.value.url).toBe('http://127.0.0.1:6173');
+				expect(prepared.value.port).toBe(6173);
+			}),
 		);
 	});
 
@@ -457,6 +641,61 @@ describe('acquireHostService', () => {
 		);
 	});
 
+	it.effect(
+		'registers the child terminator atomically with spawn (interrupt mid-boot still tears the child down)',
+		() => {
+			// Regression for the spawn/finalizer atomicity bug: spawn, the
+			// stdout/stderr line-drain fork, and the kill-finalizer
+			// registration are wrapped together in a single
+			// `Effect.uninterruptible` region, so the terminator is bound the
+			// instant the spawn succeeds — no interrupt can land in the gap
+			// between them. Here readiness never fires (a slow boot), the fiber
+			// parks past the spawn in the readiness wait, and an interrupt
+			// landing in exactly the old leak window must still run the
+			// terminator. Pre-fix the finalizer was registered far below the
+			// spawn (after the readiness wait), so an interrupt before that
+			// point would leave the detached child alive with no SIGTERM.
+			//
+			// The terminator is registered AFTER the drain fork (not before, and
+			// not via `acquireRelease`), so on scope close it runs before the
+			// drains are interrupted: it kills the child, ending its streams,
+			// which lets the non-interruptible `Stream.fromAsyncIterable` drains
+			// drain-to-end. Registering it before the drains deadlocks teardown.
+			const child = new FakeChild();
+			const options = normalizeHostServiceOptions({
+				name: 'frontend',
+				command: 'pnpm',
+				args: ['exec', 'vite'],
+				// Pattern intentionally never emitted; large timeout so the
+				// boot stays "in progress" for the whole test window.
+				ready: { kind: 'log', pattern: 'never-emitted-readiness-token', timeoutMs: 60_000 },
+			});
+
+			return Effect.gen(function* () {
+				const spawned = yield* Deferred.make<void>();
+				const fiber = yield* Effect.forkScoped(
+					acquire(options, () => {
+						// Signal the spawn happened without emitting readiness.
+						Deferred.doneUnsafe(spawned, Effect.void);
+						return child;
+					}),
+				);
+
+				// Wait until the child is spawned, then let the forked fiber
+				// park in `observeProcessLines` before interrupting — this is
+				// the exact window the old ordering left unguarded.
+				yield* Deferred.await(spawned);
+				yield* Effect.yieldNow;
+
+				yield* Fiber.interrupt(fiber);
+
+				// Finalizer ran during scope teardown -> child was signalled,
+				// no leaked detached process holding its port.
+				expect(child.signals).toEqual(['SIGTERM']);
+			});
+		},
+	);
+
 	it('fails acquire when the process exits before readiness', async () => {
 		const child = new FakeChild();
 		const options = normalizeHostServiceOptions({
@@ -489,6 +728,115 @@ describe('acquireHostService', () => {
 	});
 });
 
+describe('logReady fallback wrapper preserves non-tagged causes', () => {
+	// Regression for the `logReady` `Effect.tryPromise` catch arm: when the
+	// log-readiness Promise rejects with a NON-tagged cause (a stream /
+	// EventEmitter error rather than the pre-tagged timeout
+	// `HostServiceAcquireError`), the catch MUST thread that raw cause
+	// through the surfaced `HostServiceAcquireError.cause` instead of
+	// dropping it and only preserving the closed-over template error.
+	//
+	// These cases DRIVE THE REAL `logReady` — we hand it a `readySignal`
+	// Promise that rejects (the production `readySignal.then(onRejected)`
+	// arm routes that rejection into the inner Promise's `rejectReady`) and
+	// assert against the failure `logReady` actually surfaces. `exit` /
+	// `processError` are never-resolving so the `ready` arm is the only one
+	// that can win the race. Falsifiable: dropping the `cause:` threading in
+	// service.ts, or dropping the new `readySignal` rejection wiring (so the
+	// timeout would fire instead), breaks the first case; dropping the
+	// `instanceof` short-circuit breaks the second.
+	const never = <A>(): Promise<A> => new Promise<A>(() => {});
+
+	const templateError = (): HostServiceAcquireError =>
+		new HostServiceAcquireError({
+			serviceName: 'frontend',
+			cwd: '/cwd',
+			command: 'pnpm',
+			args: ['exec', 'vite'],
+			phase: 'ready',
+			message: 'host service readiness failed',
+		});
+
+	// A readiness signal whose rejection we control. We fork `logReady`
+	// FIRST so its `Effect.tryPromise` body runs and attaches the
+	// `readySignal.then(onFulfilled, onRejected)` handler, THEN reject —
+	// this avoids both an unhandled-rejection window and any race over
+	// which arm of `awaitManagedProcessReady` resolves first.
+	const drive = (rejectWith: unknown) =>
+		Effect.gen(function* () {
+			let rejectSignal: ((cause: unknown) => void) | undefined;
+			const readySignal = new Promise<void>((_resolve, reject) => {
+				rejectSignal = reject;
+			});
+			const fiber = yield* Effect.forkChild(
+				Effect.exit(
+					logReady(
+						{ kind: 'log', pattern: 'ready', timeoutMs: 60_000 },
+						readySignal,
+						never<{ readonly code: number | null; readonly signal: NodeJS.Signals | null }>(),
+						never<unknown>(),
+						templateError(),
+					),
+				),
+			);
+			// Let the forked fiber step into `tryPromise` and attach its
+			// rejection handler before we trip the signal.
+			yield* Effect.yieldNow;
+			rejectSignal?.(rejectWith);
+			return yield* Fiber.join(fiber);
+		});
+
+	it.live('threads a non-tagged `cause` through the surfaced HostServiceAcquireError', () => {
+		const rawCause = new Error('stream closed before readiness signal');
+		return Effect.gen(function* () {
+			const exit = yield* drive(rawCause);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value).toBeInstanceOf(HostServiceAcquireError);
+				// Template fields are preserved...
+				expect(error.value.serviceName).toBe('frontend');
+				expect(error.value.phase).toBe('ready');
+				expect(error.value.message).toBe('host service readiness failed');
+				// ...and the load-bearing assertion: the raw, non-tagged cause is
+				// threaded through (NOT dropped). This is the exact regression the
+				// catch arm guards.
+				expect(error.value.cause).toBe(rawCause);
+			}
+		});
+	});
+
+	it.live('passes a pre-tagged HostServiceAcquireError through unchanged', () => {
+		// The timeout path produces a `HostServiceAcquireError` directly — the
+		// catch arm must NOT re-wrap it (that would double-stamp the template
+		// and bury the real message under `cause`). We drive this by rejecting
+		// the readiness signal with an already-tagged error.
+		const tagged = new HostServiceAcquireError({
+			serviceName: 'frontend',
+			cwd: '/cwd',
+			command: 'pnpm',
+			args: ['exec', 'vite'],
+			phase: 'ready',
+			message: 'host service did not emit readiness log within 5ms',
+		});
+		return Effect.gen(function* () {
+			const exit = yield* drive(tagged);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				// Same identity — not re-wrapped, not buried under `.cause`.
+				expect(error.value).toBe(tagged);
+				expect(error.value.message).toContain('did not emit readiness log');
+				expect(error.value.cause).toBeUndefined();
+			}
+		});
+	});
+});
+
 describe('host service routable capability', () => {
 	it('emits a host-loopback HTTP endpoint with the legacy default endpoint name', () => {
 		const decl = makeHostServiceRoutable({
@@ -507,6 +855,7 @@ describe('host service routable capability', () => {
 			upstream: { type: 'host-loopback', port: 6173 },
 			cors: true,
 			wireProtocol: 'http',
+			readiness: 'deferred',
 		});
 	});
 });

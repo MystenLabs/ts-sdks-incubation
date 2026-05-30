@@ -122,13 +122,18 @@ describe('_template boots end-to-end', () => {
 		});
 
 		// If the config grows a member, update this list deliberately.
+		// `action:template.greet` was added in review fix phase 22d so
+		// the in-tree `_template` example matches its README claim of
+		// "one minimal `action(...)` post-publish transaction"; that
+		// shifted the ordinals of every member declared after it.
 		const expectedKeys = [
 			'sui#0',
 			'account/alice#1',
 			'package:hello#2',
-			'account/bob#3',
-			'wallet#4',
-			'host-service/app#5',
+			'action:template.greet#3',
+			'account/bob#4',
+			'wallet#5',
+			'host-service/app#6',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);

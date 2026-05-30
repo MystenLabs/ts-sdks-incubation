@@ -1,5 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -25,13 +24,14 @@ import {
 	type SnapshotCaptureProgress,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
+import { withTempRoot } from '../../helpers/with-temp-root.ts';
 import {
 	dockerSaveBundleTar,
 	dockerSaveBundleTarWithLateMetadata,
 	tarEntry,
 } from './image-bundle-fixtures.ts';
 
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'snapshot-capture-test-'));
+const TEMP_PREFIX = 'snapshot-capture-test';
 const imageBundlePath = containerImagesBundlePath();
 
 const label = (role: string): ContainerLabelTuple => ({
@@ -57,16 +57,15 @@ const participant = (
 });
 
 it.effect('refuses to write a capture artifact with empty contributed identity', () =>
-	Effect.gen(function* () {
-		const root = freshRoot();
-		const runtime = runtimeStub({
-			handlesByRole: {},
-			saveImage: () => Stream.empty,
-			pauseCalls: [],
-			saveCalls: [],
-			unpauseCalls: [],
-		});
-		try {
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const runtime = runtimeStub({
+				handlesByRole: {},
+				saveImage: () => Stream.empty,
+				pauseCalls: [],
+				saveCalls: [],
+				unpauseCalls: [],
+			});
 			const emptyIdentityParticipant: SnapshotParticipant = {
 				...participant([]),
 				captureIdentity: Effect.succeed({}),
@@ -82,10 +81,8 @@ it.effect('refuses to write a capture artifact with empty contributed identity',
 				expect(error.value).toBeInstanceOf(IdentityEmptyError);
 			}
 			expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	}),
+		}),
+	),
 );
 
 const runtimeStub = (opts: {
@@ -183,13 +180,12 @@ const runCaptureExit = (
 	);
 
 it.effect('captures an already-paused container without unpausing it afterwards', () =>
-	Effect.gen(function* () {
-		const root = freshRoot();
-		const pauseCalls: string[] = [];
-		const saveCalls: ImageRef[] = [];
-		const removeImageCalls: ImageRef[] = [];
-		const unpauseCalls: string[] = [];
-		try {
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const removeImageCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
 			const runtime = runtimeStub({
 				handlesByRole: {
 					validator: {
@@ -220,19 +216,16 @@ it.effect('captures an already-paused container without unpausing it afterwards'
 			).toMatchObject({ version: 1 });
 			expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
 			expect(unpauseCalls).toEqual([]);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	}),
+		}),
+	),
 );
 
 it.effect('records user-facing labels in metadata without using them as artifact paths', () =>
-	Effect.gen(function* () {
-		const root = freshRoot();
-		const pauseCalls: string[] = [];
-		const saveCalls: ImageRef[] = [];
-		const unpauseCalls: string[] = [];
-		try {
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
 			const runtime = runtimeStub({
 				handlesByRole: {},
 				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
@@ -254,19 +247,16 @@ it.effect('records user-facing labels in metadata without using them as artifact
 			expect(exit.value.id).toBe('snap-images');
 			expect(exit.value.label).toBe('release candidate');
 			expect(existsSync(join(root, 'artifact', 'release candidate'))).toBe(false);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	}),
+		}),
+	),
 );
 
 it.effect('refuses corrupt runtime state before publishing snapshot metadata', () =>
-	Effect.gen(function* () {
-		const root = freshRoot();
-		const pauseCalls: string[] = [];
-		const saveCalls: ImageRef[] = [];
-		const unpauseCalls: string[] = [];
-		try {
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
 			const runtime = runtimeStub({
 				handlesByRole: {},
 				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
@@ -296,19 +286,16 @@ it.effect('refuses corrupt runtime state before publishing snapshot metadata', (
 				}
 			}
 			expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	}),
+		}),
+	),
 );
 
 it.effect('captures exited and created containers instead of silently omitting them', () =>
-	Effect.gen(function* () {
-		const root = freshRoot();
-		const pauseCalls: string[] = [];
-		const saveCalls: ImageRef[] = [];
-		const unpauseCalls: string[] = [];
-		try {
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const pauseCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
+			const unpauseCalls: string[] = [];
 			const runtime = runtimeStub({
 				handlesByRole: {
 					db: {
@@ -360,21 +347,18 @@ it.effect('captures exited and created containers instead of silently omitting t
 				'snapshot:worker-container',
 			]);
 			expect(unpauseCalls).toEqual([]);
-		} finally {
-			rmSync(root, { recursive: true, force: true });
-		}
-	}),
+		}),
+	),
 );
 
 describe('snapshot capture container images', () => {
 	it.effect('writes contribution docs for plugin keys containing slashes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const pluginKey = 'account/alice#0';
 				const runtime = runtimeStub({
 					handlesByRole: {},
@@ -411,20 +395,17 @@ describe('snapshot capture container images', () => {
 					encoding: 'json',
 					value: { account: 'alice' },
 				});
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('streams committed images to one deduplicated bundle and records restore refs', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const handlesByRole: Record<string, ContainerHandle> = {
 					validator: {
 						id: 'validator-id',
@@ -484,21 +465,91 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(removeImageCalls).toEqual([]);
 				expect(unpauseCalls).toEqual(['validator-container', 'postgres-container']);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
+	);
+
+	it.effect(
+		'unpauses every container the orchestrator intended to pause when pause fails mid-list',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					// Regression — prior to this fix, the `paused` array
+					// was populated AFTER `pause` returned success, so a
+					// pause failure on the SECOND container left the
+					// first container paused (its `unpause` never ran in
+					// the finalizer) and a half-paused second container
+					// was missed entirely. After the fix, every container
+					// the orchestrator INTENDED to pause is recorded
+					// before the syscall, so the finalizer attempts
+					// `unpause` for both — `unpause` against a non-paused
+					// container is a swallowed no-op.
+					const pauseCalls: string[] = [];
+					const saveCalls: ImageRef[] = [];
+					const unpauseCalls: string[] = [];
+					const handlesByRole: Record<string, ContainerHandle> = {
+						alpha: {
+							id: 'alpha-id',
+							name: 'alpha-container',
+							imageName: 'devstack-build:alpha',
+							status: 'running',
+							ips: [],
+						},
+						beta: {
+							id: 'beta-id',
+							name: 'beta-container',
+							imageName: 'devstack-build:beta',
+							status: 'running',
+							ips: [],
+						},
+					};
+					const failingRuntime: ContainerRuntime = {
+						...runtimeStub({
+							handlesByRole,
+							saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+							pauseCalls,
+							saveCalls,
+							unpauseCalls,
+						}),
+						pause: (handle) =>
+							Effect.gen(function* () {
+								pauseCalls.push(handle.name);
+								if (handle.name === 'beta-container') {
+									return yield* Effect.fail({
+										_tag: 'ContainerRuntimeError' as const,
+										reason: 'daemon-unreachable' as const,
+										detail: `pause failed for ${handle.name}`,
+									} satisfies ContainerRuntimeError);
+								}
+							}),
+					};
+
+					mkdirSync(join(root, 'artifact'), { recursive: true });
+					const exit = yield* runCaptureExit(root, failingRuntime, [
+						participant(['alpha', 'beta']),
+					]).pipe(Effect.provide(NodeFileSystem.layer));
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					// Both pauses attempted in order.
+					expect(pauseCalls).toEqual(['alpha-container', 'beta-container']);
+					// Finalizer unpauses BOTH — alpha (confirmed paused)
+					// AND beta (intent recorded before failure). The
+					// runtime sees both unpause calls; in a real Docker
+					// daemon beta would surface "container not paused"
+					// which is treated as best-effort.
+					expect(unpauseCalls.sort()).toEqual(['alpha-container', 'beta-container']);
+				}),
+			),
 	);
 
 	it.effect('keeps running containers paused through host-tree and contribution capture', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			const progress: SnapshotCaptureProgress[] = [];
-			let contributionSawUnpauseCalls: ReadonlyArray<string> = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
+				const progress: SnapshotCaptureProgress[] = [];
+				let contributionSawUnpauseCalls: ReadonlyArray<string> = [];
 				const runtimeStackRoot = join(root, 'runtime-stack');
 				mkdirSync(join(root, 'artifact'), { recursive: true });
 				mkdirSync(join(runtimeStackRoot, 'stateful'), { recursive: true });
@@ -566,20 +617,17 @@ describe('snapshot capture container images', () => {
 					pausedContainers: 2,
 					totalContainers: 2,
 				});
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('accepts saved image bundle metadata after leading layer blobs before publish', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -615,20 +663,17 @@ describe('snapshot capture container images', () => {
 				expect(readFileSync(join(root, 'artifact', imageBundlePath))).toHaveLength(
 					dockerSaveBundleTarWithLateMetadata(['snapshot:validator-container']).length,
 				);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects an image bundle without Docker or OCI metadata before publish', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -672,20 +717,17 @@ describe('snapshot capture container images', () => {
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects corrupt image bundle metadata before publish', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -726,20 +768,17 @@ describe('snapshot capture container images', () => {
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects saved image bundle tag mismatches before publish', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -781,19 +820,16 @@ describe('snapshot capture container images', () => {
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects duplicate managed container identities before image writes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: [
@@ -840,20 +876,17 @@ describe('snapshot capture container images', () => {
 				expect(saveCalls).toEqual([]);
 				expect(unpauseCalls).toEqual([]);
 				expect(existsSync(join(root, 'artifact', imageBundlePath))).toBe(false);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('removes committed temp tags when a later commit fails before image save', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: {
@@ -905,22 +938,19 @@ describe('snapshot capture container images', () => {
 					{ digest: 'sha256:db-container', tag: 'snapshot:db-container' },
 				]);
 				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect(
 		'removes a committed temp tag when snapshot tag validation fails before image save',
 		() =>
-			Effect.gen(function* () {
-				const root = freshRoot();
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				try {
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const pauseCalls: string[] = [];
+					const saveCalls: ImageRef[] = [];
+					const removeImageCalls: ImageRef[] = [];
+					const unpauseCalls: string[] = [];
 					const runtime = runtimeStub({
 						handlesByRole: {
 							db: {
@@ -962,20 +992,17 @@ describe('snapshot capture container images', () => {
 						{ digest: 'sha256:db-container', tag: 'sha256:db-container' },
 					]);
 					expect(unpauseCalls).toEqual(['db-container']);
-				} finally {
-					rmSync(root, { recursive: true, force: true });
-				}
-			}),
+				}),
+			),
 	);
 
 	it.effect('unpauses committed containers when image save fails', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -1025,20 +1052,17 @@ describe('snapshot capture container images', () => {
 					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
 				]);
 				expect(unpauseCalls).toEqual(['validator-container']);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('removes committed temp tags when batched image save fails immediately', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: {
@@ -1092,19 +1116,16 @@ describe('snapshot capture container images', () => {
 					{ digest: 'sha256:worker-container', tag: 'snapshot:worker-container' },
 				]);
 				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects digest-only image names before pause/save side effects', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -1139,19 +1160,16 @@ describe('snapshot capture container images', () => {
 				expect(pauseCalls).toEqual([]);
 				expect(saveCalls).toEqual([]);
 				expect(unpauseCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('rejects unsafe container label path segments before writing image artifacts', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			try {
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -1189,9 +1207,106 @@ describe('snapshot capture container images', () => {
 				expect(pauseCalls).toEqual([]);
 				expect(saveCalls).toEqual([]);
 				expect(unpauseCalls).toEqual([]);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
+	);
+});
+
+// Regression for Phase B3: identity-merge fail-on-conflict at capture
+// time. Pre-fix, capture silently last-write-wins'd colliding identity
+// keys; the conflict only surfaced at restore time (way after the
+// operator could have fixed the offending plugins). Post-fix, capture
+// fails AT THE CAPTURE SITE with `IdentityContributionConflictError`
+// (`_tag: 'SnapshotIdentityContributionConflict'`).
+describe('snapshot capture — identity contribution conflict', () => {
+	it.effect('two plugins contributing different values for the same key fail at capture', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
+				const runtime = runtimeStub({
+					handlesByRole: {},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					pauseCalls,
+					saveCalls,
+					unpauseCalls,
+				});
+
+				const a: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'sui#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+				const b: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'pyth#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:testnet' }),
+					captureContribution: Effect.succeed({}),
+				};
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [a, b]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					const tag = (error.value as { readonly _tag?: string })._tag;
+					expect(tag).toBe('SnapshotIdentityContributionConflict');
+					const conflict = error.value as unknown as {
+						readonly key: string;
+						readonly conflictingPlugins: ReadonlyArray<string>;
+						readonly values: ReadonlyArray<string>;
+					};
+					expect(conflict.key).toBe('chain');
+					expect([...conflict.conflictingPlugins].sort()).toEqual(['pyth#0', 'sui#0']);
+					expect([...conflict.values].sort()).toEqual(['sui:local', 'sui:testnet']);
+				}
+				// And NO artifact was written — the failure happens before
+				// metadata flush.
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+			}),
+		),
+	);
+
+	it.effect('two plugins contributing the SAME value for the same key succeed', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const pauseCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
+				const unpauseCalls: string[] = [];
+				const runtime = runtimeStub({
+					handlesByRole: {},
+					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
+					pauseCalls,
+					saveCalls,
+					unpauseCalls,
+				});
+
+				const a: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'sui#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+				const b: SnapshotParticipant = {
+					...participant([]),
+					plugin: 'pyth#0',
+					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
+					captureContribution: Effect.succeed({}),
+				};
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [a, b]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+			}),
+		),
 	);
 });

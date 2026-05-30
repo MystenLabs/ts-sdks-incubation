@@ -13,32 +13,31 @@
 // entries die with it (the architecture's "scope-local, never
 // module-level" rule).
 
-import { Context, Effect, Layer, Ref, Scope } from 'effect';
+import { Context, Effect, Layer, Scope } from 'effect';
 
 import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import { StrategyNotFoundError } from '../errors.ts';
+import { SpanAttr } from '../observability/spans.ts';
+import { makeScopedMultimap } from '../scoped-multimap/index.ts';
 
-/** One registered strategy under a capability key. */
-interface Entry {
-	readonly strategy: unknown;
-	readonly autoMounted: boolean;
-	readonly priority: number;
-	/** Sequence number for stable ordering by registration time. */
-	readonly seq: number;
-}
-
-/** Per-capability-key contributions. We keep the LIST (not the
- *  single winner) because:
+/** One registered strategy under a capability key. The multimap stamps
+ *  the registration `seq`; the payload carries the strategy + its
+ *  visibility/priority. We keep the LIST (not the single winner)
+ *  because:
  *   1. Renderers want to enumerate "N contributors registered".
  *   2. The selector is per-strategy and may inspect all of them.
  *   3. Auto-mounted vs user-supplied is a visibility distinction
  *      consumers need to surface separately. */
-type State = ReadonlyMap<string, ReadonlyArray<Entry>>;
+interface Entry {
+	readonly strategy: unknown;
+	readonly autoMounted: boolean;
+	readonly priority: number;
+}
 
 export class StrategyRegistryService extends Context.Service<
 	StrategyRegistryService,
 	StrategyRegistry
->()('@devstack-rewrite/substrate/StrategyRegistry') {}
+>()('@devstack/substrate/StrategyRegistry') {}
 
 /**
  * Layer. Constructed per-scope; the orchestrator hands the registry
@@ -48,8 +47,7 @@ export class StrategyRegistryService extends Context.Service<
 export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer.effect(
 	StrategyRegistryService,
 	Effect.gen(function* () {
-		const state = yield* Ref.make<State>(new Map());
-		const seqRef = yield* Ref.make(0);
+		const store = yield* makeScopedMultimap<string, Entry>();
 
 		const register: StrategyRegistry['register'] = <Key extends string, S>(
 			key: Key,
@@ -57,36 +55,17 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 			options?: { readonly autoMounted?: boolean; readonly priority?: number },
 		) =>
 			Effect.gen(function* () {
-				const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
 				const entry: Entry = {
 					strategy,
 					autoMounted: options?.autoMounted ?? false,
 					priority: options?.priority ?? 0,
-					seq,
 				};
-				yield* Ref.update(state, (current) => {
-					const existing = current.get(key) ?? [];
-					const next = new Map(current);
-					next.set(key, [...existing, entry]);
-					return next;
-				});
-				// Scope finalizer: drop this entry on scope close.
-				// Sequence-number match makes parallel registrations
-				// safe — we only drop the entry we added.
-				yield* Effect.addFinalizer((_exit) =>
-					Ref.update(state, (current) => {
-						const existing = current.get(key);
-						if (!existing) return current;
-						const filtered = existing.filter((e) => e.seq !== seq);
-						const next = new Map(current);
-						if (filtered.length === 0) next.delete(key);
-						else next.set(key, filtered);
-						return next;
-					}),
-				);
+				// The multimap stamps the seq and wires the drop-by-seq
+				// finalizer — parallel registrations stay isolated.
+				yield* store.register([{ key, value: entry }]);
 				yield* Effect.annotateCurrentSpan({
-					'strategy.key': key,
-					'strategy.autoMounted': entry.autoMounted,
+					[SpanAttr.strategyKey]: key,
+					[SpanAttr.strategyAutoMounted]: entry.autoMounted,
 				});
 			}).pipe(Effect.withSpan('substrate.strategyRegistry.register')) as Effect.Effect<
 				void,
@@ -96,12 +75,12 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 
 		const get: StrategyRegistry['get'] = <Key extends string, S>(key: Key) =>
 			Effect.gen(function* () {
-				const current = yield* Ref.get(state);
-				const entries = current.get(key);
-				if (!entries || entries.length === 0) {
+				const entries = yield* store.entriesFor(key);
+				if (entries.length === 0) {
+					const keys = yield* store.keys;
 					return yield* new StrategyNotFoundError({
 						capabilityKey: key,
-						registeredKeys: [...current.keys()],
+						registeredKeys: keys,
 					});
 				}
 				// Resolution policy:
@@ -114,18 +93,17 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 				let best = entries[0]!;
 				for (let i = 1; i < entries.length; i++) {
 					const e = entries[i]!;
-					if (e.priority > best.priority || (e.priority === best.priority && e.seq > best.seq)) {
+					if (
+						e.value.priority > best.value.priority ||
+						(e.value.priority === best.value.priority && e.seq > best.seq)
+					) {
 						best = e;
 					}
 				}
-				return best.strategy as S;
+				return best.value.strategy as S;
 			}).pipe(Effect.withSpan('substrate.strategyRegistry.get', { attributes: { key } }));
 
-		const list: StrategyRegistry['list'] = () =>
-			Effect.gen(function* () {
-				const current = yield* Ref.get(state);
-				return [...current.keys()];
-			});
+		const list: StrategyRegistry['list'] = () => store.keys;
 
 		return StrategyRegistryService.of({
 			get: get as StrategyRegistry['get'],

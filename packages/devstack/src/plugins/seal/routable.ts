@@ -90,11 +90,3 @@ export const makeSealRoutable = (inputs: {
 	cors: true,
 	wireProtocol: 'http',
 });
-
-/** Known-deployment modes do NOT route through the local router —
- *  the URL points at a remote endpoint (Mysten's testnet key
- *  server). We expose a sentinel routable that the orchestrator
- *  skips (substrate-blind: the orchestrator filters by upstream
- *  type, not by service name). For now, known modes return `null`
- *  from this builder. */
-export const KNOWN_MODE_ROUTABLE: null = null;

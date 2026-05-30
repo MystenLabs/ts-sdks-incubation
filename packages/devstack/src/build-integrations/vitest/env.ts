@@ -21,6 +21,8 @@
 // reads happen at module import time; readers fetch on demand so
 // tests can stub `process.env` per-case.
 
+import { DEFAULT_DISCOVERY_STACK } from '../runtime/resolve-discovery-env.ts';
+
 // -----------------------------------------------------------------------------
 // Canonical env-var names
 // -----------------------------------------------------------------------------
@@ -50,10 +52,11 @@ export type VitestEnvVarName = (typeof VITEST_ENV_VARS)[keyof typeof VITEST_ENV_
 // Defaults
 // -----------------------------------------------------------------------------
 
-/** Default stack name when `DEVSTACK_STACK` is unset. Mirrors the
- *  engine's "main" default — but tests should explicitly set
- *  `DEVSTACK_STACK=test` rather than rely on this. */
-export const DEFAULT_STACK_NAME = 'main';
+/** Default stack name when `DEVSTACK_STACK` is unset. Re-exported from
+ *  the discovery ladder's `DEFAULT_DISCOVERY_STACK` (single source of
+ *  truth) — but tests should explicitly set `DEVSTACK_STACK=test`
+ *  rather than rely on this. */
+export const DEFAULT_STACK_NAME = DEFAULT_DISCOVERY_STACK;
 
 /** Default runtime root when neither `DEVSTACK_RUNTIME_ROOT` nor the
  *  legacy `DEVSTACK_STATE_DIR` is set. */

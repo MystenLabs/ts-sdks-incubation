@@ -9,6 +9,25 @@ import type {
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { SpanAttr } from './observability/spans.ts';
 
+/** Sentinel `stack` value for containers / volumes / networks that are
+ *  shared across a single app's stacks but isolated PER APP — the
+ *  resource lives at app-scope, not stack-scope.
+ *
+ *  Current producer: the per-app sui chain-build container
+ *  (`plugins/sui/chain-build-container.ts`) reuses one container
+ *  across multiple stacks of the same app to keep the bind-mounted
+ *  Move dep cache warm.
+ *
+ *  Lifecycle-prune + the prune CLI compare against this sentinel to
+ *  decide whether a resource group is shared (pinned while any
+ *  sibling stack under the same app is live) vs per-stack (pruned
+ *  with its stack).
+ *
+ *  The vocabulary lives here alongside the `{ app, stack, plugin,
+ *  role }` label tuple — managed-container.ts is the canonical
+ *  owner. */
+export const PER_APP_SHARED_STACK = '_per-app_' as const;
+
 export interface ManagedContainerIdentity {
 	readonly app: string;
 	readonly stack: string;

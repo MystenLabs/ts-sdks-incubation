@@ -26,6 +26,42 @@ type PackDryRunEntry = {
 const PACK_DRY_RUN_TIMEOUT_MS = 120_000;
 let cachedPackFiles: string[] | null = null;
 
+// Every subpath listed here MUST appear in `pkg.exports`. Stripping any
+// of these silently breaks a real consumer wiring; the spot-check style
+// (one explicit `toHaveProperty('./vitest/setup')`) didn't pin the rest.
+const REQUIRED_EXPORTS: ReadonlyArray<readonly [string, string]> = [
+	// Root barrel — `import { ... } from '@mysten-incubation/devstack'`.
+	['.', 'root barrel — plugin-author surface + runtime services'],
+	// Vitest preset barrel (re-exports the helpers).
+	['./vitest', 'vitest preset barrel'],
+	// Vitest setup file consumed by `setupFiles` in user vitest configs.
+	['./vitest/setup', 'vitest setup file (referenced by vitest preset)'],
+	// Playwright preset barrel (re-exports config helpers).
+	['./playwright', 'playwright preset barrel'],
+	// Playwright global-setup file referenced by `playwright/config.ts`
+	// `DEFAULT_GLOBAL_SETUP`. Stripping this silently breaks the default
+	// playwright preset for every consumer.
+	['./playwright/global-setup', 'playwright global setup (DEFAULT_GLOBAL_SETUP target)'],
+	// Vite preset barrel — `devstackVitePlugin()` aliases `@generated` at
+	// the active stack's codegen output dir (per-stack codegen design).
+	['./vite', 'vite preset barrel — @generated alias plugin'],
+	// Build-integration runtime surface consumed by user app code that
+	// reads the stack context emitted by `supervise()`.
+	['./runtime', 'build-integration runtime — stack-context reader'],
+];
+
+// Subpaths that MUST NOT be exported. Devstack consumers must NEVER
+// import from devstack internals (ARCHITECTURE: public surface is the
+// root barrel + the named subpaths above; everything else is private).
+const FORBIDDEN_EXPORTS: ReadonlyArray<readonly [string, string]> = [
+	['./src', 'source tree is private — consumers import compiled dist'],
+	['./substrate', 'substrate is internal — see ARCHITECTURE public-surface rules'],
+	['./orchestrators', 'orchestrators are internal'],
+	['./plugins', 'plugin internals are private — consumers import named plugins from root barrel'],
+	['./cli', 'CLI is a `bin`, not an importable module'],
+	['./dist', 'never expose the build output root directly'],
+];
+
 const readPackageJson = (): PackageJson => JSON.parse(readText('package.json')) as PackageJson;
 
 const exportedTargets = () => {
@@ -63,9 +99,27 @@ describe('release surface static checks', () => {
 		expect(pkg.files).not.toContain('src');
 		expect(pkg.exports).not.toHaveProperty('./samples');
 		expect(pkg.exports).toHaveProperty('./vitest/setup');
-		expect(pkg.exports).not.toHaveProperty('./vite');
+		// `./vite` is now a first-class public subpath (per-stack codegen
+		// `@generated` alias plugin) — see REQUIRED_EXPORTS above.
+		expect(pkg.exports).toHaveProperty('./vite');
 		expect(pkg.exports).not.toHaveProperty('./browser');
 		expect(pkg.exports).not.toHaveProperty('./browser/setup');
+	});
+
+	it('exposes every required public subpath', () => {
+		const pkg = readPackageJson();
+		const exports = pkg.exports ?? {};
+		for (const [specifier, why] of REQUIRED_EXPORTS) {
+			expect(exports, `missing ${specifier} (${why})`).toHaveProperty(specifier);
+		}
+	});
+
+	it('does not expose internal subpaths', () => {
+		const pkg = readPackageJson();
+		const exports = pkg.exports ?? {};
+		for (const [specifier, why] of FORBIDDEN_EXPORTS) {
+			expect(exports, `${specifier} must remain private (${why})`).not.toHaveProperty(specifier);
+		}
 	});
 
 	it('points every public export at built JavaScript and declaration files', () => {
@@ -138,7 +192,9 @@ describe('release surface static checks', () => {
 	it('build entries match the public release surface', () => {
 		const config = readText('tsdown.config.ts');
 
-		expect(config).not.toContain("'src/build-integrations/vite/index.ts'");
+		// `./vite` IS now a first-class public build entry (per-stack codegen
+		// `@generated` alias plugin) — its tsdown entry is expected/required.
+		expect(config).toContain("'src/build-integrations/vite/index.ts'");
 		expect(config).not.toContain("'src/build-integrations/browser/index.ts'");
 		expect(config).not.toContain("'src/build-integrations/browser/setup.ts'");
 		expect(config).not.toContain("'src/samples/index.ts'");
@@ -166,12 +222,14 @@ describe('release surface static checks', () => {
 		const substrate = readText('src/substrate/index.ts');
 
 		for (const leaked of [
-			'PluginErrorContribution',
+			// `PluginErrorContribution` is intentionally part of the public
+			// plugin-author vocabulary — custom plugin authors need it to
+			// declare `errorContributions` (plugin-author-symmetry invariant).
 			'LifecycleFact',
 			'chainProbeFor',
 			'ERROR_TAGS',
 			'CoinRegistryService',
-			'coinRegistryLayer',
+			'layerCoinRegistry',
 			'discoverCoinsFromPublish',
 			'performMint',
 			'makeWalletRoutable',
@@ -182,13 +240,11 @@ describe('release surface static checks', () => {
 			'SealManagerTagId',
 			'ActionReceiptSchema',
 			'signAndExecute',
-			'ActionLifecyclePhase',
 			'DynamicDiscriminator',
 			'StaticDiscriminator',
 			'ActionObjectChange',
 			'SuiExternalOptions',
 			'chainOverride',
-			'ForkMeta',
 			'SeedObjectsAccumulator',
 			'WaitForTransactionsReady',
 			'PackageCaptureCallback',
@@ -197,8 +253,6 @@ describe('release surface static checks', () => {
 			'PackagePublishObjectChange',
 			'PickCreatedByTypeOptions',
 			'pickCreatedByType',
-			'FaucetDispatcher',
-			'FaucetRequest',
 			'requestFundsOnce',
 			'requestFundsWithRetry',
 			'enableRouter',
@@ -229,13 +283,20 @@ describe('release surface static checks', () => {
 	it('pins build-integration manifest version to the writer version', () => {
 		const writer = readText('src/substrate/runtime/manifest/manifest.ts');
 		const reader = readText('src/build-integrations/runtime/read-stack-context.ts');
+		// L5 read path never reaches into substrate directly; the manifest
+		// types flow through the `manifest-types.ts` bridge per the L5/
+		// substrate boundary. The bridge itself MUST re-export from the
+		// writer's substrate module so reader + writer share one type.
+		const bridge = readText('src/build-integrations/runtime/manifest-types.ts');
 
 		const writerVersion = writer.match(/CURRENT_MANIFEST_VERSION = (\d+) as const/);
 		const readerVersion = reader.match(/CONSUMER_MANIFEST_VERSION = (\d+) as const/);
 
 		expect(writerVersion?.[1]).toBeDefined();
 		expect(readerVersion?.[1]).toBe(writerVersion?.[1]);
-		expect(reader).toContain('ManifestEnvelopeSchema, type ManifestEnvelope');
-		expect(reader).toContain('../../substrate/manifest.ts');
+		expect(reader).toContain('ManifestEnvelopeSchema');
+		expect(reader).toContain('type ManifestEnvelope');
+		expect(reader).toContain("from './manifest-types.ts'");
+		expect(bridge).toContain('../../substrate/manifest.ts');
 	});
 });

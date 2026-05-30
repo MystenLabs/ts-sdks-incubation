@@ -22,7 +22,7 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { SeedManifestMismatchError, SuiPluginError } from './errors.ts';
+import type { SuiConfigError, SuiPluginError } from './errors.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type { SuiOptions } from './mode/spec.ts';
@@ -37,7 +37,7 @@ import type { PortBroker } from '../../substrate/runtime/port-broker/index.ts';
 
 /** Bundled result of one acquire — resolved metadata + the user-facing
  *  client. The barrel projects this into the Sui resource value; the
- *  resolved metadata feeds the Codegenable + NetworkResolver contributions. */
+ *  resolved metadata feeds the Codegenable contribution. */
 export interface SuiBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;
@@ -57,7 +57,11 @@ export const bootSuiService = (
 	portBroker: PortBroker,
 	paths: StackPaths,
 	opts: SuiOptions,
-): Effect.Effect<SuiBootResult, SuiPluginError | SeedManifestMismatchError, Scope.Scope> => {
+): Effect.Effect<
+	SuiBootResult,
+	SuiPluginError | SuiConfigError,
+	Scope.Scope
+> => {
 	switch (opts.mode) {
 		case 'local':
 			return bootLocalMode(runtime, identity, portBroker, opts).pipe(

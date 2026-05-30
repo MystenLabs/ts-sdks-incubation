@@ -8,7 +8,6 @@
 export {
 	bootstrap,
 	DEFAULT_TRAEFIK_IMAGE,
-	HOST_GATEWAY_ALIAS,
 	layerTraefikContainerOpsDocker,
 	layerTraefikContainerOpsStub,
 	ROUTER_PROFILE_LABEL,
@@ -66,7 +65,6 @@ export {
 	ROUTER_ROUTE_LEASE_VERSION,
 	renderRouteYaml,
 	resolveRoute,
-	STATIC_PROVIDER_FILENAME,
 	type DispatchRouteMetadata,
 	type RouteCollisionMetadata,
 	type RouteLeaseMetadata,

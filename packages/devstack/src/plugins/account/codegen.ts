@@ -16,9 +16,9 @@
 // `name`, `address`, `scheme`, and `source` fields land on disk.
 // `sensitive: false` is correct because none of these are secret.
 
-import { Effect } from 'effect';
-
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+
+import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
 /** The typed shape the emitted file exports. Per-account record keyed
  *  by name. */
@@ -38,14 +38,17 @@ export interface AccountBindings {
 export const makeAccountCodegen = <Name extends string>(parts: {
 	readonly name: Name;
 	readonly resolved: AccountBindings;
-}): CodegenableDecl<`account/${Name}`> => ({
-	kind: 'codegenable',
-	emitterName: `account/${parts.name}` as `account/${Name}`,
-	outputPath: `accounts/${parts.name}.ts`,
-	sensitive: false,
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst(parts.name, parts.resolved);
-			return ctx.done();
-		}),
-});
+}): CodegenableDecl<`account/${Name}`> =>
+	defineSimpleConstExport({
+		emitterName: `account/${parts.name}` as `account/${Name}`,
+		outputPath: `accounts/${parts.name}.ts`,
+		exportName: parts.name,
+		value: parts.resolved,
+		aggregate: {
+			kind: 'account',
+			bucket: 'accounts.ts',
+			// Pass-through: this decl's exported map already keys by
+			// account name, which is the aggregate's merge key.
+			project: (exported) => exported,
+		},
+	});

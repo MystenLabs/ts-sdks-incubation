@@ -15,7 +15,6 @@
 import { Effect, Schema } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { AccountFundingRequest, AccountFundingStrategy } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import type { WalExchangeProbeKey } from './wal-swap.ts';
@@ -146,15 +145,3 @@ export const makeWalFaucetStrategy = (opts: WalFaucetStrategyOptions): WalFaucet
 				}).pipe(Effect.asVoid),
 });
 
-/** Build the StrategyContributor decl. The faucet plugin's
- *  dispatcher reads this key off the registry and dispatches WAL
- *  funding requests through it. */
-export const makeWalFaucetContribution = (
-	fullCoinType: string,
-	opts: WalFaucetStrategyOptions,
-): StrategyContributorDecl<ReturnType<typeof walFaucetStrategyKey>, WalFaucetStrategy> => ({
-	kind: 'strategy-contributor',
-	capabilityKey: walFaucetStrategyKey(fullCoinType),
-	strategy: makeWalFaucetStrategy(opts),
-	autoMounted: true,
-});

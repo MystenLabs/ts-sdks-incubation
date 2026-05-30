@@ -25,6 +25,8 @@
 // coin instance, so the substrate's compose-time dedup detects collisions
 // cleanly. Mirrors the Package plugin's per-instance resource identity.
 
+import { createHash } from 'node:crypto';
+
 import { Effect } from 'effect';
 
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
@@ -35,11 +37,11 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
-import type { AccountFundingStrategy } from '../account/funding.ts';
+import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
 
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
-import { COIN_REGISTRY_CAPABILITY_KEY, CoinRegistryService } from './registry.ts';
+import { CoinRegistryService } from './registry.ts';
 import { COIN_ERROR_TAGS } from './errors.ts';
 import { acquireCoin, type CoinAddressForm, type CoinValue } from './service.ts';
 import { BUILTIN_COINS } from './address-resolution.ts';
@@ -62,6 +64,39 @@ export const coinResourceId = <Sym extends string>(symbol: Sym): `coin:${Sym}` =
 
 export type CoinResourceId<Sym extends string> = `coin:${Sym}`;
 
+/** Maximum length of the readable prefix in a `coin.known(...)` resource
+ *  id. Two long coin types sharing this prefix length would silently
+ *  collide in the substrate's compose-time dedup (string equality on
+ *  the resource id), so beyond this length we append a short hash of
+ *  the full coin type to disambiguate. */
+const COIN_KNOWN_PREFIX_MAX = 60;
+
+/** Length of the SHA-256 hex suffix appended to long `coin.known(...)`
+ *  resource ids. Eight chars (~32 bits) is the same width used by other
+ *  collision-disambiguation hashes in the package (e.g. router profile,
+ *  fork preimage suffixes). */
+const COIN_KNOWN_HASH_SUFFIX_LEN = 8;
+
+/** Derive a stable, human-readable, collision-free resource-id segment
+ *  for `coin.known(fullCoinType)`. Short types pass through as the
+ *  readable `<addr>_<module>_<witness>` form; long types get a hash
+ *  suffix so two types sharing a 60-char prefix can coexist. */
+const coinKnownResourceKey = (fullCoinType: string): string => {
+	const readable = fullCoinType.replace(/^0x/, '').replace(/::/g, '_');
+	if (readable.length <= COIN_KNOWN_PREFIX_MAX) {
+		return readable;
+	}
+	const hash = createHash('sha256')
+		.update(fullCoinType)
+		.digest('hex')
+		.slice(0, COIN_KNOWN_HASH_SUFFIX_LEN);
+	// The readable prefix is truncated to leave room for the `_` divider
+	// (`-1`) and the hash suffix (`-COIN_KNOWN_HASH_SUFFIX_LEN`), so the
+	// resulting `<prefix>_<hash>` id has total length
+	// ≤ COIN_KNOWN_PREFIX_MAX — bounded and deterministic per input.
+	return `${readable.slice(0, COIN_KNOWN_PREFIX_MAX - COIN_KNOWN_HASH_SUFFIX_LEN - 1)}_${hash}`;
+};
+
 type PackageNameOf<Pkg extends PackageMember> =
 	Pkg extends ResourceRef<`package:${infer Name}`, PackageMemberValue> ? Name : string;
 
@@ -82,27 +117,21 @@ const packageNameFromMember = <Pkg extends PackageMember>(pkg: Pkg): PackageName
 // and the opaque `client` (`Transaction.build({client})` in the mint
 // produce body).
 //
-// `sui.sdk.core.getObject` is on the typed `SuiSdkShim`; `getCoinMetadata`
-// lives on the underlying `SuiGrpcClient` reached via the opaque
-// `sui.sdk.client`. We project both onto a single `MetadataSdkShim &
-// MintSdkShim` here at the boundary — the cast mirrors STYLE_GUIDE §14
-// (localized cast through an opaque SDK surface), kept narrow to one
-// method projection.
+// `sui.sdk.core.getObject` lives on the typed `SuiSdkShim` directly;
+// `getCoinMetadata` lives on the underlying `ClientWithCoreApi['core']`
+// reached via `sui.sdk.client.core`. Project both onto the combined
+// `MetadataSdkShim & MintSdkShim` here at the boundary.
 
-const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => {
-	const grpcClient = sui.sdk.client as {
-		readonly core: {
-			readonly getCoinMetadata: (args: { readonly coinType: string }) => Promise<unknown>;
-		};
-	};
-	return {
-		core: {
-			getObject: sui.sdk.core.getObject,
-			getCoinMetadata: (args) => grpcClient.core.getCoinMetadata(args),
-		},
-		client: sui.sdk.client,
-	};
-};
+const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
+	core: {
+		getObject: sui.sdk.core.getObject,
+		getCoinMetadata: (args) => sui.sdk.client.core.getCoinMetadata(args),
+		listCoins: sui.sdk.core.listCoins,
+	},
+	client: sui.sdk.client,
+	// Fork mode mints offline with explicit gas (sui-fork has no simulate).
+	forkMode: sui.fork !== null,
+});
 
 // ---------------------------------------------------------------------------
 // Per-form capability builders — dynamic (POST-acquire). Receive the
@@ -127,33 +156,58 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 		symbol,
 		resolved: bindings,
 	});
-	// Auto-mounted strategy contribution — siblings (Wallet, Faucet's
-	// treasury-cap mint, Deepbook market-maker) read the per-stack
-	// registry via this seam. The actual `CoinRegistry` instance is
-	// wired at compose time (one registry per stack); each coin
-	// contributes its `register(record)` call as a side effect at
-	// acquire.
-	const registryContribution: StrategyContributorDecl<
-		typeof COIN_REGISTRY_CAPABILITY_KEY,
-		{ readonly symbol: string }
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: COIN_REGISTRY_CAPABILITY_KEY,
-		strategy: { symbol },
-		autoMounted: true,
-	};
+	// Project the coin's narrow `{address, amount}`-shaped strategy
+	// to the wider cross-plugin `AccountFundingStrategy` contract
+	// (`{address, amount, account}`) at the capability boundary. The
+	// coin publisher signs the mint via its own lease (see
+	// `coin/service.ts → mint`), so `account` is dropped honestly
+	// here — the type-level contract is satisfied structurally
+	// without a misleading `as` cast on the contribution literal.
+	// Direct consumers (e.g. deepbook seed funding) keep using the
+	// narrow shape on `CoinValue.fundingStrategy` directly.
+	const narrowStrategy = resolved.fundingStrategy;
 	const fundingContribution =
-		resolved.fundingStrategy === undefined
+		narrowStrategy === undefined
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
-						strategy: resolved.fundingStrategy,
+						strategy: {
+							// usesAccountSigner: true — the coin strategy mints via
+							// the publisher account's own `withTransactionSigner`,
+							// which acquires the per-address lease
+							// `account:<publisherAddress>` internally (service.ts
+							// mint -> performMint -> signAndDispatch). The account
+							// funding dispatcher must therefore NOT wrap the request
+							// in its own `account:<fundedAddress>` lease. Two reasons:
+							//   1. The funded account is a passive `recipient` in
+							//      `mint_and_transfer` — it neither signs nor
+							//      contributes objects, so the funded-address lease
+							//      serializes nothing; the publisher lease already
+							//      serializes the only account whose gas + treasury
+							//      cap the mint consumes.
+							//   2. When the funded address IS the publisher address
+							//      (fund a publisher with a coin it published), the
+							//      dispatcher's `account:<funded>` lease and the
+							//      mint's `account:<publisher>` lease collapse to the
+							//      same non-reentrant key, so the inner acquire would
+							//      block forever. Owning the lease inside the strategy
+							//      (signalled by this flag) makes self-funding
+							//      single-acquire and deadlock-free while leaving the
+							//      cross-account path's mint + publisher lease
+							//      unchanged.
+							// Mirrors deepbook's DEEP strategy (faucet-strategy.ts),
+							// which sets the same flag and self-acquires via
+							// `req.account.withTransactionSigner`.
+							usesAccountSigner: true,
+							request: (req) =>
+								narrowStrategy.request({ address: req.address, amount: req.amount }),
+						} satisfies AccountFundingStrategy,
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
 				];
-	return [snap, codegen, registryContribution, ...fundingContribution] as const;
+	return [snap, codegen, ...fundingContribution] as const;
 };
 
 // ---------------------------------------------------------------------------
@@ -201,6 +255,13 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		id: coinRef.id,
 		dependsOn: { pkg, sui: suiResource },
 		role: 'task',
+		// Coin lifecycle is action-shaped — uses the action section bucket;
+		// see substrate/projection.ts `RowSection` for the canonical list.
+		// All three coin factories (`fromPackage` / `known` / `builtin`)
+		// share this deliberate bucketing; promoting to a dedicated
+		// `'coin'` section would ripple through every projection / TUI
+		// consumer for marginal display value.
+		section: 'action',
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
 				const artifactPublisher = yield* ArtifactPublisherService;
@@ -235,9 +296,13 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
  *  invariant. Resource id uses a deterministic-but-readable derivation of
  *  the coin type so collisions surface at compose time. */
 export const known = <FullType extends string>(fullCoinType: FullType) => {
-	// Derive a resource id from the type: keep it readable but unique. The
-	// substrate's compose-time dedup uses string equality on the id.
-	const id = fullCoinType.replace(/^0x/, '').replace(/::/g, '_').slice(0, 60);
+	// Derive a resource id from the type: keep it readable but unique.
+	// The substrate's compose-time dedup uses string equality on the id,
+	// so two long coin types that share a 60-char prefix MUST NOT collide.
+	// When the projection truncates, append a short hash of the FULL coin
+	// type so the suffix disambiguates the two — the readable prefix
+	// stays human-recognizable while the hash guarantees uniqueness.
+	const id = coinKnownResourceKey(fullCoinType);
 	const coinRef = resource<CoinResourceId<typeof id>, CoinValue>(
 		coinResourceId(id) as CoinResourceId<typeof id>,
 	);
@@ -245,6 +310,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
@@ -276,6 +342,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		id: coinRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'action',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
@@ -315,11 +382,7 @@ export type { ResolvedCoin, BuiltinCoinName } from './address-resolution.ts';
 export { BUILTIN_COINS } from './address-resolution.ts';
 
 export type { CoinRecord, CoinRegistry, CoinKey } from './registry.ts';
-export {
-	COIN_REGISTRY_CAPABILITY_KEY,
-	CoinRegistryService,
-	coinRegistryLayer,
-} from './registry.ts';
+export { CoinRegistryService, layerCoinRegistry } from './registry.ts';
 
 export type { CoinBindings } from './codegen.ts';
 
@@ -343,3 +406,5 @@ export { performMint, MintedCoinVerifyShape, mintTxError, mintParseError } from 
 
 export type { CoinError, CoinPhase } from './errors.ts';
 export { coinError, COIN_ERROR_TAGS } from './errors.ts';
+
+export { CoinSpans } from './spans.ts';

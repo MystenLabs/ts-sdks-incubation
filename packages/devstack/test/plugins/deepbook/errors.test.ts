@@ -1,6 +1,4 @@
-// Unit tests for deepbook's error vocabulary + the fork-refusal
-// shape (defense-in-depth — the primary refusal is type-level via
-// the mode-narrowed factory).
+// Unit tests for deepbook's error vocabulary.
 
 import { describe, expect, it } from 'vitest';
 
@@ -8,7 +6,6 @@ import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
 	deepbookPluginError,
-	forkIncompatibleError,
 } from '../../../src/plugins/deepbook/errors.ts';
 
 describe('deepbookPluginError', () => {
@@ -37,20 +34,6 @@ describe('deepbookConfigError', () => {
 		expect(err._tag).toBe('DeepbookConfigError');
 		expect(err.field).toBe('publisher');
 		expect(err.hint).toBe('pass a member');
-	});
-});
-
-describe('forkIncompatibleError', () => {
-	it('refuses local deploy on fork networks', () => {
-		const err = forkIncompatibleError('sui:mainnet-fork');
-		expect(err._tag).toBe('ForkIncompatibleError');
-		expect(err.variant).toBe('deepbookLocal');
-		expect(err.network).toBe('sui:mainnet-fork');
-	});
-
-	it('includes an actionable hint pointing at the known branch', () => {
-		const err = forkIncompatibleError('sui:testnet-fork');
-		expect(err.hint).toMatch(/known/i);
 	});
 });
 

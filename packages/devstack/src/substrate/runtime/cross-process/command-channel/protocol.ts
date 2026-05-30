@@ -66,6 +66,11 @@ export const EventRecordSchema = Schema.Union([
 		kind: Schema.Literal('ack'),
 		correlatesTo: Schema.String,
 		detail: Schema.optional(Schema.String),
+		/** Optional structured payload (e.g. snapshot.capture's captured
+		 *  metadata). Lets the publisher's `awaitCompletion` carry a
+		 *  typed result through to the caller without the caller having
+		 *  to tail the engine event stream for completion. */
+		payload: Schema.optional(Schema.Unknown),
 	}),
 	Schema.Struct({
 		protocol: Schema.Literal(COMMAND_CHANNEL_PROTOCOL_VERSION),
@@ -75,6 +80,10 @@ export const EventRecordSchema = Schema.Union([
 		correlatesTo: Schema.String,
 		message: Schema.String,
 		detail: Schema.optional(Schema.String),
+		/** Optional structured payload (e.g. snapshot.captureFailed's
+		 *  summary, snapshot.captureSkipped's reason). Mirrors the `ack`
+		 *  payload contract — see comment above. */
+		payload: Schema.optional(Schema.Unknown),
 	}),
 ]);
 

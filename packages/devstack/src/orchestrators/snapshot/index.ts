@@ -8,7 +8,6 @@
 // Service surface
 export {
 	layerSnapshotOrchestrator,
-	SnapshotBootError,
 	SnapshotIdError,
 	SnapshotOrchestratorService,
 	type SnapshotOrchestrator,
@@ -26,6 +25,10 @@ export {
 	type SnapshotProgressReporter,
 } from './capture.ts';
 
+// Command-level primitive shared by every `snapshot.capture` publisher
+// (supervisor command handler, offline CLI path, future web dashboard).
+export { captureSnapshot, type CaptureSnapshotArgs } from './capture-command.ts';
+
 // Restore
 export {
 	RESTORE_PENDING_FILE_NAME,
@@ -38,17 +41,36 @@ export {
 	type RestoreParticipant,
 } from './restore.ts';
 
+// Restore-pending recovery
+export {
+	recoverPendingRestore,
+	RestorePendingRecoveryError,
+	type RestorePendingRecoverySummary,
+} from './recover-pending.ts';
+
+// Pending marker shapes — shared between `restore.ts` (writer) and
+// `recover-pending.ts` (reader). Re-exported for tests + consumers
+// that need to inspect a marker out-of-band.
+export {
+	makePendingMarkerDocument,
+	pendingMarkerPath,
+	RestorePendingMarkerIoError,
+	type RestorePendingContainer,
+} from './pending-marker.ts';
+
 // Wipe
-export { runWipe, SNAPSHOTS_DIR_NAME, WipePhaseError, type WipeInputs } from './wipe.ts';
+export {
+	CACHE_DIR_NAME,
+	planWipe,
+	runWipe,
+	SNAPSHOTS_DIR_NAME,
+	WipePhaseError,
+	type WipeInputs,
+	type WipeTargets,
+} from './wipe.ts';
 
 // Prune
-export {
-	PrunePhaseError,
-	runPrune,
-	type ClassifierDispatch,
-	type PruneInputs,
-	type PruneResult,
-} from './prune.ts';
+export { PrunePhaseError, runPrune, type PruneInputs, type PruneResult } from './prune.ts';
 
 // Identity guard
 export {
@@ -74,6 +96,7 @@ export {
 	IdentitySliceSchema,
 	IntegrityFileSchema,
 	OpaqueContributionStateSchema,
+	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -96,6 +119,13 @@ export {
 
 export {
 	computeArtifactIntegrity,
+	SnapshotIntegrityError,
 	verifyArtifactIntegrity,
 	writeArtifactIntegrity,
 } from './integrity.ts';
+
+export {
+	readSnapshotStateDocument,
+	SnapshotStateDocumentError,
+	writeSnapshotStateDocument,
+} from './state-document.ts';

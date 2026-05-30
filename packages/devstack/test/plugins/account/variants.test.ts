@@ -1,9 +1,10 @@
-import { mkdtempSync, readFileSync, statSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
+
+import { withTempRootAsync } from '../../helpers/with-temp-root.ts';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
@@ -20,6 +21,7 @@ import type { AcquireContext } from '../../../src/substrate/plugin.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
+import { resolveKeystoreVariant } from '../../../src/plugins/account/variants/keystore.ts';
 import { layerLeaseBroker } from '../../../src/substrate/runtime/lease-broker/index.ts';
 import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
 
@@ -31,7 +33,14 @@ const fakeResolvedAccount = {
 	source: 'real',
 	funding: {
 		requested: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
-		applied: [{ coin: 'SUI', fullCoinType: '0x2::sui::SUI', amount: 1_000_000_000n }],
+		applied: [
+			{
+				coin: 'SUI',
+				fullCoinType: '0x2::sui::SUI',
+				amount: 1_000_000_000n,
+				outcome: 'funded',
+			},
+		],
 	},
 	signAndExecute: null,
 	withTransactionSigner: null,
@@ -141,6 +150,73 @@ describe('account env and private-key variant surface', () => {
 
 		expect(resolved.address).toBe(generated.address);
 	});
+
+	it('inline decode failure does NOT leak the supplied secret into the error', async () => {
+		// A bech32-shaped string that fails to decode. The marker is the
+		// kind of thing a real `suiprivkey1...` body looks like; if the
+		// SDK's reject path echoed it into the error we DROP it, so it
+		// must not survive into `message`, `hint`, or `cause`.
+		const secretMarker = 'suiprivkey1q旧notavalidkeybutsecretlooking0xdeadbeefdeadbeef';
+		const exit = await Effect.runPromiseExit(
+			resolveInlineVariant({ name: 'mallory', privateKey: secretMarker }),
+		);
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(Option.isSome(err)).toBe(true);
+		if (Option.isSome(err)) {
+			expect(err.value._tag).toBe('AccountAcquireError');
+			expect(err.value.phase).toBe('decode-inline');
+			// The whole serialized error (message + hint + cause) must not
+			// echo the supplied secret back.
+			const serialized = JSON.stringify({
+				message: err.value.message,
+				hint: err.value.hint,
+				cause: err.value.cause,
+			});
+			expect(serialized).not.toContain(secretMarker);
+			expect(err.value.cause).toBeUndefined();
+		}
+	});
+
+	it('keystore decode failure does NOT leak secret rows into the error', () =>
+		withTempRootAsync('devstack-account-keystore-leak', async (root) => {
+			// The keystore file IS an array of `suiprivkey1...` private keys.
+			// A file that parses as JSON but fails the `array of strings`
+			// schema produces a ParseError whose rendered "actual" value is
+			// the offending content. We DROP that raw cause, so a
+			// secret-looking value must not survive into message/hint/cause.
+			const secretMarker = 'suiprivkey1qSECRETMARKERdeadbeefdeadbeefdeadbeefdeadbeef';
+			const dir = join(root, '.sui');
+			mkdirSync(dir, { recursive: true });
+			const keystorePath = join(dir, 'sui.keystore');
+			// Bare JSON string (not an array) → schema mismatch whose actual
+			// value is the secret marker.
+			writeFileSync(keystorePath, JSON.stringify(secretMarker));
+
+			const exit = await Effect.runPromiseExit(
+				resolveKeystoreVariant({
+					name: 'mallory',
+					path: keystorePath,
+					aliasOrAddress: 'mallory',
+				}),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const err = Exit.findErrorOption(exit);
+			expect(Option.isSome(err)).toBe(true);
+			if (Option.isSome(err)) {
+				expect(err.value._tag).toBe('AccountAcquireError');
+				expect(err.value.phase).toBe('load-keystore');
+				const serialized = JSON.stringify({
+					message: err.value.message,
+					hint: err.value.hint,
+					cause: err.value.cause,
+				});
+				expect(serialized).not.toContain(secretMarker);
+				expect(err.value.cause).toBeUndefined();
+			}
+		}));
 
 	it('account factory accepts env key and inline privateKey option names', () => {
 		const envAccount = account('prod', {
@@ -253,7 +329,7 @@ describe('account impersonation variant', () => {
 							return {};
 						},
 					},
-					client: null,
+					client: null as never,
 				},
 				fork: {
 					status: Effect.succeed({ checkpoint: '1', clock: 1 }),
@@ -282,8 +358,10 @@ describe('account impersonation variant', () => {
 		const result = await Effect.runPromise(accountValue.signAndExecute(new Uint8Array([7])));
 		const signExit = await Effect.runPromiseExit(accountValue.signTransaction(new Uint8Array([7])));
 
-		expect(result.digest).toBe('fork-digest');
-		expect(result.objectChanges).toEqual([
+		expect(result.$kind).toBe('Transaction');
+		if (result.$kind !== 'Transaction') throw new Error('expected Transaction variant');
+		expect(result.Transaction.digest).toBe('fork-digest');
+		expect(result.Transaction.objectChanges).toEqual([
 			{
 				type: 'created',
 				objectId: '0xcreated',
@@ -298,38 +376,38 @@ describe('account impersonation variant', () => {
 });
 
 describe('account ephemeral variant persistence', () => {
-	it('reuses the persisted keypair on warm start', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-'));
-		const secretFilePath = join(root, 'account', 'alice.key');
+	it('reuses the persisted keypair on warm start', () =>
+		withTempRootAsync('devstack-account-ephemeral', async (root) => {
+			const secretFilePath = join(root, 'account', 'alice.key');
 
-		const first = await Effect.runPromise(
-			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-		);
-		const second = await Effect.runPromise(
-			resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-		);
+			const first = await Effect.runPromise(
+				resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+			);
+			const second = await Effect.runPromise(
+				resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+			);
 
-		expect(second.address).toBe(first.address);
-		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
-		expect(statSync(secretFilePath).mode & 0o777).toBe(0o600);
-		expect(statSync(join(root, 'account')).mode & 0o777).toBe(0o700);
-	});
+			expect(second.address).toBe(first.address);
+			expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
+			expect(statSync(secretFilePath).mode & 0o777).toBe(0o600);
+			expect(statSync(join(root, 'account')).mode & 0o777).toBe(0o700);
+		}));
 
-	it('collapses concurrent first acquires onto one persisted keypair', async () => {
-		const root = mkdtempSync(join(tmpdir(), 'devstack-account-ephemeral-race-'));
-		const secretFilePath = join(root, 'account', 'alice.key');
+	it('collapses concurrent first acquires onto one persisted keypair', () =>
+		withTempRootAsync('devstack-account-ephemeral-race', async (root) => {
+			const secretFilePath = join(root, 'account', 'alice.key');
 
-		const [first, second] = await Effect.runPromise(
-			Effect.all(
-				[
-					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-					resolveEphemeralVariant({ name: 'alice', secretFilePath }),
-				],
-				{ concurrency: 2 },
-			),
-		);
+			const [first, second] = await Effect.runPromise(
+				Effect.all(
+					[
+						resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+						resolveEphemeralVariant({ name: 'alice', secretFilePath }),
+					],
+					{ concurrency: 2 },
+				),
+			);
 
-		expect(second.address).toBe(first.address);
-		expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
-	});
+			expect(second.address).toBe(first.address);
+			expect(readFileSync(secretFilePath, 'utf8').trim()).toBe(first.bech32Secret);
+		}));
 });

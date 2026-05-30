@@ -1,4 +1,4 @@
-import { dirname, join, relative } from 'node:path';
+import { join, relative } from 'node:path';
 
 export interface WalrusDeployMountPaths {
 	readonly sourceHostPath: string;
@@ -6,11 +6,34 @@ export interface WalrusDeployMountPaths {
 	readonly outputDirInContainer: string;
 }
 
-export const walrusDeployMountPaths = (
-	deployOutputDirHostPath: string,
-	mountTarget: string,
-): WalrusDeployMountPaths => {
-	const sourceHostPath = dirname(dirname(dirname(deployOutputDirHostPath)));
-	const outputDirInContainer = join(mountTarget, relative(sourceHostPath, deployOutputDirHostPath));
-	return { sourceHostPath, mountTarget, outputDirInContainer };
+/** Compute the bind-mount triple shared by the walrus deploy
+ *  one-shot + storage nodes.
+ *
+ *  Previous implementation walked up exactly three levels with
+ *  `dirname(dirname(dirname(deployOutputDirHostPath)))`. A shorter
+ *  input (e.g. a single-segment path under `/`) would silently
+ *  return `/`, and the bind-mount would mount the host root into
+ *  the container — a load-bearing footgun. We now require the
+ *  caller to pass `stackRoot` explicitly (matching the existing
+ *  `paths.stackRoot` injection pattern across the postgres / sui /
+ *  seal / wallet plugins) and assert the deploy dir lives under it.
+ *
+ *  The mount source is `stackRoot`; the in-container path is
+ *  re-derived through `relative(stackRoot, deployOutputDirHostPath)`. */
+export const walrusDeployMountPaths = (input: {
+	readonly stackRoot: string;
+	readonly deployOutputDirHostPath: string;
+	readonly mountTarget: string;
+}): WalrusDeployMountPaths => {
+	const { stackRoot, deployOutputDirHostPath, mountTarget } = input;
+	const rel = relative(stackRoot, deployOutputDirHostPath);
+	if (rel.length === 0 || rel.startsWith('..')) {
+		throw new Error(
+			`walrusDeployMountPaths: deployOutputDirHostPath (${deployOutputDirHostPath}) ` +
+				`must be a descendant of stackRoot (${stackRoot}). ` +
+				`Cross-check the StackPathsService thread + the deploy directory layout.`,
+		);
+	}
+	const outputDirInContainer = join(mountTarget, rel);
+	return { sourceHostPath: stackRoot, mountTarget, outputDirInContainer };
 };

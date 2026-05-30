@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -9,7 +9,11 @@ import { definePlugin } from '../../../src/api/define-plugin.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
 import {
 	buildProductionOrchestratorSinks,
+	buildProductionPostAcquireHook,
 	endpointEventFromRoutable,
+	layerManifestEndpointRegistry,
+	manifestEndpointEntryFromRoutable,
+	ManifestEndpointRegistryService,
 	productionRouterProfile,
 } from '../../../src/orchestrators/runtime-composition.ts';
 import {
@@ -28,6 +32,11 @@ import {
 	CodegenOrchestratorService,
 	type CodegenOrchestrator,
 } from '../../../src/orchestrators/codegen/service.ts';
+import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
+import {
+	MoveCodegenService,
+	MoveSummaryRunnerService,
+} from '../../../src/orchestrators/codegen/bindings.ts';
 import {
 	appName,
 	chainId,
@@ -44,6 +53,7 @@ import {
 	type HarvestContext,
 	type OrchestratorSinks,
 } from '../../../src/substrate/runtime/index.ts';
+import { buildSubstrateLayers } from '../../../src/orchestrators/run.ts';
 import { makeProjectionRef, updateRef } from '../../../src/substrate/runtime/projection/index.ts';
 
 const bootReport: BootReport = {
@@ -79,24 +89,42 @@ const identity: Identity = {
 const routablePlugin = definePlugin({
 	id: 'test/routable',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ready: true } as const),
 	capabilities: [routable] as const,
 });
 
+const operationalEndpointPlugin = definePlugin({
+	id: 'test/remote-rpc',
+	role: 'service',
+	section: 'service',
+	start: () =>
+		Effect.succeed({
+			rpcUrl: 'https://rpc.example.invalid',
+		} as const),
+});
+
 const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 	registerParticipant: () => Effect.void,
-	registerClassifier: () => Effect.void,
 	capture: () => Effect.die('unused snapshot capture'),
 	restore: () => Effect.die('unused snapshot restore'),
 	list: Effect.die('unused snapshot list'),
 	delete: () => Effect.die('unused snapshot delete'),
 	wipe: () => Effect.die('unused snapshot wipe'),
+	wipePlan: () => Effect.die('unused snapshot wipePlan'),
 	prune: () => Effect.die('unused snapshot prune'),
+	recoverPendingRestore: Effect.die('unused snapshot recoverPendingRestore'),
 } satisfies SnapshotOrchestrator);
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
 	registerContribution: () => Effect.void,
-	runCycle: () => Effect.die('unused codegen cycle'),
+	runCycle: () =>
+		Effect.succeed({
+			filesWritten: [],
+			filesUnchanged: [],
+			filesChmod: [],
+			bindings: null,
+		}),
 } satisfies CodegenOrchestrator);
 
 const routerLayer = Layer.effect(
@@ -111,7 +139,12 @@ const routerLayer = Layer.effect(
 	}),
 );
 
-const sinkTestLayer = Layer.mergeAll(snapshotLayer, codegenLayer, routerLayer);
+const sinkTestLayer = Layer.mergeAll(
+	snapshotLayer,
+	codegenLayer,
+	routerLayer,
+	layerManifestEndpointRegistry,
+);
 
 const findSink = <K extends ContributionKind, TDecl>(
 	sinks: OrchestratorSinks,
@@ -207,6 +240,7 @@ describe('buildProductionOrchestratorSinks', () => {
 			tag: 'endpoint.registered',
 			endpoint: {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://wallet.demo.localhost:6173',
 				displayUrl: null,
@@ -220,6 +254,7 @@ describe('buildProductionOrchestratorSinks', () => {
 		Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
 			const observed = yield* Ref.make<ReadonlyArray<EngineEvent>>([]);
+			const manifestEndpoints = yield* ManifestEndpointRegistryService;
 			const sinks = yield* buildProductionOrchestratorSinks();
 			const harvestCtx: HarvestContext = {
 				pluginKey: pluginKey('wallet#0'),
@@ -232,7 +267,12 @@ describe('buildProductionOrchestratorSinks', () => {
 			};
 
 			const routableSink = findSink<'routable', RoutableDecl>(sinks, 'routable');
-			yield* Effect.scoped(routableSink.accept(routable, harvestCtx));
+			const entries = yield* Effect.scoped(
+				Effect.gen(function* () {
+					yield* routableSink.accept(routable, harvestCtx);
+					return yield* manifestEndpoints.entries;
+				}),
+			);
 
 			const events = yield* Ref.get(observed);
 			expect(events).toHaveLength(1);
@@ -245,6 +285,7 @@ describe('buildProductionOrchestratorSinks', () => {
 				tag: 'endpoint.registered',
 				endpoint: {
 					endpointKey: endpointKey('wallet#0:wallet-app'),
+					pluginKey: pluginKey('wallet#0'),
 					name: 'wallet-app',
 					url: 'http://wallet.demo.localhost:6173',
 					displayUrl: null,
@@ -254,6 +295,7 @@ describe('buildProductionOrchestratorSinks', () => {
 
 			const snapshot = yield* SubscriptionRef.get(state);
 			expect(snapshot.endpoints).toEqual([event.endpoint]);
+			expect(entries).toEqual([manifestEndpointEntryFromRoutable(pluginKey('wallet#0'), endpoint)]);
 		}).pipe(Effect.provide(sinkTestLayer)),
 	);
 
@@ -300,6 +342,7 @@ describe('buildProductionOrchestratorSinks', () => {
 			}
 			expect(endpointEvent.endpoint).toMatchObject({
 				endpointKey: endpointKey('test/routable#0:wallet-app'),
+				pluginKey: pluginKey('test/routable#0'),
 				name: 'wallet-app',
 				url: 'http://wallet.demo.localhost:6173',
 				displayUrl: null,
@@ -307,5 +350,129 @@ describe('buildProductionOrchestratorSinks', () => {
 			});
 			expect(result.snapshot.endpoints).toEqual([endpointEvent.endpoint]);
 		}).pipe(Effect.provide(sinkTestLayer)),
+	);
+
+	it.effect('production post-acquire hook writes registered routable endpoints to manifest', () =>
+		Effect.gen(function* () {
+			const runtimeRoot = mkdtempSync(join(tmpdir(), 'runtime-composition-manifest-'));
+			const layer = Layer.mergeAll(
+				sinkTestLayer,
+				layerCodegenPaths.pipe(
+					Layer.provideMerge(
+						layerCodegenRoot({
+							outputDir: join(runtimeRoot, 'generated'),
+							stackSubdir: null,
+						}),
+					),
+				),
+				Layer.succeed(MoveSummaryRunnerService)({
+					runSummary: () => Effect.die('unused Move summary'),
+				}),
+				Layer.succeed(MoveCodegenService)({
+					generate: () => Effect.die('unused Move codegen'),
+				}),
+			).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
+
+			try {
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const state = yield* makeProjectionRef();
+						const sinks = yield* buildProductionOrchestratorSinks();
+						const hook = yield* buildProductionPostAcquireHook();
+						yield* supervise(
+							{ _tag: 'Stack', members: [routablePlugin], options: {} },
+							identity,
+							state,
+							Context.empty(),
+							sinks,
+							undefined,
+							hook,
+						);
+					}),
+				).pipe(Effect.provide(layer));
+
+				const manifest = JSON.parse(
+					readFileSync(join(runtimeRoot, 'stacks', 'main', 'manifest.json'), 'utf8'),
+				) as {
+					readonly endpoints: Record<string, unknown>;
+				};
+				expect(manifest.endpoints).toEqual({
+					'test/routable#0:wallet-app': {
+						endpointKey: 'test/routable#0:wallet-app',
+						name: 'wallet-app',
+						url: 'http://wallet.demo.localhost:6173',
+						displayUrl: null,
+						wireProtocol: 'http',
+						pluginKey: 'test/routable#0',
+					},
+				});
+			} finally {
+				rmSync(runtimeRoot, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect(
+		'production post-acquire hook writes non-routable operational endpoints to manifest',
+		() =>
+			Effect.gen(function* () {
+				const runtimeRoot = mkdtempSync(
+					join(tmpdir(), 'runtime-composition-operational-manifest-'),
+				);
+				const layer = Layer.mergeAll(
+					sinkTestLayer,
+					layerCodegenPaths.pipe(
+						Layer.provideMerge(
+							layerCodegenRoot({
+								outputDir: join(runtimeRoot, 'generated'),
+								stackSubdir: null,
+							}),
+						),
+					),
+					Layer.succeed(MoveSummaryRunnerService)({
+						runSummary: () => Effect.die('unused Move summary'),
+					}),
+					Layer.succeed(MoveCodegenService)({
+						generate: () => Effect.die('unused Move codegen'),
+					}),
+				).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
+
+				try {
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const state = yield* makeProjectionRef();
+							const sinks = yield* buildProductionOrchestratorSinks();
+							const hook = yield* buildProductionPostAcquireHook();
+							yield* supervise(
+								{ _tag: 'Stack', members: [operationalEndpointPlugin], options: {} },
+								identity,
+								state,
+								Context.empty(),
+								sinks,
+								undefined,
+								hook,
+							);
+						}),
+					).pipe(Effect.provide(layer));
+
+					const manifest = JSON.parse(
+						readFileSync(join(runtimeRoot, 'stacks', 'main', 'manifest.json'), 'utf8'),
+					) as {
+						readonly endpoints: Record<string, unknown>;
+					};
+					expect(manifest.endpoints).toEqual({
+						'test/remote-rpc#0:rpcUrl': {
+							endpointKey: 'test/remote-rpc#0:rpcUrl',
+							name: 'rpc',
+							url: 'https://rpc.example.invalid',
+							displayUrl: null,
+							wireProtocol: 'http',
+							pluginKey: 'test/remote-rpc#0',
+						},
+					});
+				} finally {
+					rmSync(runtimeRoot, { recursive: true, force: true });
+				}
+			}),
 	);
 });

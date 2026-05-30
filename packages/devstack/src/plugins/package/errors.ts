@@ -27,12 +27,22 @@ export type PublishPhase = 'hash' | 'scrub' | 'build' | 'publish-tx' | 'parse' |
 export interface PublishError {
 	readonly _tag: 'PublishError';
 	readonly phase: PublishPhase;
-	/** Source path of the package being published. ALWAYS populated
-	 *  — `KnownPackage` paths set this to the symbolic id (distilled
-	 *  doc §Opportunities — "every throw site passes sourcePath"). */
-	readonly sourcePath: string;
-	/** Symbolic package name (the user-declared `pkg.name`). */
-	readonly packageName: string;
+	/** Source path of the package being published. Populated at every
+	 *  throw site that has it in scope — `KnownPackage` paths set this
+	 *  to the symbolic id; post-publish probe phases (e.g. the
+	 *  `postPublishReadyHint` step that only sees the on-chain `packageId`)
+	 *  pass `undefined`. The `mode-local` re-stamp pass back-fills
+	 *  from the outer `inputs.sourcePath` whenever it can. */
+	readonly sourcePath?: string | undefined;
+	/** Symbolic package name (the user-declared `pkg.name`). Optional
+	 *  because some throw sites (e.g. `postPublishReadyHint` in
+	 *  `publish-executor.ts`) only have the resolved on-chain
+	 *  `packageId` in scope; the `mode-local` re-stamp pass back-fills
+	 *  the symbolic name from `inputs.packageName` whenever it can.
+	 *  Throw sites MUST NOT overload this slot with the on-chain
+	 *  `packageId` — the symbolic name is what user-facing error
+	 *  displays expect. */
+	readonly packageName?: string | undefined;
 	readonly message: string;
 	readonly cause?: unknown;
 }

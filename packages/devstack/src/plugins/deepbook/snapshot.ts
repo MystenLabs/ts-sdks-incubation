@@ -14,44 +14,22 @@
 
 import { Effect } from 'effect';
 
-import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
+import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 
-/** Build the Snapshotable contribution for the local-mode plugin. */
-export const makeLocalSnapshotable = (inputs: {
-	readonly name: string;
-	readonly app: string;
-	readonly stack: string;
-	readonly indexerEnabled: boolean;
-	readonly serverEnabled: boolean;
-}): SnapshotableDecl => {
-	const managed: Array<ContainerLabelTuple> = [];
-	if (inputs.indexerEnabled) {
-		managed.push({
-			app: inputs.app,
-			stack: inputs.stack,
-			plugin: 'deepbook',
-			role: 'indexer',
-		});
-	}
-	if (inputs.serverEnabled) {
-		managed.push({
-			app: inputs.app,
-			stack: inputs.stack,
-			plugin: 'deepbook',
-			role: 'server',
-		});
-	}
-	return {
-		kind: 'snapshotable',
-		subtrees: [`deepbook/${inputs.name}`],
-		managedContainers: managed,
-		quiesce: Effect.void,
-		preRestore: Effect.succeed({ kind: 'deepbook' as const, name: inputs.name }),
-		postRestore: Effect.void,
-		missingTolerance: 'fine',
-		secretMaterial: false,
-	};
-};
+/** Build the Snapshotable contribution for the local-mode plugin.
+ *  Deepbook's deploy artifacts live on the host subtree; no managed
+ *  containers participate (the indexer + server daemons aren't wired
+ *  yet). When they land, add their `ContainerLabelTuple` here. */
+export const makeLocalSnapshotable = (inputs: { readonly name: string }): SnapshotableDecl => ({
+	kind: 'snapshotable',
+	subtrees: [`deepbook/${inputs.name}`],
+	managedContainers: [],
+	quiesce: Effect.void,
+	preRestore: Effect.succeed({ kind: 'deepbook' as const, name: inputs.name }),
+	postRestore: Effect.void,
+	missingTolerance: 'fine',
+	secretMaterial: false,
+});
 
 /** Build the Snapshotable contribution for the known-deployment
  *  mode. No on-disk state, no managed containers — pure value

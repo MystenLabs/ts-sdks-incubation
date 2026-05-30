@@ -7,7 +7,7 @@
 //
 // Plugins call `publisher.publish(spec)` with their per-cycle
 // `ArtifactSpec<Produced, Verified>` (namespace, chain,
-// contentHash, verifySchema, verify, produce, register). The
+// contentHash, verify, produce, register). The
 // substrate handles:
 //
 //   1. `cache.lookup({namespace, chain, contentHash})`. Hit AND
@@ -36,23 +36,9 @@ import type {
 	ArtifactSpec,
 } from '../../../primitives/artifact-publisher.ts';
 import { CacheService } from '../cache/index.ts';
+import { setCurrentPluginPhase } from '../current-plugin.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { parseJsonTextSync } from '../runtime-decode.ts';
-
-// Re-export the ChainOperation typed seam — plugin authors compose
-// produce bodies via `compileChainOperation({...})` rather than
-// hand-rolling the `Effect<Produced, ArtifactPublishError, Scope>`.
-//
-// `ResolvedSigner` is intentionally NOT re-exported here — it is
-// owned by `sui-execute/` and reached via that module's barrel; both
-// modules share the single canonical shape.
-export {
-	compileChainOperation,
-	type ChainOperation,
-	type OneShotRunner,
-	type OneShotSpec,
-	type SuiEffects,
-	type SuiTxBuilder,
-} from './chain-operation.ts';
 
 // ---------------------------------------------------------------------------
 // Service tag
@@ -71,7 +57,7 @@ export {
 export class ArtifactPublisherService extends Context.Service<
 	ArtifactPublisherService,
 	ArtifactPublisher
->()('@devstack-rewrite/substrate/ArtifactPublisher') {}
+>()('@devstack/substrate/ArtifactPublisher') {}
 
 // ---------------------------------------------------------------------------
 // Encode / decode the cached payload
@@ -97,12 +83,12 @@ const decode = <Produced>(bytes: Uint8Array): Produced | null => {
 const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher => ({
 	publish: <Produced, Verified>(
 		spec: ArtifactSpec<Produced, Verified>,
-	): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+	): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 		Effect.gen(function* () {
 			yield* Effect.annotateCurrentSpan({
-				'artifactPublisher.namespace': spec.namespace,
-				'artifactPublisher.chain': spec.chain,
-				'artifactPublisher.contentHash': spec.contentHash,
+				[SpanAttr.artifactPublisherNamespace]: spec.namespace,
+				[SpanAttr.artifactPublisherChain]: spec.chain,
+				[SpanAttr.artifactPublisherContentHash]: spec.contentHash,
 			});
 
 			// 1. Cache lookup. Best-effort: a CacheError on lookup
@@ -131,18 +117,57 @@ const makePublisher = (cache: typeof CacheService.Service): ArtifactPublisher =>
 					//    verify-on-hit covers chain-state drift.
 					const verified = yield* spec.verify(cached);
 					if (verified !== null) {
-						const payload: Produced | Verified = cached;
-						yield* spec.register(payload);
-						yield* Effect.annotateCurrentSpan({ 'artifactPublisher.path': 'hit' });
-						return payload;
+						// The substrate always returns the decoded
+						// `Produced` payload — the `Verified` shape is a
+						// probe-only signal that never escapes. Callers
+						// therefore type-narrow trivially against `Produced`.
+						yield* spec.register(cached);
+						yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'hit' });
+						// Reuse is the quiet, expected warm-restart path — debug
+						// only. The interesting (and noisy) case is a *re-run*,
+						// logged below.
+						yield* Effect.logDebug(
+							`artifact-publisher: reusing cached '${spec.namespace}' on chain ${spec.chain} ` +
+								`(cache hit; no re-deploy).`,
+						);
+						return cached;
 					}
 				}
 			}
 
-			// 3. Miss or verify-failed → produce.
-			yield* Effect.annotateCurrentSpan({
-				'artifactPublisher.path': hit === null ? 'miss' : 'verify-failed',
-			});
+			// 3. Miss or verify-failed → produce. State WHEN and WHY loudly:
+			//    on a restart this is the line that explains why an on-chain
+			//    id is about to change. A fresh chain genesis misses every
+			//    cache key (keyed by chain id), so packages / key servers /
+			//    walrus all get brand-new ids, and content bound to the old
+			//    ids (e.g. Seal-encrypted blobs) can no longer be resolved.
+			if (hit === null) {
+				yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'miss' });
+				yield* Effect.logInfo(
+					`artifact-publisher: producing '${spec.namespace}' on chain ${spec.chain} — ` +
+						`no cached artifact for this chain + content hash ` +
+						`(first deploy on this chain, fresh genesis after a restart, or changed inputs).`,
+				);
+			} else {
+				yield* Effect.annotateCurrentSpan({
+					[SpanAttr.artifactPublisherPath]: 'verify-failed',
+				});
+				yield* Effect.logWarning(
+					`artifact-publisher: re-deploying '${spec.namespace}' on chain ${spec.chain} — ` +
+						`a cached artifact existed but failed on-chain verification ` +
+						`(object missing, or RPC unavailable during restart); a new id will replace ` +
+						`the prior deployment.`,
+				);
+				// Effect logs are dropped under the `up` TUI (Logger.layer([])).
+				// The verify-failed re-deploy is the anomalous restart case — a
+				// cached id existed but is no longer resolvable — so narrate it
+				// on the supervised plugin's row, the channel the TUI renders.
+				// (A plain cache miss stays quiet here: on a cold boot every
+				// artifact misses, and the plugin narrates its own publish.)
+				yield* setCurrentPluginPhase(
+					`re-deploying ${spec.namespace} (cached artifact failed verification on restart)`,
+				);
+			}
 			const produced = yield* spec.produce;
 
 			// 4. Cache write — best-effort. Architecture: a write

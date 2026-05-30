@@ -58,6 +58,8 @@ const fakeRow = (overrides: Partial<Row> = {}): Row => ({
 	logTail: { lines: [], level: 'info', truncated: false },
 	endpoints: [],
 	selectiveRestartHighlight: false,
+	section: 'service',
+	endpointSection: 'service',
 	...overrides,
 });
 
@@ -130,59 +132,56 @@ describe('display-derivation', () => {
 			expect(ownerForRow('account/alice#0')).toBe('Account');
 			expect(ownerForRow('sui.localnet')).toBe('Sui');
 		});
-		it('groups long-running and endpoint rows as services unless the key names a package', () => {
-			expect(sectionForRow(fakeRow({ role: 'service' }))).toBe('service');
+		it('reads section directly from the row, ignoring key-name shape', () => {
+			// `section` is plugin-declared at `definePlugin({ section })`
+			// time and stamped on the row by the supervisor. The renderer
+			// MUST NOT pattern-match plugin-name substrings to derive a
+			// section — `sectionForRow` returns whatever the row carries.
+			expect(sectionForRow(fakeRow({ section: 'service' }))).toBe('service');
 			expect(
 				sectionForRow(
 					fakeRow({
-						key: pluginKey('package/connect-four#0'),
-						role: 'task',
-						endpoints: [endpointKey('package/connect-four#0:docs')],
+						key: pluginKey('whatever-key-shape'),
+						section: 'package',
 					}),
 				),
 			).toBe('package');
 			expect(
 				sectionForRow(
 					fakeRow({
-						key: pluginKey('app/frontend#0'),
-						role: 'task',
-						endpoints: [endpointKey('app/frontend#0:http')],
+						key: pluginKey('also-irrelevant-name'),
+						section: 'account',
 					}),
 				),
-			).toBe('service');
+			).toBe('account');
 		});
-		it('groups one-shot rows by friendly domain', () => {
-			expect(
-				sectionForRow(fakeRow({ key: pluginKey('package/connect-four#0'), role: 'task' })),
-			).toBe('package');
-			expect(sectionForRow(fakeRow({ key: pluginKey('account/alice#0'), role: 'task' }))).toBe(
+		it('uses endpointSection when the row owns a routed endpoint', () => {
+			// Endpoint-aware override: when the plugin declares an
+			// `endpointSection` distinct from `section`, the renderer
+			// promotes the row to that bucket as soon as it owns an
+			// endpoint. Used by app-style plugins that start as `app`
+			// and graduate to `service` once their URL is up.
+			const row = fakeRow({
+				key: pluginKey('any-key'),
+				section: 'app',
+				endpointSection: 'service',
+				endpoints: [endpointKey('any-key:http')],
+			});
+			expect(sectionForRow(row)).toBe('service');
+		});
+		it('honors every declared RowSection vocabulary entry', () => {
+			const sections: ReadonlyArray<RowSection> = [
+				'service',
+				'package',
 				'account',
-			);
-			expect(sectionForRow(fakeRow({ key: pluginKey('action/mint#0'), role: 'task' }))).toBe(
 				'action',
-			);
-			expect(sectionForRow(fakeRow({ key: pluginKey('app/frontend#0'), role: 'task' }))).toBe(
 				'app',
-			);
-		});
-		it('pins the section for every built-in plugin family', () => {
-			const cases: ReadonlyArray<readonly [string, Row['role'], RowSection]> = [
-				['sui#0', 'service', 'service'],
-				['wallet#0', 'service', 'service'],
-				['walrus:walrus', 'service', 'service'],
-				['seal:seal', 'service', 'service'],
-				['deepbook:deepbook', 'service', 'service'],
-				['postgres#0', 'service', 'service'],
-				['faucet#0', 'service', 'service'],
-				['host-service/web', 'service', 'service'],
-				['package:vault', 'task', 'package'],
-				['account/alice', 'task', 'account'],
-				['action:mint', 'task', 'action'],
-				['coin:wal', 'task', 'action'],
-				['app/frontend', 'task', 'app'],
+				'other',
 			];
-			for (const [key, role, section] of cases) {
-				expect(sectionForRow(fakeRow({ key: pluginKey(key), role })), key).toBe(section);
+			for (const section of sections) {
+				expect(sectionForRow(fakeRow({ section, endpointSection: section })), section).toBe(
+					section,
+				);
 			}
 		});
 	});
@@ -246,10 +245,11 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e1'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'gql',
 					url: 'http://localhost:9000',
 					displayUrl: 'https://devstack.local/gql',
-					wireProtocol: 'http',
+					wireProtocol: 'http' as const,
 					registeredAt: 0,
 				}),
 			).toBe('gql: https://devstack.local/gql -> http://localhost:9000');
@@ -258,10 +258,11 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e2'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'rpc',
 					url: 'http://localhost:9001',
 					displayUrl: null,
-					wireProtocol: 'http',
+					wireProtocol: 'http' as const,
 					registeredAt: 0,
 				}),
 			).toBe('rpc: http://localhost:9001');
@@ -270,6 +271,7 @@ describe('display-derivation', () => {
 			expect(
 				endpointLine({
 					endpointKey: endpointKey('e3'),
+					pluginKey: pluginKey('demo#0'),
 					name: 'grpc',
 					url: 'http://127.0.0.1:9184',
 					displayUrl: 'http://sui-rpc.wallet.localhost:9184',
@@ -381,10 +383,11 @@ describe('display-derivation', () => {
 	describe('row endpoints and grouping', () => {
 		const endpoint = {
 			endpointKey: endpointKey('sui:rpc'),
+			pluginKey: pluginKey('sui'),
 			name: 'rpc',
 			url: 'http://localhost:9000',
 			displayUrl: null,
-			wireProtocol: 'http',
+			wireProtocol: 'http' as const,
 			registeredAt: 0,
 		};
 
@@ -393,13 +396,29 @@ describe('display-derivation', () => {
 			expect(endpointsForRow(row, [endpoint])).toEqual([endpoint]);
 		});
 
+		it('does not select endpoints from plugin keys with matching prefixes', () => {
+			const row = fakeRow({ key: pluginKey('service#1') });
+			const endpoint = {
+				endpointKey: endpointKey('service#10:http'),
+				pluginKey: pluginKey('service#10'),
+				name: 'http',
+				url: 'http://service.localhost',
+				displayUrl: null,
+				wireProtocol: 'http' as const,
+				registeredAt: 0,
+			};
+
+			expect(endpointsForRow(row, [endpoint])).toEqual([]);
+		});
+
 		it('summarizes row endpoints inline for table rendering', () => {
 			const walletEndpoint = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://wallet.demo.localhost:5175',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
@@ -412,18 +431,20 @@ describe('display-derivation', () => {
 			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
 			const operational = {
 				endpointKey: endpointKey('wallet#0:url'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const routed = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://api.wallet.arena.localhost:6173',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			expect(visibleEndpointsForRow(row, [operational, routed])).toEqual([routed]);
@@ -432,11 +453,21 @@ describe('display-derivation', () => {
 			);
 		});
 
-		it('groups rows in operator scan order', () => {
+		it('groups rows in operator scan order using each row.section', () => {
 			const sections = groupRows([
-				fakeRow({ key: pluginKey('action/mint#0'), role: 'task' }),
-				fakeRow({ key: pluginKey('account/alice#0'), role: 'task' }),
-				fakeRow({ key: pluginKey('sui'), role: 'service' }),
+				fakeRow({
+					key: pluginKey('action/mint#0'),
+					role: 'task',
+					section: 'action',
+					endpointSection: 'action',
+				}),
+				fakeRow({
+					key: pluginKey('account/alice#0'),
+					role: 'task',
+					section: 'account',
+					endpointSection: 'account',
+				}),
+				fakeRow({ key: pluginKey('sui'), role: 'service', section: 'service' }),
 			]);
 			expect(sections.map((section) => section.key)).toEqual(['service', 'account', 'action']);
 		});
@@ -446,18 +477,20 @@ describe('display-derivation', () => {
 		it('summarizes central projection slices for the header panel', () => {
 			const rawEndpoint: Endpoint = {
 				endpointKey: endpointKey('wallet#0:url'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'http',
 				url: 'http://127.0.0.1:39200',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const routedEndpoint: Endpoint = {
 				endpointKey: endpointKey('wallet#0:wallet-app'),
+				pluginKey: pluginKey('wallet#0'),
 				name: 'wallet-app',
 				url: 'http://api.arena.arena.localhost:6173',
 				displayUrl: null,
-				wireProtocol: 'http',
+				wireProtocol: 'http' as const,
 				registeredAt: 0,
 			};
 			const account: AccountProjection = {

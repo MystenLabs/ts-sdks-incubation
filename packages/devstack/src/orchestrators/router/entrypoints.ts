@@ -51,7 +51,7 @@ export interface EntrypointRegistryShape {
 export class EntrypointRegistry extends Context.Service<
 	EntrypointRegistry,
 	EntrypointRegistryShape
->()('@devstack-rewrite/orchestrators/router/EntrypointRegistry') {}
+>()('@devstack/orchestrators/router/EntrypointRegistry') {}
 
 const entrypointFamily = (protocol: Entrypoint['protocol']): 'http' | 'tcp' =>
 	protocol === 'tcp' ? 'tcp' : 'http';

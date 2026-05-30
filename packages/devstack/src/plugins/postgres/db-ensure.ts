@@ -23,10 +23,12 @@
 //
 // The `ContainerExec` capability is consumed via the plugin's service
 // body (`service.ts:containerExec`), which thin-wraps the
-// `ContainerRuntime.exec` contract surface. Daemon-level failures
-// project to a synthetic non-zero `ExecResult` so the retry loop
-// observes them and the typed timeout error carries the captured
-// streams.
+// `ContainerRuntime.exec` contract surface. Daemon-level failures (no
+// such container, daemon unreachable) map to a typed
+// `PostgresPluginError({phase: 'container-start'})` rather than a
+// fabricated non-zero `ExecResult`; `waitForProbe` treats that typed
+// failure as retryable and preserves the underlying cause on the
+// timeout error's `lastError` field.
 
 import { Effect } from 'effect';
 
@@ -35,7 +37,9 @@ import {
 	postgresConnectionTimeout,
 	type DatabaseCreateFailed,
 	type PostgresConnectionTimeout,
+	type PostgresPluginError,
 } from './errors.ts';
+import { PostgresSpans } from './spans.ts';
 import {
 	ProbeTimeoutError,
 	exitCodeProbeResult,
@@ -54,9 +58,15 @@ export interface ExecResult {
 
 /** Exec callable injected by the plugin's service body. Wraps
  *  `ContainerRuntime.exec` (see contract) into the local seam shape so
- *  the retry / existence-check loops here stay runtime-agnostic. */
+ *  the retry / existence-check loops here stay runtime-agnostic.
+ *
+ *  Daemon-level failures surface as `PostgresPluginError`; non-zero
+ *  exit codes (eg `pg_isready` not ready yet) are returned in the
+ *  `ExecResult` for the caller to interpret. */
 export interface ContainerExec {
-	readonly run: (argv: ReadonlyArray<string>) => Effect.Effect<ExecResult>;
+	readonly run: (
+		argv: ReadonlyArray<string>,
+	) => Effect.Effect<ExecResult, PostgresPluginError>;
 }
 
 const READY_PROBE_INTERVAL_MS = 500;
@@ -90,18 +100,24 @@ export const awaitReady = (
 					return exitCodeProbeResult(result);
 				}),
 		}).pipe(
-			Effect.mapError((cause) =>
-				postgresConnectionTimeout({
+			Effect.mapError((cause) => {
+				const lastError =
+					cause instanceof ProbeTimeoutError ? cause.lastError : (cause as unknown);
+				return postgresConnectionTimeout({
 					database,
 					attempts: cause instanceof ProbeTimeoutError ? cause.attempts : attempts,
 					elapsedMs: Date.now() - startedAt,
 					lastExitCode: lastResult?.exitCode,
 					lastStdout: lastResult?.stdout,
 					lastStderr: lastResult?.stderr,
-				}),
-			),
-			Effect.withSpan('postgres.awaitReady', {
-				attributes: { 'postgres.database': database, 'postgres.timeoutMs': timeoutMs },
+					...(lastError === undefined ? {} : { lastError }),
+				});
+			}),
+			Effect.withSpan('devstack.plugin.postgres.awaitReady', {
+				attributes: {
+					[PostgresSpans.database]: database,
+					[PostgresSpans.timeoutMs]: timeoutMs,
+				},
 			}),
 		);
 	});
@@ -127,14 +143,23 @@ export const ensureDatabase = (
 	exec: ContainerExec,
 	user: string,
 	dbName: string,
-): Effect.Effect<void, DatabaseCreateFailed> =>
+): Effect.Effect<void, DatabaseCreateFailed | PostgresPluginError> =>
 	Effect.gen(function* () {
+		// Quote-escape per SQL literal rules (double single-quotes inside
+		// the literal). The plugin's own contract restricts callers to
+		// lowercase database identifiers (see distilled-doc § Edge cases
+		// above), but the literal interpolation here is still a foot-
+		// gun: a name containing `'` would break the WHERE clause and
+		// either fail the existence check or, worse, alter its
+		// semantics. Escaping locks the wire shape independent of the
+		// upstream contract.
+		const escapedDbName = dbName.replace(/'/g, "''");
 		const exists = yield* exec.run([
 			'psql',
 			'-U',
 			user,
 			'-tAc',
-			`SELECT 1 FROM pg_database WHERE datname = '${dbName}'`,
+			`SELECT 1 FROM pg_database WHERE datname = '${escapedDbName}'`,
 		]);
 		if (exists.exitCode !== 0) {
 			return yield* Effect.fail(
@@ -151,7 +176,12 @@ export const ensureDatabase = (
 			return; // already present
 		}
 
-		const created = yield* exec.run(['createdb', '-U', user, dbName]);
+		// The `--` argv separator stops `createdb`'s flag parsing — a
+		// `dbName` starting with `-` (e.g. `--help`) would otherwise be
+		// interpreted as a flag rather than a positional database name.
+		// Argv form already neutralizes shell-metacharacter injection;
+		// the separator closes the remaining flag-shape gap.
+		const created = yield* exec.run(['createdb', '-U', user, '--', dbName]);
 		if (created.exitCode !== 0) {
 			return yield* Effect.fail(
 				databaseCreateFailed({
@@ -164,8 +194,8 @@ export const ensureDatabase = (
 			);
 		}
 	}).pipe(
-		Effect.withSpan('postgres.ensureDatabase', {
-			attributes: { 'postgres.database': dbName },
+		Effect.withSpan('devstack.plugin.postgres.ensureDatabase', {
+			attributes: { [PostgresSpans.database]: dbName },
 		}),
 	);
 
@@ -176,7 +206,7 @@ export const ensureDatabases = (
 	exec: ContainerExec,
 	user: string,
 	databases: ReadonlyArray<string>,
-): Effect.Effect<void, DatabaseCreateFailed> =>
+): Effect.Effect<void, DatabaseCreateFailed | PostgresPluginError> =>
 	Effect.gen(function* () {
 		for (let i = 1; i < databases.length; i++) {
 			yield* ensureDatabase(exec, user, databases[i]!);

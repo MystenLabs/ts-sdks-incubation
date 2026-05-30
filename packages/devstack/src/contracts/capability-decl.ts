@@ -5,7 +5,6 @@
 // kinds, while opaque custom declarations remain valid by structure.
 
 import type { CodegenableDecl } from './codegenable.ts';
-import type { LivenessClassifierDecl } from './liveness-classifier.ts';
 import type { ProjectionDecl } from './projection.ts';
 import type { RoutableDecl } from './routable.ts';
 import type { SnapshotableDecl } from './snapshotable.ts';
@@ -26,7 +25,6 @@ export interface DevstackCapabilityRegistry {
 	readonly codegenable: Omit<CodegenableDecl<string>, 'kind'>;
 	readonly projection: Omit<ProjectionDecl, 'kind'>;
 	readonly 'strategy-contributor': Omit<StrategyContributorDecl<string, unknown>, 'kind'>;
-	readonly 'liveness-classifier': Omit<LivenessClassifierDecl, 'kind'>;
 }
 
 export type CapabilityKind = keyof DevstackCapabilityRegistry & string;

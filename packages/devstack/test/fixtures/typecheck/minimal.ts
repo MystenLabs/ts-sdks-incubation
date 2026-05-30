@@ -13,6 +13,7 @@ const keyval = () =>
 	definePlugin({
 		id: keyvalResource.id,
 		role: 'service',
+		section: 'service',
 		start: () => Effect.succeed({ url: 'http://127.0.0.1:6379' } as const),
 	});
 

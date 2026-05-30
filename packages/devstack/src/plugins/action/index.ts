@@ -46,8 +46,7 @@ import {
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import { suiResource } from '../sui/index.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import type { ActionBuildContext } from './build-context.ts';
 import { actionError, ACTION_ERROR_TAGS, type ActionError } from './errors.ts';
@@ -152,18 +151,32 @@ export const action = <const Name extends string, const DependsOn extends Action
 		// acquire and returns; supervisor's lifecycle wrap surfaces
 		// "done" after that.
 		role: 'task',
+		section: 'action',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedUpstream] = deps;
 				const resolvedByResourceId = new Map<string, unknown>(
 					upstreamRefs.map((ref, index) => [ref.id, resolvedUpstream[index]]),
 				);
-				const readDeclaredDependency = (id: string): unknown => {
-					if (!resolvedByResourceId.has(id)) {
-						throw new Error(`Action '${name}': dependency '${id}' was not resolved.`);
+
+				// Substrate guarantees `deps` is the resolved positional
+				// list matching `dependsOn`, so this map is densely
+				// populated. If the invariant ever breaks (substrate
+				// bug) we surface a typed ActionError(`build`) BEFORE
+				// invoking the downstream sync resolver so the cause
+				// walker attributes the failure to this action rather
+				// than producing an unattributed defect.
+				for (const ref of upstreamRefs) {
+					if (!resolvedByResourceId.has(ref.id)) {
+						return yield* Effect.fail(
+							actionError('build', {
+								actionName: name,
+								message: `Action '${name}': dependency '${ref.id}' was not resolved.`,
+							}),
+						);
 					}
-					return resolvedByResourceId.get(id);
-				};
+				}
+				const readDeclaredDependency = (id: string): unknown => resolvedByResourceId.get(id);
 
 				// Substrate-context primitives. artifact publisher + strategy registry
 				// are both provided by the supervisor's pluginContext.
@@ -203,29 +216,31 @@ export const action = <const Name extends string, const DependsOn extends Action
 						actionName: name,
 						dependencyResourceIds,
 					},
-					dynamicMaterial: resolveDiscriminator(name, opts.discriminator, bodyCtx, bodyDeps),
+					dynamicMaterial: resolveDiscriminator(opts.discriminator, bodyCtx, bodyDeps),
 					body: opts.body(bodyCtx, bodyDeps),
 				};
 
 				const receipt = yield* bootActionService(publisher, probe, acquireInputs).pipe(
-					Effect.catch((err): Effect.Effect<ActionReceipt, ActionError> => {
-						// Re-wrap the ArtifactPublishError into an
-						// ActionError so downstream consumers always see
-						// the typed `ActionError` shape. The detail
-						// already includes the phase + message from the
-						// produce-side mapper.
-						if ((err as { _tag?: string })._tag === 'ActionError') {
-							return Effect.fail(err as ActionError);
-						}
-						const detail =
-							(err as { detail?: string }).detail ?? `Action '${name}': substrate failure.`;
-						return Effect.fail(
-							actionError('sign', {
-								actionName: name,
-								message: detail,
-								cause: err,
-							}),
-						);
+					// `catchTags` narrows on the `_tag` discriminant so each
+					// branch's handler sees the typed shape directly.
+					//
+					// The produce-side body in `service.ts` recovers any
+					// stashed ActionError before the substrate's
+					// mapError wrap, so an ArtifactPublishError reaching
+					// here is always a substrate-side failure (cache
+					// decode failure, verify exhausted). Surface those as
+					// `phase: 'verify'` — they happen during the cache
+					// verify cycle, not at sign-time.
+					Effect.catchTags({
+						ActionError: (err) => Effect.fail(err),
+						ArtifactPublishError: (err) =>
+							Effect.fail(
+								actionError('verify', {
+									actionName: name,
+									message: err.detail,
+									cause: err,
+								}),
+							),
 					}),
 				);
 				return receipt;
@@ -248,9 +263,10 @@ export const action = <const Name extends string, const DependsOn extends Action
 export type { ActionBuildContext } from './build-context.ts';
 export type { ActionError, ActionPhase } from './errors.ts';
 export { ACTION_ERROR_TAGS } from './errors.ts';
-export type { ActionLifecyclePhase } from './lifecycle.ts';
 export type { DynamicDiscriminator, StaticDiscriminator } from './discriminator.ts';
 export type { ActionReceipt } from './service.ts';
 export { ActionReceiptSchema } from './service.ts';
 export type { ActionObjectChange } from './execute.ts';
 export { signAndExecute } from './execute.ts';
+
+export { ActionSpans } from './spans.ts';

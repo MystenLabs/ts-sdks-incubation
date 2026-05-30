@@ -41,16 +41,19 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
+import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { suiResource } from '../sui/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountValue } from '../account/index.ts';
 import type { CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
+import { DeepbookSpans } from './spans.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
 	deepbookPluginError,
+	type DeepbookConfigError,
 	type DeepbookError,
 	type DeepbookPluginError,
 } from './errors.ts';
@@ -306,31 +309,72 @@ const requireCapturedId = (
 	);
 };
 
+const requirePoolCoinValue = (
+	coinValuesByRefId: ReadonlyMap<string, CoinValue>,
+	poolName: string,
+	side: 'base' | 'quote',
+	coinRefId: string,
+): Effect.Effect<CoinValue, DeepbookConfigError> => {
+	const value = coinValuesByRefId.get(coinRefId);
+	if (value === undefined) {
+		// Compose-time bug — `dependsOn`/`poolCoinRefs` dropped this coin.
+		// Surface a typed config error naming the missing coin id rather
+		// than letting a double-cast `undefined` slip into the resolved
+		// pool spec. Lands on the typed E channel (not a sync throw, which
+		// inside Effect.gen would become an uncaught DEFECT that
+		// `passthroughOrWrap` could not see); `DeepbookConfigError` is in
+		// `DEEPBOOK_ERROR_TAGS`, so the outer pipeline passes it through
+		// untouched.
+		return Effect.fail(
+			deepbookConfigError(
+				'pools',
+				`deepbook: pool '${poolName}' ${side} coin '${coinRefId}' was not resolved by the dependency tuple.`,
+				'This is a compose-time bug — ensure the coin member is included in `dependsOn`/`poolCoinRefs`.',
+			),
+		);
+	}
+	return Effect.succeed(value);
+};
+
 const resolvePoolSpecs = (
 	pools: ReadonlyArray<DeepbookPoolSpec>,
 	coinValuesByRefId: ReadonlyMap<string, CoinValue>,
-): ReadonlyArray<ResolvedDeepbookPoolSpec> =>
-	pools.map((pool) => {
-		const base = coinValuesByRefId.get(pool.base.coin.id) as CoinValue;
-		const quote = coinValuesByRefId.get(pool.quote.coin.id) as CoinValue;
-		return {
-			name: pool.name,
-			base: pool.base.key,
-			quote: pool.quote.key,
-			baseCoinType: base.fullCoinType,
-			quoteCoinType: quote.fullCoinType,
-			...(base.fundingStrategy === undefined ? {} : { baseFundingStrategy: base.fundingStrategy }),
-			...(quote.fundingStrategy === undefined
-				? {}
-				: { quoteFundingStrategy: quote.fundingStrategy }),
-			tickSize: pool.tickSize,
-			lotSize: pool.lotSize,
-			minSize: pool.minSize,
-			whitelisted: pool.whitelisted ?? true,
-			stablePool: pool.stablePool ?? false,
-			...(pool.seed === undefined ? {} : { seed: pool.seed }),
-		};
-	});
+): Effect.Effect<ReadonlyArray<ResolvedDeepbookPoolSpec>, DeepbookConfigError> =>
+	Effect.forEach(pools, (pool) =>
+		Effect.gen(function* () {
+			const base = yield* requirePoolCoinValue(
+				coinValuesByRefId,
+				pool.name,
+				'base',
+				pool.base.coin.id,
+			);
+			const quote = yield* requirePoolCoinValue(
+				coinValuesByRefId,
+				pool.name,
+				'quote',
+				pool.quote.coin.id,
+			);
+			return {
+				name: pool.name,
+				base: pool.base.key,
+				quote: pool.quote.key,
+				baseCoinType: base.fullCoinType,
+				quoteCoinType: quote.fullCoinType,
+				...(base.fundingStrategy === undefined
+					? {}
+					: { baseFundingStrategy: base.fundingStrategy }),
+				...(quote.fundingStrategy === undefined
+					? {}
+					: { quoteFundingStrategy: quote.fundingStrategy }),
+				tickSize: pool.tickSize,
+				lotSize: pool.lotSize,
+				minSize: pool.minSize,
+				whitelisted: pool.whitelisted ?? true,
+				stablePool: pool.stablePool ?? false,
+				...(pool.seed === undefined ? {} : { seed: pool.seed }),
+			};
+		}),
+	);
 
 const assertUniquePoolNames = (name: string, pools: ReadonlyArray<DeepbookPoolSpec>) => {
 	const seen = new Set<string>();
@@ -385,6 +429,7 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		id: deepbookResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'task',
+		section: 'service',
 		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.sync(() => {
@@ -453,6 +498,7 @@ const buildLocalPlugin = <
 		id: deepbookResource.id,
 		dependsOn,
 		role: 'task',
+		section: 'service',
 		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -467,9 +513,9 @@ const buildLocalPlugin = <
 				const coinValues = extraValues.slice(pythValueCount) as CoinValue[];
 
 				yield* Effect.annotateCurrentSpan({
-					'deepbook.name': name,
-					'deepbook.chain': sui.chain,
-					'deepbook.publisher': publisher.address,
+					[DeepbookSpans.name]: name,
+					[DeepbookSpans.chain]: sui.chain,
+					[DeepbookSpans.publisher]: publisher.address,
 				});
 				yield* setCurrentPluginPhase('reading deployment captures');
 
@@ -502,7 +548,7 @@ const buildLocalPlugin = <
 						coinValuesByRefId.set(ref.id, value);
 					}
 				}
-				const poolSpecs = resolvePoolSpecs(opts.pools, coinValuesByRefId);
+				const poolSpecs = yield* resolvePoolSpecs(opts.pools, coinValuesByRefId);
 				const artifactPublisher = yield* ArtifactPublisherService;
 				yield* setCurrentPluginPhase(
 					opts.pyth === undefined ? 'creating pools' : 'initializing Pyth feeds',
@@ -556,34 +602,23 @@ const buildLocalPlugin = <
 				};
 				return resolved;
 			}).pipe(
-				Effect.catch((err: unknown) => {
-					// Typed plugin errors flow through; other errors
-					// (substrate primitives) are wrapped under a
-					// `'publish'` phase tag so the cascade walker keeps
-					// the plugin attribution.
-					if (
-						typeof err === 'object' &&
-						err !== null &&
-						'_tag' in err &&
-						(err._tag === 'DeepbookPluginError' ||
-							err._tag === 'DeepbookConfigError' ||
-							err._tag === 'ForkIncompatibleError')
-					) {
-						return Effect.fail(err as DeepbookError);
-					}
-					return Effect.fail(
-						deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`),
-					);
-				}),
+				// The body's aggregate E channel includes substrate Effects
+				// whose error shape is unknown to TS (ArtifactPublisher
+				// produce bodies, dependency reads). `Effect.catchTags`
+				// would need a statically-known tagged union; the
+				// substrate's `passthroughOrWrap` runtime-checks the `_tag`
+				// against `DEEPBOOK_ERROR_TAGS`, passing typed deepbook
+				// errors through untouched and wrapping everything else
+				// under `'publish'` so cascade attribution stays with the
+				// plugin.
+				passthroughOrWrap.for<DeepbookError>()(DEEPBOOK_ERROR_TAGS, (err) =>
+					deepbookPluginError('publish', `deepbook acquire failed: ${String(err)}`, {
+						cause: err,
+					}),
+				),
 			),
-		capabilities: ({ value: resolved, runtime: acquireCtx }) => {
-			const snap: SnapshotableDecl = makeLocalSnapshotable({
-				name,
-				app: acquireCtx.identity.app,
-				stack: acquireCtx.identity.stack,
-				indexerEnabled: false,
-				serverEnabled: false,
-			});
+		capabilities: ({ value: resolved }) => {
+			const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
 			const bindings: DeepbookBindings = {
 				name,
 				chain: resolved.chain,
@@ -664,6 +699,8 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		id: deepbookResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'task',
+		section: 'service',
+		pluginKey: deepbookPluginKey(name),
 		start: (deps) =>
 			Effect.sync(() => {
 				const [sui] = deps;
@@ -911,11 +948,6 @@ export type {
 	DeepbookPoolSeedLiquidity,
 	DeepbookPoolSeedOrder,
 	DeepbookPoolSpec,
-	PythFeed,
-	PythHandle,
-	PythOptions,
-	PythPackageMember,
-	PythPriceFeedId,
 } from './types.ts';
 export {
 	DEEP_PRICE_FEED_ID,
@@ -923,3 +955,4 @@ export {
 	SUI_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './types.ts';
+export { DeepbookSpans } from './spans.ts';

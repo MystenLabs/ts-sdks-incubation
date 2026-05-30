@@ -44,18 +44,21 @@ import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { ContainerRuntime, EnsureNetworkSpec } from '../../contracts/container-runtime.ts';
+import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import {
+	deriveSubnetPrefix,
+	withSubnetAddressing,
+} from '../../substrate/runtime/subnet-broker.ts';
 import type { AcquireContext } from '../../substrate/plugin.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import { suiResource } from '../sui/index.ts';
+import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 
@@ -115,28 +118,11 @@ export interface WalrusNetworkIdentity {
 /** Walrus deploy records storage-node listening IPs under this /24.
  *  Docker network create requests the matching subnet explicitly, with
  *  the prefix derived from the Walrus network identity so parallel
- *  stacks don't all claim the same Docker IPAM range. */
-export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string => {
-	const key = `${identity.app}\0${identity.stack}\0${identity.walrusName}`;
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < key.length; i += 1) {
-		hash ^= key.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	const bucket = hash % (64 * 256);
-	const secondOctet = 64 + Math.floor(bucket / 256);
-	const thirdOctet = bucket % 256;
-	return `10.${secondOctet}.${thirdOctet}`;
-};
-
-export const walrusNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
-	spec: Spec,
-	subnetPrefix: string,
-): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
-	...spec,
-	subnet: `${subnetPrefix}.0/24`,
-	gateway: `${subnetPrefix}.1`,
-});
+ *  stacks don't all claim the same Docker IPAM range. Walrus claims
+ *  the `10.64.*` – `10.127.*` band; see substrate/runtime/subnet-broker.ts
+ *  for the algorithm and band coordination with seal. */
+export const deriveWalrusSubnetPrefix = (identity: WalrusNetworkIdentity): string =>
+	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.walrusName}`, 64);
 
 const withWalrusNetworkAddressing = (
 	runtime: ContainerRuntime,
@@ -146,7 +132,7 @@ const withWalrusNetworkAddressing = (
 	...runtime,
 	ensureNetwork: (spec) =>
 		runtime.ensureNetwork(
-			spec.name === walrusNetworkName ? walrusNetworkCreateSpec(spec, subnetPrefix) : spec,
+			spec.name === walrusNetworkName ? withSubnetAddressing(spec, subnetPrefix) : spec,
 		),
 });
 
@@ -165,6 +151,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		id: walrusResource.id,
 		dependsOn: [suiResource] as const,
 		role: 'service',
+		section: 'service',
 		pluginKey: walrusKey,
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -261,6 +248,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 						// network and reach sui via `host.docker.internal`.
 						suiNetworkName: walrusNetworkName,
 						deployHostMountPath,
+						stackRoot: stackPaths.stackRoot,
 					},
 					mode,
 				);
@@ -312,6 +300,7 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		// Known deployment is a pure value-producer — no containers,
 		// no long-running children.
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.succeed({
 				mode: 'known',
@@ -472,6 +461,7 @@ export const walCoin = (walrusMember: ResourceRef<'walrus', WalrusResolved>) => 
 		id: coinRef.id,
 		dependsOn: walrusMember,
 		role: 'task',
+		section: 'action',
 		start: (resolved): Effect.Effect<WalCoinValue, WalrusPluginError> =>
 			Effect.gen(function* () {
 				if (resolved.walCoinType === null) {
@@ -512,8 +502,7 @@ export const walrus = (opts?: { readonly local?: WalrusLocalClusterOptions }) =>
  *
  *  Critically, the fork branch exposes ONLY `.known` — calling
  *  `.local` on a fork-mode network is a **compile error** at the
- *  call site (distilled-doc invariant 12 — type-level refusal).
- *  Runtime defense-in-depth: see `mode/fork-refusal.ts`. */
+ *  call site (distilled-doc invariant 12 — type-level refusal). */
 export const walrusFor = defineModeNamespace({
 	local: {
 		local: (opts: WalrusLocalClusterOptions = {}) => buildLocalPlugin(opts),
@@ -538,13 +527,6 @@ export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/kn
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';
 export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } from './errors.ts';
-// `ForkIncompatibleError` is the cross-cutting mode-refusal shape owned
-// by `substrate/runtime/mode-errors.ts`; seal re-exports it
-// under its canonical name from its barrel, so walrus exposes the
-// SAME class under a walrus-namespaced alias to avoid a collision
-// when a downstream consumer imports both plugin barrels in the same
-// scope (STYLE_GUIDE §2 — one `_tag` literal per logical error type).
-export type { ForkIncompatibleError as WalrusForkIncompatible } from './errors.ts';
 export { WALRUS_ERROR_TAGS } from './errors.ts';
 export {
 	walCoinType,
@@ -559,3 +541,4 @@ export {
 	type WalrusKnownStateEntry,
 } from './registry-publish.ts';
 export { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
+export { WalrusSpans } from './spans.ts';

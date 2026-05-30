@@ -25,9 +25,12 @@
 //   - 25: ubuntu:24.04 base — handled in the Dockerfile.
 
 import { Effect, type Scope } from 'effect';
+import { fileURLToPath } from 'node:url';
 
-import type { ContainerRuntime, ImageRef } from '../../../contracts/container-runtime.ts';
+import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
+import { WalrusSpans } from '../spans.ts';
 
 const WALRUS_CARGO_IMAGE_OVERRIDE_ENV = 'WALRUS_CARGO_IMAGE_OVERRIDE' as const;
 
@@ -44,6 +47,12 @@ export const DEFAULT_SUI_VERSION = 'devnet-v1.71.0' as const;
 export interface WalrusCargoImageInputs<Ref extends string = string, SuiV extends string = string> {
 	readonly walrusRef: Ref;
 	readonly suiVersion: SuiV;
+	/** Owner identity stamped on the built image so label-driven prune
+	 *  finds it. */
+	readonly owner: {
+		readonly app: string;
+		readonly stack: string;
+	};
 }
 
 /** Resolved value — the content-addressed image ref. */
@@ -56,9 +65,13 @@ export interface WalrusCargoImageResolved {
 // Runtime resolver
 // ---------------------------------------------------------------------------
 
-/** Resolve to the on-disk path of the vendored Dockerfile context. */
+/** Resolve to the on-disk path of the vendored Dockerfile context.
+ *  `fileURLToPath` normalises the URL → host-path conversion across
+ *  platforms (Windows `file:///C:/...` → `C:\...`; POSIX strips the
+ *  scheme and percent-decodes). Reading `.pathname` directly would
+ *  leave the leading `/` on Windows. */
 const vendoredDockerfileContext = (): string =>
-	new URL('../../../../images/walrus/', import.meta.url).pathname;
+	fileURLToPath(new URL('../../../../images/walrus/', import.meta.url));
 
 /** Resolve the walrus image. Path (a) trusts an env-override tag; path
  *  (b) builds the vendored Dockerfile via `runtime.ensureImage`. */
@@ -67,8 +80,7 @@ export const resolveCargoImage = (
 	inputs: WalrusCargoImageInputs,
 ): Effect.Effect<WalrusCargoImageResolved, WalrusPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-			.process?.env?.[WALRUS_CARGO_IMAGE_OVERRIDE_ENV];
+		const override = readEnv(WALRUS_CARGO_IMAGE_OVERRIDE_ENV);
 		if (override && override.length > 0) {
 			// Trust-the-tag path. The digest is opaque (substrate's
 			// content-addressed cache will re-resolve via `docker inspect`
@@ -83,6 +95,12 @@ export const resolveCargoImage = (
 			buildArgs: {
 				WALRUS_VERSION: inputs.walrusRef,
 				SUI_VERSION: inputs.suiVersion,
+			},
+			owner: {
+				app: inputs.owner.app,
+				stack: inputs.owner.stack,
+				plugin: 'walrus',
+				role: 'cluster',
 			},
 		};
 
@@ -101,17 +119,8 @@ export const resolveCargoImage = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.cargoImage.resolve', {
 			attributes: {
-				'walrus.ref': inputs.walrusRef,
-				'walrus.suiVersion': inputs.suiVersion,
+				[WalrusSpans.ref]: inputs.walrusRef,
+				[WalrusSpans.suiVersion]: inputs.suiVersion,
 			},
 		}),
 	);
-
-/** Convenience: resolve via the default inputs. */
-export const resolveDefaultCargoImage = (
-	runtime: ContainerRuntime,
-): Effect.Effect<ImageRef, WalrusPluginError, Scope.Scope> =>
-	resolveCargoImage(runtime, {
-		walrusRef: DEFAULT_WALRUS_REF,
-		suiVersion: DEFAULT_SUI_VERSION,
-	});

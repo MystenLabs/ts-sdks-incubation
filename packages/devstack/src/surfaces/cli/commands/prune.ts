@@ -9,9 +9,11 @@
 import { Effect } from 'effect';
 
 import {
-	ROUTER_CONTAINER_NAME_PREFIX,
-	ROUTER_SHARED_APP,
-} from '../../../orchestrators/router/cleanup.ts';
+	defaultLifecyclePruneSelection,
+	DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
+	lifecyclePruneAppsWithLiveSiblings,
+	type SharedGroupKind,
+} from '../../../orchestrators/lifecycle-prune/index.ts';
 import {
 	type CliError,
 	CliConfirmRequiredError,
@@ -29,6 +31,15 @@ export interface PruneGroup {
 	readonly live: boolean;
 	readonly livePids: ReadonlyArray<number>;
 	readonly shared: boolean;
+	/** Discriminator for shared groups — mirrored from the L3 orchestrator
+	 *  shape so surfaces never re-derive the `_per-app_` / router-singleton
+	 *  predicate. `null` for normal groups. */
+	readonly sharedKind: SharedGroupKind | null;
+	/** True when the group represents a router-shared resource set that
+	 *  is auto-prunable in non-interactive flows (`devstack prune --all`).
+	 *  Computed by the lifecycle-prune orchestrator; surfaces never
+	 *  recompute the router-stack naming predicate. */
+	readonly autoPrunable: boolean;
 	readonly containers: number;
 	readonly runningContainers: number;
 	readonly networks: number;
@@ -68,6 +79,24 @@ export interface PruneSelection extends PruneTargetSelection {
 	readonly dryRun: boolean;
 }
 
+/** One non-devstack container still holding a network that prune
+ *  could not remove. Surfaced so the operator can investigate the
+ *  external holder (typically a test fixture, a sibling project's
+ *  container, or a manually-attached debugging container). */
+export interface PruneForeignNetworkHolder {
+	readonly network: string;
+	readonly container: { readonly id: string; readonly name: string };
+}
+
+/** Endpoint Docker still tracks on a network even though the owning
+ *  container is gone and no CLI/API path can remove it. Docker engine
+ *  bug — only a daemon restart reclaims the network. */
+export interface PruneStaleNetworkEndpoint {
+	readonly network: string;
+	readonly name: string;
+	readonly id: string;
+}
+
 export interface PruneSummary {
 	readonly inspectedGroups: number;
 	readonly selectedGroups: number;
@@ -77,6 +106,12 @@ export interface PruneSummary {
 	readonly networksSkipped: number;
 	readonly volumesRemoved: number;
 	readonly imagesRemoved: number;
+	/** Foreign holders surviving network removal. Empty when every
+	 *  network came down cleanly or no network removal was attempted. */
+	readonly foreignNetworkHolders: ReadonlyArray<PruneForeignNetworkHolder>;
+	/** Stale phantom endpoints requiring a Docker daemon restart to
+	 *  reclaim. Empty in the happy path. */
+	readonly staleNetworkEndpoints: ReadonlyArray<PruneStaleNetworkEndpoint>;
 }
 
 export type PruneOutcome = { readonly kind: 'completed'; readonly summary: PruneSummary };
@@ -95,12 +130,9 @@ export interface PruneRunOptions {
 	readonly resources: PruneResourceScope;
 }
 
-export const DEFAULT_PRUNE_RESOURCES: PruneResourceScope = {
-	containers: true,
-	networks: true,
-	volumes: true,
-	images: false,
-};
+/** L4 mirror of the orchestrator's default resource scope. Re-export
+ *  rather than redefine so the default never drifts between layers. */
+export const DEFAULT_PRUNE_RESOURCES: PruneResourceScope = DEFAULT_LIFECYCLE_PRUNE_RESOURCES;
 
 export const summarizePruneGroups = (groups: ReadonlyArray<PruneGroup>): PruneTotals => {
 	let liveGroups = 0;
@@ -158,21 +190,21 @@ export const groupResourceCountForResources = (
 	(resources.volumes ? group.volumes : 0) +
 	(resources.images ? group.images : 0);
 
-const isAutoPrunableSharedGroup = (group: PruneGroup): boolean =>
-	group.app === ROUTER_SHARED_APP && group.stack.startsWith(ROUTER_CONTAINER_NAME_PREFIX);
+/** L4 mirror — defers to the orchestrator's pinning predicate so the
+ *  shared-resource rule lives in exactly one place. Exported so the
+ *  interactive picker enforces the same per-app-shared pinning rule
+ *  the default selection already obeys (manual toggle / select-all must
+ *  not add a `per-app-shared` group pinned by a live sibling). */
+export const appsWithLiveSiblings = (inventory: PruneInventory): ReadonlySet<string> =>
+	lifecyclePruneAppsWithLiveSiblings(inventory);
 
+/** Delegates to the orchestrator's `defaultLifecyclePruneSelection`.
+ *  The L4 shape mirrors the L3 shape field-for-field; the surface
+ *  never reimplements the shared/per-app/router policy. */
 export const defaultPruneSelection = (
 	inventory: PruneInventory,
 	resources: PruneResourceScope = DEFAULT_PRUNE_RESOURCES,
-): ReadonlyArray<string> =>
-	inventory.groups
-		.filter(
-			(group) =>
-				!group.live &&
-				(!group.shared || isAutoPrunableSharedGroup(group)) &&
-				groupResourceCountForResources(group, resources) > 0,
-		)
-		.map((group) => group.key);
+): ReadonlyArray<string> => defaultLifecyclePruneSelection(inventory, resources);
 
 const requireBulkConfirm = (verb: string, ctx: CommandContext): Effect.Effect<void, CliError> => {
 	if (ctx.flags.dryRun) return Effect.void;
@@ -195,15 +227,21 @@ const requireInteractive = (ctx: CommandContext): Effect.Effect<void, CliError> 
 	);
 };
 
-const formatGroupLine = (group: PruneGroup): string => {
+const formatGroupLine = (group: PruneGroup, pinnedApps: ReadonlySet<string>): string => {
 	const state =
 		group.live && group.livePids.length > 0
 			? `live pid ${group.livePids.join(',')}`
 			: group.live
 				? 'live'
-				: group.shared
-					? 'shared'
-					: 'idle';
+				: group.sharedKind === 'per-app-shared'
+					? pinnedApps.has(group.app)
+						? 'shared (pinned by live sibling)'
+						: 'shared (auto)'
+					: group.shared
+						? group.autoPrunable
+							? 'shared (auto)'
+							: 'shared'
+						: 'idle';
 	const running = group.runningContainers > 0 ? `, ${group.runningContainers} running` : '';
 	const images = group.images > 0 ? `, ${group.images} image(s)` : '';
 	return `  ${group.app}/${group.stack}  ${state}  ${group.containers} container(s)${running}, ${group.networks} network(s), ${group.volumes} volume(s)${images}`;
@@ -211,17 +249,34 @@ const formatGroupLine = (group: PruneGroup): string => {
 
 const inventoryLines = (inventory: PruneInventory): ReadonlyArray<string> => {
 	if (inventory.groups.length === 0) return ['(no devstack-labelled Docker resources)'];
+	const pinned = appsWithLiveSiblings(inventory);
 	return [
 		`devstack prune inventory: ${inventory.totals.groups} group(s), ${inventory.totals.containers} container(s), ${inventory.totals.networks} network(s), ${inventory.totals.volumes} volume(s), ${inventory.totals.images} image(s)`,
-		...inventory.groups.map(formatGroupLine),
+		...inventory.groups.map((g) => formatGroupLine(g, pinned)),
 	];
 };
 
-const completedLine = (summary: PruneSummary, dryRun: boolean): string => {
+const completedLines = (summary: PruneSummary, dryRun: boolean): ReadonlyArray<string> => {
 	const prefix = dryRun ? '[dry-run] would prune' : 'prune completed';
 	const skippedNetworks =
 		summary.networksSkipped > 0 ? `, ${summary.networksSkipped} network(s) still in use` : '';
-	return `${prefix}: ${summary.selectedGroups} group(s), ${summary.containersRemoved} container(s), ${summary.networksRemoved} network(s), ${summary.volumesRemoved} volume(s), ${summary.imagesRemoved} image(s), ${summary.skippedLiveGroups} live group(s) skipped${skippedNetworks}`;
+	const head = `${prefix}: ${summary.selectedGroups} group(s), ${summary.containersRemoved} container(s), ${summary.networksRemoved} network(s), ${summary.volumesRemoved} volume(s), ${summary.imagesRemoved} image(s), ${summary.skippedLiveGroups} live group(s) skipped${skippedNetworks}`;
+	const lines: Array<string> = [head];
+	if (summary.foreignNetworkHolders.length > 0) {
+		lines.push('foreign network holders:');
+		for (const h of summary.foreignNetworkHolders) {
+			lines.push(`  ${h.network} held by ${h.container.name} (${h.container.id.slice(0, 12)})`);
+		}
+	}
+	if (summary.staleNetworkEndpoints.length > 0) {
+		lines.push(
+			'stale endpoints (Docker engine bug — restart Docker Desktop to reclaim these networks):',
+		);
+		for (const ep of summary.staleNetworkEndpoints) {
+			lines.push(`  ${ep.network}: phantom endpoint "${ep.name}" (${ep.id.slice(0, 12)})`);
+		}
+	}
+	return lines;
 };
 
 const mapUnknownPruneError = (cause: unknown): Effect.Effect<never, CliError> =>
@@ -302,6 +357,8 @@ export const runPrune = (
 							networksSkipped: 0,
 							volumesRemoved: 0,
 							imagesRemoved: 0,
+							foreignNetworkHolders: [],
+							staleNetworkEndpoints: [],
 						},
 					},
 				},
@@ -329,7 +386,7 @@ export const runPrune = (
 				selection: selected,
 				outcome,
 			},
-			humanLines: [completedLine(outcome.summary, ctx.flags.dryRun)],
+			humanLines: completedLines(outcome.summary, ctx.flags.dryRun),
 		});
 		return { exitCode: 0 } as CommandResult;
 	}).pipe(Effect.withSpan('cli.prune'));

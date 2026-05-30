@@ -43,21 +43,27 @@ export const listenScopedHttpServer = <E>(
 	options: ScopedHttpServerOptions<E>,
 ): Effect.Effect<ScopedHttpServerHandle, E, Scope.Scope> =>
 	Effect.gen(function* () {
-		const server = yield* Effect.tryPromise({
-			try: () =>
-				new Promise<Server>((resolve, reject) => {
-					const srv = createServer(options.listener);
-					const onError = (err: Error) => reject(err);
-					srv.once('error', onError);
-					srv.listen(options.port, options.bindAddress, () => {
-						srv.removeListener('error', onError);
-						resolve(srv);
-					});
-				}),
-			catch: options.onListenError,
-		});
-
-		yield* Effect.addFinalizer(() => gracefulCloseHttpServer(server).pipe(Effect.uninterruptible));
+		// `acquireRelease` pairs the bound server with its close finalizer
+		// atomically: the moment `listen` resolves, the graceful-close
+		// finalizer is registered, so an interruption between bind and
+		// finalizer registration can no longer leak a listener holding the
+		// port.
+		const server = yield* Effect.acquireRelease(
+			Effect.tryPromise({
+				try: () =>
+					new Promise<Server>((resolve, reject) => {
+						const srv = createServer(options.listener);
+						const onError = (err: Error) => reject(err);
+						srv.once('error', onError);
+						srv.listen(options.port, options.bindAddress, () => {
+							srv.removeListener('error', onError);
+							resolve(srv);
+						});
+					}),
+				catch: options.onListenError,
+			}),
+			(srv) => gracefulCloseHttpServer(srv).pipe(Effect.uninterruptible),
+		);
 
 		return {
 			url: `http://${options.bindAddress}:${options.port}`,

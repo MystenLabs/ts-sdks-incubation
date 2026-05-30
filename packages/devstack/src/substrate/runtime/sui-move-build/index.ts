@@ -5,11 +5,15 @@
 // Like `sui-execute/`, this is an L1-adjacent Sui-aware helper. It owns
 // the mechanical "scrub Move.lock → run sui move build → parse bytecode"
 // path so Move-publishing plugins do not import each other's internals.
+// Listed as a documented exception in `ARCHITECTURE.md` §"Substrate
+// name-blindness" alongside `sui-execute/`. Rationale + alternative-
+// rejection are recorded there; new substrate-side Sui-aware exceptions
+// need explicit justification in that section before landing.
 
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { basename, dirname, join, relative } from 'node:path';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { basename, join, relative, resolve, sep } from 'node:path';
 
 import { Effect, Schema, type Scope } from 'effect';
 
@@ -20,6 +24,7 @@ import type {
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
 import { contentHash, type ChainId, type ContentHash } from '../../brand.ts';
+import { mintRandomSuffix } from '../random-suffix.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
@@ -78,10 +83,6 @@ export interface BuildOutput {
 	readonly dependencies: ReadonlyArray<string>;
 }
 
-export interface ScrubLocksHostOptions {
-	readonly packageLockFailures?: 'fatal' | 'best-effort';
-}
-
 export const stripPinnedSections = (source: string): string => {
 	const lines = source.split('\n');
 	const out: Array<string> = [];
@@ -124,8 +125,6 @@ export const containerScrubShellScript = (workspaceRoot: string, moveHomeRoot: s
 	return [stage, findPkg, findCache].join('; ');
 };
 
-export const scrubLocksContainerShellScript = containerScrubShellScript;
-
 export interface MoveBuildInput {
 	readonly packagePath: string;
 	readonly rpcUrl: string;
@@ -148,27 +147,99 @@ export const extractTrailingJson = (text: string): string => {
 	return trimmed.slice(idx);
 };
 
-export const hostBuildArgv = (input: MoveBuildInput): ReadonlyArray<string> => [
-	'move',
-	'build',
-	'--path',
-	input.packagePath,
-	'-e',
-	'testnet',
-	'--no-tree-shaking',
-	'--dump-bytecode-as-base64',
-	'--with-unpublished-dependencies',
-];
-
 export const containerInnerScript = (pkgName: string): string => {
-	const scrub = containerScrubShellScript('/workspace', '/root/.move');
+	// Copy the WHOLE mounted tree into an in-container scratch dir and scrub +
+	// build the package THERE, never `/workspace/<pkg>` directly. `/workspace`
+	// is a bind mount of the developer's real source tree (the per-app build
+	// container in `chain-build-container.ts` mounts the app dir as-is), and the
+	// scrub's `gawk -i inplace` rewrite of Move.lock would corrupt their
+	// checked-in pinned deps if run against the mount.
+	//
+	// Two reasons we copy `/workspace/.` (the whole tree) rather than only
+	// `/workspace/<pkgName>`:
+	//   1. NESTED PACKAGES. `pkgName` is the package path RELATIVE to the
+	//      bind-mounted app dir (e.g. `packages/demo`), so it can contain a
+	//      slash. Copying only `/workspace/<pkgName>` into
+	//      `/tmp/move-build-$$/<pkgName>` would need the intermediate
+	//      `packages/` dir to exist first — it doesn't, and `set -e` would
+	//      abort the build before `sui move build` ran.
+	//   2. SIBLING LOCAL DEPS. A package can reference siblings via
+	//      `{ local = "../token" }`. A scoped copy of only the package subtree
+	//      drops those, failing the build with "Invalid directory at ../…".
+	// Copying the whole tree both materialises the nested path AND carries the
+	// sibling `../` deps. The mount itself is never rewritten (mirrors
+	// `containerInnerScriptOneShot`, whose host-side staging tree is the disposable
+	// copy there; here the in-container copy is the disposable one).
+	//
+	// `$$` (the shell PID) scopes the scratch dir per exec so concurrent
+	// builds of the same package don't share a tree.
+	const quotedPkg = shellQuote(pkgName);
+	const scratchRoot = '/tmp/move-build-$$';
+	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
+	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
+	// Scrub the whole scratch tree AND the mounted Move git cache. The cache
+	// (`/root/.move/git`) is process-shared mutable state we legitimately want
+	// scrubbed so a stale pin can't leak into the build; the scratch tree is the
+	// disposable copy, so scrubbing all of it (package + staged siblings) is safe.
+	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
 	const build =
-		`sui move build --path /workspace/${shellQuote(pkgName)} ` +
+		`sui move build --path ${scratchPkg} ` +
 		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
 		`--with-unpublished-dependencies`;
-	return ['set -e', scrub, 'set +e', build, 'status=$?', 'set -e', scrub, 'exit "$status"'].join(
-		'; ',
-	);
+	const cleanup = `rm -rf ${scratchRoot}`;
+	return [
+		'set -e',
+		stage,
+		scrub,
+		'set +e',
+		build,
+		'status=$?',
+		'set -e',
+		scrub,
+		cleanup,
+		'exit "$status"',
+	].join('; ');
+};
+
+/** One-shot-path inner script. Mirrors {@link containerInnerScript} — both copy
+ *  the WHOLE `/workspace` tree into an in-container scratch dir and scrub + build
+ *  THERE, never the mount in place. The difference is only WHAT is mounted at
+ *  `/workspace`: the exec path bind-mounts the developer's real app dir (so the
+ *  whole-tree copy naturally carries nested packages + sibling `../` deps),
+ *  whereas the one-shot path mounts a disposable host-side staging copy whose
+ *  transitive local deps were pre-staged (see `stageLocalMoveDeps`). Copying only
+ *  `/workspace/<pkg>` would drop sibling local dependencies
+ *  (`{ local = "../token" }`), failing the build with "Invalid directory at ../…". */
+export const containerInnerScriptOneShot = (pkgName: string): string => {
+	const quotedPkg = shellQuote(pkgName);
+	const scratchRoot = '/tmp/move-build-$$';
+	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
+	// Copy the WHOLE staging mount (package + its staged local `../` deps) into
+	// an in-container scratch tree and scrub + build THERE — never the mounted
+	// host staging dir. Building in the mount leaves root-owned `build/` +
+	// scrubbed Move.lock files behind that the (non-root) host can't remove,
+	// failing scope cleanup with EACCES. Copying ALL of /workspace (like
+	// containerInnerScript) keeps sibling local deps like `{ local = "../token" }`
+	// present in the scratch tree.
+	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
+	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
+	const build =
+		`sui move build --path ${scratchPkg} ` +
+		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
+		`--with-unpublished-dependencies`;
+	const cleanup = `rm -rf ${scratchRoot}`;
+	return [
+		'set -e',
+		stage,
+		scrub,
+		'set +e',
+		build,
+		'status=$?',
+		'set -e',
+		scrub,
+		cleanup,
+		'exit "$status"',
+	].join('; ');
 };
 
 const isHashedFile = (name: string): boolean =>
@@ -292,26 +363,18 @@ const scrubCachedLockFiles = async (root: string): Promise<void> => {
 	}
 };
 
+// Scrub ONLY the shared Move git cache (`~/.move/git`), never the caller's
+// source tree. The package's own Move.lock is scrubbed inside the container on
+// a disposable copy (see `containerInnerScript`), so rewriting the developer's
+// checked-in Move.lock here would corrupt their pinned deps for no benefit. The
+// cache is process-shared mutable state, so scrubbing it host-side keeps a stale
+// pin from leaking into the build.
 export const scrubLocksHost = (
 	sourcePath: string,
 	moveHomeRoot: string,
-	options: ScrubLocksHostOptions = {},
 ): Effect.Effect<void, MoveBuildError, Scope.Scope> =>
 	Effect.tryPromise({
 		try: async () => {
-			const ownLocks = await findMoveLockFiles(sourcePath);
-			for (const f of ownLocks) {
-				if (options.packageLockFailures === 'best-effort') {
-					try {
-						await scrubOneLockFile(f);
-					} catch {
-						continue;
-					}
-				} else {
-					await scrubOneLockFile(f);
-				}
-			}
-
 			const moveHome = expandHome(moveHomeRoot);
 			const gitCache = join(moveHome, 'git');
 			try {
@@ -365,7 +428,7 @@ export const parseBuildOutput = (
 	});
 
 const promoteNonZero = (
-	op: 'docker exec' | 'docker run --rm' | 'host sui',
+	op: 'docker exec' | 'docker run --rm',
 	result: ExecResult,
 	sourcePath: string,
 	packageName: string,
@@ -421,24 +484,123 @@ const buildViaContainerExec = (
 		return yield* parseBuildOutput(result.stdout, inputs.sourcePath, inputs.packageName);
 	}).pipe(Effect.withSpan('sui-move-build.via-exec'));
 
+/** `{ local = "../path" }` dependency paths, harvested from a Move.toml. */
+const LOCAL_MOVE_DEP_RE = /\blocal\s*=\s*"([^"]+)"/g;
+
+/** Copy a package's transitive local-path Move dependencies into a staging
+ *  tree, preserving each dep's path RELATIVE to the staged package so
+ *  references like `{ local = "../token" }` resolve. Without this, a scoped
+ *  copy of only the package fails `sui move build` / `sui move summary` with
+ *  "Invalid directory at ../…". Throws if a dep resolves outside `stagingRoot`
+ *  (the single-mount layout can't represent it). Promise-based so the build
+ *  (`MoveBuildError`) and summary (`CodegenBindingsFailed`) call sites can
+ *  wrap it in their own error type. */
+export const copyLocalMoveDeps = async (
+	packageSrc: string,
+	stagedPackage: string,
+	stagingRoot: string,
+): Promise<void> => {
+	const staged = new Set<string>([packageSrc]);
+	const walk = async (srcDir: string, stagedDir: string): Promise<void> => {
+		let toml: string;
+		try {
+			toml = await readFile(join(srcDir, 'Move.toml'), 'utf8');
+		} catch {
+			return;
+		}
+		for (const match of toml.matchAll(LOCAL_MOVE_DEP_RE)) {
+			const rel = match[1]!;
+			const depSrc = resolve(srcDir, rel);
+			const depStaged = resolve(stagedDir, rel);
+			if (depStaged !== stagingRoot && !depStaged.startsWith(stagingRoot + sep)) {
+				throw new Error(
+					`local Move dependency "${rel}" of "${basename(srcDir)}" resolves outside the ` +
+						`staging root; vendor it under the package tree so it can be staged.`,
+				);
+			}
+			if (staged.has(depSrc)) {
+				continue;
+			}
+			staged.add(depSrc);
+			await cp(depSrc, depStaged, { recursive: true });
+			await walk(depSrc, depStaged);
+		}
+	};
+	await walk(packageSrc, stagedPackage);
+};
+
+/** Build-path wrapper around {@link copyLocalMoveDeps}. */
+export const stageLocalMoveDeps = (
+	packageSrc: string,
+	stagedPackage: string,
+	stagingRoot: string,
+	inputs: BuildInputs,
+): Effect.Effect<void, MoveBuildError> =>
+	Effect.tryPromise({
+		try: () => copyLocalMoveDeps(packageSrc, stagedPackage, stagingRoot),
+		catch: (cause): MoveBuildError =>
+			moveBuildError('scrub', {
+				sourcePath: inputs.sourcePath,
+				packageName: inputs.packageName,
+				message: 'failed to stage local Move dependencies for the one-shot build',
+				cause,
+			}),
+	});
+
 const buildViaOneShot = (
 	inputs: BuildInputs,
 	runtime: ContainerRuntime,
 	image: ImageRef,
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const parent = dirname(inputs.sourcePath);
 		const pkgName = basename(inputs.sourcePath);
-		const inner = containerInnerScript(pkgName);
+		const inner = containerInnerScriptOneShot(pkgName);
 		const moveHome = join(homedir(), '.move');
 		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
+
+		// Stage a scoped copy of the package and mount THAT, never the user's
+		// source tree. The container scrub (`gawk -i inplace`) rewrites Move.lock
+		// in place; pointing it at the developer's checked-in tree corrupts their
+		// pinned deps. The staging dir is scope-bound (acquireRelease removes it on
+		// scope close) and carries a random suffix so two concurrent builds of the
+		// same package don't share a tree. We keep the `/workspace/<pkgName>` layout
+		// so `containerInnerScript(pkgName)` and the mounted Move cache stay unchanged.
+		const stagingRoot = yield* Effect.acquireRelease(
+			Effect.tryPromise({
+				try: () => mkdtemp(join(tmpdir(), `move-build-${mintRandomSuffix(12)}-`)),
+				catch: (cause): MoveBuildError =>
+					moveBuildError('scrub', {
+						sourcePath: inputs.sourcePath,
+						packageName: inputs.packageName,
+						message: 'failed to create staging dir for Move build copy',
+						cause,
+					}),
+			}),
+			(dir) => Effect.promise(() => rm(dir, { recursive: true, force: true })),
+		);
+		const stagedPackage = join(stagingRoot, pkgName);
+		yield* Effect.tryPromise({
+			try: () => cp(inputs.sourcePath, stagedPackage, { recursive: true }),
+			catch: (cause): MoveBuildError =>
+				moveBuildError('scrub', {
+					sourcePath: inputs.sourcePath,
+					packageName: inputs.packageName,
+					message: `failed to stage package copy for Move build (staging=${stagedPackage})`,
+					cause,
+				}),
+		});
+		// Bring the package's transitive local `../` deps into the staging tree
+		// so the in-place one-shot build resolves them (the scoped copy alone
+		// would omit siblings like `{ local = "../token" }`).
+		yield* stageLocalMoveDeps(inputs.sourcePath, stagedPackage, stagingRoot, inputs);
+
 		const result = yield* runtime
 			.runOneShot({
 				image,
 				entrypoint: 'sh',
 				argv: ['-c', inner],
 				mounts: [
-					{ source: parent, target: '/workspace' },
+					{ source: stagingRoot, target: '/workspace' },
 					{ source: moveHome, target: '/root/.move' },
 				],
 				timeoutMillis: 5 * 60_000,

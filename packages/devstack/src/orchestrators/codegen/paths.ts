@@ -11,6 +11,35 @@
 
 import { Context, Effect, Layer, Path } from 'effect';
 
+import { CodegenPathConflict } from './errors.ts';
+
+/** Guard plugin-authored `CodegenableDecl.outputPath` against `..`
+ *  traversal and absolute paths. Fails with a typed
+ *  `CodegenPathConflict({kind:'non-relative'})` — defense-in-depth
+ *  for the file-layout invariants. Called once inside `buildAt` so
+ *  both the root bundle and any `withRoot`-rebased view enforce the
+ *  same `..`-rejecting `resolve` discipline.
+ *
+ *  POSIX-only: devstack runs on POSIX filesystems (substrate paths
+ *  are POSIX-shaped throughout), so this check intentionally inspects
+ *  only `/`-rooted absolutes and the `..` substring. A Windows-style
+ *  `'foo/bar\\..\\baz'` would slip past — that's accepted because
+ *  devstack never executes on a Windows runtime.
+ *
+ *  STYLE_GUIDE §2 rule 5 — orchestrator failures are typed. */
+export const assertRelativeCodegenOutputPath = (
+	outputPath: string,
+): Effect.Effect<void, CodegenPathConflict> =>
+	outputPath.includes('..') || outputPath.startsWith('/')
+		? Effect.fail(
+				new CodegenPathConflict({
+					kind: 'non-relative',
+					outputPath,
+					emitters: [],
+				}),
+			)
+		: Effect.void;
+
 /**
  * Codegen output root — the directory codegen owns and overwrites.
  * Pinned at boot time from the user's `defineDevstack` options
@@ -30,7 +59,7 @@ export interface CodegenRootShape {
 }
 
 export class CodegenRoot extends Context.Service<CodegenRoot, CodegenRootShape>()(
-	'@devstack-rewrite/orchestrator/CodegenRoot',
+	'@devstack/orchestrator/CodegenRoot',
 ) {}
 
 /** Build a `CodegenRoot` layer pinned to a literal path. */
@@ -48,15 +77,35 @@ export interface CodegenPaths {
 	readonly gitignoreFile: string;
 	/** Subtree where Move-to-TS bindings land. */
 	readonly bindingsDir: string;
+	/** Per-process lock file gating `runEmitCycle`. Sibling to
+	 *  `outputDir` so concurrent invocations (e.g. CLI direct-callers
+	 *  racing the supervisor) serialize cleanly without blocking the
+	 *  short-section substrate `stack.lock`. Codegen cycles can be
+	 *  file-system heavy (multi-emitter, Move-bindings compilation);
+	 *  the substrate lock is reserved for short sections per the
+	 *  cross-process safety protocol. */
+	readonly codegenLockFile: string;
 	/** Helper: resolve an emitter's `outputPath` (e.g. `sui/network.ts`)
-	 *  against the output root. */
-	readonly resolve: (outputPath: string) => string;
+	 *  against the output root. Fails with `CodegenPathConflict({kind:
+	 *  'non-relative'})` if the supplied path escapes the root. */
+	readonly resolve: (outputPath: string) => Effect.Effect<string, CodegenPathConflict>;
 	/** Helper: resolve a per-package bindings subtree path. */
 	readonly resolveBindingsPackage: (packageName: string) => string;
+	/** Data-driven rebase: re-root the entire bundle at `newRoot`.
+	 *  Preserves the layout (bindings under `<root>/bindings`, gitignore
+	 *  at `<root>/.gitignore`) and the `..`-rejecting `resolve`
+	 *  discipline; only the prefix changes. Used by the stage-and-swap
+	 *  build to redirect the emit pipeline at the staging directory
+	 *  WITHOUT string-surgery in the caller.
+	 *
+	 *  Note: `codegenLockFile` is preserved verbatim — the lock is
+	 *  acquired ONCE outside the staging build, so the rebased view
+	 *  must still name the real lock path. */
+	readonly withRoot: (newRoot: string) => CodegenPaths;
 }
 
 export class CodegenPathsService extends Context.Service<CodegenPathsService, CodegenPaths>()(
-	'@devstack-rewrite/orchestrator/CodegenPaths',
+	'@devstack/orchestrator/CodegenPaths',
 ) {}
 
 /**
@@ -73,27 +122,33 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 			const outputDir = root.stackSubdir
 				? path.join(root.outputDir, root.stackSubdir)
 				: root.outputDir;
-			const bindingsDir = path.join(outputDir, 'bindings');
-			const resolve = (outputPath: string): string => {
-				// Defense-in-depth: refuse `..` traversal so an emitter
-				// can't write outside its declared output dir. The
-				// declared `CodegenableDecl.outputPath` is plugin-authored
-				// and trusted but the check costs nothing.
-				if (outputPath.includes('..') || outputPath.startsWith('/')) {
-					throw new Error(
-						`codegen.outputPath must be a relative path without '..'; got '${outputPath}'`,
-					);
-				}
-				return path.join(outputDir, outputPath);
+			// Sibling of `outputDir` (NOT inside it) so the stage-and-swap
+			// rename never sees the lock file as part of the output tree.
+			// Captured once at boot — `withRoot` re-roots the rest of the
+			// bundle but preserves the original lock path so the rebased
+			// view names the real cross-process lock (the lock is acquired
+			// ONCE outside the staging build).
+			const codegenLockFile = `${outputDir}.codegen.lock`;
+			const buildAt = (atRoot: string): CodegenPaths => {
+				const bindingsDir = path.join(atRoot, 'bindings');
+				const resolve = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
+					Effect.gen(function* () {
+						yield* assertRelativeCodegenOutputPath(outputPath);
+						return path.join(atRoot, outputPath);
+					});
+				const resolveBindingsPackage = (packageName: string): string =>
+					path.join(bindingsDir, packageName);
+				const bundle: CodegenPaths = {
+					outputDir: atRoot,
+					gitignoreFile: path.join(atRoot, '.gitignore'),
+					bindingsDir,
+					codegenLockFile,
+					resolve,
+					resolveBindingsPackage,
+					withRoot: (newRoot: string) => buildAt(newRoot),
+				};
+				return bundle;
 			};
-			const resolveBindingsPackage = (packageName: string): string =>
-				path.join(bindingsDir, packageName);
-			return CodegenPathsService.of({
-				outputDir,
-				gitignoreFile: path.join(outputDir, '.gitignore'),
-				bindingsDir,
-				resolve,
-				resolveBindingsPackage,
-			});
+			return CodegenPathsService.of(buildAt(outputDir));
 		}),
 	);

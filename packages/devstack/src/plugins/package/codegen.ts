@@ -41,6 +41,30 @@ export interface PackageBindings {
 	readonly excluded: boolean;
 }
 
+/** Type guard for the `packageBindings` shape emitted into the
+ *  CodegenEmitContext below. Lives in the plugin so the codegen
+ *  orchestrator never has to recognize the shape — it only calls
+ *  the projector. */
+export const isPackageBindings = (v: unknown): v is PackageBindings =>
+	typeof v === 'object' &&
+	v !== null &&
+	'name' in v &&
+	'packageId' in v &&
+	'mvrPlaceholder' in v &&
+	'sourcePath' in v;
+
+/** Aggregate projection: extract the `packageBindings` shape and key
+ *  it by the package name into the cross-plugin `packages.ts`
+ *  aggregate. The orchestrator stays name-blind; this projector
+ *  owns the `packages.<name>` → `PackageBindings` mapping. */
+const projectPackageBindings = (
+	exported: Readonly<Record<string, unknown>>,
+): Readonly<Record<string, unknown>> | null => {
+	const bindings = exported['packageBindings'];
+	if (!isPackageBindings(bindings)) return null;
+	return { [bindings.name]: bindings };
+};
+
 /** Build the Codegenable contribution for a local package. */
 export const makeLocalCodegenable = (
 	resolved: ResolvedLocalPackage,
@@ -49,6 +73,15 @@ export const makeLocalCodegenable = (
 	kind: 'codegenable',
 	emitterName: 'package',
 	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
+	// One Package contribution per published package. The shared
+	// `'package'` emitter name is by-design — the codegen orchestrator
+	// skips its emitter-name uniqueness check for this flag.
+	allowEmitterNameRepetition: true,
+	aggregate: {
+		kind: 'package',
+		bucket: 'packages.ts',
+		project: projectPackageBindings,
+	},
 	emit: (ctx) =>
 		Effect.sync(() => {
 			// The orchestrator picks up these fields and threads them
@@ -76,6 +109,14 @@ export const makeKnownCodegenable = (
 	kind: 'codegenable',
 	emitterName: 'package',
 	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
+	// Mirrors `makeLocalCodegenable` — one Package contribution per
+	// known package.
+	allowEmitterNameRepetition: true,
+	aggregate: {
+		kind: 'package',
+		bucket: 'packages.ts',
+		project: projectPackageBindings,
+	},
 	emit: (ctx) =>
 		Effect.sync(() => {
 			ctx.exportConst('packageBindings', {

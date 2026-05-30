@@ -43,7 +43,7 @@ const runtimeImportSmoke = [
 ].join('\n');
 
 const removedSubpathSmoke = `
-for (const subpath of ['browser', 'browser/setup', 'contracts', 'substrate', 'vite']) {
+for (const subpath of ['browser', 'browser/setup', 'contracts', 'substrate']) {
 \ttry {
 \t\tawait import(\`@mysten-incubation/devstack/\${subpath}\`);
 \t} catch (error) {
@@ -138,6 +138,7 @@ import { defineDevstack, definePlugin } from '@mysten-incubation/devstack';
 const installedConsumerSmokePlugin = definePlugin({
 \tid: 'installed-consumer/smoke',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () =>
 \t\tEffect.sync(() => {
 \t\t\twriteFileSync(new URL('./installed-consumer-smoke.marker', import.meta.url), 'acquired\\n');

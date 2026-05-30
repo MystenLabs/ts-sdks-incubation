@@ -14,7 +14,7 @@
 //   - a produce procedure (run on miss / verify-fail),
 //   - a register procedure (fires on EVERY cycle — hit AND miss).
 
-import type { Effect, Schema, Scope } from 'effect';
+import type { Effect, Scope } from 'effect';
 
 import type { ChainId, ContentHash } from '../substrate/brand.ts';
 
@@ -52,12 +52,13 @@ export interface ArtifactSpec<Produced, Verified> {
 	 *  invoking this; callers can therefore assume `cached` is
 	 *  defined on every call. */
 	readonly verify: (cached: Produced) => Effect.Effect<Verified | null, never>;
-	/** Schema for the verified shape (drives decode in `verify`). */
-	readonly verifySchema: Schema.Schema<Verified>;
 	/** Produce procedure — runs on cache miss OR verify-fail. */
 	readonly produce: Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
-	/** Register procedure — fires on EVERY cycle (hit AND miss). */
-	readonly register: (artifact: Produced | Verified) => Effect.Effect<void, never>;
+	/** Register procedure — fires on EVERY cycle (hit AND miss). The
+	 *  substrate always hands back the decoded `Produced` payload (on
+	 *  cache hit) or the freshly produced one (on miss); the verify
+	 *  shape is a probe-only signal, never surfaced to callers. */
+	readonly register: (artifact: Produced) => Effect.Effect<void, never>;
 }
 
 /** Tagged error from a publish round. */
@@ -67,10 +68,33 @@ export interface ArtifactPublishError {
 	readonly detail: string;
 }
 
+/** Constructor for `ArtifactPublishError`. Centralising the literal
+ *  shape (single `_tag` site, no `as const` ceremony at call sites)
+ *  per STYLE_GUIDE §2: tagged errors expose a factory at every
+ *  plugin/public boundary. Every plugin's `produce` /
+ *  `Effect.mapError` path goes through this. */
+export const artifactPublishError = (
+	reason: ArtifactPublishError['reason'],
+	detail: string,
+): ArtifactPublishError => ({
+	_tag: 'ArtifactPublishError',
+	reason,
+	detail,
+});
+
 /** The publisher service. Plugins call `publish`; substrate handles
- *  cache lookup, verify, produce-on-miss, idempotent register. */
+ *  cache lookup, verify, produce-on-miss, idempotent register.
+ *
+ *  Returns the `Produced` payload on EVERY path:
+ *  - cache hit + verify succeeds → the decoded cached `Produced`,
+ *  - cache miss or verify-fail → the freshly produced `Produced`.
+ *
+ *  The `Verified` shape is a probe-only signal (drives the lenient
+ *  null/non-null decision inside the substrate); it is never returned
+ *  to plugin callers. Callers therefore type-narrow trivially against
+ *  `Produced` and avoid the `'<sentinel>'` projection dance. */
 export interface ArtifactPublisher {
 	readonly publish: <Produced, Verified>(
 		spec: ArtifactSpec<Produced, Verified>,
-	) => Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope>;
+	) => Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
 }

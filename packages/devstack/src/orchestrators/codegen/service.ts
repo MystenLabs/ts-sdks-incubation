@@ -12,7 +12,10 @@
 //
 // Lifecycle (distilled-doc §"Lifecycle states"):
 //   - at-up:       per supervisor cycle, run all emitters serially,
-//                  with per-file atomic/idempotent writes.
+//                  with per-file atomic/idempotent writes inside a
+//                  cycle-level stage-and-swap (rollback on any
+//                  per-file failure leaves the user-visible tree
+//                  unchanged).
 //   - on-change:   re-run as part of the new cycle when the
 //                  supervisor restarts.
 //   - on-demand:   same emit pipeline for snapshot resume.
@@ -36,16 +39,22 @@
 //   - Construct plugin-level resolved blobs (plugins pass them at
 //     factory-build time).
 //   - Decode the manifest envelope (see `manifest-bridge.ts`).
-//   - Watch files (see `watcher.ts`).
+//   - Watch files. Re-emit is driven by the supervisor cycle (and
+//     on-demand by the CLI); the app's own toolchain (Vite/HMR)
+//     watches the emitted output tree.
 //   - Walk the user's Move-source mtimes (see `bindings.ts`).
 
 import { Context, Effect, FileSystem, Layer, Order, Ref, Scope } from 'effect';
+import { dirname } from 'node:path';
 
 import type {
 	CodegenableDecl,
 	CodegenEmitDone,
 	CodegenEmitContext,
 } from '../../contracts/codegenable.ts';
+import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
+import { stageAndSwap, StageAndSwapError } from '../../substrate/runtime/stage-and-swap/index.ts';
 
 import {
 	emitBindings,
@@ -59,12 +68,13 @@ import {
 	CodegenEmitFailed,
 	CodegenEmitterCollision,
 	CodegenPathConflict,
+	CodegenWriteFailed,
 	type CodegenError,
 } from './errors.ts';
 import { renderFile } from './format.ts';
 import { writeGitignore } from './gitignore.ts';
-import { CodegenPathsService } from './paths.ts';
-import { modeFor } from './permissions.ts';
+import { CodegenPathsService, type CodegenPaths } from './paths.ts';
+import { dirModeFor, modeFor, NON_SENSITIVE_DIR_MODE } from './permissions.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -90,9 +100,40 @@ export interface RunEmitCycleResult {
 	readonly bindings: EmitBindingsResult | null;
 }
 
+const buildParentModeResolver = (
+	paths: CodegenPaths,
+	decls: ReadonlyArray<Codegenable>,
+): Effect.Effect<(absolutePath: string) => number, CodegenPathConflict> =>
+	Effect.gen(function* () {
+		const byParent = new Map<string, Array<Pick<Codegenable, 'sensitive'>>>();
+		for (const decl of decls) {
+			const parent = dirname(yield* paths.resolve(decl.outputPath));
+			const current = byParent.get(parent);
+			if (current === undefined) {
+				byParent.set(parent, [decl]);
+			} else {
+				current.push(decl);
+			}
+		}
+		const modes = new Map<string, number>();
+		for (const [parent, parentDecls] of byParent) {
+			modes.set(parent, dirModeFor(parentDecls));
+		}
+		return (absolutePath: string) => modes.get(dirname(absolutePath)) ?? NON_SENSITIVE_DIR_MODE;
+	});
+
 // -----------------------------------------------------------------------------
 // Main entry — one cycle of the codegen pipeline
 // -----------------------------------------------------------------------------
+
+/**
+ * Per-cycle lock acquire timeout. Codegen cycles can be file-system
+ * heavy (multi-emitter, Move-bindings compilation), so we allow more
+ * than the substrate's default 5s for `stack.lock` — a custom CLI
+ * caller that hits a supervisor mid-cycle should wait, not error.
+ * Mirrors `MOVE_BUILD_LOCK_TIMEOUT_MS` (5 minutes).
+ */
+const CODEGEN_CYCLE_LOCK_TIMEOUT_MS = 5 * 60_000;
 
 export const runEmitCycle = (
 	input: RunEmitCycleInput,
@@ -101,43 +142,207 @@ export const runEmitCycle = (
 	CodegenError,
 	FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
 > =>
+	// Per-process lock. The supervisor's serialized post-acquire path
+	// is fine for the normal lifecycle, but custom callers (CLI direct
+	// invocations, future watcher hooks) can call `runCycle`
+	// concurrently. With `stageAndSwap` writing under shared
+	// `<outputDir>.staging.<cycleId>` and `<outputDir>.bak.<cycleId>`
+	// siblings — and with the pre-seed `fs.copy` reading from the
+	// shared `outputDir` — two overlapping cycles can stage from a
+	// half-published tree of the other. The lock serializes them.
+	//
+	// Dedicated `codegenLockFile` (NOT the substrate `stack.lock`):
+	// codegen cycles can run for many seconds when Move bindings
+	// compile, and the substrate's `stack.lock` is reserved for short
+	// critical sections (roster mutations, snapshot reservation). A
+	// dedicated lock isolates codegen contention from those subsystems.
+	Effect.scoped(
+		Effect.gen(function* () {
+			const paths = yield* CodegenPathsService;
+			yield* acquireStackLock(paths.codegenLockFile, CODEGEN_CYCLE_LOCK_TIMEOUT_MS).pipe(
+				Effect.mapError(
+					(cause) =>
+						new CodegenWriteFailed({
+							outputPath: paths.codegenLockFile,
+							stage: 'write',
+							cause,
+						}),
+				),
+			);
+			return yield* runEmitCycleLocked(input);
+		}),
+	);
+
+const runEmitCycleLocked = (
+	input: RunEmitCycleInput,
+): Effect.Effect<
+	RunEmitCycleResult,
+	CodegenError,
+	FileSystem.FileSystem | CodegenPathsService | MoveSummaryRunnerService | MoveCodegenService
+> =>
 	Effect.gen(function* () {
 		const paths = yield* CodegenPathsService;
+		// Yield the Move-codegen services here (outside the
+		// stage-and-swap build) so the build's R-channel collapses to
+		// just `FileSystem.FileSystem` — the substrate `stageAndSwap`
+		// primitive constrains `build`'s requirements to
+		// `FileSystem.FileSystem`.
+		const moveRunner = yield* MoveSummaryRunnerService;
+		const moveCodegen = yield* MoveCodegenService;
 
-		// 1. All contributions go through the generic file emit path.
-		//    Package outputs are collected for the bindings emitter
-		//    from the same single evaluated result used to render the
-		//    package pointer file.
-		const fileEmitters: Array<Codegenable> = [];
-		for (const decl of input.contributions) {
-			fileEmitters.push(decl);
-		}
+		// Pre-flight contribution-set validation. Detected BEFORE the
+		// stage-and-swap so a programming-bug rejection (duplicate
+		// emitterName / outputPath collision) never opens an empty
+		// staging dir on disk. `package` is the one exception:
+		// multiple instances (one per Package) legitimately share the
+		// `emitterName` literal by design.
+		yield* validateUniqueness(input.contributions);
+		yield* validateAggregatePathAvailability(input.contributions);
 
-		// 2. Validate uniqueness — both `emitterName` and `outputPath`.
-		//    Detected BEFORE write so the user-visible tree is
-		//    never half-written. `package` is the one exception:
-		//    multiple instances (one per Package) share the same
-		//    `emitterName` literal by design.
-		yield* validateUniqueness(fileEmitters);
-		yield* validateAggregatePathAvailability(fileEmitters);
+		// Cycle-level atomicity: substrate stage-and-swap. The build
+		// populates `<outputDir>.staging.<cycleId>/`; on success the
+		// substrate renames it into place; on any failure the previous
+		// tree (if any) is restored byte-for-byte. Without this wrapper
+		// a mid-cycle emit failure would leave `src/generated/`
+		// half-rewritten — see STYLE_GUIDE §19.
+		//
+		// `preserveOnPreseed: true` — substrate clones the current
+		// target into staging before `build` runs so the per-file
+		// no-touch idempotency (and gitignore user-block preservation)
+		// sees the right baseline. Files this cycle rewrites are
+		// overwritten in staging; files this cycle does NOT touch
+		// survive into the next target verbatim with their original
+		// mtimes (HMR watchers stay quiet for unchanged outputs).
+		//
+		// Cycle id is a random suffix. STYLE_GUIDE §17 mandates 8
+		// hex chars for external-facing identifiers; this is a
+		// deliberate 16-char carve-out because the value only
+		// appears in transient staging-directory names
+		// (`.staging.<id>` / `.bak.<id>`) that the substrate rm's
+		// after publish. The extra entropy is defense-in-depth for
+		// the race-window where two concurrent emit cycles under a
+		// custom-CLI caller could mint overlapping staging dirs
+		// against the same shared `outputDir`; a collision there
+		// would corrupt a half-built tree, not just clash an
+		// operator-visible name.
+		const cycleId = mintRandomSuffix(16);
+		const stagingPaths = paths.withRoot(`${paths.outputDir}.staging.${cycleId}`);
 
-		// 3-5. Run + render + emit each non-bindings contribution.
+		return yield* stageAndSwap({
+			targetPath: paths.outputDir,
+			idSuffix: cycleId,
+			preserveOnPreseed: true,
+			build: Effect.gen(function* () {
+				const inner = yield* runEmitCycleInner(input, stagingPaths).pipe(
+					Effect.provideService(MoveSummaryRunnerService, moveRunner),
+					Effect.provideService(MoveCodegenService, moveCodegen),
+				);
+				// Rewrite paths so callers see the final user-visible
+				// `outputDir` location, not the staging directory that
+				// only exists for the duration of the build.
+				return rewriteResultPaths(inner, stagingPaths.outputDir, paths.outputDir);
+			}),
+		}).pipe(
+			Effect.mapError((e): CodegenError => {
+				if (e instanceof StageAndSwapError) {
+					return new CodegenWriteFailed({
+						outputPath: paths.outputDir,
+						stage: 'rename',
+						cause: e,
+					});
+				}
+				return e;
+			}),
+			Effect.withSpan('codegen.runEmitCycle', {
+				attributes: {
+					'codegen.contributions': input.contributions.length,
+					'codegen.cycleId': cycleId,
+					'codegen.stagingDir': stagingPaths.outputDir,
+				},
+			}),
+		);
+	});
+
+/**
+ * Project a staging-rooted `RunEmitCycleResult` back into the user-
+ * visible `outputDir` namespace. The build effect writes through
+ * `stagingDir` paths; callers (and tests) expect to see the final
+ * post-rename locations.
+ */
+const rewriteResultPaths = (
+	result: RunEmitCycleResult,
+	stagingDir: string,
+	outputDir: string,
+): RunEmitCycleResult => {
+	const stripped = stagingDir.replace(/\/+$/, '');
+	const target = outputDir.replace(/\/+$/, '');
+	const rewrite = (p: string): string =>
+		p.startsWith(stripped) ? `${target}${p.slice(stripped.length)}` : p;
+	return {
+		filesWritten: result.filesWritten.map(rewrite),
+		filesUnchanged: result.filesUnchanged.map(rewrite),
+		filesChmod: result.filesChmod.map(rewrite),
+		bindings:
+			result.bindings === null
+				? null
+				: {
+						...result.bindings,
+						filesWritten: result.bindings.filesWritten.map(rewrite),
+					},
+	};
+};
+
+/**
+ * The body of one emit cycle. Pulled out of `runEmitCycle` so the
+ * stage-and-swap wrapper can drive it against a redirected
+ * `CodegenPathsService` (the staging tree). Validation runs BEFORE
+ * this function so callers know the contribution set is well-formed.
+ */
+const runEmitCycleInner = (
+	input: RunEmitCycleInput,
+	paths: CodegenPaths,
+): Effect.Effect<
+	RunEmitCycleResult,
+	CodegenError,
+	FileSystem.FileSystem | MoveSummaryRunnerService | MoveCodegenService
+> =>
+	Effect.gen(function* () {
+		const fileEmitters: Array<Codegenable> = [...input.contributions];
+
 		const filesWritten: Array<string> = [];
 		const filesUnchanged: Array<string> = [];
 		const filesChmod: Array<string> = [];
-		const aggregates = emptyAggregateBuckets();
+		// Aggregate buckets keyed by plugin-supplied bucket name. The
+		// orchestrator treats bucket names as opaque tags chosen by
+		// the contributor; it never branches on plugin identity. See
+		// `CodegenableDecl.aggregate` (contracts/codegenable.ts).
+		const aggregates = new Map<string, Record<string, unknown>>();
 		const packageContribs: Array<PackageBindings> = [];
 		const sortedDecls = [...fileEmitters].sort(
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
+		const parentModeFor = yield* buildParentModeResolver(paths, fileEmitters);
 		for (const decl of sortedDecls) {
 			const emission = yield* runEmitter(decl);
 			const exported = emission.exports;
-			collectAggregateExport(aggregates, decl, exported);
-			if (decl.emitterName === 'package') {
-				const bindings = exported['packageBindings'];
-				if (isPackageBindings(bindings)) {
-					packageContribs.push(bindings);
+			if (decl.aggregate !== undefined) {
+				const projected = decl.aggregate.project(exported);
+				if (projected !== null) {
+					const bucket = aggregates.get(decl.aggregate.bucket) ?? {};
+					Object.assign(bucket, projected);
+					aggregates.set(decl.aggregate.bucket, bucket);
+				}
+			}
+			// Move-bindings collection: any export whose shape matches
+			// the orchestrator's `PackageBindings` consumer contract is
+			// forwarded to `emitBindings`. Runs against the raw `exported`
+			// map (not via `aggregate.project`) so direct `codegenable(...)`
+			// contributions — which carry no `aggregate` — are picked up
+			// too. The orchestrator validates the shape it consumes; it
+			// does NOT name the plugin that produced it.
+			for (const value of Object.values(exported)) {
+				if (isPackageBindings(value)) {
+					packageContribs.push(value);
 				}
 			}
 			const rendered = renderFile({
@@ -147,17 +352,15 @@ export const runEmitCycle = (
 				exports: exported,
 				imports: emission.imports,
 			});
-			if (rendered instanceof Error) {
-				// `renderFile` returns either a string or a
-				// `CodegenRenderError` (extends Error). Yield the
-				// tagged form.
-				return yield* Effect.fail(rendered as CodegenError);
+			if (!rendered.ok) {
+				return yield* Effect.fail(rendered.error);
 			}
-			const abs = paths.resolve(decl.outputPath);
+			const abs = yield* paths.resolve(decl.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
-				content: rendered,
+				content: rendered.text,
 				mode: modeFor(decl),
+				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
 				case 'wrote':
@@ -179,14 +382,15 @@ export const runEmitCycle = (
 				sensitive: false,
 				exports: aggregate.exports,
 			});
-			if (rendered instanceof Error) {
-				return yield* Effect.fail(rendered as CodegenError);
+			if (!rendered.ok) {
+				return yield* Effect.fail(rendered.error);
 			}
-			const abs = paths.resolve(aggregate.outputPath);
+			const abs = yield* paths.resolve(aggregate.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
-				content: rendered,
+				content: rendered.text,
 				mode: 0o644,
+				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
 				case 'wrote':
@@ -201,9 +405,6 @@ export const runEmitCycle = (
 			}
 		}
 
-		// 6. Bindings emitter. Skipped when there are no local
-		//    packages (distilled-doc § "Skip-emit is explicit and
-		//    logged").
 		let bindings: EmitBindingsResult | null = null;
 		if (packageContribs.length > 0) {
 			bindings = yield* emitBindings({
@@ -217,13 +418,13 @@ export const runEmitCycle = (
 			);
 		}
 
-		// 7. Gitignore. Sensitive paths get an explicit mention.
 		const sensitivePaths = fileEmitters
 			.filter((d) => d.sensitive === true)
 			.map((d) => d.outputPath);
 		yield* writeGitignore({
 			path: paths.gitignoreFile,
 			sensitivePaths,
+			parentMode: parentModeFor(paths.gitignoreFile),
 		});
 
 		return {
@@ -232,13 +433,7 @@ export const runEmitCycle = (
 			filesChmod,
 			bindings,
 		};
-	}).pipe(
-		Effect.withSpan('codegen.runEmitCycle', {
-			attributes: {
-				'codegen.contributions': input.contributions.length,
-			},
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Internals
@@ -277,10 +472,11 @@ const runEmitter = (decl: Codegenable): Effect.Effect<CodegenEmission, CodegenEm
 	});
 
 /**
- * Uniqueness check: emitter name (literal) must be unique EXCEPT
- * for the `package` emitter, which legitimately appears once per
- * Package contribution. Output paths must be unique across ALL
- * emitters (including each `package`-emitted pointer file).
+ * Uniqueness check: emitter name (literal) must be unique unless
+ * the decl opts into repetition via `allowEmitterNameRepetition`
+ * (used by per-item plugins like Package, which emit one decl per
+ * published package under a shared emitter name). Output paths
+ * must be unique across ALL emitters.
  */
 const validateUniqueness = (
 	decls: ReadonlyArray<Codegenable>,
@@ -292,8 +488,7 @@ const validateUniqueness = (
 			const ps = byPath.get(d.outputPath) ?? [];
 			ps.push(d.emitterName);
 			byPath.set(d.outputPath, ps);
-			// `package` is allowed to repeat — it's per-Package by design.
-			if (d.emitterName === 'package') continue;
+			if (d.allowEmitterNameRepetition === true) continue;
 			const ns = byName.get(d.emitterName) ?? [];
 			ns.push(d.outputPath);
 			byName.set(d.emitterName, ns);
@@ -302,6 +497,7 @@ const validateUniqueness = (
 			if (emitters.length > 1) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
+						kind: 'duplicate',
 						outputPath: path,
 						emitters,
 					}),
@@ -320,35 +516,26 @@ const validateUniqueness = (
 		}
 	});
 
-const AGGREGATE_OUTPUTS = {
-	accounts: 'accounts.ts',
-	coins: 'coins.ts',
-	packages: 'packages.ts',
-	services: 'services.ts',
-} as const;
-
-const aggregatePathFor = (decl: Codegenable): string | null => {
-	if (decl.emitterName.startsWith('account/')) return AGGREGATE_OUTPUTS.accounts;
-	if (decl.emitterName.startsWith('coin/')) return AGGREGATE_OUTPUTS.coins;
-	if (decl.emitterName === 'package') return AGGREGATE_OUTPUTS.packages;
-	if (decl.emitterName === 'sui-network') return AGGREGATE_OUTPUTS.services;
-	return null;
-};
-
+/**
+ * Reject contribution sets that would have an aggregate bucket
+ * collide with a per-decl `outputPath`. The orchestrator only knows
+ * bucket names because plugins declared them via `aggregate.bucket`;
+ * it does not enumerate or recognize plugin identities here.
+ */
 const validateAggregatePathAvailability = (
 	decls: ReadonlyArray<Codegenable>,
 ): Effect.Effect<void, CodegenPathConflict> =>
 	Effect.gen(function* () {
 		const aggregatePaths = new Set<string>();
 		for (const decl of decls) {
-			const path = aggregatePathFor(decl);
-			if (path !== null) aggregatePaths.add(path);
+			if (decl.aggregate !== undefined) aggregatePaths.add(decl.aggregate.bucket);
 		}
 		for (const path of aggregatePaths) {
 			const colliding = decls.filter((decl) => decl.outputPath === path);
 			if (colliding.length > 0) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
+						kind: 'duplicate',
 						outputPath: path,
 						emitters: [...colliding.map((decl) => decl.emitterName), `aggregate/${path}`],
 					}),
@@ -357,94 +544,47 @@ const validateAggregatePathAvailability = (
 		}
 	});
 
-interface AggregateBuckets {
-	readonly accounts: Record<string, unknown>;
-	readonly coins: Record<string, unknown>;
-	readonly packages: Record<string, unknown>;
-	readonly services: Record<string, unknown>;
-}
-
-const emptyAggregateBuckets = (): AggregateBuckets => ({
-	accounts: {},
-	coins: {},
-	packages: {},
-	services: {},
-});
-
-const collectAggregateExport = (
-	buckets: AggregateBuckets,
-	decl: Codegenable,
-	exported: { readonly [key: string]: unknown },
-): void => {
-	if (decl.emitterName.startsWith('account/')) {
-		Object.assign(buckets.accounts, exported);
-		return;
-	}
-	if (decl.emitterName.startsWith('coin/')) {
-		Object.assign(buckets.coins, exported);
-		return;
-	}
-	if (decl.emitterName === 'package') {
-		const bindings = exported['packageBindings'];
-		if (isPackageBindings(bindings)) {
-			buckets.packages[bindings.name] = bindings;
-		}
-		return;
-	}
-	if (decl.emitterName === 'sui-network') {
-		const network = exported['suiNetwork'];
-		if (isRecord(network)) {
-			const rpcUrl = stringField(network, 'rpcUrl');
-			const faucetUrl = stringField(network, 'faucetUrl');
-			const graphqlUrl = stringField(network, 'graphqlUrl');
-			buckets.services['sui'] = {
-				rpc: { url: rpcUrl ?? '' },
-				faucet: faucetUrl === null ? null : { url: faucetUrl },
-				graphql: graphqlUrl === null ? null : { url: graphqlUrl },
-			};
-		}
-	}
-};
-
 interface AggregateFile {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly exports: { readonly [key: string]: unknown };
 }
 
-const buildAggregateFiles = (buckets: AggregateBuckets): ReadonlyArray<AggregateFile> => {
+/**
+ * Synthesize one `AggregateFile` per non-empty bucket. The exports
+ * map is keyed by the bucket's stem (e.g. `accounts.ts` → `accounts`)
+ * so the rendered file exports `export const <stem> = { ... }`. The
+ * orchestrator picks the export key from the bucket filename; the
+ * stem itself is not a plugin identifier — it is the filename
+ * without the `.ts` extension, derived mechanically.
+ */
+const buildAggregateFiles = (
+	buckets: ReadonlyMap<string, Record<string, unknown>>,
+): ReadonlyArray<AggregateFile> => {
 	const files: Array<AggregateFile> = [];
-	if (Object.keys(buckets.accounts).length > 0) {
+	const sortedEntries = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
+	for (const [bucket, contents] of sortedEntries) {
+		if (Object.keys(contents).length === 0) continue;
+		const stem = bucketStem(bucket);
 		files.push({
-			emitterName: 'aggregate/accounts',
-			outputPath: AGGREGATE_OUTPUTS.accounts,
-			exports: { accounts: buckets.accounts },
-		});
-	}
-	if (Object.keys(buckets.coins).length > 0) {
-		files.push({
-			emitterName: 'aggregate/coins',
-			outputPath: AGGREGATE_OUTPUTS.coins,
-			exports: { coins: buckets.coins },
-		});
-	}
-	if (Object.keys(buckets.packages).length > 0) {
-		files.push({
-			emitterName: 'aggregate/packages',
-			outputPath: AGGREGATE_OUTPUTS.packages,
-			exports: { packages: buckets.packages },
-		});
-	}
-	if (Object.keys(buckets.services).length > 0) {
-		files.push({
-			emitterName: 'aggregate/services',
-			outputPath: AGGREGATE_OUTPUTS.services,
-			exports: { services: buckets.services },
+			emitterName: `aggregate/${stem}`,
+			outputPath: bucket,
+			exports: { [stem]: contents },
 		});
 	}
 	return files;
 };
 
+const bucketStem = (bucket: string): string => bucket.replace(/\.ts$/, '').replace(/^.*\//, '');
+
+/**
+ * Consumer-side shape guard: does this aggregated value look like a
+ * Move-bindings contribution that `emitBindings` knows how to
+ * consume? This is structural validation of the orchestrator's own
+ * input contract, NOT a plugin-name match. Any plugin whose
+ * `aggregate.project` returns objects with this shape will be
+ * forwarded to the Move bindings emitter.
+ */
 const isPackageBindings = (v: unknown): v is PackageBindings =>
 	typeof v === 'object' &&
 	v !== null &&
@@ -452,14 +592,6 @@ const isPackageBindings = (v: unknown): v is PackageBindings =>
 	'packageId' in v &&
 	'mvrPlaceholder' in v &&
 	'sourcePath' in v;
-
-const isRecord = (v: unknown): v is Readonly<Record<string, unknown>> =>
-	typeof v === 'object' && v !== null;
-
-const stringField = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-	const value = record[key];
-	return typeof value === 'string' && value.length > 0 ? value : null;
-};
 
 // -----------------------------------------------------------------------------
 // Service surface — registration API + emit-cycle trigger
@@ -498,7 +630,7 @@ export interface CodegenOrchestrator {
 export class CodegenOrchestratorService extends Context.Service<
 	CodegenOrchestratorService,
 	CodegenOrchestrator
->()('@devstack-rewrite/orchestrators/Codegen') {}
+>()('@devstack/orchestrators/Codegen') {}
 
 interface RegisteredCodegenEntry {
 	readonly pluginKey: string;

@@ -65,6 +65,7 @@ const stackPathsFor = (stackRoot: string): StackPaths => {
 		snapshotDir: join(stackRoot, 'snapshots'),
 		stackLockFile: join(stackRoot, 'stack.lock'),
 		rosterFile: join(stackRoot, 'roster.json'),
+		containerClaimsFile: join(stackRoot, 'container-claims.json'),
 		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
 		cacheEntry,
 		cacheChainDir,
@@ -242,15 +243,31 @@ describe('snapshot pauseAndCommit', () => {
 
 			expect(refs.map((ref) => ref.digest)).toEqual(['sha256:committed', 'sha256:committed']);
 			const lines = readFileSync(log, 'utf8').trim().split('\n');
-			expect(lines).toHaveLength(4);
-			expect(lines[0]).toBe('container inspect exited-container');
-			expect(lines[1]).toMatch(
-				/^commit exited-container devstack-snapshot:exited-container-[a-f0-9]{12}$/,
-			);
-			expect(lines[2]).toBe('container inspect created-container');
-			expect(lines[3]).toMatch(
-				/^commit created-container devstack-snapshot:created-container-[a-f0-9]{12}$/,
-			);
+			// Neither container is running, so neither is paused. Each
+			// pauseAndCommit re-checks ownership (one `container inspect`),
+			// then `commit` inspects again to recover the source container's
+			// app/stack labels for the snapshot-image ownership stamp.
+			const commitLines = lines.filter((line) => line.startsWith('commit '));
+			expect(commitLines).toHaveLength(2);
+			// `docker commit` stamps the committed image with the managed +
+			// app/stack ownership labels (recovered from the source
+			// container) plus the reserved snapshot-image role, so
+			// label-driven snapshot prune can reap it without ever matching
+			// the stack's build images. `docker commit` has no `--label`
+			// flag, so the labels ride in as `--change LABEL …` instructions
+			// preceding the `<container> <tag>` positionals.
+			for (const [container, commitLine] of [
+				['exited-container', commitLines[0]],
+				['created-container', commitLines[1]],
+			] as const) {
+				expect(commitLine).toContain('--change LABEL "devstack.managed"="true"');
+				expect(commitLine).toContain('--change LABEL "devstack.app"="app"');
+				expect(commitLine).toContain('--change LABEL "devstack.stack"="main"');
+				expect(commitLine).toContain('--change LABEL "devstack.role"="snapshot-image"');
+				expect(commitLine).toMatch(
+					new RegExp(` ${container} devstack-snapshot:${container}-[a-f0-9]{12}$`),
+				);
+			}
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

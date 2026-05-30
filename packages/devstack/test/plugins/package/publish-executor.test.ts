@@ -12,6 +12,7 @@ import {
 	type ResolvedAccountOptions,
 } from '../../../src/plugins/account/service.ts';
 import type { SuiSdkShim } from '../../../src/plugins/sui/chain-probe.ts';
+import { publishError } from '../../../src/plugins/package/errors.ts';
 import { makePublishExecutor } from '../../../src/plugins/package/publish-executor.ts';
 
 const txHarness = vi.hoisted(() => ({
@@ -110,25 +111,13 @@ const makeGate = (): Gate => {
 	return { wait, release };
 };
 
-const stubSuiSdk = (): SuiSdkShim => ({
-	core: {
-		getObject: () => Promise.reject(new Error('stub getObject')),
-		getTransaction: () => Promise.reject(new Error('stub getTransaction')),
-		getBalance: () => Promise.reject(new Error('stub getBalance')),
-		listCoins: () => Promise.reject(new Error('stub listCoins')),
-		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
-		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
-	},
-	client: null,
-});
-
-const accountCtx: AccountAcquireContext = {
-	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk: stubSuiSdk() },
+const makeAccountCtx = (sdk: SuiSdkShim): AccountAcquireContext => ({
+	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk },
 	runtimeRoot: '/tmp/devstack-publish-executor-test',
 	app: 'test-app',
 	stack: 'test-stack',
 	emitAutoPromotionEvent: () => Effect.void,
-};
+});
 
 const accountOpts: ResolvedAccountOptions = {
 	kind: 'signer',
@@ -147,47 +136,53 @@ const makePublishSdk = (
 	waitGates: ReadonlyMap<string, Gate>,
 	opts: { readonly failedLabels?: ReadonlySet<number> } = {},
 ): SuiSdkShim => {
-	const client = {
-		executeTransaction: async (args: { readonly transaction: Uint8Array }) => {
-			const label = args.transaction[0] ?? 0;
-			txHarness.events.push(`${label}:execute`);
-			if (opts.failedLabels?.has(label) === true) {
-				return {
-					$kind: 'FailedTransaction',
-					FailedTransaction: {
-						digest: `digest-${label}`,
-						status: { error: 'MoveAbort' },
-					},
-				};
-			}
+	const executeTransaction = async (args: { readonly transaction: Uint8Array }) => {
+		const label = args.transaction[0] ?? 0;
+		txHarness.events.push(`${label}:execute`);
+		if (opts.failedLabels?.has(label) === true) {
 			return {
-				$kind: 'Transaction',
-				Transaction: {
+				$kind: 'FailedTransaction',
+				FailedTransaction: {
 					digest: `digest-${label}`,
-					effects: {
-						changedObjects: [
-							{
-								objectId: `0xpkg${label}`,
-								outputState: 'PackageWrite',
-								idOperation: 'Created',
-							},
-							{
-								objectId: `0xcap${label}`,
-								outputState: 'ObjectWrite',
-								idOperation: 'Created',
-							},
-						],
-					},
-					objectTypes: {
-						[`0xcap${label}`]: '0x2::package::UpgradeCap',
-					},
+					status: { error: 'MoveAbort' },
 				},
 			};
-		},
-		waitForTransaction: async (args: { readonly digest: string }) => {
-			txHarness.events.push(`${args.digest.replace('digest-', '')}:wait`);
-			await waitGates.get(args.digest)?.wait;
-		},
+		}
+		return {
+			$kind: 'Transaction',
+			Transaction: {
+				digest: `digest-${label}`,
+				effects: {
+					changedObjects: [
+						{
+							objectId: `0xpkg${label}`,
+							outputState: 'PackageWrite',
+							idOperation: 'Created',
+						},
+						{
+							objectId: `0xcap${label}`,
+							outputState: 'ObjectWrite',
+							idOperation: 'Created',
+						},
+					],
+				},
+				objectTypes: {
+					[`0xcap${label}`]: '0x2::package::UpgradeCap',
+				},
+				// NB: the publish path projects object changes from the account
+				// plugin's `projectTxResult`, which derives them from
+				// `effects.changedObjects` + `objectTypes` (above) — NOT from a
+				// top-level `Transaction.objectChanges`. So no such array is
+				// declared here; adding one would be dead (the SDK-driven path
+				// never reads it). The impersonation test below DOES declare
+				// `Transaction.objectChanges` because its stub bypasses
+				// `projectTxResult` and is consumed by `signAndDispatch` directly.
+			},
+		};
+	};
+	const waitForTransaction = async (args: { readonly digest: string }) => {
+		txHarness.events.push(`${args.digest.replace('digest-', '')}:wait`);
+		await waitGates.get(args.digest)?.wait;
 	};
 	return {
 		core: {
@@ -207,10 +202,12 @@ const makePublishSdk = (
 					hasNextPage: false,
 					cursor: null,
 				}),
-			executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
-			waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
+			executeTransaction,
+			waitForTransaction,
 		},
-		client,
+		// Tests don't reach the publish-side client surface — the unified
+		// signAndExecute path goes through account.sdk.core.* exclusively.
+		client: null as never,
 	};
 };
 
@@ -218,21 +215,19 @@ describe('package publish executor', () => {
 	it.effect('keeps Transaction.build through waitForTransaction inside the publisher lease', () =>
 		Effect.gen(function* () {
 			txHarness.events.length = 0;
-			const account = yield* acquireAccount(accountOpts, accountCtx).pipe(
+			const waitOne = makeGate();
+			const waitTwo = makeGate();
+			const sharedSdk = makePublishSdk(
+				new Map([
+					['digest-1', waitOne],
+					['digest-2', waitTwo],
+				]),
+			);
+			const account = yield* acquireAccount(accountOpts, makeAccountCtx(sharedSdk)).pipe(
 				Effect.provide(layerStrategyRegistry),
 				Effect.orDie,
 			);
-			const waitOne = makeGate();
-			const waitTwo = makeGate();
-			const executor = makePublishExecutor({
-				sdk: makePublishSdk(
-					new Map([
-						['digest-1', waitOne],
-						['digest-2', waitTwo],
-					]),
-				),
-				account,
-			});
+			const executor = makePublishExecutor({ sdk: sharedSdk, account });
 
 			const first = yield* Effect.forkChild(
 				executor.publishTx({
@@ -281,22 +276,20 @@ describe('package publish executor', () => {
 	it.effect('waits for FailedTransaction digests before releasing the publisher lease', () =>
 		Effect.gen(function* () {
 			txHarness.events.length = 0;
-			const account = yield* acquireAccount(accountOpts, accountCtx).pipe(
+			const waitOne = makeGate();
+			const waitTwo = makeGate();
+			const sharedSdk = makePublishSdk(
+				new Map([
+					['digest-1', waitOne],
+					['digest-2', waitTwo],
+				]),
+				{ failedLabels: new Set([1]) },
+			);
+			const account = yield* acquireAccount(accountOpts, makeAccountCtx(sharedSdk)).pipe(
 				Effect.provide(layerStrategyRegistry),
 				Effect.orDie,
 			);
-			const waitOne = makeGate();
-			const waitTwo = makeGate();
-			const executor = makePublishExecutor({
-				sdk: makePublishSdk(
-					new Map([
-						['digest-1', waitOne],
-						['digest-2', waitTwo],
-					]),
-					{ failedLabels: new Set([1]) },
-				),
-				account,
-			});
+			const executor = makePublishExecutor({ sdk: sharedSdk, account });
 
 			const failedFirst = yield* Effect.forkChild(
 				Effect.exit(
@@ -344,6 +337,62 @@ describe('package publish executor', () => {
 		}).pipe(Effect.provide(layerLeaseBroker)),
 	);
 
+	it.effect(
+		'postPublishReadyHint swallows a transient RPC failure (stale-object read is non-fatal)',
+		() =>
+			Effect.gen(function* () {
+				// Contract: `getObject` rejecting after a successful publish
+				// is a "tx written but object not yet queryable" race; the
+				// next produce phase (`parse`) inspects the actual output, so
+				// the hint is best-effort and ALWAYS succeeds — the read
+				// failure is logged at debug (not silently dropped) and the
+				// hint resolves regardless. The separate unit-test below pins
+				// the `publishError('parse', ...)` shape used by other phases
+				// (packageName optional, on-chain id only in the message).
+				const sdk: SuiSdkShim = {
+					core: {
+						getObject: () => Promise.reject(new Error('hint-rpc-down')),
+						getTransaction: () => Promise.reject(new Error('stub')),
+						getBalance: () => Promise.reject(new Error('stub')),
+						listCoins: () => Promise.resolve({ objects: [], hasNextPage: false, cursor: null }),
+						executeTransaction: () => Promise.reject(new Error('stub')),
+						waitForTransaction: () => Promise.reject(new Error('stub')),
+					},
+					client: null as never,
+				};
+				const account = {
+					name: 'publisher',
+					address: '0xabc',
+				} as unknown as AccountValue;
+				const executor = makePublishExecutor({ sdk, account });
+
+				const exit = yield* Effect.exit(
+					Effect.scoped(executor.postPublishReadyHint('0xpkg-onchain-id')),
+				);
+				expect(Exit.isSuccess(exit)).toBe(true);
+			}),
+	);
+
+	it('publishError("parse") shape — packageName is optional, never overloaded with on-chain id', () => {
+		// Regression: previously the hint threw
+		// `publishError('parse', { packageName: packageId, ... })`,
+		// stamping the on-chain `0x…` id into the symbolic name
+		// slot — the user's error display showed `packageName=0x...`.
+		// The fix made `packageName` optional on the error class and
+		// removed the overload at the throw site (the on-chain id is
+		// now carried in `message` where it's unambiguous; `mode-local`
+		// re-stamps `packageName` + `sourcePath` from the outer inputs
+		// when the error bubbles through).
+		const err = publishError('parse', {
+			message: 'postPublishReadyHint(0xpkg-onchain-id) failed',
+			cause: new Error('hint-rpc-down'),
+		});
+		expect(err._tag).toBe('PublishError');
+		expect(err.phase).toBe('parse');
+		expect(err.packageName).toBeUndefined();
+		expect(err.message).toContain('0xpkg-onchain-id');
+	});
+
 	it.effect('publishes with an impersonation account through account.signAndExecute', () =>
 		Effect.gen(function* () {
 			txHarness.events.length = 0;
@@ -354,21 +403,24 @@ describe('package publish executor', () => {
 					const label = tx[0] ?? 0;
 					txHarness.events.push(`${label}:impersonate`);
 					return {
-						digest: `digest-${label}`,
-						effects: {},
-						objectChanges: [
-							{
-								type: 'published',
-								objectId: `0xpkg${label}`,
-								objectType: `0xpkg${label}::published::Package`,
-							},
-							{
-								type: 'created',
-								objectId: `0xcap${label}`,
-								objectType: '0x2::package::UpgradeCap',
-							},
-						],
-						balanceChanges: [],
+						$kind: 'Transaction',
+						Transaction: {
+							digest: `digest-${label}`,
+							effects: {},
+							objectChanges: [
+								{
+									type: 'published',
+									objectId: `0xpkg${label}`,
+									objectType: `0xpkg${label}::published::Package`,
+								},
+								{
+									type: 'created',
+									objectId: `0xcap${label}`,
+									objectType: '0x2::package::UpgradeCap',
+								},
+							],
+							balanceChanges: [],
+						},
 					};
 				});
 			const account: AccountValue = {

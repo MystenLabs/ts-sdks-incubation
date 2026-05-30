@@ -34,6 +34,8 @@ const makeState = (): SubscribableState => ({
 			logTail: { lines: ['hello'], level: 'error', truncated: false },
 			endpoints: [],
 			selectiveRestartHighlight: false,
+			section: 'service',
+			endpointSection: 'service',
 		},
 	],
 	endpoints: [],

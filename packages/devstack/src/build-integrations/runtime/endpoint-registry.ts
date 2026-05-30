@@ -8,9 +8,9 @@
 //   - `byPluginKey(key)`: group endpoints by the plugin that emitted
 //     them. The CLI `status` command uses this to print one block
 //     per plugin.
-//   - `byKind(kind)`: kind is currently `wireProtocol` (`http` vs
-//     `h2c`). Cheap projection; lets callers filter the gRPC endpoints
-//     out of an HTTP-only health check.
+//   - `byKind(kind)`: filter on `wireProtocol` — currently one of
+//     `'http' | 'h2c' | 'tcp'`. Cheap projection; lets callers filter
+//     the gRPC or raw-TCP endpoints out of an HTTP-only health check.
 //   - `all()`: stable-ordered iteration. Order is alphabetical by
 //     endpoint name — the manifest writer emits in input-order, but
 //     consumer iteration shouldn't depend on plugin registration
@@ -51,7 +51,9 @@ export class EndpointRegistry {
 		return this.entries.filter((e) => e.pluginKey === pluginKey);
 	}
 
-	/** Filter endpoints by wire protocol (`http`, `h2c`). */
+	/** Filter endpoints by wire protocol — currently `'http' | 'h2c' |
+	 *  'tcp'`. Typed as `string` for forward-compat with plugin-added
+	 *  protocols; mistyped values just return an empty array. */
 	byKind(wireProtocol: string): ReadonlyArray<ResolvedEndpoint> {
 		return this.entries.filter((e) => e.wireProtocol === wireProtocol);
 	}

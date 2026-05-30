@@ -18,26 +18,29 @@
 //        the sui plugin's `resolveImage` shape.
 
 import { Effect, type Scope } from 'effect';
+import { fileURLToPath } from 'node:url';
 
 import type {
 	ContainerBuildContext,
 	ContainerRuntime,
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
 import { DEFAULT_SEAL_REPO, DEFAULT_SEAL_VERSION } from './source-fetch.ts';
 
 // ---------------------------------------------------------------------------
-/** Pinned rust toolchain for the upstream seal cargo build. Distilled-
- *  doc §Configuration defaults block. Pinned to match walrus's default
- *  so a shared rust:1.93 builder image can fan out builds. */
-export const DEFAULT_SEAL_RUST_TOOLCHAIN = '1.93' as const;
-
 /** Inputs to the seal image resolver. */
-export interface SealCargoImageInputs<Ref extends string = string, RustV extends string = string> {
+export interface SealCargoImageInputs<Ref extends string = string> {
 	readonly sealRepo: typeof DEFAULT_SEAL_REPO;
 	readonly sealRef: Ref;
-	readonly rustToolchain: RustV;
+	/** Owner identity stamped on the built image so label-driven prune
+	 *  finds it. */
+	readonly owner: {
+		readonly app: string;
+		readonly stack: string;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -65,8 +68,7 @@ export const resolveSealCargoImage = (
 	inputs: SealCargoImageInputs,
 ): Effect.Effect<ImageRef, SealError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const override = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-			.process?.env?.SEAL_CARGO_IMAGE_OVERRIDE;
+		const override = readEnv('SEAL_CARGO_IMAGE_OVERRIDE');
 		if (override && override.length > 0) {
 			// Trust-the-tag path. Compose the resolved shape from the
 			// pinned tag — the digest is opaque (substrate's
@@ -83,10 +85,20 @@ export const resolveSealCargoImage = (
 		// URL; (2) debian:bookworm-slim runtime with the signal-
 		// forwarding entrypoint shell wrapped around `key-server`.
 		const buildCtx: ContainerBuildContext = {
-			contextPath: new URL('../../../../images/', import.meta.url).pathname,
+			// `fileURLToPath` normalises across platforms (Windows
+			// `file:///C:/...` → `C:\...`; POSIX strips the scheme and
+			// percent-decodes). Using `.pathname` directly leaves the
+			// leading `/` on Windows drive paths.
+			contextPath: fileURLToPath(new URL('../../../../images/', import.meta.url)),
 			dockerfile: 'seal/Dockerfile',
 			fingerprintPaths: ['seal/Dockerfile', 'seal/entrypoint.sh', '_shared/signal-forward.sh'],
 			buildArgs: { SEAL_VERSION: inputs.sealRef },
+			owner: {
+				app: inputs.owner.app,
+				stack: inputs.owner.stack,
+				plugin: 'seal',
+				role: 'key-server',
+			},
 		};
 		return yield* runtime.ensureImage(buildCtx).pipe(
 			Effect.mapError((cause) =>
@@ -103,8 +115,7 @@ export const resolveSealCargoImage = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.cargoImage.resolve', {
 			attributes: {
-				'seal.ref': inputs.sealRef,
-				'seal.rustToolchain': inputs.rustToolchain,
+				[SealSpans.ref]: inputs.sealRef,
 			},
 		}),
 	);
@@ -112,9 +123,10 @@ export const resolveSealCargoImage = (
 /** Convenience: resolve via the default inputs. */
 export const resolveDefaultSealCargoImage = (
 	runtime: ContainerRuntime,
+	owner: SealCargoImageInputs['owner'],
 ): Effect.Effect<ImageRef, SealError, Scope.Scope> =>
 	resolveSealCargoImage(runtime, {
 		sealRepo: DEFAULT_SEAL_REPO,
 		sealRef: DEFAULT_SEAL_VERSION,
-		rustToolchain: DEFAULT_SEAL_RUST_TOOLCHAIN,
+		owner,
 	});

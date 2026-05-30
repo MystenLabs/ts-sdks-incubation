@@ -16,8 +16,11 @@
 //      critical section, and projecting the response to a
 //      `LocalPackagePublishOutput`.
 //   3. Wrapping `sdk.core.waitForTransaction({ digest })` for
-//      `waitForReady` — the SDK already retries / waits for index
-//      visibility internally.
+//      `postPublishReadyHint` — the SDK already retries / waits for
+//      index visibility internally. The probe is hint-only: transient
+//      `getObject` misses (cold index race) are intentionally
+//      swallowed because the publisher account's `signAndExecute` has
+//      already awaited `waitForTransaction(digest)`.
 //
 // Errors:
 //   - Each method maps its concrete failure → a typed `PublishError`
@@ -30,15 +33,19 @@ import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue, TxResult } from '../account/service.ts';
+import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
+import { buildForkImpersonationTransactionBytes } from '../sui/index.ts';
 import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import { PackageSpans } from './spans.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
 
 const shouldHydrateCreatedObject = (change: PackagePublishObjectChange): boolean =>
 	change.type === 'created' &&
@@ -74,19 +81,30 @@ const hydrateCreatedObject = (
 	if (!shouldHydrateCreatedObject(change) || change.objectId === undefined) {
 		return Effect.succeed(change);
 	}
+	const objectId = change.objectId;
 	return Effect.tryPromise({
 		try: () =>
 			sdk.core.getObject({
-				objectId: change.objectId!,
+				objectId,
 				include: { json: true },
 			}),
-		catch: () => null,
+		catch: (cause) => cause,
 	}).pipe(
 		Effect.map((raw) => ({
 			...change,
 			...(raw === null ? {} : projectHydratedObjectFields(raw)),
 		})),
-		Effect.catch(() => Effect.succeed(change)),
+		// Hydration is best-effort — a cold-cache `getObject` miss must
+		// not fail the publish. Log at debug so the miss is visible (the
+		// `tryPromise` catch wraps the original cause; cause-detail
+		// extraction is non-trivial here, so we log the objectId — the
+		// fact that this happened is the actionable signal).
+		Effect.catch((cause) =>
+			Effect.logDebug('package: hydrate-created-object cache miss').pipe(
+				Effect.annotateLogs({ objectId, cause: String(cause) }),
+				Effect.as(change),
+			),
+		),
 	);
 };
 
@@ -98,51 +116,33 @@ const hydrateCreatedObjects = (
 		concurrency: 'unbounded',
 	});
 
-const rawEnvelopeFromAccountTx = (tx: TxResult): unknown => {
-	const objectTypes: Record<string, string> = {};
-	const changedObjects: Array<{
-		readonly objectId: string;
-		readonly outputState?: string;
-		readonly idOperation?: string;
-	}> = [];
+/** Project an account TxResult's flat `objectChanges` (`{type,
+ *  objectId, objectType?, ...}`) into the publish-output
+ *  `PackagePublishObjectChange[]` shape. The account plugin's
+ *  projection already classifies entries by `type`
+ *  (`published` for `outputState: 'PackageWrite'`, `created` for
+ *  `idOperation: 'Created'`, `mutated` otherwise); we just narrow
+ *  to the entries we care about (published + created) and drop the
+ *  extras. */
+const publishChangesFromTxResult = (tx: TxResult): ReadonlyArray<PackagePublishObjectChange> => {
+	const out: Array<PackagePublishObjectChange> = [];
 	for (const change of tx.objectChanges) {
 		if (typeof change !== 'object' || change === null) continue;
-		const objectId = (change as { readonly objectId?: unknown }).objectId;
-		if (typeof objectId !== 'string') continue;
-		const objectType = (change as { readonly objectType?: unknown }).objectType;
-		if (typeof objectType === 'string') objectTypes[objectId] = objectType;
-		const type = (change as { readonly type?: unknown }).type;
-		const outputState = (change as { readonly outputState?: unknown }).outputState;
-		const idOperation = (change as { readonly idOperation?: unknown }).idOperation;
-		const entry: {
-			objectId: string;
-			outputState?: string;
-			idOperation?: string;
-		} = { objectId };
-		if (typeof outputState === 'string') {
-			entry.outputState = outputState;
-		} else if (type === 'published') {
-			entry.outputState = 'PackageWrite';
-		} else if (type === 'created' || type === 'mutated') {
-			entry.outputState = 'ObjectWrite';
-		}
-		if (typeof idOperation === 'string') {
-			entry.idOperation = idOperation;
-		} else if (type === 'created' || type === 'published') {
-			entry.idOperation = 'Created';
-		} else if (type === 'mutated') {
-			entry.idOperation = 'None';
-		}
-		changedObjects.push(entry);
+		const projected = change as {
+			readonly type?: string;
+			readonly objectId?: unknown;
+			readonly objectType?: unknown;
+		};
+		if (typeof projected.objectId !== 'string') continue;
+		if (projected.type !== 'published' && projected.type !== 'created') continue;
+		const objectType = typeof projected.objectType === 'string' ? projected.objectType : undefined;
+		out.push({
+			type: projected.type,
+			objectId: projected.objectId,
+			...(objectType !== undefined ? { objectType } : {}),
+		});
 	}
-	return {
-		$kind: 'Transaction',
-		Transaction: {
-			digest: tx.digest,
-			effects: { changedObjects },
-			objectTypes,
-		},
-	};
+	return out;
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +163,10 @@ export interface PublishExecutorInputs {
 	 *  (`docker run --rm`). Absent → path-(c) (host CLI). */
 	readonly runtime?: ContainerRuntime | undefined;
 	readonly buildImage?: ImageRef | undefined;
+	/** Fork mode — real signers (not just impersonate) must build offline
+	 *  with explicit gas, because the sui-fork binary has no
+	 *  `simulate_transaction` for the SDK's gas-estimating `tx.build`. */
+	readonly forkMode?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -230,220 +234,78 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			});
 			tx.transferObjects([upgradeCapArg], inputs.account.address);
 
-			const sdkClient = inputs.sdk.client as {
-				readonly executeTransaction: (args: {
-					readonly transaction: Uint8Array;
-					readonly signatures: ReadonlyArray<string>;
-					readonly include?: {
-						readonly effects?: boolean;
-						readonly objectTypes?: boolean;
-					};
-				}) => Promise<unknown>;
-				readonly waitForTransaction: (args: {
-					readonly digest: string;
-					readonly include?: { readonly effects?: boolean };
-					readonly timeout?: number;
-				}) => Promise<unknown>;
-			};
-
-			const rawResult = yield* inputs.account.withTransactionSigner((lockedSigner) =>
-				Effect.gen(function* () {
-					// Serialise while the account lease is held. Real signers use the SDK resolver;
-					// fork impersonation must build offline with explicit gas fields because the
-					// fork binary does not support the normal gas-selection simulation path.
-					const txBytes =
-						inputs.account.source === 'impersonate'
-							? yield* buildForkImpersonationTransactionBytes(
-									tx,
-									inputs.account.address,
-									inputs.sdk.core,
-								).pipe(
-									Effect.mapError(
-										(cause): PublishError =>
-											publishError('publish-tx', {
-												sourcePath,
-												packageName,
-												message:
-													`Fork impersonation Transaction.build failed for package '${packageName}': ` +
-													cause.message,
-												cause,
-											}),
-									),
-								)
-							: yield* Effect.tryPromise({
-									try: () =>
-										tx.build({
-											client: inputs.sdk.client as Parameters<typeof tx.build>[0] extends
-												| { client?: infer C }
-												| undefined
-												? C
-												: never,
-										}),
-									catch: (cause): PublishError =>
+			// Both real-signer and impersonate paths route through the
+			// account's `signAndExecute` (which signs, executes, waits,
+			// and projects to the SDK-shaped `SignAndExecuteResult`
+			// discriminated union). The impersonate path internally
+			// hands off to `fork.impersonate`; the real-signer path
+			// goes through the SDK directly. `signAndDispatch` compacts
+			// the build → sign → execute → $kind dispatch boilerplate.
+			const { digest, objectChanges } = yield* signAndDispatch({
+				signerSource: inputs.account,
+				buildTxBytes: () =>
+					// Serialise while the account lease is held. Non-fork real
+					// signers use the SDK resolver. Fork mode (impersonate OR real
+					// signer) must build offline with explicit gas fields: the
+					// sui-fork binary has no simulate_transaction, so the SDK's
+					// gas-estimating build path fails. The real-vs-empty-signature
+					// split happens later in the account's signAndExecute.
+					inputs.account.source === 'impersonate' || inputs.forkMode === true
+						? buildForkImpersonationTransactionBytes(
+								tx,
+								inputs.account.address,
+								inputs.sdk.core,
+							).pipe(
+								Effect.mapError(
+									(cause): PublishError =>
 										publishError('publish-tx', {
 											sourcePath,
 											packageName,
 											message:
-												`Transaction.build failed for package '${packageName}': ` +
-												(cause instanceof Error ? cause.message : String(cause)),
+												`Fork impersonation Transaction.build failed for package '${packageName}': ` +
+												cause.message,
 											cause,
 										}),
-								});
-
-					if (inputs.account.source === 'impersonate') {
-						const result = yield* lockedSigner.signAndExecute(txBytes).pipe(
-							Effect.mapError(
-								(cause): PublishError =>
+								),
+							)
+						: Effect.tryPromise({
+								try: () => tx.build({ client: inputs.sdk.client }),
+								catch: (cause): PublishError =>
 									publishError('publish-tx', {
 										sourcePath,
 										packageName,
 										message:
-											`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
-											`(address=${inputs.account.address}): ${
-												cause instanceof Error ? cause.message : String(cause)
-											}`,
+											`Transaction.build failed for package '${packageName}': ` +
+											(formatUnknownError(cause)),
 										cause,
 									}),
-							),
-						);
-						return rawEnvelopeFromAccountTx(result);
-					}
-
-					const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
-						Effect.mapError(
-							(cause): PublishError =>
-								publishError('publish-tx', {
-									sourcePath,
-									packageName,
-									message:
-										`account.signTransaction failed for publisher '${inputs.account.name}' ` +
-										`(address=${inputs.account.address}): ${
-											cause instanceof Error ? cause.message : String(cause)
-										}`,
-									cause,
-								}),
-						),
-					);
-
-					const raw = yield* Effect.tryPromise({
-						try: () =>
-							sdkClient.executeTransaction({
-								transaction: txBytes,
-								signatures: [signed.signature],
-								// Include flags drive readMask paths in the SDK's
-								// `executeTransaction` (see grpc/core.mjs). Effects
-								// gives us `changedObjects` (PackageWrite + Created
-								// upgrade cap); objectTypes maps changed ids →
-								// fully-qualified type strings so the UpgradeCap is
-								// identifiable unambiguously.
-								include: { effects: true, objectTypes: true },
 							}),
-						catch: (cause): PublishError =>
-							publishError('publish-tx', {
-								sourcePath,
-								packageName,
-								message:
-									`executeTransaction failed for publisher '${inputs.account.name}': ` +
-									(cause instanceof Error ? cause.message : String(cause)),
-								cause,
-							}),
-					});
-
-					const envelope = raw as {
-						readonly Transaction?: { readonly digest?: string };
-						readonly FailedTransaction?: { readonly digest?: string };
-					};
-					const digest = envelope.Transaction?.digest ?? envelope.FailedTransaction?.digest;
-					if (digest !== undefined) {
-						yield* Effect.tryPromise({
-							try: () =>
-								sdkClient.waitForTransaction({
-									digest,
-								}),
-							catch: (cause): PublishError =>
-								publishError('publish-tx', {
-									sourcePath,
-									packageName,
-									message: `waitForTransaction(${digest}) failed`,
-									cause,
-								}),
-						});
-					}
-					return raw;
-				}),
-			);
-
-			// Project the SDK's `TransactionResult` envelope to the
-			// output shape. On `$kind: FailedTransaction` we raise a
-			// publish-tx error; on the success branch we walk
-			// `effects.changedObjects` for the published package id and
-			// the upgrade cap.
-			//
-			// changedObjects entries are flat: `{objectId, inputState,
-			// outputState, idOperation, ...}` — `outputState` is a
-			// string literal (`'PackageWrite'` | `'ObjectWrite'` |
-			// `'DoesNotExist'`), `idOperation` is a string literal
-			// (`'Created'` | `'Deleted'` | `'None'`).
-			const env = rawResult as {
-				readonly $kind?: 'Transaction' | 'FailedTransaction';
-				readonly Transaction?: {
-					readonly digest?: string;
-					readonly status?: { readonly success?: boolean; readonly error?: string };
-					readonly effects?: {
-						readonly changedObjects?: ReadonlyArray<{
-							readonly objectId?: string;
-							readonly outputState?: string;
-							readonly idOperation?: string;
-						}>;
-					};
-					readonly objectTypes?: Readonly<Record<string, string>>;
-				};
-				readonly FailedTransaction?: {
-					readonly digest?: string;
-					readonly status?: { readonly error?: string };
-				};
-			};
-			if (env.$kind === 'FailedTransaction') {
-				return yield* Effect.fail(
+				mapSignError: (cause): PublishError =>
 					publishError('publish-tx', {
 						sourcePath,
 						packageName,
 						message:
-							`executeTransaction returned FailedTransaction (digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
-							(env.FailedTransaction?.status?.error ?? '<no error>'),
+							`account.signAndExecute failed for publisher '${inputs.account.name}' ` +
+							`(address=${inputs.account.address}): ${
+								formatUnknownError(cause)
+							}`,
+						cause,
 					}),
-				);
-			}
-			const txOk = env.Transaction;
-			if (txOk?.digest === undefined) {
-				return yield* Effect.fail(
-					publishError('publish-tx', {
-						sourcePath,
-						packageName,
-						message: `executeTransaction returned no digest. Raw=${JSON.stringify(rawResult).slice(0, 300)}`,
+				onFailed: (failure) =>
+					Effect.fail(
+						publishError('publish-tx', {
+							sourcePath,
+							packageName,
+							message:
+								`executeTransaction returned FailedTransaction ` + formatExecutedFailure(failure),
+						}),
+					),
+				onSuccess: (txResult: TxResult) =>
+					Effect.succeed({
+						digest: txResult.digest,
+						objectChanges: publishChangesFromTxResult(txResult),
 					}),
-				);
-			}
-
-			const objectChanges: Array<PackagePublishObjectChange> = [];
-			const objectTypes = txOk.objectTypes ?? {};
-			for (const ch of txOk.effects?.changedObjects ?? []) {
-				if (!ch.objectId) continue;
-				const objectType = objectTypes[ch.objectId];
-				if (ch.outputState === 'PackageWrite') {
-					objectChanges.push({
-						type: 'published',
-						objectId: ch.objectId,
-						...(objectType !== undefined ? { objectType } : {}),
-					});
-				} else if (ch.idOperation === 'Created') {
-					objectChanges.push({
-						type: 'created',
-						objectId: ch.objectId,
-						...(objectType !== undefined ? { objectType } : {}),
-					});
-				}
-			}
+			});
 
 			const published = objectChanges.find((c) => c.type === 'published');
 			const upgradeCap = objectChanges.find(
@@ -452,7 +314,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			const hydratedObjectChanges = yield* hydrateCreatedObjects(inputs.sdk, objectChanges);
 
 			const output: LocalPackagePublishOutput = {
-				digest: txOk.digest,
+				digest,
 				packageId: published?.objectId ?? '',
 				publisher: inputs.account.address,
 				...(upgradeCap?.objectId !== undefined ? { upgradeCapId: upgradeCap.objectId } : {}),
@@ -461,42 +323,28 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 
 			return output;
 		}).pipe(
-			Effect.withSpan('package.publish-tx', {
-				attributes: { 'package.publish.packageName': packageName },
+			Effect.withSpan('devstack.plugin.package.publish-tx', {
+				attributes: { [PackageSpans.publish.packageName]: packageName },
 			}),
 		),
 
-	// Wait-for-index step — post-publish ready-probe. The SDK's
-	// `waitForTransaction` already polls fullnode index visibility
-	// internally; we wrap it once with a typed PublishError on failure.
-	waitForReady: (packageId: string): Effect.Effect<void, PublishError, Scope.Scope> =>
-		Effect.tryPromise({
-			try: async () => {
-				// The publish account's `signAndExecute` already calls
-				// `waitForTransaction(digest)` before returning; the read
-				// on `packageId` here is a second-layer probe to catch the
-				// "tx written but object not yet queryable" race the
-				// chain-probe verify step also guards against. Falls
-				// through silently — if the follow-up `getObject` succeeds
-				// the index is ready, else the next verify cycle picks it
-				// up.
-				try {
-					await inputs.sdk.core.getObject({ objectId: packageId });
-				} catch {
-					// A stale object read here is non-fatal — the next
-					// produce phase (parse) only inspects the output.
-				}
-			},
-			catch: (cause): PublishError =>
-				publishError('parse', {
-					sourcePath: '<wait-for-ready>',
-					packageName: packageId,
-					message: `waitForReady(${packageId}) failed`,
-					cause,
-				}),
-		}).pipe(
-			Effect.withSpan('package.wait-for-ready', {
-				attributes: { 'package.publish.packageId': packageId },
+	// Post-publish ready HINT — a best-effort second-layer probe. The publish
+	// account's `signAndExecute` already calls `waitForTransaction(digest)`
+	// before returning, so the read on `packageId` here only catches the
+	// "tx written but object not yet queryable" race. It MUST NOT fail the
+	// publish: a transient / not-yet-indexed read is expected. The failure is
+	// logged at debug (§18) so the miss stays visible rather than silently
+	// swallowed, then the hint succeeds regardless.
+	postPublishReadyHint: (packageId: string): Effect.Effect<void, PublishError, Scope.Scope> =>
+		Effect.tryPromise(() => inputs.sdk.core.getObject({ objectId: packageId })).pipe(
+			Effect.asVoid,
+			Effect.catch((cause) =>
+				Effect.logDebug('package: post-publish ready-hint read failed').pipe(
+					Effect.annotateLogs({ packageId, cause: String(cause) }),
+				),
+			),
+			Effect.withSpan('devstack.plugin.package.post-publish-ready-hint', {
+				attributes: { [PackageSpans.publish.packageId]: packageId },
 			}),
 		),
 });

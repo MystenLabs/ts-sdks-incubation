@@ -42,8 +42,14 @@ import * as path from 'node:path';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import { connect, DockerHost, DockerSpawner, waitForIp } from '../../runtime/docker/index.ts';
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
+import { logWarningAndIgnore } from '../../substrate/runtime/observability/index.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { checkHolderLiveness, ownHolder } from '../../substrate/runtime/cross-process/liveness.ts';
+import {
+	checkHolderLiveness,
+	layerLivenessProbeScope,
+	LivenessProbeScope,
+	ownHolder,
+} from '../../substrate/runtime/cross-process/liveness.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { waitForHttpEndpoint, type HttpProbeFetch } from '../../substrate/runtime/http-probe.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
@@ -120,7 +126,7 @@ export interface RouteReadinessProbeConfig {
 }
 
 export class RouterConfig extends Context.Service<RouterConfig, RouterConfigShape>()(
-	'@devstack-rewrite/orchestrators/router/RouterConfig',
+	'@devstack/orchestrators/router/RouterConfig',
 ) {}
 
 /** Default-config layer for tests. Production wires this from
@@ -135,7 +141,7 @@ export const layerRouterConfigLiteral = (cfg: RouterConfigShape): Layer.Layer<Ro
 export class UpstreamResolverService extends Context.Service<
 	UpstreamResolverService,
 	UpstreamResolver
->()('@devstack-rewrite/orchestrators/router/UpstreamResolver') {}
+>()('@devstack/orchestrators/router/UpstreamResolver') {}
 
 export const layerDockerUpstreamResolver = (
 	profile: RouterProfile,
@@ -217,7 +223,7 @@ export interface EndpointUrl {
 }
 
 export class RouterService extends Context.Service<RouterService, RouterServiceShape>()(
-	'@devstack-rewrite/orchestrators/router/Router',
+	'@devstack/orchestrators/router/Router',
 ) {}
 
 interface DispatchRouteScanDiagnostic extends DispatchRouteDecodeDiagnostic {
@@ -338,10 +344,23 @@ const sweepStaleDispatchRoutes = (
 	routes: ReadonlyArray<DispatchRouteMetadata>,
 	dispatchFileId: string,
 ): Effect.Effect<ReadonlyArray<DispatchRouteMetadata>, DispatchWriteFailed> =>
+	// Yield a fresh per-sweep `LivenessProbeScope` so a recycled lease
+	// owner (multiple stale routes pointing at the same dead pid) forks
+	// `ps`/`tasklist` AT MOST once across the loop — matches the roster
+	// sweep migration in Phase 9A.
 	Effect.gen(function* () {
+		const probe = yield* LivenessProbeScope;
 		const active: DispatchRouteMetadata[] = [];
 		for (const route of routes) {
-			const status = yield* classifyDispatchLease(route);
+			const status: DispatchLeaseStatus =
+				route.lease === null
+					? 'unknown-owner'
+					: yield* probe
+							.probeHolderLiveness(route.lease.owner)
+							.pipe(
+								Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
+								Effect.catch(() => Effect.succeed('live' as const)),
+							);
 			if (status === 'stale') {
 				const filePath = path.join(profile.dispatchDir, dispatchFilename(route.dispatchFileId));
 				yield* fs.remove(filePath).pipe(
@@ -360,7 +379,7 @@ const sweepStaleDispatchRoutes = (
 			active.push(route);
 		}
 		return active;
-	});
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 
 const makeRouteLease = (profile: RouterProfile, identity: Identity): RouteLeaseMetadata => ({
 	version: ROUTER_ROUTE_LEASE_VERSION,
@@ -568,11 +587,17 @@ const removeDispatchFile = (
 
 const waitForPublicRouteReadiness = (
 	cfg: RouterConfigShape,
+	decl: RoutableDecl,
 	endpoint: EndpointUrl,
 	resolved: ResolvedRoute,
 ): Effect.Effect<void, RouteReadinessProbeFailed> => {
 	const options = cfg.routeReadinessProbe;
-	if (options?.enabled !== true || cfg.disabled || resolved.wireProtocol === 'tcp') {
+	if (
+		options?.enabled !== true ||
+		cfg.disabled ||
+		resolved.wireProtocol === 'tcp' ||
+		decl.readiness === 'deferred'
+	) {
 		return Effect.void;
 	}
 	const timeoutMs = options.timeoutMs ?? DEFAULT_ROUTE_READINESS_TIMEOUT_MS;
@@ -658,7 +683,17 @@ export const layerRouterService: Layer.Layer<
 				}
 				const cached = yield* Ref.get(bootRef);
 				if (cached !== null) return cached;
-				const protectedRouteLeaseIds = yield* Effect.scoped(
+				// Single outer scope holds BOTH locks for the entire boot duration.
+				// Acquire dispatch lock first (outer), then bootstrap lock (inner) so
+				// scope finalizers release in reverse order: bootstrap lock first, then
+				// dispatch lock. `protectedRouteLeaseIds` is computed under the
+				// dispatch lock and consumed by `bootstrap` while still under the same
+				// lock — no peer-write window can publish a new dispatch route file
+				// between the scan and the bootstrap-time forceRemove decision.
+				// STYLE_GUIDE §18 cross-process protocol — router boot must hold the
+				// dispatch lock across the scan + bootstrap critical section, exactly
+				// the same way `contributeRoute` holds it across write + probe.
+				const report = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 							Effect.mapError(
@@ -670,9 +705,14 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						// Write the shared CORS middleware file before reading
-						// active dispatch routes so the later bootstrap phase can
-						// hold only the bootstrap lock.
+						// Re-check after acquiring the dispatch lock: a peer fiber
+						// (parallel plugin acquire) may have finished boot while we
+						// waited for this lock. The O_EXCL lock serializes in-process
+						// fibers too, and the winner sets `bootRef` below while still
+						// holding the lock — so a non-null read here means boot is
+						// done; skip the redundant bootstrap (docker inspect + decision).
+						const bootedByPeer = yield* Ref.get(bootRef);
+						if (bootedByPeer !== null) return bootedByPeer;
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
@@ -727,14 +767,10 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						return [
+						const protectedRouteLeaseIds = [
 							...activeDispatchRoutes.map((route) => route.dispatchFileId),
 							...existingDispatchScan.unknownRouteFileIds,
 						];
-					}),
-				);
-				const report = yield* Effect.scoped(
-					Effect.gen(function* () {
 						yield* acquireStackLock(profile.bootstrapLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
 							Effect.mapError(
 								(cause): RouterBootFailed =>
@@ -745,15 +781,21 @@ export const layerRouterService: Layer.Layer<
 									}),
 							),
 						);
-						return yield* bootstrap({
+						const booted = yield* bootstrap({
 							image: cfg.image,
 							entrypoints: registry.all(),
 							profile,
 							protectedRouteLeaseIds,
 						}).pipe(Effect.provideService(TraefikContainerOpsService, traefikOps));
+						// Publish the cached report WHILE still holding the locks so a
+						// peer fiber's post-lock re-check (above) observes it — the
+						// locks release at scope close, which is after this set. On
+						// bootstrap failure we never reach here, so `bootRef` stays
+						// null and a later boot() retries (retry-on-failure preserved).
+						yield* Ref.set(bootRef, booted);
+						return booted;
 					}),
 				);
-				yield* Ref.set(bootRef, report);
 				return report;
 			}).pipe(Effect.withSpan('orchestrator.router.boot'));
 
@@ -776,6 +818,11 @@ export const layerRouterService: Layer.Layer<
 					// plus files already present in the shared dispatch
 					// directory. The dispatch lock makes the scan + write a
 					// cross-process critical section.
+					// WHY: disabled mode resolves direct-loopback routes with no
+					// proxy dispatch file, so there is no shared resource a
+					// duplicate could clobber — intentionally skip
+					// `detectCollisions` and short-circuit before the
+					// dispatch-dir scan/write below.
 					if (cfg.disabled) return 'direct';
 					if (!cfg.disabled) {
 						yield* fs.makeDirectory(profile.dispatchDir, { recursive: true }).pipe(
@@ -865,7 +912,24 @@ export const layerRouterService: Layer.Layer<
 				let publishOwnership: RoutePublishOwnership;
 				if (cfg.disabled) {
 					publishOwnership = yield* publishRouteFile;
+					yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved);
+					if (publishOwnership !== 'reused-live') {
+						yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
+					}
 				} else {
+					// The dispatch lock MUST be held across (a) the on-disk
+					// scan + write inside `publishRouteFile`, (b) the
+					// readiness probe, AND (c) the in-process
+					// `SubscriptionRef.update(applied, …)` that publishes the
+					// new route to peer fibers in this process. Releasing
+					// the lock before the SubscriptionRef update would let a
+					// concurrent in-process `contributeRoute` sample the
+					// stale `applied` set at line 803 even though our
+					// dispatch file is already on disk — the on-disk scan
+					// covers cross-process visibility but the lock must also
+					// gate the in-process publish so the two views agree.
+					// See STYLE_GUIDE §18 cross-process protocol — router
+					// contributeRoute serialization rule.
 					publishOwnership = yield* Effect.scoped(
 						Effect.gen(function* () {
 							yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS).pipe(
@@ -879,32 +943,26 @@ export const layerRouterService: Layer.Layer<
 										}),
 								),
 							);
-							return yield* publishRouteFile;
+							const ownership = yield* publishRouteFile;
+							yield* waitForPublicRouteReadiness(cfg, decl, endpoint, resolved).pipe(
+								Effect.onError(() =>
+									ownership !== 'owned' ? Effect.void : removeDispatchFile(fs, profile, resolved),
+								),
+							);
+							if (ownership !== 'reused-live') {
+								yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
+							}
+							return ownership;
 						}),
 					);
 				}
-
-				yield* waitForPublicRouteReadiness(cfg, endpoint, resolved).pipe(
-					Effect.onError(() =>
-						cfg.disabled || publishOwnership !== 'owned'
-							? Effect.void
-							: Effect.scoped(
-									Effect.gen(function* () {
-										yield* acquireStackLock(
-											profile.dispatchLockFile,
-											ROUTER_LOCK_TIMEOUT_MILLIS,
-										).pipe(Effect.ignore);
-										yield* removeDispatchFile(fs, profile, resolved);
-									}),
-								),
-					),
-				);
 				if (publishOwnership !== 'reused-live') {
-					yield* SubscriptionRef.update(applied, (arr) => [...arr, resolved]);
-
 					// Scope finalizer — remove the file + drop from applied
 					// when the caller's scope closes. Best-effort: "already
-					// gone" is fine per distilled-doc.
+					// gone" is fine, but lock contention / IO failures surface
+					// via logWarning so leaked dispatch files don't go silent
+					// (STYLE_GUIDE §18 — `Effect.ignore` on `acquireStackLock`
+					// without a tap is forbidden).
 					yield* Effect.addFinalizer(() =>
 						Effect.gen(function* () {
 							if (publishOwnership === 'owned') {
@@ -913,7 +971,11 @@ export const layerRouterService: Layer.Layer<
 										yield* acquireStackLock(profile.dispatchLockFile, ROUTER_LOCK_TIMEOUT_MILLIS);
 										yield* removeDispatchFile(fs, profile, resolved);
 									}),
-								).pipe(Effect.ignore);
+								).pipe(
+									logWarningAndIgnore('router scope-close cleanup failed', {
+										dispatchFileId: resolved.dispatchFileId,
+									}),
+								);
 							}
 							yield* SubscriptionRef.update(applied, (arr) =>
 								arr.filter((r) => r.dispatchFileId !== resolved.dispatchFileId),

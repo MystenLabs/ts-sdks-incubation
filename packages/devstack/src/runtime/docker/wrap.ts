@@ -58,6 +58,21 @@ export const isNoSuchContainerStderr = (stderr: string): boolean =>
 export const isAlreadyInNetworkStderr = (stderr: string): boolean =>
 	/already exists in network/i.test(stderr) || /endpoint with name .* already exists/i.test(stderr);
 
+/** Network-create collision — `docker network create` is NOT name-atomic
+ *  and there is no per-name lock for networks, so two processes booting
+ *  against the shared `devstack` bridge can both pass the inspect-miss and
+ *  both run `create`; the loser sees this stderr. Matches the daemon's
+ *  canonical wording `network with name <name> already exists` plus the
+ *  `Conflict` (409) envelope libnetwork returns for the same condition.
+ *  Distinct from `isAlreadyInNetworkStderr` (the connect-side
+ *  endpoint-already-attached case) — this is the network object itself
+ *  already existing, the signal for `ensureNetwork`'s adopt-on-collision
+ *  re-inspect. */
+export const isNetworkAlreadyExistsStderr = (stderr: string): boolean =>
+	/network with name \S+ already exists/i.test(stderr) ||
+	/Conflict.*network/i.test(stderr) ||
+	/network \S+ already exists/i.test(stderr);
+
 /** Docker bridge IPAM exhaustion. This is a stale-network / missing
  *  explicit-subnet policy failure, not a daemon reachability failure. */
 export const isNetworkAddressPoolExhaustedStderr = (stderr: string): boolean =>
@@ -69,6 +84,30 @@ export const isImageNotFoundStderr = (stderr: string): boolean =>
 	/manifest .* not found/i.test(stderr) ||
 	/repository .* not found/i.test(stderr) ||
 	/No such image/i.test(stderr);
+
+/** Image missing — classifier for `docker image rm` / `docker tag`
+ *  flows. Matches the daemon's canonical wording only — a bare
+ *  `/not found/` alternation would misclassify permission-denied and
+ *  registry-auth errors (e.g. `pull access denied … repository does
+ *  not exist`) as "missing" and let sweep silently skip them. Distinct
+ *  from `isImageNotFoundStderr` (pull-flow-specific) — this one is the
+ *  union used by idempotent remove/tag paths. */
+export const isMissingImageStderr = (stderr: string): boolean =>
+	/no such image|reference does not exist/i.test(stderr);
+
+/** Network missing — idempotent classifier for `docker network rm` /
+ *  `docker network inspect`. Matches the daemon's canonical wordings:
+ *  `No such network: <name>` and `network <name> not found`. A bare
+ *  `/not found/` alternation would misclassify auth / permission errors
+ *  on shared docker hosts. */
+export const isMissingNetworkStderr = (stderr: string): boolean =>
+	/no such network|network \S+ not found/i.test(stderr);
+
+/** Network in-use — `docker network rm` failed because endpoints are
+ *  still attached. Inverse predicate of `isMissingNetworkStderr`; lives
+ *  next to its siblings so the two evolve together. */
+export const isNetworkInUseStderr = (stderr: string): boolean =>
+	/active endpoints|has active endpoint|network .* is in use/i.test(stderr);
 
 // -----------------------------------------------------------------------------
 // Wrappers — translate CaptureError → typed DockerRuntimeError

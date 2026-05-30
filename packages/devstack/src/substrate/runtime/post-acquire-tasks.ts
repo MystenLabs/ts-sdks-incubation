@@ -22,7 +22,7 @@ export interface PostAcquireTasksShape {
 export class PostAcquireTasksService extends Context.Service<
 	PostAcquireTasksService,
 	PostAcquireTasksShape
->()('@devstack-rewrite/substrate/PostAcquireTasks') {}
+>()('@devstack/substrate/PostAcquireTasks') {}
 
 interface RegisteredPostAcquireTask extends PostAcquireTask {
 	readonly id: symbol;

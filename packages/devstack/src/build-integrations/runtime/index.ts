@@ -22,13 +22,12 @@
 // write path. Architecture § Runtime substrate scope: three-way split.
 
 export {
-	discoverBuildIntegrationIdentity,
 	discoverManifestPath,
+	discoverSingleStackManifestPath,
 	readAppName,
 	readAppNameWalkup,
 	type DiscoverManifestPathOptions,
-	type DiscoverBuildIntegrationIdentityOptions,
-	type BuildIntegrationIdentity,
+	type DiscoverSingleStackManifestPathOptions,
 	DEFAULT_STACK,
 	DEFAULT_STATE_DIR,
 } from './discover.ts';
@@ -38,6 +37,14 @@ export {
 	type ReadStackContextOptions,
 	CONSUMER_MANIFEST_VERSION,
 } from './read-stack-context.ts';
+export {
+	DEFAULT_DISCOVERY_STACK,
+	DEFAULT_DISCOVERY_STATE_DIR,
+	DISCOVERY_ENV,
+	resolveDiscoveryEnv,
+	type ResolveDiscoveryEnvOptions,
+	type ResolvedDiscoveryEnv,
+} from './resolve-discovery-env.ts';
 export type { ResolvedEndpoint, StackContext, StackIdentity } from './stack-context.ts';
 export { EndpointRegistry } from './endpoint-registry.ts';
 export {
@@ -53,9 +60,36 @@ export {
 	type ConventionalRouteUrlInput,
 } from './cold-start-url.ts';
 export {
+	BUILT_IN_CONVENTIONAL_HINTS,
+	BUILT_IN_ENDPOINT_ALIASES,
+	DEFAULT_ROUTER_ENTRYPOINT_PORT,
+	builtInConventionalRoutes,
+	resolveBuiltInEndpointAlias,
+} from './conventional-routes.ts';
+export {
+	PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY,
+	type PlaywrightStackFixture,
+} from './playwright-stack-context-slot.ts';
+export {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	NoConventionalRouteError,
 	type ManifestDiscoveryPhase,
 	type ManifestShapePhase,
 } from './errors.ts';
+export {
+	WalletHttpPath,
+	WALLET_AUTH_HEADER,
+	WALLET_BEARER_PREFIX,
+	WALLET_ENDPOINT_KEY,
+	WALLET_ENDPOINT_NAME,
+	WALLET_PROTOCOL_PREFIX,
+	WALLET_TOKEN_FRAGMENT_KEY,
+	WALLET_TOKEN_HEX_LENGTH,
+	type WalletHttpPathValue,
+} from './wallet-paths.ts';
+export {
+	ManifestEnvelopeSchema,
+	type ManifestEnvelope,
+	type EndpointEntry,
+} from './manifest-types.ts';

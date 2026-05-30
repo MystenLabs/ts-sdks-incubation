@@ -121,22 +121,17 @@ const wrapRefMap = (refMap: ScopedRefMap<CoinKey, CoinRecord>): CoinRegistry => 
 /** Context.Service tag for the per-stack `CoinRegistry`. Plugins
  *  yield this in their acquire body. */
 export class CoinRegistryService extends Context.Service<CoinRegistryService, CoinRegistry>()(
-	'@devstack-rewrite/plugins/coin/CoinRegistry',
+	'@devstack/plugins/coin/CoinRegistry',
 ) {}
 
 /** Scope-bound Layer materializing one `CoinRegistry` per stack
  *  scope. Boot wiring (CLI / e2e) provides this once per stack;
  *  every coin/package/wallet/faucet plugin in the stack yields the
  *  SAME instance via Context. */
-export const coinRegistryLayer: Layer.Layer<CoinRegistryService> = Layer.effect(
+export const layerCoinRegistry: Layer.Layer<CoinRegistryService> = Layer.effect(
 	CoinRegistryService,
 	Effect.gen(function* () {
 		const refMap = yield* CoinRefMap.Service;
 		return CoinRegistryService.of(wrapRefMap(refMap));
 	}),
 ).pipe(Layer.provide(CoinRefMap.layer));
-
-/** Capability-key constant for the per-stack registry — siblings
- *  (Wallet, Faucet's treasury-cap mint strategy, Manifest emitter)
- *  look it up through the StrategyContributor registry. */
-export const COIN_REGISTRY_CAPABILITY_KEY = 'coin-registry' as const;

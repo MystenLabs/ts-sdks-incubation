@@ -27,12 +27,19 @@
 //   - The return shape (`ExecutedReceipt`) is name-blind: a flat
 //     digest + a uniform `objectChanges` array. Callers map to their
 //     domain shape (PublishReceipt, ActionReceipt, MintReceipt, …).
-//   - Failures route through `SuiExecuteError` whose `phase`
+//   - Transport / protocol failures (serialize, sign, execute, no-digest,
+//     wait-for-finality) route through `SuiExecuteError` whose `phase`
 //     discriminates the failing step. Callers map to their plugin's
-//     phase taxonomy in the executor closure passed to
-//     `compileChainOperation` (see `artifact-publisher/chain-operation.ts`).
+//     phase taxonomy in their produce body's `mapError` closure.
+//   - On-chain `FailedTransaction` is a RETURN-CHANNEL variant of
+//     `SuiExecuteResult`, NOT an error — mirrors `account.signAndExecute`
+//     and STYLE_GUIDE §2's return-channel discriminated-union rule.
+//     Callers dispatch on `$kind` after the call.
 
 import { Effect, Schema, Scope } from 'effect';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
+
+import { formatUnknownError } from '../format-unknown-error.ts';
 
 // ---------------------------------------------------------------------------
 // Errors — substrate-style Schema.TaggedErrorClass
@@ -41,16 +48,14 @@ import { Effect, Schema, Scope } from 'effect';
 /** Tagged failure during one step of the Sui-tx roundtrip. `phase`
  *  discriminates which step failed so callers can map to their
  *  plugin's phase taxonomy (publish-tx, sign, parse, …) without
- *  losing the original cause. */
+ *  losing the original cause.
+ *
+ *  On-chain `FailedTransaction` is NOT a phase here — it surfaces as
+ *  the `$kind: 'FailedTransaction'` variant of `SuiExecuteResult`
+ *  (return channel). Only transport / protocol failures live in this
+ *  taxonomy. See STYLE_GUIDE §2. */
 export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()('SuiExecuteError', {
-	phase: Schema.Literals([
-		'serialize',
-		'sign',
-		'execute',
-		'failed-transaction',
-		'no-digest',
-		'wait-for-finality',
-	]),
+	phase: Schema.Literals(['serialize', 'sign', 'execute', 'no-digest', 'wait-for-finality']),
 	signerName: Schema.String,
 	signerAddress: Schema.String,
 	message: Schema.String,
@@ -64,24 +69,11 @@ export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()(
 // Inputs / outputs — opaque at the substrate boundary
 // ---------------------------------------------------------------------------
 
-/** The narrow slice of the SDK client this helper drives. Mirrors the
- *  shape cast verbatim in `plugins/package/publish-executor.ts` and
- *  `plugins/action/execute.ts`. */
-export interface SuiExecuteClient {
-	readonly executeTransaction: (args: {
-		readonly transaction: Uint8Array;
-		readonly signatures: ReadonlyArray<string>;
-		readonly include?: {
-			readonly effects?: boolean;
-			readonly objectTypes?: boolean;
-		};
-	}) => Promise<unknown>;
-	readonly waitForTransaction: (args: {
-		readonly digest: string;
-		readonly include?: { readonly effects?: boolean };
-		readonly timeout?: number;
-	}) => Promise<unknown>;
-}
+/** The SDK client this helper drives. Accepts any `ClientWithCoreApi`
+ *  (the published cross-transport surface from `@mysten/sui/client`).
+ *  `executeSuiTx` calls `client.core.executeTransaction` /
+ *  `client.core.waitForTransaction` per STYLE_GUIDE §16. */
+export type SuiExecuteClient = ClientWithCoreApi;
 
 /** Serialised transaction-build callback. Returns the BCS bytes ready
  *  for signing. The caller owns the `Transaction` construction — the
@@ -95,8 +87,7 @@ export interface TransactionSignerScope<SignError = unknown> {
 	) => Effect.Effect<{ readonly bytes: string; readonly signature: string }, SignError>;
 }
 
-/** Resolved signer — narrow slice of `AccountValue` (see
- *  `artifact-publisher/chain-operation.ts::ResolvedSigner`). */
+/** Resolved signer — narrow slice of `AccountValue`. */
 export interface ResolvedSigner {
 	readonly name: string;
 	readonly address: string;
@@ -125,6 +116,49 @@ export interface ExecutedReceipt {
 	readonly objectChanges: ReadonlyArray<ExecutedObjectChange>;
 }
 
+/** On-chain failure projection. The transaction was delivered +
+ *  executed by the validator but the on-chain execution failed.
+ *  Carries the digest (for log correlation) plus the validator's
+ *  stringified error when one was attached. `executionError` is
+ *  omitted when the SDK returns no message (STYLE_GUIDE §5: no
+ *  sentinel placeholders at resolved-value surfaces). An envelope
+ *  without a digest fails at projection with
+ *  `SuiExecuteError(phase: 'no-digest')`.
+ *
+ *  This is the single source of truth for the on-chain-failure shape
+ *  across the devstack: `account.SignAndExecuteResult`'s
+ *  `FailedTransaction` variant carries it directly; every plugin that
+ *  renders one of these failures into a user-facing error message goes
+ *  through `formatExecutedFailure` (below). */
+export interface ExecutedFailure {
+	readonly digest: string;
+	readonly executionError?: string;
+}
+
+/** Render the canonical "digest + executionError-or-noted-absent" tail
+ *  used by every plugin's `FailedTransaction` surface. Pure projection;
+ *  does not throw.
+ *
+ *  Used at the call site as e.g.
+ *  `\`seal publish ... ${formatExecutedFailure(result.FailedTransaction)}\``.
+ *  Centralising the wording means future tweaks propagate uniformly
+ *  across the seal / coin / walrus / deepbook / action / package
+ *  surfaces. */
+export const formatExecutedFailure = (failure: ExecutedFailure): string =>
+	failure.executionError !== undefined
+		? `at ${failure.digest}: ${failure.executionError}`
+		: `at ${failure.digest} (no validator error attached)`;
+
+/** Outcome of `executeSuiTx`. Mirrors the SDK's discriminated
+ *  `SuiClientTypes.TransactionResult` shape — on-chain failures are a
+ *  RETURN VALUE (callers dispatch on `$kind`), NOT an error. Only
+ *  transport / protocol failures (sign refused, RPC unreachable,
+ *  finality wait broke, no digest) surface through `SuiExecuteError`.
+ *  See STYLE_GUIDE §2 for the return-channel discipline this matches. */
+export type SuiExecuteResult =
+	| { readonly $kind: 'Transaction'; readonly Transaction: ExecutedReceipt }
+	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: ExecutedFailure };
+
 // ---------------------------------------------------------------------------
 // SDK envelope projection (matches publish-executor + action.execute)
 // ---------------------------------------------------------------------------
@@ -148,6 +182,21 @@ interface RawExecuteEnvelope {
 	};
 }
 
+/** Pull the digest out of a raw `executeTransaction` envelope without
+ *  committing to success vs on-chain failure. `FailedTransaction`
+ *  carries its digest under a sibling key, so callers that only need
+ *  the digest (impersonate / one-shot dispatch paths that don't run
+ *  the full `executeSuiTx` projection) read it through this projector
+ *  rather than re-deriving the `$kind`-branching shape inline.
+ *  Returns `undefined` for a malformed envelope; callers decide
+ *  whether a missing digest is a failure. */
+export const extractExecuteDigest = (raw: unknown): string | undefined => {
+	const env = raw as RawExecuteEnvelope;
+	return env.$kind === 'FailedTransaction'
+		? env.FailedTransaction?.digest
+		: env.Transaction?.digest;
+};
+
 // ---------------------------------------------------------------------------
 // The helper
 // ---------------------------------------------------------------------------
@@ -170,15 +219,19 @@ interface RawExecuteEnvelope {
  *     others (mode-local publish ready probe path) wait separately
  *     via `getObject` polling and can pass `false`.
  *
- *  All failures surface as `SuiExecuteError` with a `phase`
- *  discriminator the caller maps to its plugin's phase taxonomy.
+ *  Returns a `SuiExecuteResult` discriminated union — callers dispatch
+ *  on `$kind` to distinguish on-chain success (`'Transaction'`) from
+ *  on-chain rejection (`'FailedTransaction'`). Transport / protocol
+ *  failures (serialize, sign, execute, no-digest, wait-for-finality)
+ *  surface as `SuiExecuteError` with a `phase` discriminator the
+ *  caller maps to its plugin's phase taxonomy.
  */
 export const executeSuiTx = (params: {
 	readonly client: SuiExecuteClient;
 	readonly signer: ResolvedSigner;
 	readonly build: SerializedTxBuilder;
 	readonly awaitFinality?: boolean;
-}): Effect.Effect<ExecutedReceipt, SuiExecuteError, Scope.Scope> =>
+}): Effect.Effect<SuiExecuteResult, SuiExecuteError, Scope.Scope> =>
 	params.signer
 		.withTransactionSigner((lockedSigner) =>
 			Effect.gen(function* () {
@@ -199,7 +252,7 @@ export const executeSuiTx = (params: {
 							message:
 								`Transaction.build failed for signer '${signer.name}' ` +
 								`(address=${signer.address}): ` +
-								(cause instanceof Error ? cause.message : String(cause)),
+								formatUnknownError(cause),
 							cause,
 						}),
 				});
@@ -227,7 +280,7 @@ export const executeSuiTx = (params: {
 				//    `changedObjects` + types to project to its domain shape.
 				const raw = yield* Effect.tryPromise({
 					try: () =>
-						client.executeTransaction({
+						client.core.executeTransaction({
 							transaction: txBytes,
 							signatures: [signed.signature],
 							include: { effects: true, objectTypes: true },
@@ -239,20 +292,34 @@ export const executeSuiTx = (params: {
 							signerAddress: signer.address,
 							message:
 								`executeTransaction rejected for signer '${signer.name}': ` +
-								(cause instanceof Error ? cause.message : String(cause)),
+								formatUnknownError(cause),
 							cause,
 						}),
 				});
 
 				// 4. Project the envelope. `$kind === 'FailedTransaction'`
-				//    surfaces as a discrete phase so callers can distinguish
-				//    transport failures from on-chain rejection.
+				//    surfaces as a return-channel variant — on-chain
+				//    rejection is a normal outcome, NOT a transport failure
+				//    (STYLE_GUIDE §2). Callers dispatch on `$kind` and map
+				//    to their plugin's on-chain-failure shape.
 				const env = raw as RawExecuteEnvelope;
 				if (env.$kind === 'FailedTransaction') {
 					const failedDigest = env.FailedTransaction?.digest;
-					if (awaitFinality && failedDigest !== undefined) {
+					if (failedDigest === undefined) {
+						return yield* Effect.fail(
+							new SuiExecuteError({
+								phase: 'no-digest',
+								signerName: signer.name,
+								signerAddress: signer.address,
+								message:
+									`executeTransaction returned FailedTransaction with no digest. ` +
+									`Raw=${JSON.stringify(raw).slice(0, 300)}`,
+							}),
+						);
+					}
+					if (awaitFinality) {
 						yield* Effect.tryPromise({
-							try: () => client.waitForTransaction({ digest: failedDigest }),
+							try: () => client.core.waitForTransaction({ digest: failedDigest }),
 							catch: (cause) =>
 								new SuiExecuteError({
 									phase: 'wait-for-finality',
@@ -264,18 +331,14 @@ export const executeSuiTx = (params: {
 								}),
 						});
 					}
-					return yield* Effect.fail(
-						new SuiExecuteError({
-							phase: 'failed-transaction',
-							signerName: signer.name,
-							signerAddress: signer.address,
-							digest: env.FailedTransaction?.digest,
-							message:
-								`executeTransaction returned FailedTransaction ` +
-								`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
-								(env.FailedTransaction?.status?.error ?? '<no error>'),
-						}),
-					);
+					const executionError = env.FailedTransaction?.status?.error;
+					return {
+						$kind: 'FailedTransaction',
+						FailedTransaction: {
+							digest: failedDigest,
+							...(executionError !== undefined ? { executionError } : {}),
+						},
+					} satisfies SuiExecuteResult;
 				}
 				const txOk = env.Transaction;
 				if (txOk?.digest === undefined) {
@@ -292,7 +355,7 @@ export const executeSuiTx = (params: {
 				// 5. Wait for finality (opt-out — some callers wait separately).
 				if (awaitFinality) {
 					yield* Effect.tryPromise({
-						try: () => client.waitForTransaction({ digest: txOk.digest! }),
+						try: () => client.core.waitForTransaction({ digest: txOk.digest! }),
 						catch: (cause) =>
 							new SuiExecuteError({
 								phase: 'wait-for-finality',
@@ -322,7 +385,10 @@ export const executeSuiTx = (params: {
 					objectChanges.push(entry);
 				}
 
-				return { digest: txOk.digest, objectChanges };
+				return {
+					$kind: 'Transaction',
+					Transaction: { digest: txOk.digest, objectChanges },
+				} satisfies SuiExecuteResult;
 			}),
 		)
 		.pipe(
@@ -333,3 +399,40 @@ export const executeSuiTx = (params: {
 				},
 			}),
 		);
+
+/** Decode a possibly URI-encoded SDK error message. The Sui SDK
+ *  emits `decodeURIComponent`-able strings for some error paths
+ *  (notably stale-object-version reports). Falls back to the raw
+ *  message on decode failure. */
+const decodeMessage = (message: string): string => {
+	try {
+		return decodeURIComponent(message);
+	} catch {
+		return message;
+	}
+};
+
+/** Typed predicate for the SDK's "stale object version" transient
+ *  failure — the Move VM refuses a transaction that references an
+ *  object reference older than the current chain version. Consumers
+ *  retry with fresh refs; pair with `STALE_OBJECT_VERSION_RETRY_PROFILE`
+ *  from `retry-policy.ts`. Detection sniffs the SDK message because the
+ *  underlying gRPC error class doesn't expose a structured discriminator
+ *  for this case. */
+export const isSuiStaleObjectVersionError = (err: SuiExecuteError): boolean => {
+	const message = decodeMessage(err.message);
+	return (
+		message.includes('needs to be rebuilt because object') && message.includes('current version')
+	);
+};
+
+// ---------------------------------------------------------------------------
+// Sibling helpers
+// ---------------------------------------------------------------------------
+
+export {
+	signAndDispatch,
+	type SignAndDispatchResult,
+	type SignAndDispatchSigner,
+	type TransactionSignerSource,
+} from './sign-and-dispatch.ts';

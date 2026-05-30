@@ -27,11 +27,32 @@ export class VitestManifestNotFoundError extends Data.TaggedError('VitestManifes
 }> {}
 
 /** The manifest exists but doesn't decode against the L0 envelope schema
- *  — either malformed JSON or shape drift after a manifestVersion bump. */
+ *  — either malformed JSON (`parse`) or shape drift (`shape`).
+ *
+ *  Distinct from `VitestManifestVersionMismatchError`: this tag carries
+ *  the "manifest looks like garbage / your envelope was wrong" recovery
+ *  ("regenerate the manifest"); the version-mismatch tag carries the
+ *  "build-integration and supervisor are at different versions"
+ *  recovery (upgrade the consumer dependency). Splitting the two lets
+ *  callers `catchTag` independently and surface a precise hint. */
 export class VitestManifestShapeError extends Data.TaggedError('VitestManifestShapeError')<{
 	readonly message: string;
 	readonly path: string;
 	readonly phase: 'parse' | 'shape';
+	readonly recovery: string;
+	readonly cause?: unknown;
+}> {}
+
+/** The manifest exists, decodes structurally, but its `manifestVersion`
+ *  doesn't match what this consumer build was compiled for. Distinct
+ *  from `VitestManifestShapeError` so callers can `catchTag` the two
+ *  separately — the recovery action is "upgrade your devstack
+ *  consumer dependency" rather than "regenerate the manifest". */
+export class VitestManifestVersionMismatchError extends Data.TaggedError(
+	'VitestManifestVersionMismatchError',
+)<{
+	readonly message: string;
+	readonly path: string;
 	readonly recovery: string;
 	readonly cause?: unknown;
 }> {}
@@ -48,4 +69,5 @@ export class VitestSetupPreconditionError extends Data.TaggedError('VitestSetupP
 export type VitestIntegrationError =
 	| VitestManifestNotFoundError
 	| VitestManifestShapeError
+	| VitestManifestVersionMismatchError
 	| VitestSetupPreconditionError;

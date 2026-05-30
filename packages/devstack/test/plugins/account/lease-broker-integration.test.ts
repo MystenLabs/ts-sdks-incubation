@@ -105,7 +105,7 @@ const stubSuiSdk = (): SuiSdkShim => ({
 		executeTransaction: () => Promise.reject(new Error('stub executeTransaction')),
 		waitForTransaction: () => Promise.reject(new Error('stub waitForTransaction')),
 	},
-	client: null,
+	client: null as never,
 });
 
 const ctx: AccountAcquireContext = {
@@ -311,7 +311,7 @@ describe('account plugin — LeaseBrokerService integration', () => {
 								await waitGate.wait;
 							},
 						},
-						client: null,
+						client: null as never,
 					},
 				},
 			};
@@ -330,12 +330,169 @@ describe('account plugin — LeaseBrokerService integration', () => {
 
 			waitGate.release();
 			const exit = yield* Fiber.join(fiber);
-			expect(Exit.isFailure(exit)).toBe(true);
-			expect(JSON.stringify(exit)).toContain('failed-digest');
+			// On-chain failures are a SUCCESS variant (SDK-shaped union),
+			// NOT an error — only transport / sign / wait failures live in
+			// the error channel.
+			expect(Exit.isSuccess(exit)).toBe(true);
+			if (Exit.isSuccess(exit)) {
+				expect(exit.value.$kind).toBe('FailedTransaction');
+				if (exit.value.$kind === 'FailedTransaction') {
+					expect(exit.value.FailedTransaction.digest).toBe('failed-digest');
+					expect(exit.value.FailedTransaction.executionError).toContain('MoveAbort');
+				}
+			}
 
 			const afterWait = yield* broker.holders();
 			expect(afterWait.has(leaseKey(`account:${address}`))).toBe(false);
 		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect('signAndExecute maps malformed execute envelopes onto AccountSignError', () =>
+		Effect.gen(function* () {
+			const address = '0xmalformed';
+			const signer = makeStubSigner(
+				address,
+				{ wait: Promise.resolve(), release: () => {} },
+				[],
+				'malformed',
+			);
+			const malformedCtx: AccountAcquireContext = {
+				...ctx,
+				sui: {
+					...ctx.sui,
+					sdk: {
+						core: {
+							getObject: () => Promise.reject(new Error('stub getObject')),
+							getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+							getBalance: () => Promise.reject(new Error('stub getBalance')),
+							listCoins: () => Promise.reject(new Error('stub listCoins')),
+							executeTransaction: () =>
+								Promise.resolve({
+									$kind: 'Transaction',
+									Transaction: {},
+								}),
+							waitForTransaction: () => Promise.reject(new Error('should not wait without digest')),
+						},
+						client: null as never,
+					},
+				},
+			};
+			const acct = yield* acquireAccount(makeOpts('mal', signer), malformedCtx).pipe(
+				Effect.provide(layerStrategyRegistry),
+				Effect.orDie,
+			);
+
+			const err = yield* acct.signAndExecute(new Uint8Array([1])).pipe(Effect.flip);
+			expect(err._tag).toBe('AccountSignError');
+			expect(err.phase).toBe('no-digest');
+			expect(err.message).toContain('malformed envelope');
+		}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect(
+		'signAndExecute fails with AccountSignError(no-digest) when SDK returns a FailedTransaction without a digest',
+		() =>
+			Effect.gen(function* () {
+				const address = '0xfailednodigest';
+				const signer = makeStubSigner(
+					address,
+					{ wait: Promise.resolve(), release: () => {} },
+					[],
+					'fail-no-digest',
+				);
+				const failedNoDigestCtx: AccountAcquireContext = {
+					...ctx,
+					sui: {
+						...ctx.sui,
+						sdk: {
+							core: {
+								getObject: () => Promise.reject(new Error('stub getObject')),
+								getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+								getBalance: () => Promise.reject(new Error('stub getBalance')),
+								listCoins: () => Promise.reject(new Error('stub listCoins')),
+								executeTransaction: () =>
+									Promise.resolve({
+										$kind: 'FailedTransaction',
+										FailedTransaction: { status: { error: 'MoveAbort' } },
+									}),
+								waitForTransaction: () =>
+									Promise.reject(new Error('should not wait without digest')),
+							},
+							client: null as never,
+						},
+					},
+				};
+				const acct = yield* acquireAccount(makeOpts('failnd', signer), failedNoDigestCtx).pipe(
+					Effect.provide(layerStrategyRegistry),
+					Effect.orDie,
+				);
+
+				const err = yield* acct.signAndExecute(new Uint8Array([1])).pipe(Effect.flip);
+				expect(err._tag).toBe('AccountSignError');
+				// Protocol violation, NOT a transport failure (§2 — phases
+				// describe steps, not failure kinds).
+				expect(err.phase).toBe('no-digest');
+				expect(err.message).toContain('FailedTransaction');
+			}).pipe(Effect.provide(layerLeaseBroker)),
+	);
+
+	it.effect(
+		'signAndExecute happy-failed path: FailedTransaction projection carries no sentinel placeholders',
+		() =>
+			Effect.gen(function* () {
+				const address = '0xhappyfailed';
+				const signer = makeStubSigner(
+					address,
+					{ wait: Promise.resolve(), release: () => {} },
+					[],
+					'happy-failed',
+				);
+				const happyFailedCtx: AccountAcquireContext = {
+					...ctx,
+					sui: {
+						...ctx.sui,
+						sdk: {
+							core: {
+								getObject: () => Promise.reject(new Error('stub getObject')),
+								getTransaction: () => Promise.reject(new Error('stub getTransaction')),
+								getBalance: () => Promise.reject(new Error('stub getBalance')),
+								listCoins: () => Promise.reject(new Error('stub listCoins')),
+								executeTransaction: () =>
+									// Digest present, status.error absent — exercises the
+									// "no validator error" branch. Per §5 the projection
+									// must OMIT `executionError` rather than synthesize a
+									// `'<no error>'` sentinel.
+									Promise.resolve({
+										$kind: 'FailedTransaction',
+										FailedTransaction: { digest: 'happy-failed-digest' },
+									}),
+								waitForTransaction: async () => {},
+							},
+							client: null as never,
+						},
+					},
+				};
+				const acct = yield* acquireAccount(makeOpts('hf', signer), happyFailedCtx).pipe(
+					Effect.provide(layerStrategyRegistry),
+					Effect.orDie,
+				);
+
+				const exit = yield* Effect.exit(acct.signAndExecute(new Uint8Array([1])));
+				expect(Exit.isSuccess(exit)).toBe(true);
+				if (Exit.isSuccess(exit)) {
+					expect(exit.value.$kind).toBe('FailedTransaction');
+					if (exit.value.$kind === 'FailedTransaction') {
+						const failed = exit.value.FailedTransaction;
+						expect(failed.digest).toBe('happy-failed-digest');
+						// §5: no sentinel literals at resolved-value surfaces.
+						expect(failed.digest).not.toBe('<unknown>');
+						expect(failed.executionError).not.toBe('<no error>');
+						// Missing-error must be `undefined` (omitted), not a
+						// synthesized placeholder string.
+						expect(failed.executionError).toBeUndefined();
+					}
+				}
+			}).pipe(Effect.provide(layerLeaseBroker)),
 	);
 
 	it.effect('distinct-address signTransaction calls run in parallel (no false serialization)', () =>

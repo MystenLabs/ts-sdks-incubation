@@ -5,8 +5,7 @@
 //   1. Bind a `node:http` server on a substrate-allocated port (the
 //      port broker hands the port in; we don't pick it here).
 //   2. Dispatch by `(METHOD, path)` to the four handlers below
-//      (health, accounts, sign-transaction, sign-personal-message,
-//      execute).
+//      (health, accounts, sign-transaction, sign-personal-message).
 //   3. Enforce the auth gate: mandatory Origin in policy.allowed +
 //      constant-time bearer compare.
 //   4. Body-cap enforcement: 64 KiB before buffering — protects the
@@ -26,7 +25,7 @@
 // logs flow to the TUI logger sink), while the substrate scoped HTTP
 // listener owns bind/close lifecycle.
 
-import { Context, Effect, Schema } from 'effect';
+import { Cause, Context, Effect, Schema } from 'effect';
 import type { Scope } from 'effect';
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -34,7 +33,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
-import type { AccountValue } from '../account/service.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
+import { WalletSpans } from './spans.ts';
+import type { AccountValue } from '../account/index.ts';
 import {
 	walletBootError,
 	walletRequestError,
@@ -45,7 +46,6 @@ import { checkOrigin, corsHeadersFor, type OriginPolicy } from './origin-policy.
 import { parseBearerHeader, safeBearerEquals, type PairingToken } from './pairing.ts';
 import {
 	AccountsResponseSchema,
-	ExecuteRequestSchema,
 	HealthResponseSchema,
 	SignRequestSchema,
 	SignResponseSchema,
@@ -68,10 +68,6 @@ export interface WalletServerConfig {
 	readonly token: PairingToken;
 	readonly policy: OriginPolicy;
 	readonly accountsByAddress: ReadonlyMap<string, AccountValue>;
-	/** Captured supervisor context — handler errors log under this so
-	 *  the TUI logger sink receives them. Stub: the substrate primitive
-	 *  will hand this in; today the field is opaque. */
-	readonly supervisorCtx: unknown;
 }
 
 /** Opaque server handle. The substrate's scope finalizer chain
@@ -143,7 +139,7 @@ export const startHttpServer = (
 					phase: 'listen',
 					message:
 						`wallet HTTP server listen failed on ${config.bindAddress}:${config.port} — ` +
-						(cause instanceof Error ? cause.message : String(cause)),
+						(formatUnknownError(cause)),
 					hint:
 						'check that the port broker did not hand out a busy port; ' +
 						'a sibling devstack on the same address would also explain this.',
@@ -231,14 +227,28 @@ const makeRequestListener =
 				body,
 			};
 			const program = dispatch(config, walletReq).pipe(
-				Effect.matchEffect({
+				// `dispatch` is typed `Effect<WalletResponse>` (no failure
+				// channel) — its handlers map every expected failure into a
+				// WalletResponse with the right HTTP status. Anything that
+				// lands here is therefore a *defect* (thrown sync exception,
+				// runtime invariant violation). We project the full Cause via
+				// `matchCauseEffect` so we have something to log; `matchEffect`
+				// would type the failure as `never` and the defect would
+				// bypass it.
+				Effect.matchCauseEffect({
 					onFailure: (cause) =>
-						Effect.sync(() => {
-							// `dispatch` is typed `Effect<WalletResponse>` (no
-							// failure channel); a thrown defect lands here as a
-							// `Cause`. Log + write a 500.
-							writeServerError(res, cause);
-						}),
+						Effect.logError('wallet dispatcher defect').pipe(
+							Effect.annotateLogs({
+								[WalletSpans.requestMethod]: walletReq.method,
+								[WalletSpans.requestUrl]: walletReq.url,
+								cause: Cause.pretty(cause),
+							}),
+							Effect.flatMap(() =>
+								Effect.sync(() => {
+									writeServerError(res);
+								}),
+							),
+						),
 					onSuccess: (resp) => Effect.sync(() => writeResponse(res, resp)),
 				}),
 			);
@@ -262,18 +272,20 @@ const writeOverflow = (res: ServerResponse): void => {
 	res.end('payload too large');
 };
 
-const writeServerError = (res: ServerResponse, cause: unknown): void => {
+/** Write an opaque 500 — no token, no internal state leak. The
+ *  caller is responsible for logging the underlying cause (see the
+ *  `Effect.logError('wallet dispatcher defect')` in `dispatch`'s
+ *  `matchCauseEffect` onFailure branch). */
+const writeServerError = (res: ServerResponse): void => {
 	if (res.writableEnded) return;
 	res.statusCode = 500;
 	res.setHeader('content-type', 'application/json; charset=utf-8');
-	// Opaque error body — no token, no internal state leak.
 	res.end(
 		JSON.stringify({
 			error: 'internal error',
 			code: 'internal-error',
 		}),
 	);
-	void cause; // surfaces via Effect.logError on the dispatcher path
 };
 
 /** Normalize Node's `IncomingHttpHeaders` (string | string[] | undefined)
@@ -343,10 +355,12 @@ const text = (
  * are projected to JSON envelopes via `errorEnvelope` below.
  *
  * The dispatch order matters:
- *   1. OPTIONS preflight (returns 204 + CORS) — no auth required.
- *   2. Path-prefix gate — anything not under `/api/v1/devstack/` is
- *      a flat 404 (text/plain). PROTECTS the auth gate from being
- *      visible on arbitrary URLs.
+ *   1. Path-prefix gate — anything not under `/api/v1/devstack/` is
+ *      a flat 404 (text/plain). PROTECTS the auth gate (and the CORS
+ *      preflight) from being visible on arbitrary URLs.
+ *   2. OPTIONS preflight (returns 204 + CORS) — no auth required, but
+ *      scoped to the protocol prefix by step 1 so an allowed origin
+ *      cannot extract CORS headers for unrelated paths.
  *   3. Origin check (must be in policy.allowed; missing → 403).
  *   4. Bearer check (must constant-time-equal `config.token`).
  *   5. Method+path route to handler.
@@ -358,12 +372,21 @@ export const dispatch = (
 	Effect.gen(function* () {
 		const requestId = randomUUID();
 		yield* Effect.annotateCurrentSpan({
-			'wallet.request.id': requestId,
-			'wallet.request.method': req.method,
-			'wallet.request.url': req.url,
+			[WalletSpans.requestId]: requestId,
+			[WalletSpans.requestMethod]: req.method,
+			[WalletSpans.requestUrl]: req.url,
 		});
 
-		// 1. OPTIONS preflight — no auth check, but the origin still has
+		// 1. Path-prefix gate. Runs BEFORE the OPTIONS preflight so an
+		//    allowed origin cannot pull a `204 + CORS` response for an
+		//    arbitrary path — preflight success is scoped to the protocol
+		//    prefix, not the whole host.
+		const path = req.url.split('?')[0] ?? '';
+		if (!path.startsWith(WALLET_PROTOCOL_PREFIX)) {
+			return text(404, 'not found');
+		}
+
+		// 2. OPTIONS preflight — no auth check, but the origin still has
 		//    to be in the allowlist so we don't leak CORS headers to
 		//    arbitrary callers.
 		if (req.method === 'OPTIONS') {
@@ -372,12 +395,6 @@ export const dispatch = (
 				return { status: 204, headers: corsHeadersFor(origin), body: '' };
 			}
 			return text(403, 'forbidden origin');
-		}
-
-		// 2. Path-prefix gate.
-		const path = req.url.split('?')[0] ?? '';
-		if (!path.startsWith(WALLET_PROTOCOL_PREFIX)) {
-			return text(404, 'not found');
 		}
 
 		// 3. Origin check.
@@ -397,7 +414,7 @@ export const dispatch = (
 			yield* Effect.logWarning('wallet origin forbidden').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[SpanAttr.walletOrigin]: req.headers.origin ?? '(missing)',
+					[WalletSpans.origin]: req.headers.origin ?? '(missing)',
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),
@@ -410,12 +427,12 @@ export const dispatch = (
 		//    boolean validity.
 		const bearer = parseBearerHeader(req.headers[WALLET_AUTH_HEADER]);
 		const bearerValid = bearer !== null && safeBearerEquals(bearer, config.token);
-		yield* Effect.annotateCurrentSpan({ [SpanAttr.walletBearerValid]: bearerValid });
+		yield* Effect.annotateCurrentSpan({ [WalletSpans.bearerValid]: bearerValid });
 		if (!bearerValid) {
 			yield* Effect.logWarning('wallet bearer check failed').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[SpanAttr.walletBearerValid]: bearerValid,
+					[WalletSpans.bearerValid]: bearerValid,
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),
@@ -461,9 +478,6 @@ const routeRequest = (
 	if (req.method === 'POST' && path === WalletHttpPath.SIGN_PERSONAL_MESSAGE) {
 		return handleSign(config, req, 'personal-message', corsHdr);
 	}
-	if (req.method === 'POST' && path === WalletHttpPath.EXECUTE) {
-		return handleExecute(config, req, corsHdr);
-	}
 	return Effect.fail(
 		walletRequestError({
 			phase: 'route-not-found',
@@ -503,16 +517,24 @@ const decodeJsonBody = <A>(
 	body: string,
 ): Effect.Effect<A, WalletRequestError> =>
 	Effect.gen(function* () {
-		if (body.length > MAX_BODY_BYTES) {
-			return yield* Effect.fail(
-				walletRequestError({
-					phase: 'body-invalid',
-					httpStatus: 400,
-					message: `body exceeds ${MAX_BODY_BYTES}-byte cap`,
-				}),
-			);
-		}
-		return yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
+		// Body-byte cap is enforced solely at the request listener (line
+		// ~200): we accumulate `chunk.length` byte counts and write a 413
+		// + destroy the socket the moment we cross `MAX_BODY_BYTES`. A
+		// secondary in-dispatcher check on `body.length` would be wrong
+		// anyway — `String.length` counts UTF-16 code units, not bytes,
+		// so a 64 KiB body of multi-byte runes could slip past it. The
+		// listener already gated correctly, so there's no second check
+		// here.
+		// Sanctioned cast: `decodeJsonText`'s `S extends Schema.Decoder<unknown>`
+		// constraint is wider than `Schema.Schema<A>` (DecodingServices /
+		// RequiresServices variance — Effect v4's `Decoder<unknown>` pins
+		// these to `unknown` while `Schema.Schema<A>` pins them to `never`).
+		// The runtime helper happily consumes either; only the TS variance
+		// disagrees. Phase 19A attempted to widen the constraint to
+		// `Schema.Top` but `decodeUnknownSync` requires `Decoder<unknown,
+		// never>`, which a `Top` constraint can't satisfy without a
+		// downstream cast that ends up uglier than this one.
+		return (yield* decodeJsonText(schema as Schema.Decoder<unknown>, body, {
 			source: 'wallet request body',
 			mkError: (issue) =>
 				walletRequestError({
@@ -524,7 +546,7 @@ const decodeJsonBody = <A>(
 							: 'request body did not match schema',
 					cause: issue.cause,
 				}),
-		}) as Effect.Effect<A, WalletRequestError>;
+		})) as A;
 	});
 
 const handleSign = (
@@ -560,37 +582,6 @@ const handleSign = (
 		);
 		const resp: Schema.Schema.Type<typeof SignResponseSchema> = signed;
 		return json(200, resp, corsHdr);
-	});
-
-const handleExecute = (
-	config: WalletServerConfig,
-	req: WalletRequest,
-	corsHdr: Readonly<Record<string, string>>,
-): Effect.Effect<WalletResponse, WalletRequestError> =>
-	Effect.gen(function* () {
-		const body = yield* decodeJsonBody(ExecuteRequestSchema, req.body);
-		const account = config.accountsByAddress.get(body.address);
-		if (account === undefined) {
-			return yield* Effect.fail(
-				walletRequestError({
-					phase: 'address-not-found',
-					httpStatus: 404,
-					message: `no account for address '${body.address}'`,
-				}),
-			);
-		}
-		const bytes = Buffer.from(body.bytes, 'base64');
-		const result = yield* account.signAndExecute(bytes).pipe(
-			Effect.mapError((cause) =>
-				walletRequestError({
-					phase: 'sign-route-failed',
-					httpStatus: 500,
-					message: 'signAndExecute failed',
-					cause,
-				}),
-			),
-		);
-		return json(200, result, corsHdr);
 	});
 
 // ----------------------------------------------------------------------

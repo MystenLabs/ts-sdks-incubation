@@ -39,7 +39,13 @@ import {
 	ImageSaveFailed,
 	ImageTagFailed,
 } from './errors.ts';
-import { isImageNotFoundStderr, wrapBuildError, wrapGeneric, wrapPullError } from './wrap.ts';
+import {
+	isImageNotFoundStderr,
+	isMissingImageStderr,
+	wrapBuildError,
+	wrapGeneric,
+	wrapPullError,
+} from './wrap.ts';
 
 // -----------------------------------------------------------------------------
 // Helpers
@@ -49,11 +55,22 @@ const SNAPSHOT_TEMP_TAG_PREFIX = 'devstack-snapshot:';
 
 const isSnapshotTempTag = (ref: string): boolean => ref.startsWith(SNAPSHOT_TEMP_TAG_PREFIX);
 
+/** Return the trailing `max` chars of `text`, prefixed with an ellipsis
+ *  when truncation occurred. Used to surface the actual stdout shape in
+ *  parse-failure errors without ballooning the error message. */
+const tailBytes = (text: string, max: number): string => {
+	if (text.length <= max) return text;
+	return `…${text.slice(-max)}`;
+};
+
 const cleanupSnapshotTempTag = (
 	ref: string,
 ): Effect.Effect<void, never, DockerHost | DockerSpawner> => {
 	if (!isSnapshotTempTag(ref)) return Effect.void;
 	return dockerRunOk('image', ['rm', ref]).pipe(
+		Effect.tapCause((cause) =>
+			Effect.logDebug('docker image rm (snapshot temp tag) failed', { ref, cause }),
+		),
 		Effect.catch(() => Effect.void),
 		Effect.asVoid,
 	);
@@ -143,6 +160,9 @@ export interface BuildOptions {
 	readonly platform?: string;
 	readonly buildArgs?: Readonly<Record<string, string>>;
 	readonly tag: string;
+	/** Image labels rendered as `--label key=value` flags. Stamped onto
+	 *  the resulting image so label-driven prune can find it. */
+	readonly labels?: Readonly<Record<string, string>>;
 	readonly onLine?: (line: string) => Effect.Effect<void>;
 }
 
@@ -177,6 +197,11 @@ export const build = (
 		if (opts.buildArgs) {
 			for (const [k, v] of Object.entries(opts.buildArgs)) {
 				args.push('--build-arg', `${k}=${v}`);
+			}
+		}
+		if (opts.labels) {
+			for (const [k, v] of Object.entries(opts.labels)) {
+				args.push('--label', `${k}=${v}`);
 			}
 		}
 		args.push(opts.contextPath);
@@ -214,9 +239,6 @@ export const tagImage = (
 			yield* cleanupSnapshotTempTag(src);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.image.tag'));
-
-const isMissingImageStderr = (stderr: string): boolean =>
-	/no such image|not found|reference does not exist/i.test(stderr);
 
 export const removeImage = (
 	ref: string,
@@ -263,7 +285,14 @@ export const saveImages = (
 			const spawner = yield* DockerSpawner;
 			const cmd = dockerCommand(host, 'save', refs);
 			const handle = yield* spawner.spawn(cmd).pipe(Effect.mapError(mapSpawnError));
-			const stderrFiber = yield* Effect.forkChild(
+			// `Stream.unwrap` IS scope-binding in v4 (STYLE_GUIDE §1): the
+			// surrounding Effect.gen runs under the consuming stream's
+			// scope, so `forkScoped` ties these helper fibers to that
+			// scope. With `forkChild` (unscoped) a caller that errors
+			// before draining the returned stream would leak the
+			// stderr/exit fibers — `Stream.ensuring(cleanup)` only runs
+			// once the stream is actually consumed.
+			const stderrFiber = yield* Effect.forkScoped(
 				Stream.mkString(Stream.decodeText(handle.stderr)).pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>
@@ -275,7 +304,7 @@ export const saveImages = (
 					),
 				),
 			);
-			const exitFiber = yield* Effect.forkChild(
+			const exitFiber = yield* Effect.forkScoped(
 				handle.exitCode.pipe(
 					Effect.mapError(
 						(cause): DockerRuntimeError =>
@@ -426,10 +455,17 @@ export const loadImage = (
 				}
 				const parsed = parseLoadedRefs(stdoutText);
 				if (parsed.length === 0) {
+					// Include the trailing ~500 bytes of stdout so newer
+					// Docker variants that interleave progress markers
+					// (e.g. JSON status lines) surface the actual output
+					// shape instead of an opaque "no Loaded image lines
+					// found". The full stderr text is still carried for
+					// the rare case docker emitted a diagnostic there.
+					const stdoutTail = tailBytes(stdoutText, 500);
 					return yield* Effect.fail(
 						new ImageLoadFailed({
-							detail: 'docker load succeeded but no Loaded image lines found',
-							stderr: stdoutText,
+							detail: `docker load succeeded but no Loaded image lines found; stdout tail: ${stdoutTail}`,
+							stderr: stderrText,
 						}),
 					);
 				}
@@ -488,7 +524,11 @@ export const ensureImageCached = (
 			.lookup({ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash })
 			.pipe(
 				// Cache-side failures collapse to MISS — the contract is
-				// best-effort. We still build.
+				// best-effort. We still build, but logDebug so the rare
+				// cache-read failure is visible.
+				Effect.tapCause((cause) =>
+					Effect.logDebug('image cache lookup failed; rebuilding', { key, cause }),
+				),
 				Effect.catch(() => Effect.succeed(null)),
 			);
 		if (hit !== null) {
@@ -510,7 +550,12 @@ export const ensureImageCached = (
 					{ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash },
 					encodeDigest(onHost),
 				)
-				.pipe(Effect.catch(() => Effect.void));
+				.pipe(
+					Effect.tapCause((cause) =>
+						Effect.logDebug('image cache write (on-host hit) failed', { key, cause }),
+					),
+					Effect.catch(() => Effect.void),
+				);
 			return onHost;
 		}
 		const digest = yield* build(opts);
@@ -519,7 +564,12 @@ export const ensureImageCached = (
 				{ namespace: key.namespace, chain: key.chain, contentHash: key.contentHash },
 				encodeDigest(digest),
 			)
-			.pipe(Effect.catch(() => Effect.void));
+			.pipe(
+				Effect.tapCause((cause) =>
+					Effect.logDebug('image cache write (post-build) failed', { key, cause }),
+				),
+				Effect.catch(() => Effect.void),
+			);
 		return digest;
 	}).pipe(Effect.withSpan('runtime.docker.image.ensureCached'));
 

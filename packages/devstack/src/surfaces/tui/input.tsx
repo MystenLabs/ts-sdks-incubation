@@ -73,8 +73,16 @@ export type InputAction =
 
 const MAX_SNAPSHOT_NAME_LENGTH = 128;
 
+const isPrintableSnapshotNameCharacter = (character: string): boolean => {
+	const codePoint = character.codePointAt(0);
+	return codePoint !== undefined && codePoint >= 0x20 && codePoint !== 0x7f;
+};
+
 const printableSnapshotNameInput = (input: string): string =>
-	input.replace(/[\u0000-\u001f\u007f]/g, '').slice(0, MAX_SNAPSHOT_NAME_LENGTH);
+	Array.from(input)
+		.filter(isPrintableSnapshotNameCharacter)
+		.join('')
+		.slice(0, MAX_SNAPSHOT_NAME_LENGTH);
 
 /**
  * Renderless component — mounts `useInput` at the dashboard root.

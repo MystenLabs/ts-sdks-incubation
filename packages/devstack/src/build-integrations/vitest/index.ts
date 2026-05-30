@@ -50,6 +50,7 @@ export {
 export {
 	VitestManifestNotFoundError,
 	VitestManifestShapeError,
+	VitestManifestVersionMismatchError,
 	VitestSetupPreconditionError,
 	type VitestIntegrationError,
 } from './errors.ts';

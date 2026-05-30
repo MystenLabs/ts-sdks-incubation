@@ -19,6 +19,18 @@ const hasSui = (): boolean => {
 	return result.status === 0;
 };
 
+/** The chain-build container backing real Move bindings codegen needs
+ *  the local Docker daemon. Skip-gate here matches `hasSui` so a dev
+ *  machine without docker-running gets a clean skip instead of a
+ *  cryptic `image-build-failed` deep in the supervisor. */
+const hasDocker = (): boolean => {
+	const result = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], {
+		encoding: 'utf8',
+		timeout: 5_000,
+	});
+	return result.status === 0;
+};
+
 const makeTempRoot = (prefix: string): string => {
 	const root = mkdtempSync(join(packageRoot, `.tmp-${prefix}-`));
 	tempRoots.push(root);
@@ -40,6 +52,7 @@ import {
 const moveBindingsProofPlugin = definePlugin({
 \tid: 'test/move-bindings-proof',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ packageName: 'hello' } as const),
 \tcapabilities: () => [
 \t\tcodegenable({
@@ -74,7 +87,7 @@ describe('cli apply Move bindings codegen', () => {
 		}
 	});
 
-	it.skipIf(!hasSui())(
+	it.skipIf(!hasSui() || !hasDocker())(
 		'runs host sui move summary, real @mysten/codegen, and imports generated bindings',
 		async () => {
 			const appRoot = makeTempRoot('cli-move-bindings-app');

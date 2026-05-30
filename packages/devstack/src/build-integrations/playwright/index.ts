@@ -59,6 +59,9 @@ export type {
 	PlaywrightStackFixture,
 } from './global-setup.ts';
 export { STACK_CONTEXT_SLOT, buildGlobalSetup, readStashedFixture } from './global-setup.ts';
+// Re-export the substrate-owned slot key so callers can import the
+// typed slot contract directly from the playwright barrel.
+export { PLAYWRIGHT_STACK_CONTEXT_SLOT_KEY } from '../runtime/playwright-stack-context-slot.ts';
 
 export type {
 	DevAccount,

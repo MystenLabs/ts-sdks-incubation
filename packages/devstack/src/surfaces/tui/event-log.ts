@@ -1,5 +1,12 @@
 import type { EngineEvent } from '../../substrate/events.ts';
-import { errorSummaryFor, labelForRow, type ColorToken } from './display-derivation.ts';
+import type { RowSection } from '../../substrate/projection.ts';
+import {
+	errorSummaryFor,
+	labelForRow,
+	sectionColor,
+	type ColorToken,
+} from './display-derivation.ts';
+import { eventAt } from '../../substrate/event-time.ts';
 
 export interface EventLogLine {
 	readonly id: string;
@@ -13,9 +20,22 @@ export interface EventLogLine {
 
 export const MAX_EVENT_LOG_LINES = 200;
 
-export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLogLine | null => {
+/** Pure: lookup a row's plugin-declared section by `pluginKey`. The
+ *  event log accepts this as a parameter rather than computing it
+ *  itself — the substrate forbids the renderer from pattern-matching
+ *  plugin-name substrings. Callers (e.g. `app.tsx`) build the lookup
+ *  from the live `state.rows` projection. */
+export type SectionLookup = (pluginKey: string) => RowSection | undefined;
+
+export const eventLogLineFromEvent = (
+	event: EngineEvent,
+	seq: number,
+	sectionLookup: SectionLookup = () => undefined,
+): EventLogLine | null => {
 	const at = eventAt(event);
 	const id = `${at}-${seq}-${event.tag}`;
+	const scopeColorFor = (pluginKey: string): ColorToken =>
+		sectionColor(sectionLookup(pluginKey) ?? 'other');
 	switch (event.tag) {
 		case 'log.appended':
 			if (event.level === 'info' || isRedundantPluginLog(event.line)) return null;
@@ -24,7 +44,7 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				at,
 				level: event.level,
 				scope: labelForRow(event.pluginKey),
-				scopeColor: colorForPluginKey(event.pluginKey),
+				scopeColor: scopeColorFor(event.pluginKey),
 				message: event.line,
 			});
 		case 'error.reported':
@@ -33,16 +53,14 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				level: event.error.severity === 'warn' ? 'warn' : 'error',
 				at,
 				scope: event.error.pluginKey === null ? 'Stack' : labelForRow(event.error.pluginKey),
-				scopeColor:
-					event.error.pluginKey === null ? 'white' : colorForPluginKey(event.error.pluginKey),
+				scopeColor: event.error.pluginKey === null ? 'white' : scopeColorFor(event.error.pluginKey),
 				message: `failed: ${errorSummaryFor(event.error)}`,
 			});
 		case 'build.statusChanged':
 		case 'lifecycle.statusChanged':
 		case 'lifecycle.phaseSet':
 		case 'endpoint.registered':
-		case 'account.updated':
-		case 'package.updated':
+		case 'projection.updated':
 			return null;
 		case 'restart.requested':
 			return line({
@@ -124,6 +142,25 @@ export const eventLogLineFromEvent = (event: EngineEvent, seq: number): EventLog
 				scopeColor: 'blueBright',
 				message: `restored ${event.snapshotId}`,
 			});
+		case 'engine.orchestrator.dispatchFailed':
+			// A capability sink (e.g. `routable`) rejected, but the plugin is
+			// left `ready` on purpose (non-fatal sink — see
+			// dispatch-contributions.ts). Previously suppressed here, which
+			// meant a live-dashboard operator saw a green stack with dead
+			// RPC/wallet routing. Surface it as a warning so the failure is
+			// visible; lead with the cause `_tag` when present so the line
+			// names WHICH orchestrator broke.
+			return line({
+				id,
+				level: 'warn',
+				at,
+				scope: labelForRow(event.pluginKey),
+				scopeColor: scopeColorFor(event.pluginKey),
+				message:
+					event.causeType === undefined
+						? `routing sink '${event.kind}' failed: ${event.message}`
+						: `routing sink '${event.kind}' failed (${event.causeType}): ${event.message}`,
+			});
 		case 'endpoint.released':
 		case 'strategy.registered':
 		case 'strategy.unregistered':
@@ -157,18 +194,30 @@ export const appendEventLogLine = (
 	return appended.length > MAX_EVENT_LOG_LINES ? appended.slice(-MAX_EVENT_LOG_LINES) : appended;
 };
 
-const eventAt = (event: EngineEvent): number => {
-	if ('at' in event && typeof event.at === 'number') return event.at;
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		default:
-			return Date.now();
+/**
+ * Batched variant of `appendEventLogLine`: append many lines, slice to
+ * the bound ONCE. The per-event variant rebuilt the array on every
+ * call; a 100-event burst therefore allocated 100 arrays and ran the
+ * `.slice(-MAX_EVENT_LOG_LINES)` projection 100 times. The plural form
+ * collapses that to one allocation + one bound check — matching the
+ * microtask-batched dispatch path in `app.tsx`.
+ *
+ * `nexts` may contain `null` entries (the same null-pass-through
+ * contract as the singular form) — they're filtered before append.
+ * Returns the input array unchanged when no real lines remain so
+ * `setEventLog`'s referential-equality short-circuit still fires.
+ */
+export const appendEventLogLines = (
+	lines: ReadonlyArray<EventLogLine>,
+	nexts: ReadonlyArray<EventLogLine | null>,
+): ReadonlyArray<EventLogLine> => {
+	const real: Array<EventLogLine> = [];
+	for (const line of nexts) {
+		if (line !== null) real.push(line);
 	}
+	if (real.length === 0) return lines;
+	const appended = lines.length === 0 ? real : [...lines, ...real];
+	return appended.length > MAX_EVENT_LOG_LINES ? appended.slice(-MAX_EVENT_LOG_LINES) : appended;
 };
 
 const time = (at: number): string => new Date(at).toISOString().slice(11, 19);
@@ -205,11 +254,9 @@ const isRedundantPluginLog = (message: string): boolean => {
 	);
 };
 
-const colorForPluginKey = (pluginKey: string): ColorToken => {
-	const normalized = pluginKey.toLowerCase();
-	if (normalized.includes('account')) return 'magenta';
-	if (normalized.includes('package')) return 'blueBright';
-	if (normalized.includes('action')) return 'magenta';
-	if (normalized.includes('app') || normalized.includes('frontend')) return 'white';
-	return 'cyan';
-};
+// Scope-chip color is driven by `Row.section`, looked up via the
+// `sectionLookup` argument the host (app.tsx / tests) constructs from
+// the live projection. Keeps the renderer name-blind: it sees only the
+// closed `RowSection` vocabulary (`service` / `package` / `account` /
+// ...), never a substring of a plugin name. Plugin authors declare
+// their section once via `definePlugin({ section })`.

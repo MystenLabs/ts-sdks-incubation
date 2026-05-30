@@ -22,7 +22,7 @@
 import { Effect } from 'effect';
 
 import { expectNonEmptyString } from '../../../substrate/runtime/config-validation.ts';
-import { sealConfigError, sealError, type SealAnyError } from '../errors.ts';
+import { sealConfigError } from '../errors.ts';
 import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
@@ -30,17 +30,25 @@ import type { SealKeyServerEntry, SealKnownResolved } from '../registry-publish.
 // ---------------------------------------------------------------------------
 
 /** Closed set of known deployments. `mainnet` + `devnet` intentionally
- *  null (distilled-doc cross-ref). v2 plans should canonicalize this
- *  table — for now we mirror v3's structure. */
-export const KNOWN_DEPLOYMENTS = {
+ *  null (no public default key server). `testnet` carries the public
+ *  key-server URL but `keyServerObjectId` is `null` until a real id is
+ *  sourced — `validateLiveInputs` forces the caller to supply
+ *  `objectId` explicitly in that case. */
+export const KNOWN_DEPLOYMENTS: {
+	readonly testnet: {
+		readonly keyServerObjectId: string | null;
+		readonly keyServerUrl: string;
+	};
+	readonly mainnet: null;
+	readonly devnet: null;
+} = {
 	testnet: {
-		keyServerObjectId:
-			'0x000000000000000000000000000000000000000000000000000000000000mysten' as string,
+		keyServerObjectId: null,
 		keyServerUrl: 'https://seal-keyserver.testnet.mystenlabs.com',
 	},
 	mainnet: null,
 	devnet: null,
-} as const;
+};
 
 export type KnownNetwork = keyof typeof KNOWN_DEPLOYMENTS;
 
@@ -98,45 +106,23 @@ export const validateLiveInputs = (
 // Mode acquire
 // ---------------------------------------------------------------------------
 
-/** Acquire body for the live mode. Returns the read-side handle
- *  ONLY (no manager tag — distilled-doc invariant #15). */
-export const acquireLive = (
-	inputs: LiveModeInputs,
-): Effect.Effect<SealKnownResolved, SealAnyError> =>
-	Effect.gen(function* () {
-		// Validation runs at the factory layer; here we trust the
-		// validated fields. The substrate's registry publishes happen
-		// at the orchestrator layer (manifest emitter walks the
-		// codegen contributions); this body just returns the resolved
-		// value.
-		let resolved: { readonly objectId: string; readonly keyServerUrl: string };
-		try {
-			resolved = validateLiveInputs(inputs);
-		} catch (err) {
-			if (
-				typeof err === 'object' &&
-				err !== null &&
-				'_tag' in err &&
-				err._tag === 'SealConfigError'
-			) {
-				return yield* Effect.fail(err as SealAnyError);
-			}
-			return yield* Effect.fail(
-				sealError('seal', {
-					name: inputs.name,
-					message: err instanceof Error ? err.message : String(err),
-					cause: err,
-				}),
-			);
-		}
+/** Acquire body for the live mode. Validation already ran at the
+ *  factory boundary (see `index.ts:buildLivePlugin`); this projects
+ *  the validated bundle into the resolved shape. Returns the
+ *  read-side handle ONLY (no manager tag — distilled-doc invariant #15). */
+export const acquireLive = (inputs: {
+	readonly name: string;
+	readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+}): Effect.Effect<SealKnownResolved> =>
+	Effect.sync(() => {
 		const serverConfigs: ReadonlyArray<SealKeyServerEntry> = [
-			{ objectId: resolved.objectId, weight: 1 },
+			{ objectId: inputs.resolved.objectId, weight: 1 },
 		];
 		return {
 			keyServer: {
 				serverConfigs,
-				keyServerUrl: resolved.keyServerUrl,
-				objectId: resolved.objectId,
+				keyServerUrl: inputs.resolved.keyServerUrl,
+				objectId: inputs.resolved.objectId,
 			},
 		} satisfies SealKnownResolved;
 	});

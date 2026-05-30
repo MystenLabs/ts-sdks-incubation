@@ -142,6 +142,93 @@ describe('decideRunAction — running container', () => {
 			reason: 'image-mismatch',
 		});
 	});
+
+	it('primary network alias drift under on-config-change → recreate(config-mismatch)', () => {
+		expect(
+			decideRunAction(
+				{
+					...factsRunning('img:1'),
+					networkAttachments: [{ name: 'primary', aliases: ['devstack-owned'] }],
+				},
+				'img:1',
+				'on-config-change',
+				[],
+				'exact',
+				undefined,
+				undefined,
+				[{ name: 'primary', aliases: ['db-main'] }],
+			),
+		).toEqual({ kind: 'recreate', id: 'c1', reason: 'config-mismatch' });
+	});
+
+	it('present primary and secondary aliases → adopt', () => {
+		expect(
+			decideRunAction(
+				{
+					...factsRunning('img:1'),
+					networkAttachments: [
+						{ name: 'primary', aliases: ['db-main'] },
+						{ name: 'secondary', aliases: ['side-a'] },
+					],
+				},
+				'img:1',
+				'on-config-change',
+				[],
+				'exact',
+				undefined,
+				undefined,
+				[
+					{ name: 'primary', aliases: ['db-main'] },
+					{ name: 'secondary', aliases: ['side-a'] },
+				],
+			),
+		).toEqual({ kind: 'adopt', id: 'c1' });
+	});
+
+	it('missing secondary network remains adoptable for post-start connect', () => {
+		expect(
+			decideRunAction(
+				{
+					...factsRunning('img:1'),
+					networkAttachments: [{ name: 'primary', aliases: ['db-main'] }],
+				},
+				'img:1',
+				'on-config-change',
+				[],
+				'exact',
+				undefined,
+				undefined,
+				[
+					{ name: 'primary', aliases: ['db-main'] },
+					{ name: 'secondary', aliases: ['side-a'] },
+				],
+			),
+		).toEqual({ kind: 'adopt', id: 'c1' });
+	});
+
+	it('attached secondary network with alias drift → recreate(config-mismatch)', () => {
+		expect(
+			decideRunAction(
+				{
+					...factsRunning('img:1'),
+					networkAttachments: [
+						{ name: 'primary', aliases: ['db-main'] },
+						{ name: 'secondary', aliases: [] },
+					],
+				},
+				'img:1',
+				'on-config-change',
+				[],
+				'exact',
+				undefined,
+				undefined,
+				[
+					{ name: 'primary', aliases: ['db-main'] },
+					{ name: 'secondary', aliases: ['side-a'] },
+				],
+			),
+		).toEqual({ kind: 'recreate', id: 'c1', reason: 'config-mismatch' });
+	});
 });
 
 describe('decideRunAction — stopped container, image match', () => {

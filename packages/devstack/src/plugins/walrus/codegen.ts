@@ -14,11 +14,12 @@
 //
 // Mode-asymmetric emission:
 //   - Local: emits `{packageConfig, proxyUrl, aggregatorUrl,
-//     publisherUrl, nodes}` — full shape.
-//   - Known: emits `{packageConfig, proxyUrl?, aggregatorUrl?,
-//     publisherUrl?}` — the proxy URLs are optional because the
-//     contract only publishes them when ALL three are present
-//     (distilled-doc invariant 15).
+//     publisherUrl, nodes}` — full shape (all three URLs resolved).
+//   - Known: emits the same shape; each of `proxyUrl /
+//     aggregatorUrl / publisherUrl` is `string | null` and surfaces
+//     INDEPENDENTLY — a field is null only when THAT specific URL is
+//     unresolved (distilled-doc invariant 15). A missing publisher
+//     URL no longer suppresses an available proxy/aggregator URL.
 
 import { Effect } from 'effect';
 
@@ -47,9 +48,9 @@ export interface WalrusBindings {
 		readonly stakingPoolId: string;
 		readonly exchangeIds?: ReadonlyArray<string>;
 	};
-	/** HTTP URLs — present iff the publishing mode populated them
-	 *  (local always; known only when all three are non-empty —
-	 *  distilled-doc invariant 15). */
+	/** HTTP URLs — each is `null` only when that specific URL is
+	 *  unresolved (local resolves all three; known surfaces each
+	 *  independently — distilled-doc invariant 15). */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;

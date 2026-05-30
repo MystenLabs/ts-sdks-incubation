@@ -18,10 +18,11 @@
 //     `_exhaustive: never` line will fail to type-check if a new
 //     tag is added without a handler here).
 
-import { Effect, SubscriptionRef } from 'effect';
+import { Effect, Schema, SubscriptionRef } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
+import { eventAtOrNull } from '../../event-time.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type {
 	AccountProjection,
@@ -33,6 +34,8 @@ import type {
 	SubscribableState,
 } from '../../projection.ts';
 import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
+import { SpanAttr } from '../observability/spans.ts';
+import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
 
 // -----------------------------------------------------------------------------
 // Capacity policy
@@ -46,6 +49,16 @@ const MAX_BUILD_ENTRIES_KEPT = 200;
 const MAX_ROW_LOG_LINES = 100;
 
 // -----------------------------------------------------------------------------
+// Decode-result type — shared between the reducer's optional pre-flight
+// cache and the `tryDecodeProjectionPayload` helper. Hoisted above the
+// reducer so the optional `prevalidated` parameter can reference it.
+// -----------------------------------------------------------------------------
+
+type DecodeResult<T> =
+	| { readonly ok: true; readonly value: T }
+	| { readonly ok: false; readonly cause: unknown };
+
+// -----------------------------------------------------------------------------
 // Pure reducer
 // -----------------------------------------------------------------------------
 
@@ -57,14 +70,28 @@ const MAX_ROW_LOG_LINES = 100;
  * The `tag` switch is exhaustive against `EngineEvent['tag']`; the
  * trailing `_exhaustive: never` causes TS to flag any new tag that
  * isn't handled here.
+ *
+ * @param prevalidated - Optional pre-flight decode result for
+ *   `projection.updated` payloads. When the Effect-aware `updateRef`
+ *   seam has already decoded the payload (to drive the warning
+ *   emission inside the fiber's logger Layer), it threads the result
+ *   here so the reducer doesn't decode the same payload twice on
+ *   the hot path. Direct `applyEvent` callers (tests, in-process
+ *   projection consumers) leave this undefined and the reducer
+ *   re-decodes — the schema is sync + deterministic so the cached
+ *   result and a fresh decode agree.
  */
-export const applyEvent = (state: SubscribableState, event: EngineEvent): SubscribableState => {
+export const applyEvent = (
+	state: SubscribableState,
+	event: EngineEvent,
+	prevalidated?: DecodeResult<unknown>,
+): SubscribableState => {
 	// Every event advances `lastEvent.at`. `lastEvent.seq` is bumped at
 	// the `updateRef` wrapper, not here — this reducer is pure data.
 	const withTouched = (next: Partial<SubscribableState>): SubscribableState => ({
 		...state,
 		...next,
-		lastEvent: { seq: state.lastEvent.seq, at: eventAt(event) ?? state.lastEvent.at },
+		lastEvent: { seq: state.lastEvent.seq, at: eventAtOrNull(event) ?? state.lastEvent.at },
 	});
 
 	// Lifecycle-shaped events flow through the typed `LifecycleFact`
@@ -74,9 +101,7 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 	const fact = factFromEvent(event);
 	if (fact !== null) {
 		return withTouched({
-			rows: upsertRow(state.rows, fact.pluginKey as PluginKey, (row) =>
-				applyLifecycleFact(row, fact.delta),
-			),
+			rows: upsertRow(state.rows, fact.pluginKey, (row) => applyLifecycleFact(row, fact.delta)),
 		});
 	}
 
@@ -100,15 +125,48 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 				rows: attachEndpoint(state.rows, event.endpoint),
 			});
 
-		case 'account.updated':
-			return withTouched({
-				accounts: upsertAccount(state.accounts, event.account),
-			});
-
-		case 'package.updated':
-			return withTouched({
-				packages: upsertPackage(state.packages, event.package),
-			});
+		case 'projection.updated':
+			// Substrate stays name-blind on the event vocabulary; the
+			// reducer is the projection orchestrator and owns the per-
+			// `kind` decode. New plugin-author projection kinds slot in
+			// here without a new event variant — extending this switch
+			// is the load-bearing knob.
+			//
+			// Per STYLE_GUIDE §20: a misbehaving plugin emitting a
+			// malformed payload must NOT crash the reducer or the
+			// surrounding projection stream. Decode per-kind via the
+			// canonical Schema; on failure, drop the slice update
+			// (`lastEvent.at` still advances so the renderer sees the
+			// event was observed). Warning emission is handled by the
+			// Effect-aware seam at the `updateRef` call site so it runs
+			// inside the fiber's structured-logging context — the
+			// reducer itself stays pure-data sync (no logger access),
+			// just signaling a decode failure via a non-`ok` decode
+			// result.
+			if (event.kind === 'account') {
+				const decoded =
+					prevalidated ?? tryDecodeProjectionPayload(AccountProjectionSchema, event.payload);
+				// `event.payload` (not `decoded.value`) is forwarded once the
+				// schema has confirmed the structural shape — the runtime brand
+				// (`account/${string}`) is TS-only and Schema can't express
+				// it. The cast is justified by the preceding decode, not a
+				// `Schema.decodeUnknownSync(...) as A` bare-cast (§20).
+				return decoded.ok
+					? withTouched({
+							accounts: upsertAccount(state.accounts, event.payload as AccountProjection),
+						})
+					: withTouched({});
+			}
+			if (event.kind === 'package') {
+				const decoded =
+					prevalidated ?? tryDecodeProjectionPayload(PackageProjectionSchema, event.payload);
+				return decoded.ok
+					? withTouched({
+							packages: upsertPackage(state.packages, event.payload as PackageProjection),
+						})
+					: withTouched({});
+			}
+			return withTouched({});
 
 		case 'endpoint.released':
 			// Renderer projection keeps endpoint history as last-known
@@ -173,6 +231,13 @@ export const applyEvent = (state: SubscribableState, event: EngineEvent): Subscr
 				cycle: { ...state.cycle, phase: 'running' },
 				rows: state.rows.map((r) => ({ ...r, selectiveRestartHighlight: false })),
 			});
+
+		case 'engine.orchestrator.dispatchFailed':
+			// Orchestrator-side dispatch failure surfaced for renderers /
+			// log consumers; carries no projection slice (the originating
+			// plugin remains in its current lifecycle state — sink failure
+			// is orchestrator-fault, not plugin-fault).
+			return withTouched({});
 
 		default: {
 			const _exhaustive: never = event;
@@ -261,37 +326,97 @@ export const declarePackage = (
  * boundaries.
  *
  * Uses `state.lastEvent.seq + 1` for monotonic per-process counts.
+ *
+ * Side-channel: when the event is a `projection.updated` with a
+ * malformed payload, the reducer drops the slice and we emit a
+ * structured warning here, inside the surrounding fiber, so it lands
+ * on the fiber's structured-logging path (`Effect.logWarning`). This
+ * is the only place in the reducer where a warning is emitted; the
+ * pure `applyEvent` reducer never touches the logger.
  */
 export const updateRef = (
 	ref: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	event: EngineEvent,
 ): Effect.Effect<void> =>
-	SubscriptionRef.update(ref, (state) => {
-		const next = applyEvent(state, event);
-		return {
-			...next,
-			lastEvent: { seq: state.lastEvent.seq + 1, at: next.lastEvent.at },
-		};
+	Effect.gen(function* () {
+		// Pre-flight: detect malformed projection-updated payloads so the
+		// warning runs inside the fiber's logger context. We thread the
+		// decode result into the reducer below so the hot path decodes
+		// the payload exactly once per event — the previous shape ran
+		// the same `Schema.decodeUnknownSync` pass twice (once here,
+		// once inside `applyEvent`) on every projection.updated event.
+		let prevalidated: DecodeResult<unknown> | undefined;
+		if (event.tag === 'projection.updated') {
+			if (event.kind === 'account' || event.kind === 'package') {
+				const schema = event.kind === 'account' ? AccountProjectionSchema : PackageProjectionSchema;
+				prevalidated = tryDecodeProjectionPayload(schema, event.payload);
+				if (!prevalidated.ok) {
+					yield* Effect.logWarning(
+						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
+					).pipe(
+						Effect.annotateLogs({
+							[SpanAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
+						}),
+					);
+				}
+			}
+		}
+		yield* SubscriptionRef.update(ref, (state) => {
+			const next = applyEvent(state, event, prevalidated);
+			return {
+				...next,
+				lastEvent: { seq: state.lastEvent.seq + 1, at: next.lastEvent.at },
+			};
+		});
 	});
 
 // -----------------------------------------------------------------------------
 // Internals
 // -----------------------------------------------------------------------------
 
-const eventAt = (event: EngineEvent): number | null => {
-	if ('at' in event) return event.at;
-	// Events whose payload nests `at` (endpoint, error, build): pull it
-	// up. Discriminating purely on `tag` keeps this exhaustive.
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		default:
-			return null;
+/**
+ * Sync per-kind validator for `projection.updated` payloads. Returns
+ * an `ok` decode result on success or a non-`ok` one on decode
+ * failure. Pure-data sync: no logger access, no `Effect.runSync` —
+ * the reducer is documented as pure, and earlier versions of this
+ * seam called `Effect.runSync(Effect.logWarning(...))` outside any
+ * fiber context, which logged off-fiber (bypassing the supervisor's
+ * structured-logging context). The Effect-aware `updateRef` wrapper
+ * now emits the warning inside the fiber so the warning is captured
+ * consistently with the rest of the supervisor's logs.
+ *
+ * On success callers still pass `event.payload` to the upsert (not the
+ * decoded copy) — the runtime brand types (`account/${string}`,
+ * `package/${string}`) are TS-only and the decoded copy would strip
+ * them. The schema acts as a structural guard only.
+ */
+const tryDecodeProjectionPayload = <S extends Schema.Decoder<unknown>>(
+	schema: S,
+	payload: unknown,
+): DecodeResult<S['Type']> => {
+	try {
+		return { ok: true, value: Schema.decodeUnknownSync(schema)(payload) };
+	} catch (cause) {
+		return { ok: false, cause };
 	}
+};
+
+/**
+ * Render a `Schema.decodeUnknownSync` throw into a human-readable
+ * string for the warn annotation. `SchemaError` in Effect v4 stores
+ * the parse issue and exposes `.message` (= `issue.toString()`); using
+ * that surfaces the actual decode-issue path/expectation. Fallback to
+ * `String(cause)` for non-SchemaError throws (defensive — the schema's
+ * sync decoder should always throw `SchemaError`).
+ */
+const formatDecodeIssue = (cause: unknown): string => {
+	if (Schema.isSchemaError(cause)) {
+		return cause.message;
+	}
+	if (cause instanceof Error) {
+		return cause.message;
+	}
+	return String(cause);
 };
 
 const upsertRow = (
@@ -377,17 +502,11 @@ const upsertPackage = (
 };
 
 const attachEndpoint = (rows: ReadonlyArray<Row>, endpoint: Endpoint): ReadonlyArray<Row> => {
-	// Endpoint -> Row link is `endpointKey` derived from `pluginKey` + dispatchId.
-	// The plugin that owns the endpoint must have a row; we look it up by
-	// the endpoint's pluginKey via a structured field. The current
-	// `Endpoint` shape (from projection.ts) doesn't carry pluginKey in
-	// the projection slice — it's derivable from `endpointKey` (prefix match).
-	const probableKey = endpoint.endpointKey;
 	return rows.map((row) =>
-		probableKey.startsWith(row.key)
-			? row.endpoints.includes(probableKey)
+		endpoint.pluginKey === row.key
+			? row.endpoints.includes(endpoint.endpointKey)
 				? row
-				: { ...row, endpoints: [...row.endpoints, probableKey] }
+				: { ...row, endpoints: [...row.endpoints, endpoint.endpointKey] }
 			: row,
 	);
 };

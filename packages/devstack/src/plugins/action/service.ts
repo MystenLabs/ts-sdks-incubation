@@ -12,8 +12,6 @@
 //   - chain          = Sui dependency's resolved `chain`
 //   - contentHash    = hash of (actionName, upstreamResourceIds[], dynamic
 //                      discriminator if any)
-//   - verifySchema   = `ActionReceiptSchema` — Schema-validated cached
-//                      shape so a corrupt entry surfaces as a miss
 //   - verify         = `chainProbe.get({kind:'transaction', digest},
 //                      VerifyTxShape, 'lenient')` — null on transient
 //                      or not-found, NOT raise.
@@ -36,15 +34,18 @@
 
 import { createHash } from 'node:crypto';
 
-import { Effect, Schema, type Scope } from 'effect';
+import { Cause, Effect, Schema, type Scope } from 'effect';
 
 import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
+import { withPhasePreservingProduce } from '../../substrate/runtime/phase-preserving-produce.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import type { ActionBuildContext } from './build-context.ts';
 import { actionError, type ActionError } from './errors.ts';
 import {
@@ -52,6 +53,7 @@ import {
 	type DynamicDiscriminator,
 	type StaticDiscriminator,
 } from './discriminator.ts';
+import { ActionSpans } from './spans.ts';
 
 /** Action receipt — the cached value. Minimal shape: digest is the
  *  load-bearing identifier (drives verify probe + downstream
@@ -115,29 +117,19 @@ export interface ActionAcquireInputs {
  *  (per `DynamicDiscriminator`) collapse onto
  *  `Effect<string | undefined, ActionError>`. */
 export const resolveDiscriminator = <Deps>(
-	actionName: string,
 	dynamic: DynamicDiscriminator<Deps> | undefined,
 	ctx: ActionBuildContext,
 	deps: Deps,
 ): Effect.Effect<string | undefined, ActionError> => {
 	if (dynamic === undefined) return Effect.succeed(undefined);
 	if (typeof dynamic === 'string') return Effect.succeed(dynamic);
-	return dynamic(ctx, deps).pipe(
-		Effect.catch(
-			(cause): Effect.Effect<string, ActionError> =>
-				Effect.fail(
-					// If the user's discriminator Effect itself raises an
-					// ActionError, surface it verbatim. Otherwise wrap.
-					(cause as ActionError)._tag === 'ActionError'
-						? (cause as ActionError)
-						: actionError('discriminator', {
-								actionName,
-								message: `Action '${actionName}': discriminator Effect failed.`,
-								cause,
-							}),
-				),
-		),
-	);
+	// The dynamic discriminator's error channel is typed `ActionError`
+	// (see `DynamicDiscriminator<Deps>` in `discriminator.ts`), so user
+	// failures already arrive in the tagged shape — no wrap or
+	// re-projection needed. (Prior code ran `Effect.catch` to fall
+	// through tag-or-wrap, but the channel is exhaustively
+	// ActionError; the wrap branch was unreachable.)
+	return dynamic(ctx, deps);
 };
 
 /** Build the verify-probe Effect for a given cached digest. Lenient
@@ -166,8 +158,8 @@ export const bootActionService = (
 ): Effect.Effect<ActionReceipt, ActionError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'action.name': inputs.actionName,
-			'action.chain': inputs.chainId,
+			[ActionSpans.name]: inputs.actionName,
+			[ActionSpans.chain]: inputs.chainId,
 		});
 
 		// --- Pull the pre-projected dynamic-discriminator material
@@ -180,6 +172,82 @@ export const bootActionService = (
 		const material = composeDiscriminatorMaterial(inputs.staticDiscriminator, resolvedDynamic);
 		const inputsHash = brandContentHash(createHash('sha256').update(material).digest('hex'));
 
+		// --- Phase-preserving produce.
+		//
+		// `publisher.publish`'s `produce` channel must surface failures
+		// as `ArtifactPublishError` per the substrate contract. That
+		// erases the original `ActionError.phase`.
+		// `withPhasePreservingProduce` stashes the typed `ActionError`
+		// in a Ref BEFORE the mapError boundary so the outer recovery
+		// (`recoverTypedError`) can re-raise it untouched. The caller in
+		// `index.ts` then sees the original `phase` rather than a
+		// uniformly-stamped `'sign'`.
+		const typedProduce = Effect.gen(function* () {
+			yield* Effect.annotateCurrentSpan({
+				[ActionSpans.phase]: 'building',
+			});
+			// `inputs.body` is a USER-SUPPLIED Effect. Two failure
+			// surfaces must collapse onto a single `ActionError`:
+			//
+			//   1. Typed `ActionError` on the failure channel —
+			//      `catchTag('ActionError')` re-raises untouched so
+			//      the original `phase` survives.
+			//   2. Defects (sync `throw` inside the body, `die(...)`)
+			//      bypass typed catches entirely — `catchCause` is
+			//      the only seam that sees them. Defects get
+			//      rebadged to `phase: 'sign'` so a user body that
+			//      throws lands on the typed channel rather than
+			//      crashing the produce step. Interrupt-only causes
+			//      propagate untouched so cancellation semantics
+			//      survive.
+			const receipt: ActionReceipt = yield* inputs.body.pipe(
+				Effect.catchCause((cause) => {
+					// 1. Typed `ActionError` on the failure channel —
+					//    re-raise untouched so the original `phase`
+					//    survives the downstream re-wrap step.
+					const failed = Cause.findError(cause);
+					if (failed._tag === 'Success') {
+						return Effect.fail(failed.success);
+					}
+					// 2. Interrupt-only causes propagate untouched so
+					//    cancellation semantics survive.
+					if (Cause.hasInterruptsOnly(cause)) {
+						return Effect.failCause(cause);
+					}
+					// 3. Defects (sync `throw` inside the body, `die(...)`)
+					//    bypass typed catches entirely — `catchCause` is
+					//    the only seam that sees them. Rebadge to
+					//    `phase: 'sign'` so a user body that throws
+					//    lands on the typed channel rather than crashing
+					//    the produce step.
+					const defect = Cause.findDefect(cause);
+					const defectValue =
+						defect._tag === 'Success' ? defect.success : Cause.squash(cause);
+					return Effect.fail(
+						actionError('sign', {
+							actionName: inputs.actionName,
+							message: `Action '${inputs.actionName}': body Effect raised a defect.`,
+							cause: defectValue,
+						}),
+					);
+				}),
+			);
+			yield* Effect.annotateCurrentSpan({
+				[ActionSpans.phase]: 'parsing',
+				[ActionSpans.digest]: receipt.digest,
+			});
+			return receipt;
+		});
+
+		const { wrappedProduce, recoverTypedError } = yield* withPhasePreservingProduce({
+			produce: typedProduce,
+			wrapProduceError: (err: ActionError): ArtifactPublishError =>
+				artifactPublishError(
+					'produce-failed',
+					`action.${inputs.actionName} ${err.phase}: ${err.message}`,
+				),
+		});
+
 		// --- Submit the spec to the publisher.
 		//
 		// The artifact publisher substrate decodes the cached `ActionReceipt` and
@@ -187,71 +255,28 @@ export const bootActionService = (
 		// pull the digest off the cached payload directly. No
 		// in-process registry-hop required (mirrors the seam pattern
 		// the package plugin's mode-local TODO calls out).
-		const produced = yield* publisher.publish<ActionReceipt, typeof VerifyTxShape.Type>({
+		const receipt: ActionReceipt = yield* acquireOnChainArtifact<
+			ActionReceipt,
+			typeof VerifyTxShape.Type
+		>(publisher, {
 			namespace: 'action',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
-			verifySchema: VerifyTxShape,
 			verify: (cached) => buildVerifyProbe(probe, cached.digest),
-			produce: Effect.gen(function* () {
-				yield* Effect.annotateCurrentSpan({
-					'action.phase': 'building',
-				});
-				const receipt: ActionReceipt = yield* inputs.body.pipe(
-					Effect.catch(
-						(cause): Effect.Effect<ActionReceipt, ActionError> =>
-							Effect.fail(
-								(cause as ActionError)?._tag === 'ActionError'
-									? (cause as ActionError)
-									: actionError('sign', {
-											actionName: inputs.actionName,
-											message: `Action '${inputs.actionName}': body Effect failed.`,
-											cause,
-										}),
-							),
-					),
-				);
-				yield* Effect.annotateCurrentSpan({
-					'action.phase': 'parsing',
-					'action.digest': receipt.digest,
-				});
-				return receipt;
-			}).pipe(
-				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `action.${inputs.actionName} ${err.phase}: ${err.message}`,
-					}),
-				),
-			),
-			register: (_artifact) =>
-				// Action declares no in-process registry (mirrors v3's
-				// `services/action.ts:189-191` "Action does NOT populate
-				// any in-process registries"). The cached digest is now
-				// threaded directly via the artifact publisher's `verify(cached)`
-				// parameter — no register-hop hint required.
-				Effect.void,
-		});
+			produce: wrappedProduce,
+		}).pipe(recoverTypedError);
 
-		// The publisher returns `Produced | Verified`. Both shapes
-		// carry `digest`; the action's resolved value is the cached
-		// receipt (full `ActionReceipt` on produce/decoded-hit, or a
-		// projected `{digest}` on bare-verify-hit). Callers expect the
-		// wider shape — surface defensively.
-		if ('digest' in produced && typeof produced.digest === 'string') {
-			// Already-`ActionReceipt`-shaped. Cast through to recover
-			// the optional change arrays if present.
-			return produced as ActionReceipt;
-		}
-		// Defensive: unreachable under the current substrate (verify
-		// returns the bare `{digest}` shape; the substrate falls back
-		// to it ONLY when the cached payload failed to decode, which
-		// we treat as miss elsewhere). Surface a parse-phase error.
-		return yield* Effect.fail(
-			actionError('parse', {
-				actionName: inputs.actionName,
-				message: `Action '${inputs.actionName}': cached payload missing digest.`,
-			}),
-		);
-	});
+		// The substrate hands back the decoded `ActionReceipt` on every
+		// path (decoded cached payload on hit, fresh produce on miss).
+		return receipt;
+	}).pipe(
+		// Outer span so the per-action `annotateCurrentSpan` annotations
+		// above attach to a real span instead of dropping silently when
+		// `bootActionService` is invoked outside a parent span.
+		Effect.withSpan('devstack.plugin.action.boot', {
+			attributes: {
+				[ActionSpans.name]: inputs.actionName,
+				[ActionSpans.chain]: inputs.chainId,
+			},
+		}),
+	);

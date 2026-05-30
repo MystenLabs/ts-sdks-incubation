@@ -62,6 +62,13 @@ import { dispatchFileId, renderUrl, routerHostname } from './hostname.ts';
 
 export const ROUTE_READINESS_HEADER = 'X-Devstack-Route-Id';
 
+/** Dispatch-file filename prefix. `10-` sorts behind the shared CORS
+ *  middleware (`00-`) so Traefik's file-provider loads the middleware
+ *  before any router that references it. Single source of truth for
+ *  the file-write side (`dispatchFilename`) and the file-read side
+ *  (`dispatchFileIdFromFilename`) — keep them in lockstep here. */
+const DISPATCH_FILENAME_PREFIX = '10-';
+
 // ---------------------------------------------------------------------------
 // Resolved-route data structure
 // ---------------------------------------------------------------------------
@@ -140,9 +147,11 @@ export type DispatchRouteParseResult =
 	  };
 
 /** Filename within the dispatch directory for a given file-id. The
- *  `10-` prefix sorts behind the shared CORS middleware (`00-`) so
- *  Traefik picks up the middleware before any router referencing it. */
-export const dispatchFilename = (fileId: string): string => `10-${fileId}.yml`;
+ *  prefix (`DISPATCH_FILENAME_PREFIX`) sorts behind the shared CORS
+ *  middleware (`00-`) so Traefik picks up the middleware before any
+ *  router referencing it. */
+export const dispatchFilename = (fileId: string): string =>
+	`${DISPATCH_FILENAME_PREFIX}${fileId}.yml`;
 
 // ---------------------------------------------------------------------------
 // Resolution — Routable + Identity + EntrypointRegistry + upstream → ResolvedRoute
@@ -356,7 +365,11 @@ const renderTcpRouteYaml = (route: ResolvedRoute, lease: RouteLeaseMetadata): st
 };
 
 export const dispatchFileIdFromFilename = (filename: string): string | null => {
-	const match = /^10-(.+)\.yml$/.exec(filename);
+	// Escape `DISPATCH_FILENAME_PREFIX` for use inside a RegExp literal —
+	// today it's a plain `10-` so no regex metacharacters are at play,
+	// but the escape makes the read side robust to future prefix changes.
+	const escapedPrefix = DISPATCH_FILENAME_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const match = new RegExp(`^${escapedPrefix}(.+)\\.yml$`).exec(filename);
 	return match?.[1] ?? null;
 };
 
@@ -607,12 +620,3 @@ const routeCollisionMessage = (collision: {
 	);
 };
 
-// ---------------------------------------------------------------------------
-// Static base file — Traefik provider directive
-// ---------------------------------------------------------------------------
-
-/** Filename for the file-provider static config. Traefik is launched
- *  with `--providers.file.directory=/etc/traefik/dispatch` so it
- *  reads from there directly; this static file is OPTIONAL polish
- *  and currently unused. Reserved for future provider tuning. */
-export const STATIC_PROVIDER_FILENAME = '00-providers.yml';

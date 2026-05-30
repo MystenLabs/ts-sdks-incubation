@@ -59,16 +59,40 @@ const runtimeCapturingEnsureSpec = (specs: EnsureContainerSpec[]): ContainerRunt
 		}),
 });
 
+/** Capture every `exec` argv the build path emits (the third element
+ *  is the `sh -c` inner script). */
+const runtimeCapturingExecArgv = (argvs: ReadonlyArray<string>[]): ContainerRuntime =>
+	runtimeFromExec((_handle, argv) =>
+		Effect.sync(() => {
+			argvs.push([...argv]);
+			return okExecResult;
+		}),
+	);
+
 const makeFixture = () => {
 	const root = mkdtempSync(join(tmpdir(), 'chain-build-container-test-'));
 	const appDir = join(root, 'app');
+	// NESTED package (path contains a slash relative to appDir) WITH a
+	// sibling local dep — the exact in-repo shape (e.g.
+	// examples/deepbook-trader/move/vendor/.../Move.toml) that the
+	// scoped-copy regression broke: copying only `/workspace/packages/demo`
+	// both needs the intermediate `packages/` dir to exist and drops the
+	// `{ local = "../token" }` sibling.
 	const packagePath = join(appDir, 'packages', 'demo');
+	const siblingPath = join(appDir, 'packages', 'token');
 	const moveHome = join(root, 'home', '.move');
 	mkdirSync(packagePath, { recursive: true });
+	mkdirSync(siblingPath, { recursive: true });
 	mkdirSync(moveHome, { recursive: true });
+	writeFileSync(
+		join(packagePath, 'Move.toml'),
+		'[package]\nname = "demo"\n\n[dependencies]\ntoken = { local = "../token" }\n',
+	);
+	writeFileSync(join(siblingPath, 'Move.toml'), '[package]\nname = "token"\n');
 	return {
 		root,
 		packagePath,
+		siblingPath,
 		spec: {
 			app: 'demo',
 			stack: 'test',
@@ -87,7 +111,9 @@ describe('chain build container move-build lock', () => {
 			const fixture = makeFixture();
 			try {
 				const specs: EnsureContainerSpec[] = [];
-				yield* Effect.scoped(acquireChainBuildContainer(runtimeCapturingEnsureSpec(specs), fixture.spec));
+				yield* Effect.scoped(
+					acquireChainBuildContainer(runtimeCapturingEnsureSpec(specs), fixture.spec),
+				);
 
 				expect(specs[0]?.entrypoint).toBe('sh');
 				expect(specs[0]?.command?.[0]).toBe('-c');
@@ -98,6 +124,55 @@ describe('chain build container move-build lock', () => {
 				rmSync(fixture.root, { recursive: true, force: true });
 			}
 		}),
+	);
+
+	it.effect(
+		'runBuild stages a nested package without dropping sibling local deps (whole-tree copy)',
+		() =>
+			Effect.gen(function* () {
+				const fixture = makeFixture();
+				try {
+					const argvs: ReadonlyArray<string>[] = [];
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							const buildContainer = yield* acquireChainBuildContainer(
+								runtimeCapturingExecArgv(argvs),
+								fixture.spec,
+							);
+							// Host path → `/workspace/packages/demo` → pkgName
+							// `packages/demo` (the nested, slash-bearing trigger).
+							yield* buildContainer.runBuild(fixture.packagePath);
+						}),
+					);
+
+					expect(argvs.length).toBe(1);
+					const argv = argvs[0]!;
+					expect(argv[0]).toBe('sh');
+					expect(argv[1]).toBe('-c');
+					const inner = argv[2]!;
+
+					// (1) The staging copies the WHOLE mounted tree — this is what
+					// both materialises the nested `packages/` parent AND carries
+					// the `{ local = "../token" }` sibling at `/workspace/packages/token`.
+					// A whole-`/workspace` copy is the only staging form that keeps
+					// siblings present without per-dep enumeration.
+					expect(inner).toContain('cp -a /workspace/. ');
+
+					// (2) Falsifiable against the exact regression: the scoped copy
+					// `cp -a /workspace/'packages/demo' <scratch>/'packages/demo'`
+					// mkdir's only the scratch ROOT, so the intermediate `packages/`
+					// is missing and `set -e` aborts before `sui move build` — AND it
+					// drops the `../token` sibling. The fix must never emit it.
+					expect(inner).not.toContain("cp -a /workspace/'packages/demo'");
+
+					// (3) The build still targets the nested package path inside the
+					// scratch tree (proves the nested pkgName threaded through, not a
+					// flattened basename).
+					expect(inner).toContain("sui move build --path /tmp/move-build-$$/'packages/demo'");
+				} finally {
+					rmSync(fixture.root, { recursive: true, force: true });
+				}
+			}),
 	);
 
 	it.effect('runBuild holds the host-wide move-build lock around docker exec', () =>

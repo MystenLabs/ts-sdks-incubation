@@ -67,6 +67,13 @@ export const resolveKeystoreVariant = (
 		});
 		const rows = yield* decodeJsonText(KeystoreShape, raw, {
 			source: args.path,
+			// Secret-leak guard: the keystore file IS an array of
+			// `suiprivkey1...` private keys, so a malformed-array
+			// `ParseError` renders the offending secret rows into its
+			// message/tree. We deliberately DROP the raw `cause`; the typed
+			// `message` already distinguishes "not valid JSON" from a schema
+			// mismatch, which is the only actionable diagnostic here.
+			// (Mirrors the `decodeBech32Secret` guard in `../keypair.ts`.)
 			mkError: (issue): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
@@ -76,7 +83,6 @@ export const resolveKeystoreVariant = (
 						issue.message === 'failed to parse JSON'
 							? `Account '${args.name}': keystore at '${args.path}' is not valid JSON.`
 							: `Account '${args.name}': keystore at '${args.path}' did not match the expected schema (array of bech32 strings).`,
-					cause: issue.cause,
 				}),
 		});
 
@@ -84,7 +90,7 @@ export const resolveKeystoreVariant = (
 		// Best-effort: missing aliases file is not fatal — fall through
 		// to the by-address path.
 		const aliasesPath = `${args.path.replace(/\.keystore$/, '')}.aliases`;
-		const aliasIdx = yield* resolveAliasIndex(aliasesPath, args.aliasOrAddress).pipe(
+		const aliasIdx = yield* resolveAliasIndex(aliasesPath, args.aliasOrAddress, args.name).pipe(
 			Effect.orElseSucceed(() => -1),
 		);
 		if (aliasIdx >= 0 && aliasIdx < rows.length) {
@@ -117,6 +123,7 @@ export const resolveKeystoreVariant = (
 const resolveAliasIndex = (
 	aliasesPath: string,
 	want: string,
+	accountName: string,
 ): Effect.Effect<number, AccountAcquireError> =>
 	Effect.gen(function* () {
 		const raw = yield* Effect.tryPromise({
@@ -124,7 +131,7 @@ const resolveAliasIndex = (
 			catch: (cause): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
-					accountName: '<keystore>',
+					accountName,
 					variant: 'keystore',
 					message: `aliases file '${aliasesPath}' missing or unreadable`,
 					cause,
@@ -132,16 +139,21 @@ const resolveAliasIndex = (
 		});
 		const aliases = yield* decodeJsonText(AliasesShape, raw, {
 			source: aliasesPath,
+			// Secret-leak guard: drop the raw `cause`. The aliases file holds
+			// public keys rather than secrets, but a malformed-array
+			// `ParseError` embeds whatever rows the file contained, and the
+			// resolver is pointed at a sibling of the secret keystore — so we
+			// keep the same scrub the keystore-array path uses above. The
+			// typed `message` already names the only actionable distinction.
 			mkError: (issue): AccountAcquireError =>
 				accountAcquireError({
 					phase: 'load-keystore',
-					accountName: '<keystore>',
+					accountName,
 					variant: 'keystore',
 					message:
 						issue.message === 'failed to parse JSON'
 							? `aliases file '${aliasesPath}' is not valid JSON`
 							: `aliases file '${aliasesPath}' did not match the expected schema`,
-					cause: issue.cause,
 				}),
 		});
 		return aliases.findIndex((row) => row.alias === want);

@@ -49,6 +49,7 @@ const codegenable: CodegenableDecl<'sink-proof-config'> = {
 const sinkProofPlugin = definePlugin({
 	id: 'sink-proof',
 	role: 'service',
+	section: 'service',
 	start: () => Effect.succeed({ ready: true } satisfies SinkProofValue),
 	capabilities: [routable, codegenable] as const,
 });

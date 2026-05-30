@@ -4,7 +4,6 @@
 // Built-in plugins own their public listener names and ports.
 
 import type { EntrypointDecl } from '../contracts/routable.ts';
-import { DEEPBOOK_ENTRYPOINTS } from './deepbook/routable.ts';
 import { HOST_SERVICE_ENTRYPOINTS } from './host-service/routable.ts';
 import { POSTGRES_ENTRYPOINTS } from './postgres/routable.ts';
 import { SEAL_ENTRYPOINTS } from './seal/routable.ts';
@@ -18,6 +17,5 @@ export const BUILT_IN_ENTRYPOINTS: ReadonlyArray<EntrypointDecl> = [
 	...WALLET_ENTRYPOINTS,
 	...WALRUS_ENTRYPOINTS,
 	...SEAL_ENTRYPOINTS,
-	...DEEPBOOK_ENTRYPOINTS,
 	...POSTGRES_ENTRYPOINTS,
 ];

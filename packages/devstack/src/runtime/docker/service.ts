@@ -7,7 +7,7 @@
 // via the underlying subsystems but the public surface projects to
 // the contract's narrow `ContainerRuntimeError`.
 
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
@@ -31,6 +31,7 @@ import type {
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { chainId, contentHash } from '../../substrate/brand.ts';
+import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
@@ -57,6 +58,7 @@ import {
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
+import { expectedImageOwnershipLabels } from './labels.ts';
 import { followLogs as followLogsStream } from './logs.ts';
 import { ensureNetwork as ensureNetworkImpl } from './network.ts';
 import {
@@ -74,14 +76,14 @@ import {
 export class ContainerRuntimeService extends Context.Service<
 	ContainerRuntimeService,
 	ContainerRuntime
->()('@devstack-rewrite/runtime-docker/ContainerRuntime') {}
+>()('@devstack/runtime-docker/ContainerRuntime') {}
 
 // -----------------------------------------------------------------------------
 // Cycle counter — stamped on container labels at create time
 // -----------------------------------------------------------------------------
 
 export class DockerCycle extends Context.Service<DockerCycle, Ref.Ref<number>>()(
-	'@devstack-rewrite/runtime-docker/Cycle',
+	'@devstack/runtime-docker/Cycle',
 ) {}
 
 export const layerDockerCycleInitial: Layer.Layer<DockerCycle> = Layer.effect(
@@ -102,7 +104,7 @@ const mapToContractError = <R, A>(
 
 const snapshotTempTag = (containerName: string): string => {
 	const safeName = containerName.replace(/[^A-Za-z0-9_.-]/g, '-');
-	const suffix = randomUUID().replace(/-/g, '').slice(0, 12);
+	const suffix = mintRandomSuffix(12);
 	return `devstack-snapshot:${safeName}-${suffix}`;
 };
 
@@ -304,6 +306,15 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// collide on the sanitized contextPath form.
 				const hash = buildContentHash(effectiveCtx);
 				const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
+				// Owner identity flows through as `--label` flags on
+				// `docker build`, making the resulting image visible to
+				// label-driven prune. Labels are metadata, NOT part of
+				// the cache key — a previously-unlabelled cached image
+				// stays a cache hit (the legacy cleanup script reaps it).
+				const ownerLabels =
+					effectiveCtx.owner !== undefined
+						? expectedImageOwnershipLabels(effectiveCtx.owner)
+						: undefined;
 				return yield* ensureImageCached(
 					{
 						contextPath: effectiveCtx.contextPath,
@@ -311,6 +322,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 						platform: effectiveCtx.platform,
 						buildArgs: effectiveCtx.buildArgs,
 						tag,
+						...(ownerLabels !== undefined && { labels: ownerLabels }),
 					},
 					{
 						namespace: 'runtime-docker-build',

@@ -57,22 +57,20 @@ import type {
 } from '../../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
-import type {
-	AllocatedPort,
-	PortBroker,
-	PortKind,
-} from '../../../substrate/runtime/port-broker/index.ts';
+import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
-import { renderUrl, routerHostname } from '../../../orchestrators/router/hostname.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
+import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import {
 	DEFAULT_SUI_CLI_VERSION,
 	suiCliImageBuildContext,
 } from '../../../substrate/runtime/sui-move-build/index.ts';
-import { noopClockAdvancer } from '../auto-tick.ts';
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import {
 	SUI_FAUCET_ENTRYPOINT_PORT,
 	SUI_FAUCET_ENDPOINT_NAME,
@@ -127,7 +125,6 @@ const PROBE_FETCH_TIMEOUT_MS = 3000;
 export interface LocalModeBootResult {
 	readonly resolved: ResolvedSuiNetwork;
 	readonly client: SuiClient;
-	readonly clockAdvancer: typeof noopClockAdvancer;
 }
 
 /**
@@ -145,11 +142,11 @@ export const bootLocalMode = (
 	identity: Identity,
 	portBroker: PortBroker,
 	opts: SuiLocalOptions,
-): Effect.Effect<LocalModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LocalModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
 		yield* setCurrentPluginPhase('resolving Sui local image');
-		const image = yield* resolveImage(runtime, opts);
+		const image = yield* resolveImage(runtime, identity, opts);
 
 		// ----- 2. Allocate ports + ensure container --------------------------
 		yield* setCurrentPluginPhase('creating Sui validator container');
@@ -189,7 +186,7 @@ export const bootLocalMode = (
 
 		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
 		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ 'sui.container': handle.name }),
+			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
 
 		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
@@ -210,11 +207,10 @@ export const bootLocalMode = (
 		// SAME image we built/resolved here. Without this the package
 		// plugin would have to re-resolve the image, doubling the
 		// build-context hash work and risking digest drift.
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl,
-			sdkRpcUrl: directRpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
 			graphqlUrl,
@@ -237,10 +233,9 @@ export const bootLocalMode = (
 		return {
 			resolved,
 			client,
-			clockAdvancer: noopClockAdvancer,
 		};
 	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { 'devstack.plugin': 'sui' } }),
+		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
 	);
 
 // ---------------------------------------------------------------------------
@@ -249,6 +244,7 @@ export const bootLocalMode = (
 
 export const resolveImage = (
 	runtime: ContainerRuntime,
+	identity: Identity,
 	opts: SuiLocalOptions,
 ): Effect.Effect<ImageRef, SuiPluginError> =>
 	Effect.gen(function* () {
@@ -275,14 +271,21 @@ export const resolveImage = (
 				);
 		}
 		const version = opts.version ?? DEFAULT_SUI_VERSION;
+		const owner = {
+			app: identity.app,
+			stack: identity.stack,
+			plugin: 'sui',
+			role: 'validator',
+		} as const;
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {
 						contextPath: opts.image.build.context,
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
 						buildArgs: { SUI_VERSION: version },
+						owner,
 					}
-				: suiCliImageBuildContext(version);
+				: { ...suiCliImageBuildContext(version), owner };
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(
@@ -426,6 +429,9 @@ const ensureLocalValidatorContainerAttempt = (
 // Port mapping — host:container pairs
 // ---------------------------------------------------------------------------
 
+// Exported test entry point: resolves the host:container port pairs
+// without surfacing the release handle (the live boot path uses
+// `resolvePortMappingWithRelease` directly to retain the release).
 export const resolvePortMapping = (
 	portBroker: PortBroker,
 	override: Readonly<Record<number, number>> | undefined,
@@ -455,9 +461,19 @@ const resolvePortMappingWithRelease = (
 		});
 	}
 	return Effect.gen(function* () {
-		const rpc = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
-		const faucet = yield* allocatePort(portBroker, 'http', DEFAULT_HOST_FAUCET_PORT, 'faucet');
-		const graphql = yield* allocatePort(portBroker, 'rpc', DEFAULT_HOST_GRAPHQL_PORT, 'graphql');
+		const rpc = yield* allocatePort(portBroker, 'sui:rpc', DEFAULT_HOST_RPC_PORT, 'rpc');
+		const faucet = yield* allocatePort(
+			portBroker,
+			'sui:faucet',
+			DEFAULT_HOST_FAUCET_PORT,
+			'faucet',
+		);
+		const graphql = yield* allocatePort(
+			portBroker,
+			'sui:graphql',
+			DEFAULT_HOST_GRAPHQL_PORT,
+			'graphql',
+		);
 		return {
 			ports: [
 				portPublish(CONTAINER_RPC_PORT, rpc.port),
@@ -529,7 +545,7 @@ const portPublish = (containerPort: number, hostPort: number): ContainerPortPubl
 
 const allocatePort = (
 	portBroker: PortBroker,
-	kind: PortKind,
+	owner: string,
 	preferredPort: number | undefined,
 	label: 'rpc' | 'faucet' | 'graphql',
 ): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> => {
@@ -538,14 +554,14 @@ const allocatePort = (
 	): Effect.Effect<AllocatedPort, SuiPluginError, Scope.Scope> =>
 		portBroker
 			.allocate({
-				kind,
+				owner,
 				...(hint === undefined ? {} : { preferredPort: hint }),
 				probeHost: DOCKER_PUBLISH_HOST,
 			})
 			.pipe(
 				Effect.catchTag('PortBrokerError', (cause) =>
 					hint !== undefined && cause.reason === 'preferred-busy'
-						? portBroker.allocate({ kind, probeHost: DOCKER_PUBLISH_HOST })
+						? portBroker.allocate({ owner, probeHost: DOCKER_PUBLISH_HOST })
 						: Effect.fail(cause),
 				),
 				Effect.mapError((cause) =>
@@ -601,7 +617,7 @@ const waitForReady = (
 					suiPluginError(
 						'rpc-probe',
 						`sui local mode: RPC endpoint ${rpcUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),
@@ -623,7 +639,7 @@ const waitForReady = (
 					suiPluginError(
 						'faucet-probe',
 						`sui local mode: faucet endpoint ${faucetUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),
@@ -642,7 +658,7 @@ const waitForReady = (
 					suiPluginError(
 						'graphql-probe',
 						`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${stringifyCause(cause)}`,
+							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
 						cause,
 					),
 			),
@@ -666,7 +682,7 @@ const routedSuiUrl = (
 	endpointName: string,
 	port: number,
 ): Effect.Effect<string, SuiPluginError> =>
-	routerHostname(identity, endpointName).pipe(
+	routedHostname(identity, endpointName).pipe(
 		Effect.map((hostname) => renderUrl({ protocol: 'http', hostname, port })),
 		Effect.mapError((cause) =>
 			suiPluginError(
@@ -676,13 +692,3 @@ const routedSuiUrl = (
 			),
 		),
 	);
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

@@ -21,7 +21,6 @@ export { DockerHost, DockerSpawner, layerDockerHost, layerDockerHostDefault } fr
 export {
 	BuildFailed,
 	ContainerCreateFailed,
-	ContainerExited,
 	ContainerNameCollisionUnrecoverable,
 	ContainerRemoveFailed,
 	DaemonUnreachable,
@@ -81,9 +80,9 @@ export {
 	type ContainerSummary,
 	type ImageSummary,
 	listDevstackContainers,
+	listDevstackContainersByKind,
 	listDevstackImages,
 	listDevstackNetworks,
-	listDevstackRouterContainers,
 	listDevstackVolumes,
 	listContainers,
 	listImages,
@@ -93,13 +92,16 @@ export {
 	type VolumeSummary,
 } from './inventory.ts';
 
-export { followLogs, type FollowLogsOptions, logTail } from './logs.ts';
+export { followLogs, type FollowLogsOptions } from './logs.ts';
 
 export {
 	connect,
 	disconnect,
 	ensureNetwork,
 	type EnsureNetworkOptions,
+	forceDisconnect,
+	listAttachedContainers,
+	type NetworkAttachedEndpoint,
 	readIps,
 	SHARED_NETWORK_NAME,
 	waitForIp,
@@ -108,10 +110,10 @@ export {
 
 export {
 	removeDevstackContainers,
+	removeDevstackContainersByKindAndName,
 	removeDevstackImages,
 	removeDevstackNetworks,
 	removeDevstackNetworksBestEffort,
-	removeDevstackRouterContainers,
 	removeDevstackVolumes,
 	removeManagedContainers,
 	removeManagedImages,
@@ -119,6 +121,8 @@ export {
 	removeManagedVolumes,
 	sweepOrphans,
 	type DevstackNetworkRemovalSummary,
+	type ForeignNetworkHolder,
+	type StaleNetworkEndpoint,
 } from './sweep.ts';
 
 export { ensureVolume, removeVolume } from './volume.ts';
@@ -135,6 +139,7 @@ export {
 	renderComposeNetworkLabels,
 	renderComposeVolumeLabels,
 	expectedContainerOwnershipLabels,
+	expectedImageOwnershipLabels,
 	expectedNetworkOwnershipLabels,
 	expectedVolumeOwnershipLabels,
 	ownershipMismatchDetail,

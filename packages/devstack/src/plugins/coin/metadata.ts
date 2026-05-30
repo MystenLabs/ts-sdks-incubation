@@ -18,7 +18,9 @@ import { Effect, Ref, Schema } from 'effect';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { makeSpacedRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { coinError, type CoinError } from './errors.ts';
+import { CoinSpans } from './spans.ts';
 
 /** Per-attempt timeout (5 seconds) — distilled-doc invariant. */
 export const METADATA_FETCH_TIMEOUT_MS = 5_000;
@@ -109,8 +111,8 @@ export const fetchCoinMetadataOnce = (
 			Effect.catch((err): Effect.Effect<unknown> => {
 				return Effect.logWarning('coin metadata fetch failed; soft-degrading to null').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.coinType]: fullCoinType,
-						[SpanAttr.errorCause]: stringifyCause(err.cause),
+						[CoinSpans.type]: fullCoinType,
+						[SpanAttr.errorCause]: formatUnknownError(err.cause),
 					}),
 					Effect.as(null),
 				);
@@ -126,14 +128,18 @@ export const fetchCoinMetadataOnce = (
 					'coin metadata response had non-conforming shape; degrading to null',
 				).pipe(
 					Effect.annotateLogs({
-						[SpanAttr.coinType]: fullCoinType,
-						[SpanAttr.errorCause]: stringifyCause(issue.cause ?? issue),
+						[CoinSpans.type]: fullCoinType,
+						[SpanAttr.errorCause]: formatUnknownError(issue.cause ?? issue),
 					}),
 					Effect.as(null as OnchainCoinMetadata | null),
 				),
 			),
 		);
-	}).pipe(Effect.withSpan('coin.metadata.fetch', { attributes: { fullCoinType } }));
+	}).pipe(
+		Effect.withSpan('devstack.plugin.coin.metadata.fetch', {
+			attributes: { [CoinSpans.metadata.fullCoinType]: fullCoinType },
+		}),
+	);
 
 /** Batch-fetch with cache. Each fullCoinType is asked at most once
  *  per Layer-invocation. The fetches run concurrently — distilled-doc
@@ -190,14 +196,4 @@ export const validateBareCoinType = (identifier: string): CoinError | null => {
 		});
 	}
 	return null;
-};
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
 };

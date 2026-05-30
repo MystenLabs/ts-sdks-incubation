@@ -15,7 +15,7 @@
 //      `info`/`warn`/`error`/`fatal`) are exercised without diverting
 //      the buffer write.
 
-import { Effect, Layer } from 'effect';
+import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -25,13 +25,9 @@ import {
 	layerLogger,
 	type LogLevel,
 } from '../../../../src/substrate/runtime/observability/logger.ts';
-import {
-	Redactor,
-	layerRedactor,
-} from '../../../../src/substrate/runtime/observability/redaction.ts';
 import { pluginKey } from '../../../../src/substrate/brand.ts';
 
-const testLoggerLayer = layerLogger.pipe(Layer.provideMerge(layerRedactor));
+const testLoggerLayer = layerLogger;
 
 describe('Logger', () => {
 	it.effect('records a single line under the requested tag with the payload level', () =>
@@ -197,22 +193,6 @@ describe('Logger', () => {
 			yield* logger.log('no-fields', null, { level: 'info', message: 'plain' });
 			const buf = yield* logger.readTag('no-fields');
 			expect(buf.lines[0]!.fields).toEqual({});
-		}).pipe(Effect.provide(testLoggerLayer)),
-	);
-
-	it.effect('applies registered redaction rules to buffered messages and fields', () =>
-		Effect.gen(function* () {
-			const redactor = yield* Redactor;
-			const logger = yield* Logger;
-			yield* redactor.register({ kind: 'literal', value: 'secret-token' });
-			yield* logger.log('secret', null, {
-				level: 'info',
-				message: 'ready secret-token',
-				fields: { token: 'secret-token' },
-			});
-			const buf = yield* logger.readTag('secret');
-			expect(buf.lines[0]!.message).toBe('ready <redacted>');
-			expect(buf.lines[0]!.fields).toEqual({ token: '<redacted>' });
 		}).pipe(Effect.provide(testLoggerLayer)),
 	);
 

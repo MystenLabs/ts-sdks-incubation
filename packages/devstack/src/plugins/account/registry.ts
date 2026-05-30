@@ -17,6 +17,7 @@
 // capability-decl surface so the substrate orchestrates dedup-by-
 // name and last-write-wins without an engine import.
 
+import { projection } from '../../api/define-capabilities.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 
@@ -54,11 +55,24 @@ export interface AccountRegistryFunding {
 	readonly entries?: ReadonlyArray<AccountRegistryFundingEntry>;
 }
 
+/** Per-entry funding status — the projection's per-row "did we actually
+ *  hit the faucet?" signal.
+ *
+ *   - `'funded'`            — a wire call ran and balance settled.
+ *   - `'already-satisfied'` — the pre-existing balance covered the
+ *                             request, so no wire call ran.
+ *   - `'skipped'`           — the entry was zero-amount, dropped at
+ *                             the funding-pass boundary, or there was
+ *                             no registered strategy (cross-cutting
+ *                             non-SUI silent-noop).
+ *
+ *  Splitting `'funded'` from `'already-satisfied'` matches the
+ *  applied-projection invariant in `service.ts:858-887`. */
 export interface AccountRegistryFundingEntry {
 	readonly coin: string;
 	readonly fullCoinType: string;
 	readonly amount: string;
-	readonly status: 'funded' | 'skipped';
+	readonly status: 'funded' | 'already-satisfied' | 'skipped';
 }
 
 /** Construct the strategy-contributor decl Account emits for one
@@ -77,22 +91,21 @@ export const makeAccountProjectionContribution = <Name extends string>(
 	entry: AccountRegistryEntry & { readonly name: Name },
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
-	return {
-		kind: 'projection',
-		event: {
-			tag: 'account.updated',
-			account: {
-				key: `account/${entry.name}` as `account/${string}`,
-				rowKey: null,
-				name: entry.name,
-				address: entry.address,
-				scheme: entry.scheme,
-				source: entry.source,
-				funding: entry.funding,
-				walletVisible: false,
-				updatedAt,
-			},
-			at: updatedAt,
+	const key = `account/${entry.name}` as `account/${string}`;
+	return projection({
+		kind: 'account',
+		key,
+		payload: {
+			key,
+			rowKey: null,
+			name: entry.name,
+			address: entry.address,
+			scheme: entry.scheme,
+			source: entry.source,
+			funding: entry.funding,
+			walletVisible: false,
+			updatedAt,
 		},
-	};
+		at: updatedAt,
+	});
 };

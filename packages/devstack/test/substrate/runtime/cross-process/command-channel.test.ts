@@ -5,10 +5,6 @@
 // the tail subscription delivers records appended after the
 // subscription started.
 
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
 import { Effect, Fiber, Schema, Stream } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
@@ -23,17 +19,15 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../../src/substrate/runtime/cross-process/command-channel/index.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'cmd-channel-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 describe('command-channel', () => {
 	// These tests use real wall-clock time (the file-channel tail polls
 	// via `Effect.sleep`; `it.effect`'s default TestClock would freeze
 	// the poll loop). `it.live` runs under the wall-clock runtime.
 	it.live('publisher writes a record that the subscriber observes', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const sub = yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -67,16 +61,13 @@ describe('command-channel', () => {
 				const cmd = sub[0]!.command as { tag: string };
 				expect(cmd.tag).toBe('shutdown.requested');
 				expect(sub[0]!.publisherPid).toBe(process.pid);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('ack/error correlate to the originating command id', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -104,29 +95,26 @@ describe('command-channel', () => {
 							at: 0,
 						} satisfies EngineCommand;
 						const published = yield* publisher.publish(command);
-						const reply = yield* publisher.awaitCompletion(published.id, {
+						const reply = yield* publisher.awaitCompletion(published, {
 							timeoutMillis: 2000,
 						});
 						return reply;
 					}),
 				);
 				expect(result.ok).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.live('awaitCompletion times out when no ack arrives', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				const result = yield* Effect.scoped(
 					Effect.gen(function* () {
 						const publisher = yield* makeCommandChannelPublisher(paths);
 						const published = yield* publisher.publish({ tag: 'shutdown.requested' });
-						return yield* publisher.awaitCompletion(published.id, {
+						return yield* publisher.awaitCompletion(published, {
 							timeoutMillis: 100,
 						});
 					}),
@@ -135,16 +123,77 @@ describe('command-channel', () => {
 				if (!result.ok) {
 					expect(result.message).toMatch(/timed out/);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
+	);
+
+	it.live('awaitCompletion correlates correctly past a large unrelated events backlog', () =>
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
+				const paths = commandChannelPaths(root);
+				const result = yield* Effect.scoped(
+					Effect.gen(function* () {
+						const publisher = yield* makeCommandChannelPublisher(paths);
+						const subscriber = yield* makeCommandChannelSubscriber(paths, {
+							fromOffset: 'start',
+							pollMillis: 20,
+						});
+
+						// Seed a large backlog of unrelated engine events AND a
+						// stale ack that correlates to a DIFFERENT command id.
+						// `publish` snapshots the events-file offset at publish
+						// time, so `awaitCompletion` tails only from there — it
+						// must neither re-scan this backlog nor be fooled by the
+						// stale ack into a wrong correlation.
+						for (let i = 0; i < 200; i++) {
+							yield* subscriber.publishEvent({
+								tag: 'manifest.flushed',
+								manifestVersion: i,
+								at: 0,
+							});
+						}
+						yield* subscriber.ack('not-the-command-we-await', 'stale');
+
+						// Supervisor acks only the command it actually observes,
+						// echoing its id as the correlation key + a payload we can
+						// assert against.
+						yield* Effect.forkChild(
+							subscriber.commands.pipe(
+								Stream.runForEach((rec) =>
+									subscriber
+										.ack(rec.id, 'observed', { echoedId: rec.id })
+										.pipe(Effect.catch(() => Effect.void)),
+								),
+								Effect.catch(() => Effect.void),
+							),
+							{ startImmediately: true },
+						);
+						yield* Effect.sleep('30 millis');
+
+						const published = yield* publisher.publish({ tag: 'apply.requested' });
+						const reply = yield* publisher.awaitCompletion(published, {
+							timeoutMillis: 2000,
+						});
+						return { reply, publishedId: published.id, fromOffset: published.fromOffset };
+					}),
+				);
+
+				// Correct reply despite the 200-event + stale-ack backlog: the
+				// await correlated to THIS command's id, not the stale one.
+				expect(result.reply.ok).toBe(true);
+				if (result.reply.ok) {
+					expect(result.reply.payload).toEqual({ echoedId: result.publishedId });
+				}
+				// The publish-time offset was non-zero — proving the await
+				// started past the seeded backlog rather than from byte 0.
+				expect(result.fromOffset).toBeGreaterThan(0);
+			}),
+		),
 	);
 
 	it.effect('readAllRecords replays every command on disk', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -165,16 +214,13 @@ describe('command-channel', () => {
 				expect((all[0]!.command as { tag: string }).tag).toBe('shutdown.requested');
 				expect((all[1]!.command as { tag: string }).tag).toBe('shutdown.hardKillRequested');
 				expect((all[2]!.command as { tag: string }).tag).toBe('apply.requested');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('engine event records carry kind: engine', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('cmd-channel', (root) =>
+			Effect.gen(function* () {
 				const paths = commandChannelPaths(root);
 				yield* Effect.scoped(
 					Effect.gen(function* () {
@@ -186,9 +232,7 @@ describe('command-channel', () => {
 				const all = yield* readAllRecords<EventRecord>(paths.eventsFile, (raw) => decode(raw));
 				expect(all).toHaveLength(1);
 				expect(all[0]!.kind).toBe('engine');
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 });

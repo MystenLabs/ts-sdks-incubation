@@ -33,6 +33,18 @@
 //
 // No teardown of the devstack itself — that's the supervisor's job;
 // the preset is a pure reader.
+//
+// NOTE: this module must NOT import `vitest` at the top level. The
+// public `./vitest` barrel re-exports this file, and the build is
+// unbundled — so a bare `import … from 'vitest'` here would land a
+// runtime `import { … } from 'vitest'` at barrel module-init. `vitest`
+// is an OPTIONAL peer (declared in package.json's
+// `peerDependenciesMeta`), and the documented way to consume the config
+// helpers is from a `vitest.config.ts`; a consumer who legitimately
+// lacks `vitest` and imports the barrel would otherwise get a hard
+// `Cannot find package 'vitest'` at barrel evaluation. The
+// `VitestLifecycleHooks` shape below is matched STRUCTURALLY for the
+// same reason.
 
 import {
 	loadStackContext,
@@ -43,8 +55,20 @@ import { resolveVitestEnv, VITEST_ENV_VARS, RECOMMENDED_TEST_STACK } from './env
 import { VitestSetupPreconditionError } from './errors.ts';
 
 // -----------------------------------------------------------------------------
-// Captured fixture — single shared handle across the test file
+// Captured fixture — single per-worker handle
 // -----------------------------------------------------------------------------
+//
+// Vitest workers reuse a single module-level binding across the test
+// files they run, and run those files strictly sequentially
+// (`beforeAll → its → afterAll`, then the next file). The isolation
+// guarantee that matters is therefore narrow: a file's fixture must not
+// bleed into a LATER file that forgot `useDevstackTestSetup`. That is
+// satisfied by `runDevstackAfterAll` clearing the binding at end-of-file
+// — no per-test-path keying is needed (and keying would require reading
+// `expect.getState().testPath`, forcing the forbidden top-level `vitest`
+// import; see the module header). A single binding cleared on `afterAll`
+// is both sufficient and keeps the barrel's transitive graph free of any
+// runtime `vitest` import.
 
 let captured: StackContext | undefined;
 
@@ -70,8 +94,10 @@ export interface TestSetupOptions extends LoadStackContextOptions {
 	readonly requireDevstack?: boolean;
 	/** Suppress the stack-name advisory. Default `false`. */
 	readonly silent?: boolean;
-	/** Custom writer for the advisory line. Defaults to `console.warn`.
-	 *  Tests substitute a buffer. */
+	/** Custom writer for the advisory line. Defaults to a stderr
+	 *  writer (`process.stderr.write(line + '\n')`) — matches the
+	 *  build-integration surface IO discipline (no `console.*` in
+	 *  production paths). Tests substitute a buffer. */
 	readonly writeAdvisory?: (line: string) => void;
 }
 
@@ -87,7 +113,8 @@ export const runDevstackBeforeAll = (options: TestSetupOptions = {}): void => {
 	const resolved = resolveVitestEnv(env);
 
 	if (!options.silent && !resolved.stackWasExplicit) {
-		const write = options.writeAdvisory ?? ((line: string) => console.warn(line));
+		const write =
+			options.writeAdvisory ?? ((line: string) => void process.stderr.write(`${line}\n`));
 		write(
 			`[devstack/vitest] ${VITEST_ENV_VARS.STACK} is unset; tests will read the '${resolved.stack}' stack. ` +
 				`Set ${VITEST_ENV_VARS.STACK}=${RECOMMENDED_TEST_STACK} in the test script to avoid contention with \`pnpm dev\`.`,

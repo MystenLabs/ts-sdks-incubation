@@ -19,6 +19,7 @@
  *  requires editing this list AND the cause-walker's display table. */
 export type AccountAcquirePhase =
 	| 'validate-name'
+	| 'validate-funding'
 	| 'load-keystore'
 	| 'read-env'
 	| 'decode-inline'
@@ -51,14 +52,42 @@ export const accountAcquireError = (
 	parts: Omit<AccountAcquireError, '_tag'>,
 ): AccountAcquireError => ({ _tag: 'AccountAcquireError', ...parts });
 
-/** Phases for `AccountSignError`. The "sign-and-execute" surface is
- *  the canonical entry point; the impersonation refusal lives here
- *  so a synchronous throw maps cleanly onto an async catch boundary
- *  when callers wrap the resolved-account signer in `Effect.try`. */
+/** Phases for `AccountSignError`. Strictly transport / lifecycle
+ *  failures along the sign-and-execute pipeline — `signAndExecute`
+ *  itself returns a `SignAndExecuteResult` discriminated union for
+ *  the on-chain outcome (success vs `FailedTransaction`), so
+ *  on-chain failures are NOT in this phase set. The impersonation
+ *  refusal lives here so a synchronous throw maps cleanly onto an
+ *  async catch boundary when callers wrap the resolved-account
+ *  signer in `Effect.try`.
+ *
+ *   - `build-tx`         — transaction serialisation threw before
+ *                          signing.
+ *   - `sign`             — the signer rejected / threw.
+ *   - `submit`           — `executeTransaction` transport failure
+ *                          (RPC unreachable, network error). The
+ *                          response never arrived.
+ *   - `no-digest`        — `executeTransaction` returned a response
+ *                          that violates the SDK envelope contract
+ *                          (`$kind` missing OR `Transaction.digest`
+ *                          missing OR `FailedTransaction.digest`
+ *                          missing). Protocol violation, not a
+ *                          transport failure — kept distinct so
+ *                          `'submit'` keeps a single failure-kind
+ *                          (per §2 "phases describe steps, not
+ *                          failure kinds").
+ *   - `await-finality`   — `waitForTransaction` failed AFTER a
+ *                          submit-success; the digest exists but the
+ *                          finality wait broke.
+ *   - `dependent-package-not-found`
+ *   - `lease-acquire`
+ *   - `impersonation-bypass-attempt`
+ */
 export type AccountSignPhase =
 	| 'build-tx'
 	| 'sign'
 	| 'submit'
+	| 'no-digest'
 	| 'await-finality'
 	| 'dependent-package-not-found'
 	| 'lease-acquire'

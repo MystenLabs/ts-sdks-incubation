@@ -103,7 +103,7 @@ export class CliInternalError extends Data.TaggedError('CliInternalError')<{
  *
  *  Architecture § Learnings: "Already-reported sentinel pattern" — the
  *  marker traverses the cause structure used by the Effect runtime, so
- *  the top-level `Effect.catchAll` sees it. */
+ *  the top-level `Effect.catch` sees it. */
 export class CliAlreadyReportedError extends Data.TaggedError('CliAlreadyReportedError')<{
 	readonly exitCode: ExitCode;
 }> {}
@@ -234,6 +234,14 @@ export const hintFor = (error: CliError): string | undefined => {
 		case 'CliNoSupervisorError':
 			return error.hint;
 		case 'CliConfigNotFoundError':
+			// Operator-facing hint: the most common cause is running a
+			// devstack verb in a directory whose ancestors don't contain a
+			// `devstack.config.ts`. Two actions resolve it — either
+			// initialize one in the current tree, or point the loader at
+			// an explicit path. We surface both so the envelope renderer
+			// (JSON `error.hint`, human stderr line) can render one short
+			// line instead of forcing the caller to remember the recipe.
+			return 'config file not found; run `devstack init` or pass `--config <path>`';
 		case 'CliConfigInvalidError':
 		case 'CliSnapshotNotFoundError':
 		case 'CliInternalError':

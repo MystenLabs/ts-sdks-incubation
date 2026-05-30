@@ -32,6 +32,7 @@ import { FileSystem } from 'effect';
 import type { EndpointKey, PluginKey } from '../../brand.ts';
 import {
 	type EndpointEntry,
+	type ManifestCodegen,
 	type ManifestExtras,
 	type ManifestEnvelope,
 	ManifestEnvelopeSchema,
@@ -104,7 +105,12 @@ export interface PluginManifestContribution {
 export interface WriteManifestInput {
 	readonly identity: ManifestEnvelope['identity'];
 	readonly contributions: ReadonlyArray<PluginManifestContribution>;
+	readonly endpoints?: ReadonlyArray<EndpointEntry>;
 	readonly extras?: ManifestExtras;
+	/** Per-stack codegen metadata (the resolved absolute `generatedDir`).
+	 *  Optional + additive — omitting it produces an envelope without the
+	 *  `codegen` key, identical to a pre-field manifest. */
+	readonly codegen?: ManifestCodegen;
 }
 
 /**
@@ -123,6 +129,21 @@ export const buildEnvelope = (
 		const services: Record<string, unknown> = {};
 		const endpoints: Record<string, EndpointEntry> = {};
 		const extras: Record<string, unknown> = { ...input.extras };
+
+		const addEndpoint = (ep: EndpointEntry): Effect.Effect<void, ManifestError> =>
+			Effect.gen(function* () {
+				const ek = ep.endpointKey as string;
+				if (ek in endpoints) {
+					return yield* Effect.fail(
+						new ManifestError({
+							reason: 'duplicate-contribution',
+							path: '(in-memory envelope)',
+							detail: `endpointKey ${ek} contributed twice`,
+						}),
+					);
+				}
+				endpoints[ek] = ep;
+			});
 
 		for (const contribution of input.contributions) {
 			const key = contribution.pluginKey as string;
@@ -151,18 +172,11 @@ export const buildEnvelope = (
 				}
 			}
 			for (const ep of contribution.endpoints) {
-				const ek = ep.endpointKey as string;
-				if (ek in endpoints) {
-					return yield* Effect.fail(
-						new ManifestError({
-							reason: 'duplicate-contribution',
-							path: '(in-memory envelope)',
-							detail: `endpointKey ${ek} contributed twice`,
-						}),
-					);
-				}
-				endpoints[ek] = ep;
+				yield* addEndpoint(ep);
 			}
+		}
+		for (const ep of input.endpoints ?? []) {
+			yield* addEndpoint(ep);
 		}
 
 		return {
@@ -171,6 +185,10 @@ export const buildEnvelope = (
 			services,
 			endpoints,
 			extras,
+			// Spread only when present so an omitted `codegen` yields the
+			// exact same envelope (and serialized bytes) as a pre-field
+			// manifest — additive, no churn for stacks that don't record it.
+			...(input.codegen !== undefined ? { codegen: input.codegen } : {}),
 		};
 	});
 
@@ -262,5 +280,5 @@ export const readManifest = (
 // directly.
 // -----------------------------------------------------------------------------
 
-export type { EndpointEntry, EndpointKey, ManifestEnvelope, PluginKey };
+export type { EndpointEntry, EndpointKey, ManifestCodegen, ManifestEnvelope, PluginKey };
 export { ManifestEnvelopeSchema };

@@ -1,16 +1,21 @@
 // Append-only NDJSON channel.
 //
-// One-record-per-line, atomic append via `fs.appendFileSync` with
-// `flag: 'a'` (POSIX guarantees the write is atomic for buffers under
-// PIPE_BUF; one JSON line is comfortably under that on every platform
-// we run). The tail-reader polls via offset bookkeeping — `fs.watch`
+// One-record-per-line. Each append is `fs.appendFileSync` with
+// `flag: 'a'`, serialized cross-process by the runtime-control lock
+// (`withRuntimeControlLock`, an O_EXCL create/unlink). The LOCK — not
+// PIPE_BUF — is what guarantees a record never interleaves with a
+// concurrent append: a JSON record can exceed PIPE_BUF (the POSIX
+// atomic-append bound is only ~512 bytes on macOS, 4096 on Linux), so
+// relying on PIPE_BUF alone would let a large record tear under
+// contention. The tail-reader polls via offset bookkeeping — `fs.watch`
 // is unreliable across platforms for "file grew" notifications
 // (especially over NFS, which the cross-process protocol must remain
 // safe on per architecture § Cross-process safety protocol).
 //
 // Records are framed by a literal newline. A partial trailing line
-// (writer mid-flight when reader observed) is buffered until the next
-// poll iteration completes the line.
+// (writer mid-flight when reader observed, or a short read bisecting a
+// record) is buffered as raw bytes until a later poll completes the
+// line — see `drainNewLines` for why the buffer is bytes, not a string.
 
 import {
 	appendFileSync,
@@ -155,13 +160,20 @@ export const readAllRecords = <A>(
 
 interface TailState {
 	offset: number;
-	partial: string;
+	/** Raw, not-yet-decoded bytes of the trailing partial line. Held as a
+	 *  Buffer rather than a decoded string so an incomplete UTF-8
+	 *  multibyte sequence straddling a short-read boundary survives intact
+	 *  until its continuation bytes arrive on the next poll. Decoding
+	 *  per-read (the old behaviour) emitted U+FFFD for the split sequence
+	 *  and lost the continuation bytes, which could corrupt a non-ASCII
+	 *  record into invalid JSON that is then silently dropped. */
+	partial: Buffer;
 }
 
 /** Read newly-appended bytes from `state.offset` to current EOF. Updates
  *  `state` in place. Returns the freshly-completed lines. A trailing
- *  partial line (no newline yet) is preserved in `state.partial` and
- *  prepended on the next poll. */
+ *  partial line (no newline yet) is preserved as raw bytes in
+ *  `state.partial` and prepended on the next poll. */
 const drainNewLines = (
 	path: string,
 	state: TailState,
@@ -175,12 +187,34 @@ const drainNewLines = (
 			const fd = openSync(path, 'r');
 			try {
 				const buf = Buffer.alloc(grow);
-				readSync(fd, buf, 0, grow, state.offset);
-				state.offset = stat.size;
-				const chunk = state.partial + buf.toString('utf8');
-				const parts = chunk.split('\n');
-				state.partial = parts.pop() ?? '';
-				return parts.filter((l) => l.length > 0);
+				// POSIX `read(2)` may short-return (especially across
+				// filesystems like NFS); advance the offset by what was
+				// ACTUALLY read, not what we asked for. A short read just
+				// means the rest will arrive on the next poll iteration.
+				const bytesRead = readSync(fd, buf, 0, grow, state.offset);
+				if (bytesRead <= 0) return [];
+				state.offset += bytesRead;
+				// Split on the newline BYTE (0x0A) and decode only complete
+				// lines. A short read can bisect a multibyte codepoint; by
+				// keeping the trailing fragment as raw bytes we never decode
+				// a half codepoint, so non-ASCII records reassemble byte-for-
+				// byte across poll cycles. 0x0A never appears as a
+				// continuation byte in UTF-8, so byte-level framing is sound.
+				const chunk = Buffer.concat([state.partial, buf.subarray(0, bytesRead)]);
+				const completedLines: string[] = [];
+				let lineStart = 0;
+				for (let i = 0; i < chunk.length; i++) {
+					if (chunk[i] === 0x0a) {
+						if (i > lineStart) {
+							completedLines.push(chunk.toString('utf8', lineStart, i));
+						}
+						lineStart = i + 1;
+					}
+				}
+				// Retain the unterminated remainder (possibly an incomplete
+				// multibyte sequence) as raw bytes for the next poll.
+				state.partial = Buffer.from(chunk.subarray(lineStart));
+				return completedLines;
 			} finally {
 				closeSync(fd);
 			}
@@ -195,8 +229,12 @@ const drainNewLines = (
  *  - `fromOffset === 'start'` replays every existing record then tails.
  *  - `fromOffset === number` resumes from a known byte offset.
  *
- *  Decode errors are surfaced as Stream failures with the offending
- *  line attached so the consumer can pick a retry / skip policy.
+ *  By default decode errors are surfaced as Stream failures with the
+ *  offending line attached so the consumer can pick a retry / skip
+ *  policy. Pass `onDecodeError: 'skip'` to drop the bad line instead —
+ *  required for NDJSON readers that race atomic-append writers (a
+ *  truncated/corrupt mid-flight line is normal and MUST NOT kill the
+ *  stream; see STYLE_GUIDE §20).
  *
  *  The poll loop uses `Effect.sleep` between iterations, so cooperative
  *  scheduling is preserved (no busy loop).
@@ -207,11 +245,13 @@ export const tailRecords = <A>(
 	options: {
 		readonly fromOffset?: 'start' | 'current' | number;
 		readonly pollMillis?: number;
+		readonly onDecodeError?: 'fail' | 'skip';
 	} = {},
 ): Stream.Stream<A, CommandChannelError, Scope.Scope> =>
 	Stream.unwrap(
 		Effect.gen(function* () {
 			const pollMillis = options.pollMillis ?? DEFAULT_TAIL_POLL_MILLIS;
+			const onDecodeError = options.onDecodeError ?? 'fail';
 			yield* ensureFile(path);
 			const initialOffset = yield* Effect.try({
 				try: () => {
@@ -225,7 +265,7 @@ export const tailRecords = <A>(
 				},
 				catch: (cause) => new CommandChannelIoError({ path, stage: 'stat', cause }),
 			});
-			const state: TailState = { offset: initialOffset, partial: '' };
+			const state: TailState = { offset: initialOffset, partial: Buffer.alloc(0) };
 			const pollOne: Effect.Effect<ReadonlyArray<A>, CommandChannelError> = Effect.gen(
 				function* () {
 					const lines = yield* drainNewLines(path, state);
@@ -235,7 +275,21 @@ export const tailRecords = <A>(
 					}
 					const decoded: A[] = [];
 					for (const line of lines) {
-						decoded.push(yield* decodeLine(path, line, decode));
+						if (onDecodeError === 'skip') {
+							const result = yield* decodeLine(path, line, decode).pipe(
+								Effect.tapError((cause) =>
+									Effect.logDebug(`tail-records: skipped malformed line at ${path}`).pipe(
+										Effect.annotateLogs({ line: cause.line, cause: String(cause.cause) }),
+									),
+								),
+								Effect.option,
+							);
+							if (result._tag === 'Some') {
+								decoded.push(result.value);
+							}
+						} else {
+							decoded.push(yield* decodeLine(path, line, decode));
+						}
 					}
 					return decoded as ReadonlyArray<A>;
 				},

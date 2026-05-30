@@ -1,4 +1,9 @@
-import { Context, Effect, Layer, Ref } from 'effect';
+// Pure redaction helpers. These back the inline plugin-level redaction
+// in seal (`redactMasterKey`) and wallet (`redactToken`), and the
+// cascade-formatter's `safeJson` field scrubbing. There is intentionally
+// no engine-wide Redactor service: plugins that surface secret-bearing
+// output defend themselves at the point of emission with a local rule
+// set, which keeps the rules co-located with the thing they protect.
 
 export type RedactionRule =
 	| {
@@ -12,19 +17,17 @@ export type RedactionRule =
 			readonly replacement?: string;
 	  };
 
-export interface RedactorShape {
-	readonly register: (rule: RedactionRule) => Effect.Effect<void>;
-	readonly redact: (text: string) => Effect.Effect<string>;
-	readonly rules: Effect.Effect<ReadonlyArray<RedactionRule>>;
-}
-
-export class Redactor extends Context.Service<Redactor, RedactorShape>()(
-	'@devstack-rewrite/substrate/Redactor',
-) {}
-
 const DEFAULT_REPLACEMENT = '<redacted>';
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+
+/** A non-global pattern redacts only its FIRST match — every later
+ *  occurrence leaks. Force the global flag so all occurrences are
+ *  redacted; clone (don't mutate the caller's RegExp) and preserve any
+ *  unicode flag. Already-global patterns pass through untouched so we
+ *  don't double-apply. */
+const asGlobalPattern = (pattern: RegExp): RegExp =>
+	pattern.global ? pattern : new RegExp(pattern.source, `${pattern.flags}g`);
 
 export const redactText = (text: string, rules: ReadonlyArray<RedactionRule>): string => {
 	let next = text;
@@ -34,7 +37,7 @@ export const redactText = (text: string, rules: ReadonlyArray<RedactionRule>): s
 			if (rule.value.length === 0) continue;
 			next = next.replace(new RegExp(escapeRegExp(rule.value), 'gu'), replacement);
 		} else {
-			next = next.replace(rule.pattern, replacement);
+			next = next.replace(asGlobalPattern(rule.pattern), replacement);
 		}
 	}
 	return next;
@@ -56,15 +59,3 @@ export const redactValue = (
 	}
 	return out;
 };
-
-export const layerRedactor: Layer.Layer<Redactor> = Layer.effect(
-	Redactor,
-	Effect.gen(function* () {
-		const ref = yield* Ref.make<ReadonlyArray<RedactionRule>>([]);
-		return Redactor.of({
-			register: (rule) => Ref.update(ref, (rules) => [...rules, rule]),
-			redact: (text) => Ref.get(ref).pipe(Effect.map((rules) => redactText(text, rules))),
-			rules: Ref.get(ref),
-		});
-	}),
-);

@@ -39,7 +39,7 @@ export interface ResolvedEndpoint {
 	readonly name: string;
 	readonly url: string;
 	readonly displayUrl: string | null;
-	readonly wireProtocol: string;
+	readonly wireProtocol: 'http' | 'h2c' | 'tcp';
 	readonly pluginKey: string;
 	readonly endpointKey: string;
 }

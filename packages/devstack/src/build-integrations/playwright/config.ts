@@ -29,6 +29,7 @@
 // loadable without `@playwright/test` (matching the Vitest helpers'
 // optional-peer pattern).
 
+import { BUILT_IN_ENDPOINT_ALIASES } from '../runtime/conventional-routes.ts';
 import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-context.ts';
 
 // -----------------------------------------------------------------------------
@@ -37,6 +38,9 @@ import { type ResolveStackContextOptions, resolveEndpointUrl } from './stack-con
 // -----------------------------------------------------------------------------
 
 type PlaywrightReporterShape = [string] | [string, Record<string, unknown>];
+type PlaywrightGlobalSetupShape = string | string[];
+
+const DEFAULT_GLOBAL_SETUP = '@mysten-incubation/devstack/playwright/global-setup';
 
 /** Base subset of `PlaywrightTestConfig` this surface produces. The
  *  full type lives in `@playwright/test`; we keep this structural so
@@ -48,7 +52,7 @@ export interface PlaywrightBaseConfigShape {
 	readonly retries: number;
 	readonly workers: number;
 	readonly reporter: PlaywrightReporterShape[] | string;
-	readonly globalSetup?: string;
+	readonly globalSetup?: PlaywrightGlobalSetupShape;
 	readonly globalTeardown?: string;
 }
 
@@ -82,9 +86,10 @@ export interface DevstackPlaywrightBaseConfigOptions {
 	/** Test directory. Default: `'./e2e'` (architecture invariant). */
 	readonly testDir?: string;
 
-	/** Path to a global-setup module. Default: not wired. Pass `null`
-	 *  to keep the property omitted when composing conditionally. */
-	readonly globalSetup?: string | null;
+	/** Path to a global-setup module. Default: the devstack setup that
+	 *  waits for post-acquire codegen before specs load the app. Pass
+	 *  `null` to keep the property omitted when composing conditionally. */
+	readonly globalSetup?: PlaywrightGlobalSetupShape | null;
 }
 
 export interface DevstackPlaywrightEndpointOptions extends ResolveStackContextOptions {
@@ -136,7 +141,7 @@ const DEFAULT_TEST_DIR = './e2e';
 const DEFAULT_COMMAND = 'pnpm dev';
 const DEFAULT_WEBSERVER_TIMEOUT_MS = 300_000;
 const DEFAULT_GRACEFUL_SHUTDOWN_MS = 10_000;
-const DEFAULT_ENDPOINT_NAME = 'dev';
+const DEFAULT_ENDPOINT_NAME = BUILT_IN_ENDPOINT_ALIASES.app;
 
 // -----------------------------------------------------------------------------
 // Builders
@@ -174,7 +179,8 @@ export const devstackPlaywrightBaseConfig = (
 		retries: ci ? 2 : 0,
 		workers: 1,
 		reporter: ci ? [['github'], ['list']] : 'list',
-		globalSetup: options.globalSetup === null ? undefined : (options.globalSetup ?? undefined),
+		globalSetup:
+			options.globalSetup === null ? undefined : (options.globalSetup ?? DEFAULT_GLOBAL_SETUP),
 	};
 };
 
@@ -184,7 +190,7 @@ export const devstackPlaywrightUse = (
 	baseURL: resolveDevstackPlaywrightBaseURL(options),
 	trace: options.trace ?? 'on-first-retry',
 	screenshot: options.screenshot ?? 'only-on-failure',
-	...(options.use ?? {}),
+	...options.use,
 });
 
 export const devstackPlaywrightProjects = (

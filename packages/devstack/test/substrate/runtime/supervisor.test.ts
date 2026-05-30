@@ -31,7 +31,6 @@ import {
 	Logger,
 	layerCapabilitySinksDefault,
 	layerLogger,
-	layerRedactor,
 	makeProjectionRef,
 	startSupervisor,
 	supervise,
@@ -235,8 +234,10 @@ const packageStrategyDecl: StrategyContributorDecl<
 const accountProjectionDecl: ProjectionDecl = {
 	kind: 'projection',
 	event: {
-		tag: 'account.updated',
-		account: {
+		tag: 'projection.updated',
+		kind: 'account',
+		key: 'account/alice',
+		payload: {
 			key: 'account/alice',
 			rowKey: null,
 			name: 'alice',
@@ -266,8 +267,10 @@ const accountProjectionDecl: ProjectionDecl = {
 const packageProjectionDecl: ProjectionDecl = {
 	kind: 'projection',
 	event: {
-		tag: 'package.updated',
-		package: {
+		tag: 'projection.updated',
+		kind: 'package',
+		key: 'package/vault',
+		payload: {
 			key: 'package/vault',
 			rowKey: null,
 			name: 'vault',
@@ -300,6 +303,7 @@ const errorContribBeta: PluginErrorContribution = {
 const pluginSnap = definePlugin({
 	id: 'test:snap',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'snap' as const }),
 	capabilities: [snapDecl] as const,
 });
@@ -307,6 +311,7 @@ const pluginSnap = definePlugin({
 const pluginRoute = definePlugin({
 	id: 'test:route',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'route' as const }),
 	capabilities: [routeDecl] as const,
 });
@@ -314,6 +319,7 @@ const pluginRoute = definePlugin({
 const pluginCodegen = definePlugin({
 	id: 'test:codegen',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'codegen' as const }),
 	capabilities: [codegenDecl] as const,
 });
@@ -321,6 +327,7 @@ const pluginCodegen = definePlugin({
 const pluginStrat = definePlugin({
 	id: 'test:strat',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'strat' as const }),
 	capabilities: [strategyDecl] as const,
 });
@@ -328,6 +335,7 @@ const pluginStrat = definePlugin({
 const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
 	role: 'task' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'account' as const }),
 	capabilities: [accountStrategyDecl, accountProjectionDecl] as const,
 });
@@ -335,6 +343,7 @@ const pluginAccountProjection = definePlugin({
 const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
 	role: 'service' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'package' as const }),
 	capabilities: [packageStrategyDecl, packageProjectionDecl] as const,
 });
@@ -342,6 +351,7 @@ const pluginPackageProjection = definePlugin({
 const pluginStableKey = definePlugin({
 	id: 'test:stable-key',
 	role: 'task' as const,
+	section: 'service',
 	pluginKey: 'plug-stable-key',
 	start: () => Effect.succeed({ v: 'stable-key' as const }),
 	errorContributions: [errorContribAlpha],
@@ -350,6 +360,7 @@ const pluginStableKey = definePlugin({
 const pluginErrorOnly = definePlugin({
 	id: 'test:errorOnly',
 	role: 'task' as const,
+	section: 'service',
 	start: () => Effect.succeed({ v: 'err' as const }),
 	errorContributions: [errorContribBeta],
 });
@@ -370,6 +381,7 @@ describe('supervisor harvest loop', () => {
 			const pluginSlow = definePlugin({
 				id: 'test:slow',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
@@ -443,17 +455,20 @@ describe('supervisor harvest loop', () => {
 			const root = definePlugin({
 				id: 'test:root',
 				role: 'task' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'root' as const }),
 			});
 			const signer = definePlugin({
 				id: 'test:signer',
 				role: 'task' as const,
+				section: 'service',
 				dependsOn: { root },
 				start: () => Effect.succeed({ v: 'signer' as const }),
 			});
 			const slowWalrus = definePlugin({
 				id: 'test:walrus',
 				role: 'service' as const,
+				section: 'service',
 				dependsOn: { root },
 				start: () =>
 					Effect.gen(function* () {
@@ -465,6 +480,7 @@ describe('supervisor harvest loop', () => {
 			const seal = definePlugin({
 				id: 'test:seal',
 				role: 'service' as const,
+				section: 'service',
 				dependsOn: { signer },
 				start: () =>
 					Effect.gen(function* () {
@@ -537,6 +553,7 @@ describe('supervisor harvest loop', () => {
 			const pluginShutdown = definePlugin({
 				id: 'test:shutdown',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'shutdown' as const }),
 			});
 			const state = yield* makeProjectionRef();
@@ -667,6 +684,7 @@ describe('supervisor harvest loop', () => {
 			const pluginRestarting = definePlugin({
 				id: 'test:restarting',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
@@ -789,6 +807,7 @@ describe('supervisor harvest loop', () => {
 			const pluginRestartable = definePlugin({
 				id: 'test:restartable',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
@@ -832,6 +851,92 @@ describe('supervisor harvest loop', () => {
 			);
 
 			expect(yield* Ref.get(finalizers)).toBe(2);
+		}),
+	);
+
+	it.effect('selective restart of a non-ready (pending) node does not wedge the command loop', () =>
+		// Regression: `resetForRestart` used to leave the node's status
+		// untouched and the restart path then ran `transition(key,
+		// 'pending')`. The transition table only admits `→ pending` from
+		// terminal states (`failed` / `stopped` / `done`), so a node that
+		// was still `pending` (or `acquiring`) when the restart landed hit
+		// `assertTransition('pending', 'pending')` — an off-table move
+		// surfaced as `Effect.die`. Defects are NOT caught by the
+		// `Effect.catch(() => …)` wrappers on the restart path or in the
+		// command loop, so the defect killed the command-loop fiber and
+		// the supervisor wedged (no further commands — including graceful
+		// shutdown — were processed).
+		//
+		// We reproduce the off-table state deterministically by NOT
+		// running the initial acquire: every entry is built `pending` by
+		// `startSupervisor`, and with no acquire fiber the target node
+		// stays `pending`. Firing `selective-restart.requested` then
+		// drives `resetForRestart` from `pending`. The fix makes
+		// `resetForRestart` set the status to `pending` authoritatively
+		// (no `transition` hop), so the subsequent acquire performs a
+		// clean `pending → acquiring`. We assert the restart RUNS the
+		// node's `start` exactly once, reaches `ready`, and that a later
+		// `shutdown.requested` is still processed (the loop survived).
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const restartableKey = pluginKey('test:restart-pending#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-pending',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						yield* Ref.update(starts, (n) => n + 1);
+						return { v: 'restart-pending' as const };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					// NB: deliberately DO NOT call `startup.runInitialAcquire`.
+					// The command loop is forked by `startSupervisor`
+					// regardless, and the node stays `pending`.
+					const startup = yield* startSupervisor(stack, identity, state);
+
+					const pending = yield* SubscriptionRef.get(state);
+					expect(pending.rows.find((r) => r.key === restartableKey)?.status).toBe('pending');
+					expect(yield* Ref.get(starts)).toBe(0);
+
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'selective-restart.requested',
+						pluginKey: restartableKey,
+					});
+
+					// The restart must complete — pre-fix the command-loop
+					// fiber dies on the defect and this event never arrives,
+					// so the test hangs (times out) rather than passing.
+					while (true) {
+						const event = yield* Queue.take(startup.handle.events);
+						if (
+							event.tag === 'restart.completed' &&
+							event.target !== 'stack' &&
+							event.target.pluginKey === restartableKey
+						) {
+							break;
+						}
+					}
+
+					const acquired = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect((acquired as { readonly v: string }).v).toBe('restart-pending');
+					expect(yield* Ref.get(starts)).toBe(1);
+					const snap = yield* SubscriptionRef.get(state);
+					expect(snap.rows.find((r) => r.key === restartableKey)?.status).toBe('ready');
+
+					// The command loop survived the restart: a subsequent
+					// command is still processed end-to-end.
+					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
+					yield* startup.handle.awaitShutdown;
+					const shuttingDown = yield* SubscriptionRef.get(state);
+					expect(shuttingDown.cycle.phase).toBe('shutting-down');
+				}),
+			);
 		}),
 	);
 
@@ -1094,6 +1199,7 @@ describe('supervisor harvest loop', () => {
 				const pluginCustom = definePlugin({
 					id: 'test:custom',
 					role: 'service' as const,
+					section: 'service',
 					start: () => Effect.succeed({ v: 'custom' as const }),
 					// Cast: the custom decl isn't part of the built-in
 					// CapabilityDecl union. The substrate dispatches
@@ -1163,6 +1269,7 @@ describe('supervisor harvest loop', () => {
 			const pluginCustom = definePlugin({
 				id: 'test:custom-unregistered',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'custom-unregistered' as const }),
 				capabilities: [
 					{ kind: 'plugin-author:unregistered', payload: 'ignored' },
@@ -1223,6 +1330,7 @@ describe('supervisor harvest loop', () => {
 			const pluginLog = definePlugin({
 				id: 'test:log',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.gen(function* () {
 						const logger = yield* Logger;
@@ -1239,7 +1347,7 @@ describe('supervisor harvest loop', () => {
 
 			const event = yield* Effect.scoped(
 				Effect.gen(function* () {
-					const loggerContext = yield* Layer.build(layerLogger.pipe(Layer.provide(layerRedactor)));
+					const loggerContext = yield* Layer.build(layerLogger);
 					const logger = Context.get(loggerContext, Logger);
 					const pluginContext = Context.empty().pipe(
 						Context.add(Logger, logger),
@@ -1277,6 +1385,7 @@ describe('supervisor harvest loop', () => {
 			const pluginFail = definePlugin({
 				id: 'test:fail',
 				role: 'service' as const,
+				section: 'service',
 				start: () =>
 					Effect.fail(new Error('boom from acquire')) as Effect.Effect<
 						{ readonly v: 'fail' },
@@ -1309,6 +1418,7 @@ describe('supervisor harvest loop', () => {
 				const pluginFail = definePlugin({
 					id: 'test:root-fail',
 					role: 'service' as const,
+					section: 'service',
 					start: () =>
 						Effect.fail(new Error('root acquire failed')) as Effect.Effect<
 							{ readonly v: 'fail' },
@@ -1318,6 +1428,7 @@ describe('supervisor harvest loop', () => {
 				const pluginDependent = definePlugin({
 					id: 'test:dependent',
 					role: 'service' as const,
+					section: 'service',
 					dependsOn: pluginFail,
 					start: () => Effect.succeed({ v: 'dependent' as const }),
 				});
@@ -1350,6 +1461,7 @@ describe('supervisor harvest loop', () => {
 			const pluginCaps = definePlugin({
 				id: 'test:caps',
 				role: 'service' as const,
+				section: 'service',
 				start: () => Effect.succeed({ v: 'caps' as const }),
 				capabilities: (() => {
 					throw new Error('capability boom');
@@ -1393,10 +1505,17 @@ describe('supervisor harvest loop', () => {
 
 			const snap = yield* SubscriptionRef.get(state);
 			const row = snap.rows.find((r) => r.key === 'test:route#0');
-			expect(row?.status).toBe('failed');
-			expect(row?.lastError?.pluginKey).toBe('test:route#0');
-			expect(row?.lastError?.chain.join('\n')).toContain('route dispatch boom');
-			expect(snap.errors.at(-1)?.pluginKey).toBe('test:route#0');
+			// Sink failure is orchestrator-fault, NOT plugin-fault (Phase 6 #39
+			// fix): the plugin's acquire ran cleanly, the sink that received
+			// the contribution failed. Plugin status stays ready; the row's
+			// lastError carries no entry attributed to this plugin.
+			// `supervise(...)` runs to shutdown, so the plugin's post-supervise
+			// status is `'stopped'` (clean lifecycle exit), NOT `'failed'`.
+			expect(row?.status).toBe('stopped');
+			expect(row?.lastError ?? undefined).toBeUndefined();
+			// The sink failure surfaces via the new orchestrator-event path —
+			// `engine.orchestrator.dispatchFailed` (covered by the dedicated
+			// regression at test/substrate/runtime/supervisor-contribution-sink-fail.test.ts).
 			expect(snap.cycle.phase).toBe('running');
 		}),
 	);

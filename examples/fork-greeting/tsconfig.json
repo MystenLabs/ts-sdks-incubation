@@ -7,5 +7,5 @@
 		"module": "ESNext",
 		"allowImportingTsExtensions": true
 	},
-	"include": ["devstack.config.ts", "vite.config.ts"]
+	"include": ["devstack.config.ts"]
 }

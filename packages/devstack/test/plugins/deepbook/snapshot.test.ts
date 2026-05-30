@@ -12,78 +12,24 @@ import {
 } from '../../../src/plugins/deepbook/snapshot.ts';
 
 describe('makeLocalSnapshotable', () => {
-	it('captures the runtime/deepbook/<name> subtree', () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: false,
-			serverEnabled: false,
-		});
+	it('captures the deepbook/<name> subtree', () => {
+		const decl = makeLocalSnapshotable({ name: 'main' });
 		expect(decl.kind).toBe('snapshotable');
 		expect(decl.subtrees).toEqual(['deepbook/main']);
 	});
 
-	it('declares no managed containers when indexer + server are off', () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: false,
-			serverEnabled: false,
-		});
+	it('declares no managed containers (indexer + server daemons not wired yet)', () => {
+		const decl = makeLocalSnapshotable({ name: 'main' });
 		expect(decl.managedContainers).toEqual([]);
 	});
 
-	it('declares indexer label tuple when indexer is on', () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: true,
-			serverEnabled: false,
-		});
-		expect(decl.managedContainers).toEqual([
-			{ app: 'arena', stack: 'devstack', plugin: 'deepbook', role: 'indexer' },
-		]);
-	});
-
-	it('declares both indexer + server label tuples when both are on', () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: true,
-			serverEnabled: true,
-		});
-		expect(decl.managedContainers).toHaveLength(2);
-		expect(decl.managedContainers).toEqual(
-			expect.arrayContaining([
-				{ app: 'arena', stack: 'devstack', plugin: 'deepbook', role: 'indexer' },
-				{ app: 'arena', stack: 'devstack', plugin: 'deepbook', role: 'server' },
-			]),
-		);
-	});
-
 	it("missing tolerance is 'fine' (cache is best-effort)", () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: false,
-			serverEnabled: false,
-		});
+		const decl = makeLocalSnapshotable({ name: 'main' });
 		expect(decl.missingTolerance).toBe('fine');
 	});
 
 	it('declares no secret material', () => {
-		const decl = makeLocalSnapshotable({
-			name: 'main',
-			app: 'arena',
-			stack: 'devstack',
-			indexerEnabled: false,
-			serverEnabled: false,
-		});
+		const decl = makeLocalSnapshotable({ name: 'main' });
 		expect(decl.secretMaterial).toBe(false);
 	});
 });

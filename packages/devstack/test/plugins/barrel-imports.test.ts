@@ -18,6 +18,7 @@
 // plugin name.
 
 import { spawnSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,27 +26,24 @@ import { describe, expect, it } from 'vitest';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE = resolve(HERE, 'probe-load.cjs');
+const PLUGINS_ROOT = resolve(HERE, '..', '..', 'src', 'plugins');
 
 const SENTINEL = 'BARREL_LOAD_OK';
 const BARREL_LOAD_TIMEOUT_MS = 30_000;
 const BARREL_TEST_TIMEOUT_MS = BARREL_LOAD_TIMEOUT_MS + 5_000;
 
-const PLUGINS = [
-	'sui',
-	'account',
-	'package',
-	'faucet',
-	'wallet',
-	'coin',
-	'postgres',
-	'walrus',
-	'seal',
-	'action',
-	'deepbook',
-] as const;
+// Discover plugins by reading `src/plugins/` directly so the smoke
+// test auto-covers any new plugin directory. A plugin counts if it
+// is a directory containing an `index.ts` barrel.
+const PLUGINS = readdirSync(PLUGINS_ROOT, { withFileTypes: true })
+	.filter(
+		(entry) =>
+			entry.isDirectory() && existsSync(resolve(PLUGINS_ROOT, entry.name, 'index.ts')),
+	)
+	.map((entry) => entry.name);
 
 const loadBarrel = (plugin: string): { ok: boolean; stdout: string; stderr: string } => {
-	const barrelPath = resolve(HERE, '..', '..', 'src', 'plugins', plugin, 'index.ts');
+	const barrelPath = resolve(PLUGINS_ROOT, plugin, 'index.ts');
 	const res = spawnSync(process.execPath, ['--import', 'tsx/esm', PROBE, barrelPath, SENTINEL], {
 		encoding: 'utf8',
 		timeout: BARREL_LOAD_TIMEOUT_MS,

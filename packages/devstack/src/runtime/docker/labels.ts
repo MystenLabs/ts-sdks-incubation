@@ -24,7 +24,15 @@
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 
-/** Canonical label keys. Single source of truth. */
+/** Canonical label keys. Single source of truth.
+ *
+ *  L1 is plugin-blind: it carries the four canonical engine dimensions
+ *  (`app`/`stack`/`plugin`/`role`) plus generic resource-kind slots
+ *  (`kind`/`subkind`/`specVersion`). Orchestrators stamp their own
+ *  values into the generic slots — e.g. the router orchestrator stamps
+ *  `kind=router`, `subkind=<profile-id>`, `specVersion=<version>` —
+ *  those become orchestrator-side conventions rather than L1 vocabulary.
+ *  Per STYLE_GUIDE §7, L1 MUST NOT add orchestrator-named label keys. */
 export const LabelKey = {
 	app: 'devstack.app',
 	stack: 'devstack.stack',
@@ -37,11 +45,11 @@ export const LabelKey = {
 	// for inventory walks.
 	networkMarker: 'devstack.network',
 	volumeMarker: 'devstack.volume',
-	// Reverse-proxy / routable. Router itself is built outside this
-	// package, but if it stamps a label, this is the key it uses.
-	routerMarker: 'devstack.router',
-	routerProfile: 'devstack.router.profile',
-	routerSpecVersion: 'devstack.router.spec-version',
+	// Generic kind/subkind slots — orchestrators stamp their own values
+	// (e.g. router stamps `kind=router`, `subkind=<profile-id>`).
+	kind: 'devstack.kind',
+	subkind: 'devstack.subkind',
+	specVersion: 'devstack.spec-version',
 } as const;
 
 export type LabelKey = (typeof LabelKey)[keyof typeof LabelKey];
@@ -63,6 +71,21 @@ export type ComposeLabelKey = (typeof ComposeLabelKey)[keyof typeof ComposeLabel
 export const COMPOSE_UI_VERSION = '2.0.0';
 
 export type ExpectedOwnershipLabels = Readonly<Record<string, string>>;
+
+/** Coerce a `docker inspect` `Labels` field (typed `Schema.Unknown`) into
+ *  a string→string map, dropping any non-string values. Shared by the
+ *  container / network / volume inspect readers — `docker inspect` reports
+ *  labels as an object whose values are always strings in practice, but the
+ *  schema keeps the field `Unknown` so a malformed daemon response cannot
+ *  blow up decode; this reader is the defensive narrowing. */
+export const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
+	if (raw === null || typeof raw !== 'object') return {};
+	const out: Record<string, string> = {};
+	for (const [key, value] of Object.entries(raw)) {
+		if (typeof value === 'string') out[key] = value;
+	}
+	return out;
+};
 
 const normalizeComposeSegment = (value: string): string => {
 	const normalized = value
@@ -135,6 +158,25 @@ export const expectedVolumeOwnershipLabels = (
 	[LabelKey.plugin]: tuple.plugin,
 	[LabelKey.role]: tuple.role,
 });
+
+/** Labels stamped on `docker build` outputs so label-driven prune can
+ *  find the image. `plugin` / `role` are optional — the runtime
+ *  contract only requires `app` / `stack`. */
+export const expectedImageOwnershipLabels = (owner: {
+	readonly app: string;
+	readonly stack: string;
+	readonly plugin?: string;
+	readonly role?: string;
+}): ExpectedOwnershipLabels => {
+	const out: Record<string, string> = {
+		[LabelKey.managed]: 'true',
+		[LabelKey.app]: owner.app,
+		[LabelKey.stack]: owner.stack,
+	};
+	if (owner.plugin !== undefined) out[LabelKey.plugin] = owner.plugin;
+	if (owner.role !== undefined) out[LabelKey.role] = owner.role;
+	return out;
+};
 
 export const ownershipMismatchDetail = (
 	expected: ExpectedOwnershipLabels,

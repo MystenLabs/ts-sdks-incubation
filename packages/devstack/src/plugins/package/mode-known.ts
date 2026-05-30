@@ -8,10 +8,23 @@
 //
 // What we still do:
 //
-//   1. Lenient verify probe (chain reachable + object exists). On
-//      transient RPC failure, lenient mode masks → no abort. On
-//      authoritative not-found we surface a PublishError(phase='verify')
-//      so the user catches the typo / wrong-network mistake at boot.
+//   1. Strict verify probe (chain reachable + object exists). Strict
+//      mode lets the ChainProbe distinguish an authoritative miss from a
+//      transient RPC failure. Two miss shapes surface a
+//      PublishError(phase='verify') so the user catches the typo /
+//      wrong-network mistake at boot:
+//        - `reason: 'not-found'`     — no object at the id.
+//        - `reason: 'decode-failed'` — an object exists at the id but
+//          its on-chain shape does not satisfy `KnownObjectShape`
+//          (a wrong-kind object — the typical wrong-network / copy-paste
+//          mistake). This is a THROWN `ChainProbeError`, not a `null`
+//          result, because the real Sui probe fails Schema decode on a
+//          wrong-shape id.
+//      Only genuinely-transient reasons (`'transient'`,
+//      `'no-probe-registered'`) are masked (no abort) — the id re-verifies
+//      on the next cycle rather than failing boot on a flaky RPC. A `null`
+//      strict result (object decodes against the minimal shape but the
+//      probe still reports absence) is also treated as a verify failure.
 //   2. Register the resolved value on EVERY cycle.
 //
 // Bindings: KnownPackage cannot be bound by `@mysten/codegen` (no
@@ -24,7 +37,7 @@
 import { Effect, Schema, type Scope } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedKnownPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
@@ -49,12 +62,18 @@ export interface KnownModeOutputs {
 /**
  * Acquire body for known mode.
  *
- * Runs the lenient ChainProbe verify and registers the resolved value.
- * Lenient mode masks transient RPC failure — the user-visible failure
- * here is "object truly missing on this chain". A `null` probe result
- * does not surface yet: distinguishing transient-vs-missing requires a
- * second strict probe layer that the ChainProbe primitive does not
- * expose.
+ * Runs a strict ChainProbe verify and registers the resolved value.
+ * Strict mode surfaces a typed `ChainProbeError` whose `reason`
+ * discriminates an authoritative miss from a transient RPC failure, so we
+ * can fail boot on a real typo / wrong-network mistake while masking
+ * transient failures so a flaky RPC does not abort boot:
+ *   - `reason: 'not-found'`     → verify failure (no object at the id).
+ *   - `reason: 'decode-failed'` → verify failure (an object exists but is
+ *     the wrong object kind — its on-chain shape fails `KnownObjectShape`).
+ *   - `reason: 'transient' | 'no-probe-registered'` → masked; the verify
+ *     re-runs on the next cycle.
+ * A `null` strict payload (probe reports absence after decode) is also a
+ * verify failure.
  */
 export const acquireKnown = (
 	probe: ChainProbe<SuiProbeKey>,
@@ -64,18 +83,53 @@ export const acquireKnown = (
 	Effect.gen(function* () {
 		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
 
-		yield* probe
-			.get({ kind: 'object', objectId: inputs.packageId }, KnownObjectShape, 'lenient')
+		const verifyError = (message: string): PublishError =>
+			publishError('verify', {
+				sourcePath: `known:${inputs.packageId}`,
+				packageName: inputs.packageName,
+				message,
+			});
+		// `'transient'` is a sentinel for "masked transient RPC failure —
+		// skip the verify aborts and re-derive next cycle".
+		const found: { readonly objectId: string } | null | 'transient' = yield* probe
+			.get({ kind: 'object', objectId: inputs.packageId }, KnownObjectShape, 'strict')
 			.pipe(
-				Effect.mapError(
-					(): PublishError =>
-						publishError('verify', {
-							sourcePath: `known:${inputs.packageId}`,
-							packageName: inputs.packageName,
-							message: 'verify probe failed',
-						}),
+				// Classify the strict-probe failure. An authoritative miss
+				// (`not-found`) and a wrong-kind object (`decode-failed` — an
+				// object exists at the id but its shape does not satisfy
+				// `KnownObjectShape`) BOTH surface a verify error: they are the
+				// typo / wrong-network mistakes strict mode exists to catch. Only
+				// genuinely-transient reasons (`transient`, `no-probe-registered`)
+				// are masked so the id re-verifies next cycle rather than aborting
+				// boot on a flaky RPC.
+				Effect.catch((err) => {
+					switch (err.reason) {
+						case 'not-found':
+							return Effect.fail(
+								verifyError(
+									`known package id ${inputs.packageId} does not exist on this chain — check for a typo or wrong network.`,
+								),
+							);
+						case 'decode-failed':
+							return Effect.fail(
+								verifyError(
+									`known package id ${inputs.packageId} resolved to an unexpected object shape on this chain — check for a typo or wrong network.`,
+								),
+							);
+						default:
+							return Effect.succeed('transient' as const);
+					}
+				}),
+			);
+		// A `null` strict result means the id exists but is not the
+		// expected object kind — also a verify failure.
+		if (found === null) {
+			return yield* Effect.fail(
+				verifyError(
+					`known package id ${inputs.packageId} resolved to an unexpected object shape on this chain.`,
 				),
 			);
+		}
 
 		const resolved: ResolvedKnownPackage = {
 			kind: 'known',

@@ -25,20 +25,24 @@ import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../substrate/runtime/probes.ts';
 import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import {
-	DockerInspectDecodeFailed,
-	DockerInspectFailed,
-	DaemonUnreachable,
 	type DockerRuntimeError,
 	ForeignDockerResource,
 	NetworkIpReadbackTimeout,
 	NetworkOperationFailed,
 } from './errors.ts';
+import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedNetworkOwnershipLabels,
 	ownershipMismatchDetail,
+	readLabels,
 	renderNetworkLabels,
 } from './labels.ts';
-import { isAlreadyInNetworkStderr, isDaemonUnreachableStderr, wrapNetworkError } from './wrap.ts';
+import {
+	isAlreadyInNetworkStderr,
+	isMissingNetworkStderr,
+	isNetworkAlreadyExistsStderr,
+	wrapNetworkError,
+} from './wrap.ts';
 
 /** The cross-host shared network name. Architecture-mandated single
  *  bridge per host. Callers can target other networks (per-stack) but
@@ -59,68 +63,47 @@ interface NetworkInspectFacts {
 	readonly labels: Readonly<Record<string, string>>;
 }
 
-const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
-	if (raw === null || typeof raw !== 'object') return {};
-	const out: Record<string, string> = {};
-	for (const [key, value] of Object.entries(raw)) {
-		if (typeof value === 'string') out[key] = value;
-	}
-	return out;
-};
-
 const NetworkInspectSchema = Schema.Struct({
 	Id: Schema.String,
 	Labels: Schema.optional(Schema.Unknown),
+	Containers: Schema.optional(Schema.Unknown),
 });
 
-const isNoSuchNetworkStderr = (stderr: string): boolean =>
-	/no such network|network .* not found|not found/i.test(stderr);
+/** One endpoint attached to a network, as reported by `docker network
+ *  inspect`. `name` is the container name; `id` is the container id. */
+export interface NetworkAttachedEndpoint {
+	readonly id: string;
+	readonly name: string;
+}
+
+const readContainers = (raw: unknown): ReadonlyArray<NetworkAttachedEndpoint> => {
+	if (raw === null || typeof raw !== 'object') return [];
+	const out: Array<NetworkAttachedEndpoint> = [];
+	for (const [id, value] of Object.entries(raw)) {
+		if (value === null || typeof value !== 'object') continue;
+		const name = (value as { Name?: unknown }).Name;
+		if (typeof name !== 'string' || name.length === 0) continue;
+		out.push({ id, name });
+	}
+	return out;
+};
 
 const inspectNetwork = (
 	name: string,
 ): Effect.Effect<NetworkInspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('network', ['inspect', name]).pipe(
-			Effect.mapError(wrapNetworkError('inspect', name)),
-		);
-		if (res.exitCode !== 0) {
-			if (isNoSuchNetworkStderr(res.stderr)) return null;
-			if (isDaemonUnreachableStderr(res.stderr)) {
-				return yield* Effect.fail(
-					new DaemonUnreachable({
-						op: 'docker.network.inspect',
-						detail: 'docker daemon unreachable',
-					}),
-				);
-			}
-			return yield* Effect.fail(
-				new DockerInspectFailed({
-					resource: 'network',
-					name,
-					stderr: res.stderr,
-					exitCode: res.exitCode,
-				}),
-			);
-		}
-		try {
-			const decoded = decodeJsonArrayElementSync(NetworkInspectSchema, res.stdout, {
-				source: `docker network inspect ${name}`,
-				missingMessage: 'inspect returned an empty result',
-				mkError: (issue) =>
-					new DockerInspectDecodeFailed({
-						resource: 'network',
-						name,
-						detail:
-							issue.message === 'inspect returned an empty result'
-								? issue.message
-								: 'inspect returned malformed network JSON',
-						cause: issue.cause,
-					}),
-			});
-			return { id: decoded.Id, labels: readLabels(decoded.Labels) };
-		} catch (cause) {
-			return yield* Effect.fail(cause as DockerRuntimeError);
-		}
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'network',
+			name,
+			op: 'docker.network.inspect',
+			inspectCommand: dockerRunOk('network', ['inspect', name]).pipe(
+				Effect.mapError(wrapNetworkError('inspect', name)),
+			),
+			schema: NetworkInspectSchema,
+			isMissingStderr: isMissingNetworkStderr,
+		});
+		if (decoded === null) return null;
+		return { id: decoded.Id, labels: readLabels(decoded.Labels) };
 	});
 
 const assertNetworkOwned = (
@@ -175,9 +158,49 @@ export const ensureNetwork = (
 			...gatewayArgs,
 			...labelArgs,
 			name,
-		]).pipe(Effect.mapError(wrapNetworkError('create', name)));
+		]).pipe(
+			Effect.mapError(wrapNetworkError('create', name)),
+			// `docker network create` is NOT name-atomic and — unlike
+			// containers, which lean on `--name` atomicity plus a per-name
+			// lock — networks have no per-name lock. Two processes booting
+			// against the shared `devstack` bridge can both pass the
+			// inspect-miss above and both run `create`; the loser's daemon
+			// stderr ("network with name … already exists" / a `Conflict`
+			// envelope) is classified by `wrapNetworkError` as a generic
+			// `NetworkOperationFailed`. Recover that ONE case here by
+			// re-inspecting and adopting the winner's network — but only if
+			// it carries OUR ownership labels. This mirrors the container
+			// `startAndAdopt` adopt-on-collision shape: recover from the
+			// typed collision error, re-read facts, assert ownership, then
+			// return the existing id; a foreign/unowned network surfaces the
+			// ownership error rather than being silently adopted.
+			Effect.catchTag('NetworkOperationFailed', (err) =>
+				err.op === 'create' && isNetworkAlreadyExistsStderr(err.stderr)
+					? adoptExistingNetwork(name, opts, err)
+					: Effect.fail(err),
+			),
+		);
 		return created.stdout.trim();
 	}).pipe(Effect.withSpan('runtime.docker.network.ensure'));
+
+/** Concurrent-create-loses recovery: a peer created the network between
+ *  our inspect-miss and our `create`. Re-inspect, assert it carries our
+ *  ownership labels, and return its id wrapped as a synthetic create
+ *  `CaptureResult` (so the caller's `.stdout.trim()` reads the adopted
+ *  id). A foreign/unowned network surfaces the ownership error; a vanished
+ *  network (peer pruned it between create and re-inspect) re-surfaces the
+ *  original typed create failure for the boot to retry. */
+const adoptExistingNetwork = (
+	name: string,
+	opts: EnsureNetworkOptions,
+	createFailure: NetworkOperationFailed,
+): Effect.Effect<{ readonly stdout: string }, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const adopted = yield* inspectNetwork(name);
+		if (adopted === null) return yield* Effect.fail(createFailure);
+		yield* assertNetworkOwned(name, adopted, opts);
+		return { stdout: adopted.id };
+	});
 
 // -----------------------------------------------------------------------------
 // Connect / disconnect
@@ -185,14 +208,15 @@ export const ensureNetwork = (
 
 /** Idempotent `docker network connect`. Treats "already exists in
  *  network" stderr as success — architecture mandates idempotency on
- *  this verb. */
+ *  this verb. Multiple `--alias` flags register additional DNS names
+ *  siblings can dial under the network. */
 export const connect = (
 	containerNameOrId: string,
 	network: string,
-	alias?: string,
+	aliases?: ReadonlyArray<string>,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const aliasArgs = alias ? ['--alias', alias] : [];
+		const aliasArgs = (aliases ?? []).flatMap((alias) => ['--alias', alias]);
 		const res = yield* dockerRunOk('network', [
 			'connect',
 			...aliasArgs,
@@ -224,6 +248,53 @@ export const disconnect = (
 			);
 		}
 	}).pipe(Effect.withSpan('runtime.docker.network.disconnect'));
+
+/** Force-disconnect — `docker network disconnect -f`. Used by prune
+ *  to evict our own endpoints from an in-use network before retrying
+ *  `network rm`. Idempotent against "not connected". */
+export const forceDisconnect = (
+	containerNameOrId: string,
+	network: string,
+): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const res = yield* dockerRunOk('network', [
+			'disconnect',
+			'-f',
+			network,
+			containerNameOrId,
+		]).pipe(Effect.mapError(wrapNetworkError('disconnect', network)));
+		if (res.exitCode !== 0 && !/is not connected/i.test(res.stderr)) {
+			return yield* Effect.fail(
+				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
+			);
+		}
+	}).pipe(Effect.withSpan('runtime.docker.network.forceDisconnect'));
+
+/** List the endpoints currently attached to a network. Returns an
+ *  empty list when the network is missing. Used by prune to decide
+ *  whether to force-disconnect own endpoints or report foreign
+ *  holders. */
+export const listAttachedContainers = (
+	name: string,
+): Effect.Effect<
+	ReadonlyArray<NetworkAttachedEndpoint>,
+	DockerRuntimeError,
+	DockerHost | DockerSpawner
+> =>
+	Effect.gen(function* () {
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'network',
+			name,
+			op: 'docker.network.inspect',
+			inspectCommand: dockerRunOk('network', ['inspect', name]).pipe(
+				Effect.mapError(wrapNetworkError('inspect', name)),
+			),
+			schema: NetworkInspectSchema,
+			isMissingStderr: isMissingNetworkStderr,
+		});
+		if (decoded === null) return [];
+		return readContainers(decoded.Containers);
+	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
 
 // -----------------------------------------------------------------------------
 // IP readback

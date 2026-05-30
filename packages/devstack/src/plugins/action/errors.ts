@@ -3,10 +3,11 @@
 // Distilled doc 16-action.md "Failure modes": signing failure routes
 // through `PublishError({ phase: 'publish-tx' })`. The rewrite splits
 // the user-facing action error from `package`'s `PublishError` because
-// action-specific phases (build, sign, parse) carry different semantics
-// — `build` here is the user-supplied transaction-builder Effect,
-// `sign` is the `signAndExecute` invocation, `parse` covers downstream
-// receipt projection.
+// action-specific phases carry different semantics — `build` here is the
+// user-supplied transaction-builder Effect, `sign` is the build/sign/
+// submit transport (the `signAndExecute` invocation, including the
+// Account plugin's `no-digest` envelope violation surfaced via `cause`),
+// and `execute-failed` is the on-chain `FailedTransaction` outcome.
 //
 // Per architecture §Effect, errors are plain interfaces with a `_tag`
 // discriminator; `Effect.catchTag` / `catchTags` match on the literal.
@@ -15,19 +16,23 @@
  *  editing this file (and the plugin doc's catalog).
  *
  *  Phase semantics:
- *   - `discriminator` — `opts.discriminator` Effect evaluation failed.
- *                       User-code defect or yielded upstream raised.
- *   - `build`         — `opts.body`'s build phase (the user-supplied
- *                       Effect) failed before producing a transaction.
- *   - `sign`          — `signAndExecute` failed (gas, bytecode
- *                       verification, RPC).
- *   - `parse`         — the action's receipt projection (digest /
- *                       objectChanges) was malformed.
- *   - `verify`        — verify probe authoritatively raised (transient
- *                       is masked by the lenient probe — does NOT raise
- *                       this).
+ *   - `discriminator`   — `opts.discriminator` Effect evaluation failed.
+ *                         User-code defect or yielded upstream raised.
+ *   - `build`           — `opts.body`'s build phase (the user-supplied
+ *                         Effect) failed before producing a transaction.
+ *   - `sign`            — signing / submit transport failed (signer
+ *                         refused, RPC unreachable, finality timeout).
+ *                         This is `account.signAndExecute`'s error
+ *                         channel; it does NOT cover on-chain failures.
+ *   - `execute-failed`  — transaction was delivered + executed by the
+ *                         validator but the on-chain execution failed
+ *                         (the `$kind: 'FailedTransaction'` variant of
+ *                         `account.signAndExecute`'s return value).
+ *   - `verify`          — verify probe authoritatively raised (transient
+ *                         is masked by the lenient probe — does NOT raise
+ *                         this).
  */
-export type ActionPhase = 'discriminator' | 'build' | 'sign' | 'parse' | 'verify';
+export type ActionPhase = 'discriminator' | 'build' | 'sign' | 'execute-failed' | 'verify';
 
 /** Single tagged action error. */
 export interface ActionError {

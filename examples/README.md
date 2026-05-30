@@ -15,7 +15,7 @@ be committed.
 | [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.                                 | `pnpm --filter @mysten-incubation/connect-four dev`    |
 | [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader with dev-wallet connection, local DeepBook publish, DEEP/SUI pool seeding, and live SUI-to-DEEP swaps. | `pnpm --filter @mysten-incubation/deepbook-trader dev` |
 | [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.                                 | `pnpm --filter @mysten-incubation/private-content dev` |
-| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint, burn, and transfer flows.                                                      | `pnpm --filter @mysten-incubation/token-studio dev`    |
+| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint and transfer flows.                                                             | `pnpm --filter @mysten-incubation/token-studio dev`    |
 
 The `dev` scripts run the built workspace devstack CLI directly. Turbo builds workspace
 dependencies when needed, and devstack supervises the local services plus each
@@ -44,7 +44,7 @@ Manual path:
 2. Replace the package name and `DEVSTACK_APP=template` runtime identity
    with your app name in `package.json` and `devstack.config.ts`.
 3. Pick non-conflicting port hints. Existing examples occupy ports 5170, 5173,
-   5176, 5179, 5181, and 5182; the per-stack allocator handles collisions at
+   5176, 5179, and 5182; the per-stack allocator handles collisions at
    runtime.
 4. Rename `move/hello/` to your package name and update the address in
    `move/<pkg>/Move.toml`.

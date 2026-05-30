@@ -8,7 +8,7 @@
 //
 //     1. The IN-PROCESS HTTP server. Owned here. Boot at acquire,
 //        serve `/api/v1/devstack/*` routes (health, accounts,
-//        sign-transaction, sign-personal-message, execute).
+//        sign-transaction, sign-personal-message).
 //
 //     2. The BROWSER-SIDE ADAPTER. Owned by `dev-wallet`. Reads the
 //        codegen-emitted `dapp-kit/config.ts`, constructs a
@@ -29,14 +29,19 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
-import { renderUrl, routerHostname } from '../../orchestrators/router/hostname.ts';
+import {
+	DEFAULT_PORT_WINDOW,
+	PortBrokerService,
+} from '../../substrate/runtime/port-broker/index.ts';
+import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { suiResource } from '../sui/index.ts';
+import type { AccountResourceId } from '../account/index.ts';
 import {
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
-} from '../host-service/routable.ts';
+} from '../host-service/index.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
 import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
@@ -52,36 +57,31 @@ import {
 } from './service.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
 
-/** Composer-side expander hook for `wallet({ accounts: 'all' })`. The
- *  wallet factory cannot know the stack's account members at its own
- *  call site (members are introduced positionally to `defineDevstack`
- *  AFTER the wallet factory has returned). The composer detects this
- *  symbol on a member returned by the wallet factory, collects every
- *  account-providing member from the final stack, and invokes the
- *  hook to produce the real wallet member with a populated dependencies
- *  tuple — keeping the dep-graph edges accurate.
+/** Wallet's expander contributes through the substrate-owned
+ *  `PluginExpander` contract (`contracts/plugin-expander.ts`). The
+ *  composer dispatches every member's expander uniformly — wallet has
+ *  no special-case wiring in `api/define-devstack.ts`.
  *
- *  Symbol-keyed (not a named property) so it cannot collide with any
- *  user-facing member field. Globally registered via `Symbol.for(...)`
- *  so the composer can look it up without importing the wallet
- *  module's symbol-binding (this side-steps a TS2742 inferred-type
- *  portability error: a `unique symbol`-keyed property in the wallet
- *  member's return type would leak the symbol's compile-time identity
- *  into the user's `defineDevstack(...)` inferred Stack type, forcing
- *  every example's default export to carry an explicit annotation). */
-export const WALLET_EXPAND_ACCOUNTS_ALL: symbol = Symbol.for('devstack.wallet.expand-accounts-all');
+ *  Compose-time symmetry: any plugin needing the "rewrite this
+ *  placeholder once the full member tuple is known" rewrite uses the
+ *  same `attachPluginExpander(...)` seam wallet uses below. */
 
-/** Runtime-only expander shape attached to the placeholder wallet
- *  member when the user passes `accounts: 'all'`. The composer reads
- *  `member[WALLET_EXPAND_ACCOUNTS_ALL](accountMembers)` to mint the
- *  resolved-tuple wallet member.
- *
- *  Kept as a value-level shape (not a type-level intersection on the
- *  factory's return signature) so the symbol-keyed property does NOT
- *  leak into the user's inferred Stack type (see TS2742 note above). */
-export type WalletExpandAccountsAllExpander = (
-	accountMembers: ReadonlyArray<WalletAccountMember>,
-) => AnyPlugin;
+const ACCOUNT_RESOURCE_ID_PREFIX = 'account/' as const;
+
+/** Type-narrowing predicate on a plugin's resource id. The account
+ *  plugin's `AccountResourceId<Name>` template-literal type IS the
+ *  substrate-owned discriminator (12-account.md "resource id flows into
+ *  the on-disk path, the manifest key, container labels, and generated
+ *  TypeScript exports") — every account member's `id` reduces to
+ *  `account/${Name}`. Probing through this typed predicate (vs. a bare
+ *  `startsWith` whose narrowing returns `string`) prevents misclassifying
+ *  a future plugin whose id happens to start with `account/` but is NOT
+ *  the account-plugin shape, AND surfaces a compile error if the
+ *  account-id prefix convention ever changes. */
+const isAccountResourceMember = (
+	member: AnyPlugin,
+): member is AnyPlugin & { readonly id: AccountResourceId<string> } =>
+	member.id.startsWith(ACCOUNT_RESOURCE_ID_PREFIX);
 
 // ----------------------------------------------------------------------
 // Resource identity
@@ -117,12 +117,11 @@ const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
  *     host-gateway address instead of host loopback. The published
  *     wallet URL remains stack-scoped through the router.
  *
- *   - `allowLocalhostVite: false`. The bare `http://localhost:<vite>`
- *     form is OFF by default — opt-in for headless test runners /
- *     custom dev hosts. Defaulting it on would let a sibling stack
- *     running vite on the same port pair with this wallet (because
- *     `localhost` is not stack-scoped). See `origin-policy.ts` for
- *     the rationale.
+ *   - Origin allowlist is the router-fronted dev-server origin for
+ *     this stack plus any explicit `allowedOrigins`. The wallet does
+ *     not auto-allowlist a bare `http://localhost:<vite-port>` form —
+ *     `localhost` is not stack-scoped, so a sibling stack on the same
+ *     port could pair with this wallet. See `origin-policy.ts`.
  *
  *   - Pairing token in URL fragment only (`#token=<32-hex>`). Never
  *     in query params (would land in access logs / referrers).
@@ -164,9 +163,22 @@ export function wallet(opts?: WalletOptions): AnyPlugin {
 		// to ./node_modules/.../plugins/wallet" at every example's
 		// default export).
 		const placeholder = makeWalletMember(resolvedOpts, [] as const);
-		const expander: WalletExpandAccountsAllExpander = (accountMembers) =>
-			makeWalletMember({ ...resolvedOpts, accounts: accountMembers }, accountMembers);
-		(placeholder as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL] = expander;
+		attachPluginExpander(placeholder, (members) => {
+			// Filter the full composed member tuple to the per-account
+			// resource members the wallet would otherwise have to receive
+			// at factory call. `isAccountResourceMember` narrows on the
+			// `AccountResourceId<Name>` template-literal type — the typed
+			// discriminator the account plugin's barrel exposes via
+			// `AccountResourceId<Name>` — so a future plugin whose id
+			// accidentally starts with `account/` cannot masquerade.
+			const accountMembers: Array<WalletAccountMember> = [];
+			for (const m of members) {
+				if (isAccountResourceMember(m)) {
+					accountMembers.push(m as unknown as WalletAccountMember);
+				}
+			}
+			return makeWalletMember({ ...resolvedOpts, accounts: accountMembers }, accountMembers);
+		});
 		return placeholder;
 	}
 	return makeWalletMember(resolvedOpts, resolvedOpts.accounts);
@@ -197,6 +209,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// handlers fork off the supervisor-context fiber but the server
 		// itself lives for the stack's lifetime.
 		role: 'service',
+		section: 'service',
 		start: (deps) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-
@@ -215,7 +228,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// The first dependency is the hard Sui ordering edge; the
 				// remaining values mirror the explicit account tuple.
 				const [, ...resolvedAccounts] = deps;
-				const routerFrontedUrl = yield* routerHostname(identity, WALLET_ROUTE_ROLE).pipe(
+				const routerFrontedUrl = yield* routedHostname(identity, WALLET_ROUTE_ROLE).pipe(
 					Effect.map((hostname) =>
 						renderUrl({
 							protocol: 'http',
@@ -231,7 +244,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 						}),
 					),
 				);
-				const routedAppOrigin = yield* routerHostname(
+				const routedAppOrigin = yield* routedHostname(
 					identity,
 					HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 				).pipe(
@@ -256,11 +269,19 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					stack: identity.stack,
 					chain: identity.chain,
 					stateRoot: paths.stackRoot,
-					vitePortForThisStack: null,
 					allocatePort: (preferred, probeHost) =>
 						portBroker
 							.allocate({
-								kind: 'wallet',
+								owner: 'wallet',
+								// Pin the wallet's UX-meaningful range so the dev wallet
+								// adapter's auto-connect-port heuristic keeps working even
+								// after a fallback scan. The broker scan window is half-open
+								// `[start, start + size)`, so `DEFAULT_PORT_WINDOW`
+								// (start 39200, size 1000) covers 39200..40199 inclusive.
+								// Reuse the broker's exported default rather than a local
+								// literal so the two cannot silently drift (pinned by
+								// `test/plugins/wallet/port-window-pin.test.ts`).
+								windowHint: DEFAULT_PORT_WINDOW,
 								preferredPort: preferred,
 								...(probeHost === undefined ? {} : { probeHost }),
 							})
@@ -274,7 +295,7 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 											err.reason === 'preferred-busy'
 												? 'another plugin in this stack is using your preferred port; omit `port` to let the broker pick.'
 												: err.reason === 'no-free-port'
-													? 'the wallet kind-window is exhausted; check for stray devstack supervisors holding ports.'
+													? 'the wallet port window is exhausted; check for stray devstack supervisors holding ports.'
 													: 'bind-probe failed — likely a privileged port or jail restriction.',
 										cause: err,
 									}),
@@ -283,7 +304,6 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 					resolveAccounts: () => Effect.succeed(resolvedAccounts),
 					routerFrontedUrl,
 					routedAppOrigin,
-					supervisorCtx: undefined,
 				};
 
 				return yield* acquireWallet(resolvedOpts, acquireCtx);
@@ -328,8 +348,6 @@ export {
 	WALLET_TOKEN_HEX_LENGTH,
 	SignRequestSchema,
 	SignResponseSchema,
-	ExecuteRequestSchema,
-	ExecuteResponseSchema,
 	HealthResponseSchema,
 	AccountsResponseSchema,
 	AccountSummarySchema,
@@ -341,8 +359,6 @@ export {
 	type WalletHttpPathValue,
 	type SignRequest,
 	type SignResponse,
-	type ExecuteRequest,
-	type ExecuteResponse,
 	type HealthResponse,
 	type AccountsResponse,
 	type AccountSummary,
@@ -369,7 +385,8 @@ export {
 	safeBearerEquals,
 	redactToken,
 } from './pairing.ts';
-export { WALLET_ENDPOINT_NAME, makeWalletRoutable } from './routable.ts';
+export { WALLET_ENDPOINT_NAME, WALLET_ENDPOINT_KEY, makeWalletRoutable } from './routable.ts';
+export { WalletSpans } from './spans.ts';
 export {
 	dispatch,
 	startHttpServer,

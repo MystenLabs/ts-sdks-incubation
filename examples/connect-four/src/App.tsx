@@ -4,14 +4,14 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQuery, type UseMutationResult } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import { accounts } from './generated/accounts.js';
+import { accounts } from '@generated/accounts.js';
 import {
 	Game,
 	createLobby as buildCreateLobby,
 	joinLobby as buildJoinLobby,
 	play as buildPlay,
-} from './generated/bindings/connect_four/game.js';
-import { packages } from './generated/packages.js';
+} from '@generated/bindings/connect_four/game.js';
+import { packages } from '@generated/packages.js';
 import { selectDevstackAccount } from './dapp-kit.js';
 
 const COLS = 7;

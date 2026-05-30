@@ -29,6 +29,7 @@ import { Context, Effect, FileSystem, Layer } from 'effect';
 import type { Cache, CacheEntry, CacheKey } from '../../../primitives/cache.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { CacheError } from '../errors.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText } from '../runtime-decode.ts';
 import { CacheEntryDoc } from './schema.ts';
@@ -37,7 +38,7 @@ const base64Encode = (bytes: Uint8Array): string => Buffer.from(bytes).toString(
 const base64Decode = (s: string): Uint8Array => new Uint8Array(Buffer.from(s, 'base64'));
 
 export class CacheService extends Context.Service<CacheService, Cache>()(
-	'@devstack-rewrite/substrate/Cache',
+	'@devstack/substrate/Cache',
 ) {}
 
 /**
@@ -87,17 +88,24 @@ export const layerCache: Layer.Layer<
 				// Corruption = miss. The cache contract is
 				// best-effort; surfacing decode failures would force
 				// every caller to handle a recovery path that's
-				// already implicit (re-produce). We do annotate the
-				// span so the substrate's observability still
-				// surfaces the rare corruption.
-				const annotateCorruption = Effect.annotateCurrentSpan({
-					'cache.corruption': true,
-				});
+				// already implicit (re-produce). We annotate the span
+				// AND emit a `logDebug` so the rare corruption is
+				// visible in the log stream, not only via span backend.
 				const doc = yield* decodeJsonText(CacheEntryDoc, text, {
 					source: file,
 					mkError: (issue) => issue,
 				}).pipe(
-					Effect.catch(() => annotateCorruption.pipe(Effect.as(null as CacheEntryDoc | null))),
+					Effect.tapCause((cause) =>
+						Effect.logDebug('cache entry decode failed; treating as miss', {
+							file,
+							cause,
+						}),
+					),
+					Effect.catch(() =>
+						Effect.annotateCurrentSpan({ [SpanAttr.cacheCorruption]: true }).pipe(
+							Effect.as(null as CacheEntryDoc | null),
+						),
+					),
 				);
 				if (doc === null) return null;
 				return {

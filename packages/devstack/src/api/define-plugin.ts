@@ -32,3 +32,5 @@ export {
 	type ResolvedDependencyObject,
 	type WatchDecl,
 } from '../substrate/plugin.ts';
+
+export type { RowSection } from '../substrate/projection.ts';

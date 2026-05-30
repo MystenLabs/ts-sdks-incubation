@@ -26,9 +26,12 @@ import { dirname } from 'node:path';
 
 import { Data, Effect, Schema, Scope } from 'effect';
 
-import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { type RosterHolder } from '../../cross-process.ts';
+import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
+import { SpanAttr } from '../observability/spans.ts';
+import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
-import type { RosterHolder } from '../../cross-process.ts';
+import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -56,26 +59,22 @@ export type StackLockError = StackLockTimeoutError | StackLockIoError;
 // -----------------------------------------------------------------------------
 
 /** The on-disk body is the same `RosterHolder` shape — re-using the schema
- *  means roster sweep + stack-lock reclaim see the same fields. */
+ *  means roster sweep + stack-lock reclaim see the same fields.
+ *
+ *  `startTime` mirrors `RosterHolderSchema`: `number | null` so an
+ *  unprobable platform's lock body round-trips cleanly through the
+ *  decoder. The shared liveness predicate honors null conservatively. */
 const StackLockBodySchema = Schema.Struct({
 	pid: Schema.Number,
-	startTime: Schema.Number,
+	startTime: Schema.NullOr(Schema.Number),
 	hostname: Schema.String,
 	claimedAt: Schema.Number,
 	heartbeatAt: Schema.Number,
 	intent: Schema.Literals(['normal', 'snapshot']),
 });
 
-const parseLockBody = (raw: string): RosterHolder | null => {
-	try {
-		return decodeJsonTextSync(StackLockBodySchema, raw, {
-			source: 'stack.lock',
-			mkError: (issue) => issue,
-		});
-	} catch {
-		return null;
-	}
-};
+const parseLockBody = (raw: string): RosterHolder | null =>
+	parseVersionedDocumentBodyOrNull(raw, StackLockBodySchema, 'stack.lock');
 
 // -----------------------------------------------------------------------------
 // Acquire / release
@@ -85,9 +84,14 @@ const parseLockBody = (raw: string): RosterHolder | null => {
  *  ("Block up to 5 seconds; if unavailable, retry with backoff"). */
 export const DEFAULT_ACQUIRE_TIMEOUT_MILLIS = 5_000;
 
-/** Per-attempt initial wait. Doubles each retry up to the cap. */
+/** Per-attempt initial wait. Doubles each retry up to the cap. The
+ *  backoff also resets whenever the holder identity changes — see the
+ *  reclaim loop comment for the contention story (review fix phase
+ *  22f). The cap is intentionally tight (200ms) so peers react quickly
+ *  to a release; combined with the O_EXCL-arbitrated retry on reclaim,
+ *  no staggering jitter is needed. */
 const INITIAL_BACKOFF_MILLIS = 25;
-const MAX_BACKOFF_MILLIS = 500;
+const MAX_BACKOFF_MILLIS = 200;
 
 /**
  * Sync attempt at O_EXCL-create. Returns whether we own the lock now.
@@ -154,12 +158,13 @@ export const acquireStackLock = (
 ): Effect.Effect<void, StackLockError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'devstack.stack-lock.path': path,
-			'devstack.stack-lock.timeoutMillis': timeoutMillis,
+			[SpanAttr.stackLockPath]: path,
+			[SpanAttr.stackLockTimeoutMillis]: timeoutMillis,
 		});
 		const startedAt = Date.now();
 		let backoff = INITIAL_BACKOFF_MILLIS;
 		let lastHolder: RosterHolder | null = null;
+		let prevHolderPid: number | null = null;
 		while (true) {
 			const elapsed = Date.now() - startedAt;
 			if (elapsed > timeoutMillis) {
@@ -186,8 +191,34 @@ export const acquireStackLock = (
 				return;
 			}
 			lastHolder = attempt.holder;
-			// Reclaim if the holder is dead.
+			// Reset the backoff whenever the holder identity changes —
+			// a new holder means the previous one released, and our
+			// long-saturated backoff (driven by waiting on the prior
+			// holder) is now stale. Without this, late waiters under
+			// heavy contention saturate at MAX_BACKOFF_MILLIS while
+			// each peer holds the lock only briefly, exhausting the
+			// claim budget before they can win (review fix phase 22f
+			// reclaim-stress reproducer caught the case).
+			const currentHolderPid = lastHolder?.pid ?? null;
+			if (currentHolderPid !== prevHolderPid) {
+				backoff = INITIAL_BACKOFF_MILLIS;
+				prevHolderPid = currentHolderPid;
+			}
+			// Reclaim if the holder is dead OR the lock body is
+			// unparseable AND old enough to be presumed-abandoned. The
+			// unparseable case covers a peer that died mid-write: the
+			// PID liveness check has nothing to consult, so the only
+			// signal is the file's mtime falling outside the staleness
+			// window (`DEFAULT_SWEEP_POLICY.staleAfterMillis`, shared
+			// with the roster sweep). Without this branch, a mid-write
+			// crash keeps every peer blocked for the full 5s claim
+			// window — see review fix phase 22f (cross-process).
+			let reclaimed = false;
 			if (lastHolder !== null) {
+				// Dead-PID reclaim: gated on a liveness probe, so the
+				// holder cannot have written a fresh body — a plain
+				// unlink is safe here (no TOCTOU). An alive holder falls
+				// through to the backoff below.
 				const status = yield* checkHolderLiveness(lastHolder).pipe(
 					Effect.catch(() => Effect.succeed('alive' as const)),
 				);
@@ -203,11 +234,34 @@ export const acquireStackLock = (
 						},
 						catch: (cause) => new StackLockIoError({ path, cause }),
 					});
-					// Loop again immediately; don't sleep for a reclaim.
-					continue;
+					reclaimed = true;
 				}
+			} else {
+				// Unparseable body: reclaim ONLY through the re-stat
+				// guard. A bare mtime read + unlink races a competitor
+				// who legitimately reclaims the garbage and writes a
+				// fresh valid O_EXCL body in the window — the unlink
+				// would clobber that LIVE lock (two simultaneous
+				// holders). `reclaimUnparseableStaleFile` re-confirms the
+				// file is still the same stale, unparseable inode
+				// immediately before unlinking; any other outcome leaves
+				// the file untouched and we fall through to back off.
+				const outcome = yield* Effect.try({
+					try: () => reclaimUnparseableStaleFile(path, parseLockBody),
+					catch: (cause) => new StackLockIoError({ path, cause }),
+				});
+				reclaimed = outcome === 'reclaimed';
 			}
-			yield* Effect.sleep(`${backoff} millis`);
+			if (reclaimed) {
+				// O_EXCL atomicity alone arbitrates the post-reclaim
+				// race; reset the backoff so the contest starts fresh
+				// (the prior growth was driven by a now-evicted dead
+				// holder).
+				backoff = INITIAL_BACKOFF_MILLIS;
+				continue;
+			}
+			// Peer holds an alive lock — back off exponentially.
+			yield* underLiveClock(Effect.sleep(`${backoff} millis`));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MILLIS);
 		}
 	}).pipe(Effect.withSpan('cross-process.stack-lock.acquire'));

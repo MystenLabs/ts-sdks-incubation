@@ -33,6 +33,7 @@ describe('playwright config helpers', () => {
 		expect(base.workers).toBe(1);
 		expect(base.fullyParallel).toBe(false);
 		expect(base.testDir).toBe('./e2e');
+		expect(base.globalSetup).toBe('@mysten-incubation/devstack/playwright/global-setup');
 		expect(use.baseURL).toBe('http://localhost:8000');
 		expect(webServer.url).toBe('http://localhost:8000');
 		expect(webServer.gracefulShutdown).toEqual({

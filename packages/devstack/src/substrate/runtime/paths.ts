@@ -30,7 +30,7 @@ export interface RuntimeRootShape {
 }
 
 export class RuntimeRoot extends Context.Service<RuntimeRoot, RuntimeRootShape>()(
-	'@devstack-rewrite/substrate/RuntimeRoot',
+	'@devstack/substrate/RuntimeRoot',
 ) {}
 
 /** Build a `RuntimeRoot` layer pinned to a literal path. */
@@ -46,7 +46,7 @@ export const layerRuntimeRoot = (root: string): Layer.Layer<RuntimeRoot> =>
  * resolver and every consumer reads from this single source.
  */
 export class IdentityContext extends Context.Service<IdentityContext, Identity>()(
-	'@devstack-rewrite/substrate/Identity',
+	'@devstack/substrate/Identity',
 ) {}
 
 export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> =>
@@ -73,6 +73,13 @@ export interface StackPaths {
 	readonly snapshotDir: string;
 	readonly stackLockFile: string;
 	readonly rosterFile: string;
+	/** Sibling of `rosterFile` — the per-container claim ledger that
+	 *  the roster module mutates under `stack.lock`. Composing this
+	 *  inside the substrate path resolver keeps the discipline "nothing
+	 *  else builds cache/cross-process paths" closed: the roster module
+	 *  reads this field rather than reconstructing
+	 *  `dirname(rosterFile) + 'container-claims.json'` itself. */
+	readonly containerClaimsFile: string;
 	readonly snapshotReservationFile: string;
 	/**
 	 * Helper that composes the cache entry path from cache-key
@@ -98,7 +105,7 @@ export interface StackPaths {
  * boot-immutable.
  */
 export class StackPathsService extends Context.Service<StackPathsService, StackPaths>()(
-	'@devstack-rewrite/substrate/StackPaths',
+	'@devstack/substrate/StackPaths',
 ) {}
 
 /**
@@ -139,6 +146,7 @@ export const layerStackPaths: Layer.Layer<
 			snapshotDir: path.join(stackRoot, 'snapshots'),
 			stackLockFile: path.join(stackRoot, 'stack.lock'),
 			rosterFile: path.join(stackRoot, 'roster.json'),
+			containerClaimsFile: path.join(stackRoot, 'container-claims.json'),
 			snapshotReservationFile: path.join(stackRoot, 'snapshot.reservation'),
 			cacheEntry,
 			cacheChainDir,

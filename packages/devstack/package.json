@@ -41,6 +41,15 @@
 			"types": "./dist/build-integrations/playwright/index.d.mts",
 			"import": "./dist/build-integrations/playwright/index.mjs"
 		},
+		"./vite": {
+			"types": "./dist/build-integrations/vite/index.d.mts",
+			"import": "./dist/build-integrations/vite/index.mjs"
+		},
+		"./playwright/global-setup": {
+			"types": "./dist/build-integrations/playwright/global-setup.d.mts",
+			"import": "./dist/build-integrations/playwright/global-setup.mjs",
+			"default": "./dist/build-integrations/playwright/global-setup.mjs"
+		},
 		"./runtime": {
 			"types": "./dist/build-integrations/runtime/index.d.mts",
 			"import": "./dist/build-integrations/runtime/index.mjs"

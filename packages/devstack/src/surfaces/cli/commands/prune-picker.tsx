@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Effect } from 'effect';
 
 import {
+	appsWithLiveSiblings,
 	defaultPruneSelection,
 	groupResourceCountForResources,
 	hasPruneResources,
@@ -68,7 +69,15 @@ const PrunePicker = ({
 		setSelected(new Set(defaultPruneSelection(inventory, initialResources)));
 	}, [initialResources, inventory, rows]);
 
-	const selectable = (row: PruneGroup): boolean => !row.live;
+	// Apps with a live non-shared sibling pin their `per-app-shared`
+	// group (shared chain-build cache &c.). The default `selected` set
+	// already excludes these via `defaultPruneSelection`; mirroring the
+	// predicate here keeps manual toggle / select-all from re-adding a
+	// pinned shared group, matching the orchestrator's enforcement.
+	const pinned = useMemo(() => appsWithLiveSiblings(inventory), [inventory]);
+
+	const selectable = (row: PruneGroup): boolean =>
+		!row.live && !(row.sharedKind === 'per-app-shared' && pinned.has(row.app));
 
 	const move = (dir: 1 | -1): void => {
 		if (rows.length === 0) return;

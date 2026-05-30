@@ -29,19 +29,31 @@
 //        `produce-failed` reason).
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { ChainId, ContentHash } from '../../substrate/brand.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import { atomicWriteFileSync } from '../../substrate/runtime/atomic-write.ts';
+import { hostBindMountOwner } from '../../substrate/runtime/host-bind-mount-owner.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
+import { probeManyLenient } from '../../substrate/runtime/probes.ts';
+import {
+	DEPLOY_BIND_SOURCE_RETRY_PROFILE,
+	makeSpacedRetrySchedule,
+} from '../../substrate/runtime/retry-policy.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
+import { labelledExcerpt } from '../../substrate/runtime/observability/index.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { WalrusSpans } from './spans.ts';
 
 /** Cache-stored payload — what verify re-confirms on every cycle.
  *  Mirrors the v3 `CachedDeployState` shape (06-walrus.md §"State-
@@ -104,6 +116,12 @@ export interface DeployInputs {
 	 *  name, 'deploy')` equivalent. Persists across teardown
 	 *  (distilled-doc §"What survives teardown"). */
 	readonly outputDirHostPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  bind-mount source is `stackRoot`; `outputDirHostPath` MUST be a
+	 *  descendant. Threaded explicitly to remove the previous
+	 *  `dirname(dirname(dirname(...)))` walk-up footgun in
+	 *  `walrusDeployMountPaths`. */
+	readonly stackRoot: string;
 	readonly suiRpcUrlInNetwork: string;
 	readonly walrusFaucetUrlInNetwork: string;
 	readonly committeeSize: number;
@@ -127,17 +145,21 @@ export interface DeployInputs {
  *  observed wall-clock is 30-60s. 5-minute ceiling absorbs cold-cache
  *  + slow CI runners. */
 const DEPLOY_TIMEOUT_MS = 5 * 60_000;
-const DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS = 10;
-const DEPLOY_BIND_SOURCE_RETRY_DELAY_MS = 500;
 
 const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, WalrusPluginError> =>
 	Effect.tryPromise({
 		try: async () => {
 			await mkdir(inputs.outputDirHostPath, { recursive: true });
-			await writeFile(
+			// Route the bind-source marker through the canonical atomic
+			// primitive (STYLE_GUIDE §17) — tempfile + fsync + rename so a
+			// crashed writer can't leave the bind-mount probe reading a
+			// half-written marker. 0o644 so the in-container deploy user can
+			// stat it. Sync variant: the marker is a tiny one-liner and it
+			// keeps the durability boundary the raw `writeFile` lacked.
+			atomicWriteFileSync(
 				join(inputs.outputDirHostPath, '.devstack-bind-source'),
 				'devstack walrus bind source\n',
-				'utf8',
+				{ mode: 0o644 },
 			);
 		},
 		catch: (cause) =>
@@ -147,29 +169,6 @@ const ensureDeployOutputDir = (inputs: DeployInputs): Effect.Effect<void, Walrus
 				{ cause },
 			),
 	});
-
-const hostBindMountOwner = (): string | undefined => {
-	const process = (
-		globalThis as {
-			process?: { getuid?: () => number; getgid?: () => number };
-		}
-	).process;
-	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
-		return undefined;
-	}
-	return `${process.getuid()}:${process.getgid()}`;
-};
-
-const excerpt = (label: string, value: string): string => {
-	const trimmed = value.trim();
-	if (trimmed.length === 0) return '';
-	const max = 2_400;
-	const body =
-		trimmed.length > max
-			? `${trimmed.slice(0, 1_100)}...<truncated ${trimmed.length - 2_200} chars>...${trimmed.slice(-1_100)}`
-			: trimmed;
-	return ` ${label}=${JSON.stringify(body)}`;
-};
 
 const deployExitDetail = (
 	result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
@@ -183,8 +182,8 @@ const deployExitDetail = (
 		`walrus deploy exited with code ${result.exitCode}.` +
 		missingCommandHint +
 		` outputDir=${inputs.outputDirHostPath} committee=${inputs.committeeSize} shards=${inputs.shards}` +
-		excerpt('stdout', result.stdout) +
-		excerpt('stderr', result.stderr)
+		labelledExcerpt('stdout', result.stdout) +
+		labelledExcerpt('stderr', result.stderr)
 	);
 };
 
@@ -195,16 +194,6 @@ const isBindSourceMissing = (result: {
 	result.exitCode === 125 &&
 	/bind source path does not exist/i.test(result.stderr) &&
 	/invalid mount config/i.test(result.stderr);
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};
 
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
@@ -223,15 +212,22 @@ const stringifyCause = (cause: unknown): string => {
  *  surfaced with stdout/stderr capture for debugging. */
 export const parseDeployOutput = (stdout: string): CachedDeployState | null => {
 	// Match `key: value` (or `key = value`) lines; treat `None` as
-	// "absent" per the upstream walrus-deploy output convention. The
-	// pattern is permissive on the value (`\S+`) — walrus-deploy
-	// versions have varied on the exact hex format, and the substrate's
-	// downstream `ChainProbe` re-validates the id shape anyway.
+	// "absent" per the upstream walrus-deploy output convention.
+	//
+	// Value pattern: `0x<hex>` strictly. The previous `\S+` regex
+	// happily matched values like `None,` (with a trailing comma) or
+	// `[unset]` and passed them through as fake object ids; downstream
+	// `ChainProbe.get(...)` would then issue a `getObject` against
+	// garbage, surfacing a confusing "object not found" instead of a
+	// parse failure. Enforcing the hex shape here makes the parse-
+	// failure surface (`walrusPluginError('deploy', 'parser could not
+	// find ...')`) catch the bad value at its real source.
 	const pick = (k: string): string | undefined => {
 		const re = new RegExp(`(?:^|\\n)\\s*${k}\\s*[:=]\\s*(\\S+)`);
 		const m = re.exec(stdout);
 		const v = m?.[1];
 		if (v === undefined || v === 'None') return undefined;
+		if (!/^0x[0-9a-fA-F]+$/u.test(v)) return undefined;
 		return v;
 	};
 	const walrusPackageId = pick('walrus_package_id') ?? pick('package_id');
@@ -268,7 +264,7 @@ export const runDeployOneShot = (
 				Effect.mapError((cause) =>
 					walrusPluginError(
 						'deploy',
-						`walrus deploy funding gate failed before walrus-deploy: ${stringifyCause(cause)}`,
+						`walrus deploy funding gate failed before walrus-deploy: ${formatUnknownError(cause)}`,
 						{ cause },
 					),
 				),
@@ -277,7 +273,11 @@ export const runDeployOneShot = (
 		yield* ensureDeployOutputDir(inputs);
 
 		const outputOwner = hostBindMountOwner();
-		const outputMount = walrusDeployMountPaths(inputs.outputDirHostPath, '/opt/walrus/runtime');
+		const outputMount = walrusDeployMountPaths({
+			stackRoot: inputs.stackRoot,
+			deployOutputDirHostPath: inputs.outputDirHostPath,
+			mountTarget: '/opt/walrus/runtime',
+		});
 		const argv: ReadonlyArray<string> = [
 			'deploy',
 			'--output-dir',
@@ -313,9 +313,9 @@ export const runDeployOneShot = (
 					network: inputs.suiNetworkName,
 					// Same `host-gateway` rationale as storage-nodes.ts —
 					// deploy one-shot dials sui's host-bound RPC + faucet via
-					// `host.docker.internal`. Native Linux Docker needs the
-					// explicit mapping; Docker Desktop is a no-op.
-					extraHosts: { 'host.docker.internal': 'host-gateway' },
+					// `host.docker.internal`. See substrate/runtime/host-gateway.ts
+					// for the platform rationale.
+					extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
 					timeoutMillis: DEPLOY_TIMEOUT_MS,
 				})
 				.pipe(
@@ -330,12 +330,50 @@ export const runDeployOneShot = (
 					),
 				);
 
-		let result: { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
-		for (let attempt = 0; ; attempt += 1) {
-			result = yield* runAttempt();
-			if (!isBindSourceMissing(result) || attempt >= DEPLOY_BIND_SOURCE_RETRY_ATTEMPTS) break;
-			yield* ensureDeployOutputDir(inputs);
-			yield* Effect.sleep(Duration.millis(DEPLOY_BIND_SOURCE_RETRY_DELAY_MS));
+		const attempt = Effect.gen(function* () {
+			const result = yield* runAttempt();
+			if (isBindSourceMissing(result)) {
+				yield* ensureDeployOutputDir(inputs);
+			}
+			return result;
+		});
+		const result = yield* attempt.pipe(
+			Effect.repeat({
+				schedule: makeSpacedRetrySchedule(
+					DEPLOY_BIND_SOURCE_RETRY_PROFILE.delayMs,
+					DEPLOY_BIND_SOURCE_RETRY_PROFILE.attempts,
+				),
+				until: (r) => !isBindSourceMissing(r),
+			}),
+		);
+
+		// `Effect.repeat` with a bounded `schedule` + `until` exits SUCCESS
+		// in two cases: (a) `until(r)` returned true (bind source is now
+		// visible — the happy path) OR (b) the schedule recurrence cap was
+		// reached while `until(r)` still returned false (the bind source
+		// remained missing through every retry). The follow-up
+		// `result.exitCode !== 0` check below would already surface case
+		// (b) as a deploy-failure exit, but the failure message would be
+		// the bind-source stderr — not the more diagnostic "we exhausted
+		// the bind-source retry budget" message. Surface that explicitly
+		// here so operators see the retry budget in the failure shape.
+		if (isBindSourceMissing(result)) {
+			return yield* Effect.fail(
+				walrusPluginError(
+					'deploy',
+					`walrus deploy: bind-source visibility race did not resolve after ` +
+						`${DEPLOY_BIND_SOURCE_RETRY_PROFILE.attempts} retries ` +
+						`(${DEPLOY_BIND_SOURCE_RETRY_PROFILE.delayMs}ms spacing). ` +
+						`outputDir=${inputs.outputDirHostPath} — Docker Desktop's bind-source ` +
+						`propagation lagged past the retry budget. ` +
+						deployExitDetail(result, inputs),
+					{
+						exitCode: result.exitCode,
+						stdout: result.stdout,
+						stderr: result.stderr,
+					},
+				),
+			);
 		}
 
 		if (result.exitCode !== 0) {
@@ -364,7 +402,10 @@ export const runDeployOneShot = (
 		return parsed;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.deploy.oneShot', {
-			attributes: { 'walrus.committeeSize': inputs.committeeSize, 'walrus.shards': inputs.shards },
+			attributes: {
+				[WalrusSpans.committeeSize]: inputs.committeeSize,
+				[WalrusSpans.shards]: inputs.shards,
+			},
 		}),
 		Effect.timeoutOrElse({
 			duration: Duration.millis(DEPLOY_TIMEOUT_MS + 5_000),
@@ -391,9 +432,9 @@ export interface DeployOutputs {
  *  Produce: real wiring — `runDeployOneShot` runs
  *  `docker run --rm walrusImage deploy …` and parses the deploy stdout.
  *
- *  Verify-hit projection: the artifact publisher primitive returns the cached
- *  `Produced` payload after verify succeeds, so callers keep the full
- *  `CachedDeployState` shape across warm restarts. */
+ *  The substrate's `ArtifactPublisher.publish` returns the full
+ *  `CachedDeployState` on EVERY path (decoded cached payload on hit,
+ *  fresh produce on miss) — no projection dance required. */
 export const deployWalrusContracts = (
 	publisher: ArtifactPublisher,
 	probe: ChainProbe<SuiProbeKey>,
@@ -401,11 +442,10 @@ export const deployWalrusContracts = (
 	inputs: DeployInputs,
 ): Effect.Effect<DeployOutputs, WalrusPluginError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const verified = yield* publisher.publish<CachedDeployState, WalrusDeployVerified>({
+		const state = yield* publisher.publish<CachedDeployState, WalrusDeployVerified>({
 			namespace: 'walrus-deploy',
 			chain: inputs.chainId,
 			contentHash: inputs.contentHash,
-			verifySchema: WalrusDeployVerifyShape,
 			// Verify: lenient probes of the cached system + staking
 			// objects. The Sui chain probe decodes raw `getObject`
 			// responses, so the probe schema matches that envelope and
@@ -414,33 +454,60 @@ export const deployWalrusContracts = (
 				Effect.gen(function* () {
 					if (!(yield* deployOutputFilesComplete(inputs))) return null;
 
-					const system = yield* probe.get(
-						{ kind: 'object', objectId: cached.systemObject },
-						SuiObjectExistsShape,
-						'lenient',
-					);
-					if (system === null) return null;
-
-					const staking = yield* probe.get(
-						{ kind: 'object', objectId: cached.stakingObject },
-						SuiObjectExistsShape,
-						'lenient',
-					);
-					if (staking === null) return null;
+					// Both cached on-chain objects are independent lenient
+					// probes — fan them out via `probeManyLenient` so the
+					// substrate owns the iteration shape. Any null means
+					// "re-deploy"; both non-null gives us the composite
+					// verified payload.
+					const [system, staking] = yield* probeManyLenient([
+						probe.get(
+							{ kind: 'object', objectId: cached.systemObject },
+							SuiObjectExistsShape,
+							'lenient',
+						),
+						probe.get(
+							{ kind: 'object', objectId: cached.stakingObject },
+							SuiObjectExistsShape,
+							'lenient',
+						),
+					]);
+					if (system === undefined || system === null) return null;
+					if (staking === undefined || staking === null) return null;
 
 					return {
 						systemObjectId: system.objectId,
 						stakingObjectId: staking.objectId,
 					} satisfies WalrusDeployVerified;
-				}).pipe(Effect.catch(() => Effect.succeed(null as WalrusDeployVerified | null))),
+				}).pipe(
+					// `verify` must satisfy `Effect<… | null, never>` per
+					// the publisher contract. Narrow the cache-miss
+					// collapse to genuine cache-corruption signals
+					// (`decode-failed`) and missing-registration
+					// (`no-probe-registered`). The lenient probe already
+					// maps `not-found`/`transient` to `null`, so the
+					// remaining ChainProbeError values that reach here
+					// are authoritative — `decode-failed` is stale shape
+					// (re-produce) and `no-probe-registered` means the
+					// plugin booted before the chain probe was
+					// contributed (treat as miss). Anything else is a
+					// real RPC failure we want visible in the logs
+					// rather than silently collapsed to "re-deploy".
+					Effect.catchTag('ChainProbeError', (err) => {
+						if (err.reason === 'decode-failed' || err.reason === 'no-probe-registered') {
+							return Effect.succeed(null as WalrusDeployVerified | null);
+						}
+						return Effect.logWarning(
+							`walrus.deploy verify probe surfaced an authoritative error (` +
+								`reason=${err.reason}, chain=${err.chain}, detail=${err.detail}); ` +
+								`re-deploying.`,
+						).pipe(Effect.as(null as WalrusDeployVerified | null));
+					}),
+				),
 			// Produce: real walrus-deploy one-shot.
 			produce: runDeployOneShot(runtime, inputs).pipe(
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `walrus.deploy ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError('produce-failed', `walrus.deploy ${err.phase}: ${err.message}`),
 				),
 			),
 			// Register: fires on EVERY cycle. The plugin's outer body
@@ -451,28 +518,9 @@ export const deployWalrusContracts = (
 			register: () => Effect.void,
 		});
 
-		// Project Produced ∪ Verified onto CachedDeployState. artifact publisher returns
-		// the cached Produced payload on verify-hit, but keep a defensive
-		// projection for custom publisher implementations in tests.
-		const state: CachedDeployState =
-			'walrusPackageId' in verified
-				? verified
-				: {
-						// Verify-hit path: synthesize from the cached id's.
-						// The richer fields (packageId, exchange etc.) live
-						// in the on-disk artifact publisher cache; downstream consumers
-						// surface them through the in-process registry. The
-						// artifact publisher primitive's next API revision will hand the
-						// full Produced payload back here directly —
-						// architecture revision tracked in the file header.
-						walrusPackageId: '<cache-hit-not-rehydrated>',
-						systemObject: verified.systemObjectId,
-						stakingObject: verified.stakingObjectId,
-					};
-
 		return { state };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.deploy', {
-			attributes: { 'walrus.name': inputs.walrusName, 'walrus.chain': inputs.chainId },
+			attributes: { [WalrusSpans.name]: inputs.walrusName, [WalrusSpans.chain]: inputs.chainId },
 		}),
 	);

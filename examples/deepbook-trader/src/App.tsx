@@ -9,10 +9,10 @@ import {
 } from '@mysten/deepbook-v3';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { accounts } from './generated/accounts.js';
-import { coins } from './generated/coins.js';
-import { deepbookBindings } from './generated/deepbook/deepbook.js';
-import { suiNetwork } from './generated/sui/network.js';
+import { accounts } from '@generated/accounts.js';
+import { coins } from '@generated/coins.js';
+import { deepbookBindings } from '@generated/deepbook/deepbook.js';
+import { suiNetwork } from '@generated/sui/network.js';
 import { formatCoinAmount, parseCoinAmount, shortId } from './lib/format.js';
 import { useCoinBalance, useSignAndExecute } from './lib/queries.js';
 

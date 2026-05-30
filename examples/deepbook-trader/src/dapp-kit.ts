@@ -6,9 +6,9 @@ import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { accounts } from './generated/accounts.js';
-import { dappKitConfig } from './generated/dapp-kit/config.js';
-import { suiNetwork } from './generated/sui/network.js';
+import { accounts } from '@generated/accounts.js';
+import { dappKitConfig } from '@generated/dapp-kit/config.js';
+import { suiNetwork } from '@generated/sui/network.js';
 
 const deepbookNetwork = 'localnet' as const;
 const autoApprove = import.meta.env.VITE_DEEPBOOK_TRADER_AUTO_APPROVE === '1';

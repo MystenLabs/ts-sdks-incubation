@@ -35,8 +35,11 @@ import {
 } from '../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
+import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { WalrusSpans } from './spans.ts';
 
 /** Default per-node grace window. Storage nodes maintain RocksDB-
  *  backed state; need >10s to flush and checkpoint on `docker stop`.
@@ -58,11 +61,15 @@ export const WALRUS_ROUTER_PORT = 9185;
 export const DEFAULT_CONTAINER_API_PORT = WALRUS_ROUTER_PORT;
 
 /** Per-node descriptor — what the plugin resolved value surfaces
- *  for downstream consumers (the `@mysten/walrus` SDK reads this). */
+ *  for downstream consumers (the `@mysten/walrus` SDK reads this).
+ *
+ *  Note: no `publicKey` field. The per-node BLS12-381 keypair lives
+ *  inside the per-node keystore the deploy one-shot emitted; the SDK
+ *  consumer reads the public key off `packageConfig` rather than this
+ *  routing-handle descriptor. */
 export interface WalrusStorageNode {
 	readonly nodeIndex: number;
 	readonly nodeId: string;
-	readonly publicKey: string;
 	readonly publicHostname: string;
 	readonly rpcUrl: string;
 }
@@ -82,6 +89,12 @@ export interface StorageNodesSpec {
 	readonly walrusNetworkName: string;
 	readonly suiNetworkName: string;
 	readonly deployHostMountPath: string;
+	/** On-disk per-stack root from `StackPathsService.stackRoot`. The
+	 *  walrus bind-mount is computed by `walrusDeployMountPaths` as
+	 *  `<stackRoot> -> <mountTarget>`; the deploy output dir MUST be a
+	 *  descendant. Threaded explicitly to remove the previous
+	 *  `dirname(dirname(dirname(...)))` walk-up footgun. */
+	readonly stackRoot: string;
 	/** Fingerprint of the deploy outputs mounted into each node. */
 	readonly deployConfigHash: string;
 	readonly stopGraceSeconds?: number;
@@ -185,12 +198,29 @@ export const startStorageNodes = (
 		// Fork a parallel stop-scope. Per-node `ensureContainer` finalizers
 		// fire here on outer teardown; closing the parallel scope races
 		// the per-container `docker stop`s instead of summing them.
+		//
+		// Cascade semantics (verified against effect-v4 `Scope.ts`
+		// `fork` docs — "Closing the parent closes the child with the
+		// same exit value"): when ANY `bootOne` fails (e.g. a ready-
+		// probe times out on node i), `Effect.all` interrupts the rest;
+		// the failure propagates up through the encompassing
+		// `Effect.scoped` boundary which closes `outerScope`; that
+		// cascade-closes `nodeStopScope`, running EVERY already-acquired
+		// per-node `docker stop` finalizer in parallel. The probe is
+		// intentionally OUTSIDE `Scope.provide(nodeStopScope)` — its
+		// failures do NOT need their own finalizer attached to the
+		// stop scope; the just-started container's finalizer is already
+		// there from the `ensureNode` acquire that preceded the probe.
 		const outerScope = yield* Effect.scope;
 		const nodeStopScope = yield* Scope.fork(outerScope, 'parallel');
 
 		const stopGraceSeconds = spec.stopGraceSeconds ?? DEFAULT_NODE_STOP_GRACE_SECONDS;
 		const readyTimeout = Duration.millis(spec.readyTimeoutMs ?? DEFAULT_NODE_READY_TIMEOUT_MS);
-		const deployMount = walrusDeployMountPaths(spec.deployHostMountPath, '/opt/walrus/runtime');
+		const deployMount = walrusDeployMountPaths({
+			stackRoot: spec.stackRoot,
+			deployOutputDirHostPath: spec.deployHostMountPath,
+			mountTarget: '/opt/walrus/runtime',
+		});
 
 		const indices = Array.from({ length: spec.nodeCount }, (_, i) => i);
 
@@ -232,13 +262,12 @@ export const startStorageNodes = (
 							// secondary attach gives docker DNS for the sui
 							// network. The adapter treats [0] as primary.
 							networkAttach: [spec.walrusNetworkName, spec.suiNetworkName],
-							// `host-gateway` resolves `host.docker.internal` to
-							// the host's loopback inside the container — Docker
-							// Desktop wires this automatically on macOS/Windows
-							// but native Linux Docker requires the explicit
-							// `--add-host` flag. Storage nodes dial sui's
-							// host-bound RPC + faucet via this hostname.
-							extraHosts: { 'host.docker.internal': 'host-gateway' },
+							// Storage nodes dial sui's host-bound RPC + faucet via
+							// `host.docker.internal`. See
+							// substrate/runtime/host-gateway.ts for the platform
+							// rationale (Docker Desktop auto-wires; native Linux
+							// Docker requires the explicit `--add-host`).
+							extraHosts: HOST_GATEWAY_EXTRA_HOSTS,
 							mounts: [
 								{
 									// Mount the stack root and point the entrypoint at
@@ -315,7 +344,6 @@ export const startStorageNodes = (
 					// public key off `packageConfig` rather than this
 					// per-node descriptor.
 					nodeId: `walrus-node-${i}`,
-					publicKey: `<bls-pubkey-storage-node-${i}>`,
 					publicHostname,
 					// Router-fronted URL on the well-known walrus
 					// entrypoint port — Traefik routes by Host: header.
@@ -323,7 +351,7 @@ export const startStorageNodes = (
 				} satisfies WalrusStorageNode;
 			}).pipe(
 				Effect.withSpan(`devstack.plugin.walrus.storage-node-${i}.boot`, {
-					attributes: { 'devstack.plugin': 'walrus', 'walrus.node': i },
+					attributes: { [SpanAttr.plugin]: 'walrus', [WalrusSpans.node]: i },
 				}),
 			);
 
@@ -334,6 +362,6 @@ export const startStorageNodes = (
 		return { nodes };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.walrus.storage-nodes.boot', {
-			attributes: { 'devstack.plugin': 'walrus' },
+			attributes: { [SpanAttr.plugin]: 'walrus' },
 		}),
 	);

@@ -178,12 +178,6 @@ const toVolumeSummaries = (stdout: string): ReadonlyArray<VolumeSummary> => {
 };
 
 const devstackAppFilterArgs: ReadonlyArray<string> = ['--filter', `label=${LabelKey.app}`];
-const devstackRouterFilterArgs: ReadonlyArray<string> = [
-	'--filter',
-	`label=${LabelKey.managed}=true`,
-	'--filter',
-	`label=${LabelKey.routerMarker}=true`,
-];
 
 export const listContainers = (
 	match: Partial<ContainerLabelTuple>,
@@ -211,20 +205,27 @@ export const listDevstackContainers = (): Effect.Effect<
 		return toContainerSummaries(res.stdout);
 	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainers'));
 
-export const listDevstackRouterContainers = (): Effect.Effect<
-	ReadonlyArray<ContainerSummary>,
-	DockerRuntimeError,
-	DockerHost | DockerSpawner
-> =>
+/** List devstack-managed containers whose generic `kind` label matches.
+ *
+ *  Orchestrators that own a slot of named containers (e.g. the router
+ *  orchestrator stamps `kind=router`) use this to enumerate their own
+ *  fleet without L1 learning the orchestrator's name. The L1 lister
+ *  takes a STRING — it never branches on the value. */
+export const listDevstackContainersByKind = (
+	kind: string,
+): Effect.Effect<ReadonlyArray<ContainerSummary>, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		const res = yield* dockerRunOk('ps', [
 			'-a',
 			'--format',
 			'{{json .}}',
-			...devstackRouterFilterArgs,
+			'--filter',
+			`label=${LabelKey.managed}=true`,
+			'--filter',
+			`label=${LabelKey.kind}=${kind}`,
 		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
 		return toContainerSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackRouterContainers'));
+	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainersByKind'));
 
 export const listImages = (
 	match: Partial<ContainerLabelTuple>,

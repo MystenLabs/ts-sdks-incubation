@@ -19,6 +19,10 @@
 //   5. The composer is a no-op (zero allocation) when no wallet
 //      placeholder is present.
 
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -27,12 +31,9 @@ import { defineDevstack, readStackEngine } from '../../../src/api/define-devstac
 import { account } from '../../../src/plugins/account/index.ts';
 import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import { sui } from '../../../src/plugins/sui/index.ts';
-import {
-	WALLET_ACCOUNTS_ALL,
-	WALLET_EXPAND_ACCOUNTS_ALL,
-	wallet,
-} from '../../../src/plugins/wallet/index.ts';
+import { WALLET_ACCOUNTS_ALL, wallet } from '../../../src/plugins/wallet/index.ts';
 import { acquireWallet, type WalletAcquireContext } from '../../../src/plugins/wallet/service.ts';
+import { PLUGIN_EXPANDER } from '../../../src/contracts/plugin-expander.ts';
 
 const fakeAccount = {
 	name: 'alice',
@@ -77,7 +78,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		// trigger TS2742 at every example's default export). The slot
 		// is read by the composer at compose time via `Symbol.for(...)`
 		// lookup; tests reach for it through the same untyped path.
-		const slot = (placeholder as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (placeholder as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(typeof slot).toBe('function');
 	});
 
@@ -118,7 +119,7 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		// `makeWalletMember(opts, accountMembers)` — the hook is
 		// intentionally absent so a re-entered composer pass would be a
 		// no-op rather than a re-expansion.
-		const slot = (walletMember as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (walletMember as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(slot).toBeUndefined();
 	});
 
@@ -154,13 +155,11 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			app: 'app',
 			stack: 'main',
 			chain: 'chain',
-			stateRoot: '/tmp/devstack-wallet-empty',
-			vitePortForThisStack: null,
+			stateRoot: '/dev/null/fake-wallet-state',
 			allocatePort: () => Effect.die('empty wallet should fail before allocating a port'),
 			resolveAccounts: () => Effect.succeed([]),
 			routerFrontedUrl: null,
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const exit = await Effect.runPromiseExit(
@@ -179,14 +178,14 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 	});
 
 	it('defaults to a container-reachable bind address for routed stacks', async () => {
-		const stateRoot = `/tmp/devstack-wallet-bind-${Date.now()}`;
+		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-bind-'));
+		try {
 		let allocation: { readonly preferred?: number; readonly probeHost?: string } | null = null;
 		const ctx: WalletAcquireContext = {
 			app: 'app',
 			stack: 'main',
 			chain: 'chain',
 			stateRoot,
-			vitePortForThisStack: null,
 			allocatePort: (preferred, probeHost) => {
 				allocation = { preferred, probeHost };
 				return Effect.succeed(0);
@@ -194,7 +193,6 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 			resolveAccounts: () => Effect.succeed([fakeAccount]),
 			routerFrontedUrl: 'http://api.app.localhost:6173',
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const value = await Effect.runPromise(
@@ -206,21 +204,23 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		expect(allocation).toEqual({ preferred: undefined, probeHost: '0.0.0.0' });
 		expect(value.server.url).toBe('http://0.0.0.0:0');
 		expect(value.url).toBe('http://api.app.localhost:6173');
+		} finally {
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
 	});
 
 	it('keeps direct fallback URLs loopback-readable when binding all interfaces', async () => {
-		const stateRoot = `/tmp/devstack-wallet-direct-${Date.now()}`;
+		const stateRoot = mkdtempSync(join(tmpdir(), 'devstack-wallet-direct-'));
+		try {
 		const ctx: WalletAcquireContext = {
 			app: 'app',
 			stack: 'main',
 			chain: 'chain',
 			stateRoot,
-			vitePortForThisStack: null,
 			allocatePort: () => Effect.succeed(0),
 			resolveAccounts: () => Effect.succeed([fakeAccount]),
 			routerFrontedUrl: null,
 			routedAppOrigin: null,
-			supervisorCtx: undefined,
 		};
 
 		const value = await Effect.runPromise(
@@ -230,6 +230,9 @@ describe('wallet({ accounts: "all" }) — D6 composer expansion', () => {
 		);
 
 		expect(value.url).toBe('http://127.0.0.1:0');
+		} finally {
+			rmSync(stateRoot, { recursive: true, force: true });
+		}
 	});
 });
 
@@ -246,7 +249,7 @@ describe('wallet({ accounts: [...] }) — explicit-array form (regression)', () 
 		expect(dependencyIds).toEqual(['sui', 'account/alice', 'account/bob']);
 
 		// No expander hook on the explicit-form member.
-		const slot = (w as unknown as Record<symbol, unknown>)[WALLET_EXPAND_ACCOUNTS_ALL];
+		const slot = (w as unknown as Record<symbol, unknown>)[PLUGIN_EXPANDER];
 		expect(slot).toBeUndefined();
 	});
 

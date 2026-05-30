@@ -37,6 +37,7 @@
 import {
 	closeSync,
 	fsyncSync,
+	linkSync,
 	mkdirSync,
 	openSync,
 	renameSync,
@@ -47,6 +48,7 @@ import { randomUUID } from 'node:crypto';
 
 import { Effect, FileSystem, Schema } from 'effect';
 
+import { selfPid } from './cross-process/self-pid.ts';
 import { AtomicWriteFailed } from './errors.ts';
 
 /** 8-hex tempfile suffix. `crypto.randomUUID()` is collision-safe under
@@ -78,38 +80,32 @@ export const atomicWriteFile = (
 		const fs = yield* FileSystem.FileSystem;
 		const mode = options.mode ?? 0o600;
 		const parentMode = options.parentMode ?? 0o700;
-		const tmp = `${path}.tmp.${process.pid}.${tempSuffix()}`;
+		const tmp = `${path}.tmp.${selfPid()}.${tempSuffix()}`;
 		// 1. Ensure parent. recursive: true is idempotent under
 		//    concurrent callers — `mkdir -p` semantics.
 		yield* fs
 			.makeDirectory(dirname(path), { recursive: true, mode: parentMode })
 			.pipe(Effect.catch(failStage(path, 'mkdir-parent')));
-		// 2-4. Open tempfile with `wx` (O_EXCL), write, fsync, all
-		//      inside a Scope so the file handle closes on any path.
-		yield* Effect.scoped(
-			Effect.gen(function* () {
-				const file = yield* fs
-					.open(tmp, { flag: 'wx', mode })
-					.pipe(Effect.catch(failStage(path, 'open-temp')));
-				yield* file.writeAll(bytes).pipe(Effect.catch(failStage(path, 'write')));
-				// fsync — durability boundary. Without this the
-				// rename can land but bytes can stay in the page
-				// cache through a power loss.
-				yield* file.sync.pipe(Effect.catch(failStage(path, 'fsync')));
-			}),
-		);
-		// 5. Atomic rename. On failure unlink the tempfile so we
-		//    don't leak; unlink failure is ignored (the original
-		//    rename failure is the one that matters).
-		yield* fs
-			.rename(tmp, path)
-			.pipe(
-				Effect.catch((cause) =>
-					fs
-						.remove(tmp, { force: true })
-						.pipe(Effect.ignore, Effect.andThen(failStage(path, 'rename')(cause))),
-				),
+		// 2-5. Write + rename, with unconditional tempfile cleanup on
+		//      ANY failure path (open-temp / write / fsync / rename).
+		//      `force: true` makes the unlink a no-op if the file
+		//      doesn't exist (open-temp failed early, or rename moved
+		//      it to its final home).
+		yield* Effect.gen(function* () {
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const file = yield* fs
+						.open(tmp, { flag: 'wx', mode })
+						.pipe(Effect.catch(failStage(path, 'open-temp')));
+					yield* file.writeAll(bytes).pipe(Effect.catch(failStage(path, 'write')));
+					// fsync — durability boundary. Without this the
+					// rename can land but bytes can stay in the page
+					// cache through a power loss.
+					yield* file.sync.pipe(Effect.catch(failStage(path, 'fsync')));
+				}),
 			);
+			yield* fs.rename(tmp, path).pipe(Effect.catch(failStage(path, 'rename')));
+		}).pipe(Effect.onError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)));
 	}).pipe(Effect.withSpan('substrate.atomicWriteFile', { attributes: { path } }));
 
 /**
@@ -139,10 +135,72 @@ export const atomicWriteJson = <A, I>(
 // -----------------------------------------------------------------------------
 
 /**
+ * Internal: mkdir-parent → O_EXCL temp → write → fsync. Returns the
+ * tempfile path on success; throws on any failure (and unlinks the
+ * tempfile if it managed to land). The temp exists after return —
+ * the caller is responsible for moving it to its final home (rename
+ * for clobber semantics, link for exclusive-create semantics) AND
+ * for unlinking the temp afterwards.
+ *
+ * Centralizes the durability boundary so both `atomicWriteFileSync`
+ * (rename) and `atomicWriteFileExclusiveSync` (link+unlink) share
+ * one tempfile/fsync implementation.
+ */
+const writeAndFsyncTempSync = (
+	finalPath: string,
+	bytes: Uint8Array | string,
+	mode: number,
+	parentMode: number,
+): string => {
+	const tmp = `${finalPath}.tmp.${selfPid()}.${tempSuffix()}`;
+	mkdirSync(dirname(finalPath), { recursive: true, mode: parentMode });
+	// O_EXCL via `flag: 'wx'`. writeFileSync handles open + write +
+	// close in one call but does NOT fsync; do it manually so we
+	// preserve the durability boundary the Effect surface has.
+	writeFileSync(tmp, bytes, { flag: 'wx', mode });
+	// Tempfile exists from here — fsync failure must unlink before
+	// rethrowing so a crashed-mid-flight writer doesn't leak a
+	// half-written sibling.
+	try {
+		let fd: number | null = null;
+		try {
+			fd = openSync(tmp, 'r');
+			fsyncSync(fd);
+		} finally {
+			if (fd !== null) closeSync(fd);
+		}
+	} catch (cause) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// ignore — best-effort
+		}
+		throw cause;
+	}
+	return tmp;
+};
+
+/** Best-effort unlink. Swallows errors — used in cleanup paths where
+ *  a failure to remove the temp should NOT mask the original error. */
+const unlinkBestEffort = (path: string): void => {
+	try {
+		unlinkSync(path);
+	} catch {
+		// ignore
+	}
+};
+
+/**
  * Synchronous atomic write. Same disk-side contract as
  * `atomicWriteFile` (mkdir-parent → O_EXCL temp → write → fsync →
  * rename). Returns `void` on success; throws on any failure with
  * `cause` set to the underlying `NodeJS.ErrnoException`.
+ *
+ * Rename CLOBBERS a pre-existing file at the final path. Callers
+ * that need exclusive-create semantics ("fail if the final path
+ * already exists, atomically") want `atomicWriteFileExclusiveSync`
+ * instead — that surface uses `linkSync` which is POSIX-atomic and
+ * fails with `EEXIST` rather than overwriting.
  *
  * Used inside `Effect.try` by the cross-process modules; the caller
  * maps the thrown error to a typed plugin/runtime error
@@ -155,32 +213,54 @@ export const atomicWriteFileSync = (
 ): void => {
 	const mode = options.mode ?? 0o600;
 	const parentMode = options.parentMode ?? 0o700;
-	const tmp = `${path}.tmp.${process.pid}.${tempSuffix()}`;
-	mkdirSync(dirname(path), { recursive: true, mode: parentMode });
-	// O_EXCL via `flag: 'wx'`. writeFileSync handles open + write +
-	// close in one call but does NOT fsync; do it manually so we
-	// preserve the durability boundary the Effect surface has.
-	writeFileSync(tmp, bytes, { flag: 'wx', mode });
-	// fsync — open the file just to fsync the bytes through the page
-	// cache. `writeFileSync` already closed the original fd.
-	let fd: number | null = null;
-	try {
-		fd = openSync(tmp, 'r');
-		fsyncSync(fd);
-	} finally {
-		if (fd !== null) closeSync(fd);
-	}
+	const tmp = writeAndFsyncTempSync(path, bytes, mode, parentMode);
+	let renamed = false;
 	try {
 		renameSync(tmp, path);
-	} catch (cause) {
-		// Best-effort tempfile cleanup; the original rename failure is
-		// the one we re-throw to the caller.
-		try {
-			unlinkSync(tmp);
-		} catch {
-			// ignore
-		}
-		throw cause;
+		renamed = true;
+	} finally {
+		if (!renamed) unlinkBestEffort(tmp);
+	}
+};
+
+/**
+ * Synchronous atomic EXCLUSIVE-CREATE write. Same disk-side contract
+ * as `atomicWriteFileSync` (mkdir-parent → O_EXCL temp → write →
+ * fsync) but uses `linkSync(tmp, final)` instead of `renameSync` for
+ * the final installation step. `link` is POSIX-atomic and FAILS with
+ * `EEXIST` if the target already exists — closing the rename-clobber
+ * race that `existsSync` + `renameSync` cannot.
+ *
+ * On success: the tempfile is unlinked (the hard link satisfies the
+ * final path).
+ *
+ * On `EEXIST`: the tempfile is unlinked and the underlying
+ * `NodeJS.ErrnoException` (with `code === 'EEXIST'`) is rethrown so
+ * the caller can read the winning final-path and decide what to do.
+ *
+ * On any other failure: the tempfile is unlinked and the error is
+ * rethrown unchanged.
+ *
+ * POSIX `link(2)` is available on Linux + macOS + WSL. Devstack is
+ * POSIX-only at runtime.
+ */
+export const atomicWriteFileExclusiveSync = (
+	path: string,
+	bytes: Uint8Array | string,
+	options: { readonly mode?: number; readonly parentMode?: number } = {},
+): void => {
+	const mode = options.mode ?? 0o600;
+	const parentMode = options.parentMode ?? 0o700;
+	const tmp = writeAndFsyncTempSync(path, bytes, mode, parentMode);
+	try {
+		// Atomic exclusive-create. On EEXIST the tempfile remains and
+		// the finally below unlinks it; the EEXIST error propagates.
+		linkSync(tmp, path);
+	} finally {
+		// Always unlink the tempfile: on success the hard link IS the
+		// final file; on failure (EEXIST or otherwise) the tempfile
+		// should not leak.
+		unlinkBestEffort(tmp);
 	}
 };
 

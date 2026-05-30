@@ -21,7 +21,10 @@ export type { Assert, Equal, Expect, Not } from './equal.ts';
 export type { LifecycleStatus, PhaseNarration, PluginRole } from './lifecycle.ts';
 export {
 	ManifestEnvelopeSchema,
+	ManifestExtrasInvalid,
+	ManifestExtrasLookupError,
 	type EndpointEntry,
+	type ManifestCodegen,
 	type ManifestEnvelope,
 	type ManifestExtras,
 	type ManifestExtrasContext,

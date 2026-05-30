@@ -1,0 +1,74 @@
+---
+title: defineDevstackWith
+description:
+  Callback-form composer that threads a resolved-narrow NetworkConfig through a BuildCtx so
+  mode-narrowed plugin factories type-check at the call site.
+---
+
+`defineDevstackWith` is the callback-form devstack composer. Use it instead of `defineDevstack` when
+one or more plugin factories need mode-narrowing — `sui()` in `live` mode, `walrusFor(...)`,
+`sealFor(...)`, and similar mode-narrowed namespaces only expose their per-mode call shape when the
+resolved network is known at composition time.
+
+```ts title="devstack.config.ts"
+import { chainId, defineDevstackWith, suiFor } from '@mysten-incubation/devstack';
+
+export default defineDevstackWith(
+	{
+		network: { mode: 'live', chain: chainId('sui:testnet') },
+		stackName: 'main',
+	},
+	({ network }) => {
+		const liveSui = suiFor(network).testnet();
+		return [liveSui];
+	},
+);
+```
+
+## Signature
+
+```ts
+function defineDevstackWith<Mode extends NetworkMode, Members extends ReadonlyArray<AnyPlugin>>(
+	options: DevstackOptionsWith<Mode>,
+	build: (ctx: BuildCtx<Mode>) => Members,
+): Stack<ComposedMembers<Members>>;
+```
+
+- `options` — the same options bag `defineDevstack` accepts, plus a required `network` field
+  carrying the resolved-narrow `NetworkConfig<Mode>`.
+- `build` — a callback that receives a `BuildCtx<Mode>` and returns the member tuple.
+
+## `BuildCtx`
+
+```ts
+interface BuildCtx<Mode extends NetworkMode> {
+	readonly network: NetworkConfig<Mode>;
+}
+```
+
+The `Mode` generic is inferred from `options.network.mode` and carried through `BuildCtx`. Plugin
+factories that accept `(network)` recover the discriminator structurally — the compiler refuses
+illegal-mode factory access at the call site, before the stack runs.
+
+## Validation
+
+`defineDevstackWith` runs the same composition-time checks as `defineDevstack`:
+
+- The returned member array is recursively expanded so plugin-valued dependencies are included
+  before missing-provider checks. Bare resource dependencies still require an explicit provider in
+  the returned tuple.
+- A `MissingProviders<...>` branded error surfaces at the call site if any plugin's `dependsOn`
+  reference is not provided by the tuple.
+- A defensive runtime check verifies every element returned by the builder carries the plugin brand.
+  If you reach for `as unknown as AnyPlugin` and skip `definePlugin`, the composer throws
+  immediately with a clear message.
+
+## When to use which composer
+
+- `defineDevstack({ members: [...] })` — flat form. No mode-narrowed factories; the simplest path
+  for localnet-only stacks.
+- `defineDevstackWith({ network, ... }, ({ network }) => [...])` — callback form. The canonical
+  surface when one or more plugins narrow on the resolved network mode (live, fork).
+
+The two return the same `Stack<...>` shape and are consumed identically by `runStack`,
+`devstack up`, and the build-integration subpaths.

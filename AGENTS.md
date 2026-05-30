@@ -105,7 +105,7 @@ preparing for a release.
 ### Development Workflow
 
 1. Turbo ensures dependencies are built before dependents.
-2. Biome (lint + format) is enforced across the codebase.
+2. oxlint and Prettier (lint + format) are enforced across the codebase.
 3. Tests must pass before changes are merged.
 4. Breaking changes don't need a deprecation cycle (see "Project status" above) —
    rename/restructure/delete in place and update every callsite in the same commit.
@@ -135,6 +135,48 @@ Three layers of guidance, in order:
    that apply inside that package.
 3. **Repo-wide habits** — the short list below. Anything more concrete belongs
    in a package AGENTS.md, not here.
+
+### Sui SDK documentation (read before guessing)
+
+**Never hand-roll Sui RPC — always go through the SDK.** Any time you talk to a
+Sui node (reads or writes, runtime or dev scripts), use the `@mysten/sui` SDK
+client — `SuiGrpcClient` and its `client.core.*` methods (`listCoins`,
+`getObject`, `executeTransaction`, `waitForTransaction`, …). Do NOT build raw
+JSON-RPC requests (no `fetch` to a fullnode with a `{ jsonrpc, method:
+'suix_*' | 'sui_*' }` body) and do NOT use the legacy JSON-RPC transport — the
+gRPC client is the only sanctioned path, and `sui-fork` doesn't serve JSON-RPC
+at all. The runtime already standardizes on `SuiGrpcClient`; any helper or
+script that reaches a Sui node must do the same.
+
+Every `@mysten/*` package ships LLM-optimized documentation in its own
+`docs/` directory. Before writing or modifying code that touches a `@mysten/*`
+package, find and read the relevant docs locally — **don't guess at API shape,
+don't grep `node_modules/**/\*.d.ts`for type names, don't search the web**.
+The shipped docs are the ground truth for the version installed in this repo
+(currently`@mysten/sui`2.x;`experimental` and other 1.x surfaces are gone).
+
+Workflow:
+
+1. Locate the index in `node_modules/`:
+   `find . -path '*@mysten/*/docs/llms-index.md' | head` (or the specific
+   package: `node_modules/.pnpm/@mysten+sui*/node_modules/@mysten/sui/docs/llms-index.md`).
+2. Read `llms-index.md` first — it's a routing table mapping each doc page
+   to a one-line description.
+3. Read the specific page(s) (`clients/core.md`, `transaction-building/basics.md`,
+   `migrations/sui-2.0/sui.md`, etc.) before touching code.
+
+Common entries you'll need:
+
+- `clients/core.md` — `ClientWithCoreApi` / `CoreClient`, the shape `Transaction.build({ client })` accepts and every `client.core.*` method routes through.
+- `clients/grpc.md` — `SuiGrpcClient`, the gRPC transport (preferred over JSON-RPC).
+- `transaction-building/basics.md` — `Transaction` construction, `tx.build({ client })`, gas configuration.
+- `transactions/signing-and-execution.md` — `client.core.executeTransaction` / `client.core.waitForTransaction` instead of bespoke wrappers.
+- `migrations/sui-2.0/sui.md` — what moved where between 1.x and 2.x (the `experimental` subpath is gone; `ClientWithCoreApi` now lives at `@mysten/sui/client`).
+
+When you do reach across the SDK boundary, **import published types instead
+of redeclaring narrowed shapes**. `Parameters<typeof tx.build>[0] extends { client?: infer C } | undefined ? C : never`-style extractors are a code smell — the
+SDK already exports the type (e.g. `ClientWithCoreApi`); re-export from the
+plugin barrel and consumers cast to that.
 
 ### Repo-wide habits
 

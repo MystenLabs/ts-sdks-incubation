@@ -15,7 +15,7 @@ import {
 import { ContainerRuntimeService } from '../../src/runtime/docker/index.ts';
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import { readClaims } from '../../src/substrate/runtime/cross-process/roster.ts';
-import { buildSubstrateLayers } from '../../src/substrate/runtime/run.ts';
+import { buildSubstrateLayers } from '../../src/orchestrators/run.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
@@ -139,6 +139,7 @@ describe('snapshot container image roundtrip', () => {
 						const claimsBeforeRestore = yield* readClaims({
 							stackLockFile: paths.stackLockFile,
 							rosterFile: paths.rosterFile,
+							containerClaimsFile: paths.containerClaimsFile,
 						});
 						expect(claimsBeforeRestore.claims.map((claim) => claim.containerKey)).toContain(
 							containerName,

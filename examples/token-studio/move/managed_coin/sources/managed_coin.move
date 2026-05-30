@@ -1,7 +1,7 @@
 #[allow(deprecated_usage)]
 module token_studio::managed_coin;
 
-use sui::coin::{Self, Coin, TreasuryCap};
+use sui::coin::{Self, TreasuryCap};
 use sui::url;
 
 /// One-time witness for the demo coin.
@@ -31,9 +31,4 @@ public fun mint(
 ) {
 	let coin = coin::mint(treasury, amount, ctx);
 	transfer::public_transfer(coin, recipient);
-}
-
-/// Burn the supplied coin object. Caller must hold the TreasuryCap.
-public fun burn(treasury: &mut TreasuryCap<MANAGED_COIN>, coin: Coin<MANAGED_COIN>) {
-	coin::burn(treasury, coin);
 }

@@ -8,7 +8,7 @@ resolves to a typed value from `start`.
 
 - `id`: graph identity and generated default resource id.
 - `dependsOn`: a single plugin/ref, an array, or an object.
-- `kind`: lifecycle classification for the supervisor.
+- `role`: lifecycle classification for the supervisor (`'service' | 'task' | …`).
 - `start`: the effect that produces the resolved value.
 - `capabilities`: optional declarations for routing, snapshots, strategies, projection events, and
   generated files.

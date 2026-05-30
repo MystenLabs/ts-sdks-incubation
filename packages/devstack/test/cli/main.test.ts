@@ -7,7 +7,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { runCli } from '../../src/cli/main.ts';
+import { identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
 import {
 	contributionPath,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -36,7 +36,7 @@ const makeTempRoot = (prefix: string): string => {
 	return root;
 };
 
-const writeCodegenConfig = (appRoot: string): string => {
+const writeCodegenConfig = (appRoot: string, stackName = 'main'): string => {
 	const configPath = join(appRoot, 'devstack.config.ts');
 	writeFileSync(
 		configPath,
@@ -51,6 +51,7 @@ import {
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
 \tcapabilities: ({ value }) => [
 \t\tcodegenable({
@@ -66,7 +67,7 @@ const cliApplyCodegenPlugin = definePlugin({
 \t],
 });
 
-export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });
+export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: '${stackName}' });
 `.trimStart(),
 	);
 	return configPath;
@@ -195,7 +196,9 @@ const writeLiveRoster = (stackRoot: string): void => {
 
 const readCommandLog = (
 	stackRoot: string,
-): ReadonlyArray<{ readonly command: { readonly tag: string; readonly snapshotId?: string } }> =>
+): ReadonlyArray<{
+	readonly command: { readonly tag: string; readonly snapshotId?: string; readonly name?: string };
+}> =>
 	readFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'utf8')
 		.trim()
 		.split('\n')
@@ -204,7 +207,11 @@ const readCommandLog = (
 				? []
 				: [
 						JSON.parse(line) as {
-							readonly command: { readonly tag: string; readonly snapshotId?: string };
+							readonly command: {
+								readonly tag: string;
+								readonly snapshotId?: string;
+								readonly name?: string;
+							};
 						},
 					],
 		);
@@ -362,6 +369,282 @@ describe('cli/main', () => {
 		}
 	}, 60_000);
 
+	it('status defaults runtime state to cwd-local .devstack', async () => {
+		const appRoot = makeTempRoot('cli-default-state-app');
+		const homeRoot = makeTempRoot('cli-default-state-home');
+		const stackRoot = join(appRoot, '.devstack', 'stacks', 'main');
+		const previousExitCode = process.exitCode;
+		const previousCwd = process.cwd();
+		const previousEnv = {
+			DEVSTACK_APP: process.env.DEVSTACK_APP,
+			DEVSTACK_STACK: process.env.DEVSTACK_STACK,
+			DEVSTACK_NETWORK: process.env.DEVSTACK_NETWORK,
+			DEVSTACK_STATE_DIR: process.env.DEVSTACK_STATE_DIR,
+			DEVSTACK_CONFIG: process.env.DEVSTACK_CONFIG,
+			HOME: process.env.HOME,
+		};
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_APP;
+			delete process.env.DEVSTACK_STACK;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_STATE_DIR;
+			delete process.env.DEVSTACK_CONFIG;
+			process.env.HOME = homeRoot;
+			process.chdir(appRoot);
+			await Effect.runPromise(
+				writeProjectionSnapshot(
+					stackRoot,
+					makeProjectionState({
+						app: 'local-app',
+						stack: 'main',
+						network: 'sui:local',
+					}),
+				),
+			);
+
+			await runCli(['status', '--app', 'local-app', '--stack', 'main', '--json']);
+
+			expect(stderr.join('')).toBe('');
+			expect(process.exitCode).toBe(0);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly present: boolean; readonly identity: unknown };
+			};
+			expect(envelope.data.present).toBe(true);
+			expect(envelope.data.identity).toEqual({
+				app: 'local-app',
+				stack: 'main',
+				network: 'sui:local',
+			});
+			expect(existsSync(join(homeRoot, '.devstack', 'stacks', 'main'))).toBe(false);
+		} finally {
+			process.chdir(previousCwd);
+			process.exitCode = previousExitCode;
+			for (const [key, value] of Object.entries(previousEnv)) {
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it('snapshot save publishes to a live supervisor and waits for capture result', async () => {
+		const stateRoot = makeTempRoot('cli-live-snapshot-state');
+		const stackRoot = join(stateRoot, 'stacks', 'alpha');
+		const observed: Array<{
+			readonly tag?: string;
+			readonly snapshotId?: string;
+			readonly name?: string;
+		}> = [];
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		writeLiveRoster(stackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(commandChannelPaths(stackRoot), {
+						fromOffset: 'start',
+						pollMillis: 20,
+					});
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								const command = record.command as {
+									readonly tag?: string;
+									readonly snapshotId?: string;
+									readonly name?: string;
+								};
+								yield* Effect.sync(() => {
+									observed.push(command);
+								});
+								if (command.snapshotId !== undefined) {
+									yield* subscriber.publishEvent({
+										tag: 'snapshot.captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+										at: Date.now(),
+									});
+								}
+								yield* subscriber.ack(record.id, 'captured', {
+									kind: 'captured',
+									snapshotId: command.snapshotId,
+									...(command.name === undefined ? {} : { name: command.name }),
+								});
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'snapshot',
+				'save',
+				'seeded',
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'alpha',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(observed).toHaveLength(1);
+			expect(observed[0]?.tag).toBe('snapshot.capture');
+			expect(observed[0]?.name).toBe('seeded');
+			expect(observed[0]?.snapshotId).toMatch(/^snap-\d+-[0-9a-f]{8}$/);
+			expect(readCommandLog(stackRoot).map((record) => record.command.tag)).toEqual([
+				'snapshot.capture',
+			]);
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: true;
+				readonly data: { readonly snapshotId: string; readonly name: string };
+			};
+			expect(envelope.data).toEqual({
+				snapshotId: observed[0]?.snapshotId,
+				name: 'seeded',
+			});
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
+	it('snapshot save: explicit --stack overrides config stackName', async () => {
+		const appRoot = makeTempRoot('cli-live-snapshot-config-app');
+		const stateRoot = makeTempRoot('cli-live-snapshot-config-state');
+		const configPath = writeCodegenConfig(appRoot, 'config-stack');
+		const cliStackRoot = join(stateRoot, 'stacks', 'cli-stack');
+		const configStackRoot = join(stateRoot, 'stacks', 'config-stack');
+		const observed: Array<{
+			readonly tag?: string;
+			readonly snapshotId?: string;
+			readonly name?: string;
+		}> = [];
+		const previousExitCode = process.exitCode;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		// Live supervisor lives on the EXPLICIT --stack (cli-stack). Under the
+		// corrected precedence (explicit flag/env > config stackName), the verb
+		// must target cli-stack, NOT the config-declared config-stack.
+		writeLiveRoster(cliStackRoot);
+		const subscriberFiber = Effect.runFork(
+			Effect.scoped(
+				Effect.gen(function* () {
+					const subscriber = yield* makeCommandChannelSubscriber(
+						commandChannelPaths(cliStackRoot),
+						{
+							fromOffset: 'start',
+							pollMillis: 20,
+						},
+					);
+					yield* subscriber.commands.pipe(
+						Stream.take(1),
+						Stream.runForEach((record) =>
+							Effect.gen(function* () {
+								const command = record.command as {
+									readonly tag?: string;
+									readonly snapshotId?: string;
+									readonly name?: string;
+								};
+								yield* Effect.sync(() => {
+									observed.push(command);
+								});
+								if (command.snapshotId !== undefined) {
+									yield* subscriber.publishEvent({
+										tag: 'snapshot.captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+										at: Date.now(),
+									});
+								}
+								yield* subscriber.ack(record.id, 'captured', {
+									kind: 'captured',
+									snapshotId: command.snapshotId,
+									...(command.name === undefined ? {} : { name: command.name }),
+								});
+							}),
+						),
+					);
+				}),
+			),
+		);
+
+		try {
+			process.exitCode = undefined;
+			await new Promise((resolve) => setTimeout(resolve, 50));
+
+			await runCli([
+				'snapshot',
+				'save',
+				'seeded',
+				'--config',
+				configPath,
+				'--state-dir',
+				stateRoot,
+				'--app',
+				'labeled-app',
+				'--stack',
+				'cli-stack',
+				'--json',
+			]);
+
+			expect(process.exitCode).toBe(0);
+			expect(stderr.join('')).toBe('');
+			expect(observed).toHaveLength(1);
+			expect(observed[0]?.tag).toBe('snapshot.capture');
+			expect(observed[0]?.name).toBe('seeded');
+			expect(readCommandLog(cliStackRoot).map((record) => record.command.tag)).toEqual([
+				'snapshot.capture',
+			]);
+			expect(existsSync(join(configStackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
+		} finally {
+			process.exitCode = previousExitCode;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+			await Effect.runPromise(Fiber.interrupt(subscriberFiber));
+		}
+	}, 60_000);
+
 	it('apply infers app and stack identity from the config package when omitted', async () => {
 		const appRoot = makeTempRoot('cli-identity-app');
 		const stateRoot = makeTempRoot('cli-identity-state');
@@ -378,6 +661,7 @@ import { definePlugin } from '../src/api/define-plugin.ts';
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-identity-codegen',
 \trole: 'service',
+\tsection: 'service',
 \tstart: () => Effect.succeed({ message: 'from-cli-identity' } as const),
 \tcapabilities: ({ value }) => [
 \t\tcodegenable({
@@ -872,5 +1156,120 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			stdoutSpy.mockRestore();
 			stderrSpy.mockRestore();
 		}
+	});
+
+	// Regression: `identityInputsFromArgv` must REJECT `--flag` with no
+	// following value AND `--flag --next-flag` (where the next token looks
+	// like a flag). Silently absorbing `--next-flag` as the value would
+	// quietly demote a downstream flag, hiding a user typo.
+	describe('identityInputsFromArgv', () => {
+		it('throws when --app has no following value', () => {
+			expect(() => identityInputsFromArgv(['--app'], {})).toThrow(/flag --app requires a value/);
+		});
+
+		it('throws when --stack is followed by another flag (typo guard)', () => {
+			expect(() => identityInputsFromArgv(['--stack', '--network', 'localnet'], {})).toThrow(
+				/flag --stack requires a value; got "--network" which looks like a flag/,
+			);
+		});
+
+		it('accepts --name=value form even when next token is a flag', () => {
+			const out = identityInputsFromArgv(['--stack=main', '--app', 'demo'], {});
+			expect(out.stack).toBe('main');
+			expect(out.app).toBe('demo');
+		});
+
+		it('falls back to env when neither --flag nor --flag=value is present', () => {
+			const out = identityInputsFromArgv([], {
+				DEVSTACK_APP: 'envapp',
+				DEVSTACK_STACK: 'envstack',
+			});
+			expect(out.app).toBe('envapp');
+			expect(out.stack).toBe('envstack');
+		});
+	});
+
+	// Regression: a malformed `--network` value reaches `resolveIdentity`
+	// -> `resolveNetworkSync`, which THROWS `DevstackNetworkParseError` (a
+	// plain Error, not a CliError) OUTSIDE the argv pre-parse try/catch and
+	// BEFORE dispatch. Without the in-`runCli` guard this escapes to the
+	// bin entry's generic `.catch` (raw stderr, exit 1, no envelope),
+	// violating the sysexits contract. `flags.test.ts` only exercises the
+	// dispatcher's own `--network` validation via `dispatch()` directly, so
+	// only a `runCli`-level assertion covers the real bin path.
+	it('malformed --network exits USAGE (64) with a JSON envelope, not generic 1', async () => {
+		const previousExitCode = process.exitCode;
+		const previousNetwork = process.env.DEVSTACK_NETWORK;
+		const previousJson = process.env.DEVSTACK_JSON;
+		const stdout: Array<string> = [];
+		const stderr: Array<string> = [];
+		const stdoutSpy = vi
+			.spyOn(process.stdout, 'write')
+			.mockImplementation(captureProcessWrite(stdout));
+		const stderrSpy = vi
+			.spyOn(process.stderr, 'write')
+			.mockImplementation(captureProcessWrite(stderr));
+
+		try {
+			process.exitCode = undefined;
+			delete process.env.DEVSTACK_NETWORK;
+			delete process.env.DEVSTACK_JSON;
+
+			await runCli(['status', '--network', 'bogus', '--json']);
+
+			// Exactly USAGE (64) — never the disallowed generic exit 1.
+			expect(process.exitCode).toBe(64);
+			// Envelope is on stdout, NOT a raw stderr line.
+			expect(stderr.join('')).toBe('');
+			const envelope = JSON.parse(stdout.join('')) as {
+				readonly ok: false;
+				readonly error: {
+					readonly code: string;
+					readonly exitCode: number;
+					readonly summary: string;
+				};
+			};
+			expect(envelope.ok).toBe(false);
+			expect(envelope.error.code).toBe('USAGE');
+			expect(envelope.error.exitCode).toBe(64);
+			expect(envelope.error.summary).toContain('bogus');
+		} finally {
+			process.exitCode = previousExitCode;
+			if (previousNetwork === undefined) delete process.env.DEVSTACK_NETWORK;
+			else process.env.DEVSTACK_NETWORK = previousNetwork;
+			if (previousJson === undefined) delete process.env.DEVSTACK_JSON;
+			else process.env.DEVSTACK_JSON = previousJson;
+			stdoutSpy.mockRestore();
+			stderrSpy.mockRestore();
+		}
+	});
+
+	// Regression for the Phase B3 fix: an attached supervisor receiving
+	// `prune.requested` MUST dispatch to the lifecycle-prune orchestrator
+	// (the same code path the offline `devstack prune` verb uses), NOT to
+	// `params.snapshot.prune({})`. The snapshot-orchestrator prune only
+	// cleans the snapshot catalog; routing prune.requested there would
+	// silently leave stale containers/networks/volumes/images behind.
+	//
+	// The handler is a closed-over local in `cli/wirings/up.ts`, so this is
+	// a static-text guard against accidental regression — same style as the
+	// other source-level invariants pinned by `test/style/*`.
+	it('attached prune.requested routes to runLifecyclePrune, never params.snapshot.prune', () => {
+		// The attached supervisor command handler lives in `cli/wirings/up.ts`
+		// (was inline in `cli/main.ts` before Phase 15).
+		const up = readFileSync(join(packageRoot, 'src/cli/wirings/up.ts'), 'utf8');
+		// Locate the IMPLEMENTATION switch case (`case 'prune.requested':`
+		// inside `makeSnapshotCommandHandler`).
+		const caseIdx = up.lastIndexOf("case 'prune.requested':");
+		expect(caseIdx).toBeGreaterThan(0);
+		// Capture the case body up to the next `case` or `default`.
+		const tail = up.slice(caseIdx);
+		const nextCase = tail.slice(1).search(/\n\s*(case |default:)/);
+		const body = nextCase === -1 ? tail : tail.slice(0, nextCase + 1);
+		// Must invoke the lifecycle-prune orchestrator.
+		expect(body).toMatch(/runLifecyclePrune\s*\(/);
+		expect(body).toMatch(/collectLifecyclePruneInventory\s*\(/);
+		// Must NOT route to the snapshot-orchestrator prune.
+		expect(body).not.toMatch(/params\.snapshot\.prune\b/);
 	});
 });

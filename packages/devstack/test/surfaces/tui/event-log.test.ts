@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { endpointKey, pluginKey } from '../../../src/substrate/brand.ts';
+import type { RowSection } from '../../../src/substrate/projection.ts';
 import {
 	appendEventLogLine,
+	appendEventLogLines,
 	eventLogLineFromEvent,
 	type EventLogLine,
 	MAX_EVENT_LOG_LINES,
@@ -10,6 +12,14 @@ import {
 } from '../../../src/surfaces/tui/event-log.ts';
 
 const AT = Date.parse('2026-05-19T20:11:32.001Z');
+
+// Test stub for the section lookup the host (`app.tsx`) builds from
+// the live projection. The renderer must NOT pattern-match plugin
+// names — it consumes `row.section` via this lookup.
+const fixedSection =
+	(section: RowSection) =>
+	(_pluginKey: string): RowSection =>
+		section;
 
 describe('event log derivation', () => {
 	it('renders warning plugin logs as scoped activity lines', () => {
@@ -22,6 +32,7 @@ describe('event log derivation', () => {
 				at: AT,
 			},
 			0,
+			fixedSection('service'),
 		);
 		expect(line).toMatchObject({
 			level: 'warn',
@@ -64,6 +75,7 @@ describe('event log derivation', () => {
 					tag: 'endpoint.registered',
 					endpoint: {
 						endpointKey: endpointKey('sui:rpc'),
+						pluginKey: pluginKey('sui'),
 						name: 'rpc',
 						url: 'http://localhost:9000',
 						displayUrl: null,
@@ -93,12 +105,95 @@ describe('event log derivation', () => {
 				},
 			},
 			1,
+			fixedSection('service'),
 		);
 		expect(error?.level).toBe('error');
 		expect(error?.scope).toBe('Seal');
 		expect(error?.scopeColor).toBe('cyan');
 		expect(error?.message).toContain('private content key server exited');
 		expect(error?.message).toContain('port is already allocated');
+	});
+
+	it('colors the scope chip from the provided section lookup, not the pluginKey shape', () => {
+		// The renderer is name-blind: chip color comes from the `RowSection`
+		// the host (`app.tsx`) supplies for each pluginKey. With the
+		// lookup returning `'package'` for a key that LOOKS like a
+		// service, the scope chip should render as the `package` color
+		// (`blueBright`) — proving no substring matching survives in the
+		// renderer.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('sui-looking-key#0'),
+				line: 'something happened',
+				level: 'warn',
+				at: AT,
+			},
+			0,
+			fixedSection('package'),
+		);
+		expect(line?.scopeColor).toBe('blueBright');
+	});
+
+	it('falls back to the "other" section color when the lookup has no entry', () => {
+		// A pluginKey not yet projected (or one we deliberately filter)
+		// should not crash the renderer or leak a default tied to plugin
+		// names. The lookup returning `undefined` means: render with the
+		// `'other'` color token.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('unknown#0'),
+				line: 'who am i',
+				level: 'warn',
+				at: AT,
+			},
+			0,
+		);
+		expect(line?.scopeColor).toBe('cyan'); // sectionColor('other') === 'cyan'
+	});
+
+	it('surfaces orchestrator dispatch failures as operator warnings (was suppressed)', () => {
+		// Observability regression: this event used to return null, so a
+		// live-dashboard operator saw a green stack with dead RPC/wallet
+		// routing. The plugin is intentionally left `ready` (non-fatal
+		// sink), so the warning line is the only diagnosis. It names the
+		// failing sink kind, the cause `_tag`, and the message — scoped to
+		// the affected plugin via the section lookup.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'engine.orchestrator.dispatchFailed',
+				pluginKey: pluginKey('sui'),
+				kind: 'routable',
+				message: 'router spec mismatch: upstream sui:rpc not reachable',
+				causeType: 'RouterBootFailed',
+				at: AT,
+			},
+			5,
+			fixedSection('service'),
+		);
+		expect(line?.level).toBe('warn');
+		expect(line?.scope).toBe('Sui');
+		expect(line?.scopeColor).toBe('cyan');
+		expect(line?.message).toContain('routable');
+		expect(line?.message).toContain('RouterBootFailed');
+		expect(line?.message).toContain('router spec mismatch: upstream sui:rpc not reachable');
+	});
+
+	it('renders a dispatch-failure warning without a cause tag when none is present', () => {
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'engine.orchestrator.dispatchFailed',
+				pluginKey: pluginKey('sui'),
+				kind: 'routable',
+				message: 'sink rejected',
+				at: AT,
+			},
+			6,
+			fixedSection('service'),
+		);
+		expect(line?.level).toBe('warn');
+		expect(line?.message).toBe("routing sink 'routable' failed: sink rejected");
 	});
 
 	it('renders shutdown escalation as an operator warning', () => {
@@ -119,12 +214,14 @@ describe('event log derivation', () => {
 		});
 	});
 
-	it('suppresses account updates because account state is table state', () => {
+	it('suppresses projection updates because projection state is table state', () => {
 		expect(
 			eventLogLineFromEvent(
 				{
-					tag: 'account.updated',
-					account: {
+					tag: 'projection.updated',
+					kind: 'account',
+					key: 'account/alice',
+					payload: {
 						key: 'account/alice',
 						rowKey: pluginKey('account/alice#1'),
 						name: 'alice',
@@ -164,5 +261,99 @@ describe('event log derivation', () => {
 		})).reduce<ReadonlyArray<EventLogLine>>((acc, line) => appendEventLogLine(acc, line), []);
 		expect(lines).toHaveLength(MAX_EVENT_LOG_LINES);
 		expect(lines[0]?.id).toBe('2');
+	});
+
+	describe('appendEventLogLines — batched append', () => {
+		const fakeLine = (id: number): EventLogLine => ({
+			id: String(id),
+			time: '20:11:32',
+			scope: 'Stack',
+			scopeColor: 'white',
+			message: String(id),
+			text: String(id),
+			level: 'info',
+		});
+
+		it('appends a burst in a single pass, preserving order', () => {
+			const burst = Array.from({ length: 100 }, (_, idx) => fakeLine(idx));
+			const next = appendEventLogLines([], burst);
+			expect(next).toHaveLength(100);
+			expect(next[0]?.id).toBe('0');
+			expect(next[99]?.id).toBe('99');
+		});
+
+		it('filters null entries (matches the singular form contract)', () => {
+			const burst: ReadonlyArray<EventLogLine | null> = [
+				fakeLine(0),
+				null,
+				fakeLine(1),
+				null,
+				fakeLine(2),
+			];
+			const next = appendEventLogLines([], burst);
+			expect(next.map((l) => l.id)).toEqual(['0', '1', '2']);
+		});
+
+		it('returns the input array reference when the burst is all-null (lets setEventLog short-circuit)', () => {
+			const start: ReadonlyArray<EventLogLine> = [fakeLine(0)];
+			const next = appendEventLogLines(start, [null, null]);
+			expect(next).toBe(start);
+		});
+
+		it('respects MAX_EVENT_LOG_LINES across the merged tail', () => {
+			const existing = Array.from({ length: MAX_EVENT_LOG_LINES - 10 }, (_, idx) => fakeLine(idx));
+			const burst = Array.from({ length: 50 }, (_, idx) => fakeLine(MAX_EVENT_LOG_LINES + idx));
+			const next = appendEventLogLines(existing, burst);
+			expect(next).toHaveLength(MAX_EVENT_LOG_LINES);
+			// Oldest 40 trimmed from the head (existing had MAX-10, plus 50
+			// new = MAX+40; tail bound keeps the most recent MAX).
+			expect(next[0]?.id).toBe('40');
+			expect(next[next.length - 1]?.id).toBe(String(MAX_EVENT_LOG_LINES + 49));
+		});
+
+		it('handles a single very large burst without going over the bound', () => {
+			const burst = Array.from({ length: MAX_EVENT_LOG_LINES * 3 }, (_, idx) => fakeLine(idx));
+			const next = appendEventLogLines([], burst);
+			expect(next).toHaveLength(MAX_EVENT_LOG_LINES);
+			// Last MAX entries preserved.
+			expect(next[0]?.id).toBe(String(MAX_EVENT_LOG_LINES * 2));
+			expect(next[next.length - 1]?.id).toBe(String(MAX_EVENT_LOG_LINES * 3 - 1));
+		});
+	});
+
+	it('eventAt projects the producer-time, not a dequeue-time fallback', () => {
+		// Producer-time projection invariant: each event's `at` (or
+		// nested timestamp field for `endpoint.registered` /
+		// `error.reported` / `build.statusChanged`) drives the rendered
+		// `time`. Removing the historical `Date.now()` fallback prevents
+		// late-flushed events from being back-dated to dequeue time,
+		// which would surface as out-of-order log lines under load.
+		const earlier = Date.parse('2026-05-19T20:11:00.000Z');
+		const later = Date.parse('2026-05-19T20:11:32.001Z');
+		const a = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('walrus'),
+				line: 'first',
+				level: 'warn',
+				at: earlier,
+			},
+			0,
+		);
+		const b = eventLogLineFromEvent(
+			{
+				tag: 'log.appended',
+				pluginKey: pluginKey('walrus'),
+				line: 'second',
+				level: 'warn',
+				at: later,
+			},
+			1,
+		);
+		expect(a?.time).toBe('20:11:00');
+		expect(b?.time).toBe('20:11:32');
+		// The id encodes the producer `at` — feeds the renderer's React key.
+		expect(a?.id.startsWith(String(earlier))).toBe(true);
+		expect(b?.id.startsWith(String(later))).toBe(true);
 	});
 });

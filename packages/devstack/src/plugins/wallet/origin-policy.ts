@@ -1,35 +1,48 @@
 // Wallet plugin — CORS / origin allowlist policy.
 //
-// Distilled-doc problem (15-wallet.md "Cross-stack pairing risk"): the
-// legacy wallet auto-allowlisted `http://localhost:<vite-port>` per
-// stack. Two sibling stacks running vite on the same `localhost:5175`
-// (or `5176`, etc.) could pair with EITHER wallet — CORS lets the
-// request through, and the bearer token (once leaked once via any
-// channel) is enough to sign.
+// The allowlist is built from two real, substrate-wired sources: the
+// router-fronted dev-server origin for this stack (`routedAppOrigin`)
+// and any caller-supplied `extraOrigins`. Both are stack-scoped or
+// explicit, so neither opens the cross-stack pairing risk described in
+// 15-wallet.md.
 //
-// Architecture decision (per task):
+// History (removed): an earlier design auto-allowlisted a vite-port-
+// derived origin (`http://dev.<stack>.<app>.localhost:<vite-port>`,
+// plus an opt-in `http://localhost:<vite-port>`). That branch was dead
+// AT THE TIME: there was no vite plugin and the port broker only
+// allocated ports for in-stack plugins with no reader/lookup API, so
+// `vitePortForThisStack` was always `null` at the only production call
+// site and the branch never fired. Per STYLE_GUIDE §5 ("code either
+// works or doesn't exist") the whole vite-origin path — and the
+// `allowLocalhostVite` opt-in it gated — was removed rather than left as
+// an unreachable allowlist seam.
 //
-//   - Stack-scoped allowlist. The vite-port-derived origin is added to
-//     this stack's allowlist ONLY when the substrate's port broker
-//     records THIS stack as the owner of that vite port.
-//   - The stack-scoped host (e.g. `http://dev.<stack>.<app>.localhost:<port>`)
-//     is the canonical browser entry — always allowlisted.
-//   - The raw `http://localhost:<port>` form is OFF by default; opt-in
-//     via `WalletOptions.allowLocalhostVite: true` for callers who
-//     want the legacy behavior (e.g. headless test runners that pin
-//     `localhost`). Documented as a security tradeoff in the factory's
-//     JSDoc.
+// Note (no longer dead, but deliberately NOT re-added here): with the
+// `hostService(...)` plugin devstack now DOES own the dev server's bind
+// port (the broker allocates it; Vite binds it via `--port {port}`). So
+// the raw-loopback origin (`http://127.0.0.1:<port>` /
+// `http://localhost:<port>`) the dev sees in Vite's own console banner is
+// a real, knowable origin. The canonical fix lives on the host-service
+// side instead: it now publishes the ROUTED origin as its
+// `HostServiceValue.url`, so `devstack up` output (and any consumer
+// holding the resolved host-service value) point devs at the URL whose
+// Origin THIS allowlist already accepts (the routed `routedAppOrigin`).
+// Re-adding a raw-loopback branch
+// here is intentionally deferred — it would have to thread the
+// host-service's dynamic bind port into the wallet, which runs in the
+// OPPOSITE direction of the current dependency edge (host-service
+// `dependsOn` wallet), so the wallet has no view of that port at its own
+// boot. Devs who must load the raw Vite URL can pass it via
+// `allowedOrigins` (→ `extraOrigins`) until that plumbing is justified.
 //
-// Why "origin + bearer together" (task requirement #3): bearer alone
-// leaves a non-browser-tooling bypass — curl / fetch from a service
-// worker can forge `Authorization` from a leaked token. Browsers
-// always send `Origin`; non-browsers omit it. Demanding BOTH closes
-// the bypass.
+// Why "origin + bearer together": bearer alone leaves a non-browser-
+// tooling bypass — curl / fetch from a service worker can forge
+// `Authorization` from a leaked token. Browsers always send `Origin`;
+// non-browsers omit it. Demanding BOTH closes the bypass.
 
 import { Effect } from 'effect';
 
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
-import type { WalletBootError } from './errors.ts';
 
 // ----------------------------------------------------------------------
 // Policy shape
@@ -40,25 +53,16 @@ import type { WalletBootError } from './errors.ts';
  *  comparison. */
 export interface OriginPolicy {
 	readonly allowed: ReadonlySet<string>;
-	/** True if the policy permitted the `http://localhost:<vite-port>`
-	 *  form. Carried for renderer / log hygiene — surfaces in the
-	 *  manifest as a flag so the TUI can warn. */
-	readonly localhostViteEnabled: boolean;
-	/** Bare host (e.g. `dev.<stack>.<app>.localhost`) the stack-scoped
-	 *  origin resolves under. Captured for log lines. */
-	readonly stackScopedHost: string;
 }
 
 /** Per-stack inputs the policy resolver needs. Supplied by the
- *  substrate at acquire time (port broker + identity); this module
- *  doesn't reach into the broker itself. */
+ *  substrate at acquire time (identity + routed-url derivation); this
+ *  module doesn't reach into the broker itself. */
 export interface OriginPolicyInputs {
 	readonly app: string;
 	readonly stack: string;
-	readonly vitePortForThisStack: number | null;
 	readonly routedAppOrigin: string | null;
 	readonly extraOrigins: ReadonlyArray<string>;
-	readonly allowLocalhostVite: boolean;
 }
 
 // ----------------------------------------------------------------------
@@ -68,42 +72,23 @@ export interface OriginPolicyInputs {
 /**
  * Resolve the per-stack origin allowlist.
  *
- *  - Always allowlisted: the stack-scoped router host
- *    `http://dev.<stack>.<app>.localhost:<vite-port>`, IF the broker recorded
- *    a vite port for this stack.
- *  - Conditionally allowlisted: the bare `http://localhost:<vite-port>`
- *    form. Off by default; on iff `allowLocalhostVite` is true.
+ *  - Always allowlisted: the router-fronted dev-server origin for this
+ *    stack (`routedAppOrigin`), when the router derivation produced one.
  *  - Always allowlisted: any explicit caller-supplied origins from
  *    `extraOrigins`.
  *
- * Empty-allowlist policy (vite absent AND no `extraOrigins`): allowed.
- * The wallet boots normally; with an empty allowlist the per-request
- * gate refuses every request (every Origin lands in `forbidden`). This
- * is the correct behavior for a stack composed without any client UI
- * (e.g. node-only smoke / e2e configs) — the wallet's keypair + token
- * are still useful for the host process, but the HTTP surface is
- * effectively closed. A `Effect.logWarning` surfaces the configuration
- * for operator visibility.
- *
- * Returns `Effect<OriginPolicy, WalletBootError>` (the error channel
- * is preserved for future fail-fast modes the resolver may grow).
+ * Empty-allowlist policy (no `routedAppOrigin` AND no `extraOrigins`):
+ * allowed. The wallet boots normally; with an empty allowlist the
+ * per-request gate refuses every request (every Origin lands in
+ * `forbidden`). This is the correct behavior for a stack composed
+ * without any client UI (e.g. node-only smoke / e2e configs) — the
+ * wallet's keypair + token are still useful for the host process, but
+ * the HTTP surface is effectively closed. A `Effect.logWarning`
+ * surfaces the configuration for operator visibility.
  */
-export const resolveOriginPolicy = (
-	inputs: OriginPolicyInputs,
-): Effect.Effect<OriginPolicy, WalletBootError> =>
+export const resolveOriginPolicy = (inputs: OriginPolicyInputs): Effect.Effect<OriginPolicy> =>
 	Effect.gen(function* () {
 		const allowed = new Set<string>();
-		const stackScopedHost =
-			inputs.stack === 'main'
-				? `dev.${inputs.app}.localhost`
-				: `dev.${inputs.stack}.${inputs.app}.localhost`;
-
-		if (inputs.vitePortForThisStack !== null) {
-			allowed.add(`http://${stackScopedHost}:${inputs.vitePortForThisStack}`);
-			if (inputs.allowLocalhostVite) {
-				allowed.add(`http://localhost:${inputs.vitePortForThisStack}`);
-			}
-		}
 
 		if (inputs.routedAppOrigin !== null) {
 			allowed.add(inputs.routedAppOrigin);
@@ -118,16 +103,11 @@ export const resolveOriginPolicy = (
 				Effect.annotateLogs({
 					[SpanAttr.app]: inputs.app,
 					[SpanAttr.stack]: inputs.stack,
-					[SpanAttr.walletLocalhostViteEnabled]: inputs.allowLocalhostVite,
 				}),
 			);
 		}
 
-		return {
-			allowed,
-			localhostViteEnabled: inputs.allowLocalhostVite,
-			stackScopedHost,
-		} satisfies OriginPolicy;
+		return { allowed } satisfies OriginPolicy;
 	});
 
 // ----------------------------------------------------------------------

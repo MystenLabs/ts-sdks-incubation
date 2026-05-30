@@ -3,8 +3,10 @@
 // Architecture (distilled/23-build-integrations.md § Playwright /
 // "What it produces"):
 //
-//   In-spec helpers (`connectAs`, `selectAccount`) and artifact
-//   loaders (`loadStackManifest`, `loadStackKeypair`).
+//   In-spec helpers (`connectAs`, `selectAccount`) and the
+//   `loadStackManifest` artifact loader. (`loadStackKeypair` is not
+//   implemented — keys never leave the wallet plugin; tests sign via
+//   the wallet's HTTP API.)
 //
 // And (per the user task brief): tests sign txs via the wallet's HTTP
 // API rather than driving the browser's wallet-UI flow. That is the
@@ -34,6 +36,11 @@ import {
 import { readStashedFixture } from './global-setup.ts';
 import { PlaywrightWalletAdapterError } from './errors.ts';
 import { DAPP_KIT_SLOT_KEY, type DAppKitSlot } from '../runtime/dapp-kit-slot.ts';
+// The wallet plugin owns the wire-protocol path constants AND the
+// canonical endpoint name. Both are surfaced through the L5 runtime
+// bridge so this adapter never reaches into L2 plugin code directly
+// (ARCHITECTURE.md § Layer table — L5 reads only the runtime bridge).
+import { WalletHttpPath, WALLET_ENDPOINT_KEY } from '../runtime/wallet-paths.ts';
 
 // -----------------------------------------------------------------------------
 // Structural Playwright `Page` shape — we keep `@playwright/test` an
@@ -49,11 +56,13 @@ export interface PlaywrightPageLike {
 // Wallet adapter — HTTP client targeting the wallet plugin's endpoint
 // -----------------------------------------------------------------------------
 
-/** Public alias for the dev-wallet endpoint. The manifest stores raw
- *  keys as `${pluginKey}:${endpointName}` and the actual endpoint name
- *  is `wallet-app`; `readStackContext(...).endpointMaybe('wallet')`
- *  maps this alias through the Playwright boundary. */
-export const WALLET_ENDPOINT_KEY = 'wallet' as const;
+// `WALLET_ENDPOINT_KEY` is the short form Playwright/vitest helpers look
+// up — the manifest stores the canonical endpoint name
+// (`WALLET_ENDPOINT_NAME` — `'wallet-app'`) but the substrate's alias
+// resolver folds the key to the canonical name. Re-exported from the L5
+// runtime bridge so the spelling + canonical pairing stay aligned with
+// the wallet plugin.
+export { WALLET_ENDPOINT_KEY };
 
 export interface WalletAdapterOptions extends ResolveStackContextOptions {
 	/** Override the resolved wallet URL. Useful for tests targeting a
@@ -74,13 +83,13 @@ export interface WalletAdapter {
 	/** List dev-wallet account names + addresses. */
 	readonly listAccounts: () => Promise<ReadonlyArray<DevAccount>>;
 
-	/** Switch the active dev-wallet account by name. Posts to the
-	 *  wallet's `switch-account` endpoint. */
-	readonly switchAccount: (accountName: string) => Promise<void>;
-
 	/** Sign + execute a serialized transaction as `accountName`.
 	 *  `txBytes` is the canonical Sui tx bytes (base64). Returns the
-	 *  wallet's response body (typed `unknown` — caller decodes). */
+	 *  wallet's response body (typed `unknown` — caller decodes).
+	 *
+	 *  NOTE on account switching: the HTTP wallet server has no
+	 *  `/accounts/switch` endpoint — active-account selection is owned
+	 *  by the dapp-kit slot. Use `selectAccount` / `connectAs` below. */
 	readonly signTransaction: (input: SignTxRequest) => Promise<SignTxResponse>;
 
 	/** Raw POST escape hatch. Used by the helpers above and by tests
@@ -164,7 +173,12 @@ const resolveWalletUrl = (options: WalletAdapterOptions): string => {
 export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletAdapter => {
 	const walletUrl = resolveWalletUrl(options).replace(/\/$/, '');
 	const fetchImpl = options.fetch ?? globalThis.fetch;
-	const timeoutMs = options.timeoutMs ?? 5_000;
+	// 30s default — Playwright's webServer cold-start (vite + first
+	// devstack bring-up) routinely exceeds 5s under CI parallelism; the
+	// shorter default surfaces as a spurious AbortError before the
+	// wallet plugin has finished publishing its HTTP route. Callers can
+	// still tighten via `options.timeoutMs` for hot-path assertions.
+	const timeoutMs = options.timeoutMs ?? 30_000;
 
 	const request = async <T>(path: string, body?: Record<string, unknown>): Promise<T> => {
 		const url = `${walletUrl}${path.startsWith('/') ? path : `/${path}`}`;
@@ -201,12 +215,12 @@ export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletA
 
 	return {
 		walletUrl,
-		listAccounts: () => request<ReadonlyArray<DevAccount>>('/accounts'),
-		switchAccount: async (accountName: string) => {
-			await request<{ readonly ok: true }>('/accounts/switch', { accountName });
-		},
+		// Paths come from the wallet plugin's canonical wire-protocol
+		// module. Hard-coded literals here would silently 404 the moment
+		// `WalletHttpPath` is reorganised, with no compile-time signal.
+		listAccounts: () => request<ReadonlyArray<DevAccount>>(WalletHttpPath.ACCOUNTS),
 		signTransaction: (input: SignTxRequest) =>
-			request<SignTxResponse>('/sign-transaction', {
+			request<SignTxResponse>(WalletHttpPath.SIGN_TRANSACTION, {
 				accountName: input.accountName,
 				txBytesBase64: input.txBytesBase64,
 				label: input.label,
@@ -281,6 +295,12 @@ export const selectAccount = async (
 				`Confirm \`globalThis.${DAPP_KIT_SLOT}\` is populated by the app's ` +
 				`dapp-kit module at boot.`,
 			operation: 'switch-account',
+			// `cause` survives the `page.evaluate` boundary as a string —
+			// the browser-side `Error` instance is lost across the bridge,
+			// but the message is the load-bearing diagnostic. Preserving
+			// it on the typed error keeps the underlying detail attached
+			// when consumers inspect `cause` rather than `message`.
+			cause: result.reason,
 		});
 	}
 };

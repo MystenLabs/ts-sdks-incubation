@@ -36,10 +36,11 @@
 //     databases at the runtime default.
 
 import { Duration, Effect, type Scope } from 'effect';
+import { createHash } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
 import type { ContainerHandle, ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { Identity } from '../../substrate/identity.ts';
-import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import {
 	credentialedUrl,
@@ -56,6 +57,7 @@ import {
 	type PostgresConnectionTimeout,
 	type PostgresPluginError,
 } from './errors.ts';
+import { PostgresSpans } from './spans.ts';
 
 /** Resolved Postgres handle — the tag's resolved value.
  *
@@ -123,13 +125,35 @@ const DEFAULT_READY_TIMEOUT_MS = 30_000;
 const DEFAULT_STOP_GRACE_SECONDS = 20;
 const POSTGRES_PORT = 5432;
 
-/** Deterministic dev password from `(app, stack)`. Tradeoff
+/** Deterministic dev password from `(app, stack, stackRoot)`. Tradeoff
  *  documented in the distilled doc § Postgres-specific concerns:
  *  fine for a single-user dev tool, foot-gun if `hostPort` is set in
  *  a multi-user environment. The user-supplied `password` override on
- *  `PostgresServiceOptions` is the escape hatch. */
-const derivePassword = (app: string, stack: string): string =>
-	`pg-${(app + stack).replace(/[^a-zA-Z0-9]/g, '')}`;
+ *  `PostgresServiceOptions` is the escape hatch.
+ *
+ *  The short hash + separator disambiguate three collision classes:
+ *  - (app, stack) pairs whose sanitized concatenation would collide
+ *    (e.g. `("my-app", "dev")` vs `("my", "appdev")` both sanitize to
+ *    the same body, but the hash binds the unambiguous boundary).
+ *  - Two checkouts of the SAME `(app, stack)` on the same machine
+ *    (different working directories) — folding `stackRoot` into the
+ *    hash means each checkout's postgres password is distinct. (Note:
+ *    the `pg_isready` liveness probe does NOT authenticate, so this
+ *    does not gate the probe.) The benefit is that the per-checkout
+ *    CREDENTIALED endpoint URL — and any `psql`/`createdb` that
+ *    actually authenticates — differs per checkout, so one checkout's
+ *    connection string cannot silently land on the other's container.
+ *  - The `\x1f` (US, ASCII 31) separator between fields is unambiguous
+ *    because identity strings and absolute paths cannot legally
+ *    contain it. */
+export const derivePassword = (app: string, stack: string, stackRoot: string): string => {
+	const body = (app + stack).replace(/[^a-zA-Z0-9]/g, '');
+	const fingerprint = createHash('sha256')
+		.update(`${app}\x1f${stack}\x1f${stackRoot}`)
+		.digest('hex')
+		.slice(0, 8);
+	return `pg-${body}-${fingerprint}`;
+};
 
 const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
 
@@ -137,19 +161,22 @@ const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
  *  values. Pure; safe to call before the Effect body runs. */
 export const resolveOptions = (
 	identity: Identity,
+	stackRoot: string,
 	opts: PostgresServiceOptions,
 ): ResolvedPostgresOptions => {
 	const name = opts.name ?? 'postgres';
-	const databases = expectNonEmptyArray(opts.databases ?? DEFAULT_DATABASES, {
-		field: 'databases',
-		message: 'postgres(): `databases` must be non-empty',
-		mkError: postgresConfigError,
-	});
+	const databases = opts.databases ?? DEFAULT_DATABASES;
+	if (!Array.isArray(databases) || databases.length === 0) {
+		throw postgresConfigError({
+			field: 'databases',
+			message: 'postgres(): `databases` must be non-empty',
+		});
+	}
 	return {
 		name,
 		version: opts.version ?? DEFAULT_VERSION,
 		user: opts.user ?? DEFAULT_USER,
-		password: opts.password ?? derivePassword(identity.app, identity.stack),
+		password: opts.password ?? derivePassword(identity.app, identity.stack, stackRoot),
 		databases,
 		hostPort: opts.hostPort,
 		extraNetworks: opts.extraNetworks ?? [],
@@ -185,32 +212,39 @@ const resolveImageContextPath = (): string => {
 	// `images/postgres/`.
 	const here = new URL(import.meta.url);
 	const ctxUrl = new URL('../../../images/postgres/', here);
-	// File: URLs need decoding back to a host path for the docker CLI.
-	return decodeURIComponent(ctxUrl.pathname);
+	// `fileURLToPath` handles the platform-specific decode (the
+	// `file:///C:/...` → `C:\...` round-trip on Windows, plus
+	// percent-decoding everywhere). `decodeURIComponent(pathname)`
+	// would leave the leading `/` on Windows paths.
+	return fileURLToPath(ctxUrl);
 };
 
 /** Build a `ContainerExec` view bound to a specific container handle.
  *  Thin adapter from the runtime's contract surface to the plugin's
  *  local exec seam. The runtime never promotes non-zero exit to
  *  failure here — the caller (pg_isready retry loop, createdb
- *  existence-check) decides. */
+ *  existence-check) decides.
+ *
+ *  Daemon-level failures (no such container, daemon unreachable)
+ *  surface as a typed `PostgresPluginError({phase: 'container-start'})`
+ *  rather than a fabricated `exitCode: 255` ExecResult. STYLE_GUIDE
+ *  §16 — typed errors must carry the actual failure shape, not lie
+ *  about it being a tx-level non-zero exit. The retry loops in
+ *  `awaitReady` / `ensureDatabase` treat the typed failure as
+ *  retryable via `waitForProbe`'s default retry behavior; the
+ *  underlying cause is preserved on the timeout error's `lastError`
+ *  field for the cause walker. */
 const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): ContainerExec => ({
 	run: (argv) =>
 		runtime.exec(handle, argv).pipe(
-			// Daemon-level failures (no such container, daemon
-			// unreachable) collapse to a synthetic non-zero ExecResult
-			// so the retry loop sees them and the typed timeout error
-			// carries the daemon stderr as `lastStderr` for the cause
-			// walker. We do NOT surface ContainerRuntimeError here —
-			// the plugin's typed errors are the only failure shapes
-			// `awaitReady` / `ensureDatabases` produce, and they
-			// already carry the captured streams.
 			Effect.catch((err) =>
-				Effect.succeed({
-					exitCode: 255,
-					stdout: '',
-					stderr: `runtime.exec failed: ${err.reason} — ${err.detail}`,
-				}),
+				Effect.fail(
+					postgresPluginError(
+						'container-start',
+						`runtime.exec failed: ${err.reason} — ${err.detail}`,
+						err,
+					),
+				),
 			),
 		),
 });
@@ -220,6 +254,7 @@ const containerExec = (runtime: ContainerRuntime, handle: ContainerHandle): Cont
 export const bootPostgresService = (
 	runtime: ContainerRuntime,
 	identity: Identity,
+	stackRoot: string,
 	opts: PostgresServiceOptions,
 ): Effect.Effect<
 	PostgresBootResult,
@@ -228,7 +263,7 @@ export const bootPostgresService = (
 > =>
 	Effect.gen(function* () {
 		const resolved = yield* Effect.try({
-			try: () => resolveOptions(identity, opts),
+			try: () => resolveOptions(identity, stackRoot, opts),
 			catch: (cause) => cause as PostgresConfigError,
 		});
 
@@ -267,6 +302,7 @@ export const bootPostgresService = (
 				contextPath: resolveImageContextPath(),
 				dockerfile: 'Dockerfile',
 				buildArgs: { POSTGRES_VERSION: resolved.version },
+				owner: { app: identity.app, stack: identity.stack, plugin: 'postgres', role: 'db' },
 			})
 			.pipe(
 				Effect.catch((cause) =>
@@ -283,15 +319,11 @@ export const bootPostgresService = (
 		// 3. Start container. `networkAttach`'s first entry becomes the
 		//    `--network` flag on `docker run -d`; subsequent entries
 		//    are attached post-start with IP-readback (runtime owns
-		//    that detail).
-		//
-		//    The runtime adapter does NOT yet thread the in-network
-		//    alias through `--network-alias`; the network alias the
-		//    handle exposes is the architecture-mandated value, but
-		//    siblings should dial by `name` (the container name)
-		//    which docker also publishes under the network. The
-		//    architecture revision to add `networkAlias` to
-		//    EnsureContainerSpec is flagged in `index.ts`.
+		//    that detail). The first attach carries the per-network
+		//    DNS alias (`networkAlias`) — Docker registers it as a
+		//    secondary DNS name on the per-stack network so siblings
+		//    can dial by the parallel-stack-stable alias rather than
+		//    the per-stack container name.
 		const containerHandle = yield* ensureManagedContainer({
 			runtime,
 			identity,
@@ -311,7 +343,10 @@ export const bootPostgresService = (
 						? [{ containerPort: POSTGRES_PORT, hostPort: resolved.hostPort }]
 						: undefined,
 				stopGraceSeconds: resolved.stopGraceSeconds,
-				networkAttach: [containerNetwork, ...resolved.extraNetworks],
+				networkAttach: [
+					{ name: containerNetwork, aliases: [networkAlias] },
+					...resolved.extraNetworks,
+				],
 			},
 			mapError: (cause) =>
 				postgresPluginError(
@@ -335,10 +370,11 @@ export const bootPostgresService = (
 		yield* ensureDatabases(exec, resolved.user, resolved.databases);
 
 		// 6. Resolve the handle. Host for in-stack siblings is the
-		//    container name (which docker registers as a DNS entry on
-		//    the attached network). When the substrate's
-		//    `networkAlias` plumbing lands we'll swap to that; until
-		//    then the container name is the stable in-network handle.
+		//    container DNS name (always resolves on the attached
+		//    network). The per-stack `networkAlias` is registered via
+		//    `--network-alias` on the primary attach (see step 3) and
+		//    is the parallel-stack-portable DNS name; codegen consumes
+		//    it through `index.ts`.
 		const dnsName = `${identity.app}-${identity.stack}-${resolved.name}`;
 		const parts: PostgresConnectionParts = {
 			user: resolved.user,
@@ -365,10 +401,10 @@ export const bootPostgresService = (
 
 		return { resolved, handle, containerHandle };
 	}).pipe(
-		Effect.withSpan('postgres.boot', {
+		Effect.withSpan('devstack.plugin.postgres.boot', {
 			attributes: {
-				'postgres.name': opts.name ?? 'postgres',
-				'postgres.version': opts.version ?? DEFAULT_VERSION,
+				[PostgresSpans.name]: opts.name ?? 'postgres',
+				[PostgresSpans.version]: opts.version ?? DEFAULT_VERSION,
 			},
 		}),
 	);

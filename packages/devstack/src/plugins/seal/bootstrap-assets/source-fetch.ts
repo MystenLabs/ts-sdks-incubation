@@ -17,8 +17,13 @@
 import { Effect, FileSystem, Path, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
+import { hostBindMountOwner } from '../../../substrate/runtime/host-bind-mount-owner.ts';
+import { mintRandomSuffix } from '../../../substrate/runtime/random-suffix.ts';
+import { tailOutput } from '../../../substrate/runtime/observability/index.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
+import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
 
 // ---------------------------------------------------------------------------
 // Constants — distilled-doc §"External / upstream sources"
@@ -66,19 +71,16 @@ export interface SealSourceFetchInputs<Ref extends string = string> {
 	readonly subdir: typeof DEFAULT_SEAL_MOVE_SUBDIR;
 }
 
-const env = (): Record<string, string | undefined> =>
-	(globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
-
-const processId = (): string =>
-	String((globalThis as { process?: { pid?: number } }).process?.pid ?? 'unknown');
-
-let scratchCounter = 0;
-
 const nextScratchPaths = (
 	cacheDir: string,
 ): { readonly stagingPath: string; readonly backupPath: string } => {
-	scratchCounter = scratchCounter + 1;
-	const suffix = `${processId()}.${scratchCounter}`;
+	// 16-char crypto suffix (STYLE_GUIDE §17) — the old
+	// `pid.counter` scheme collided across two concurrent PROCESSES
+	// fetching the same ref (counters reset per-process, so pid A's
+	// `.staging.1` and pid B's `.staging.1` differ only by pid, and
+	// the staging tree corrupts if a pid is reused). A random suffix
+	// makes overlap cryptographically negligible regardless of pid.
+	const suffix = mintRandomSuffix(16);
 	return {
 		stagingPath: `${cacheDir}.staging.${suffix}`,
 		backupPath: `${cacheDir}.backup.${suffix}`,
@@ -86,28 +88,14 @@ const nextScratchPaths = (
 };
 
 export const sealSourceCacheDir = (ref: string): string => {
-	const home = env().HOME ?? '/tmp';
-	return `${home}/.cache/devstack-rewrite/seal-src/${encodeURIComponent(ref)}`;
+	const home = readEnv('HOME') ?? '/tmp';
+	return `${home}/.cache/devstack/seal-src/${encodeURIComponent(ref)}`;
 };
 
 export const sealSourcePublishLockPath = (ref: string): string =>
 	`${sealSourceCacheDir(ref)}.publish.lock`;
 
 const sourceImageRef = { digest: SEAL_SOURCE_FETCH_IMAGE, tag: SEAL_SOURCE_FETCH_IMAGE } as const;
-
-const outputTail = (value: string): string => value.slice(-1000);
-
-const hostCloneUser = (): string | undefined => {
-	const process = (
-		globalThis as {
-			process?: { getuid?: () => number; getgid?: () => number };
-		}
-	).process;
-	if (typeof process?.getuid !== 'function' || typeof process.getgid !== 'function') {
-		return undefined;
-	}
-	return `${process.getuid()}:${process.getgid()}`;
-};
 
 export const resolveSealSource = (
 	runtime: ContainerRuntime,
@@ -118,7 +106,7 @@ export const resolveSealSource = (
 	Scope.Scope | FileSystem.FileSystem | Path.Path
 > =>
 	Effect.gen(function* () {
-		const override = env().SEAL_MOVE_SOURCE_OVERRIDE;
+		const override = readEnv('SEAL_MOVE_SOURCE_OVERRIDE');
 		if (override && override.length > 0) {
 			return {
 				repo: inputs.repo,
@@ -153,7 +141,7 @@ export const resolveSealSource = (
 						.runOneShot({
 							image: sourceImageRef,
 							entrypoint: 'git',
-							user: hostCloneUser(),
+							user: hostBindMountOwner(),
 							argv: ['clone', '--depth', '1', '--branch', inputs.ref, inputs.repo, '/out'],
 							mounts: [{ source: stagingPath, target: '/out' }],
 							timeoutMillis: SEAL_SOURCE_FETCH_TIMEOUT_MS,
@@ -179,8 +167,8 @@ export const resolveSealSource = (
 								`seal move-source: git clone exited ${result.exitCode}. ` +
 								`Set SEAL_MOVE_SOURCE_OVERRIDE=<path> or pass movePackagePath to bypass.`,
 							exitCode: result.exitCode,
-							stdout: outputTail(result.stdout),
-							stderr: outputTail(result.stderr),
+							stdout: tailOutput(result.stdout),
+							stderr: tailOutput(result.stderr),
 						}),
 					);
 				}
@@ -219,9 +207,9 @@ export const resolveSealSource = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.moveSource.resolve', {
 			attributes: {
-				'seal.repo': inputs.repo,
-				'seal.ref': inputs.ref,
-				'seal.subdir': inputs.subdir,
+				[SealSpans.repo]: inputs.repo,
+				[SealSpans.ref]: inputs.ref,
+				[SealSpans.subdir]: inputs.subdir,
 			},
 		}),
 	);

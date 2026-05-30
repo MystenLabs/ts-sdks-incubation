@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -92,14 +93,88 @@ describe('sui-move-build helpers', () => {
 		expect(stripPinnedSections(pinned)).toBe(unpinned);
 	});
 
-	it('scrubs lock files after container builds so build-generated pins do not leak', () => {
+	it('copies the WHOLE mount to a scratch dir then scrubs around the build so the mount is untouched', () => {
 		const script = containerInnerScript('demo');
 		const buildOffset = script.indexOf('sui move build');
 		expect(script).not.toContain('exec sui move build');
 		expect(script).toContain('status=$?');
-		expect(script.indexOf('find /workspace')).toBeLessThan(buildOffset);
-		expect(script.lastIndexOf('find /workspace')).toBeGreaterThan(buildOffset);
+		// The whole bind-mounted tree is copied into the in-container scratch
+		// root, never built in place at /workspace (`gawk -i inplace` would
+		// corrupt the developer's checked-in Move.lock). Copying `/workspace/.`
+		// (not just `/workspace/<pkg>`) materialises nested package paths and
+		// carries sibling `{ local = "../x" }` deps — see the nested-package test.
+		expect(script).toContain('cp -a /workspace/. /tmp/move-build-$$/');
+		expect(script).not.toContain("cp -a /workspace/'demo'");
+		// The package is built by its path INSIDE the scratch tree.
+		expect(script).toContain("sui move build --path /tmp/move-build-$$/'demo'");
+		// The scratch tree (root, so nested packages are covered) is scrubbed
+		// before and after the build.
+		const scratchFind = 'find /tmp/move-build-$$ -type f -name Move.lock';
+		expect(script.indexOf(scratchFind)).toBeLessThan(buildOffset);
+		expect(script.lastIndexOf(scratchFind)).toBeGreaterThan(buildOffset);
 		expect(CONTAINER_SCRUB_AWK_SCRIPT).toContain('^\\[env');
+	});
+
+	it('stages a nested-path package and its sibling local dep without aborting under set -e', async () => {
+		// Regression: the per-app exec build passes `pkgName` RELATIVE to the
+		// bind-mounted app dir, so it can contain a slash (e.g. `packages/demo`),
+		// and a package may reference a sibling via `{ local = "../token" }`.
+		// The prior implementation copied only `/workspace/<pkgName>` into
+		// `/tmp/move-build-$$/<pkgName>` without creating the intermediate dir,
+		// so `set -e` aborted the whole build before `sui move build` ran AND the
+		// sibling dep was dropped. We assert the emitted script's stage step is
+		// well-formed for a nested pkgName by EXECUTING it against a fixture tree
+		// (the real production code path is this shell string).
+		const pkgName = 'packages/demo';
+		const script = containerInnerScript(pkgName);
+
+		// The stage copies the whole mount, and the build targets the nested path.
+		expect(script).toContain('cp -a /workspace/. /tmp/move-build-$$/');
+		expect(script).toContain("sui move build --path /tmp/move-build-$$/'packages/demo'");
+
+		const root = await mkdtemp(join(tmpdir(), 'devstack-move-nested-'));
+		try {
+			// Bind-mount stand-in: appDir with a nested package referencing a sibling.
+			const workspace = join(root, 'workspace');
+			await mkdir(join(workspace, 'packages', 'demo', 'sources'), { recursive: true });
+			await mkdir(join(workspace, 'packages', 'token', 'sources'), { recursive: true });
+			await writeFile(
+				join(workspace, 'packages', 'demo', 'Move.toml'),
+				'[package]\nname = "demo"\n[dependencies]\ntoken = { local = "../token" }\n',
+			);
+			await writeFile(
+				join(workspace, 'packages', 'token', 'Move.toml'),
+				'[package]\nname = "token"\n',
+			);
+
+			// Drive ONLY the stage step the production script emits (the first
+			// `cp -a /workspace/. <scratch>/`), rebased onto the fixture: rewrite
+			// the in-container scratch root (`/tmp/move-build-$$`, `$$` and all)
+			// and the `/workspace` mount to host paths. Run it under `sh -euc` so
+			// a failed `cp` aborts (the script's own `set -e` semantics). If the
+			// stage were the old single-subdir copy, the missing intermediate
+			// `packages/` dir would make `cp` fail and reject here.
+			const scratch = join(root, 'scratch');
+			const stageLine = script
+				.split('; ')
+				.find((part) => part.startsWith('rm -rf /tmp/move-build-$$'));
+			expect(stageLine).toBeDefined();
+			const rebased = stageLine!
+				.replaceAll('/tmp/move-build-$$', scratch)
+				.replaceAll('/workspace', workspace);
+
+			await new Promise<void>((resolveStage, rejectStage) => {
+				execFile('sh', ['-euc', rebased], (err) => (err ? rejectStage(err) : resolveStage()));
+			});
+
+			// The nested package is present at its relative path in the scratch tree
+			// (so `--path <scratch>/packages/demo` resolves)...
+			expect(existsSync(join(scratch, 'packages', 'demo', 'Move.toml'))).toBe(true);
+			// ...and the sibling `../token` dep came along (resolves from the package).
+			expect(existsSync(join(scratch, 'packages', 'token', 'Move.toml'))).toBe(true);
+		} finally {
+			await rm(root, { recursive: true, force: true });
+		}
 	});
 
 	it('hashes Move sources while normalising Move.lock pinned drift', async () => {
@@ -134,58 +209,39 @@ describe('sui-move-build helpers', () => {
 		}
 	});
 
-	it('scrubs package locks while tolerating unwritable Move cache locks', async () => {
+	it('scrubs the shared Move cache while leaving the source tree untouched', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
 		const packageLock = join(root, 'package', 'Move.lock');
 		const cacheLock = join(root, 'move-home', 'git', 'dep', 'Move.lock');
+		const lockedCacheLock = join(root, 'move-home', 'git', 'locked', 'Move.lock');
 		try {
 			await mkdir(join(root, 'package'), { recursive: true });
 			await mkdir(join(root, 'move-home', 'git', 'dep'), { recursive: true });
+			await mkdir(join(root, 'move-home', 'git', 'locked'), { recursive: true });
 			const pinnedLock = '[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n';
 			await writeFile(packageLock, pinnedLock);
 			await writeFile(cacheLock, pinnedLock);
-			await chmod(cacheLock, 0o444);
+			await writeFile(lockedCacheLock, pinnedLock);
+			await chmod(lockedCacheLock, 0o444);
 
 			await Effect.runPromise(
 				scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
 			);
 
-			expect(await readFile(packageLock, 'utf8')).toBe('[move]\nversion = 3');
-			expect(await readFile(cacheLock, 'utf8')).toBe(pinnedLock);
+			// The developer's source tree is never mutated host-side; the package's
+			// own Move.lock is scrubbed inside the container on a staged copy.
+			expect(await readFile(packageLock, 'utf8')).toBe(pinnedLock);
+			// Writable cache locks ARE scrubbed so stale pins don't leak into the build.
+			expect(await readFile(cacheLock, 'utf8')).toBe('[move]\nversion = 3');
+			// Unwritable cache locks are tolerated (the container scrub re-runs inside).
+			expect(await readFile(lockedCacheLock, 'utf8')).toBe(pinnedLock);
 		} finally {
-			await chmod(cacheLock, 0o644).catch(() => {});
+			await chmod(lockedCacheLock, 0o644).catch(() => {});
 			await rm(root, { recursive: true, force: true });
 		}
 	});
 
-	it('fails when a package Move.lock cannot be scrubbed', async () => {
-		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
-		const packageLock = join(root, 'package', 'Move.lock');
-		try {
-			await mkdir(join(root, 'package'), { recursive: true });
-			await mkdir(join(root, 'move-home'), { recursive: true });
-			await writeFile(
-				packageLock,
-				'[move]\nversion = 3\n[pinned.testnet.dep]\npublished-at = "0x1"\n',
-			);
-			await chmod(packageLock, 0o444);
-
-			await expect(
-				Effect.runPromise(
-					scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
-				),
-			).rejects.toMatchObject({
-				_tag: 'MoveBuildError',
-				phase: 'scrub',
-				sourcePath: join(root, 'package'),
-			});
-		} finally {
-			await chmod(packageLock, 0o644).catch(() => {});
-			await rm(root, { recursive: true, force: true });
-		}
-	});
-
-	it('tolerates unwritable package locks when container scrub will run later', async () => {
+	it('never touches the package tree even when its Move.lock is unwritable', async () => {
 		const root = await mkdtemp(join(tmpdir(), 'devstack-move-scrub-'));
 		const packageLock = join(root, 'package', 'Move.lock');
 		try {
@@ -196,9 +252,7 @@ describe('sui-move-build helpers', () => {
 			await chmod(packageLock, 0o444);
 
 			await Effect.runPromise(
-				scrubLocksHost(join(root, 'package'), join(root, 'move-home'), {
-					packageLockFailures: 'best-effort',
-				}).pipe(Effect.scoped),
+				scrubLocksHost(join(root, 'package'), join(root, 'move-home')).pipe(Effect.scoped),
 			);
 
 			expect(await readFile(packageLock, 'utf8')).toBe(pinnedLock);

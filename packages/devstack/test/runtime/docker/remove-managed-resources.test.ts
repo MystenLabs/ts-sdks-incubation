@@ -59,6 +59,7 @@ describe('removeManagedContainers', () => {
 					const log = join(root, 'docker.log');
 					const stackLockFile = join(root, 'stack.lock');
 					const rosterFile = join(root, 'roster.json');
+					const containerClaimsFile = join(root, 'container-claims.json');
 					const containerName = 'devstack-claimed-postgres';
 					const labels: ContainerLabelTuple = {
 						app: 'app',
@@ -93,11 +94,14 @@ describe('removeManagedContainers', () => {
 					);
 					chmodSync(bin, 0o755);
 
-					yield* addClaim({ stackLockFile, rosterFile }, containerName);
+					yield* addClaim(
+						{ stackLockFile, rosterFile, containerClaimsFile },
+						containerName,
+					);
 					const removed = yield* removeManagedContainers(labels).pipe(
 						Effect.provide(fakeDockerLayer(bin)),
 					);
-					const claims = yield* readClaims({ stackLockFile, rosterFile });
+					const claims = yield* readClaims({ stackLockFile, rosterFile, containerClaimsFile });
 					const lines = readFileSync(log, 'utf8').trim().split('\n');
 
 					expect(removed).toBe(1);
@@ -368,7 +372,21 @@ describe('removeManagedContainers', () => {
 				).pipe(Effect.provide(fakeDockerLayer(bin)));
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 
-				expect(result).toEqual({ removed: 0, skippedInUse: 1 });
+				expect(result.removed).toBe(0);
+				expect(result.skippedInUse).toBe(1);
+				// Foreign holders depend on what the shim reports for
+				// `network inspect`. This shim doesn't expose attachments,
+				// so the holder list should be empty.
+				expect(result.foreignHolders).toEqual([]);
+				// The shim's "active endpoints" stderr names a phantom
+				// endpoint — that's the stale-endpoint signature.
+				expect(result.staleEndpoints).toEqual([
+					{
+						network: 'seal-seal-net',
+						name: 'devstack-private-content-rewrite-main-seal-seal-key-server',
+						id: '58dd',
+					},
+				]);
 				expect(lines).toContain('network rm seal-seal-net');
 			} finally {
 				rmSync(root, { recursive: true, force: true });

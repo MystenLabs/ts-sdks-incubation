@@ -42,7 +42,7 @@ export const ExitCode = {
 	/** Cannot open input (config not found, snapshot file missing). */
 	NO_INPUT: 66,
 	/** Internal software error / unhandled defect. Default for
-	 *  defects that escape Effect.catchAll. */
+	 *  defects that escape Effect.catch. */
 	SOFTWARE: 70,
 	/** Service required by the CLI is unavailable (Docker daemon
 	 *  unreachable, network down). */
@@ -92,6 +92,12 @@ export const exitCodeName = (code: ExitCode): string => {
 			return 'TEMP_FAIL';
 		case ExitCode.CONFIG:
 			return 'CONFIG';
+		default: {
+			// Proof-of-exhaustiveness — adding a new entry to `ExitCode`
+			// without extending this switch fails compilation here.
+			const _exhaustive: never = code;
+			throw new Error(`Unknown ExitCode: ${String(_exhaustive)}`);
+		}
 	}
 };
 

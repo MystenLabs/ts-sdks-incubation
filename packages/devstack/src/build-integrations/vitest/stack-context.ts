@@ -17,11 +17,16 @@ import {
 	ManifestDiscoveryError,
 	ManifestShapeError,
 	readStackContext as readStackContextRuntime,
+	resolveBuiltInEndpointAlias,
+	resolveDiscoveryEnv,
+	type ManifestEnvelope,
 	type StackContext as RuntimeStackContext,
 } from '../runtime/index.ts';
-import type { ManifestEnvelope } from '../../substrate/manifest.ts';
-import { VITEST_ENV_VARS } from './env.ts';
-import { VitestManifestNotFoundError, VitestManifestShapeError } from './errors.ts';
+import {
+	VitestManifestNotFoundError,
+	VitestManifestShapeError,
+	VitestManifestVersionMismatchError,
+} from './errors.ts';
 
 /** Read-only projection over the live manifest, scoped to the vitest
  *  surface's needs. The full envelope is reconstructed (`manifest`)
@@ -67,13 +72,23 @@ export interface LoadStackContextOptions {
 
 const project = (ctx: RuntimeStackContext): StackContext => {
 	const envelope: ManifestEnvelope = manifestEnvelopeFromStackContext(ctx);
+	// Alias-resolve the user-typed name BEFORE the registry lookup so
+	// `endpoint('app')` resolves to whatever canonical key the substrate
+	// emits (`'dev'` today). Mirrors the playwright surface
+	// (`playwrightEndpointNameFor` in `playwright/stack-context.ts`) so
+	// both build integrations share one alias table from
+	// `runtime/conventional-routes.ts`. Without this, the `endpoint(name)`
+	// accessor silently returns `undefined` for legit aliases the
+	// playwright fixture happily accepts.
+	const lookup = (nameOrAlias: string) =>
+		ctx.endpoints.byName(resolveBuiltInEndpointAlias(nameOrAlias));
 	return {
 		manifestPath: ctx.manifestPath,
 		manifest: envelope,
 		identity: envelope.identity,
-		endpoint: (name) => ctx.endpoints.byName(name)?.url,
+		endpoint: (name) => lookup(name)?.url,
 		displayEndpoint: (name) => {
-			const e = ctx.endpoints.byName(name);
+			const e = lookup(name);
 			if (e === undefined) return undefined;
 			return e.displayUrl ?? e.url;
 		},
@@ -93,12 +108,13 @@ const project = (ctx: RuntimeStackContext): StackContext => {
  */
 export const loadStackContext = (opts: LoadStackContextOptions = {}): StackContext | undefined => {
 	const env = opts.env ?? (process.env as Readonly<Record<string, string | undefined>>);
-	const stack = opts.stack ?? env[VITEST_ENV_VARS.STACK] ?? 'main';
-	const runtimeRoot =
-		opts.runtimeRoot ??
-		env[VITEST_ENV_VARS.RUNTIME_ROOT] ??
-		env[VITEST_ENV_VARS.RUNTIME_ROOT_LEGACY] ??
-		'.devstack';
+	// `runtimeRoot` is the vitest-flavored name for the shared resolver's
+	// `stateDir` rung; the ladder (option > DEVSTACK_RUNTIME_ROOT >
+	// DEVSTACK_STATE_DIR > '.devstack') lives in `resolveDiscoveryEnv`.
+	const { stack, stateDir: runtimeRoot } = resolveDiscoveryEnv(env, {
+		...(opts.stack !== undefined ? { stack: opts.stack } : {}),
+		...(opts.runtimeRoot !== undefined ? { stateDir: opts.runtimeRoot } : {}),
+	});
 
 	try {
 		const ctx = readStackContextRuntime({
@@ -111,6 +127,21 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 		return project(ctx);
 	} catch (err) {
 		if (err instanceof ManifestDiscoveryError) {
+			// `env-missing` / `override-missing` surface regardless of
+			// `required` — the user explicitly pointed at a file that
+			// doesn't exist; silently returning `undefined` would
+			// quietly fall back to cold-start defaults and hide the typo.
+			// `required: false` only suppresses the walk-up-not-found
+			// path (`phase: 'walk-up' | 'required-missing'`).
+			if (err.phase === 'env-missing' || err.phase === 'override-missing') {
+				throw new VitestManifestNotFoundError({
+					message: err.message,
+					searchedFrom: opts.cwd ?? process.cwd(),
+					stack,
+					stateDir: runtimeRoot,
+					recovery: `run \`devstack up\` (or unset DEVSTACK_MANIFEST_PATH / pass an existing manifestPath)`,
+				});
+			}
 			if (opts.required === true) {
 				throw new VitestManifestNotFoundError({
 					message: `no devstack manifest found for stack '${stack}' under '${runtimeRoot}'`,
@@ -123,14 +154,27 @@ export const loadStackContext = (opts: LoadStackContextOptions = {}): StackConte
 			return undefined;
 		}
 		if (err instanceof ManifestShapeError) {
-			// The runtime tags both decode-failure and version-mismatch as
-			// `phase: 'parse' | 'shape' | 'version'`. The vitest error
-			// union exposes `parse` and `shape`; map `version` onto
-			// `shape` with a recovery hint that names the version-bump
-			// recipe.
-			const phase: 'parse' | 'shape' = err.phase === 'parse' ? 'parse' : 'shape';
+			// The runtime tags decode-failure, structural drift, and
+			// version-mismatch as `phase: 'parse' | 'shape' | 'version'`.
+			// We surface them as TWO distinct error tags so consumers can
+			// `catchTag` independently — the recovery actions diverge:
+			//
+			//   - parse/shape → regenerate the manifest (the file is wrong)
+			//   - version     → upgrade the consumer dependency (your
+			//                   build and the supervisor are out of sync)
+			if (err.phase === 'version') {
+				throw new VitestManifestVersionMismatchError({
+					path: err.path,
+					message: err.message,
+					recovery:
+						`upgrade @mysten-incubation/devstack to a build that matches the ` +
+						`supervisor's manifestVersion, or run \`devstack up\` to regenerate ` +
+						`the manifest with this consumer's version.`,
+					cause: err,
+				});
+			}
 			throw new VitestManifestShapeError({
-				phase,
+				phase: err.phase,
 				path: err.path,
 				message: err.message,
 				recovery:

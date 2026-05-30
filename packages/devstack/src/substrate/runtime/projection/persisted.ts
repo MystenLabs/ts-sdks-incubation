@@ -5,10 +5,12 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 
 import type { SubscribableState } from '../../projection.ts';
 import { endpointKey, pluginKey } from '../../brand.ts';
+import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
+import { logWarningAndIgnore } from '../observability/ignore-with-log.ts';
 import { decodeJsonTextSync } from '../runtime-decode.ts';
 
-export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v3.json';
+export const PROJECTION_SNAPSHOT_FILE_NAME = 'projection.v4.json';
 
 export const projectionSnapshotPath = (stackRoot: string): string =>
 	`${stackRoot}/${PROJECTION_SNAPSHOT_FILE_NAME}`;
@@ -26,6 +28,14 @@ const LifecycleStatusSchema = Schema.Literals([
 ]);
 const PluginRoleSchema = Schema.Literals(['service', 'task']);
 const CyclePhaseSchema = Schema.Literals(['booting', 'running', 'restarting', 'shutting-down']);
+const RowSectionSchema = Schema.Literals([
+	'service',
+	'package',
+	'account',
+	'action',
+	'app',
+	'other',
+]);
 
 const StructuredErrorSchema = Schema.Struct({
 	at: Schema.Number,
@@ -38,14 +48,15 @@ const StructuredErrorSchema = Schema.Struct({
 
 const EndpointSchema = Schema.Struct({
 	endpointKey: Schema.String,
+	pluginKey: Schema.String,
 	name: Schema.String,
 	url: Schema.String,
 	displayUrl: Schema.NullOr(Schema.String),
-	wireProtocol: Schema.String,
+	wireProtocol: Schema.Literals(['http', 'h2c', 'tcp']),
 	registeredAt: Schema.Number,
 });
 
-const AccountProjectionSchema = Schema.Struct({
+export const AccountProjectionSchema = Schema.Struct({
 	key: Schema.String,
 	rowKey: Schema.NullOr(Schema.String),
 	name: Schema.String,
@@ -62,7 +73,13 @@ const AccountProjectionSchema = Schema.Struct({
 					coin: Schema.String,
 					fullCoinType: Schema.String,
 					amount: Schema.String,
-					status: Schema.Literals(['funded', 'skipped']),
+					// Mirrors `AccountProjection.funding.entries[].status` in
+					// `substrate/projection.ts`. `'already-satisfied'` is
+					// the pre-existing-balance short-circuit emitted by the
+					// account funding pass — semantically a success, kept
+					// distinct from `'funded'` so renderers can surface the
+					// cached-vs-fresh distinction.
+					status: Schema.Literals(['funded', 'already-satisfied', 'skipped']),
 				}),
 			),
 		),
@@ -71,7 +88,7 @@ const AccountProjectionSchema = Schema.Struct({
 	updatedAt: Schema.Number,
 });
 
-const PackageProjectionSchema = Schema.Struct({
+export const PackageProjectionSchema = Schema.Struct({
 	key: Schema.String,
 	rowKey: Schema.NullOr(Schema.String),
 	name: Schema.String,
@@ -96,6 +113,8 @@ const RowSchema = Schema.Struct({
 	}),
 	endpoints: Schema.Array(Schema.String),
 	selectiveRestartHighlight: Schema.Boolean,
+	section: RowSectionSchema,
+	endpointSection: RowSectionSchema,
 });
 
 const BuildEntrySchema = Schema.Struct({
@@ -128,8 +147,7 @@ const SubscribableStateSchema = Schema.Struct({
 	stackBuild: Schema.Array(BuildEntrySchema),
 });
 
-export const ProjectionSnapshotSchema = Schema.Struct({
-	version: Schema.Literal(3),
+export const ProjectionSnapshotSchema = versionedDocSchema(4, {
 	state: SubscribableStateSchema,
 });
 
@@ -152,6 +170,7 @@ const rebrandPersistedState = (state: PersistedSubscribableState): SubscribableS
 	endpoints: state.endpoints.map((endpoint) => ({
 		...endpoint,
 		endpointKey: endpointKey(endpoint.endpointKey),
+		pluginKey: pluginKey(endpoint.pluginKey),
 	})),
 	accounts: state.accounts.map((account) => ({
 		...account,
@@ -175,11 +194,18 @@ export const writeProjectionSnapshot = (
 	state: SubscribableState,
 ): Effect.Effect<void> =>
 	atomicWriteJson(projectionSnapshotPath(stackRoot), ProjectionSnapshotSchema, {
-		version: 3 as const,
+		version: 4 as const,
 		state,
 	}).pipe(
 		Effect.provide(NodeFileSystem.layer),
-		Effect.catch(() => Effect.void),
+		// Best-effort: a snapshot write failure must not fail the caller
+		// (the projection is a re-derivable read model). But a bare
+		// `Effect.catch(() => Effect.void)` hid disk-full / permission
+		// faults entirely — leave the cause in the log stream (§18) so a
+		// persistently-failing snapshot is diagnosable.
+		logWarningAndIgnore('projection snapshot write failed', {
+			path: projectionSnapshotPath(stackRoot),
+		}),
 	);
 
 export const persistProjectionChanges = (

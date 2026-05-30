@@ -13,10 +13,17 @@ import { DeepBookClient, type DeepBookCompatibleClient } from '@mysten/deepbook-
 import { Transaction } from '@mysten/sui/transactions';
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { AccountFundingRequest, AccountFundingStrategy } from '../account/funding.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
+import {
+	AccountSpans,
+	type AccountFundingRequest,
+	type AccountFundingStrategy,
+} from '../account/index.ts';
+import type { SuiSdkShim } from '../sui/index.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
+import { DeepbookSpans } from './spans.ts';
 
 export const DEEPBOOK_TESTNET_DEEP_COIN_TYPE =
 	'0x36dbef866a1d62bf7328989a10fb2f07d769f4ee587c0de4a0a256e57e0a58a8::deep::DEEP' as const;
@@ -27,12 +34,6 @@ const DEEPBOOK_DEEP_POOL_KEY = 'DEEP_SUI';
 const DEEP_SCALAR = 1_000_000n;
 const SUI_SCALAR = 1_000_000_000n;
 const DEFAULT_INPUT_BUFFER_BPS = 500n;
-
-type TransactionBuildClient = Parameters<Transaction['build']>[0] extends
-	| { readonly client?: infer Client }
-	| undefined
-	? Client
-	: never;
 
 export interface DeepbookDeepFundingStrategyOptions {
 	readonly suiSdk: SuiSdkShim;
@@ -113,8 +114,9 @@ export const makeDeepbookDeepFundingStrategy = (
 			);
 			const deepAmountRaw = yield* decimalToRaw(quote.deepRequired, DEEP_SCALAR, 'ceil');
 
-			yield* req.account
-				.withTransactionSigner((lockedSigner) =>
+			yield* signAndDispatch({
+				signerSource: req.account,
+				buildTxBytes: () =>
 					Effect.gen(function* () {
 						const tx = yield* Effect.try({
 							try: () => {
@@ -142,11 +144,8 @@ export const makeDeepbookDeepFundingStrategy = (
 								),
 						});
 
-						const txBytes = yield* Effect.tryPromise({
-							try: () =>
-								tx.build({
-									client: opts.suiSdk.client as TransactionBuildClient,
-								}),
+						return yield* Effect.tryPromise({
+							try: () => tx.build({ client: opts.suiSdk.client }),
 							catch: (cause): DeepbookPluginError =>
 								deepbookPluginError(
 									'fund-deep',
@@ -156,29 +155,31 @@ export const makeDeepbookDeepFundingStrategy = (
 									{ cause },
 								),
 						});
-
-						yield* lockedSigner
-							.signAndExecute(txBytes)
-							.pipe(
-								Effect.mapError(
-									(cause): DeepbookPluginError =>
-										deepbookPluginError(
-											'fund-deep',
-											`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
-											{ cause },
-										),
-								),
-							);
 					}),
-				)
-				.pipe(Effect.asVoid);
+				mapSignError: (cause): DeepbookPluginError =>
+					deepbookPluginError(
+						'fund-deep',
+						`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
+						{ cause },
+					),
+				onFailed: (failure) =>
+					Effect.fail(
+						deepbookPluginError(
+							'fund-deep',
+							`DeepBook DEEP funding transaction failed on-chain ` +
+								`for account '${req.account.name}' (address=${req.account.address}) ` +
+								formatExecutedFailure(failure),
+						),
+					),
+				onSuccess: () => Effect.void,
+			});
 		}).pipe(
 			Effect.withSpan('devstack.plugin.deepbook.fundDeep', {
 				attributes: {
-					'account.name': req.account.name,
-					'account.address': req.account.address,
-					'fund.coin': DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-					'fund.amount': req.amount.toString(),
+					[AccountSpans.name]: req.account.name,
+					[AccountSpans.address]: req.account.address,
+					[DeepbookSpans.fundCoin]: DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
+					[DeepbookSpans.fundAmount]: req.amount.toString(),
 				},
 			}),
 		),

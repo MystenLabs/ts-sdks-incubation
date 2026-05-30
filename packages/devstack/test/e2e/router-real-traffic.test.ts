@@ -21,7 +21,7 @@ import {
 } from '../../src/orchestrators/router/index.ts';
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import { renderNetworkLabels } from '../../src/runtime/docker/index.ts';
-import { buildSubstrateLayers } from '../../src/substrate/runtime/run.ts';
+import { buildSubstrateLayers } from '../../src/orchestrators/run.ts';
 
 const SERVICE_IMAGE = 'busybox:1.36';
 const SERVICE_PORT = 8080;

@@ -17,8 +17,7 @@
 // "claim the lock", not "claim the lock, but first someone else must
 // have made sure the directory exists."
 
-import { mkdtempSync, existsSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, mkdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { Effect, Scope } from 'effect';
@@ -29,14 +28,12 @@ import {
 	StackLockIoError,
 } from '../../../../src/substrate/runtime/cross-process/stack-lock.ts';
 import { claim } from '../../../../src/substrate/runtime/cross-process/roster.ts';
-
-const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'stack-lock-test-'));
+import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
 describe('acquireStackLock', () => {
 	it.effect('creates the parent directory when missing (fresh runtime root)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				// Path two levels deep — `<root>/stacks/stack/stack.lock`.
 				// `<root>/stacks/stack/` does NOT exist yet; the claim
 				// path must mkdir -p before the O_EXCL write.
@@ -59,16 +56,13 @@ describe('acquireStackLock', () => {
 				// Parent directory remains (mkdir is idempotent
 				// across acquires; we don't reap it).
 				expect(existsSync(stackRoot)).toBe(true);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('roster.claim succeeds on a fresh runtime root (regression: StackLockIoError)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', 'main');
 				const paths = {
 					stackLockFile: join(stackRoot, 'stack.lock'),
@@ -89,16 +83,13 @@ describe('acquireStackLock', () => {
 					expect(result.value.roster.holders.length).toBe(1);
 					expect(existsSync(paths.rosterFile)).toBe(true);
 				}
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
 	);
 
 	it.effect('re-acquire after release works (lock file is unlinked at scope close)', () =>
-		Effect.gen(function* () {
-			const root = freshRoot();
-			try {
+		withTempRoot('stack-lock-test', (root) =>
+			Effect.gen(function* () {
 				const stackRoot = join(root, 'stacks', 'main');
 				const lockPath = join(stackRoot, 'stack.lock');
 
@@ -115,10 +106,67 @@ describe('acquireStackLock', () => {
 						expect(existsSync(lockPath)).toBe(true);
 					}),
 				);
-			} finally {
-				rmSync(root, { recursive: true, force: true });
-			}
-		}),
+			}),
+		),
+	);
+});
+
+describe('acquireStackLock — unparseable body + mtime staleness', () => {
+	// Regression for review fix phase 22f Bug 3: a peer that died mid-
+	// write leaves the lock body unparseable. The PID liveness check
+	// has nothing to consult (parse returned null), and pre-fix the
+	// loop fell through to the exponential backoff and burned the full
+	// 5s timeout. Fix: if the body is unparseable AND the file's mtime
+	// is older than `DEFAULT_SWEEP_POLICY.staleAfterMillis` (30s), the
+	// next peer reclaims via unlink + retry.
+	it.live('reclaims an unparseable lock body once mtime exceeds the staleness window', () =>
+		withTempRoot('stack-lock-mtime', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stacks', 'main');
+				mkdirSync(stackRoot, { recursive: true });
+				const lockPath = join(stackRoot, 'stack.lock');
+				// Plant unparseable garbage (mid-write crash simulation).
+				writeFileSync(lockPath, '{partial-json', { flag: 'wx' });
+				// Backdate mtime by 60s (well past the 30s sweep window).
+				const past = (Date.now() - 60_000) / 1_000;
+				utimesSync(lockPath, past, past);
+
+				// Tight 1s budget — without the mtime-stale reclaim, the
+				// loop falls through to exponential backoff and burns the
+				// budget. With the fix, the first iteration's parse-null
+				// + mtime check triggers reclaim and the next O_EXCL wins.
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* acquireStackLock(lockPath, 1_000);
+						expect(existsSync(lockPath)).toBe(true);
+					}),
+				);
+				// Scope close unlinked our acquire.
+				expect(existsSync(lockPath)).toBe(false);
+			}),
+		),
+	);
+
+	it.live('does NOT reclaim an unparseable lock body whose mtime is fresh', () =>
+		withTempRoot('stack-lock-mtime', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stacks', 'main');
+				mkdirSync(stackRoot, { recursive: true });
+				const lockPath = join(stackRoot, 'stack.lock');
+				// Plant unparseable garbage with current mtime — peer is
+				// presumed actively writing; respect the staleness budget
+				// rather than racing them. A short timeout proves we DON'T
+				// reclaim within the staleness window.
+				writeFileSync(lockPath, '{partial-json', { flag: 'wx' });
+
+				const exit = yield* Effect.scoped(acquireStackLock(lockPath, 300)).pipe(
+					Effect.exit,
+				);
+				expect(exit._tag).toBe('Failure');
+				// The file is still on disk — we never reclaimed it.
+				expect(existsSync(lockPath)).toBe(true);
+			}),
+		),
 	);
 });
 

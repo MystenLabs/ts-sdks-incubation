@@ -11,8 +11,9 @@
 #   1. `seal-cli genkey` — one-shot.
 #      Must emit stdout matching the two regexes in
 #      `plugins/seal/keygen.ts::parseSealKeygenOutput`:
-#        - `Master key: 0x<hex>` (32 bytes)
-#        - `Public key: 0x<hex>` (48 bytes — BLS12-381 G1)
+#        - `Master key: 0x<hex>` (32 bytes / 64 hex chars)
+#        - `Public key: 0x<hex>` (96 bytes / 192 hex chars —
+#          BLS12-381 G2 uncompressed, matching real seal-cli v0.6.6)
 #
 #   2. Default ENTRYPOINT (key-server mode) — bind TCP on
 #      DEFAULT_KEY_SERVER_PORT (2024) and stay alive. The plugin's

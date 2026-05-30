@@ -4,7 +4,7 @@
 // attached lifecycle commands, direct/offline maintenance commands,
 // command-scoped flags, and no public peer-command verbs.
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -58,6 +58,15 @@ interface HarnessOptions {
 }
 
 const tempRoots: Array<string> = [];
+
+const packageVersion = (): string => {
+	const pkg = JSON.parse(
+		readFileSync(new URL('../../../package.json', import.meta.url), 'utf8'),
+	) as {
+		readonly version: string;
+	};
+	return pkg.version;
+};
 
 const makeHarness = (
 	options: HarnessOptions = {},
@@ -159,6 +168,8 @@ const makeHarness = (
 							live: false,
 							livePids: [],
 							shared: false,
+							sharedKind: null,
+							autoPrunable: true,
 							containers: 2,
 							runningContainers: 0,
 							networks: 1,
@@ -172,6 +183,8 @@ const makeHarness = (
 							live: true,
 							livePids: [123],
 							shared: false,
+							sharedKind: null,
+							autoPrunable: false,
 							containers: 1,
 							runningContainers: 1,
 							networks: 1,
@@ -206,6 +219,8 @@ const makeHarness = (
 							networksSkipped: 0,
 							volumesRemoved: selection.resources.volumes ? 1 : 0,
 							imagesRemoved: selection.resources.images ? 3 : 0,
+							foreignNetworkHolders: [],
+							staleNetworkEndpoints: [],
 						},
 					};
 				}),
@@ -316,6 +331,15 @@ describe('dispatch', () => {
 		expect(h.stderr.join('\n')).toMatch(/No command registered/);
 	});
 
+	it('reports the package version', async () => {
+		const { deps, read } = makeHarness();
+		await run(['--version'], deps, { io: read().io });
+		const h = read();
+		expect(h.exitCode).toBe(0);
+		expect(h.stdout.join('\n')).toContain(packageVersion());
+		expect(h.stderr).toHaveLength(0);
+	});
+
 	it('unknown verb honors json output when requested before the verb', async () => {
 		const { deps, read } = makeHarness();
 		await run(['--json', 'frobnicate'], deps, { io: read().io });
@@ -346,6 +370,73 @@ describe('dispatch', () => {
 		expect(h.stderr).toHaveLength(0);
 		expect(h.applyRuns).toHaveLength(1);
 		expect(h.applyRuns[0]!.network).toBe('mainnet-fork');
+	});
+
+	it('restores process.env[DEVSTACK_NETWORK] after each invocation', async () => {
+		// Guards the documented bridge: `setNetworkEnv` mutates
+		// `process.env.DEVSTACK_NETWORK` so the deepbook factory's
+		// config-load-time env read picks up `--network`. The scoped
+		// finalizer must restore the prior value (or unset it) so
+		// concurrent CLI invocations in the same process — tests,
+		// embedded harnesses — do not leak network state to siblings.
+		const KEY = 'DEVSTACK_NETWORK';
+		const prior = process.env[KEY];
+		delete process.env[KEY];
+		try {
+			// Invocation 1: --network=testnet mutates the env for the
+			// duration of the command, then must restore (unset).
+			const first = makeHarness();
+			await run(['apply', '--network', 'testnet'], first.deps, { io: first.read().io });
+			expect(first.read().exitCode).toBe(0);
+			expect(process.env[KEY]).toBeUndefined();
+
+			// Invocation 2: no --network flag, no env preset.
+			// `flags.network` should be undefined inside the command —
+			// proving the prior invocation did not leak.
+			const second = makeHarness();
+			await run(['apply'], second.deps, { io: second.read().io });
+			expect(second.read().exitCode).toBe(0);
+			expect(second.read().applyRuns[0]!.network).toBeUndefined();
+			expect(process.env[KEY]).toBeUndefined();
+
+			// Invocation 3: a prior value must be restored (not deleted).
+			process.env[KEY] = 'localnet';
+			const third = makeHarness();
+			await run(['apply', '--network', 'testnet'], third.deps, { io: third.read().io });
+			expect(third.read().exitCode).toBe(0);
+			expect(process.env[KEY]).toBe('localnet');
+		} finally {
+			if (prior === undefined) delete process.env[KEY];
+			else process.env[KEY] = prior;
+		}
+	});
+
+	it('restores process.env[DEVSTACK_NETWORK] when the wrapped command FAILS', async () => {
+		// The `setNetworkEnv` restore is registered via `Effect.addFinalizer`
+		// inside `Effect.scoped` (surfaces/cli/index.ts), so the prior value
+		// must be restored on the FAILURE path too — not just on success.
+		// A leaked `--network` from a failed invocation would poison a
+		// sibling invocation in the same process (tests / embedded harness).
+		const KEY = 'DEVSTACK_NETWORK';
+		const prior = process.env[KEY];
+		try {
+			process.env[KEY] = 'localnet';
+			const { deps, read } = makeHarness();
+			// Force the wrapped command effect to fail while `--network` is set.
+			const failingDeps: CliDeps = {
+				...deps,
+				apply: {
+					run: () => Effect.fail(new CliNoSupervisorError({ app: 'a', stack: 's' })),
+				},
+			};
+			await run(['apply', '--network', 'testnet'], failingDeps, { io: read().io });
+			// The command failed (non-zero exit) AND the prior env was restored.
+			expect(read().exitCode).not.toBe(0);
+			expect(process.env[KEY]).toBe('localnet');
+		} finally {
+			if (prior === undefined) delete process.env[KEY];
+			else process.env[KEY] = prior;
+		}
 	});
 
 	it('lifecycle commands run through attached/direct deps', async () => {
@@ -610,7 +701,10 @@ describe('dispatch', () => {
 		await run(['schema', '--json'], deps, { io: read().io });
 		const h = read();
 		expect(h.exitCode).toBe(0);
-		const schema = JSON.parse(h.stdout[0]!);
+		const envelope = JSON.parse(h.stdout[0]!);
+		expect(envelope.ok).toBe(true);
+		expect(envelope.command).toBe('schema');
+		const schema = envelope.data;
 		expect(schema.verbs).toEqual([
 			'up',
 			'apply',

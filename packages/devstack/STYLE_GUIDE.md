@@ -1,162 +1,83 @@
 # Devstack style guide
 
-> Living document. Every review finding that surfaces a recurring code-level pattern lands here as a
-> rule. Updates require justification in the PR/commit.
+Code-level patterns. Companion: `ARCHITECTURE.md` for layer / boundary rules.
 
-Companion: see `ARCHITECTURE.md` for layer / boundary rules.
-
-Source-of-truth inputs that seeded this guide (consult before adding a new rule):
-
-- `notes/reviews/substrate.md`
-- `notes/reviews/runtime-docker.md`
-- `notes/reviews/orchestrators.md`
-- `notes/reviews/surfaces.md`
-- `notes/reviews/build-integrations.md`
-- `notes/reviews/stable-plugins.md`
-- `notes/reviews/cross-cutting.md`
-- `notes/api-comparison.md`, `notes/parity-matrix.md`
-- `PHASE-3-NOTES.md` (type-system findings)
-
-## How to use this guide
-
-- Every PR + every dispatched agent must adhere.
-- A violation found during review = fix + codify here.
-- Open slots (marked **TBD — pending <decision-id>**) mean a decision is pending; do NOT pick
-  arbitrarily — escalate, or wait for the named pass.
-- "Self-evident" rules below MUST be caught at PR review; "Enforced" rules MUST be caught by
-  typecheck / lint / build / invariant test.
+Rules in this guide are caught at review (when not enforceable by typecheck/lint/build/invariant
+test). A violation found during review = fix + codify here.
 
 ---
 
-## 1. Effect v4 idioms
+## 1. Effect v4
 
-The skill `writing-effect` is the authority. The recurring breakages found in PHASE-3 + reviews +
-the PR1 typecheck sweep:
+The `writing-effect` skill is the authority on Effect v4 idioms. When uncertain, defer to
+`.repos/effect-v4/` (cloned by `scripts/setup-repos.sh`). A few rules that come up enough to pin
+locally:
 
-- `Effect.catch` not `Effect.catchAll`.
-- `Context.Service<Self, Shape>()(id)` is the substrate primitive form — the L0 services
-  (`scoped-ref-map`, `lease-broker`, `port-broker`, registries, etc.) MUST use this. The
-  `Effect.Service` class form (recommended by writing-effect) is the L1+ default for
-  application-level services. Pick by location: substrate primitives → `Context.Service`; everything
-  else → `Effect.Service`.
-- `Schema.Record(keySchema, valueSchema)` — POSITIONAL args. Not `Schema.Record({ key, value })`.
-  (Three fixed sites in `manifest.ts`; do not regress.)
-- `Logger.consolePretty()` + `Logger.layer([...])` — not `Logger.pretty`.
-- `SubscriptionRef.changes(ref)` — function form, not `ref.changes`.
-- `Schema.Schema<T>` — single-generic; not the 3-generic v3 form.
+- `Context.Service<Self, Shape>()(id)` is the substrate primitive form — L0 services use this.
+  `Effect.Service` class form is the default at L1+.
+- `Schema.Record(keySchema, valueSchema)` is positional, not `{ key, value }`.
 - `it.effect` from `@effect/vitest` for Effect-bearing tests; pure-data helpers use plain `it`.
-- **`Effect.fork` split in v4.** Use `Effect.forkChild` for an unscoped fiber, or
-  `Effect.forkScoped` for one tied to the surrounding scope. Plain `Effect.fork` is gone. (See
-  `substrate/runtime/supervisor.ts` + `surfaces/tui/index.ts` for the canonical `forkScoped`
-  pattern.)
-- **`Effect.async` → `Effect.callback` in v4.** The name changed; the shape is the same
-  `(resume) => void`. See `substrate/runtime/host-tree-tar/index.ts` + `port-broker/service.ts`.
-- **`Cause` shape changed.** Reading the failure value via
-  `cause._tag === 'Fail' ? cause.error : ...` is the v3 shape and is brittle on v4. Prefer
-  `Exit.findErrorOption(exit): Option<E>` when the surrounding code has an `Exit`; otherwise use
-  `Cause.failures(cause)` / the documented walkers. The v3 conditional pattern is allowed as a
-  defensive guard at boundary code that may receive arbitrary cause shapes (see
-  `plugins/sui/mode/local.ts`, `pretty-error.ts`), but new code should reach for
-  `Exit.findErrorOption` first.
-- **`Stream.unwrap` IS scope-binding in v4.** The R-channel signature reads
-  `Exclude<R, Scope.Scope>` which looks like it discards `Scope`, but the implementation calls
-  `Channel.unwrap` which provides the channel's surrounding scope to the inner Effect
-  (`Scope.provide(scope)` at `effect/src/Channel.ts:7918`). Finalizers registered inside the inner
-  `Effect.gen` (via `Effect.addFinalizer`) DO fire on stream completion. The R-channel `Exclude`
-  means "the scope requirement is satisfied by the stream itself", not "the scope is dropped". No
-  `Stream.unwrapScoped` exists in v4 — `Stream.unwrap` is the correct primitive for "Effect that
-  acquires a scope-bound subprocess and returns a Stream". Reference uses:
-  `host-tree-tar/index.ts:113`, `runtime/docker/image.ts:211`, `runtime/docker/logs.ts:39` — all
-  correct as written.
-- **`Effect.either` is GONE in v4.** The v3 `Effect.either(eff): Effect<Either<A, E>>` helper for
-  promoting an error channel into the success channel does not exist on v4's namespace. Tests that
-  need to assert on the error value MUST go via `Effect.exit(eff): Effect<Exit<A, E>>` and then
-  `Exit.findErrorOption(exit): Option<E>` (or `Exit.isFailure(exit)` +
-  `Cause.failureOption(exit.cause)` if the test cares about the cause shape). Reference:
-  `test/substrate/runtime/lifecycle/*` uses `Exit.findErrorOption` exclusively.
-- **`Cause.failures(cause)` is GONE in v4.** The Effect v3 walker that flattened a `Cause` into an
-  array of `E` values is removed. Canonical replacement: `Exit.findErrorOption(exit)` returns
-  `Option<E>` for the first typed failure (skips defects, interrupts, parallel branches the way
-  you'd want for assertion code). For exhaustive cause walking, use `Cause.failureOption`,
-  `Cause.defects`, `Cause.interruptors` — the documented v4 accessors. Per-test
-  `cause._tag === 'Fail' ? cause.error : ...` is the brittle v3 shape (still allowed only as a
-  defensive guard at boundary code that may receive arbitrary cause shapes — see
-  `plugins/sui/mode/local.ts`, `pretty-error.ts` — but new code reaches for `Exit.findErrorOption`
-  first; this duplicates the `Cause`-shape note above for emphasis because reviews keep catching
-  v3-style `Cause.failures` calls).
-- **`it.live` is required for tests that exercise wall-clock `Effect.sleep`.** `@effect/vitest`'s
-  default `it.effect` runs against TestClock — `Effect.sleep` does NOT advance unless the test
-  explicitly `TestClock.adjust`s. Tests that drive a real-time poll loop (file-channel watcher,
-  port-broker bind-probe retry, lifecycle settle interval) MUST use `it.live` from `@effect/vitest`
-  so `Effect.sleep` runs against the wall clock. Preferred alternative: replace the
-  `Effect.sleep`-driven poll with a `Deferred` + `Effect.yieldNow` pattern when the test owns the
-  production for/against signal (the deterministic shape — see
-  `test/plugins/account/lease-broker-integration.test.ts` which uses Promise gates +
-  `Effect.yieldNow` to pin enqueue order, no `it.live` needed). The `it.live` knob is reserved for
-  tests that genuinely cannot avoid wall-clock dependencies (filesystem `inotify`, network
-  round-trip).
-
-When uncertain, defer to `.repos/effect-v4/` (cloned by `scripts/setup-repos.sh`).
+- `it.live` only when the test genuinely depends on wall-clock (filesystem `inotify`, network
+  round-trip). Default to `Deferred` + `Effect.yieldNow` patterns to pin ordering without sleeping.
+- Read failure values via `Exit.findErrorOption(exit)` when you have an `Exit`. The
+  `cause._tag === 'Fail'` pattern is allowed only as a defensive guard at boundary code that may
+  receive arbitrary cause shapes.
 
 ---
 
 ## 2. Tagged errors
 
-There is no package-wide error-class unification planned. Match the style of the subsystem boundary
-that owns the value:
+Match the style of the subsystem boundary that owns the value:
 
-1. L2 plugins and public contracts use plain structural `_tag` interfaces plus factories for
-   plugin-author/public boundary values.
-2. Schema-bearing substrate/orchestrator failures use `Schema.TaggedErrorClass`.
-3. Runtime adapters, CLI/cross-process/observability, and per-integration L5 errors use
+1. L2 plugins and public contracts → plain structural `_tag` interfaces + factories.
+2. Schema-bearing substrate / orchestrator failures → `Schema.TaggedErrorClass`.
+3. Runtime adapters, CLI / cross-process / observability, per-integration L5 errors →
    `Data.TaggedError`.
-4. `build-integrations/runtime` synchronous reader errors use plain `Error` subclasses; Vitest,
-   Playwright, and Browser integration-specific errors may use `Data.TaggedError`.
+4. `build-integrations/runtime` synchronous reader errors → plain `Error` subclasses.
+   Per-integration Vitest / Playwright / Browser errors may use `Data.TaggedError`.
+5. Orchestrator failures never raise plain `new Error(...)` — phase classifiers pattern-match by
+   tag. `cause instanceof Error && cause.message.includes(...)` in an orchestrator is a violation;
+   add a `kind` field to the upstream tagged error and switch on it.
 
-Rules that apply across all four styles:
+Rules across all four styles:
 
-- Do NOT introduce a fifth style.
-- `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits it (this is the
-  v4-idiomatic shape and round-trips cleanly through the cascade formatter and CLI envelope).
-  Plain-interface plugins use `cause?: unknown` — fine, but document.
+- **Failed conditions surface as return-channel discriminated unions, not error-channel failures.**
+  On-chain outcomes (`$kind: 'Transaction' | 'FailedTransaction'`) are return values the caller
+  dispatches on. Tagged errors cover only transport / lifecycle failures (sign refused, RPC
+  unreachable, finality timeout). The error channel is for "the operation couldn't proceed"; the
+  return channel for "the operation produced an outcome — here's which".
+- Phase enums describe WHAT STEP failed, not WHAT KIND OF FAILURE happened. Overloading a phase with
+  multiple distinct failure semantics is a violation — split into discrete phases.
 - One `_tag` literal per logical error type across the whole package — no duplicates.
-  **`ForkIncompatibleError` was duplicated** in `plugins/walrus/errors.ts` +
-  `plugins/seal/errors.ts`; PR1-E promoted the canonical shape to `substrate/runtime/mode-errors.ts`
-  (O3 closed). The plugin-side duplicates remain pending PR3 delete; **do NOT add a second variant
-  of any tag** when a canonical substrate shape exists.
-- Tag naming: PascalCase. Suffix `Error` is preferred for "the error a caller catches"
-  (`WalletBootError`, `SealError`); unsuffixed is acceptable for "the failure event variant"
-  (`DaemonUnreachable`, `RecreateRefused`). Mixed today; convention is invisible — be consistent
-  within a subsystem.
-- Plugin author-facing errors MUST be surfaceable via `Effect.catchTag` / `catchTags` — never rely
+- `cause` field: prefer `Schema.optional(Schema.Defect)` where the style permits. Plain-interface
+  plugins use `cause?: unknown`.
+- Tag naming: PascalCase. Suffix `Error` for "the error a caller catches" (`WalletBootError`,
+  `SealError`); unsuffixed for "the failure event variant" (`DaemonUnreachable`).
+- Plugin author-facing errors must be surfaceable via `Effect.catchTag` / `catchTags` — never rely
   on `instanceof`.
-- Plugins MUST NOT silently drop errors. The `Schema.decodeUnknownSync(...) as A` bare-cast pattern
-  in `runtime/docker/*.ts` is the only sanctioned escape and is currently flagged for removal. New
-  code uses `Schema.decodeUnknown` (Effect-returning).
-
-Boundary decodes use `substrate/runtime/runtime-decode.ts` (`decodeUnknown`, `decodeJsonText`, and
-sync variants) unless the boundary is specifically plugin config, in which case use
-`substrate/runtime/config-validation.ts`.
+- Plugins must not silently drop errors. `Schema.decodeUnknownSync(...) as A` bare-cast is banned.
+- Boundary decodes use `substrate/runtime/runtime-decode.ts`. Plugin config uses
+  `substrate/runtime/config-validation.ts`.
 
 ---
 
 ## 3. Tests
 
-- Vitest tests live in `packages/devstack/test/` mirroring the `src/` directory structure. **Never**
-  as `*.test.ts` siblings inside `src/`. User-mandated 2026-05-19.
+- Vitest tests live in `packages/devstack/test/` mirroring the `src/` directory structure. Never as
+  `*.test.ts` siblings inside `src/`.
 - Effect-bearing tests use `it.effect` from `@effect/vitest`.
-- Browser/DOM tests opt into `@vitest/browser` per the repo's pattern (see `running-vitest` skill).
-- **Subprocess-runner pattern is FORBIDDEN by default.** A `*-runner.cjs` + `*-impl.ts` pair that
-  spawns a child `node --import tsx/esm <impl>.ts` from a vitest test body is the smell. Vitest 4
-  transforms our `.ts`-extension re-exports natively (the vitest 2.1.9 SSR crash that motivated this
-  shim is gone). Tests MUST import their implementation directly and assert on the in-process
-  result. The only sanctioned exception is `test/plugins/barrel-imports.test.ts`-style "load this
-  module in isolation per plugin and observe it doesn't throw at module-load time" — and only when
-  in-process load would conflate side effects across plugin barrels. If you reach for this shim,
-  write a one-line header comment explaining the load-bearing reason; absent that, it's a violation.
-- The "no inline validation in parallel agents" memory directive applies: orchestrators may NOT run
-  `pnpm typecheck` / `test` / `build` inside fanned-out agents — see
-  `feedback_no_inline_validation_in_parallel_agents`.
+- Browser / DOM tests opt into `@vitest/browser` per the repo pattern (see `running-vitest` skill).
+- The subprocess-runner pattern (`*-runner.cjs` + `*-impl.ts` that spawns a child
+  `node --import tsx/esm <impl>.ts`) is forbidden by default. Tests import their implementation
+  directly. The only sanctioned exception is per-plugin barrel module-load isolation; write a
+  one-line header comment explaining the load-bearing reason or it's a violation.
+- Lock-ordering invariants ("router dispatch lock held across the readiness probe") are pinned via
+  source-structure tests, not real-time fiber racing. If a lock-state question is more complex than
+  a structural check, refactor the locking primitive to an `Effect.Service` and provide a recording
+  test Layer.
+
+The "no inline validation in parallel agents" memory directive applies: orchestrators may not run
+`pnpm typecheck` / `test` / `build` inside fanned-out agents.
 
 ---
 
@@ -164,166 +85,173 @@ sync variants) unless the boundary is specifically plugin config, in which case 
 
 - **Default: write nothing.** Only add when WHY is non-obvious.
 - Never narrate WHAT — well-named identifiers say what.
-- Never reference the current PR / task / session / fix in comments ("added for Y flow", "fixes
-  #123", "Phase-5 wires this", "as of 2026-05-20").
+- Never reference the current PR / task / session / fix in comments.
 - Header comments may explain WHY a non-obvious design choice was made: invariants, citations to
-  `architecture.md`, why a specific cast/escape-hatch is acceptable.
-- Comment lines that read as TODO + a phase number are violations of §5; rewrite or delete.
-- Known bad pattern (see `notes/api-comparison.md` opportunity): comparison-era example configs
-  carried 10-30 lines of "Differences from v3" header comments. **Strip during example cutover.**
-  New examples must not adopt this style.
+  `ARCHITECTURE.md`, why a specific cast / escape-hatch is acceptable.
 
 ---
 
-## 5. No phase markers / no scaffold debt
+## 5. No scaffold debt
 
-Per memory `feedback_no_compat_for_never_cases`:
+- No phase markers, no `<unresolved-*>` sentinel placeholders, no "will replace once Y lands".
+- No `as never` / `as any` / `as unknown as ...` at the user-facing surface. Plugin barrels + `api/`
+  have a sanctioned-cast manifest (`test/style/no-unknown-as.test.ts`) tracking the per-file
+  counts + the reason each cast persists; adding a cast at one of those files (or removing one)
+  requires updating the manifest. Substrate / runtime / orchestrator code is out of scope — those
+  layers have their own decode + typed-error discipline (§2 + §20).
+- Code either WORKS or DOESN'T EXIST. No orphan exports waiting for a wiring layer.
+- Effect Service tag identifiers must use the current package namespace (`'@devstack/...'`).
+- Sentinel literals at resolved-value surfaces (`'<...>'`, `'<TODO-fill-me>'`,
+  `'<cache-hit-not-rehydrated>'`) are scaffold debt. Fail at the factory (typed error or
+  `Effect.fail`) or omit the field entirely.
 
-- No `// Phase 4 wires X`, `// Phase 5 deferred`, `// will replace once Y lands`.
-- No `<unresolved-*>` sentinel placeholder strings (the user reads these in example configs as
-  `as never`).
-- No `as never` / `as any` / `as unknown as ...` at the **user-facing surface** — they are
-  diagnostic markers of incomplete substrate types and MUST be zero at cutover. Known sites flagged
-  for removal: `wallet-rewrite/devstack.config.ts:130`, `deepbook-full-rewrite` chainId placeholder,
-  connect-four's `sdkClient as { ... }`.
-- Code either WORKS as written or DOESN'T EXIST. Phase markers are dead scaffold — delete.
-- Substrate-side: same rule applies. No `// future` reservations, no orphan exports waiting for a
-  wiring layer (`Logger` service, `SpanAttr` helpers, `LifecycleFact`, `PluginErrorContribution`,
-  `*_ERROR_TAGS` arrays — all currently orphan; either wire or delete in the substrate triage pass).
-
-Currently ~17 Phase-4/5/6 markers across substrate per `notes/reviews/substrate.md`. Strip on touch.
-
-**`noUnusedLocals` quirk** — TypeScript's `noUnusedLocals` (enabled package-wide) is strict: an
-underscore prefix (`_ctx`, `_unused`) exempts ONLY function parameters, not top-level locals. For an
-unused local that must be retained for type-positional or design-comment reasons, use a trailing
-`void <name>;` line — matches the existing `void Scope;` pattern at substrate L0 entrypoints and the
-`void ctx;` design-doc pattern in `plugins/wallet/index.ts:142` (kept so the compose-time dependency
-edge is documented even though the wallet body doesn't read the resolved value).
+**`noUnusedLocals` quirk:** TypeScript's `noUnusedLocals` is strict — an underscore prefix exempts
+only function parameters, not top-level locals. For unused locals retained for type-positional or
+design-comment reasons, use a trailing `void <name>;` line.
 
 ---
 
 ## 6. Naming
 
 - Plugin factories: **lowercase** (`sui`, `walrus`, `postgres`, `account`, `localPackage`,
-  `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`). v3's PascalCase is
-  dropped.
+  `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`).
 - Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`,
-  `NetworkResolver`, `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
+  `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
   `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
-  `ArtifactPublisherService`, `ContainerRuntimeService`, `PackageRegistryService`,
-  `CoinRegistryService`).
-- Branded primitives: `AppName`, `StackName`, `ChainId`, `PluginKey`, `EndpointKey`, `ContentHash`,
-  etc. — established in `substrate/brand.ts`.
-- Type-only generics with phantom witnesses: `__PrefixedWithDoubleUnderscore` (e.g.
-  `__MissingProvidersError<Missing>`, `__LifecycleTableShape`, `__ProjectionFieldsClosed`,
-  `__TuiDisplayVocabClean`). Established convention — surfaces structural validation errors at the
-  call-site argument.
-- Per-instance resource id literal templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
+  `ArtifactPublisherService`, `ContainerRuntimeService`).
+- Branded primitives: `AppName`, `StackName`, `ChainId`, `PluginKey`, `EndpointKey`, `ContentHash`
+  (established in `substrate/brand.ts`).
+- Type-only generics with phantom witnesses: `__PrefixedWithDoubleUnderscore`
+  (`__MissingProvidersError<Missing>`, `__ProjectionFieldsClosed`, `__RowFieldsClosed`).
+- Per-instance resource id templates: `account/<name>`, `package:<name>`, `coin:<symbol>`,
   `action:<name>`, `deepbook/<name>`. Mixing `/` vs `:` separators is intentional per plugin
-  convention; do not "normalize".
-- File names: kebab-case (`stage-and-swap.ts`, `cross-process-lock.ts`). Effect-Service module shape
-  commonly: `{ index, layer, service }.ts` when nontrivial.
-- **`PluginKey` derivation** (substrate `lifecycle/dep-graph.ts:mintKey`):
-  - Plugins that need a stable lifecycle key declare `pluginKey: PluginKey | string` in plugin
-    metadata; the dep-graph reads it verbatim. Local service factories choose the key shape
-    (`seal:${name}`, `walrus:${name}`) so routed services and persisted projection rows remain
-    stable across cycles.
-  - Plugins without a declared key mint `${member.id}#${ordinal}` where `ordinal` is the position in
-    the surrounding member tuple. The `#N` suffix disambiguates two members providing the same
-    resource id in one stack.
-  - Plugin authors do NOT call `pluginKey(...)` for ordinary task plugins. Reserve declared keys for
-    long-lived services or factories whose row identity must survive member reordering.
+  convention; do not normalize.
+- File names: kebab-case. Effect Service module shape commonly: `{ index, layer, service }.ts` when
+  nontrivial.
+- Effect `Layer` exports use the `layerXxx` prefix (`layerLogger`, `layerCrossProcessLockFlock`,
+  `layerProductionOrchestrators`). New code follows the prefix shape; suffix-shape exports are
+  renamed on touch.
+
+**`PluginKey` derivation** (`lifecycle/dep-graph.ts:mintKey`):
+
+- Plugins that need a stable lifecycle key declare `pluginKey: PluginKey | string` in plugin
+  metadata; the dep-graph reads it verbatim. Local service factories choose the key shape
+  (`seal:${name}`, `walrus:${name}`).
+- Plugins without a declared key mint `${member.id}#${ordinal}` where `ordinal` is the position in
+  the surrounding member tuple. The `#N` suffix disambiguates two members providing the same
+  resource id.
+- Reserve declared keys for long-lived services whose row identity must survive member reordering.
 
 ---
 
 ## 7. Imports
 
-Hard rules (lint-enforceable; substrate of `ARCHITECTURE.md`):
-
-- **Plugin A may NOT import from Plugin B.** Cross-plugin communication goes through explicit
-  `dependsOn` resource values, public resource refs, or a higher-level runtime composition layer
-  that is allowed to import both plugins. Do not import a sibling plugin's internal modules.
-- **Substrate is name-blind:** substrate code MUST NOT mention plugin names. Plugin-domain services
-  such as `CoinRegistryService` and `PackageRegistryService` are composed outside
-  `substrate/runtime/` and injected through `pluginContext`.
-- **Substrate must not depend on contract NAMES either.** `substrate/runtime/supervisor.ts:35-40`
-  imports six named capability-decl modules; the substrate is name-blind only at the plugin level,
-  but capability awareness is also a coupling. Pending inversion via a `CapabilitySinks` registry —
-  see Open slot O6.
-- **L5 build integrations use `build-integrations/runtime/` (canonical), NOT reimplement.** Today
-  four sibling integrations (`vite/`, `vitest/`, `playwright/`, `browser/`) ship their own discovery
-  / decode / cold-start / dapp-kit-slot — must consolidate to `runtime/`. See Open slot O7.
-- **Apps NEVER import devstack.** L5 example apps consume codegen-emitted manifest + L5
+- **Plugin A may not import from Plugin B's internal modules.** Cross-plugin imports go through the
+  target plugin's `index.ts` barrel. The three documented universal buses (Sui, Account,
+  host-service — see ARCHITECTURE.md) flow through barrels too.
+- **Shared cross-plugin contract types live in `src/contracts/`.** When two plugins need to agree on
+  a shape that neither owns, lift the type to a substrate-neutral file. Plugin barrels may re-export
+  for ergonomics (often with a narrowed generic).
+- **Substrate is name-blind.** Substrate code does not mention plugin names.
+- **L1 (`runtime/docker/*`) labels carry generic `kind` / `subkind` / `specVersion` slots.** Never
+  add orchestrator-named label keys or sweep helpers (`listDevstackRouterContainers`) to L1. The
+  router orchestrator owns the literal `'router'` it stamps; the generic
+  `listDevstackContainersByKind(...)` helpers stay plugin-blind.
+- **Substrate must not depend on capability-contract names either.** The supervisor's dispatch loop
+  is kind-blind and routes contributions through `CapabilitySinks.dispatch(item, ctx)`.
+- **L2 plugins must not import L3 orchestrators.** When an orchestrator helper turns out to be pure
+  / substrate-blind and L2 needs it (canonical case: URL composition + routed-hostname minting),
+  lift the pure logic into `substrate/runtime/` and have the orchestrator re-export or adapt for its
+  own callers.
+- **Orchestrators are plugin-name-blind.** No L3 may branch on an `emitterName` / plugin-id literal
+  or invoke a CLI binary named after a plugin. Aggregate cross-plugin renderings live in plugin
+  contributors via `CodegenableDecl.aggregate.{bucket, project}`. Domain subprocesses (e.g.
+  `sui move summary`) live in the plugin (the orchestrator references an abstract
+  `MoveSummaryRunnerService`).
+- **L4 surfaces vs. `cli/main.ts`-adjacent infrastructure.** `cli/main.ts`-side modules
+  (`cli/prune-direct.ts`, `cli/doctor-probes.ts`, `cli/snapshot-reader.ts`, etc.) are L4-adjacent
+  composition infrastructure — they may import L3 / L2 / substrate barrels because they exist to
+  compose those layers for the bin entry. Pure L4 surfaces (`surfaces/cli/**`, `surfaces/tui/**`)
+  consume only typed event / command channels + cascade-formatter + codegen helpers. Enforced by
+  `test/style/l4-boundary.test.ts`.
+- **L5 build integrations use `build-integrations/runtime/`** as the canonical substrate;
+  per-integration reimplementations of manifest discovery / decode / cold-start / dapp-kit-slot
+  consolidate there.
+- **Apps never import devstack.** L5 example apps consume codegen-emitted manifest + L5
   build-integration helpers only.
 - Effect imports: bare `import { Effect, ... } from 'effect'` for the main runtime;
   `@effect/platform`, `@effect/platform-node`, `@effect/vitest` from their own subpaths.
-- Cross-package imports inside this monorepo use `@mysten-incubation/devstack/<subpath>` for
-  exported public subpaths; relative `.ts` imports inside the package use the explicit `.ts`
-  extension because the package enables `allowImportingTsExtensions`.
+- Cross-package imports use `@mysten-incubation/devstack/<subpath>` for exported public subpaths;
+  relative `.ts` imports inside the package use the explicit `.ts` extension because the package
+  enables `allowImportingTsExtensions`.
 
 ---
 
 ## 8. File organization
 
 - One Effect Service per file when nontrivial. Service modules typically:
-  `<primitive>/{ index.ts, layer.ts, service.ts }` (e.g. `state-store/`, `cache/`, `port-broker/`,
-  `cross-process/`).
-- Plugin barrel (`plugins/<name>/index.ts`) re-exports only what is **user-public**. Plugin
-  internals (mode files, registries, errors taxonomy) stay behind package-local imports unless an
-  explicit package export exposes them.
-- One capability decl per file when nontrivial; the decl barrel (`contracts/index.ts`) re-exports.
-- Renderer modules use `.tsx` only when JSX is used (`surfaces/tui/*.tsx`); everything else stays
-  `.ts`. Ink dependencies must be lazy-imported (see
-  `surfaces/tui/index.ts:dynamic import('./mount-ink.tsx')`).
-- File length: no hard limit, but `substrate/runtime/supervisor.ts` at 962 lines is the upper bound
-  that has been accepted with a clear sub-module split path. New monoliths above ~700 lines invite a
-  "factor by responsibility" review.
+  `<primitive>/{ index, layer, service }.ts`.
+- Plugin barrel (`plugins/<name>/index.ts`) re-exports only what is user-public. Plugin internals
+  stay behind package-local imports unless an explicit package export exposes them.
+- One capability decl per file when nontrivial. Contract types reach users only through the root
+  barrel (`src/index.ts`); there is no `contracts/index.ts` barrel — package-internal callers import
+  the per-decl module directly.
+- Renderer modules use `.tsx` only when JSX is used. Ink dependencies must be lazy-imported.
+
+**File length is a smell, not a threshold.** If a file is hard to navigate, factor by
+responsibility. If it's coherent, leave it. Don't split because a file crossed a number. No lint
+rule enforces a numeric LOC ceiling; review judgement is the gate.
+
+Reference shape for genuine multi-concern decomposition: `substrate/runtime/supervisor/` (each
+file scoped to one concern, currently each fits in a single editor screen).
+
+```
+supervisor/
+├── index.ts                  — public surface re-exports
+├── start-supervisor.ts       — orchestrating boot body
+├── command-loop.ts           — handleCommand + commandLoop
+├── acquire-node.ts           — per-plugin acquire pipeline
+├── dispatch-contributions.ts — capability harvest + sink dispatch
+├── teardown.ts               — slice teardown + selective restart
+├── background-tasks.ts       — snapshot / restart / post-acquire fork helpers
+├── shutdown.ts               — shutdown branches
+├── state.ts                  — shared-state record
+├── types.ts                  — boundary-shape types
+├── errors.ts                 — typed error surface
+└── wiring.ts                 — substrate-wiring helpers + OptionalService<T>
+```
+
+When splitting a monolith, group locals into a typed shared-state record rather than threading every
+closure capture through helper signatures. When NOT splitting: large composition surfaces
+(`cli/main.ts`) are coherent — scattering a wiring function 8 ways scatters the wiring.
 
 ---
 
-## 9. Test layout
-
-(See §3 for the parallel-`test/` rule.)
-
-Test directory mirrors source:
-
-```
-src/substrate/runtime/lifecycle/dep-graph.ts
-test/substrate/runtime/lifecycle/dep-graph.test.ts
-```
-
-Existing dirs: `test/substrate/`, `test/plugins/`, `test/orchestrators/`, `test/surfaces/`,
-`test/build-integrations/`, `test/e2e/`.
-
----
-
-## 10. Mode-narrowed factory namespaces
+## 9. Mode-narrowed factory namespaces
 
 For plugins with modes (sui local/local-rpc/live, walrus local-cluster/known, seal
 local-keygen/live/fork-known, deepbook local/live/fork):
 
-- Use `defineModeNamespace` and call the returned namespace with `network` (per
-  `api/mode-narrowed-factory.ts`).
-- Mode refusal lives at the **TYPE LEVEL**. `walrus.localOf(sui)` is the only valid local Walrus
+- Use `defineModeNamespace` and call the returned namespace with `network`.
+- Mode refusal lives at the **type level**. `walrus.localOf(sui)` is the only valid local Walrus
   call; `walrus()` on a fork-typed branch is a compile error.
-- Do NOT add runtime mode checks that the type system could have caught. Mode-narrowed factories use
-  two `as` casts inside `defineModeNamespace` — that is the **sole** boundary between runtime
-  breadth and type-level narrowness; do not add ad-hoc `if (mode === ...)` runtime guards
-  downstream.
-- Plugin SDK ergonomics: barre form (`walrus({ ... })`) defaults via the established network
-  resolver; explicit form (`walrus.localOf(sui)({ ... })`) is the typed form. Both are first-class.
+- Do not add runtime mode checks the type system could have caught. Mode-narrowed factories use two
+  `as` casts inside `defineModeNamespace` — that is the sole boundary between runtime breadth and
+  type-level narrowness; no ad-hoc `if (mode === ...)` runtime guards downstream.
+- Plugin SDK ergonomics: bare form (`walrus({ ... })`) defaults via the network resolver; explicit
+  form (`walrus.localOf(sui)({ ... })`) is the typed form. Both are first-class.
 
 ---
 
-## 10b. L2 wrapper-service around `defineScopedRefMap`
+## 10. L2 wrapper-service around `defineScopedRefMap`
 
-When an L2 plugin owns a per-stack `K -> V` registry (Sui-coin's `CoinRegistry`, Move-package's
-`PackageRegistry`, future chain-plugin registries), it MUST follow the wrapper-service shape:
+When an L2 plugin owns a per-stack `K → V` registry **and adds plugin-specific methods** (Sui-coin's
+`CoinRegistry` exposes `bySymbol` / `byWitness` / `byType`), use the wrapper-service shape:
 
 ```ts
-const FooRefMap = defineScopedRefMap<FooKey, FooRecord>('FooRegistry'); // module-private inner primitive
+const FooRefMap = defineScopedRefMap<FooKey, FooRecord>('FooRegistry');
 
 export interface FooRegistry {
 	/* plugin-specific API */
@@ -342,340 +270,398 @@ export const layerFooRegistry: Layer.Layer<FooRegistryService> = Layer.effect(
 ).pipe(Layer.provide(FooRefMap.layer));
 ```
 
-Why:
-
-- Substrate stays name-blind (it sees only `K`, `V`, and an opaque namespace string — see
-  ARCHITECTURE.md § Substrate name-blindness).
-- The L2 wrapper is the place plugin-specific lookups land (Sui-coin's `bySymbol` / `byWitness` /
-  `byType` go on `CoinRegistry`, NOT on the substrate primitive).
-- Consumers (CLI / e2e / sibling plugins) yield ONE name (`FooRegistryService`) and provide ONE
-  layer (`layerFooRegistry`). They never reach the inner `defineScopedRefMap(...)` factory return.
-- Even when the wrapper's surface is a 1:1 re-projection today (e.g. Move-package's
-  `PackageRegistry` only re-exposes `set/find/has/entries/changes`), the shape MUST be present —
-  it's the L2 plugin's API contract, and future plugin-specific methods land here without forcing
-  every consumer to learn a new shape.
-
-Do NOT directly export the `defineScopedRefMap(...)` factory return
-(`export const FooRegistry = defineScopedRefMap(...)`). Consumers reaching `FooRegistry.Service` /
-`FooRegistry.layer` is a stale pattern — refactor to the wrapper-service shape on touch.
-
-**Convention rule (PR1.5 retro):** L2 plugins instantiate substrate generic primitives via the
-wrapper-service pattern, not by re-exposing the factory directly. Two PR1.5 agents arrived at the
-migration independently and chose inconsistent shapes (one re-exported the factory return, one
-wrapped); the typecheck sweep caught the mismatch only because the rest of the package consumed the
-wrapper shape. This rule prevents the recurrence — any future generic-primitive consumer
-(chain-plugin registries, future per-stack maps) MUST wrap, not re-export.
+When the surface is a 1:1 re-projection of `set/find/has/entries/changes` and no plugin-specific
+methods exist today, consume `defineScopedRefMap(...)` directly. Don't wrap for symmetry. Switch to
+the wrapper shape when the first plugin-specific method lands.
 
 ---
 
-## 11. artifact publisher usage
+## 11. ArtifactPublisher
 
-All cacheable produce/verify/register artifacts MUST go through `ArtifactPublisher` (substrate
-primitive at `primitives/artifact-publisher.ts` + `substrate/runtime/artifact-publisher/`):
+All cacheable produce / verify / register artifacts go through `ArtifactPublisher`
+(`primitives/artifact-publisher.ts` + `substrate/runtime/artifact-publisher/`):
 
 - Pattern: `cache → verify(cached) → produce → register`.
-- Use `LENIENT_RETRY_PROFILE` for chain reads (cross-cutting convention).
-- Do NOT write ad-hoc publish paths. Reference impls: `plugins/package/mode-local.ts:255+`,
-  `plugins/coin/mint.ts:223+`.
-- Typed seam for `ChainOperation<Produced>` is at
-  `substrate/runtime/artifact-publisher/chain-operation.ts` (`sui-tx` / `shell-oneshot` /
-  `register-only` variants); O1 closed in PR1-E. New produce bodies MUST express themselves as a
-  `ChainOperation` variant; do NOT re-derive the produce shape per-plugin.
+- Use `LENIENT_RETRY_PROFILE` for chain reads.
+- The substrate enforces the cache → verify → produce → register pattern. The produce body is
+  plugin-owned — write the shape that fits the on-chain operation.
 
 ---
 
-## 12. Container ensure boilerplate
+## 12. Container ensure + exec + image ops
 
-Use `substrate/runtime/managed-container.ts` for long-running managed containers:
+For long-running managed containers, use `substrate/runtime/managed-container.ts`:
 
 - `managedContainerLabels({ identity, plugin, role })` builds the canonical
   `{ app, stack, plugin, role }` ownership tuple.
 - `ensureManagedContainer({ runtime, identity | labels, plugin, role, spec, mapError })` injects
   labels, adds the managed-container span attributes, and projects `ContainerRuntimeError` once.
 
-Plugins own their domain error message through `mapError`; they do not hand-roll label tuples plus
+Plugins own their domain error message via `mapError`. They do not hand-roll label tuples plus
 `runtime.ensureContainer(...).pipe(Effect.catch(...))` at each callsite.
 
----
+`ContainerRuntime.exec` is on the contract (`contracts/container-runtime.ts`) with optional
+`ExecOptions` (`user`, `env`, `workdir`). Plugins consume the contract surface — no per-plugin
+`containerExec` shims.
 
-## 13. Container `exec` / image-op access
-
-`ContainerRuntime.exec` is on the contract (`contracts/container-runtime.ts`) with an optional
-`ExecOptions` knob (`user`, `env`, `workdir`). Plugins MUST consume the contract surface — do NOT
-introduce per-plugin `containerExec` shims. Postgres's adapter (`plugins/postgres/service.ts`) is a
-thin per-handle wrapper around `runtime.exec(handle, argv)`, kept only to project daemon-level
-errors into a synthetic non-zero ExecResult; new plugins copy that wrapper if they need the same
-projection, but do NOT reimplement the underlying exec.
-
-`saveImage` / `loadImage` / `tagImage` are also on the contract (snapshot orchestrator dependency).
-`saveImage(ref)` returns a `Stream<Uint8Array, …>` so large images don't materialise in memory;
-`loadImage(tar)` accepts `Stream<Uint8Array, unknown>` and returns the resolved `ImageRef`;
-`tagImage(src, newTag)` is an atomic tag move. Plugins MUST go through these — direct
-`dockerCommand('save'|'load'|'tag', …)` from a plugin would breach the L1 → L2 boundary.
+`saveImage` / `loadImage` / `tagImage` are also on the contract. `saveImage(ref)` returns a
+`Stream<Uint8Array, …>` so large images don't materialise in memory. Plugins go through these —
+direct `dockerCommand('save' | 'load' | 'tag', …)` from a plugin breaches the L1 → L2 boundary.
 
 ---
 
-## 14. Cross-plugin dependencies
+## 13. Cross-plugin dependencies
 
-Public plugin authors declare upstreams with `definePlugin({ dependsOn })`. Do not introduce new
-plugin code that reads dependency values through side-channel context APIs.
+Public plugin authors declare upstreams with `definePlugin({ dependsOn })`. The `start` callback's
+sole argument is the resolved dependency value(s):
 
-Use the shape of `dependsOn` to make the `start` callback ergonomic:
+- Tuple `dependsOn` produces tuple deps: `dependsOn: [suiResource, accountRef]`.
+- Object `dependsOn` produces object deps: `dependsOn: { sui: suiResource, signer }`.
+- A single dependency produces that dependency's resolved value directly.
 
-- tuple dependencies produce tuple deps: `dependsOn: [suiResource, accountRef]`;
-- object dependencies produce object deps: `dependsOn: { sui: suiResource, signer }`;
-- a single dependency produces that dependency's resolved value directly.
-
-Built-in options should accept plugin/resource refs (`ResourceRef<id, value>`) rather than substrate
+Built-in options accept plugin / resource refs (`ResourceRef<id, value>`) rather than substrate
 `StackMember` aliases. Preserve the actual plugin value in the factory generic so recursive
-`defineDevstack` expansion can see plugin-valued dependencies. Do not add plugin-local casts such as
-`deps as ...` to compensate for weak typing; fix the public helper types instead.
-
-Production plugin barrels stay on `definePlugin`, and the engine consumes that resource-native shape
-directly.
+`defineDevstack` expansion can see plugin-valued dependencies.
 
 ---
 
-## 15. Per-key serialization (leases)
+## 14. Per-key serialization (leases)
 
-Substrate L0 owns the per-key lease primitive: `LeaseBrokerService` at
-`substrate/runtime/lease-broker/`. Generic, name-blind, scope-bound release.
+`LeaseBrokerService` at `substrate/runtime/lease-broker/`. Generic, name-blind, scope-bound release.
 
 - Plugins requiring at-most-one-in-flight on an opaque resource (per-address sequence number,
   per-connection gate, per-slot work queue) yield `LeaseBrokerService` and call
   `broker.acquire(leaseKey('<plugin>:<key>'), '<owner>')`.
-- Key encoding is a per-plugin convention: the broker treats the key as opaque. Account uses
+- Key encoding is per-plugin convention; the broker treats keys as opaque. Account uses
   `account:<address>`.
-- Release is scope-bound; there is no `release()` method. Wrap `broker.acquire(...)` in
-  `Effect.scoped` (or call it inside a surrounding scope) and let the finalizer fire.
-- Non-reentrant: the broker has no concept of re-entrancy by design. A same-owner nested `acquire`
-  against a key the owner already holds will deadlock the inner call. If a caller needs to re-enter,
-  restructure the caller — do NOT reintroduce a re-entrant local lock.
-- Reference consumer: `plugins/account/lease.ts`
-  (`withAddressLease(broker, accountName, address, effect)`) — used by both the funding pass
-  (`funding.ts`) and the resolved-value sign/execute closures (`service.ts`).
+- Release is scope-bound. No `release()` method. Wrap `broker.acquire(...)` in `Effect.scoped` (or
+  call inside a surrounding scope) and let the finalizer fire.
+- Non-reentrant. A same-owner nested `acquire` against a held key deadlocks the inner call. If a
+  caller needs to re-enter, restructure the caller.
 
 ---
 
-## 15a. Endpoints
+## 15. Endpoints
 
 - `RoutableDecl` is the canonical declaration for public in-stack endpoints. The router mints the
-  hostname and emits the `endpoint.registered` event; plugins do not separately publish their own
-  guessed public URL for the same service.
+  hostname and emits `endpoint.registered`; plugins do not separately publish their own guessed
+  public URL for the same service.
 - Resolved-value URL projection is fallback-only. The supervisor suppresses inferred `url`,
-  `rpcUrl`, `faucetUrl`, and `graphqlUrl` endpoints when the plugin contributes any routable
-  capability. This keeps direct loopback/probe URLs from competing with router-fronted URLs.
+  `rpcUrl`, `faucetUrl`, `graphqlUrl` endpoints when the plugin contributes any routable capability.
 - Direct URLs used for boot probes, sibling containers, or host-gateway access must be named as such
-  (`direct*`, `probe*`, `hostGateway`) and should not be treated as public endpoint declarations.
-- For live/local-rpc modes with no router contribution, resolved-value URL fields may still surface
-  as operational endpoints.
+  (`direct*`, `probe*`, `hostGateway`) and aren't public endpoint declarations.
+- For live / local-rpc modes with no router contribution, resolved-value URL fields may still
+  surface as operational endpoints.
 
 ---
 
 ## 16. Observability
 
 - `Effect.withSpan(...)` + `Effect.annotateCurrentSpan(...)` are the only span-instrumentation entry
-  points. No `console.log/warn/error` in production code (zero today — preserve this).
-- Span attribute keys MUST flow through `substrate/runtime/observability/spans.ts:SpanAttr`.
-  Free-form strings (`'sui.chain'`, `'walrus.committeeSize'`) are a divergence flagged for cleanup —
-  see Open slot O12.
+  points. No `console.log/warn/error` in production code.
+- Span attribute keys flow through a namespace constant. Substrate-owned engine-dimensional keys
+  live in `substrate/runtime/observability/spans.ts:SpanAttr`. Plugin-domain keys live in
+  `src/plugins/<name>/spans.ts` (`WalletSpans`, `AccountSpans`, etc.). Cross-plugin reads go through
+  the source plugin's barrel. Free-form string literals are a violation.
 - Log-level discipline: `logDebug` per-fetch / per-tick loops; `logInfo` lifecycle transitions;
-  `logWarning` retryable failures; `logError` surfacing typed errors. Avoid raw `console.*`.
+  `logWarning` retryable failures; `logError` typed-error surfacing.
 - Log messages are stable event text; dynamic values go in fields / log annotations. Do not format
-  endpoint URLs, request ids, origins, exit codes, or retry causes into the message unless the value
-  is the user-facing domain error itself. Renderers and log sinks own presentation.
-- The structured `Logger` service (`substrate/runtime/observability/logger.ts`) is the plugin-facing
-  buffered log sink. Long-running child processes should route stdout/stderr through
-  `ProcessLines.observeProcessLines(...)` from the root plugin-authoring barrel; one-shot command
-  capture should use `subprocess-capture.ts`; raw `Stream.decodeText() + Stream.splitLines` belongs
-  only inside those substrate helpers.
-- Host processes use `substrate/runtime/process-supervisor.ts` for spawn typing, exit/error races,
-  exit-status description, and SIGTERM-to-SIGKILL teardown. Plugins should not reimplement
-  `once('exit')` / `once('error')` races or shutdown escalation.
-- HTTP readiness checks should use `HttpProbes.waitForHttpEndpoint(...)` from the root
-  plugin-authoring barrel: callers provide the endpoint, total timeout, retry interval, optional
-  per-request timeout, and an optional validator that may parse the response body and return whether
-  the endpoint is actually ready.
-- Request retry schedules use `substrate/runtime/retry-policy.ts`; do not build local
+  endpoint URLs, request ids, origins, exit codes, or retry causes into the message.
+- The structured `Logger` service is the plugin-facing buffered log sink. Long-running child
+  processes route stdout/stderr through `ProcessLines.observeProcessLines(...)`; one-shot command
+  capture uses `subprocess-capture.ts`; raw `Stream.decodeText() + Stream.splitLines` belongs only
+  inside those substrate helpers.
+- Host processes use `substrate/runtime/process-supervisor.ts` for spawn typing, exit / error races,
+  exit-status description, and SIGTERM-to-SIGKILL teardown.
+- HTTP readiness checks use `HttpProbes.waitForHttpEndpoint(...)` from the root plugin-authoring
+  barrel: endpoint, total timeout, retry interval, optional per-request timeout, optional response
+  validator.
+- Request retry schedules use `substrate/runtime/retry-policy.ts`. Do not build local
   `Schedule.exponential(...).pipe(Schedule.jittered, Schedule.both(...))` chains in plugins.
-- The `Effect.annotateCurrentSpan` outside `Effect.withSpan` pattern silently drops annotations
-  (caught by `runtime-docker.md` review at `container.ts:233`). Wrap in a span first.
+- `Effect.annotateCurrentSpan` outside `Effect.withSpan` silently drops annotations. Wrap in a span
+  first.
+
+**Canonical substrate helpers — the four classes of plugin-side bespoke code that must migrate:**
+
+| Class                | Canonical substrate helper                                                                            | Anti-pattern                                                         |
+| -------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Request retry        | `retry-policy.ts` (`makeExponentialRetrySchedule` / `makeSpacedRetrySchedule` / named profiles)       | Hand-rolled `Schedule.exponential(...).pipe(Schedule.jittered, ...)` |
+| Balance / poll loop  | `retry-policy.ts` (`makeBoundedSpacedSchedule` + named profiles)                                      | `for(;;)` with `Date.now()` + `Effect.sleep` deadline check          |
+| JSON / Schema decode | `runtime-decode.ts` (`decodeJsonText` / `decodeJsonTextSync` / `decodeUnknown` / `decodeUnknownSync`) | Bare `JSON.parse` + `Schema.decodeUnknown*` with try / catch swallow |
+| HTTP readiness probe | `http-probe.ts` (`waitForHttpEndpoint` + `HttpProbes` namespace)                                      | Hand-rolled `fetch` + `AbortSignal.timeout` poll loop                |
+
+Named retry profiles in `retry-policy.ts` are for shapes reused across plugins. A one-off retry with
+no sibling reuse stays inline — don't fabricate a profile name for a single consumer. Reuse drives
+the lift, not aesthetic uniformity.
+
+**Sui chain access goes through `@mysten/sui`'s gRPC `core` surface.** Construct a `SuiGrpcClient`
+and call `core.getObject` / `core.getTransaction` / `core.executeTransaction` / etc. Do not
+hand-roll JSON-RPC POSTs — JSON-RPC is deprecated upstream and the gRPC core API exposes typed
+`SuiClientTypes` responses. Owner discriminants mirror `SuiClientTypes.ObjectOwner` (`AddressOwner`
+/ `ObjectOwner` / `Shared` / `Immutable` / `ConsensusAddressOwner` / `Unknown`).
+
+**Single sanctioned SDK client cast at plugin boundaries: `ClientWithCoreApi`** (re-exported from
+`plugins/sui/index.ts`; lives at `@mysten/sui/client`). `SuiSdkShim.client` is typed as
+`ClientWithCoreApi` already, so passing `sui.sdk.client` to `Transaction.build({ client })` or
+`client.core.*` needs no cast. Do not cast to inline shapes — `ClientWithCoreApi` already covers
+them. The lone exception is `SuiGrpcClient`-only surfaces (`ledgerService`,
+`transactionExecutionService`, `stateService`, etc.) reachable only off the concrete gRPC class: use
+`sdk.client as unknown as { ... }` and document inline why the surface isn't on `core`.
 
 ---
 
 ## 17. Atomic writes
 
-ONE atomic-write primitive: `substrate/runtime/atomic-write.ts`. Two surfaces — one file, one
-tempfile dance:
+One primitive: `substrate/runtime/atomic-write.ts`. Two surfaces:
 
-- `atomicWriteFile` / `atomicWriteJson` — Effect/`FileSystem`-based. Used by state-store, cache, and
-  manifest.
-- `atomicWriteFileSync` / `atomicWriteJsonSync` — `node:fs`-sync. Used by the cross-process modules
-  (roster, snapshot-reservation) that hold `stack.lock` and must keep their critical section
-  non-yielding.
+- `atomicWriteFile` / `atomicWriteJson` — Effect / `FileSystem`-based. State-store, cache, manifest.
+- `atomicWriteFileSync` / `atomicWriteJsonSync` — `node:fs`-sync. Cross-process modules (roster,
+  snapshot-reservation) that hold `stack.lock` and must keep their critical section non-yielding.
 
 Rules:
 
-- New code MUST call the canonical primitive. Do NOT inline tempfile + rename.
+- New code calls the canonical primitive. No inline tempfile + rename.
 - **Random ID rule: `crypto.randomUUID().slice(0, 8)`.** Avoid `Math.random()`-based names
-  (collision risk in parallel callers + non-cryptographic). The rule applies UNIFORMLY across every
-  site that needs a short random suffix: tempfile names (centralised inside `atomic-write.ts`),
-  one-shot container names (`runtime/docker/exec.ts`), snapshot reservation ids
-  (`orchestrators/snapshot/service.ts`), and `runOneShot` invocations.
+  (collision risk in parallel callers + non-cryptographic). Applies uniformly across every site that
+  needs a short random suffix: tempfile names (centralised in `atomic-write.ts`), one-shot container
+  names, snapshot reservation ids, `runOneShot` invocations.
 
 ---
 
 ## 18. Cross-process protocol
 
 - `stack.lock` (O_EXCL) + `roster.json` + `snapshot.reservation` are the three on-disk artifacts.
-  Liveness via PID + startTime predicates centralised at
-  `substrate/runtime/cross-process/liveness.ts`.
-- ONE cross-process lock primitive: the typed `CrossProcessLock` Effect Service.
-- Production wiring uses `layerCrossProcessLockFlock` (O_EXCL + PID/start-time liveness via
-  `acquireStackLock`). Test wiring uses `layerCrossProcessLockInProcess` (in-memory semaphore —
-  single-process only). State-store + cache yield `CrossProcessLock` and let wiring decide.
-- Cross-process modules use sync `node:fs` (substrate-fix-plan #11 tracks unification onto Effect
-  `FileSystem`); the canonical atomic-write primitive exposes both surfaces (§17) so duplication
-  does not creep back in during the interim.
+  Liveness via PID + startTime predicates at `substrate/runtime/cross-process/liveness.ts`.
+- One cross-process lock primitive: the typed `CrossProcessLock` Effect Service. Production wiring
+  uses `layerCrossProcessLockFlock`; test wiring uses `layerCrossProcessLockInProcess`.
+  State-store + cache yield `CrossProcessLock` and let wiring decide.
+- Router `contributeRoute` holds the dispatch-file lock across both the file write AND the readiness
+  probe so a sibling contributor cannot publish over a half-staged dispatch file. The probe runs
+  INSIDE the surrounding `Effect.scoped(acquireStackLock(...))` block; releasing the lock between
+  write and probe is a regression.
+- Lock-acquire failures during scope-close cleanup surface via `Effect.logWarning` (with the error
+  annotated). `.pipe(Effect.ignore)` on `acquireStackLock(...)` silently swallows contention and IO
+  errors and is forbidden — best-effort cleanup is fine, but the leak must be visible.
 
 ---
 
-## 19. Stage-and-swap
-
-`stage-and-swap.ts` lives in `orchestrators/snapshot/` today. The architecture promises a single
-substrate primitive; codegen also needs it (per-cycle outer swap is missing —
-`notes/reviews/orchestrators.md` codegen issue 5).
-
-- `stage-and-swap` lives at `substrate/runtime/stage-and-swap/` (O14 closed in PR1-E). Snapshot
-  keeps a thin forwarder at `orchestrators/snapshot/stage-and-swap.ts` pending PR3 consumer
-  migration.
-- New consumers MUST import from the substrate primitive. Do NOT re-implement.
-
----
-
-## 20. Schema decode
-
-Three patterns exist; ONE is canonical:
+## 19. Schema decode
 
 - **Canonical:** `decodeUnknown(schema, raw, { source, mkError })` and
-  `decodeJsonText(schema, text, { source, mkError })` from `substrate/runtime/runtime-decode.ts` —
+  `decodeJsonText(schema, text, { source, mkError })` from `substrate/runtime/runtime-decode.ts`.
   Effect-returning, typed error projection with one parse / decode issue shape.
-- **Plugin config:** use `substrate/runtime/config-validation.ts` at factory and boundary sites.
-  `defineConfigError(tag)` keeps plugin-owned error tags, scalar `expect*` helpers cover common
-  authoring guards, and `decodeConfig(...)` / `decodeConfigSync(...)` wrap Effect Schema failures in
-  the same `ConfigIssue` shape. Custom plugin authors import the same helpers from the root
-  `ConfigValidation` namespace.
-- **Acceptable** (when surrounding context is sync, e.g. cross-process readers):
-  `decodeUnknownSync(...)` / `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption to
-  a miss or typed error.
-- **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely. Known
-  offenders must be migrated on touch.
+- **Plugin config:** `substrate/runtime/config-validation.ts` at factory and boundary sites.
+  `defineConfigError(tag)` keeps plugin-owned error tags. Scalar `expect*` validators throw the
+  plugin-tagged `ConfigIssue` shape; route Schema decodes through `decodeUnknown(Sync)` in
+  `substrate/runtime/runtime-decode.ts`.
+- **Sync acceptable** (cross-process readers, cache / state reads): `decodeUnknownSync(...)` /
+  `decodeJsonTextSync(...)` inside a `try/catch` that maps corruption to a miss or typed error.
+- **Banned:** `Schema.decodeUnknownSync(...) as A` bare cast — loses parse errors entirely.
+
+NDJSON tail-decoders treat per-line decode failure as "skip row + `logDebug`". A truncated line
+during atomic append (writer partway through `events.ndjson` when the tail polls) is normal and must
+not kill the surrounding stream. Wrap the per-line decode in `try / catch` that returns `null`,
+filter the sentinel downstream, emit `Effect.logDebug`.
 
 ---
 
-## 21. Renderer projection — closed-field discipline
+## 20. Renderer projection
 
-`SubscribableState` (substrate/projection.ts:99-119) is a **closed** field set. Adding a
-display-vocabulary field (`title`, `primary`, `extras`) is a TS error at the wiring site via
-`__ProjectionFieldsClosed`. The TUI carries a second-layer guard `__TuiDisplayVocabClean`.
+The projection field set (`SubscribableState` + `Row`) is closed — see ARCHITECTURE.md "Closed
+projection field list" for the canonical fields and the `__*FieldsClosed` guards.
 
-- The architecture has a stale claim about the field list
-  (`{ identity, cycle, rows, endpoints, errors, buildLog, logs }`); the actual shape is
-  `{ identity, cycle, rows, endpoints, errors, lastEvent, stackBuild }` per
-  `substrate/projection.ts`. **Single source of truth: the code.** Update doc when changing the
-  projection — do not split the truth.
+Code-level rules that follow from the closure:
+
 - Logs live INSIDE rows as `row.logTail`, not as a top-level `logs` field.
+- `Row.section` is plugin-declared at `definePlugin({ section })` time. The renderer reads it
+  directly and must not pattern-match on plugin-name substrings to derive a section.
+- Substrate projection events are name-blind. The only projection-shaped event is
+  `projection.updated` carrying `{ kind: string, key: string, payload: unknown, at: number }`. New
+  plugin-specific projection shapes contribute a decoder branch to the reducer's
+  `projection.updated` case — they do NOT add a new event variant.
 
 ---
 
-## 22. Sugar policy
+## 21. Cookbook
 
-Per `notes/api-comparison.md`, examples are 5-30% longer than v3 because sugar was deferred. The
-**fix is to add sugar in the substrate**, not to have every example re-derive boilerplate.
+Reusable patterns. Each entry pairs a substrate primitive with the discipline for using it.
 
-Pending sugar additions (do not add new examples that work around these — instead, wait or fix the
-substrate):
+### 21.1 `as const` on `HostServiceAfter` / `ReadonlyArray<AnyResourceRef>` tuples
 
-- Infer `stackName` from cwd / package.json (S4).
-- Action body `ctx.signAndExecute(account, build)` substrate helper (S5).
-- `coin.fromPackage(pkg, 'WITNESS')` shape (S10).
-- Restore `extras:` field on `DevstackOptions` (S11).
-- Root barrel re-exports every plugin factory (S2).
+**Plugin-author tuples declared as a `HostServiceAfter`-style list must be `as const`.** Without
+it, TypeScript widens the tuple to `AnyResourceRef[]` and the generic capture loses the per-element
+narrowing the plugin's `After` parameter relies on.
 
----
+```ts
+// Wrong — widened to AnyResourceRef[]; downstream type-level narrowing breaks.
+hostService({ command: 'pnpm', after: [neededMember] });
 
-## 23. Closing-the-loop opportunities
+// Right — narrows the tuple length and element types.
+hostService({ command: 'pnpm', after: [neededMember] as const });
+```
 
-Per `feedback_agents_report_cleanup_opportunities`: every dispatched agent ends with
-`## Opportunities noticed`. Existing rules consolidating notes from all 7 reviews:
+**Rule:** when a plugin factory generic parameter extends a `ReadonlyArray<...Ref>` tuple, the
+caller writes `[…] as const`.
 
-- Three duplicate atomic-writes → one (§17).
-- Three duplicate Schema-decode patterns → one canonical (§20).
-- Four duplicate manifest readers (build-integrations) → one (§7, Open slot O7).
-- Three duplicate cold-start URL synthesisers (build-integrations) → one (§7, Open slot O7).
-- Three duplicate dapp-kit-slot declarations (build-integrations) → one (§7, Open slot O7).
-- Three duplicate `Endpoint` shape definitions → one.
-- Per-orchestrator `failPhase` helpers → one (Snapshot, Router, Codegen each have one).
-- Per-orchestrator "scope-bound register-with-finalizer" pattern (Ref + seqRef + finalizer) → one
-  `makeRegistry<T>()` substrate helper.
+### 21.2 `OptionalService` discipline
 
-When you SEE a duplicate, REPORT in the agent's Opportunities section. When you ADD code, do NOT
-create the N+1th copy.
+`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical
+"probe `pluginContext` for a service; fall back if absent" lookup. The internal cast
+(`ctx as Context.Context<I>`) is structural: `pluginContext` is typed
+`Context.Context<never>` and the probe is intentional. Hand-rolled `Context.getOption`
+plus a cast at the callsite is the anti-pattern.
 
----
+```ts
+const Logger = OptionalService(LoggerService);
+const logger = Logger.read(pluginContext, noopLogger);
+const sinks = yield* Logger.readEffect(pluginContext, buildDefaultSinks);
+```
 
-## Open slots — pending decisions
+**Rule:** probe optional services through `OptionalService(tag).read` / `.readEffect`. Don't
+open-code the lookup.
 
-The following slots are referenced inline above. They are decision-pending; specific agents own
-each.
+### 21.3 Stage-and-swap primitive
 
-| ID      | What                                                                                                                                                                                                                                                                                                                                                                                                                | Owner / pass                  | Where it shows up today                                                                      |
-| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------- | -------------------------------------------------------------------------------------------- |
-| **O2**  | Tagged-error class style unification (3 → 1)                                                                                                                                                                                                                                                                                                                                                                        | cross-cutting audit           | every plugin + substrate + runtime                                                           |
-| **O4**  | Keep boundary decode callsites on `runtime-decode.ts` / `config-validation.ts`; migrate any newly found direct `Schema.decodeUnknown*` wrappers on touch                                                                                                                                                                                                                                                            | substrate triage              | boundary readers and plugin config factories                                                 |
-| **O5**  | Cross-plugin Coin↔Package coupling — lift `PublishReceipt` (today Package owns `PublishReceipt`/`PublishObjectChange` and Coin imports them; the proper fix is a substrate-raised `PublishReceiptEmitted` event the coin plugin subscribes to. PR1.5 made the violation MORE visible by moving the contract into `plugins/package/coin-discovery.ts` — pending PR2-A harvest loop OR a future event-bus primitive.) | substrate / contract redesign | `plugins/coin/discovery.ts`, `plugins/package/coin-discovery.ts`, `plugins/package/index.ts` |
-| **O6**  | `CapabilitySinks` registry — invert supervisor's contract awareness (PR2-A in flight)                                                                                                                                                                                                                                                                                                                               | substrate triage (PR2-A)      | `substrate/runtime/supervisor.ts:35-40,285-312`                                              |
-| **O7**  | Consolidate build-integrations to `runtime/`                                                                                                                                                                                                                                                                                                                                                                        | build-integrations cleanup    | `vite/`, `vitest/`, `playwright/`, `browser/`                                                |
-| **O8**  | Managed container helper is wired; migrate any newly added direct `runtime.ensureContainer` callsites on touch                                                                                                                                                                                                                                                                                                      | substrate triage              | future container-owning plugins                                                              |
-| **O10** | Closed by the resource-native dependency callback model; `BuildContext.use(member)` no longer exists.                                                                                                                                                                                                                                                                                                               | closed                        | `src/substrate/plugin.ts`                                                                    |
-| **O12** | `SpanAttr` is canonical for new/touched structured fields; migrate historical free-form span/log keys on touch                                                                                                                                                                                                                                                                                                      | observability cleanup         | older plugin/runtime span sites                                                              |
-| **O13** | Wire or delete: `Logger` service / `SpanAttr` helpers / `LifecycleFact` / `PluginErrorContribution` / `*_ERROR_TAGS` arrays (PR2-A in flight)                                                                                                                                                                                                                                                                       | substrate triage (PR2-A)      | substrate/runtime/observability/, every plugin                                               |
-| **O15** | Closed by resource refs in `dependsOn`; plugin/resource values are the cross-plugin reference mechanism.                                                                                                                                                                                                                                                                                                            | closed                        | every cross-plugin reference site                                                            |
-| **O16** | Root-barrel re-export policy                                                                                                                                                                                                                                                                                                                                                                                        | API design pass               | `src/index.ts` (today no clear main entry)                                                   |
+`stageAndSwap` at `src/substrate/runtime/stage-and-swap/index.ts` is the canonical
+"build-then-publish atomically" primitive. The build effect populates `stagingPath`; on success
+the helper backs up the current target, renames staging into place, and drops the backup. On
+failure the previous target is restored verbatim. The build effect's error tag passes through
+unchanged.
 
-**Closed slots** (filled — see ARCHITECTURE.md substrate primitives roster + CHANGELOG):
+Two call shapes:
 
-- ~~O1~~: `ChainOperation<Produced>` typed seam landed (PR1-E).
-- ~~O3~~: `ForkIncompatibleError` promoted to substrate at `substrate/runtime/mode-errors.ts`
-  (PR1-E); plugin-side duplicates pending PR3 delete.
-- ~~O9~~: `ContainerRuntime.exec` on the contract with `ExecOptions` (PR1-D).
-- ~~O11~~: `LeaseBroker` substrate primitive (PR1-B); `plugins/account/lease.ts` consumes.
-- ~~O14~~: `stage-and-swap` promoted to substrate (PR1-E).
-- ~~O17~~: `runStack(stack, opts?) → RunHandle` lands at `src/api/run-stack.ts` (root-barrel
-  re-exported); shared substrate Layer composition at `src/substrate/runtime/run.ts` consumed by
-  both CLI `runUpLive` and the library surface. `Stack` value stays a struct per
-  api-surface-design.md §3 — runtime execution is a separate seam.
-- ~~O21~~: `host-tree-tar` primitive — host-tree leg filled at `substrate/runtime/host-tree-tar/`
-  (PR1-E).
-- ~~O22~~: `ContainerRuntime.{saveImage, loadImage, tagImage}` on the contract (PR1-D).
+- **`idSuffix`** — the primitive mints `<targetPath>.staging.<idSuffix>` /
+  `<targetPath>.bak.<idSuffix>`. Use when the staging-name convention is owned in one place
+  (codegen, snapshot).
+- **explicit `stagingPath` + `backupPath`** — caller picks both names. Use when bespoke sibling
+  names are load-bearing (Seal's `.backup.`, fixtures pinning literal names).
 
-When a slot is filled by its owning pass, **move it to the Closed list above** (do not delete the ID
-— keep the audit reference) and codify the resulting rule in the appropriate section above.
+```ts
+yield* stageAndSwap({
+	targetPath,
+	idSuffix: crypto.randomUUID().slice(0, 8),
+	build: Effect.gen(function* () {
+		// populate stagingPath
+	}),
+});
+```
 
----
+**Rule:** publish-then-swap goes through `stageAndSwap`. No inline `mkdir(tmp) + rename(tmp,
+target)`.
 
-## Citations
+### 21.4 `versionedDocSchema` migration procedure
 
-Rules above derive from explicit findings in the review docs. When in doubt, search the reviews:
+`versionedDocSchema(N, payload)` at `substrate/versioned-doc-schema.ts` centralises the
+`{ version: Literal<N>, ...payload }` shape every persisted cross-process document shares (roster,
+container-claim, snapshot-reservation, port-reservation).
 
-- substrate review for the L0 boundary rules.
-- runtime-docker review for typed-error envelope shape + classifier centralisation + state-machine
-  purity rules.
-- orchestrators review for capability-driven dispatch + name-blindness.
-- surfaces review for surface-equality and projection-only consumption.
-- build-integrations review for the runtime/ consolidation.
-- stable-plugins review for the cross-plugin coupling rules + capability-decl shape.
-- cross-cutting review for the error-model + observability rules.
+```ts
+// v1
+const DocSchema = versionedDocSchema(1, { pid: Schema.Number, host: Schema.String });
 
-PHASE-3-NOTES.md is the type-system bible — every constraint-widening / inference-asymmetry
-workaround documented there is load-bearing.
+// v2 migration — union the two versions at the read site.
+const DocSchema = Schema.Union(
+	versionedDocSchema(1, { pid: Schema.Number, host: Schema.String }),
+	versionedDocSchema(2, { pid: Schema.Number, host: Schema.String, startTime: Schema.Number }),
+);
+```
+
+**Rule:** new versioned cross-process documents use `versionedDocSchema`. v2+ schemas read
+through `Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...), ...)`. Don't
+hand-roll the discriminator field.
+
+### 21.5 `plugins/internal/` directory
+
+Modules under `src/plugins/internal/` are shared plugin helpers that are NOT plugins themselves
+(`acquire-on-chain-artifact.ts`, `codegen-helpers.ts`, `funding-failure-error.ts`). Sibling
+plugins import from `plugins/internal/<helper>.ts` directly — there is no barrel.
+
+```ts
+// Right
+import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
+
+// Wrong — no barrel exists, and adding one would invite cross-plugin reach.
+import { acquireOnChainArtifact } from '../internal/index.ts';
+```
+
+**Rule:** shared plugin-side helpers live in `plugins/internal/` with per-file imports. No
+barrel.
+
+### 21.6 `withTempRoot` test helper
+
+Tests needing a tempdir use `withTempRoot` / `withTempRootSync` / `withTempRootAsync` from
+`test/helpers/with-temp-root.ts`. Cleanup is unconditional (Effect finalizer, `try/finally`).
+
+```ts
+it.effect('writes manifest', () =>
+	withTempRoot('manifest-test', (root) =>
+		Effect.gen(function* () {
+			yield* writeManifest(join(root, 'manifest.json'));
+		}),
+	));
+```
+
+**Rule:** tests do not call `mkdtempSync` + ad-hoc `try/finally`. Use the helper — it closes
+several historical leak-on-throw bugs in one place.
+
+### 21.7 Minimal `definePlugin` skeleton
+
+The shortest compiling plugin declares `id`, `role`, `section`, and `start`. `dependsOn`,
+`capabilities`, `watch`, `errorContributions`, `pluginKey`, and `endpointSection` are all optional.
+The `start` callback receives the resolved `dependsOn` value as its sole argument; tuple
+`dependsOn` projects to a tuple, object to an object, single ref to the bare resolved value.
+
+```ts
+import { Effect } from 'effect';
+import { definePlugin, resource } from '@mysten-incubation/devstack';
+
+const fooResource = resource<'foo', { readonly id: string }>('foo');
+
+export const foo = () =>
+	definePlugin({
+		id: fooResource.id,
+		role: 'task', // 'task' = value-producer reaches done; 'service' = long-lived host process
+		section: 'other', // dashboard bucket the supervisor stamps onto every row
+		start: (deps) =>
+			Effect.gen(function* () {
+				// Substrate services come from yield*; cross-plugin values from `deps`.
+				void deps;
+				return { id: 'foo-1' };
+			}),
+	});
+```
+
+**Rule:** new plugins start from this shape. Add `dependsOn` / `capabilities` only when the
+plugin genuinely needs them — don't pre-declare empty arrays.
+
+### 21.8 `StrategyContributorDecl` registration shape
+
+The substrate's strategy registry decouples sibling plugins that contribute funding /
+chain-probe / fund-ready strategies. The plugin's `capabilities` factory returns one or more
+`StrategyContributorDecl<Key, Strategy>` entries; the supervisor harvests them post-acquire and
+publishes them keyed by `capabilityKey`. Consumers retrieve with
+`StrategyRegistryService.get<Key, Strategy>(key)`.
+
+Contributor (real example, `plugins/coin/index.ts:158`):
+
+```ts
+const fundingContribution: StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy> = {
+	kind: 'strategy-contributor',
+	capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
+	strategy: resolved.fundingStrategy,
+	autoMounted: true, // hides from renderer rows; user-supplied contributors are visible
+};
+```
+
+Consumer (real example, `plugins/account/funding.ts:475`):
+
+```ts
+const strategy = yield* registry
+	.get<typeof coinKey, AccountFundingStrategy>(coinKey)
+	.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
+```
+
+**Rule:** sibling-plugin strategy hand-off goes through the strategy registry sink. Do not stash
+a strategy on a plugin's resolved value for another plugin to import — it bypasses the
+dep-graph-free decoupling and breaks parity between built-in and custom contributors. See
+`ARCHITECTURE.md`'s "Funding contribution-sink invariant" for the full failure mode.

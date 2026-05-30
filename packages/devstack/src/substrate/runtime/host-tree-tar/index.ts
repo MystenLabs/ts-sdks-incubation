@@ -26,7 +26,7 @@
 //     orchestrator passes a list of relative paths under a parent
 //     dir). Permission preservation is unconditional.
 
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess, type StdioOptions } from 'node:child_process';
 
 import { Effect, Schema, Scope, Stream } from 'effect';
 
@@ -107,6 +107,62 @@ const tarExitError = (
 		exitCode: status.code ?? -1,
 		detail: `'tar' exited with ${describeProcessExitStatus(status)}`,
 		stderrTail: collectStderrTail(stderrChunks),
+	});
+
+/** Spawn `tar` with a bounded stderr ring buffer and a SIGKILL-on-
+ *  scope-close finalizer. Both `tarHostTree` and `untarHostTree` share
+ *  this body verbatim — only the args, stdio direction (which pipe is
+ *  the data channel), and the `operation` tag differ. The data pipe
+ *  (`stdout` for tar, `stdin` for untar) is read off the returned
+ *  `child` by the caller; stderr is always piped so the exit-code
+ *  failure can carry the captured tail.
+ *
+ *  The stderr listener is removed and a live child is killed on scope
+ *  close — the finalizer binds to the surrounding Scope (the stream's
+ *  lifecycle for tar, the consuming Effect's for untar). */
+const spawnTar = (
+	operation: 'tar' | 'untar',
+	args: ReadonlyArray<string>,
+	stdio: StdioOptions,
+): Effect.Effect<
+	{ readonly child: ChildProcess; readonly stderrChunks: Array<Uint8Array> },
+	HostTreeTarError,
+	Scope.Scope
+> =>
+	Effect.gen(function* () {
+		const child = yield* Effect.try({
+			try: () => spawn('tar', [...args], { stdio }),
+			catch: (cause) =>
+				new HostTreeTarError({
+					stage: 'spawn',
+					operation,
+					detail: `failed to spawn 'tar ${args.join(' ')}'`,
+					cause,
+				}),
+		});
+
+		// Stderr collection lives outside the data stream — we accumulate
+		// the tail so an exit-code failure carries actionable context. The
+		// stderr listener is removed on scope close.
+		const stderrChunks: Array<Uint8Array> = [];
+		const onStderr = (chunk: Buffer): void => {
+			stderrChunks.push(chunk);
+			if (stderrChunks.length > 256) stderrChunks.splice(0, stderrChunks.length - 256);
+		};
+		child.stderr?.on('data', onStderr);
+
+		// Finalise the subprocess on scope close: kill if alive, drop
+		// listeners either way.
+		yield* Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				child.stderr?.off('data', onStderr);
+				if (child.exitCode === null && child.signalCode === null) {
+					child.kill('SIGKILL');
+				}
+			}),
+		);
+
+		return { child, stderrChunks };
 	});
 
 const TAR_BLOCK_SIZE = 512;
@@ -250,6 +306,18 @@ const processTarValidationChunk = (
 	state: TarValidationState,
 	chunk: Uint8Array,
 ): HostTreeTarError | null => {
+	// Fast path: we're mid-skip over a large file body and this chunk is
+	// fully consumed by the skip. Avoid `concatBytes` (O(N) per call →
+	// O(N²) across a multi-MB body streamed in 64KB chunks). The buffer
+	// must be empty so we don't re-order bytes relative to the parser.
+	if (
+		state.content === null &&
+		state.skipRemaining >= chunk.length &&
+		state.buffer.length === 0
+	) {
+		state.skipRemaining -= chunk.length;
+		return null;
+	}
 	state.buffer = concatBytes(state.buffer, chunk);
 	while (state.buffer.length > 0) {
 		if (state.content !== null) {
@@ -387,46 +455,30 @@ export const tarHostTree = (
 				);
 			}
 
+			// Producer-boundary path defense — mirror the extraction-side
+			// `isSafeArchivePath`. The caller controls `relPaths`, and they
+			// are spliced straight into `tar -C <parentDir> … relPaths`. An
+			// absolute path or a `..` segment would archive a subtree
+			// outside `parentDir` (and on extraction escape `target`). We
+			// reject at the producer rather than relying on the consumer's
+			// entry validation alone.
+			const unsafe = spec.relPaths.find((relPath) => !isSafeArchivePath(relPath));
+			if (unsafe !== undefined) {
+				return Stream.fail(
+					new HostTreeTarError({
+						stage: 'entry-validation',
+						operation: 'tar',
+						detail: `unsafe tar relPath (absolute or contains '..'): ${unsafe}`,
+					}),
+				);
+			}
+
 			// `-c` create, `-f -` write to stdout, `-C <dir>` cd-before,
 			// `-p` preserve permissions (matches BSD-tar + GNU-tar). The
 			// subprocess emits its own bytes; we don't apply any
 			// transcoding.
 			const args = ['-c', '-f', '-', '-C', spec.parentDir, '-p', ...spec.relPaths];
-			const child = yield* Effect.try({
-				try: () =>
-					spawn('tar', args, {
-						stdio: ['ignore', 'pipe', 'pipe'],
-					}),
-				catch: (cause) =>
-					new HostTreeTarError({
-						stage: 'spawn',
-						operation: 'tar',
-						detail: `failed to spawn 'tar ${args.join(' ')}'`,
-						cause,
-					}),
-			});
-
-			// Stderr collection lives outside the data stream — we
-			// accumulate the tail so an exit-code failure carries
-			// actionable context. The stderr listener is removed on
-			// scope close.
-			const stderrChunks: Array<Uint8Array> = [];
-			const onStderr = (chunk: Buffer): void => {
-				stderrChunks.push(chunk);
-				if (stderrChunks.length > 256) stderrChunks.splice(0, stderrChunks.length - 256);
-			};
-			child.stderr?.on('data', onStderr);
-
-			// Finalise the subprocess on scope close: kill if alive,
-			// drop listeners either way.
-			yield* Effect.addFinalizer(() =>
-				Effect.sync(() => {
-					child.stderr?.off('data', onStderr);
-					if (child.exitCode === null && child.signalCode === null) {
-						child.kill('SIGKILL');
-					}
-				}),
-			);
+			const { child, stderrChunks } = yield* spawnTar('tar', args, ['ignore', 'pipe', 'pipe']);
 
 			// Wrap stdout (a Node Readable) as a Stream<Uint8Array>.
 			// `Stream.fromReadable` is the substrate-blessed shape.
@@ -499,35 +551,7 @@ export const untarHostTree = <R>(
 ): Effect.Effect<void, HostTreeTarError, R | Scope.Scope> =>
 	Effect.gen(function* () {
 		const args = ['-x', '-f', '-', '-C', spec.target, '-p'];
-		const child = yield* Effect.try({
-			try: () =>
-				spawn('tar', args, {
-					stdio: ['pipe', 'ignore', 'pipe'],
-				}),
-			catch: (cause) =>
-				new HostTreeTarError({
-					stage: 'spawn',
-					operation: 'untar',
-					detail: `failed to spawn 'tar ${args.join(' ')}'`,
-					cause,
-				}),
-		});
-
-		const stderrChunks: Array<Uint8Array> = [];
-		const onStderr = (chunk: Buffer): void => {
-			stderrChunks.push(chunk);
-			if (stderrChunks.length > 256) stderrChunks.splice(0, stderrChunks.length - 256);
-		};
-		child.stderr?.on('data', onStderr);
-
-		yield* Effect.addFinalizer(() =>
-			Effect.sync(() => {
-				child.stderr?.off('data', onStderr);
-				if (child.exitCode === null && child.signalCode === null) {
-					child.kill('SIGKILL');
-				}
-			}),
-		);
+		const { child, stderrChunks } = yield* spawnTar('untar', args, ['pipe', 'ignore', 'pipe']);
 
 		const stdin = child.stdin;
 		if (stdin === null) {
@@ -578,6 +602,11 @@ export const untarHostTree = <R>(
 				if (!ok) {
 					stdin.once('drain', onDrain);
 				}
+				// Interrupt while parked on backpressure must remove the
+				// drain listener so it can't resume an interrupted fiber.
+				return Effect.sync(() => {
+					stdin.off('drain', onDrain);
+				});
 			});
 
 		// Pump the source stream into tar's stdin. Each chunk is

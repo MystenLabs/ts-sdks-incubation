@@ -14,7 +14,7 @@
 // `accept` body owns interpretation. The substrate never imports a
 // concrete plugin module.
 
-import { Context, Data, Effect, Layer, Ref, Scope } from 'effect';
+import { Context, Data, Effect, Layer, Scope } from 'effect';
 
 import type { CapabilityDecl } from '../../../contracts/capability-decl.ts';
 import type { StrategyContributorDecl } from '../../../contracts/strategy-contributor.ts';
@@ -22,6 +22,8 @@ import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { PluginErrorContribution } from '../../plugin.ts';
+import { SpanAttr } from '../observability/spans.ts';
+import { makeScopedMultimap } from '../scoped-multimap/index.ts';
 
 // -----------------------------------------------------------------------------
 // Contribution surface
@@ -44,7 +46,6 @@ export type ContributionKind =
 	| 'codegenable'
 	| 'projection'
 	| 'strategy-contributor'
-	| 'liveness-classifier'
 	| 'error-contribution'
 	| (string & { readonly __extensionKind?: never });
 
@@ -110,9 +111,13 @@ export class ContributionSinkFailed extends Data.TaggedError('ContributionSinkFa
 
 export interface CapabilitySinksShape {
 	/** Register a sink for a contribution kind. Last-write-wins on
-	 *  duplicate kinds: a plugin-author overlay replaces the built-in.
+	 *  duplicate kinds: a plugin-author overlay shadows the built-in
+	 *  (the highest-seq surviving registration wins at `dispatch`).
 	 *  Scope-bound: registering inside a `Layer` and providing the
-	 *  layer to the supervisor's scope reaps the sink on shutdown. */
+	 *  layer to the supervisor's scope reaps the sink on shutdown.
+	 *  Closing an overlay's scope un-shadows the built-in WITHOUT
+	 *  clobbering any newer sibling registration for the same kind —
+	 *  the scoped-multimap drops only this registration's own entry. */
 	readonly registerSink: <K extends ContributionKind, TDecl>(
 		sink: CapabilitySink<K, TDecl>,
 	) => Effect.Effect<void, never, Scope.Scope>;
@@ -131,7 +136,7 @@ export interface CapabilitySinksShape {
 export class CapabilitySinksService extends Context.Service<
 	CapabilitySinksService,
 	CapabilitySinksShape
->()('@devstack-rewrite/substrate/CapabilitySinks') {}
+>()('@devstack/substrate/CapabilitySinks') {}
 
 // -----------------------------------------------------------------------------
 // Implementation helper — kind extraction
@@ -161,33 +166,28 @@ type SinkAccept = (decl: unknown, ctx: HarvestContext) => Effect.Effect<void, un
 export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.effect(
 	CapabilitySinksService,
 	Effect.gen(function* () {
-		const sinksRef = yield* Ref.make<ReadonlyMap<string, SinkAccept>>(new Map());
+		// Seq-tagged multimap, NOT a single-value-per-kind map. The old
+		// shape stored one accept per kind and restored a captured
+		// `prior` on scope close — correct only under strict LIFO. With
+		// sibling scopes (an overlay registered while another overlay for
+		// the same kind is still live) the first to close would restore
+		// ITS stale `prior` and clobber the live sibling. The multimap's
+		// drop-by-seq finalizer removes only this registration's entry,
+		// so the surviving highest-seq sink keeps winning regardless of
+		// close order.
+		const store = yield* makeScopedMultimap<string, SinkAccept>();
 
 		const registerSink = <K extends ContributionKind, TDecl>(
 			sink: CapabilitySink<K, TDecl>,
 		): Effect.Effect<void, never, Scope.Scope> =>
 			Effect.gen(function* () {
 				const accept = sink.accept as SinkAccept;
-				const prior = yield* Ref.modify(sinksRef, (current) => {
-					const next = new Map(current);
-					const had = next.get(sink.kind) ?? null;
-					next.set(sink.kind, accept);
-					return [had, next];
-				});
-				// Scope finalizer: restore the prior sink (or remove
-				// entirely) on scope close. Symmetric semantics — a
-				// plugin-author overlay's scope close restores the
-				// built-in.
-				yield* Effect.addFinalizer((_exit) =>
-					Ref.update(sinksRef, (current) => {
-						const next = new Map(current);
-						if (prior === null) next.delete(sink.kind);
-						else next.set(sink.kind, prior);
-						return next;
-					}),
-				);
+				// The multimap's register is already uninterruptible and
+				// wires the drop-by-seq finalizer atomically with the
+				// append (mirrors `leaseBroker.tryAcquire`).
+				yield* store.register([{ key: sink.kind, value: accept }]);
 				yield* Effect.annotateCurrentSpan({
-					'capability-sinks.kind': sink.kind,
+					[SpanAttr.capabilitySinksKind]: sink.kind,
 				});
 			}).pipe(Effect.withSpan('substrate.capabilitySinks.registerSink'));
 
@@ -197,14 +197,18 @@ export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.e
 		): Effect.Effect<void, UnknownContributionKind | ContributionSinkFailed, Scope.Scope> =>
 			Effect.gen(function* () {
 				const kind = kindOf(contribution);
-				const sinks = yield* Ref.get(sinksRef);
-				const accept = sinks.get(kind);
-				if (accept === undefined) {
-					return yield* new UnknownContributionKind({
-						kind,
-						known: [...sinks.keys()],
-					});
+				const entries = yield* store.entriesFor(kind);
+				if (entries.length === 0) {
+					const known = yield* store.keys;
+					return yield* new UnknownContributionKind({ kind, known });
 				}
+				// Last-write-wins: the highest-seq surviving registration
+				// is the active sink for this kind.
+				let chosen = entries[0]!;
+				for (let i = 1; i < entries.length; i++) {
+					if (entries[i]!.seq > chosen.seq) chosen = entries[i]!;
+				}
+				const accept = chosen.value;
 				const payload: unknown =
 					contribution.source === 'error' ? contribution.contribution : contribution.decl;
 				yield* accept(payload, ctx).pipe(
@@ -218,15 +222,12 @@ export const layerCapabilitySinks: Layer.Layer<CapabilitySinksService> = Layer.e
 					),
 				);
 				yield* Effect.annotateCurrentSpan({
-					'capability-sinks.kind': kind,
-					'devstack.plugin': ctx.pluginKey,
+					[SpanAttr.capabilitySinksKind]: kind,
+					[SpanAttr.plugin]: ctx.pluginKey,
 				});
 			}).pipe(Effect.withSpan('substrate.capabilitySinks.dispatch'));
 
-		const knownKinds: Effect.Effect<ReadonlyArray<string>> = Effect.gen(function* () {
-			const sinks = yield* Ref.get(sinksRef);
-			return [...sinks.keys()];
-		});
+		const knownKinds: Effect.Effect<ReadonlyArray<string>> = store.keys;
 
 		return CapabilitySinksService.of({ registerSink, dispatch, knownKinds });
 	}),

@@ -61,6 +61,32 @@ export const makeProjectionRef = (): Effect.Effect<
 > => SubscriptionRef.make(emptyProjection());
 
 /**
+ * Sync-only constructor for the subscribable projection ref. The
+ * `runStack(...)` API allocates the ref BEFORE the supervised
+ * Effect runs so callers can subscribe to `state.changes` ahead of
+ * boot — that allocation path has no Effect runtime to run under and
+ * must complete synchronously.
+ *
+ * Callers that already live inside an Effect should use the
+ * Effect-wrapped `makeProjectionRef()` so future changes to the
+ * constructor stay Effect-correct without breaking those call
+ * sites. This sync variant is pinned at the substrate boundary: any
+ * future refactor of `makeProjectionRef` (e.g. layering a `withSpan`
+ * or annotation) MUST keep `makeProjectionRefSync` synchronous — if
+ * that ever becomes impossible the boot-time call site needs a
+ * different signaling strategy (Deferred-handoff), not a silent
+ * `Effect.runSync` crash on an async effect.
+ *
+ * `SubscriptionRef.make` is sync-effect today (no async, no
+ * side-effects beyond an `unbounded` `PubSub.unbounded({ replay:
+ * 1 })`), so `Effect.runSync` is safe right now; the indirection
+ * exists so the constraint is documented at the constructor, not
+ * inferred from the caller.
+ */
+export const makeProjectionRefSync = (): SubscriptionRef.SubscriptionRef<SubscribableState> =>
+	Effect.runSync(makeProjectionRef());
+
+/**
  * Compile-time guard: the projection shape MUST NOT contain display
  * vocabulary. These conditional types resolve to `never` (and would
  * fail to assign anywhere they're used) if `title`/`primary`/

@@ -3,6 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContainerRuntime, ImageRef } from '../../../src/contracts/container-runtime.ts';
 import { resolveImage } from '../../../src/plugins/sui/mode/local.ts';
+import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
+
+const TEST_IDENTITY: Identity = {
+	app: appName('test-app'),
+	stack: stackName('test-stack'),
+	chain: chainId('test-chain'),
+};
 
 const unusedRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntime => ({
 	ensureImage: () => Effect.die('ensureImage not used'),
@@ -42,14 +50,17 @@ describe('Sui local image resolution', () => {
 		});
 
 		const resolved = await Effect.runPromise(
-			resolveImage(runtime, { mode: 'local', image: { pull: 'mysten/sui:devnet' } }),
+			resolveImage(runtime, TEST_IDENTITY, {
+				mode: 'local',
+				image: { pull: 'mysten/sui:devnet' },
+			}),
 		);
 
 		expect(calls).toEqual(['mysten/sui:devnet']);
 		expect(resolved).toEqual(ref);
 	});
 
-	it('uses ensureImage for explicit build contexts', async () => {
+	it('uses ensureImage for explicit build contexts and stamps owner labels', async () => {
 		const calls: unknown[] = [];
 		const runtime = unusedRuntime({
 			ensureImage: (build) =>
@@ -60,7 +71,7 @@ describe('Sui local image resolution', () => {
 		});
 
 		const resolved = await Effect.runPromise(
-			resolveImage(runtime, {
+			resolveImage(runtime, TEST_IDENTITY, {
 				mode: 'local',
 				image: { build: { context: '/tmp/sui', dockerfile: 'Dockerfile.sui' } },
 				version: 'v1',
@@ -72,12 +83,13 @@ describe('Sui local image resolution', () => {
 				contextPath: '/tmp/sui',
 				dockerfile: 'Dockerfile.sui',
 				buildArgs: { SUI_VERSION: 'v1' },
+				owner: { app: 'test-app', stack: 'test-stack', plugin: 'sui', role: 'validator' },
 			},
 		]);
 		expect(resolved.digest).toBe('sha256:built');
 	});
 
-	it('fingerprints only Sui image inputs for the vendored image context', async () => {
+	it('fingerprints only Sui image inputs for the vendored image context and stamps owner', async () => {
 		const calls: unknown[] = [];
 		const runtime = unusedRuntime({
 			ensureImage: (build) =>
@@ -87,13 +99,14 @@ describe('Sui local image resolution', () => {
 				}),
 		});
 
-		await Effect.runPromise(resolveImage(runtime, { mode: 'local', version: 'v1' }));
+		await Effect.runPromise(resolveImage(runtime, TEST_IDENTITY, { mode: 'local', version: 'v1' }));
 
 		expect(calls).toEqual([
 			expect.objectContaining({
 				dockerfile: 'sui/Dockerfile',
 				fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
 				buildArgs: { SUI_VERSION: 'v1' },
+				owner: { app: 'test-app', stack: 'test-stack', plugin: 'sui', role: 'validator' },
 			}),
 		]);
 	});

@@ -1,46 +1,38 @@
 // Action plugin — `signAndExecute` helper.
 //
-// This module encapsulates the "build → sign → execute → wait → project"
-// roundtrip that every action body needs to perform a Move call against
-// the booted Sui chain. Without it, every action body re-implements the
-// SDK boundary cast on `sdk.client.executeTransaction` + the SDK envelope
-// projection + the post-submit `waitForTransaction` gate.
+// Delegates the full build → sign → execute → wait → project pipeline
+// to the Account plugin's `withTransactionSigner` scope. The action
+// body never sees the SDK envelope; instead it receives the Account's
+// already-projected `TxResult`, which this module re-projects into the
+// action's `ActionReceipt` shape (bucketed `created`/`mutated` instead
+// of the account-flat `objectChanges`).
 //
-// The same wiring lives in `plugins/package/publish-executor.ts` — both
-// sites cast the opaque `sdk.client` to call `executeTransaction({
-// include: { effects: true, objectTypes: true }})` so they recover
-// `changedObjects` + their fully-qualified types. Both run through the
-// Account plugin's transaction-signer scope so `Transaction.build`,
-// signing, execute, and finality wait serialize per address.
+// Before the dedup, this module reimplemented the entire SDK roundtrip
+// (`executeTransaction`, `$kind`/`FailedTransaction`/no-digest envelope
+// projection, `waitForTransaction` finality wait). The same logic lived
+// in `account/service.ts:666-704` and `package/publish-executor.ts`, with
+// three near-identical SDK envelope projectors. Backlog item #29 lifts
+// the action path; the remaining package projector is tracked there too.
 //
-// What this helper extracts: the SDK-envelope projection + the
-// finality-wait. Per call sites:
-//
-//   - The user supplies a `build(tx)` callback that populates the
-//     `Transaction` synchronously (moveCalls, transferObjects, etc.).
-//   - The user supplies the signing `account` (an `AccountValue` from
-//     the action's resolved dependency values); we sign with the
-//     locked transaction signer and drive the SDK's
-//     `executeTransaction` directly.
-//   - The helper returns an `ActionReceipt` projection: `{ digest,
-//     objectChanges }`. The `objectChanges` array is shaped uniformly so
-//     downstream consumers can pick by `objectType` substring.
-//
-// All failures route through `ActionError` (phase: `sign` for transport
-// / RPC failures; `parse` for "no digest" / "wrong envelope shape"
-// situations). The action plugin's outer wrap collapses these into the
-// substrate's artifact publisher `produce-failed` channel.
+// Boundary discipline: this module imports the Account plugin's
+// `AccountValue` + `TxResult` (peer L4 contract) and a `SuiClient`
+// shim (peer L4 contract). It does not import `@mysten/sui/client` or
+// reach into the SDK envelope — those concerns live in
+// `account/service.ts`'s `projectTxResult`.
 
 import { Effect, type Scope } from 'effect';
 
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { AccountValue, TxResult } from '../account/service.ts';
-import type { SuiClient } from '../sui/index.ts';
-import { buildForkImpersonationTransactionBytes } from '../sui/fork-transaction.ts';
+import type { AccountSignError, AccountValue, TxResult } from '../account/index.ts';
+import { buildForkImpersonationTransactionBytes, type SuiClient } from '../sui/index.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
+import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
+import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
+import { ActionSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Receipt object-change projection
@@ -66,44 +58,16 @@ export interface ActionObjectChange {
 }
 
 // ---------------------------------------------------------------------------
-// SDK shape — kept narrow, mirrors the cast in publish-executor.ts
+// Account TxResult → ActionReceipt projection
 // ---------------------------------------------------------------------------
 
-interface SdkExecuteClient {
-	readonly executeTransaction: (args: {
-		readonly transaction: Uint8Array;
-		readonly signatures: ReadonlyArray<string>;
-		readonly include?: {
-			readonly effects?: boolean;
-			readonly objectTypes?: boolean;
-		};
-	}) => Promise<unknown>;
-	readonly waitForTransaction: (args: {
-		readonly digest: string;
-		readonly include?: { readonly effects?: boolean };
-		readonly timeout?: number;
-	}) => Promise<unknown>;
-}
-
-interface RawExecuteEnvelope {
-	readonly $kind?: 'Transaction' | 'FailedTransaction';
-	readonly Transaction?: {
-		readonly digest?: string;
-		readonly effects?: {
-			readonly changedObjects?: ReadonlyArray<{
-				readonly objectId?: string;
-				readonly outputState?: string;
-				readonly idOperation?: string;
-			}>;
-		};
-		readonly objectTypes?: Readonly<Record<string, string>>;
-	};
-	readonly FailedTransaction?: {
-		readonly digest?: string;
-		readonly status?: { readonly error?: string };
-	};
-}
-
+/**
+ * Re-bucket the account's flat `objectChanges` into action-flavored
+ * `created` / `mutated` rows. The account plugin's projection emits
+ * `{type, objectId, objectType?, outputState?, idOperation?}`; we
+ * carry through the optional fields and discriminate on `type` /
+ * `kind` so a downstream `findCreatedByType` consumer keeps working.
+ */
 const projectAccountObjectChanges = (
 	changes: ReadonlyArray<unknown>,
 ): ReadonlyArray<ActionObjectChange> =>
@@ -136,35 +100,57 @@ const projectAccountObjectChanges = (
 			return entry;
 		});
 
-const receiptFromAccountTx = (tx: TxResult): ActionReceipt => ({
+const receiptFromTxResult = (tx: TxResult): ActionReceipt => ({
 	digest: tx.digest,
 	objectChanges: projectAccountObjectChanges(tx.objectChanges),
 	balanceChanges: tx.balanceChanges,
 });
 
 // ---------------------------------------------------------------------------
+// AccountSignError → ActionError mapping
+// ---------------------------------------------------------------------------
+
+/**
+ * Map an `AccountSignError` onto the action's `'sign'` phase. The
+ * account's `signAndExecute` returns a discriminated `SignAndExecuteResult`
+ * for the on-chain outcome (success vs FailedTransaction); only
+ * transport / lifecycle failures surface here.
+ */
+const accountSignErrorToActionError =
+	(actionName: string) =>
+	(cause: AccountSignError): ActionError =>
+		actionError('sign', {
+			actionName,
+			message:
+				`Action '${actionName}': account sign/execute failed for ` +
+				`'${cause.accountName}' (address=${cause.address}): ${cause.message}`,
+			cause,
+		});
+
+// ---------------------------------------------------------------------------
 // `signAndExecute` helper
 // ---------------------------------------------------------------------------
 
-/** Drive the full build → sign → execute → wait → project pipeline.
+/** Drive the full build → sign → execute → wait → project pipeline by
+ *  delegating to the account's `withTransactionSigner` /
+ *  `signAndExecute` surface, then re-projecting the returned
+ *  `TxResult` into the action's `ActionReceipt` shape.
  *
  *  Allocates a fresh `Transaction`, sets the sender to the account's
  *  address, lets the caller populate it via the `build` callback,
- *  serialises via `Transaction.build({ client })`, signs via the
- *  account's transaction-signer scope, executes via the SDK's
- *  `executeTransaction` (with `include: { effects: true, objectTypes:
- *  true }` so the SDK surfaces `changedObjects` + types), waits for
- *  finality, and projects the envelope into an `ActionReceipt`.
+ *  serialises via `Transaction.build({ client })` (or the fork-mode
+ *  builder for impersonation accounts), then hands the bytes to the
+ *  account's locked-signer scope. The account plugin owns sign,
+ *  execute, finality wait, and envelope projection.
  *
  *  All failures surface as `ActionError`:
- *   - `build` callback throws  → `phase: 'sign'` (matches the existing
- *      catch-all phase for body-side failures).
+ *   - `build` callback throws  → `phase: 'sign'`.
  *   - `Transaction.build` rejects → `phase: 'sign'`.
- *   - `signTransaction` rejects → `phase: 'sign'`.
- *   - `executeTransaction` rejects → `phase: 'sign'`.
- *   - SDK returns `FailedTransaction` → `phase: 'sign'`.
- *   - SDK returns no digest → `phase: 'parse'`.
- *   - `waitForTransaction` rejects → `phase: 'sign'`.
+ *   - `account.signAndExecute` rejects with `AccountSignError` → mapped
+ *     to `phase: 'sign'`. The Account plugin's `'no-digest'` phase
+ *     (SDK envelope protocol violation) flows through here as well —
+ *     the originating `AccountSignError` is preserved via `cause` so
+ *     the cause walker renders the underlying `phase: 'no-digest'`.
  *
  *  The `actionName` parameter threads into every error's `actionName`
  *  field so cause-walker output stays attributable.
@@ -174,10 +160,18 @@ export const signAndExecute = (params: {
 	readonly sui: SuiClient;
 	readonly account: AccountValue;
 	readonly build: (tx: Transaction) => void;
-}): Effect.Effect<ActionReceipt, ActionError, Scope.Scope> =>
-	Effect.gen(function* () {
-		const { actionName, sui, account, build } = params;
-		return yield* account.withTransactionSigner((lockedSigner) =>
+}): Effect.Effect<ActionReceipt, ActionError, Scope.Scope> => {
+	const { actionName, sui, account, build } = params;
+	const mapAccountErr = accountSignErrorToActionError(actionName);
+	// Delegate the build → sign → execute → dispatch pipeline to the
+	// shared `signAndDispatch` helper. The build closure handles both
+	// the user callback (`build(tx)`) and mode-appropriate serialization
+	// (fork impersonation vs SDK-resolver). On-chain failures surface
+	// as `phase: 'execute-failed'` so cause-walker renders them distinctly
+	// from transport-level signing failures (`phase: 'sign'`).
+	return signAndDispatch({
+		signerSource: account,
+		buildTxBytes: () =>
 			Effect.gen(function* () {
 				// --- 1. Allocate + populate the Transaction ------------------
 				const tx = new Transaction();
@@ -193,169 +187,48 @@ export const signAndExecute = (params: {
 				});
 
 				// --- 2. Serialise via the mode-appropriate path --------------
-				const txBytes =
-					account.source === 'impersonate'
-						? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
-								Effect.mapError(
-									(cause): ActionError =>
-										actionError('sign', {
-											actionName,
-											message: `Action '${actionName}': fork impersonation Transaction.build failed — ${cause.message}.`,
-											cause,
-										}),
-								),
-							)
-						: yield* Effect.tryPromise({
-								try: () =>
-									tx.build({
-										client: sui.sdk.client as Parameters<typeof tx.build>[0] extends
-											| { client?: infer C }
-											| undefined
-											? C
-											: never,
-									}),
-								catch: (cause): ActionError =>
+				// Fork mode (impersonate OR real signer) must build offline with
+				// explicit gas: the sui-fork binary has no simulate_transaction,
+				// so the SDK's gas-estimating `tx.build({ client })` fails. The
+				// real-vs-empty-signature split happens later in signAndExecute.
+				return account.source === 'impersonate' || sui.fork !== null
+					? yield* buildForkImpersonationTransactionBytes(tx, account.address, sui.sdk.core).pipe(
+							Effect.mapError(
+								(cause): ActionError =>
 									actionError('sign', {
 										actionName,
-										message: `Action '${actionName}': Transaction.build failed — ${
-											cause instanceof Error ? cause.message : String(cause)
-										}.`,
+										message: `Action '${actionName}': fork Transaction.build failed — ${cause.message}.`,
 										cause,
 									}),
-							});
-
-				if (account.source === 'impersonate') {
-					const executed = yield* lockedSigner.signAndExecute(txBytes).pipe(
-						Effect.mapError(
-							(cause): ActionError =>
-								actionError('sign', {
-									actionName,
-									message:
-										`Action '${actionName}': account.signAndExecute failed for ` +
-										`'${account.name}' (address=${account.address}): ${
-											cause instanceof Error ? cause.message : String(cause)
-										}`,
-									cause,
-								}),
-						),
-					);
-					return receiptFromAccountTx(executed);
-				}
-
-				// --- 3. Sign with the account -------------------------------
-				const signed = yield* lockedSigner.signTransaction(txBytes).pipe(
-					Effect.mapError(
-						(cause): ActionError =>
-							actionError('sign', {
-								actionName,
-								message:
-									`Action '${actionName}': account.signTransaction failed for ` +
-									`'${account.name}' (address=${account.address}): ${
-										cause instanceof Error ? cause.message : String(cause)
-									}`,
-								cause,
-							}),
-					),
-				);
-
-				// --- 4. Execute via the SDK (with effects+objectTypes) ------
-				const sdkClient = sui.sdk.client as SdkExecuteClient;
-				const raw = yield* Effect.tryPromise({
-					try: () =>
-						sdkClient.executeTransaction({
-							transaction: txBytes,
-							signatures: [signed.signature],
-							include: { effects: true, objectTypes: true },
-						}),
-					catch: (cause): ActionError =>
-						actionError('sign', {
-							actionName,
-							message:
-								`Action '${actionName}': executeTransaction failed — ` +
-								(cause instanceof Error ? cause.message : String(cause)),
-							cause,
-						}),
-				});
-
-				// --- 5. Project the envelope --------------------------------
-				const env = raw as RawExecuteEnvelope;
-				if (env.$kind === 'FailedTransaction') {
-					const failedDigest = env.FailedTransaction?.digest;
-					if (failedDigest !== undefined) {
-						yield* Effect.tryPromise({
-							try: () => sdkClient.waitForTransaction({ digest: failedDigest }),
+							),
+						)
+					: yield* Effect.tryPromise({
+							try: () => tx.build({ client: sui.sdk.client }),
 							catch: (cause): ActionError =>
 								actionError('sign', {
 									actionName,
-									message: `Action '${actionName}': waitForTransaction(${failedDigest}) failed.`,
+									message: `Action '${actionName}': Transaction.build failed — ${
+										formatUnknownError(cause)
+									}.`,
 									cause,
 								}),
 						});
-					}
-					return yield* Effect.fail(
-						actionError('sign', {
-							actionName,
-							message:
-								`Action '${actionName}': FailedTransaction ` +
-								`(digest=${env.FailedTransaction?.digest ?? '<unknown>'}): ` +
-								`${env.FailedTransaction?.status?.error ?? '<no error>'}`,
-						}),
-					);
-				}
-				const txOk = env.Transaction;
-				if (txOk?.digest === undefined) {
-					return yield* Effect.fail(
-						actionError('parse', {
-							actionName,
-							message: `Action '${actionName}': executeTransaction returned no digest.`,
-						}),
-					);
-				}
-
-				// --- 6. Wait for finality -----------------------------------
-				yield* Effect.tryPromise({
-					try: () => sdkClient.waitForTransaction({ digest: txOk.digest! }),
-					catch: (cause): ActionError =>
-						actionError('sign', {
-							actionName,
-							message: `Action '${actionName}': waitForTransaction(${txOk.digest}) failed.`,
-							cause,
-						}),
-				});
-
-				// --- 7. Project changedObjects into the receipt's objectChanges
-				const objectTypes = txOk.objectTypes ?? {};
-				const objectChanges: ReadonlyArray<ActionObjectChange> = (
-					txOk.effects?.changedObjects ?? []
-				)
-					.filter(
-						(c): c is { objectId: string; outputState?: string; idOperation?: string } =>
-							typeof c.objectId === 'string',
-					)
-					.map((c) => {
-						const objectType = objectTypes[c.objectId];
-						const entry: {
-							-readonly [K in keyof ActionObjectChange]: ActionObjectChange[K];
-						} = {
-							kind: c.idOperation === 'Created' ? 'created' : 'mutated',
-							objectId: c.objectId,
-						};
-						if (objectType !== undefined) entry.objectType = objectType;
-						if (c.outputState !== undefined) entry.outputState = c.outputState;
-						if (c.idOperation !== undefined) entry.idOperation = c.idOperation;
-						return entry;
-					});
-
-				const receipt: ActionReceipt = {
-					digest: txOk.digest,
-					objectChanges,
-					balanceChanges: [],
-				};
-				return receipt;
 			}),
-		);
+		mapSignError: mapAccountErr,
+		onFailed: (failure) =>
+			Effect.fail(
+				actionError('execute-failed', {
+					actionName,
+					message:
+						`Action '${actionName}': transaction execution failed on-chain ` +
+						`for account '${account.name}' (address=${account.address}) ` +
+						formatExecutedFailure(failure),
+				}),
+			),
+		onSuccess: (txResult) => Effect.succeed(receiptFromTxResult(txResult)),
 	}).pipe(
 		Effect.withSpan('devstack.plugin.action.signAndExecute', {
-			attributes: { 'action.name': params.actionName },
+			attributes: { [ActionSpans.name]: actionName },
 		}),
 	);
+};

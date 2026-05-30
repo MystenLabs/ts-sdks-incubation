@@ -31,11 +31,11 @@ import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snap
  *  smallest tuple that distinguishes a postgres instance for snapshot
  *  purposes — image tag / version is intentionally NOT part of
  *  identity (a minor-version bump should restore cleanly). */
-export interface PostgresIdentityPayload {
+export type PostgresIdentityPayload = {
 	readonly kind: 'postgres-server';
 	readonly name: string;
 	readonly databases: ReadonlyArray<string>;
-}
+};
 
 export interface MakeSnapshotableOptions {
 	readonly app: string;

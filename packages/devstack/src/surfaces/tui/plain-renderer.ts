@@ -21,11 +21,15 @@
 //     heartbeat (no backlog catch-up)". The seam is exposed via
 //     `formatHeartbeat`.
 
-import { Effect, Stream, SubscriptionRef } from 'effect';
+import { Effect, Schema, Stream, SubscriptionRef } from 'effect';
 
 import type { Renderer } from '../../contracts/renderer.ts';
 import type { EngineEvent } from '../../substrate/events.ts';
 import type { SubscribableState } from '../../substrate/projection.ts';
+import {
+	AccountProjectionSchema,
+	PackageProjectionSchema,
+} from '../../substrate/runtime/projection/persisted.ts';
 import {
 	accountLine,
 	endpointLine,
@@ -36,6 +40,7 @@ import {
 	statusLabel,
 } from './display-derivation.ts';
 import { mountFailed } from './errors.ts';
+import { eventAt } from '../../substrate/event-time.ts';
 
 // -----------------------------------------------------------------------------
 // Line shape — pure formatters
@@ -107,20 +112,6 @@ export const makePlainRenderer = (): Renderer => ({
 
 const isoTimestamp = (at: number): string => new Date(at || Date.now()).toISOString();
 
-const eventAt = (event: EngineEvent): number => {
-	if ('at' in event && typeof event.at === 'number') return event.at;
-	switch (event.tag) {
-		case 'endpoint.registered':
-			return event.endpoint.registeredAt;
-		case 'error.reported':
-			return event.error.at;
-		case 'build.statusChanged':
-			return event.entry.startedAt;
-		default:
-			return Date.now();
-	}
-};
-
 const levelForEvent = (event: EngineEvent): 'INFO' | 'WARN' | 'ERROR' => {
 	switch (event.tag) {
 		case 'log.appended':
@@ -129,6 +120,12 @@ const levelForEvent = (event: EngineEvent): 'INFO' | 'WARN' | 'ERROR' => {
 			return event.error.severity === 'fatal' || event.error.severity === 'error'
 				? 'ERROR'
 				: 'WARN';
+		// A broken orchestrator capability sink leaves the plugin `ready`
+		// (non-fatal by design — see dispatch-contributions.ts), so this
+		// is the operator's ONLY signal that e.g. RPC/wallet routing is
+		// dead. It must not render as a routine INFO line.
+		case 'engine.orchestrator.dispatchFailed':
+			return 'WARN';
 		default:
 			return 'INFO';
 	}
@@ -160,31 +157,46 @@ const payloadFor = (event: EngineEvent): string => {
 				url: event.endpoint.url,
 				wire: event.endpoint.wireProtocol,
 			});
-		case 'account.updated':
-			return kv({
-				key: event.account.key,
-				row: event.account.rowKey ?? '',
-				name: event.account.name,
-				address: event.account.address ?? '',
-				scheme: event.account.scheme ?? '',
-				source: event.account.source ?? '',
-				funding: event.account.funding.status,
-				fundingEntries: (event.account.funding.entries ?? [])
-					.map((entry) => `${entry.coin}:${entry.amount}:${entry.status}`)
-					.join(','),
-				requestedMist: event.account.funding.requestedMist ?? '',
-				balanceMist: event.account.funding.balanceMist ?? '',
-			});
-		case 'package.updated':
-			return kv({
-				key: event.package.key,
-				row: event.package.rowKey ?? '',
-				name: event.package.name,
-				kind: event.package.kind,
-				packageId: event.package.packageId,
-				upgradeCapId: event.package.upgradeCapId ?? '',
-				mvr: event.package.mvrPlaceholder,
-			});
+		case 'projection.updated':
+			if (event.kind === 'account') {
+				// STYLE_GUIDE §19 — substrate-side `decodeUnknownSync` so a
+				// malformed payload skips the line rather than rendering
+				// garbage (`Schema.decodeUnknownSync(...) as A` bare-cast
+				// is banned). The reducer at
+				// `substrate/runtime/projection/update.ts` performs the
+				// same decode; we repeat it here because the renderer
+				// reads the raw event stream, not the reduced state slice.
+				const account = tryDecodeProjection(AccountProjectionSchema, event.payload);
+				if (account === null) return kv({ kind: event.kind, key: event.key });
+				return kv({
+					key: account.key,
+					row: account.rowKey ?? '',
+					name: account.name,
+					address: account.address ?? '',
+					scheme: account.scheme ?? '',
+					source: account.source ?? '',
+					funding: account.funding.status,
+					fundingEntries: (account.funding.entries ?? [])
+						.map((entry) => `${entry.coin}:${entry.amount}:${entry.status}`)
+						.join(','),
+					requestedMist: account.funding.requestedMist ?? '',
+					balanceMist: account.funding.balanceMist ?? '',
+				});
+			}
+			if (event.kind === 'package') {
+				const pkg = tryDecodeProjection(PackageProjectionSchema, event.payload);
+				if (pkg === null) return kv({ kind: event.kind, key: event.key });
+				return kv({
+					key: pkg.key,
+					row: pkg.rowKey ?? '',
+					name: pkg.name,
+					kind: pkg.kind,
+					packageId: pkg.packageId,
+					upgradeCapId: pkg.upgradeCapId ?? '',
+					mvr: pkg.mvrPlaceholder,
+				});
+			}
+			return kv({ kind: event.kind, key: event.key });
 		case 'endpoint.released':
 			return kv({ key: event.endpointKey });
 		case 'strategy.registered':
@@ -198,6 +210,17 @@ const payloadFor = (event: EngineEvent): string => {
 			return kv({ version: event.manifestVersion });
 		case 'codegen.emitted':
 			return kv({ files: event.files.length });
+		case 'engine.orchestrator.dispatchFailed':
+			return kv({
+				key: event.pluginKey,
+				kind: event.kind,
+				// `causeType` (the failing sink error's `_tag`, e.g.
+				// `RouterBootFailed`) is the discriminator an operator scans
+				// for to tell dead RPC routing from a codegen collision. `kv`
+				// drops it when undefined, so untagged causes stay clean.
+				causeType: event.causeType ?? '',
+				summary: event.message,
+			});
 		case 'error.reported':
 			return kv({
 				key: event.error.pluginKey ?? '',
@@ -255,9 +278,36 @@ const kv = (record: Readonly<Record<string, unknown>>): string =>
 		.map(([k, v]) => `${k}=${quoteIfNeeded(String(v))}`)
 		.join(' ');
 
-const quoteIfNeeded = (s: string): string => (/[\s"]/.test(s) ? quote(s) : s);
+// Quote anything that contains whitespace, a `"`, or an ASCII control
+// byte (`\x00-\x1f`). Control bytes are the load-bearing case: a
+// projection payload field that contains a stray `\x1b` (ESC) would
+// otherwise inject an ANSI escape sequence into the plain-renderer's
+// stdout, corrupting subsequent terminal state for callers tailing
+// `--format plain` output.
+const quoteIfNeeded = (s: string): string => (/[\s"\x00-\x1f]/.test(s) ? quote(s) : s);
 
 const quote = (s: string): string => `"${s.replace(/"/g, '\\"')}"`;
+
+/**
+ * Structural validate-then-narrow for `projection.updated` payloads
+ * before they are formatted as text. Mirrors
+ * `tryDecodeProjectionPayload` in the substrate reducer — returns
+ * `null` on schema-decode failure so the renderer drops the slice
+ * rather than printing fields off a malformed object. The substrate
+ * reducer emits the `Effect.logWarning` for the same payload (the
+ * decode is deterministic), so we stay silent here to avoid double
+ * logging.
+ */
+const tryDecodeProjection = <S extends Schema.Decoder<unknown>>(
+	schema: S,
+	payload: unknown,
+): S['Type'] | null => {
+	try {
+		return Schema.decodeUnknownSync(schema)(payload);
+	} catch {
+		return null;
+	}
+};
 
 // -----------------------------------------------------------------------------
 // Internals — initial sweep
@@ -285,12 +335,12 @@ const emitInitialSweep = (state: SubscribableState): Effect.Effect<void> =>
 		}
 		for (const account of state.accounts) {
 			yield* writeStderrLine(
-				`${isoTimestamp(account.updatedAt)} INFO account.updated ${accountLine(account)}`,
+				`${isoTimestamp(account.updatedAt)} INFO projection.updated[account] ${accountLine(account)}`,
 			);
 		}
 		for (const pkg of state.packages) {
 			yield* writeStderrLine(
-				`${isoTimestamp(pkg.updatedAt)} INFO package.updated ${packageLine(pkg)}`,
+				`${isoTimestamp(pkg.updatedAt)} INFO projection.updated[package] ${packageLine(pkg)}`,
 			);
 		}
 	});

@@ -37,13 +37,12 @@
 //      this file does NOT re-declare it.
 
 import { Effect, type Scope } from 'effect';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, relative } from 'node:path';
 
 import type {
 	ContainerHandle,
 	ContainerRuntime,
 	EnsureContainerSpec,
-	EnsureNetworkSpec,
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
@@ -53,9 +52,12 @@ import {
 	waitForProbe,
 } from '../../substrate/runtime/probes.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
-import { sealError, type SealError } from './errors.ts';
+import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
+import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
+import { isSealError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
+import { SealSpans } from './spans.ts';
 
 export { DEFAULT_KEY_SERVER_PORT } from './routable.ts';
 
@@ -86,9 +88,7 @@ export const CONTAINER_ENV: Readonly<Record<string, string>> = {
 	RUST_LOG: 'info',
 };
 
-export const HOST_GATEWAY_EXTRA_HOSTS: Readonly<Record<string, string>> = {
-	'host.docker.internal': 'host-gateway',
-};
+export { HOST_GATEWAY_EXTRA_HOSTS };
 
 export const buildSealNetworkName = (app: string, stack: string, sealName: string): string =>
 	`devstack-${app}-${stack}-seal-${sealName}-net`;
@@ -100,28 +100,12 @@ export interface SealNetworkIdentity {
 }
 
 /** Seal's key-server network gets a deterministic /24 so repeated
- *  local runs do not consume Docker's default bridge address pools. */
-export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string => {
-	const key = `${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`;
-	let hash = 0x811c9dc5;
-	for (let i = 0; i < key.length; i += 1) {
-		hash ^= key.charCodeAt(i);
-		hash = Math.imul(hash, 0x01000193) >>> 0;
-	}
-	const bucket = hash % (64 * 256);
-	const secondOctet = 128 + Math.floor(bucket / 256);
-	const thirdOctet = bucket % 256;
-	return `10.${secondOctet}.${thirdOctet}`;
-};
-
-export const sealNetworkCreateSpec = <Spec extends EnsureNetworkSpec>(
-	spec: Spec,
-	subnetPrefix: string,
-): Spec & Required<Pick<EnsureNetworkSpec, 'subnet' | 'gateway'>> => ({
-	...spec,
-	subnet: `${subnetPrefix}.0/24`,
-	gateway: `${subnetPrefix}.1`,
-});
+ *  local runs do not consume Docker's default bridge address pools.
+ *  Seal claims the `10.128.*` – `10.191.*` band; see
+ *  substrate/runtime/subnet-broker.ts for the algorithm and band
+ *  coordination with walrus. */
+export const deriveSealSubnetPrefix = (identity: SealNetworkIdentity): string =>
+	deriveSubnetPrefix(`${identity.app}\0${identity.stack}\0${identity.sealName}\0seal`, 128);
 
 /** Per-probe interval inside the bounded retry. */
 const READY_PROBE_INTERVAL_MS = 500;
@@ -141,16 +125,18 @@ export interface KeyServerContainerSpec {
 	/** Label tuple — drives the snapshot orchestrator's filter +
 	 *  `inspectByLabels`. */
 	readonly labels: ContainerLabelTuple;
-	/** Mount source on host — the rendered key-server-config.yaml. */
-	readonly configHostPath: string;
-	/** Env-file holding `MASTER_KEY=<hex>`. Mode-bit 0o600 inside
-	 *  0o700 parent. Distilled-doc invariant #2. Bind-mounted (see
-	 *  file header for the missing-envFiles workaround). */
-	readonly masterKeyEnvFileHostPath: string;
 	/** Mount source on host. Docker Desktop can reject freshly-created
 	 *  nested file/leaf-directory bind sources even when a parent mount
 	 *  can see them, so key-server mounts the stack root and points the
-	 *  entrypoint at the config/envfile inside that mount. */
+	 *  entrypoint at the config/envfile inside that mount.
+	 *
+	 *  The rendered config + master-key envfile do not appear as their
+	 *  own fields on this spec — they live under `servicePath` inside
+	 *  `runtimeRootHostPath`. The single host mount publishes both into
+	 *  the container; `configContainerPath` /
+	 *  `masterKeyEnvFileContainerPath` give the entrypoint shell the
+	 *  inside-container locations. The spec-builder asserts the
+	 *  relationship between `servicePath` and `runtimeRootHostPath`. */
 	readonly runtimeRootHostPath: string;
 	readonly configContainerPath: string;
 	readonly masterKeyEnvFileContainerPath: string;
@@ -200,14 +186,36 @@ export interface KeyServerSpecInputs {
  *  encoded here:
  *
  *   - `routedUrl` is the SAME value the on-chain Move call registers.
- *   - `env` is `CONTAINER_ENV` (no MASTER_KEY); `masterKeyEnvFileHostPath`
- *     bind-mount carries the secret.
+ *   - `env` is `CONTAINER_ENV` (no MASTER_KEY); the bind-mounted env-file
+ *     at `<servicePath>/master-key.env` (sourced by the entrypoint shell)
+ *     carries the secret.
  *   - `routing[]` lists the seal-key-server entrypoint; the spec returned has
- *     NO `ports:` field (it's not modelled). */
+ *     NO `ports:` field (it's not modelled).
+ *
+ *  Asserts at spec-build time that the substrate-provided `servicePath`
+ *  lives under the derived `runtimeRootHostPath`. The single host
+ *  mount publishes the entire `runtimeRootHostPath` subtree; if the
+ *  caller ever drifts `servicePath` outside that subtree, the
+ *  rendered config + master-key envfile silently would not reach the
+ *  container — surface that drift here instead. */
 export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContainerSpec => {
-	const masterKeyEnvFileHostPath = `${inputs.servicePath}/${MASTER_KEY_ENVFILE_BASENAME}`;
-	const configHostPath = `${inputs.servicePath}/${KEY_SERVER_CONFIG_BASENAME}`;
 	const runtimeRootHostPath = dirname(dirname(inputs.servicePath));
+	const rel = relative(runtimeRootHostPath, inputs.servicePath);
+	if (rel.length === 0 || rel.startsWith('..') || runtimeRootHostPath === '/') {
+		// `runtimeRootHostPath === '/'` catches the degenerate case
+		// where the `dirname(dirname(...))` walk-up collapses to the
+		// host root (e.g. servicePath shorter than 3 segments) — that
+		// would bind-mount the entire host into the container. Same
+		// family of bug as the walrus deploy-paths walk-up.
+		throw new Error(
+			`buildKeyServerSpec: servicePath (${inputs.servicePath}) must be a descendant of ` +
+				`runtimeRootHostPath (${runtimeRootHostPath}) AND runtimeRootHostPath must not ` +
+				`collapse to '/'. The single bind-mount publishes runtimeRootHostPath into the ` +
+				`container — if servicePath drifts outside it, the rendered config + master-key ` +
+				`envfile would silently not reach the container; if the root collapses to '/', the ` +
+				`bind would publish the host root. Cross-check the substrate's seal servicePath layout.`,
+		);
+	}
 	const serviceDirName = basename(inputs.servicePath);
 	const configContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${KEY_SERVER_CONFIG_BASENAME}`;
 	const masterKeyEnvFileContainerPath = `${INSIDE_RUNTIME_ROOT}/seal/${serviceDirName}/${MASTER_KEY_ENVFILE_BASENAME}`;
@@ -216,8 +224,6 @@ export const buildKeyServerSpec = (inputs: KeyServerSpecInputs): KeyServerContai
 		image: inputs.image,
 		containerName: inputs.containerName,
 		labels: inputs.labels,
-		configHostPath,
-		masterKeyEnvFileHostPath,
 		runtimeRootHostPath,
 		configContainerPath,
 		masterKeyEnvFileContainerPath,
@@ -351,12 +357,25 @@ export const startKeyServer = (
 		}).pipe(
 			Effect.mapError((cause) => {
 				if (cause instanceof ProbeTimeoutError) {
+					// Unwrap so we don't double-wrap an inner `SealError`:
+					// if `lastError` was itself a `SealError` (e.g. an
+					// upstream probe site that already promoted to typed),
+					// re-wrapping inside `sealError('ready', …)` would
+					// leave the cause walker chasing two layers. The
+					// outer `passthroughOrWrap.for<SealError>` in
+					// `index.ts` strips one such layer, but the direct
+					// `sealError('ready', …)` path doesn't — collapse
+					// here at the source.
+					const inner = cause.lastError ?? cause.lastNotReady ?? cause;
+					if (isSealError(inner)) {
+						return inner;
+					}
 					return sealError('ready', {
 						name,
 						message:
 							`seal key-server never became ready within ${spec.readyTimeoutMs}ms ` +
 							`(directProbeUrl=${directProbeUrl}, routedUrl=${spec.routedUrl})`,
-						cause: cause.lastError ?? cause.lastNotReady ?? cause,
+						cause: inner,
 					});
 				}
 				return sealError('ready', {
@@ -371,9 +390,9 @@ export const startKeyServer = (
 	}).pipe(
 		Effect.withSpan('devstack.plugin.seal.keyServer.start', {
 			attributes: {
-				'seal.name': name,
-				'seal.containerName': spec.containerName,
-				'seal.routedUrl': spec.routedUrl,
+				[SealSpans.name]: name,
+				[SealSpans.containerName]: spec.containerName,
+				[SealSpans.routedUrl]: spec.routedUrl,
 			},
 		}),
 	);

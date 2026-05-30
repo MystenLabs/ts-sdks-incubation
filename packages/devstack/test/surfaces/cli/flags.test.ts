@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { takeBoolFlag, takePositional, takeValueFlag } from '../../../src/surfaces/cli/flags.ts';
+import { takePositional, takeValueFlag } from '../../../src/surfaces/cli/flags.ts';
 import { CliUsageError } from '../../../src/surfaces/cli/errors.ts';
 
 describe('subcommand-flag helpers', () => {
@@ -8,12 +8,6 @@ describe('subcommand-flag helpers', () => {
 		const r = takePositional(['--foo', 'bar', '--baz']);
 		expect(r.head).toBe('bar');
 		expect(r.tail).toEqual(['--foo', '--baz']);
-	});
-
-	it('takeBoolFlag matches long form', () => {
-		const r = takeBoolFlag(['a', '--include-images', 'b'], 'include-images');
-		expect(r.present).toBe(true);
-		expect(r.tail).toEqual(['a', 'b']);
 	});
 
 	it('takeValueFlag supports inline =', () => {

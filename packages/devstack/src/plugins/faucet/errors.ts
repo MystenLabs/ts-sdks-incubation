@@ -9,14 +9,15 @@
 //     warm-up the faucet accepts requests it cannot execute, and
 //     treating those bodies as success marks accounts funded when
 //     no coins moved.
-//   - A wall-clock budget exhaustion is distinct from a retry-count
-//     exhaustion; both surface through the same `FaucetExhausted`
-//     class but carry the discriminating field.
+//   - Wall-clock budget exhaustion surfaces as `FaucetExhausted`. The
+//     attempt-cap (`maxRetries` on the underlying retry schedule)
+//     re-raises the LAST `FaucetUnreachable | FaucetBodyError` directly
+//     — wrapping it in `FaucetExhausted` would just hide the wire-level
+//     error the cap was triggered by. The wall-clock budget is the
+//     dominant exit; the attempt cap exists as a safety net.
 //
 // Effect v4: tagged errors are plain interfaces; `Effect.catchTag` /
-// `catchTags` match on the `_tag` literal. The error tags this
-// plugin contributes are surfaced via `FAUCET_ERROR_TAGS` for the
-// substrate cause walker.
+// `catchTags` match on the `_tag` literal.
 
 import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/config-validation.ts';
 
@@ -44,17 +45,21 @@ export const faucetUnreachable = (parts: Omit<FaucetUnreachable, '_tag'>): Fauce
 });
 
 /**
- * Retry-budget exhaustion. The wall-clock budget elapsed before any
- * attempt succeeded, OR the attempt count cap was hit first. Both
- * paths land here; `kind` discriminates so renderers can distinguish
- * "we ran out of time" from "we ran out of attempts".
+ * Wall-clock budget exhaustion. The retry loop did not land a
+ * successful attempt within the configured `timeoutMs`.
+ *
+ * The attempt-count cap (`maxRetries` on the schedule) does NOT
+ * surface as `FaucetExhausted` — when the retry schedule exhausts,
+ * Effect re-raises the LAST `FaucetUnreachable | FaucetBodyError`
+ * verbatim, which is more informative than a wrapped budget message.
+ * Callers handling `FaucetUnreachable | FaucetBodyError` already see
+ * the right wire-level cause.
  *
  * Carries the last underlying cause so pretty-error rendering can
  * show what was actually failing instead of just the budget message.
  */
 export interface FaucetExhausted {
 	readonly _tag: 'FaucetExhausted';
-	readonly kind: 'wall-clock' | 'attempts';
 	readonly url: string;
 	readonly address: string;
 	readonly amount: bigint;
@@ -85,7 +90,7 @@ export interface FaucetBodyError {
 	readonly address: string;
 	readonly amount: bigint;
 	readonly status: number;
-	readonly reason: 'failure-status' | 'malformed-body' | 'invalid-json';
+	readonly reason: 'failure-status' | 'invalid-json';
 	readonly message: string;
 	/** The raw body payload (truncated where necessary) for diagnostics. */
 	readonly bodySnippet?: string;
@@ -93,31 +98,6 @@ export interface FaucetBodyError {
 
 export const faucetBodyError = (parts: Omit<FaucetBodyError, '_tag'>): FaucetBodyError => ({
 	_tag: 'FaucetBodyError',
-	...parts,
-});
-
-/**
- * Unknown coin / chain id at dispatch. The strategy registry held
- * no contributor matching `capabilityKey`. The error names the
- * registered set so users can see "I asked for X, only Y is wired".
- *
- * Distinct from substrate-level `StrategyNotFoundError` — this one
- * is faucet-flavored (carries amount + address) and lives at the
- * plugin's public boundary.
- */
-export interface FaucetStrategyMissing {
-	readonly _tag: 'FaucetStrategyMissing';
-	readonly capabilityKey: string;
-	readonly address: string;
-	readonly amount: bigint;
-	readonly registeredKeys: ReadonlyArray<string>;
-	readonly hint: string;
-}
-
-export const faucetStrategyMissing = (
-	parts: Omit<FaucetStrategyMissing, '_tag'>,
-): FaucetStrategyMissing => ({
-	_tag: 'FaucetStrategyMissing',
 	...parts,
 });
 
@@ -132,15 +112,4 @@ export type FaucetError =
 	| FaucetUnreachable
 	| FaucetExhausted
 	| FaucetBodyError
-	| FaucetStrategyMissing
 	| FaucetConfigError;
-
-/** Error tags this plugin contributes — surfaced to the substrate's
- *  cause walker via `PluginErrorContribution`. */
-export const FAUCET_ERROR_TAGS: ReadonlyArray<FaucetError['_tag']> = [
-	'FaucetUnreachable',
-	'FaucetExhausted',
-	'FaucetBodyError',
-	'FaucetStrategyMissing',
-	'FaucetConfigError',
-] as const;

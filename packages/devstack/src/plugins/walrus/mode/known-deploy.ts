@@ -7,11 +7,15 @@
 // resolved value whose tags are eager `Layer.succeed(...)` constants.
 //
 // Distilled-doc invariants honored:
-//   - 15: `WalrusProxyTag` only when ALL three URLs (proxy,
-//         aggregator, publisher) are present. Encoded as
-//         `proxyUrl / aggregatorUrl / publisherUrl: string | null`
-//         in the resolved shape; the plugin's projection step
-//         hides the proxy tag when any is missing.
+//   - 15: each of `proxyUrl / aggregatorUrl / publisherUrl` surfaces
+//         INDEPENDENTLY. Encoded as `string | null` in the resolved
+//         shape — a given field is null only when THAT specific URL
+//         is unresolved (registry default + explicit override both
+//         absent). The plugin's projection step publishes each tag
+//         when its own URL is present; a missing publisher URL no
+//         longer suppresses an available proxy/aggregator URL. (The
+//         earlier all-or-nothing gate that nullified all three when
+//         any single URL was missing was removed.)
 //   - 16: throw synchronously when `nodes` is missing for a
 //         registered network. Testnet has 100+ nodes that the
 //         `@mysten/walrus` SDK fetches dynamically; pinning them
@@ -51,8 +55,10 @@ export interface KnownDeploymentBootResult {
 	readonly stakingPoolId: string;
 	readonly exchangeIds: ReadonlyArray<string>;
 	readonly nodes: ReadonlyArray<WalrusStorageNode>;
-	/** Null when any of the three URLs are missing — distilled-doc
-	 *  invariant 15. */
+	/** Null only when the proxy URL itself is unresolved (no explicit
+	 *  `proxyUrl` override and no registry/aggregator/publisher
+	 *  fallback). Surfaces independently of `aggregatorUrl` /
+	 *  `publisherUrl` — distilled-doc invariant 15. */
 	readonly proxyUrl: string | null;
 	readonly aggregatorUrl: string | null;
 	readonly publisherUrl: string | null;
@@ -148,10 +154,10 @@ export const resolveKnownDeploymentOptions = (
 	const publisherUrl = opts.publisherUrl ?? reg?.publisherUrl ?? null;
 	const proxyUrl = opts.proxyUrl ?? reg?.proxyUrl ?? aggregatorUrl ?? publisherUrl ?? null;
 
-	// Invariant 15: surface null when any URL is missing so the
-	// plugin's projection can conditionally publish the proxy tag.
-	const allUrlsPresent = aggregatorUrl !== null && publisherUrl !== null && proxyUrl !== null;
-
+	// Invariant 15: surface null per individual URL when missing so the
+	// plugin's projection can conditionally publish each tag. Previously
+	// any single missing URL nullified all three, dropping user-supplied
+	// values for the URLs they did provide.
 	return {
 		mode: 'known' as const,
 		chain: reg?.chain ?? 'sui:custom',
@@ -159,9 +165,9 @@ export const resolveKnownDeploymentOptions = (
 		stakingPoolId,
 		exchangeIds: opts.exchangeIds ?? reg?.exchangeIds ?? [],
 		nodes,
-		proxyUrl: allUrlsPresent ? proxyUrl : null,
-		aggregatorUrl: allUrlsPresent ? aggregatorUrl : null,
-		publisherUrl: allUrlsPresent ? publisherUrl : null,
+		proxyUrl,
+		aggregatorUrl,
+		publisherUrl,
 	};
 };
 
@@ -174,6 +180,26 @@ export const bootKnownDeployment = (
 	Effect.try({
 		try: () => resolveKnownDeploymentOptions(opts),
 		// `resolveKnownDeploymentOptions` throws our typed config error
-		// shape; map straight back into the typed channel.
-		catch: (err) => err as WalrusConfigError,
+		// shape. STYLE_GUIDE §2 forbids bare error casts; runtime-guard
+		// the `_tag` so an unexpected synchronous throw (e.g. a future
+		// helper that throws a stock `TypeError`) is wrapped instead of
+		// silently mis-tagged as `WalrusConfigError`.
+		catch: (err): WalrusConfigError => {
+			if (
+				typeof err === 'object' &&
+				err !== null &&
+				'_tag' in err &&
+				(err as { readonly _tag?: unknown })._tag === 'WalrusConfigError'
+			) {
+				return err as WalrusConfigError;
+			}
+			return walrusConfigError(
+				'unknown',
+				`walrusKnownDeployment: unexpected non-typed throw inside resolveKnownDeploymentOptions: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+				undefined,
+				err,
+			);
+		},
 	});

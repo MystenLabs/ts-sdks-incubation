@@ -39,6 +39,7 @@ import {
 } from './address-resolution.ts';
 import { coinError, type CoinError } from './errors.ts';
 import type { MetadataSdkShim } from './metadata.ts';
+import { CoinSpans } from './spans.ts';
 import {
 	performMint,
 	type MintInputs,
@@ -85,7 +86,27 @@ export interface CoinValue extends ResolvedCoin {
 	/** Centralized funding strategy, present for local package coins
 	 *  whose publisher still owns the TreasuryCap. The coin barrel
 	 *  publishes it under `coinType:<fullCoinType>` so Account funding
-	 *  can mint arbitrary local coins without bespoke example actions. */
+	 *  can mint arbitrary local coins without bespoke example actions.
+	 *
+	 *  The request shape is a NARROWED projection of
+	 *  `AccountFundingRequest` (`{address, amount}` only — the coin
+	 *  strategy doesn't need the resolved account handle since the
+	 *  TreasuryCap-owning publisher signs the mint via its own lease
+	 *  inside `mint → signAndDispatch`). Direct consumers (deepbook
+	 *  seed funding) call `.request({address, amount})` against this
+	 *  narrowed shape; the coin barrel projects the value to the wider
+	 *  `AccountFundingStrategy` cross-plugin contract at the
+	 *  `strategy-contributor` capability boundary (see
+	 *  `coin/index.ts → buildCapabilities`), wrapping the narrow
+	 *  request fn so the account bus's `{address, amount, account}`
+	 *  shape is satisfied honestly at the boundary.
+	 *
+	 *  The E channel preserves the tagged vocabulary
+	 *  (`CoinError | ArtifactPublishError`) rather than collapsing to
+	 *  `unknown`, so direct consumers can catchTag on the typed
+	 *  errors. The account-side dispatcher's registry lookup narrows
+	 *  the channel to `unknown` at the registry boundary and reads
+	 *  `_tag` defensively. */
 	readonly fundingStrategy?: {
 		readonly request: (req: {
 			readonly address: string;
@@ -101,7 +122,7 @@ export const acquireCoin = (
 ): Effect.Effect<CoinValue, CoinError> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({
-			'coin.form': form.kind,
+			[CoinSpans.form]: form.kind,
 		});
 
 		const resolved: ResolvedCoin = yield* (() => {
@@ -116,9 +137,9 @@ export const acquireCoin = (
 		})();
 
 		yield* Effect.annotateCurrentSpan({
-			'coin.fullCoinType': resolved.fullCoinType,
-			'coin.decimals': resolved.decimals,
-			'coin.source': resolved.source,
+			[CoinSpans.fullCoinType]: resolved.fullCoinType,
+			[CoinSpans.decimals]: resolved.decimals,
+			[CoinSpans.source]: resolved.source,
 		});
 
 		const mint: CoinValue['mint'] = (signer, opts) => {
@@ -141,10 +162,10 @@ export const acquireCoin = (
 		};
 		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
 		const fundingTreasuryCapId = resolved.treasuryCapId;
-		const fundingStrategy =
+		const fundingStrategy: CoinValue['fundingStrategy'] =
 			fundingSigner !== undefined && fundingTreasuryCapId !== undefined
 				? {
-						request: (req: { readonly address: string; readonly amount: bigint }) =>
+						request: (req) =>
 							Effect.scoped(
 								mint(fundingSigner, {
 									to: req.address,

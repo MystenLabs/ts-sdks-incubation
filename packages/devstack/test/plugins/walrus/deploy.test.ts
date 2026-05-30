@@ -3,11 +3,11 @@
 // file and the plugin's `CachedDeployState` shape — any drift in the
 // upstream output format surfaces here.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from '@effect/vitest';
+import { afterAll, describe, expect, it } from '@effect/vitest';
 import { Effect, Exit, Option, Stream, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
@@ -54,21 +54,29 @@ const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRu
 
 const deployInputs = (
 	outputDirHostPath = '/tmp/devstack/stacks/main/walrus/walrus/deploy',
-): DeployInputs => ({
-	walrusName: 'walrus',
-	chainId: chainId('sui:localnet'),
-	contentHash: contentHash('walrus-test'),
-	outputDirHostPath,
-	suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
-	walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
-	committeeSize: 4,
-	shards: 100,
-	epochDuration: '24h',
-	publicHostsCsv: 'a,b,c,d',
-	listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
-	walrusImage: { digest: 'walrus:test' },
-	suiNetworkName: 'devstack-test-sui',
-});
+): DeployInputs => {
+	// Derive `stackRoot` from the canonical `<stackRoot>/walrus/<name>/deploy`
+	// layout — the bind-mount source the deploy one-shot publishes is
+	// `stackRoot` (review fix phase 22a — explicit injection replacing
+	// the previous `dirname(dirname(dirname(...)))` walk-up).
+	const stackRoot = outputDirHostPath.replace(/\/walrus\/[^/]+\/deploy$/u, '');
+	return {
+		walrusName: 'walrus',
+		chainId: chainId('sui:localnet'),
+		contentHash: contentHash('walrus-test'),
+		outputDirHostPath,
+		stackRoot,
+		suiRpcUrlInNetwork: 'http://host.docker.internal:9123',
+		walrusFaucetUrlInNetwork: 'http://host.docker.internal:9123/v2/gas',
+		committeeSize: 4,
+		shards: 100,
+		epochDuration: '24h',
+		publicHostsCsv: 'a,b,c,d',
+		listeningIpsCsv: '10.0.0.10,10.0.0.11,10.0.0.12,10.0.0.13',
+		walrusImage: { digest: 'walrus:test' },
+		suiNetworkName: 'devstack-test-sui',
+	};
+};
 
 const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount = 4) => {
 	mkdirSync(dir, { recursive: true });
@@ -87,8 +95,20 @@ const writeDeployOutputFiles = (dir: string, state: CachedDeployState, nodeCount
 	}
 };
 
+// Tests below request a nested output-dir layout under a fresh
+// tmpdir. We cannot use `withTempRoot` here because the helper hands
+// back a leaf path used inside an `Effect.gen` body — instead we
+// track every allocated root and tear them all down in `afterAll`.
+const allocatedTempRoots: string[] = [];
+afterAll(() => {
+	for (const root of allocatedTempRoots.splice(0)) {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
+
 const tempDeployOutputDir = (prefix: string): string => {
 	const root = mkdtempSync(join(tmpdir(), prefix));
+	allocatedTempRoots.push(root);
 	const outputDir = join(root, 'stacks', 'main', 'walrus', 'walrus', 'deploy');
 	mkdirSync(outputDir, { recursive: true });
 	return outputDir;
@@ -315,6 +335,53 @@ describe('parseDeployOutput', () => {
 		}),
 	);
 
+	it.live('fails loudly when bind-source remains missing through every retry', () =>
+		// Regression: `Effect.repeat({ schedule, until })` exits SUCCESS
+		// once the schedule's recurrence cap is reached even if `until`
+		// still returns false. Pre-fix, the loop would terminate with the
+		// last (still bind-source-missing) result and the follow-up
+		// `result.exitCode !== 0` check surfaced only the raw 125 +
+		// bind-source stderr — masking the fact that the RETRY BUDGET
+		// itself was the failure. Post-fix, the loop surfaces an
+		// explicit "bind-source retry budget exhausted" failure that
+		// names the retry profile in the message.
+		Effect.gen(function* () {
+			const outputDir = tempDeployOutputDir('devstack-walrus-bind-race-exhaust-');
+			let attempts = 0;
+			const runtime = oneShotRuntime(() => {
+				attempts += 1;
+				return Effect.succeed({
+					exitCode: 125,
+					stdout: '',
+					stderr:
+						'docker: Error response from daemon: invalid mount config for type "bind": ' +
+						'bind source path does not exist: /host_mnt/tmp/devstack/walrus/deploy',
+				});
+			});
+
+			const exit = yield* Effect.scoped(
+				runDeployOneShot(runtime, deployInputs(outputDir)).pipe(Effect.exit),
+			);
+
+			expect(Exit.isFailure(exit)).toBe(true);
+			const error = Exit.findErrorOption(exit);
+			expect(Option.isSome(error)).toBe(true);
+			if (Option.isSome(error)) {
+				expect(error.value._tag).toBe('WalrusPluginError');
+				expect(error.value.phase).toBe('deploy');
+				expect(error.value.message).toContain('bind-source visibility race');
+				expect(error.value.message).toContain('retries');
+				// Pin the originating exit/stderr is still surfaced so
+				// operators see WHAT was failing through the budget.
+				expect(error.value.message).toContain('bind source path does not exist');
+			}
+			// At least one attempt happened (initial) and the loop
+			// retried; we don't pin a specific count because the retry
+			// profile's `attempts` constant is allowed to change.
+			expect(attempts).toBeGreaterThanOrEqual(2);
+		}),
+	);
+
 	it.effect('reports missing walrus-deploy as a typed deploy failure with stderr context', () =>
 		Effect.gen(function* () {
 			const runtime = oneShotRuntime((spec) => {
@@ -365,13 +432,13 @@ describe('parseDeployOutput', () => {
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},
-				client: {},
+				client: {} as never,
 			};
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
 			const publisher: ArtifactPublisher = {
 				publish: <Produced, Verified>(
 					spec: ArtifactSpec<Produced, Verified>,
-				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+				): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 					Effect.gen(function* () {
 						const verified = yield* spec.verify(cached as unknown as Produced);
 						if (verified !== null) return cached as unknown as Produced;
@@ -386,7 +453,14 @@ describe('parseDeployOutput', () => {
 				deployWalrusContracts(publisher, probe, runtime, deployInputs(outputDir)),
 			);
 
+			// Regression: backlog #1. The substrate now hands back the
+			// decoded `CachedDeployState` on verify-hit. The walrus
+			// caller MUST surface the originally-produced packageId
+			// verbatim — NOT the historical `'<cache-hit-not-rehydrated>'`
+			// sentinel string.
 			expect(result.state).toEqual(cached);
+			expect(result.state.walrusPackageId).toBe(cached.walrusPackageId);
+			expect(result.state.walrusPackageId).not.toMatch(/^</);
 			expect(requestedObjects).toEqual([cached.systemObject, cached.stakingObject]);
 		}),
 	);
@@ -408,13 +482,13 @@ describe('parseDeployOutput', () => {
 					executeTransaction: async () => ({}),
 					waitForTransaction: async () => ({}),
 				},
-				client: {},
+				client: {} as never,
 			};
 			const probe = makeSuiChainProbe(sdk, 'sui:localnet');
 			const publisher: ArtifactPublisher = {
 				publish: <Produced, Verified>(
 					spec: ArtifactSpec<Produced, Verified>,
-				): Effect.Effect<Produced | Verified, ArtifactPublishError, Scope.Scope> =>
+				): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 					Effect.gen(function* () {
 						const verified = yield* spec.verify(cached as unknown as Produced);
 						if (verified !== null) return cached as unknown as Produced;
@@ -425,9 +499,9 @@ describe('parseDeployOutput', () => {
 				Effect.succeed({
 					exitCode: 0,
 					stdout: [
-						'package_id: 0xnewpackage',
-						'system_object: 0xnewsystem',
-						'staking_object: 0xnewstaking',
+						'package_id: 0xa1a1a1a1a1a1a1a1',
+						'system_object: 0xb2b2b2b2b2b2b2b2',
+						'staking_object: 0xc3c3c3c3c3c3c3c3',
 					].join('\n'),
 					stderr: '',
 				}),
@@ -438,9 +512,9 @@ describe('parseDeployOutput', () => {
 			);
 
 			expect(result.state).toEqual({
-				walrusPackageId: '0xnewpackage',
-				systemObject: '0xnewsystem',
-				stakingObject: '0xnewstaking',
+				walrusPackageId: '0xa1a1a1a1a1a1a1a1',
+				systemObject: '0xb2b2b2b2b2b2b2b2',
+				stakingObject: '0xc3c3c3c3c3c3c3c3',
 			});
 			expect(requestedObjects).toEqual([]);
 		}),

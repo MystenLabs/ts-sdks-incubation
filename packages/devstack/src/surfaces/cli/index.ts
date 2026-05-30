@@ -14,13 +14,15 @@ import {
 	type CommandContext as StricliCommandContext,
 	type StricliProcess,
 } from '@stricli/core';
-import { Effect } from 'effect';
+import { Effect, type Scope } from 'effect';
+import { readFileSync } from 'node:fs';
 
 import { commandSchema } from './command-tree.ts';
 import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
 import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
+import { ExitCode } from './sysexits.ts';
 import { parseDevstackNetworkName } from '../../api/inference-network.ts';
-import { type CliIO, emitFailure, nodeProcessIO } from './output.ts';
+import { type CliIO, emitFailure, emitSuccess, nodeProcessIO } from './output.ts';
 import {
 	type CommandResult,
 	type ConfigDeps,
@@ -37,6 +39,15 @@ import {
 	runStatus,
 	runWipe,
 } from './commands/index.ts';
+
+const readPackageVersion = (): string => {
+	const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
+	const pkg = JSON.parse(raw) as { readonly version?: unknown };
+	if (typeof pkg.version !== 'string') {
+		throw new Error('devstack package.json is missing a string version');
+	}
+	return pkg.version;
+};
 
 // -----------------------------------------------------------------------------
 // Deps bundle
@@ -311,20 +322,50 @@ const makeGlobalFlags = (
 			forbidPrompt: flags.noInput === true || ctx.env[ENV_VARS.NO_INPUT] === '1',
 			stdinIsTty: ctx.stdinIsTty,
 		},
-		schemaEmit: false,
 		verbose: flags.verbose === true,
-		help: false,
-		version: false,
 		rest,
 	};
 };
 
-const setNetworkEnv = (flags: GlobalFlags): Effect.Effect<void> =>
-	flags.network === undefined
-		? Effect.void
-		: Effect.sync(() => {
-				process.env[ENV_VARS.NETWORK] = flags.network;
-			});
+/**
+ * Bridge the CLI `--network` flag through `process.env` so config-load-time
+ * factory reads pick it up. This indirection is deliberate, not a leak.
+ *
+ * Why the mutation exists:
+ *   The `deepbook()` factory (`plugins/deepbook/index.ts`) defaults its mode
+ *   by reading `process.env.DEVSTACK_NETWORK` at config import time — before
+ *   any flag value has reached the orchestrator. To make `--network` affect
+ *   the same default, we must mutate the env BEFORE the user's
+ *   `devstack.config.ts` is loaded. The chain is:
+ *     `--network=<net>` flag  →  setNetworkEnv  →  `process.env.DEVSTACK_NETWORK`
+ *                              →  `deepbook()` factory's env read at import.
+ *
+ * Why save/restore (and a scoped finalizer) matters:
+ *   The CLI is also invoked from tests and embedded harnesses inside a single
+ *   process. An unscoped mutation leaks across invocations: a test that runs
+ *   `dispatch(['up','--network=testnet'])` followed by `dispatch(['up'])`
+ *   would see the second call inherit `testnet` from the first. The
+ *   finalizer restores the prior value (or deletes the key if it was unset)
+ *   on success, failure, AND interrupt — `Effect.addFinalizer` guarantees
+ *   the cleanup runs regardless of how the scope closes.
+ */
+const setNetworkEnv = (flags: GlobalFlags): Effect.Effect<void, never, Scope.Scope> => {
+	if (flags.network === undefined) return Effect.void;
+	const next = flags.network;
+	return Effect.gen(function* () {
+		const prior = process.env[ENV_VARS.NETWORK];
+		process.env[ENV_VARS.NETWORK] = next;
+		yield* Effect.addFinalizer(() =>
+			Effect.sync(() => {
+				if (prior === undefined) {
+					delete process.env[ENV_VARS.NETWORK];
+				} else {
+					process.env[ENV_VARS.NETWORK] = prior;
+				}
+			}),
+		);
+	});
+};
 
 // -----------------------------------------------------------------------------
 // Command execution helpers
@@ -336,22 +377,28 @@ const runCommandEffect = async (
 	flags: GlobalFlags,
 	effect: Effect.Effect<CommandResult, CliError>,
 ): Promise<void> => {
-	const program = setNetworkEnv(flags).pipe(
-		Effect.andThen(effect),
-		Effect.catch((error: CliError) =>
-			emitFailure(ctx.io, flags.outputMode, {
-				command,
-				elapsedMs: 0,
-				error,
-			}).pipe(Effect.as({ exitCode: exitCodeFor(error) })),
-		),
-		Effect.catchCause((cause) =>
-			emitFailure(ctx.io, flags.outputMode, {
-				command,
-				elapsedMs: 0,
-				error: new CliInternalError({ message: 'unexpected internal failure' }),
-				cause,
-			}).pipe(Effect.as({ exitCode: 70 })),
+	// `setNetworkEnv` registers a `process.env[ENV_VARS.NETWORK]` restore as a
+	// scope finalizer; the outer `Effect.scoped` closes that scope after the
+	// command completes (success, failure, or interrupt), preventing env leaks
+	// between concurrent CLI invocations in the same process.
+	const program = Effect.scoped(
+		setNetworkEnv(flags).pipe(
+			Effect.andThen(effect),
+			Effect.catch((error: CliError) =>
+				emitFailure(ctx.io, flags.outputMode, {
+					command,
+					elapsedMs: 0,
+					error,
+				}).pipe(Effect.as({ exitCode: exitCodeFor(error) })),
+			),
+			Effect.catchCause((cause) =>
+				emitFailure(ctx.io, flags.outputMode, {
+					command,
+					elapsedMs: 0,
+					error: new CliInternalError({ message: 'unexpected internal failure' }),
+					cause,
+				}).pipe(Effect.as({ exitCode: ExitCode.SOFTWARE })),
+			),
 		),
 	);
 	const result = await Effect.runPromise(program);
@@ -472,12 +519,15 @@ const schemaCommand = buildCommand<Pick<IdentityFlags, 'json'>, [], DevstackCliC
 	parameters: { flags: { json: identityFlagParams.json } },
 	docs: { brief: 'Emit the CLI schema' },
 	func: function (flags) {
-		const mode = outputModeFrom(flags, this.env);
-		return Effect.runPromise(
-			this.io
-				.writeStdout(JSON.stringify({ ...commandSchema(), outputMode: mode }))
-				.pipe(Effect.andThen(this.io.setExitCode(0))),
-		);
+		return runWithFlags(this, 'schema', flags, [], (global) => {
+			const data = { ...commandSchema(), outputMode: global.outputMode };
+			return emitSuccess(this.io, global.outputMode, {
+				command: 'schema',
+				elapsedMs: 0,
+				data,
+				humanLines: [JSON.stringify(data, null, 2)],
+			}).pipe(Effect.as({ exitCode: 0 }));
+		});
 	},
 });
 
@@ -604,7 +654,7 @@ const root = buildRouteMap({
 
 const app = buildApplication(root, {
 	name: 'devstack',
-	versionInfo: { currentVersion: '0.0.0' },
+	versionInfo: { currentVersion: readPackageVersion() },
 	scanner: { caseStyle: 'allow-kebab-for-camel' },
 	documentation: {
 		caseStyle: 'convert-camel-to-kebab',
@@ -625,11 +675,48 @@ const jsonRequested = (
 	env: Readonly<Record<string, string | undefined>>,
 ): boolean => env[ENV_VARS.JSON] === '1' || argv.includes('--json');
 
+/**
+ * Project a `BufferedProcess.exitCode` to a sysexit code AT THE
+ * STRICLI-PARSE BOUNDARY ONLY.
+ *
+ * Contract: `BufferedProcess.exitCode` is mutated ONLY by Stricli's
+ * argv-parser when an argv parse step fails (unknown subcommand,
+ * malformed flag value, missing required positional). Verbs route
+ * their own outcomes through `ctx.io.setExitCode`, which marks
+ * `io.touched()` and short-circuits this projection in `dispatch`
+ * before `flushBufferedProcess` is reached.
+ *
+ * The historic implementation collapsed ANY non-zero `code` to
+ * `USAGE` (64), but that was wrong: it could only ever observe a
+ * Stricli parse failure (the only writer to this field), so the
+ * `USAGE` mapping holds by construction. Kept as a named function
+ * so the invariant is documented at the call site.
+ */
 const normalizeStricliExitCode = (code: number | string | null | undefined): number => {
-	if (typeof code === 'number' && code !== 0) return 64;
-	return 0;
+	if (typeof code === 'number' && code !== 0) return ExitCode.USAGE;
+	return ExitCode.OK;
 };
 
+/**
+ * Bridge Stricli's synchronous `StricliProcess.{stdout,stderr}.write`
+ * shape to our async (Effect-based) `CliIO` surface.
+ *
+ * The indirection is load-bearing for the JSON-envelope contract:
+ * Stricli writes argv-parse errors to stderr the moment the parser
+ * trips, but `--json` mode demands the failure be EMITTED as a
+ * structured envelope on stdout (not raw text on stderr) with exit
+ * code `EX_USAGE`. We can't wire Stricli's `stderr.write` directly to
+ * `nodeProcessIO.writeStderr` because:
+ *
+ *   1. The stderr bytes are the raw parser error text; in `--json`
+ *      mode we need to transform them into a failure envelope.
+ *   2. We don't know whether the verb handler "touched" the IO
+ *      (rendered its own envelope) until after Stricli returns.
+ *
+ * Buffering lets us delay the decision until both signals are
+ * available. Tests substitute a `BufferedProcess` whose buffers are
+ * later inspected, mirroring the prod flush behavior.
+ */
 const flushBufferedProcess = (
 	process: BufferedProcess,
 	io: CliIO,
@@ -690,13 +777,7 @@ export const dispatch = (deps: CliDeps, dispatchEnv: DispatchEnv): Effect.Effect
 
 export type { CliIO } from './output.ts';
 export type { GlobalFlags } from './flags.ts';
-export {
-	COMMAND_TREE,
-	commandSchema,
-	formatCommandHelp,
-	VERBS,
-	type Verb,
-} from './command-tree.ts';
+export { COMMAND_TREE, commandSchema, VERBS, type Verb } from './command-tree.ts';
 export type { Envelope, EnvelopeError } from './envelope.ts';
 export {
 	ENVELOPE_SCHEMA_VERSION,

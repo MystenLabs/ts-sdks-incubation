@@ -42,4 +42,33 @@ describe('ExitCode numeric values are pinned', () => {
 			seen.add(entry.code);
 		}
 	});
+
+	// Regression: Phase B fix made the table the source of truth for
+	// `schema --json` consumers. Pin that every `ExitCode.*` value has a
+	// matching `exitCodeTable` entry — accidentally leaving a value out of
+	// the table when adding a new code would silently break downstream
+	// scripts inspecting the schema.
+	it('exitCodeTable contains every ExitCode.* value', () => {
+		const tableValues = new Set(exitCodeTable.map((entry) => entry.code));
+		for (const value of Object.values(ExitCode)) {
+			expect(tableValues.has(value)).toBe(true);
+		}
+		// And vice-versa — every table entry corresponds to a known ExitCode value.
+		const enumValues = new Set<number>(Object.values(ExitCode));
+		for (const entry of exitCodeTable) {
+			expect(enumValues.has(entry.code)).toBe(true);
+		}
+		// Sanity: the two sets are exactly the same size.
+		expect(tableValues.size).toBe(enumValues.size);
+	});
+
+	// Regression: the exhaustiveness `_exhaustive: never` switch in
+	// `exitCodeName` ensures adding a new ExitCode entry without
+	// extending the switch fails compilation. We can't trigger TS failure
+	// at runtime, but we can assert that every named code passes through.
+	it('exitCodeName resolves every ExitCode.* without falling into the never branch', () => {
+		for (const [name, value] of Object.entries(ExitCode)) {
+			expect(exitCodeName(value)).toBe(name);
+		}
+	});
 });

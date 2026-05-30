@@ -29,10 +29,15 @@
 // but the API surface is plain TS. Schema is a validation tool here,
 // not an exposed type.
 
-import { Schema } from 'effect';
 import { readFileSync } from 'node:fs';
 
-import { ManifestEnvelopeSchema, type ManifestEnvelope } from '../../substrate/manifest.ts';
+import {
+	decodeUnknownSync,
+	ManifestEnvelopeSchema,
+	parseJsonTextSync,
+	type ManifestEnvelope,
+	type EndpointEntry,
+} from './manifest-types.ts';
 import { discoverManifestPath, type DiscoverManifestPathOptions } from './discover.ts';
 import { EndpointRegistry } from './endpoint-registry.ts';
 import { ManifestDiscoveryError, ManifestShapeError } from './errors.ts';
@@ -52,10 +57,6 @@ export interface ReadStackContextOptions extends DiscoverManifestPathOptions {
 	 *  ergonomic parity with the CLI's `--manifest-path` flag. */
 	readonly manifestPath?: string;
 }
-
-// Pre-build the decoder so each read isn't paying the Schema-build
-// cost. `decodeUnknownSync` throws on shape failure; we catch + rewrap.
-const decodeEnvelope = Schema.decodeUnknownSync(ManifestEnvelopeSchema);
 
 const resolveManifestPath = (opts: ReadStackContextOptions): string => {
 	const override = opts.manifestPath ?? opts.override;
@@ -78,7 +79,10 @@ const resolveManifestPath = (opts: ReadStackContextOptions): string => {
 const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => {
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(raw);
+		parsed = parseJsonTextSync(raw, {
+			source: manifestPath,
+			mkError: (issue) => issue,
+		});
 	} catch (cause) {
 		throw new ManifestShapeError({
 			phase: 'parse',
@@ -92,7 +96,10 @@ const parseAndDecode = (raw: string, manifestPath: string): ManifestEnvelope => 
 	}
 	let decoded: ManifestEnvelope;
 	try {
-		decoded = decodeEnvelope(parsed) as ManifestEnvelope;
+		decoded = decodeUnknownSync(ManifestEnvelopeSchema, parsed, {
+			source: manifestPath,
+			mkError: (issue) => issue,
+		});
 	} catch (cause) {
 		throw new ManifestShapeError({
 			phase: 'shape',
@@ -127,8 +134,8 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
 			url: raw.url,
 			displayUrl: raw.displayUrl,
 			wireProtocol: raw.wireProtocol,
-			pluginKey: raw.pluginKey as string,
-			endpointKey: raw.endpointKey as string,
+			pluginKey: raw.pluginKey,
+			endpointKey: raw.endpointKey,
 		});
 	}
 	return {
@@ -150,22 +157,22 @@ const project = (envelope: ManifestEnvelope, manifestPath: string): StackContext
  *  surfaces use this instead of duplicating endpoint-registry
  *  projection logic. */
 export const manifestEnvelopeFromStackContext = (ctx: StackContext): ManifestEnvelope => ({
-	identity: ctx.identity as ManifestEnvelope['identity'],
+	identity: ctx.identity,
 	manifestVersion: ctx.manifestVersion,
 	services: ctx.services,
 	endpoints: Object.fromEntries(
-		ctx.endpoints.all().map((e) => [
+		ctx.endpoints.all().map((e): [string, EndpointEntry] => [
 			e.endpointKey,
 			{
 				name: e.name,
 				url: e.url,
 				displayUrl: e.displayUrl,
 				wireProtocol: e.wireProtocol,
-				pluginKey: e.pluginKey as never,
-				endpointKey: e.endpointKey as never,
+				pluginKey: e.pluginKey,
+				endpointKey: e.endpointKey,
 			},
 		]),
-	) as ManifestEnvelope['endpoints'],
+	),
 	extras: ctx.extras,
 });
 

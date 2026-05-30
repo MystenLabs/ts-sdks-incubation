@@ -1,4 +1,4 @@
-import { Effect, Schema } from 'effect';
+import { Effect, Exit, Schema } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import type {
@@ -10,12 +10,15 @@ import type {
 import {
 	buildWalSwapTransaction,
 	resolveWalExchange,
+	swapAccountSuiForWal,
 	type WalExchangeProbeKey,
+	type WalSwapSdk,
 } from '../../../src/plugins/walrus/wal-swap.ts';
 import {
 	parseWalCoinTypeFromTreasuryType,
 	resolveWalCoinType,
 } from '../../../src/plugins/walrus/faucet-strategy.ts';
+import type { AccountValue } from '../../../src/plugins/account/index.ts';
 
 const objectProbe = (object: { readonly objectId: string; readonly type: string }) =>
 	({
@@ -91,6 +94,85 @@ describe('walrus WAL swap', () => {
 			'0x456::wal::WAL',
 		);
 		expect(parseWalCoinTypeFromTreasuryType('0xabc::wal_exchange::Exchange')).toBeNull();
+	});
+
+	it('refuses with a typed error when paymentMist exceeds the account SUI balance', async () => {
+		// Regression: without the pre-flight check the failure surfaces
+		// as an opaque `Transaction.build` / chain-side `InsufficientGas`
+		// after the wire call has already started. The typed refusal
+		// names the balance + required numbers so the caller can act.
+		const sdk: WalSwapSdk = {
+			client: {} as never,
+			core: {
+				getBalance: async () => ({ balance: { balance: '1000' } }),
+			},
+		};
+		const account = {
+			name: 'alice',
+			address: '0xalice',
+		} as unknown as AccountValue;
+
+		const exit = await Effect.runPromiseExit(
+			swapAccountSuiForWal({
+				account,
+				sdk,
+				exchange: { objectId: '0xex', packageId: '0xpkg' },
+				recipientAddress: '0xalice',
+				paymentMist: 500_000_000n,
+			}),
+		);
+
+		expect(Exit.isFailure(exit)).toBe(true);
+		const err = Exit.findErrorOption(exit);
+		expect(err._tag).toBe('Some');
+		if (err._tag === 'Some') {
+			expect(err.value._tag).toBe('WalrusPluginError');
+			expect(err.value.phase).toBe('fund-wal');
+			expect(err.value.message).toContain('insufficient SUI');
+			expect(err.value.message).toContain('balance=1000');
+			expect(err.value.message).toContain('500000000');
+		}
+	});
+
+	it('falls through to the wire path when the balance read returns null (best-effort hint)', async () => {
+		// If the SDK throws or returns an unparseable shape the pre-flight
+		// must NOT swallow the call — control reaches `withTransactionSigner`
+		// (the wire path) instead of being short-circuited as
+		// "insufficient SUI".
+		const sdk: WalSwapSdk = {
+			client: {} as never,
+			core: {
+				getBalance: async () => {
+					throw new Error('rpc unreachable');
+				},
+			},
+		};
+		let wireWasReached = false;
+		const account = {
+			name: 'alice',
+			address: '0xalice',
+			source: 'real',
+			withTransactionSigner: () => {
+				wireWasReached = true;
+				return Effect.fail(new Error('wire-path sentinel'));
+			},
+		} as unknown as AccountValue;
+
+		const exit = await Effect.runPromiseExit(
+			swapAccountSuiForWal({
+				account,
+				sdk,
+				exchange: { objectId: '0xex', packageId: '0xpkg' },
+				recipientAddress: '0xalice',
+				paymentMist: 500_000_000n,
+			}),
+		);
+
+		// The pre-flight passed through (balance=null) — `withTransactionSigner`
+		// was reached, proving the pre-flight did NOT short-circuit on a
+		// best-effort read failure.
+		expect(wireWasReached).toBe(true);
+		expect(Exit.isFailure(exit)).toBe(true);
 	});
 
 	it('uses the treasury package id for WAL funding instead of the upgraded walrus package id', async () => {

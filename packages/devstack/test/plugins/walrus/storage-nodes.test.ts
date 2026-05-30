@@ -10,10 +10,8 @@ import type {
 	ContainerRuntime,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
-import {
-	deriveWalrusSubnetPrefix,
-	walrusNetworkCreateSpec,
-} from '../../../src/plugins/walrus/index.ts';
+import { deriveWalrusSubnetPrefix } from '../../../src/plugins/walrus/index.ts';
+import { withSubnetAddressing } from '../../../src/substrate/runtime/subnet-broker.ts';
 import { resolveLocalClusterOptions } from '../../../src/plugins/walrus/mode/local-cluster.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -24,6 +22,7 @@ import {
 	computePublicHostname,
 	startStorageNodes,
 	storageNodeConfigHash,
+	type WalrusStorageNode,
 } from '../../../src/plugins/walrus/storage-nodes.ts';
 
 const runtimeCapturingStorageNodeSpecs = (specs: EnsureContainerSpec[]): ContainerRuntime => ({
@@ -119,7 +118,7 @@ describe('walrus network addressing', () => {
 	it('requests the explicit Docker subnet matching the derived listening IP prefix', () => {
 		const identity = { app: 'private-content', stack: 'main', walrusName: 'walrus' };
 		const prefix = deriveWalrusSubnetPrefix(identity);
-		const spec = walrusNetworkCreateSpec(
+		const spec = withSubnetAddressing(
 			{
 				name: buildWalrusNetworkName(identity.app, identity.stack, identity.walrusName),
 				app: identity.app,
@@ -166,7 +165,8 @@ describe('walrus storage-node constants', () => {
 					containerApiPort: WALRUS_ROUTER_PORT,
 					walrusNetworkName: 'walrus-net',
 					suiNetworkName: 'sui-net',
-					deployHostMountPath: '/tmp/devstack/walrus-deploy',
+					deployHostMountPath: '/tmp/devstack/walrus/walrus/deploy',
+					stackRoot: '/tmp/devstack',
 					deployConfigHash: 'deploy-hash',
 					stopGraceSeconds: 37,
 				}),
@@ -190,13 +190,35 @@ describe('walrus storage-node constants', () => {
 					containerApiPort: WALRUS_ROUTER_PORT,
 					walrusNetworkName: 'walrus-net',
 					suiNetworkName: 'sui-net',
-					deployHostMountPath: '/tmp/devstack/walrus-deploy',
+					deployHostMountPath: '/tmp/devstack/walrus/walrus/deploy',
+					stackRoot: '/tmp/devstack',
 					deployConfigHash: 'deploy-hash',
 				}),
 			),
 		);
 
 		expect(specs[0]?.stopGraceSeconds).toBe(DEFAULT_NODE_STOP_GRACE_SECONDS);
+	});
+
+	it('WalrusStorageNode shape does NOT carry a publicKey field (backlog #2)', () => {
+		// Regression: the per-node descriptor used to carry a placeholder
+		// `publicKey: '<bls-pubkey-storage-node-${i}>'` sentinel that
+		// shipped to user code on every cycle. Per the storage-nodes
+		// inline doc the SDK consumer reads the public key off
+		// `packageConfig`, NOT this routing-handle descriptor — so the
+		// field is dropped entirely. Compile-time check: a structurally
+		// well-formed descriptor type-narrows without referencing
+		// `publicKey`, and the runtime shape's keyset MUST NOT include it.
+		const node: WalrusStorageNode = {
+			nodeIndex: 0,
+			nodeId: 'walrus-node-0',
+			publicHostname: 'walrus-node-0.app.localhost',
+			rpcUrl: 'http://walrus-node-0.app.localhost:9185',
+		};
+		expect(Object.keys(node)).not.toContain('publicKey');
+		// Defensive — guard against the field reappearing as an optional
+		// `undefined` accessor in the type.
+		expect('publicKey' in node).toBe(false);
 	});
 
 	it('folds bind-mount and network inputs into the recreate fingerprint', () => {

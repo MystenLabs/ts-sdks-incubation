@@ -31,8 +31,11 @@ import type {
 	ImageRef,
 } from '../../contracts/container-runtime.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
-import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
-import { containerInnerScript } from './cli-driver.ts';
+import {
+	ensureManagedContainer,
+	PER_APP_SHARED_STACK,
+} from '../../substrate/runtime/managed-container.ts';
+import { containerInnerScript } from '../../substrate/runtime/sui-move-build/index.ts';
 import { suiCliError, suiPluginError, type SuiCliError, type SuiPluginError } from './errors.ts';
 
 /** Default move-build lock timeout — five minutes, matching the
@@ -135,7 +138,7 @@ export const acquireChainBuildContainer = (
 				app: spec.app,
 				// Intentionally pin stack to a sentinel — see comment
 				// above; this is per-app, not per-stack.
-				stack: '_per-app_',
+				stack: PER_APP_SHARED_STACK,
 				plugin: 'sui',
 				role: 'build',
 			},
@@ -186,10 +189,11 @@ export const acquireChainBuildContainer = (
 						}),
 					);
 				}
-				// The package's container path = `/workspace/<basename>`;
-				// containerInnerScript stages the awk scrub then exec-s
-				// `sui move build --path /workspace/<pkgName>` with the
-				// invariant flag set.
+				// The package's container path = `/workspace/<basename>`.
+				// containerInnerScript copies that subdir into an in-container
+				// scratch dir and scrubs + builds THERE, so the bind-mounted
+				// appDir source (`spec.appDir` at `/workspace`) is never
+				// rewritten by the build.
 				const pkgName = containerPath.replace(/^\/workspace\//, '').replace(/^\/+|\/+$/g, '');
 				const inner = containerInnerScript(pkgName);
 				const result = yield* Effect.scoped(

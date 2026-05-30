@@ -58,6 +58,10 @@ interface RoutableBase {
 	readonly endpointName: string;
 	readonly dispatchId: DispatchId;
 	readonly upstream: RoutableUpstream;
+	/** Routes whose upstream starts after capability harvest can publish
+	 *  their dispatch file without waiting for the public proxy to serve
+	 *  the backend during route contribution. */
+	readonly readiness?: 'deferred';
 }
 
 /** HTTP variant — Host-header dispatched, CORS-aware. */

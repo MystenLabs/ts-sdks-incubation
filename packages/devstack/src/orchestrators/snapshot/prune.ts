@@ -1,27 +1,29 @@
 // Prune — label-scoped orphan sweep.
 //
-// Architecture § 4 / Decision §10: plugins emit `LivenessClassifier`
-// decls; the L3 prune orchestrator dispatches to them with the
-// registry-persisted hints and reaps anything classified `abandoned`.
+// Architecture § 4: the L3 prune orchestrator sweeps committed snapshot
+// byproduct images and snapshot-catalog directories whose meta document
+// is missing (partial artifacts) or unreadable. Stack-wide registry
+// pruning (engine resources / stack roster) is a sibling orchestrator and
+// lives elsewhere; this file is scoped to snapshot-adjacent artifacts.
 //
-// This module is the snapshot-orchestrator-side of prune: sweeping
-// snapshot-byproduct images, snapshot-catalog directories that lost
-// their owning stack, and cache entries whose chainId is no longer
-// referenced anywhere.
-//
-// The substrate-wide registry prune (engine resources / stack
-// roster) is a sibling orchestrator and lives elsewhere; this file
-// is scoped to snapshot adjacent artifacts.
+// Image sweep scope (load-bearing): committed snapshot images are stamped
+// at `docker commit` time with `{managed, app, stack, role:
+// SNAPSHOT_IMAGE_ROLE}` (see `runtime/docker/container.ts`). Prune scopes
+// its sweep to THAT role so it reaps only snapshot byproducts. Plugin
+// BUILD images share `{managed, app, stack}` but carry the source
+// plugin's real role (or none) — never `SNAPSHOT_IMAGE_ROLE` — so the
+// sweep can NEVER untag a live stack's build images and force a silent
+// rebuild. Prune holds only `snapshot.reservation` (not stack liveness)
+// and is CLI-exposed, so this scoping is what keeps it safe against a
+// running stack.
 
 import { Effect, FileSystem, Schema } from 'effect';
 
-import type {
-	LivenessClassification,
-	LivenessClassifierDecl,
-	LivenessHints,
-} from '../../contracts/liveness-classifier.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { SNAPSHOT_IMAGE_ROLE } from '../../runtime/docker/container.ts';
+import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { SnapshotMetadataSchema, type SnapshotMetadata } from './descriptor.ts';
+import { makePhaseFailer } from './phase-error.ts';
 import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
@@ -34,7 +36,6 @@ export class PrunePhaseError extends Schema.TaggedErrorClass<PrunePhaseError>()(
 		phase: Schema.Literals([
 			'enumerate-catalog',
 			'read-meta',
-			'classify',
 			'sweep-images',
 			'sweep-directories',
 		]),
@@ -43,36 +44,20 @@ export class PrunePhaseError extends Schema.TaggedErrorClass<PrunePhaseError>()(
 	},
 ) {}
 
-const failPhase =
-	(
-		phase: PrunePhaseError['phase'],
-		detail: string,
-	): ((cause: unknown) => Effect.Effect<never, PrunePhaseError>) =>
-	(cause) =>
-		Effect.fail(new PrunePhaseError({ phase, detail, cause }));
+const failPhase = makePhaseFailer(PrunePhaseError);
 
 // -----------------------------------------------------------------------------
 // Inputs
 // -----------------------------------------------------------------------------
 
-/** Per-classifier dispatch entry — the L3 prune orchestrator hands
- *  the classifier the persisted hints for one snapshot artifact /
- *  cache entry / etc., and the classifier returns `'alive' | 'dormant'
- *  | 'stale' | 'abandoned'`. */
-export interface ClassifierDispatch {
-	readonly plugin: string;
-	readonly decl: LivenessClassifierDecl;
-}
-
 export interface PruneInputs {
 	/** Stack root containing the `snapshots/` catalog. */
 	readonly stackRoot: string;
-	/** Filter for managed image cleanup. */
+	/** App/stack scope for the committed-snapshot-image sweep. Prune
+	 *  narrows this to `role: SNAPSHOT_IMAGE_ROLE` before removing images,
+	 *  so only this stack's snapshot byproducts are swept — never its
+	 *  build images, never a sibling stack. */
 	readonly imageLabelFilter: { readonly app: string; readonly stack: string };
-	/** Classifiers contributed by plugins — same set the L3 prune
-	 *  orchestrator dispatches to. Iterated in declaration order; the
-	 *  first non-`alive` classification wins. */
-	readonly classifiers: ReadonlyArray<ClassifierDispatch>;
 	readonly runtime: ContainerRuntime;
 }
 
@@ -80,8 +65,13 @@ export interface PruneResult {
 	readonly inspected: number;
 	readonly reaped: ReadonlyArray<{
 		readonly id: string;
-		readonly classification: LivenessClassification;
+		/** Reason the artifact was reaped. Currently only `'abandoned'`
+		 *  (partial artifact with no readable meta document). */
+		readonly classification: 'abandoned';
 	}>;
+	/** Count of committed snapshot byproduct images removed (those stamped
+	 *  with `role: SNAPSHOT_IMAGE_ROLE` in this app/stack). Build images
+	 *  are never included. */
 	readonly imagesSwept: number;
 }
 
@@ -100,42 +90,25 @@ const readMetaOpt = (
 		const text = yield* fs
 			.readFileString(path)
 			.pipe(Effect.catch(failPhase('read-meta', `read ${path} failed`)));
-		const raw = yield* Effect.try({
-			try: () => JSON.parse(text) as unknown,
-			catch: () => null,
+		return yield* decodeJsonText(SnapshotMetadataSchema, text, {
+			source: path,
+			mkError: () => null,
 		}).pipe(Effect.catch(() => Effect.succeed(null)));
-		if (raw === null) return null;
-		return yield* Schema.decodeUnknownEffect(SnapshotMetadataSchema)(raw).pipe(
-			Effect.catch(() => Effect.succeed(null)),
-		);
 	});
-
-/** Build the hints document a classifier consumes. Snapshot prune is
- *  age- + identity-based by default; plugin-specific hints flow
- *  through `pluginHints`. */
-const hintsFor = (meta: SnapshotMetadata): LivenessHints => ({
-	heartbeatAt: meta.createdAt,
-	claimPid: null,
-	claimStartTime: null,
-	pluginHints: {
-		snapshotId: meta.id,
-		identity: meta.identity,
-		participants: meta.participants,
-	},
-});
 
 // -----------------------------------------------------------------------------
 // Top-level prune
 // -----------------------------------------------------------------------------
 
 /**
- * Walk the snapshot catalog, dispatch each artifact's hints through
- * the contributed classifiers, and reap anything classified
- * `abandoned`. Concurrent sweeps over the same catalog are not
- * supported (caller holds `snapshot.reservation` or `stack.lock`).
+ * Walk the snapshot catalog and reap partial artifacts (entries whose
+ * `meta.json` is missing or unparseable). Concurrent sweeps over the
+ * same catalog are not supported (caller holds `snapshot.reservation`
+ * or `stack.lock`).
  *
- * Also removes managed images via the runtime adapter's label-filtered
- * image cleanup.
+ * Also removes committed snapshot byproduct images via the runtime
+ * adapter's label-filtered image cleanup, scoped to `role:
+ * SNAPSHOT_IMAGE_ROLE` so build images are never touched.
  */
 export const runPrune = (
 	inputs: PruneInputs,
@@ -156,45 +129,31 @@ export const runPrune = (
 			.readDirectory(catalogDir)
 			.pipe(Effect.catch(failPhase('enumerate-catalog', `readdir ${catalogDir} failed`)));
 
-		const reaped: Array<{ id: string; classification: LivenessClassification }> = [];
+		const reaped: Array<{ id: string; classification: 'abandoned' }> = [];
 		for (const id of ids) {
 			const dir = `${catalogDir}/${id}`;
 			const meta = yield* readMetaOpt(dir);
-			// Partial artifacts (no meta) — classify as `abandoned` by
-			// convention. The catalog list already hides them; reaping
-			// is just freeing the disk slot.
+			// Partial artifacts (no meta) — reap to free the disk slot.
+			// The catalog list already hides them; reaping is just GC.
 			if (meta === null) {
 				yield* fs
 					.remove(dir, { recursive: true, force: true })
 					.pipe(Effect.catch(failPhase('sweep-directories', `remove ${dir} failed`)));
 				reaped.push({ id, classification: 'abandoned' });
-				continue;
-			}
-			const hints = hintsFor(meta);
-			let classification: LivenessClassification = 'alive';
-			for (const { decl } of inputs.classifiers) {
-				const c = yield* decl
-					.classify(hints)
-					.pipe(Effect.catch(() => Effect.succeed('alive' as LivenessClassification)));
-				if (c !== 'alive') {
-					classification = c;
-					break;
-				}
-			}
-			if (classification === 'abandoned') {
-				yield* fs
-					.remove(dir, { recursive: true, force: true })
-					.pipe(Effect.catch(failPhase('sweep-directories', `remove ${dir} failed`)));
-				reaped.push({ id, classification });
 			}
 		}
 
-		// Sweep snapshot-byproduct images via the runtime adapter's
-		// label-scoped image cleanup. Architecture § Decision §8 —
-		// committed snapshot images accumulate; the orchestrator GCs
-		// alongside catalog prune.
+		// Sweep committed snapshot byproduct images via the runtime
+		// adapter's label-scoped image cleanup. Architecture § Decision §8 —
+		// committed snapshot images accumulate (a hard-killed capture can
+		// leak its temp image before cleanup); the orchestrator GCs them
+		// alongside catalog prune. The `role: SNAPSHOT_IMAGE_ROLE` narrowing
+		// is what distinguishes these byproducts from the live stack's
+		// build images (which share `{app, stack}` but carry a different
+		// role / no role) — without it, prune would untag build images and
+		// force silent rebuilds.
 		const imagesSwept = yield* inputs.runtime
-			.removeManagedImages(inputs.imageLabelFilter)
+			.removeManagedImages({ ...inputs.imageLabelFilter, role: SNAPSHOT_IMAGE_ROLE })
 			.pipe(Effect.catch(failPhase('sweep-images', `image sweep failed`)));
 
 		return {

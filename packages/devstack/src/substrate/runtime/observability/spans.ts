@@ -5,25 +5,25 @@
 // vocabulary — OTEL consumers can filter by `devstack.app`,
 // `devstack.stack`, `devstack.plugin`, `devstack.role` reliably.
 //
-// Discipline: no service names appear anywhere; only the four
-// engine-level dimensions. Plugins call `withPluginSpan` and pass
-// their `pluginKey` + `role`.
+// Discipline: substrate-owned vocabulary carries ONLY engine-dimensional
+// keys (`devstack.*`, `error.*`, `process.exit.*`, `container.*`) plus
+// HTTP-generic keys (`http.*`, `server.*`). Plugin-domain keys
+// (`wallet.token`, `sui.mode`, `account.name`, etc.) live in
+// `src/plugins/<name>/spans.ts` next to the plugin that owns them; see
+// STYLE_GUIDE §16.
 
 import { Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { PluginRole } from '../../lifecycle.ts';
+import { IdentityContext } from '../paths.ts';
 
-/** Canonical span-attribute keys. Single source of truth for the
- *  observability vocabulary. */
+/** Canonical span-attribute keys. Engine-dimensional + http/process
+ *  generic only. Plugin-domain keys belong on per-plugin `spans.ts`. */
 export const SpanAttr = {
-	accountFundingFrom: 'account.funding.from',
-	accountFundingTo: 'account.funding.to',
-	accountName: 'account.name',
 	app: 'devstack.app',
 	stack: 'devstack.stack',
 	network: 'devstack.network',
-	coinType: 'coin.type',
 	plugin: 'devstack.plugin',
 	role: 'devstack.role',
 	phase: 'devstack.phase',
@@ -50,14 +50,17 @@ export const SpanAttr = {
 	serviceName: 'devstack.service.name',
 	stageAndSwapStagingPath: 'stageAndSwap.stagingPath',
 	stageAndSwapTargetPath: 'stageAndSwap.targetPath',
-	suiAutoTickIntervalMs: 'sui.autoTick.intervalMs',
-	suiMode: 'sui.mode',
-	walletToken: 'wallet.token',
-	walletBearerValid: 'wallet.auth.bearerValid',
-	walletLocalhostViteEnabled: 'wallet.localhostViteEnabled',
-	walletOrigin: 'wallet.origin',
-	walletTokenFile: 'wallet.tokenFile',
-	walletUrl: 'wallet.url',
+	cacheCorruption: 'cache.corruption',
+	capabilitySinksKind: 'capability-sinks.kind',
+	strategyKey: 'strategy.key',
+	strategyAutoMounted: 'strategy.autoMounted',
+	artifactPublisherNamespace: 'artifactPublisher.namespace',
+	artifactPublisherChain: 'artifactPublisher.chain',
+	artifactPublisherContentHash: 'artifactPublisher.contentHash',
+	artifactPublisherPath: 'artifactPublisher.path',
+	stackLockPath: 'devstack.stack-lock.path',
+	stackLockTimeoutMillis: 'devstack.stack-lock.timeoutMillis',
+	snapshotReservationPath: 'devstack.snapshot-reservation.path',
 } as const;
 
 export interface StackSpanContext {
@@ -133,3 +136,49 @@ export const annotateCycle = (cycleId: number): Effect.Effect<void> =>
  */
 export const annotateOp = (op: string): Effect.Effect<void> =>
 	Effect.annotateCurrentSpan({ [SpanAttr.op]: op });
+
+/**
+ * Canonical labels every `spanWithLabels` span carries. `plugin` is
+ * caller-supplied (per-acquisition); `endpoint` + `op` are optional
+ * canonical narrowers — anything plugin-specific goes through `extras`
+ * so the OTEL namespace check (STYLE_GUIDE §16) still applies.
+ */
+export interface SpanLabels {
+	readonly plugin: PluginKey | string;
+	readonly endpoint?: string;
+	readonly op?: string;
+}
+
+/**
+ * Wrap an Effect in a span that pre-bakes the canonical identity
+ * footprint — `devstack.app` + `devstack.stack` (read from the ambient
+ * `IdentityContext`) + `devstack.plugin` from `labels.plugin`. Reach
+ * for this on any span that needs to be filterable or groupable by
+ * plugin on the dashboard (i.e. basically every span). Coexists with
+ * raw `Effect.withSpan` — migration is incremental, not a flag day.
+ *
+ * Adoption prerequisite: this adds `IdentityContext` to the wrapped
+ * effect's `R`. Only reach for it where `IdentityContext` is already in
+ * scope (or the boot signature can be widened to carry it). Plugin
+ * acquire/boot effects currently do NOT thread `IdentityContext` — they
+ * set `devstack.plugin` directly via `Effect.withSpan` — so migrating
+ * them needs the identity plumbed first. Note also that a span's
+ * app/stack may legitimately differ from the ambient identity (e.g. the
+ * `_per-app_` shared-stack sentinel in `managed-container.ts`), where
+ * this helper is the wrong tool.
+ */
+export const spanWithLabels =
+	(name: string, labels: SpanLabels, extras?: Record<string, unknown>) =>
+	<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R | IdentityContext> =>
+		Effect.gen(function* () {
+			const identity = yield* IdentityContext;
+			const attributes: Record<string, unknown> = {
+				[SpanAttr.app]: identity.app,
+				[SpanAttr.stack]: identity.stack,
+				[SpanAttr.plugin]: labels.plugin,
+				...(labels.endpoint !== undefined ? { [SpanAttr.endpointKey]: labels.endpoint } : {}),
+				...(labels.op !== undefined ? { [SpanAttr.op]: labels.op } : {}),
+				...extras,
+			};
+			return yield* effect.pipe(Effect.withSpan(name, { attributes }));
+		});

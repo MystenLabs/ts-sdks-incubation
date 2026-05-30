@@ -32,6 +32,8 @@ const state = (): SubscribableState => ({
 			},
 			endpoints: [endpointKey('sui#0:rpc')],
 			selectiveRestartHighlight: false,
+			section: 'service',
+			endpointSection: 'service',
 		},
 		{
 			key: pluginKey('account/alice#1'),
@@ -42,6 +44,8 @@ const state = (): SubscribableState => ({
 			logTail: { lines: ['address=0xabc'], level: 'info', truncated: false },
 			endpoints: [],
 			selectiveRestartHighlight: false,
+			section: 'account',
+			endpointSection: 'account',
 		},
 		{
 			key: pluginKey('package/connect-four#2'),
@@ -52,11 +56,14 @@ const state = (): SubscribableState => ({
 			logTail: { lines: ['packageId=0x123'], level: 'info', truncated: false },
 			endpoints: [],
 			selectiveRestartHighlight: false,
+			section: 'package',
+			endpointSection: 'package',
 		},
 	],
 	endpoints: [
 		{
 			endpointKey: endpointKey('sui#0:rpc'),
+			pluginKey: pluginKey('sui#0'),
 			name: 'rpc',
 			url: 'http://127.0.0.1:9000',
 			displayUrl: 'http://sui.wallet.localhost:9000',
@@ -115,6 +122,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 		endpoints: [
 			{
 				endpointKey: endpointKeys[0]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'rpc',
 				url: 'http://127.0.0.1:51001',
 				displayUrl: 'http://rpc.private-content.private-content.localhost:9000',
@@ -123,6 +131,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 			},
 			{
 				endpointKey: endpointKeys[1]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'faucet',
 				url: 'http://127.0.0.1:50001',
 				displayUrl: 'http://faucet.private-content.private-content.localhost:9123',
@@ -131,6 +140,7 @@ const stateWithMultipleServiceUrls = (): SubscribableState => {
 			},
 			{
 				endpointKey: endpointKeys[2]!,
+				pluginKey: pluginKey('sui#0'),
 				name: 'graphql',
 				url: 'http://127.0.0.1:51002',
 				displayUrl: 'http://graphql.private-content.private-content.localhost:9125',

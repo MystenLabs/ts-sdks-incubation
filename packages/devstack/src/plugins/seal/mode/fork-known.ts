@@ -21,8 +21,8 @@
 
 import { Effect } from 'effect';
 
-import { acquireLive, type KnownNetwork } from './live.ts';
-import { sealError, type SealError } from '../errors.ts';
+import { acquireLive, validateLiveInputs, type KnownNetwork } from './live.ts';
+import type { SealError } from '../errors.ts';
 import type { SealKnownResolved } from '../registry-publish.ts';
 
 // ---------------------------------------------------------------------------
@@ -40,37 +40,73 @@ export const resolveDeploymentNetwork = (upstream: ForkUpstream): KnownNetwork =
 // Inputs
 // ---------------------------------------------------------------------------
 
+/** Pre-validated fork-known inputs. Symmetric with the live mode's
+ *  `{ name, resolved }` shape — the barrel resolves
+ *  `upstream → KnownNetwork → validated tuple` synchronously at
+ *  factory time so both branches reach `acquireLive` with the same
+ *  structural envelope. */
 export interface ForkKnownInputs {
 	readonly name: string;
 	readonly upstream: ForkUpstream;
-	/** Explicit overrides (rare — the wrapped upstream's known
-	 *  deployment is usually authoritative). */
+	readonly resolved: { readonly objectId: string; readonly keyServerUrl: string };
+}
+
+/** Resolve the fork-known overrides + upstream-derived defaults into
+ *  a validated tuple. Pure synchronous projection — mirrors the
+ *  factory-boundary `validateLiveInputs` call in `index.ts` for the
+ *  live branch. Throws on missing fields after fallback (matches the
+ *  live branch's behaviour — see `validateLiveInputs`). */
+export const validateForkKnownInputs = (inputs: {
+	readonly name: string;
+	readonly upstream: ForkUpstream;
 	readonly objectId?: string;
 	readonly keyServerUrl?: string;
-}
+}): { readonly objectId: string; readonly keyServerUrl: string } => {
+	try {
+		return validateLiveInputs({
+			name: inputs.name,
+			network: resolveDeploymentNetwork(inputs.upstream),
+			objectId: inputs.objectId,
+			keyServerUrl: inputs.keyServerUrl,
+		});
+	} catch (err) {
+		// Re-throw the original tagged error so downstream
+		// `Effect.catchTag('SealConfigError', …)` still matches.
+		// Wrapping in `new Error(…)` would strip the `_tag` and turn
+		// the typed refusal into an untyped runtime crash. Prepend the
+		// upstream context to the message in-place instead.
+		if (isSealConfigError(err)) {
+			throw {
+				...err,
+				message: `seal.fork-known (upstream=${inputs.upstream}): ${err.message}`,
+			};
+		}
+		throw err;
+	}
+};
+
+const isSealConfigError = (
+	value: unknown,
+): value is { readonly _tag: 'SealConfigError'; readonly message: string; [k: string]: unknown } =>
+	typeof value === 'object' &&
+	value !== null &&
+	(value as { _tag?: unknown })._tag === 'SealConfigError' &&
+	typeof (value as { message?: unknown }).message === 'string';
 
 // ---------------------------------------------------------------------------
 // Mode acquire
 // ---------------------------------------------------------------------------
 
-/** Acquire body for the fork-known mode. Delegates to live mode
- *  with the resolved network. */
+/** Acquire body for the fork-known mode. Inputs already pre-validated
+ *  by the barrel via `validateForkKnownInputs`; delegates the
+ *  read-side projection to live mode. The `upstream` field rides
+ *  through for downstream span attribution.
+ *
+ *  Error channel kept typed as `SealError` for forward-compatibility
+ *  with any future fallible work this body needs to do (currently
+ *  `acquireLive` is `Effect.sync` so the channel is effectively
+ *  `never`). */
 export const acquireForkKnown = (
 	inputs: ForkKnownInputs,
 ): Effect.Effect<SealKnownResolved, SealError> =>
-	acquireLive({
-		name: inputs.name,
-		network: resolveDeploymentNetwork(inputs.upstream),
-		objectId: inputs.objectId,
-		keyServerUrl: inputs.keyServerUrl,
-	}).pipe(
-		// Re-tag the error so the cause walker can attribute fork-mode
-		// failures distinctly from live-mode failures.
-		Effect.mapError((err) =>
-			sealError('seal', {
-				name: inputs.name,
-				message: `seal.fork-known (upstream=${inputs.upstream}): ${err.message}`,
-				cause: err,
-			}),
-		),
-	);
+	acquireLive({ name: inputs.name, resolved: inputs.resolved });

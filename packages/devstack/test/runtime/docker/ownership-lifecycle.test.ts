@@ -158,6 +158,7 @@ const stackPathsFor = (stackRoot: string): StackPaths => {
 		snapshotDir: join(stackRoot, 'snapshots'),
 		stackLockFile: join(stackRoot, 'stack.lock'),
 		rosterFile: join(stackRoot, 'roster.json'),
+		containerClaimsFile: join(stackRoot, 'container-claims.json'),
 		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
 		cacheEntry,
 		cacheChainDir,
@@ -714,6 +715,97 @@ describe('same-name Docker resource ownership', () => {
 				const lines = readFileSync(log, 'utf8').trim().split('\n');
 				expect(lines).not.toContain('network create devstack-network');
 				expect(lines).not.toContain('volume create devstack-volume');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('adopts an owned network when a concurrent create loses the race', () =>
+		Effect.gen(function* () {
+			// `docker network create` is not name-atomic and networks have
+			// no per-name lock, so two processes booting against the shared
+			// bridge can both pass the inspect-miss and both create. The
+			// loser sees an "already exists" stderr; ensureNetwork must
+			// re-inspect, confirm OUR ownership labels, and return the
+			// winner's id instead of failing the boot.
+			const root = mkdtempSync(join(tmpdir(), 'docker-network-create-race-test-'));
+			try {
+				// `created` flips the `network inspect` behaviour: absent →
+				// inspect-miss (peer hasn't won yet); present → the owned
+				// winner network is visible to the re-inspect.
+				const created = join(root, 'network-created');
+				const { bin, log } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  if [ ! -f ${JSON.stringify(created)} ]; then`,
+					'    echo "Error response from daemon: network devstack-network not found" >&2',
+					'    exit 1',
+					'  fi',
+					'  printf "%s\\n" \'[{"Id":"winner-network-id","Labels":{"devstack.managed":"true","devstack.network":"true","devstack.app":"app","devstack.stack":"main"}}]\'',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "network" ] && [ "$2" = "create" ]; then',
+					// Peer won the race between our inspect-miss and this
+					// create: make the network visible to the re-inspect and
+					// emit the collision stderr the loser would see.
+					`  touch ${JSON.stringify(created)}`,
+					'  echo "Error response from daemon: network with name devstack-network already exists" >&2',
+					'  exit 1',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const id = yield* ensureNetwork('devstack-network', {
+					app: 'app',
+					stack: 'main',
+				}).pipe(Effect.provide(fakeDockerLayer(bin)));
+
+				expect(id).toBe('winner-network-id');
+				const lines = readFileSync(log, 'utf8').trim().split('\n');
+				// We did attempt the create (lost the race) and then
+				// re-inspected to adopt — so two `network inspect` calls bracket
+				// the single `network create`.
+				expect(lines.filter((line) => line.startsWith('network create ')).length).toBe(1);
+				expect(lines.filter((line) => line.startsWith('network inspect ')).length).toBe(2);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('refuses to adopt a FOREIGN network that wins the create race', () =>
+		Effect.gen(function* () {
+			// Same concurrent-create-loses path, but the network that wins
+			// belongs to another app. ensureNetwork must surface the
+			// ownership error rather than silently adopting a foreign network.
+			const root = mkdtempSync(join(tmpdir(), 'docker-network-foreign-race-test-'));
+			try {
+				const created = join(root, 'network-created');
+				const { bin } = writeDocker(root, [
+					'if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then',
+					`  if [ ! -f ${JSON.stringify(created)} ]; then`,
+					'    echo "Error response from daemon: network devstack-network not found" >&2',
+					'    exit 1',
+					'  fi',
+					'  printf "%s\\n" \'[{"Id":"foreign-network-id","Labels":{"devstack.managed":"true","devstack.network":"true","devstack.app":"other","devstack.stack":"main"}}]\'',
+					'  exit 0',
+					'fi',
+					'if [ "$1" = "network" ] && [ "$2" = "create" ]; then',
+					`  touch ${JSON.stringify(created)}`,
+					'  echo "Error response from daemon: network with name devstack-network already exists" >&2',
+					'  exit 1',
+					'fi',
+					'exit 0',
+					'',
+				]);
+
+				const exit = yield* ensureNetwork('devstack-network', {
+					app: 'app',
+					stack: 'main',
+				}).pipe(Effect.provide(fakeDockerLayer(bin)), Effect.exit);
+
+				expectErrorTag(exit, 'ForeignDockerResource');
 			} finally {
 				rmSync(root, { recursive: true, force: true });
 			}

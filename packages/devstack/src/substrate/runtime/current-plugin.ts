@@ -13,7 +13,7 @@ export interface CurrentPluginKeyShape {
 }
 
 export class CurrentPluginKey extends Context.Service<CurrentPluginKey, CurrentPluginKeyShape>()(
-	'@devstack-rewrite/substrate/CurrentPluginKey',
+	'@devstack/substrate/CurrentPluginKey',
 ) {}
 
 export interface CurrentPluginProgressShape {
@@ -23,7 +23,7 @@ export interface CurrentPluginProgressShape {
 export class CurrentPluginProgress extends Context.Service<
 	CurrentPluginProgress,
 	CurrentPluginProgressShape
->()('@devstack-rewrite/substrate/CurrentPluginProgress') {}
+>()('@devstack/substrate/CurrentPluginProgress') {}
 
 /** Publish acquire-time row narration for the currently supervised
  * plugin. Safe to call from plugin code: if the caller is running

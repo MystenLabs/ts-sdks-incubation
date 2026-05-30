@@ -27,18 +27,25 @@
 // is non-reentrant by design, so a hypothetical loop holding a single
 // lease across iterations would deadlock the second one.
 
-import { Duration, Effect } from 'effect';
+import { Effect } from 'effect';
 
-import type { FaucetStrategy } from '../faucet/strategies/sui-local.ts';
+import { FAUCET_CAPABILITY_KEY_PREFIX, type FaucetStrategy } from '../faucet/index.ts';
 import {
-	faucetCapabilityFor,
+	chainKeyedStrategyFor,
 	StrategyRegistryService,
 } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { CoinResourceId } from '../coin/index.ts';
+import type {
+	AccountFundingRequest as ContractAccountFundingRequest,
+	AccountFundingStrategy as ContractAccountFundingStrategy,
+} from '../../contracts/funding-strategy.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
+import {
+	BALANCE_POLL_PROFILE,
+	makeBoundedSpacedSchedule,
+} from '../../substrate/runtime/retry-policy.ts';
 
 import {
 	accountAcquireError,
@@ -46,7 +53,20 @@ import {
 	type AccountVariantKind,
 } from './errors.ts';
 import { withAddressLease } from './lease.ts';
+import { fundingFailureError } from '../internal/funding-failure-error.ts';
 import type { AccountValue } from './service.ts';
+import { AccountSpans } from './spans.ts';
+import { SuiSpans } from '../sui/index.ts';
+
+// `CoinResourceId` is the literal-typed resource id the coin plugin
+// publishes. Inlined here as `coin:${Sym}` so this file does NOT
+// cross-import the coin plugin — the substrate's compose-time dedup
+// works by string equality on the resource id, and the coin plugin's
+// `coinResourceId` constructor produces the same shape. This is the
+// per-Task-A "inline the literal type alias" decision (the literal
+// pattern is the contract; promoting it to a substrate type would
+// be more ceremony than the single string template warrants).
+type CoinResourceId<Sym extends string> = `coin:${Sym}`;
 
 /** Direct resource ref shape for a coin upstream. The user passes the
  *  result of `coin.fromPackage(...)` / `coin.known(...)` /
@@ -117,28 +137,40 @@ export interface ProjectedFundingEntry {
 
 export type ProjectedFunding = ReadonlyArray<ProjectedFundingEntry>;
 
+/** Outcome marker carried on each `applied` entry — distinguishes a
+ *  faucet/strategy call that actually moved funds (`'funded'`) from
+ *  the short-circuit case where the existing balance already covered
+ *  the request (`'already-satisfied'`). Downstream projection turns
+ *  this into the `AccountRegistryFundingEntry.status` column so a
+ *  no-faucet-call entry is not mislabeled as "funded".
+ *
+ *  Distilled-doc invariant: the `applied` projection must reflect
+ *  what actually happened — not the user's request shape. */
+export type AppliedFundingOutcome = 'funded' | 'already-satisfied';
+
+export interface AppliedFundingEntry extends ProjectedFundingEntry {
+	readonly outcome: AppliedFundingOutcome;
+}
+
+export type AppliedFunding = ReadonlyArray<AppliedFundingEntry>;
+
 export interface AccountFundingResult {
 	readonly requested: ProjectedFunding;
-	readonly applied: ProjectedFunding;
+	readonly applied: AppliedFunding;
 }
 
-/** Request passed to account funding strategies. `amount` uses the
- *  funded coin's smallest unit. The resolved account handle is present
- *  so strategies without an admin signer can perform account-owned
- *  swaps while still sharing the central funding dispatcher. */
-export interface AccountFundingRequest {
-	readonly address: string;
-	readonly amount: bigint;
-	readonly account: AccountValue;
-}
+/** Account-bus projection of the substrate funding-request contract
+ *  (`contracts/funding-strategy.ts`). Narrows the contract's generic
+ *  account-handle slot to the concrete `AccountValue` this plugin
+ *  publishes; strategies inside account or in sibling plugins
+ *  (coin/walrus/deepbook) see the real handle type without re-stating
+ *  the substrate shape. */
+export type AccountFundingRequest = ContractAccountFundingRequest<AccountValue>;
 
-export interface AccountFundingStrategy<E = unknown> {
-	readonly request: (req: AccountFundingRequest) => Effect.Effect<void, E>;
-	/** True when the strategy calls `account.withTransactionSigner`.
-	 *  The dispatcher must not acquire the same non-reentrant
-	 *  per-address lease outside the strategy. */
-	readonly usesAccountSigner?: boolean;
-}
+/** Account-bus projection of the substrate strategy contract. The
+ *  generic account-handle slot is fixed to `AccountValue` so
+ *  contributing plugins receive a typed account handle. */
+export type AccountFundingStrategy<E = unknown> = ContractAccountFundingStrategy<E, AccountValue>;
 
 export interface FundingBalanceReader {
 	readonly readBalance: (args: {
@@ -146,6 +178,32 @@ export interface FundingBalanceReader {
 		readonly coinType: string;
 	}) => Effect.Effect<bigint | null>;
 }
+
+/** Sentinel brand identifying the test-only no-op reader. Surfaced as
+ *  a separate `readonly skipFinalityWait?: true` discriminator on
+ *  `NULL_BALANCE_READER` so the funding pass can short-circuit the
+ *  finality wait deterministically WITHOUT exhausting the bounded
+ *  poll schedule. Production readers MUST NOT set this. */
+interface NullBalanceReader extends FundingBalanceReader {
+	readonly skipFinalityWait: true;
+}
+
+/** Test-only no-op balance reader.
+ *
+ *  Production callers (`account/service.ts`) build a real reader from
+ *  the live SDK via `makeFundingBalanceReader`; the funding pass
+ *  REQUIRES a reader so the post-faucet finality wait is load-bearing
+ *  on real wire calls. Tests that don't model the read/poll loop pass
+ *  this sentinel to explicitly opt OUT of the wait — the absence of
+ *  this opt-out previously hid as a silent `Effect.void` short-circuit
+ *  on any production caller that forgot to wire the reader. */
+export const NULL_BALANCE_READER: FundingBalanceReader = {
+	readBalance: () => Effect.succeed(null),
+	skipFinalityWait: true,
+} as NullBalanceReader;
+
+const skipsFinalityWait = (reader: FundingBalanceReader): boolean =>
+	(reader as NullBalanceReader).skipFinalityWait === true;
 
 /** The canonical builtin SUI coin type. Used by the funding dispatch
  *  to route SUI entries to the faucet strategy (same key as the
@@ -158,9 +216,6 @@ export const SUI_FULL_COIN_TYPE = '0x2::sui::SUI' as const;
  *  Documented at the user-facing factory so a bare `account('alice')`
  *  is predictable. */
 export const DEFAULT_EPHEMERAL_FUND_MIST = 1_000_000_000n;
-
-const FUNDING_SETTLEMENT_INTERVAL_MS = 250;
-const FUNDING_SETTLEMENT_TIMEOUT_MS = 30_000;
 
 /** Inputs the default-funding pass needs from the per-acquire ctx. */
 export interface FundEphemeralDefaultArgs {
@@ -180,8 +235,21 @@ export interface FundEphemeralDefaultArgs {
 	 *  wire call and acquires the per-address lease so concurrent wire
 	 *  calls for the same address serialize at the chain boundary. */
 	readonly broker: LeaseBroker;
-	readonly balanceReader?: FundingBalanceReader;
+	/** Required. Production callers build this from the SDK via
+	 *  `makeFundingBalanceReader`; tests that don't model the read/poll
+	 *  loop opt out explicitly with `NULL_BALANCE_READER`. The previous
+	 *  optional shape allowed a silent `Effect.void` short-circuit on
+	 *  the finality wait when callers forgot to wire it. */
+	readonly balanceReader: FundingBalanceReader;
 }
+
+/** Outcome of `fundEphemeralDefault`. `'skipped'` covers the
+ *  zero-amount no-op; `'already-satisfied'` covers the pre-existing-
+ *  balance short-circuit (no faucet call); `'funded'` covers the
+ *  successful wire path. Callers project this into the `applied`
+ *  shape so the `funded`-vs-`already-satisfied` distinction survives
+ *  to the registry projection. */
+export type FundEphemeralDefaultOutcome = 'funded' | 'already-satisfied' | 'skipped';
 
 /** Apply the default-funding pass for an ephemeral account.
  *
@@ -192,7 +260,7 @@ export interface FundEphemeralDefaultArgs {
  *  the address lock around the wire call. */
 export const fundEphemeralDefault = (
 	parts: FundEphemeralDefaultArgs,
-): Effect.Effect<void, AccountAcquireError, StrategyRegistryService> =>
+): Effect.Effect<FundEphemeralDefaultOutcome, AccountAcquireError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		// LOUD AUTO-PROMOTION — distilled-doc invariant: "no silent
 		// surprises". Emit BEFORE attempting the dispatch so the user
@@ -208,7 +276,7 @@ export const fundEphemeralDefault = (
 		// as a no-op; doing the same here avoids a registry lookup +
 		// span emission for the legitimately-no-funding case.
 		if (parts.amountMist <= 0n) {
-			return;
+			return 'skipped' as const;
 		}
 
 		yield* setCurrentPluginPhase('checking SUI funding');
@@ -217,7 +285,7 @@ export const fundEphemeralDefault = (
 			coinType: SUI_FULL_COIN_TYPE,
 		});
 		if (existingBalance !== null && existingBalance >= parts.amountMist) {
-			return;
+			return 'already-satisfied' as const;
 		}
 
 		// Look up the strategy. Sui auto-registers a faucet strategy
@@ -226,7 +294,10 @@ export const fundEphemeralDefault = (
 		// nothing is registered we surface a typed, actionable error
 		// pointing at the architecture's contract: ephemeral-on-non-
 		// fork without a Faucet MUST fail at acquire time.
-		const strategy = yield* faucetCapabilityFor<FaucetStrategy>(parts.chainId).pipe(
+		const strategy = yield* chainKeyedStrategyFor<FaucetStrategy>(
+			FAUCET_CAPABILITY_KEY_PREFIX,
+			parts.chainId,
+		).pipe(
 			Effect.catchTag('StrategyNotFoundError', (err) =>
 				Effect.fail(
 					accountAcquireError({
@@ -255,18 +326,12 @@ export const fundEphemeralDefault = (
 			readonly _tag: 'FaucetUnreachable' | 'FaucetExhausted' | 'FaucetBodyError';
 		}) =>
 			Effect.fail(
-				accountAcquireError({
+				fundingFailureError({
 					phase: 'fund-default',
 					accountName: parts.accountName,
 					variant: 'ephemeral',
-					message:
-						`Account '${parts.accountName}': faucet strategy request failed ` +
-						`for chain '${parts.chainId}' (tag=${cause._tag}).`,
+					chainId: parts.chainId,
 					cause,
-					hint:
-						'See the cause chain — typical roots are the faucet container ' +
-						'not yet ready (FaucetUnreachable), the wall-clock budget elapsed ' +
-						'(FaucetExhausted), or the body returned Failure (FaucetBodyError).',
 				}),
 			);
 		yield* setCurrentPluginPhase('funding SUI');
@@ -295,18 +360,19 @@ export const fundEphemeralDefault = (
 		});
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': parts.accountName,
-			'account.address': parts.address,
-			'fund.amount.mist': parts.amountMist.toString(),
-			'sui.chain': parts.chainId,
-			'sui.mode': parts.suiMode,
+			[AccountSpans.name]: parts.accountName,
+			[AccountSpans.address]: parts.address,
+			[AccountSpans.fundAmountMist]: parts.amountMist.toString(),
+			[SuiSpans.chain]: parts.chainId,
+			[SuiSpans.mode]: parts.suiMode,
 		});
+		return 'funded' as const;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.fundEphemeralDefault', {
 			attributes: {
-				'account.name': parts.accountName,
-				'account.address': parts.address,
-				'sui.mode': parts.suiMode,
+				[AccountSpans.name]: parts.accountName,
+				[AccountSpans.address]: parts.address,
+				[SuiSpans.mode]: parts.suiMode,
 			},
 		}),
 	);
@@ -325,7 +391,8 @@ export interface ApplyCrossCuttingFundingArgs {
 	readonly funding: ProjectedFunding;
 	readonly chainId: ChainId;
 	readonly broker: LeaseBroker;
-	readonly balanceReader?: FundingBalanceReader;
+	/** Required. See `FundEphemeralDefaultArgs.balanceReader`. */
+	readonly balanceReader: FundingBalanceReader;
 }
 
 /** Apply the cross-cutting funding pass. Variant-agnostic — runs for
@@ -350,13 +417,13 @@ export interface ApplyCrossCuttingFundingArgs {
  *  that do not are wrapped by this dispatcher. */
 export const applyCrossCuttingFunding = (
 	parts: ApplyCrossCuttingFundingArgs,
-): Effect.Effect<ProjectedFunding, AccountAcquireError, StrategyRegistryService> =>
+): Effect.Effect<AppliedFunding, AccountAcquireError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		if (parts.funding.length === 0) {
 			return [];
 		}
 		const registry = yield* StrategyRegistryService;
-		const applied: ProjectedFundingEntry[] = [];
+		const applied: AppliedFundingEntry[] = [];
 
 		for (const entry of parts.funding) {
 			if (entry.amount <= 0n) {
@@ -369,7 +436,7 @@ export const applyCrossCuttingFunding = (
 				coinType: entry.fullCoinType,
 			});
 			if (existingBalance !== null && existingBalance >= entry.amount) {
-				applied.push(entry);
+				applied.push({ ...entry, outcome: 'already-satisfied' });
 				continue;
 			}
 
@@ -378,69 +445,83 @@ export const applyCrossCuttingFunding = (
 			// SUI (`0x2::sui::SUI`) → reuse the faucet-request key so the
 			// SUI auto-registered strategy fields the request (this
 			// matches the default-funding pass and keeps the registry
-			// surface uniform).
+			// surface uniform). The faucet contract takes
+			// `{address, amount}` only (it never sees the resolved
+			// account handle) — kept as its own helper so the typing is
+			// honest at the dispatch site.
 			//
 			// Everything else → `coinType:<fullCoinType>` so user-defined
 			// Coin plugins (and Walrus's exchange strategy keyed by
 			// `coinType:<WAL fullCoinType>`) can contribute strategies
-			// declaratively.
+			// declaratively. These satisfy `AccountFundingStrategy` and
+			// receive the resolved account handle in the request.
 			const isSui = entry.fullCoinType === SUI_FULL_COIN_TYPE;
 			const coinKey = `coinType:${entry.fullCoinType}` as const;
-			const lookup = isSui
-				? faucetCapabilityFor<AccountFundingStrategy>(parts.chainId)
-				: registry.get<typeof coinKey, AccountFundingStrategy>(coinKey);
-
-			// Architecture-distilled: optional-faucet-is-noop for
-			// arbitrary coins. Explicit SUI entries are the normal gas
-			// faucet path, so missing strategy is actionable and loud.
-			const strategy = yield* lookup.pipe(
-				Effect.catchTag('StrategyNotFoundError', (err) =>
-					isSui
-						? Effect.fail(
-								accountAcquireError({
-									phase: 'fund-cross-cutting',
-									accountName: parts.accountName,
-									variant: parts.variant,
-									message:
-										`Account '${parts.accountName}': no SUI funding strategy registered ` +
-										`for chain '${parts.chainId}'. Registered keys: [${err.registeredKeys.join(', ')}].`,
-									cause: err,
-									hint: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
-								}),
-							)
-						: Effect.succeed(null as AccountFundingStrategy | null),
-				),
-			);
-			if (strategy === null) {
-				continue;
-			}
-
 			const key = isSui ? (`faucet:request:${parts.chainId}` as const) : coinKey;
-			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError => {
-				const tag =
-					typeof cause === 'object' && cause !== null && '_tag' in cause
-						? String((cause as { readonly _tag?: unknown })._tag)
-						: 'unknown';
-				return accountAcquireError({
+
+			const wrapCrossCuttingFailure = (cause: unknown): AccountAcquireError =>
+				fundingFailureError({
 					phase: 'fund-cross-cutting',
 					accountName: parts.accountName,
 					variant: parts.variant,
-					message:
-						`Account '${parts.accountName}': cross-cutting funding ` +
-						`failed for coin (key='${key}') amount=${entry.amount} ` +
-						`(tag=${tag}).`,
+					key,
+					amount: entry.amount,
 					cause,
-					hint:
-						'Cross-cutting funding requires the matching strategy ' +
-						'to be registered at the time of acquire — check the ' +
-						'plugin that contributes this coin and any `via` dependency.',
 				});
-			};
-			const request = strategy
-				.request({ address: parts.address, amount: entry.amount, account: parts.account })
-				.pipe(Effect.mapError(wrapCrossCuttingFailure));
+
+			let request: Effect.Effect<void, AccountAcquireError>;
+			let usesAccountSigner = false;
+			if (isSui) {
+				// FaucetStrategy lookup — request shape is `{address, amount}`.
+				// Architecture-distilled: explicit SUI entries are the
+				// normal gas faucet path, so missing strategy is
+				// actionable and loud (no silent drop).
+				const strategy = yield* chainKeyedStrategyFor<FaucetStrategy>(
+					FAUCET_CAPABILITY_KEY_PREFIX,
+					parts.chainId,
+				).pipe(
+					Effect.catchTag('StrategyNotFoundError', (err) =>
+						Effect.fail(
+							accountAcquireError({
+								phase: 'fund-cross-cutting',
+								accountName: parts.accountName,
+								variant: parts.variant,
+								message:
+									`Account '${parts.accountName}': no SUI funding strategy registered ` +
+									`for chain '${parts.chainId}'. Registered keys: [${err.registeredKeys.join(', ')}].`,
+								cause: err,
+								hint: 'Ensure a sui() plugin with a faucet-bearing mode (local/live-testnet/live-devnet) is in the stack.',
+							}),
+						),
+					),
+				);
+				request = strategy
+					.request({ address: parts.address, amount: entry.amount })
+					.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			} else {
+				// AccountFundingStrategy lookup — request shape is
+				// `{address, amount, account}`. Architecture-distilled:
+				// optional-faucet-is-noop for arbitrary coins — missing
+				// registration short-circuits silently rather than
+				// failing the acquire.
+				const strategy = yield* registry
+					.get<typeof coinKey, AccountFundingStrategy>(coinKey)
+					.pipe(
+						Effect.catchTag('StrategyNotFoundError', () =>
+							Effect.succeed(null as AccountFundingStrategy | null),
+						),
+					);
+				if (strategy === null) {
+					continue;
+				}
+				usesAccountSigner = strategy.usesAccountSigner === true;
+				request = strategy
+					.request({ address: parts.address, amount: entry.amount, account: parts.account })
+					.pipe(Effect.mapError(wrapCrossCuttingFailure));
+			}
+
 			yield* setCurrentPluginPhase(`funding ${entry.coin}`);
-			yield* strategy.usesAccountSigner === true
+			yield* usesAccountSigner
 				? request
 				: withAddressLease(parts.broker, parts.accountName, parts.address, request);
 			yield* setCurrentPluginPhase(`waiting for ${entry.coin} funding settlement`);
@@ -454,37 +535,36 @@ export const applyCrossCuttingFunding = (
 				coinLabel: entry.coin,
 				amount: entry.amount,
 			});
-			applied.push(entry);
+			applied.push({ ...entry, outcome: 'funded' });
 		}
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': parts.accountName,
-			'account.address': parts.address,
-			'fund.cross-cutting.count': parts.funding.length,
-			'sui.chain': parts.chainId,
+			[AccountSpans.name]: parts.accountName,
+			[AccountSpans.address]: parts.address,
+			[AccountSpans.fundCrossCuttingCount]: parts.funding.length,
+			[SuiSpans.chain]: parts.chainId,
 		});
 		return applied;
 	}).pipe(
 		Effect.withSpan('devstack.plugin.account.applyCrossCuttingFunding', {
 			attributes: {
-				'account.name': parts.accountName,
-				'account.address': parts.address,
-				'fund.cross-cutting.entries': parts.funding.length,
+				[AccountSpans.name]: parts.accountName,
+				[AccountSpans.address]: parts.address,
+				[AccountSpans.fundCrossCuttingEntries]: parts.funding.length,
 			},
 		}),
 	);
 
 const readExistingBalance = (
-	balanceReader: FundingBalanceReader | undefined,
+	balanceReader: FundingBalanceReader,
 	args: {
 		readonly owner: string;
 		readonly coinType: string;
 	},
-): Effect.Effect<bigint | null> =>
-	balanceReader === undefined ? Effect.succeed(null) : balanceReader.readBalance(args);
+): Effect.Effect<bigint | null> => balanceReader.readBalance(args);
 
 const waitForBalanceAtLeast = (parts: {
-	readonly balanceReader: FundingBalanceReader | undefined;
+	readonly balanceReader: FundingBalanceReader;
 	readonly accountName: string;
 	readonly variant: AccountVariantKind;
 	readonly phase: 'fund-default' | 'fund-cross-cutting';
@@ -493,37 +573,44 @@ const waitForBalanceAtLeast = (parts: {
 	readonly coinLabel: string;
 	readonly amount: bigint;
 }): Effect.Effect<void, AccountAcquireError> => {
-	if (parts.balanceReader === undefined) {
+	const reader = parts.balanceReader;
+	// Test-only opt-out — the `NULL_BALANCE_READER` sentinel explicitly
+	// declares "this caller doesn't model the read/poll loop". Production
+	// readers never set `skipFinalityWait`, so the wait stays load-bearing
+	// on real wire calls.
+	if (skipsFinalityWait(reader)) {
 		return Effect.void;
 	}
 	return Effect.gen(function* () {
-		const startedAt = Date.now();
-		let lastBalance: bigint | null = null;
-		for (;;) {
-			lastBalance = yield* readExistingBalance(parts.balanceReader, {
-				owner: parts.owner,
-				coinType: parts.coinType,
-			});
-			if (lastBalance !== null && lastBalance >= parts.amount) {
-				return;
-			}
-			if (Date.now() - startedAt >= FUNDING_SETTLEMENT_TIMEOUT_MS) {
-				return yield* Effect.fail(
-					accountAcquireError({
-						phase: parts.phase,
-						accountName: parts.accountName,
-						variant: parts.variant,
-						message:
-							`Account '${parts.accountName}': funding for ${parts.coinLabel} was accepted ` +
-							`but balance did not reach ${parts.amount} before the settlement timeout ` +
-							`(last=${lastBalance === null ? '<unavailable>' : lastBalance}).`,
-						hint:
-							'The faucet or funding strategy returned before the funded coin became spendable. ' +
-							'Check the funding strategy finality gate and Sui RPC health.',
-					}),
-				);
-			}
-			yield* Effect.sleep(Duration.millis(FUNDING_SETTLEMENT_INTERVAL_MS));
+		const read = readExistingBalance(reader, {
+			owner: parts.owner,
+			coinType: parts.coinType,
+		});
+		const lastBalance = yield* read.pipe(
+			Effect.repeat({
+				schedule: makeBoundedSpacedSchedule(
+					BALANCE_POLL_PROFILE.intervalMs,
+					BALANCE_POLL_PROFILE.timeoutMs,
+				),
+				until: (balance) => balance !== null && balance >= parts.amount,
+			}),
+		);
+		if (lastBalance !== null && lastBalance >= parts.amount) {
+			return;
 		}
+		return yield* Effect.fail(
+			accountAcquireError({
+				phase: parts.phase,
+				accountName: parts.accountName,
+				variant: parts.variant,
+				message:
+					`Account '${parts.accountName}': funding for ${parts.coinLabel} was accepted ` +
+					`but balance did not reach ${parts.amount} before the settlement timeout ` +
+					`(last=${lastBalance === null ? '<unavailable>' : lastBalance}).`,
+				hint:
+					'The faucet or funding strategy returned before the funded coin became spendable. ' +
+					'Check the funding strategy finality gate and Sui RPC health.',
+			}),
+		);
 	});
 };

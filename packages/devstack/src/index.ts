@@ -1,10 +1,13 @@
 // Public API surface for `@mysten-incubation/devstack`.
 //
-// One root barrel for the whole user-facing + plugin-author vocabulary
-// (api-surface-design.md P5). Every plugin factory, every option type,
-// every plugin-author primitive flows through this file. Subpaths
-// (`/contracts`, `/substrate`, plus the L5 build-integration subpaths)
-// exist for tree-shaking + isolation, not as part of the user vocabulary.
+// One root barrel for the whole user-facing + plugin-author vocabulary.
+// Every plugin factory, every option type, every plugin-author primitive
+// flows through this file. The only additional public subpaths are the
+// L5 build-integration entrypoints declared in `package.json:exports`
+// (`/playwright`, `/playwright/global-setup`, `/runtime`, `/vitest`,
+// `/vitest/setup`).
+// See ARCHITECTURE.md §"Layer composition lives at L3, not L0" for the
+// L0–L5 layering this barrel projects.
 
 // --- Composer surfaces --------------------------------------------------
 
@@ -43,12 +46,32 @@ export {
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,
+	type PluginErrorContribution,
 	type PluginSpec,
 	type ResourceRef,
 	type ResolvedDependencies,
 	type ResourceIdOf,
 	type ResourceValueOf,
 } from './api/define-plugin.ts';
+export { pluginErrorContributions } from './api/plugin-errors.ts';
+export {
+	DEFAULT_DEVSTACK_NETWORK,
+	DEFAULT_STACK_NAME,
+	DEVSTACK_NETWORK_NAMES,
+	DevstackNetworkParseError,
+	parseDevstackNetwork,
+	parseDevstackNetworkName,
+	resolveAppName,
+	resolveNetwork,
+	resolveNetworkSync,
+	resolveStackName,
+	resolveStateDir,
+	type ParsedDevstackNetwork,
+	type ResolveNetworkOptions,
+	type ResolveStateDirOptions,
+	type ResolvedDevstackNetwork,
+	type DevstackNetworkName,
+} from './api/inference-network.ts';
 export {
 	defineModeNamespace,
 	type FactoriesByMode,
@@ -66,7 +89,6 @@ export * as RetryPolicy from './substrate/runtime/retry-policy.ts';
 export * as RuntimeDecode from './substrate/runtime/runtime-decode.ts';
 export {
 	Logger,
-	Redactor,
 	type LoggerShape,
 	type LogLevel,
 	type LogLine,
@@ -98,15 +120,11 @@ export type {
 	LoadedImageBundle,
 	TaggedImageRef,
 } from './contracts/container-runtime.ts';
-export { ContainerRuntimeService } from './runtime/docker/service.ts';
-export type {
-	LivenessClassifierDecl,
-	LivenessClassification,
-	LivenessHints,
-} from './contracts/liveness-classifier.ts';
+export { ContainerRuntimeService } from './substrate/runtime/container-runtime.ts';
 export type {
 	DispatchId,
 	DevstackRoutableUpstreamRegistry,
+	EntrypointDecl,
 	RoutableDecl,
 	RoutableHttpDecl,
 	RoutableTcpDecl,
@@ -115,6 +133,7 @@ export type {
 } from './contracts/routable.ts';
 export type { ContainerLabelTuple, SnapshotableDecl } from './contracts/snapshotable.ts';
 export type { StrategyContributorDecl, StrategyFor } from './contracts/strategy-contributor.ts';
+export type { Renderer, RendererError } from './contracts/renderer.ts';
 
 // --- Lifecycle primitives plugin authors touch --------------------------
 
@@ -125,7 +144,6 @@ export type { LifecycleStatus, PhaseNarration, PluginRole } from './substrate/li
 export type {
 	NetworkConfig,
 	NetworkMode,
-	DefaultNetwork,
 	DevstackNetworkModeRegistry,
 } from './substrate/network.ts';
 export type { DevstackOptions } from './substrate/options.ts';
@@ -134,6 +152,7 @@ export type {
 	ManifestExtrasContext,
 	ManifestExtrasInput,
 } from './substrate/manifest.ts';
+export { ManifestExtrasInvalid, ManifestExtrasLookupError } from './substrate/manifest.ts';
 export { IdentityContext } from './substrate/runtime/paths.ts';
 
 // --- Branded primitives (constructor functions for plugin authors) ------
@@ -156,10 +175,10 @@ export {
 // Built-in plugin factories
 // ===========================================================================
 //
-// Every L2 plugin's public surface re-exported here. Subpaths under
-// `/plugins/<name>` are deleted at this PR — tree-shaking handles unused
-// plugins via the package's `sideEffects: false`. See api-surface-design.md
-// §5 (subpath strategy) and `api-comparison.md` cross-cut friction point #1.
+// Every L2 plugin's public surface re-exported here. There are no
+// `/plugins/<name>` subpaths — tree-shaking handles unused plugins via
+// the package's `sideEffects: false`. See ARCHITECTURE.md §"L2 plugins"
+// for the layering rules these exports honour.
 
 // --- Sui ----------------------------------------------------------------
 
@@ -178,13 +197,9 @@ export {
 	type SuiCliError,
 	type SuiConfigError,
 	type ForkUnsupportedError,
-	type SeedManifestMismatchError,
-	type SuiFundsReadyError,
 	type ChainProbe,
 	type ChainProbeError,
 	type ChainProbeMode,
-	type FundsReadyStrategy,
-	type FundsReadyError,
 } from './plugins/sui/index.ts';
 
 // --- Account ------------------------------------------------------------
@@ -392,9 +407,4 @@ export {
 	type DeepbookPoolSeedLiquidity,
 	type DeepbookPoolSeedOrder,
 	type DeepbookPoolSpec,
-	type PythFeed,
-	type PythHandle,
-	type PythOptions,
-	type PythPackageMember,
-	type PythPriceFeedId,
 } from './plugins/deepbook/index.ts';

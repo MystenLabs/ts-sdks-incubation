@@ -28,30 +28,36 @@ import type {
 	ContainerHandle,
 	ContainerPortPublish,
 	EnsureContainerSpec,
+	NetworkAttachment,
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
-import { addClaim, removeClaim } from '../../substrate/runtime/cross-process/roster.ts';
+import {
+	addClaim,
+	removeClaim,
+	type RosterError,
+} from '../../substrate/runtime/cross-process/roster.ts';
+import type { StackLockError } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
-import { decodeJsonArrayElementSync } from '../../substrate/runtime/runtime-decode.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
 	ContainerNameCollisionUnrecoverable,
 	DaemonUnreachable,
-	DockerInspectDecodeFailed,
-	DockerInspectFailed,
 	type DockerRuntimeError,
 	ForeignDockerResource,
 	RecreateRefused,
 } from './errors.ts';
+import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedContainerOwnershipLabels,
 	LabelKey,
 	ownershipMismatchDetail,
+	readLabels,
 	renderContainerLabels,
 } from './labels.ts';
 import { connect, readIps, waitForIp } from './network.ts';
+import { renderCreateArgs } from './render-run-args.ts';
 import {
 	classifyExit,
 	isDaemonUnreachableStderr,
@@ -93,12 +99,18 @@ export interface InspectFacts {
 	readonly command?: ReadonlyArray<string>;
 	readonly labels?: Readonly<Record<string, string>>;
 	readonly networks?: ReadonlyArray<string>;
+	readonly networkAttachments?: ReadonlyArray<InspectNetworkAttachment>;
 }
 
 export interface InspectMount {
 	readonly source: string;
 	readonly target: string;
 	readonly readOnly?: boolean;
+}
+
+export interface InspectNetworkAttachment {
+	readonly name: string;
+	readonly aliases: ReadonlyArray<string>;
 }
 
 /** The closed set of actions the state machine can decide. */
@@ -130,6 +142,7 @@ export const decideRunAction = (
 	portBindingReconciliation: PortBindingReconciliation = 'exact',
 	desiredConfigHash?: string,
 	desiredImageDigest?: string,
+	desiredNetworkAttachments: ReadonlyArray<string | NetworkAttachment> = [],
 ): RunAction => {
 	if (facts === null) return { kind: 'fresh' };
 	const imageMatches =
@@ -141,8 +154,13 @@ export const decideRunAction = (
 		portsMatch ||
 		(portBindingReconciliation === 'adopt-existing' &&
 			sameBindingContainerPorts(facts.portBindings ?? [], desiredPortBindings));
+	const networksCompatible = desiredNetworkAttachmentsCompatible(
+		facts.networkAttachments ?? [],
+		desiredNetworkAttachments,
+	);
 	const configMatches =
-		desiredConfigHash === undefined || facts.labels?.[LabelKey.configHash] === desiredConfigHash;
+		networksCompatible &&
+		(desiredConfigHash === undefined || facts.labels?.[LabelKey.configHash] === desiredConfigHash);
 	if (facts.lifecycle.kind === 'unknown') {
 		return routeRecreate({ kind: 'recreate', id: facts.id, reason: 'unknown-state' }, policy);
 	}
@@ -229,6 +247,23 @@ const bindingContainerKey = (binding: string): string => binding.split('=')[0] ?
 const normalizeHostIp = (hostIp: string | undefined): string =>
 	hostIp === undefined || hostIp === '' ? '0.0.0.0' : hostIp;
 
+const desiredNetworkAttachmentsCompatible = (
+	actual: ReadonlyArray<InspectNetworkAttachment>,
+	desired: ReadonlyArray<string | NetworkAttachment>,
+): boolean => {
+	const actualByName = new Map(actual.map((network) => [network.name, network]));
+	return desired.every((entry, index) => {
+		const normalized = normalizeNetworkAttachment(entry);
+		const actualNetwork = actualByName.get(normalized.name);
+		if (actualNetwork === undefined) {
+			return index !== 0;
+		}
+		if (normalized.aliases === undefined || normalized.aliases.length === 0) return true;
+		const actualAliases = new Set(actualNetwork.aliases);
+		return normalized.aliases.every((alias) => actualAliases.has(alias));
+	});
+};
+
 const readPublishedPorts = (raw: unknown): ReadonlyArray<ContainerPortPublish> => {
 	if (raw === null || typeof raw !== 'object') return [];
 	const out: ContainerPortPublish[] = [];
@@ -280,18 +315,27 @@ const readStringArray = (raw: unknown): ReadonlyArray<string> => {
 	return raw.filter((value): value is string => typeof value === 'string');
 };
 
-const readLabels = (raw: unknown): Readonly<Record<string, string>> => {
-	if (raw === null || typeof raw !== 'object') return {};
-	const out: Record<string, string> = {};
-	for (const [key, value] of Object.entries(raw)) {
-		if (typeof value === 'string') out[key] = value;
-	}
-	return out;
-};
-
 const readNetworks = (raw: unknown): ReadonlyArray<string> => {
 	if (raw === null || typeof raw !== 'object') return [];
 	return Object.keys(raw).sort();
+};
+
+const readNetworkAttachments = (raw: unknown): ReadonlyArray<InspectNetworkAttachment> => {
+	if (raw === null || typeof raw !== 'object') return [];
+	return Object.entries(raw)
+		.map(([name, value]): InspectNetworkAttachment => {
+			const aliases =
+				value !== null && typeof value === 'object'
+					? ((value as { Aliases?: unknown }).Aliases ?? [])
+					: [];
+			return {
+				name,
+				aliases: Array.isArray(aliases)
+					? aliases.filter((alias): alias is string => typeof alias === 'string').sort()
+					: [],
+			};
+		})
+		.sort((a, b) => a.name.localeCompare(b.name));
 };
 
 const readLifecycleState = (
@@ -344,128 +388,91 @@ export const inspectContainer = (
 	name: string,
 ): Effect.Effect<InspectFacts | null, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('container', ['inspect', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.container.inspect')),
-		);
-		if (res.exitCode !== 0) {
-			if (isNoSuchContainerStderr(res.stderr)) return null;
-			if (isDaemonUnreachableStderr(res.stderr)) {
-				return yield* Effect.fail(
-					new DaemonUnreachable({
-						op: 'docker.container.inspect',
-						detail: 'docker daemon unreachable',
-					}),
-				);
-			}
-			return yield* Effect.fail(
-				new DockerInspectFailed({
-					resource: 'container',
-					name,
-					stderr: res.stderr,
-					exitCode: res.exitCode,
-				}),
-			);
-		}
-		try {
-			const decoded = decodeJsonArrayElementSync(InspectSchema, res.stdout, {
-				source: `docker container inspect ${name}`,
-				missingMessage: 'inspect returned an empty result',
-				mkError: (issue) =>
-					new DockerInspectDecodeFailed({
-						resource: 'container',
-						name,
-						detail:
-							issue.message === 'inspect returned an empty result'
-								? issue.message
-								: 'inspect returned malformed container JSON',
-						cause: issue.cause,
-					}),
-			});
-			const lifecycle = readLifecycleState(decoded.State);
-			const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
-			const ports =
-				decoded.HostConfig === undefined
-					? effectivePorts
-					: readPublishedPorts(decoded.HostConfig.PortBindings);
-			const mounts = readMounts(decoded.Mounts);
-			const command = readStringArray(decoded.Config.Cmd);
-			const labels = readLabels(decoded.Config.Labels);
-			const networks = readNetworks(decoded.NetworkSettings.Networks);
-			return {
-				id: decoded.Id,
-				lifecycle,
-				running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
-				paused: lifecycle.kind === 'paused',
-				exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
-				// The container's recorded image. Docker may omit the
-				// top-level digest field, but lifecycle decisions need the
-				// create-time ref from Config.Image.
-				image: decoded.Config.Image,
-				...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
-				mounts,
-				portBindings: canonicalPortBindings(ports),
-				ports,
-				effectivePortBindings: canonicalPortBindings(effectivePorts),
-				effectivePorts,
-				command,
-				labels,
-				networks,
-			};
-		} catch (cause) {
-			return yield* Effect.fail(cause as DockerRuntimeError);
-		}
+		const decoded = yield* dockerInspectAndDecode({
+			resourceKind: 'container',
+			name,
+			op: 'docker.container.inspect',
+			inspectCommand: dockerRunOk('container', ['inspect', name]).pipe(
+				Effect.mapError(wrapGeneric('docker.container.inspect')),
+			),
+			schema: InspectSchema,
+			isMissingStderr: isNoSuchContainerStderr,
+		});
+		if (decoded === null) return null;
+		const lifecycle = readLifecycleState(decoded.State);
+		const effectivePorts = readPublishedPorts(decoded.NetworkSettings.Ports);
+		const ports =
+			decoded.HostConfig === undefined
+				? effectivePorts
+				: readPublishedPorts(decoded.HostConfig.PortBindings);
+		const mounts = readMounts(decoded.Mounts);
+		const command = readStringArray(decoded.Config.Cmd);
+		const labels = readLabels(decoded.Config.Labels);
+		const networks = readNetworks(decoded.NetworkSettings.Networks);
+		const networkAttachments = readNetworkAttachments(decoded.NetworkSettings.Networks);
+		return {
+			id: decoded.Id,
+			lifecycle,
+			running: lifecycle.kind === 'running' || lifecycle.kind === 'paused',
+			paused: lifecycle.kind === 'paused',
+			exitCode: lifecycle.kind === 'unknown' ? null : lifecycle.exitCode,
+			// The container's recorded image. Docker may omit the
+			// top-level digest field, but lifecycle decisions need the
+			// create-time ref from Config.Image.
+			image: decoded.Config.Image,
+			...(decoded.Image !== undefined ? { imageDigest: decoded.Image } : {}),
+			mounts,
+			portBindings: canonicalPortBindings(ports),
+			ports,
+			effectivePortBindings: canonicalPortBindings(effectivePorts),
+			effectivePorts,
+			command,
+			labels,
+			networks,
+			networkAttachments,
+		};
 	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
 
 // -----------------------------------------------------------------------------
 // Argv construction
 // -----------------------------------------------------------------------------
 
+const normalizeNetworkAttachment = (
+	entry: string | NetworkAttachment,
+): { readonly name: string; readonly aliases?: ReadonlyArray<string> } =>
+	typeof entry === 'string'
+		? { name: entry }
+		: entry.aliases === undefined || entry.aliases.length === 0
+			? { name: entry.name }
+			: { name: entry.name, aliases: entry.aliases };
+
 const createArgv = (
 	spec: EnsureContainerSpec,
 	cycle: number,
 	imageRef: string,
 ): ReadonlyArray<string> => {
-	const args: Array<string> = ['-d', '--name', spec.name];
 	const configLabels: Readonly<Record<string, string>> | undefined =
 		spec.configHash === undefined ? undefined : { [LabelKey.configHash]: spec.configHash };
-	for (const label of renderContainerLabels(spec.labels, cycle, configLabels)) {
-		args.push('--label', label);
-	}
-	if (spec.env) {
-		for (const [k, v] of Object.entries(spec.env)) {
-			args.push('--env', `${k}=${v}`);
-		}
-	}
-	if (spec.ports) {
-		for (const p of spec.ports) {
-			const hostPrefix = p.hostIp === undefined ? '' : `${p.hostIp}:`;
-			args.push('-p', `${hostPrefix}${p.hostPort}:${p.containerPort}`);
-		}
-	}
-	if (spec.mounts) {
-		for (const m of spec.mounts) {
-			const ro = m.readonly ? ',readonly' : '';
-			args.push('--mount', `type=bind,source=${m.source},target=${m.target}${ro}`);
-		}
-	}
-	if (spec.networkAttach && spec.networkAttach.length > 0) {
-		// First attach goes via --network; subsequent attaches via
-		// post-start `network connect` so we can wait for IP readback.
-		args.push('--network', spec.networkAttach[0]!);
-	}
-	if (spec.extraHosts) {
-		for (const [host, ip] of Object.entries(spec.extraHosts)) {
-			args.push('--add-host', `${host}:${ip}`);
-		}
-	}
-	if (spec.entrypoint) {
-		args.push('--entrypoint', spec.entrypoint);
-	}
-	args.push(imageRef);
-	if (spec.command) {
-		args.push(...spec.command);
-	}
-	return args;
+	const labels = renderContainerLabels(spec.labels, cycle, configLabels);
+	// First attach is rendered into `--network` + `--network-alias`;
+	// subsequent attaches happen post-start via `network connect` so we
+	// can wait for IP readback.
+	const firstNetwork =
+		spec.networkAttach && spec.networkAttach.length > 0
+			? normalizeNetworkAttachment(spec.networkAttach[0]!)
+			: undefined;
+	return renderCreateArgs({
+		name: spec.name,
+		image: imageRef,
+		labels,
+		env: spec.env,
+		ports: spec.ports,
+		mounts: spec.mounts,
+		network: firstNetwork,
+		addHosts: spec.extraHosts,
+		entrypoint: spec.entrypoint,
+		command: spec.command,
+	});
 };
 
 // -----------------------------------------------------------------------------
@@ -747,6 +754,9 @@ const stopWithGrace = (
 		args.push('--time', String(Math.max(0, Math.floor(graceSeconds))));
 		args.push(name);
 		yield* dockerRunOk('stop', args).pipe(
+			Effect.tapCause((cause) =>
+				Effect.logDebug('docker stop failed; container may already be gone', { name, cause }),
+			),
 			Effect.catch(() => Effect.void),
 			Effect.asVoid,
 		);
@@ -806,20 +816,55 @@ export const acquirePerNameLock = (
 		});
 		if (claimed) return;
 		// Park until the current holder releases and completes our
-		// deferred. Interrupt-cleanup: if we're interrupted while
-		// queued, drop our deferred from the queue so a future
-		// release doesn't transfer ownership to a dead waiter.
+		// deferred. Interrupt-cleanup mirrors the lease-broker pattern
+		// (`substrate/runtime/lease-broker/service.ts:194-216`):
+		//   1. If we're still queued → drop our deferred so a future
+		//      release doesn't transfer ownership to a dead waiter.
+		//   2. If we are NO LONGER queued → a `releasePerNameLock`
+		//      already popped us as head (the ONLY way a queued waiter
+		//      leaves the queue) and transferred ownership to us, so we
+		//      release on our behalf to hand off to the next waiter.
+		//
+		// We discriminate on queue membership ALONE, not on
+		// `Deferred.isDoneUnsafe(waiter)`: release pops the head (step 1
+		// of releasePerNameLock's two-step transfer) and only THEN signals
+		// the deferred (step 2). Between those steps the popped waiter is
+		// already absent from the queue but its deferred is still pending;
+		// keying on the signal would (incorrectly) classify us as "still
+		// queued" and skip the release, orphaning the slot permanently.
+		// A waiter that reached this await is only ever removed by a
+		// release popping it, so "not queued ⇒ promoted" is exact —
+		// matching the lease-broker, which keys off its explicit `holder`
+		// field set atomically with the pop rather than the signal.
 		yield* Deferred.await(waiter).pipe(
 			Effect.onInterrupt(() =>
-				Ref.update(lock, (m) => {
-					const queue = m.get(name);
-					if (queue === undefined) return m;
-					const filtered = queue.filter((d) => d !== waiter);
-					if (filtered.length === queue.length) return m;
-					const next = new Map(m);
-					next.set(name, filtered);
-					return next as PerNameLockState;
-				}),
+				Effect.gen(function* () {
+					const promotedButInterrupted = yield* Ref.modify(lock, (m) => {
+						const queue = m.get(name);
+						if (queue === undefined) {
+							// Entry gone entirely → a release fully drained
+							// the slot (empty-queue delete) after popping us.
+							// We held it; nothing to hand off.
+							return [false, m] as const;
+						}
+						const filtered = queue.filter((d) => d !== waiter);
+						if (filtered.length !== queue.length) {
+							// Still queued → drop ourselves; the holder
+							// will release normally and skip us.
+							const next = new Map(m);
+							next.set(name, filtered);
+							return [false, next as PerNameLockState] as const;
+						}
+						// Not queued, entry still present. A release already
+						// popped us as head and transferred ownership; the
+						// rest of the queue is waiting on us. Release on our
+						// behalf so the next waiter proceeds.
+						return [true, m] as const;
+					});
+					if (promotedButInterrupted) {
+						yield* releasePerNameLock(lock, name);
+					}
+				}).pipe(Effect.uninterruptible),
 			),
 		);
 	});
@@ -846,6 +891,23 @@ export const releasePerNameLock = (
 		}
 	});
 
+/** Run `body` while holding the per-name lock for `name`. Wraps the
+ *  `acquireUseRelease(acquire, use, release)` triple so every caller
+ *  cannot accidentally forget the release on interrupt. The body is
+ *  responsible for running uninterruptibly over the inspect→action
+ *  window AND arming any stop-on-scope-close finalizer before this
+ *  helper releases the lock. */
+export const withSerializedContainerOp = <A, E, R>(
+	name: string,
+	lock: Ref.Ref<PerNameLockState>,
+	body: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> =>
+	Effect.acquireUseRelease(
+		acquirePerNameLock(lock, name),
+		() => body,
+		() => releasePerNameLock(lock, name),
+	);
+
 /** Idempotent ensure: apply the state machine, register a scope
  *  finalizer that stops the container + releases the cross-process
  *  claim.
@@ -860,17 +922,125 @@ export const ensureContainer = (
 	DockerHost | DockerSpawner | StackPathsService | Scope.Scope
 > =>
 	Effect.gen(function* () {
-		// Per-name lock holds the inspect → applyAction window. We release
-		// immediately after applyAction returns (success or typed failure)
-		// so concurrent callers for the SAME name serialize at the
-		// "decide what to do" step, but the lock does not outlive the
-		// state-machine resolution. `acquireUseRelease` ensures the
-		// release fires on interrupt/defect too.
+		// Per-name lock holds the inspect → applyAction → finalizer-registration
+		// window. The lock CANNOT be released before the stop-on-scope-close
+		// finalizer is armed: an interrupt or `addClaim` failure in that gap
+		// would strand a running container with no scope-bound cleanup until
+		// label-driven sweep ran later (per-scope contract: one
+		// `Effect.scoped` ⇒ one container managed).
+		//
+		// The uninterruptible window is NARROWED to the orphan-safety
+		// prefix: inspect → applyAction → ensureEffectivePublishedPorts →
+		// `registerStopFinalizer`. That prefix MUST be uninterruptible so an
+		// interrupt cannot land between "container started" and "finalizer
+		// armed" (which would strand a running container with no scope-bound
+		// cleanup). Once the stop-on-scope-close finalizer is armed, the
+		// remaining work (assertOwned → secondary network attach → IP
+		// readback → refresh inspect → `addClaim`) runs INTERRUPTIBLY via
+		// `restore(...)`: an interrupt there simply triggers the armed
+		// finalizer (stop + idempotent removeClaim), which is the desired
+		// cleanup — so keeping that ~8s tail uninterruptible would only defer
+		// Ctrl-C/shutdown for a bounded window with no orphan-safety benefit.
+		// The finalizer itself is uninterruptible (Architecture §13).
 		const desiredImageRef = spec.image.tag ?? spec.image.digest;
-		const id = yield* Effect.acquireUseRelease(
-			acquirePerNameLock(deps.perNameLock, spec.name),
-			() =>
+		const paths = yield* StackPathsService;
+		// Preserve the substrate-side error taxonomy by surfacing a
+		// distinct `op` per known cause tag. Labeling every roster/lock
+		// failure as "docker daemon unreachable" misleads operators —
+		// `RosterIoError` is a state-dir IO problem, `StackLockTimeoutError`
+		// is a peer-holding-the-lock problem, neither of which has
+		// anything to do with the docker socket. We still emit a typed
+		// `DaemonUnreachable` envelope (substrate→docker channel needs
+		// ONE bridging shape per the DockerRuntimeError union) but the
+		// `op` / `detail` fields keep the original tag visible. A truly
+		// unknown cause falls through to the legacy generic mapping.
+		const mapSubstrateClaimError = <A, R>(
+			eff: Effect.Effect<A, RosterError | StackLockError, R>,
+		): Effect.Effect<A, DockerRuntimeError, R> =>
+			eff.pipe(
+				Effect.catchTags({
+					RosterIoError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.roster-io',
+								detail: `roster IO failed at ${cause.path}`,
+								cause,
+							}),
+						),
+					RosterCorruptError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.roster-corrupt',
+								detail: `roster ledger corrupt at ${cause.path}`,
+								cause,
+							}),
+						),
+					StackLockTimeoutError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.stack-lock-timeout',
+								detail: `stack-lock acquire timed out after ${cause.waitedMillis}ms at ${cause.path}`,
+								cause,
+							}),
+						),
+					StackLockIoError: (cause) =>
+						Effect.fail(
+							new DaemonUnreachable({
+								op: 'cross-process.claim.stack-lock-io',
+								detail: `stack-lock IO failed at ${cause.path}`,
+								cause,
+							}),
+						),
+				}),
+			);
+		const registerStopFinalizer = (
+			id: string,
+		): Effect.Effect<void, never, Scope.Scope | DockerHost | DockerSpawner> =>
+			Effect.addFinalizer(() =>
 				Effect.gen(function* () {
+					// Restore may deliberately remove a claimed container and
+					// a later acquire may reuse the name before this scope
+					// closes; the old finalizer must not stop that newer
+					// container — hence the id check.
+					const current = yield* inspectContainer(spec.name).pipe(
+						Effect.tapCause((cause) =>
+							Effect.logDebug('container inspect during scope-close failed', {
+								name: spec.name,
+								cause,
+							}),
+						),
+						Effect.catch(() => Effect.succeed(null)),
+					);
+					if (current?.id === id) {
+						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
+					}
+					yield* removeClaim(
+						{
+							stackLockFile: paths.stackLockFile,
+							rosterFile: paths.rosterFile,
+							containerClaimsFile: paths.containerClaimsFile,
+						},
+						spec.name,
+					).pipe(
+						Effect.tapCause((cause) =>
+							Effect.logDebug('removeClaim during scope-close failed', {
+								name: spec.name,
+								cause,
+							}),
+						),
+						Effect.catch(() => Effect.succeed({ lastClaimReleased: false })),
+					);
+				}).pipe(Effect.uninterruptible),
+			);
+		const { id, ips, ports } = yield* withSerializedContainerOp(
+			spec.name,
+			deps.perNameLock,
+			Effect.uninterruptibleMask((restore) =>
+				Effect.gen(function* () {
+					// --- Orphan-safety prefix (uninterruptible) ---
+					// inspect → applyAction → publish-ports → finalizer-arm
+					// must run atomically: a stranded running container with
+					// no scope-bound cleanup is the failure this guards.
 					const facts = yield* inspectContainer(spec.name);
 					if (facts !== null) {
 						yield* assertOwnedFacts(spec.name, facts, spec.labels);
@@ -883,65 +1053,72 @@ export const ensureContainer = (
 						spec.portBindingReconciliation ?? 'exact',
 						spec.configHash,
 						spec.image.digest,
+						spec.networkAttach,
 					);
-					const id = yield* applyAction(action, spec, deps);
-					return yield* ensureEffectivePublishedPorts(id, spec, deps);
+					const initialId = yield* applyAction(action, spec, deps);
+					const id = yield* ensureEffectivePublishedPorts(initialId, spec, deps);
+
+					// Arm the stop-on-scope-close finalizer BEFORE we
+					// release the per-name lock and BEFORE we call
+					// `addClaim`. If anything below this point fails OR is
+					// interrupted (assert, network attach, addClaim) the
+					// container will still be stopped at scope close.
+					yield* registerStopFinalizer(id);
+
+					// --- Interruptible tail (restore) ---
+					// The finalizer is now armed, so an interrupt here is
+					// safe: it triggers the scope finalizer (stop + idempotent
+					// removeClaim). Running this ~8s tail interruptibly keeps
+					// Ctrl-C/shutdown responsive during bring-up.
+					const tail = yield* restore(
+						Effect.gen(function* () {
+							yield* assertContainerHandleOwned({
+								id,
+								name: spec.name,
+								labels: spec.labels,
+								imageName: spec.image.tag ?? spec.image.digest,
+								status: 'running',
+								ips: [],
+							});
+
+							// Architecture §5 — secondary network attaches (any
+							// beyond the first, which is wired in via `--network`
+							// on create) must wait for IP allocation before we
+							// declare ready.
+							const secondaries = (spec.networkAttach ?? [])
+								.slice(1)
+								.map(normalizeNetworkAttachment);
+							for (const net of secondaries) {
+								yield* connect(spec.name, net.name, net.aliases);
+								yield* waitForIp(spec.name, net.name);
+							}
+
+							const ips = yield* readIps(spec.name);
+							const refreshedFacts = yield* inspectContainer(spec.name);
+							const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+
+							// Record cross-process claim. The scope finalizer
+							// (already registered) will release it on scope
+							// close. If this fails, the container is still
+							// cleaned up at scope close.
+							yield* mapSubstrateClaimError(
+								addClaim(
+									{
+										stackLockFile: paths.stackLockFile,
+										rosterFile: paths.rosterFile,
+										containerClaimsFile: paths.containerClaimsFile,
+									},
+									spec.name,
+								),
+							);
+
+							return { ips, ports };
+						}),
+					);
+
+					return { id, ips: tail.ips, ports: tail.ports };
 				}),
-			() => releasePerNameLock(deps.perNameLock, spec.name),
-		);
-		yield* assertContainerHandleOwned({
-			id,
-			name: spec.name,
-			labels: spec.labels,
-			imageName: spec.image.tag ?? spec.image.digest,
-			status: 'running',
-			ips: [],
-		});
-
-		// Architecture §5 — secondary network attaches (any beyond the
-		// first, which is wired in via `--network` on create) must wait
-		// for IP allocation before we declare ready.
-		const secondaries = (spec.networkAttach ?? []).slice(1);
-		for (const net of secondaries) {
-			yield* connect(spec.name, net);
-			yield* waitForIp(spec.name, net);
-		}
-
-		const ips = yield* readIps(spec.name);
-		const refreshedFacts = yield* inspectContainer(spec.name);
-		const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
-
-		// Register cross-process claim and scope-bound release. The
-		// stop finalizer fires on scope close if the same container id
-		// still owns the stable name. Restore may deliberately remove a
-		// claimed container and a later acquire may reuse the name before
-		// this scope closes; the old finalizer must not stop that newer
-		// container. Architecture §13: stop is uninterruptible.
-		const paths = yield* StackPathsService;
-		const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
-			new DaemonUnreachable({
-				op: 'cross-process.claim',
-				detail: `cross-process claim mutation failed: ${String(cause)}`,
-				cause,
-			});
-		yield* addClaim(
-			{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-			spec.name,
-		).pipe(Effect.mapError(mapSubstrateError));
-
-		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				const current = yield* inspectContainer(spec.name).pipe(
-					Effect.catch(() => Effect.succeed(null)),
-				);
-				if (current?.id === id) {
-					yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
-				}
-				yield* removeClaim(
-					{ stackLockFile: paths.stackLockFile, rosterFile: paths.rosterFile },
-					spec.name,
-				).pipe(Effect.catch(() => Effect.succeed({ lastClaimReleased: false })));
-			}).pipe(Effect.uninterruptible),
+			),
 		);
 
 		return handleOf(
@@ -1046,14 +1223,64 @@ export const unpause = (
 		yield* dockerRun('unpause', [name]).pipe(Effect.mapError(wrapGeneric('docker.unpause')));
 	}).pipe(Effect.withSpan('runtime.docker.container.unpause'));
 
+/** Reserved `devstack.role` value stamped on every committed snapshot
+ *  byproduct image. Plugin BUILD images carry the source plugin's real
+ *  role (`db`, `validator`, …) or no role at all; committed snapshot
+ *  images carry THIS sentinel instead. Snapshot prune scopes its image
+ *  sweep to `{app, stack, role: SNAPSHOT_IMAGE_ROLE}` so it reaps the
+ *  byproducts WITHOUT ever matching the live stack's build images.
+ *
+ *  This is a label-value protocol token shared with the snapshot prune
+ *  orchestrator (`orchestrators/snapshot/prune.ts`), which imports it. */
+export const SNAPSHOT_IMAGE_ROLE = 'snapshot-image';
+
+/** Render `{managed, app, stack, role}` ownership labels into
+ *  `docker commit --change 'LABEL …'` argv. `docker commit` has no
+ *  `--label` flag, so labels must ride in as `--change` Dockerfile
+ *  instructions. Values are quoted so an app/stack carrying whitespace
+ *  cannot split the instruction. */
+const snapshotImageChangeArgs = (
+	app: string | undefined,
+	stack: string | undefined,
+): ReadonlyArray<string> => {
+	const labels: Array<[string, string]> = [[LabelKey.managed, 'true']];
+	if (app !== undefined) labels.push([LabelKey.app, app]);
+	if (stack !== undefined) labels.push([LabelKey.stack, stack]);
+	labels.push([LabelKey.role, SNAPSHOT_IMAGE_ROLE]);
+	return labels.flatMap(([key, value]) => ['--change', `LABEL "${key}"="${value}"`]);
+};
+
 /** `docker commit <name> <tag>` — writable layer → image. Used by
- *  snapshot capture. */
+ *  snapshot capture.
+ *
+ *  The committed image is stamped with `{managed:'true', app, stack,
+ *  role:SNAPSHOT_IMAGE_ROLE}` ownership labels so label-driven snapshot
+ *  prune can reap leaked byproducts (a hard-killed capture that never
+ *  reached its `removeImage` cleanup) while leaving the stack's build
+ *  images untouched. A bare `docker commit` produces an UNlabelled image
+ *  that no label-driven sweep can find — hence the explicit stamp.
+ *
+ *  `app`/`stack` are recovered from the source container's own ownership
+ *  labels (`docker commit` does NOT copy container labels onto the image).
+ *  Capture only commits containers it owns, so those labels are present;
+ *  if the inspect misses they are simply omitted and prune's app/stack-
+ *  scoped filter will not match — a degenerate case capture cannot reach. */
 export const commit = (
 	name: string,
 	tag: string,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRun('commit', [name, tag]).pipe(
+		// Recover the source container's app/stack so the committed image
+		// inherits the SAME ownership scope. Best-effort: a failed inspect
+		// must not abort the commit (the image is the product; labels are
+		// metadata), so degrade to the role-only stamp.
+		const facts = yield* inspectContainer(name).pipe(Effect.catch(() => Effect.succeed(null)));
+		const sourceLabels = facts?.labels ?? {};
+		const changeArgs = snapshotImageChangeArgs(
+			sourceLabels[LabelKey.app],
+			sourceLabels[LabelKey.stack],
+		);
+		const res = yield* dockerRun('commit', [...changeArgs, name, tag]).pipe(
 			Effect.mapError(wrapGeneric('docker.commit')),
 		);
 		const digest = res.stdout.trim();

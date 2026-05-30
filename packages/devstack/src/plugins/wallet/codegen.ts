@@ -40,7 +40,10 @@ import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
+import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
+
 import { redactToken } from './pairing.ts';
+import { WalletSpans } from './spans.ts';
 
 // ----------------------------------------------------------------------
 // Emitted shape
@@ -72,7 +75,6 @@ export interface DappKitConfigBindings {
 		readonly accounts: string;
 		readonly signTransaction: string;
 		readonly signPersonalMessage: string;
-		readonly execute: string;
 	};
 }
 
@@ -95,22 +97,20 @@ export interface DappKitConfigBindings {
  */
 export const makeWalletCodegen = (
 	resolved: DappKitConfigBindings,
-): CodegenableDecl<'dapp-kit-config'> => ({
-	kind: 'codegenable',
-	emitterName: 'dapp-kit-config',
-	outputPath: 'dapp-kit/config.ts',
-	// SENSITIVE: drives 0o600 + .gitignore. The architecture has this
-	// hook (`SnapshotableDecl` mirrors it for the snapshot subtree).
-	sensitive: true,
-	emit: (ctx) =>
-		Effect.gen(function* () {
-			// Span annotation logs ONLY the redacted form — defense-in-
-			// depth so any debug-mode span dump doesn't leak the token.
-			yield* Effect.annotateCurrentSpan({
-				'wallet.codegen.pairUrl': redactToken(resolved.pairUrl),
-				'wallet.codegen.walletUrl': resolved.walletUrl,
-			});
-			ctx.exportConst('dappKitConfig', resolved);
-			return ctx.done();
+): CodegenableDecl<'dapp-kit-config'> =>
+	defineSimpleConstExport({
+		emitterName: 'dapp-kit-config',
+		outputPath: 'dapp-kit/config.ts',
+		exportName: 'dappKitConfig',
+		value: resolved,
+		// SENSITIVE: drives 0o600 + .gitignore. The architecture has
+		// this hook (`SnapshotableDecl` mirrors it for the snapshot
+		// subtree).
+		sensitive: true,
+		// Span annotation logs ONLY the redacted form — defense-in-
+		// depth so any debug-mode span dump doesn't leak the token.
+		preEmit: Effect.annotateCurrentSpan({
+			[WalletSpans.codegenPairUrl]: redactToken(resolved.pairUrl),
+			[WalletSpans.codegenWalletUrl]: resolved.walletUrl,
 		}),
-});
+	});

@@ -12,6 +12,7 @@
 // status / phase / restart field independently. The reducer for non-
 // lifecycle events is unchanged.
 
+import type { PluginKey } from '../../brand.ts';
 import type { Row } from '../../projection.ts';
 import type { LifecycleFact, LifecycleStatus } from '../../lifecycle.ts';
 import type { EngineEvent } from '../../events.ts';
@@ -31,7 +32,7 @@ export interface LifecycleFactDelta {
  *  by routing through this single mapping table. */
 export const factFromEvent = (
 	event: EngineEvent,
-): { readonly pluginKey: string; readonly delta: LifecycleFactDelta } | null => {
+): { readonly pluginKey: PluginKey; readonly delta: LifecycleFactDelta } | null => {
 	switch (event.tag) {
 		case 'lifecycle.statusChanged':
 			return {

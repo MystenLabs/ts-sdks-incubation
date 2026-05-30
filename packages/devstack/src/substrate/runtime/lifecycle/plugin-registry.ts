@@ -206,6 +206,22 @@ export const makeRegistry = (
 				resolved.delete(key);
 				const readyGate = yield* Deferred.make<ResolvedValue, PluginAcquireFailed>();
 				const scope = yield* Scope.fork(parentScope);
+				// Authoritatively reset the status to `pending`. The
+				// transition table only admits `→ pending` from terminal
+				// states (`failed` / `stopped` / `done`), but a selective
+				// restart can reset a node that is still `acquiring` or
+				// `pending` (its scope close interrupted an in-flight
+				// acquire). Routing that through `transition` would die on
+				// the off-table move — a defect the supervisor's command
+				// loop can't catch — so we set the Ref directly and emit
+				// the `statusChanged` event ourselves to keep the
+				// projection's restart blip and the "every status change
+				// flows through `onTransition`" contract intact. `acquire`
+				// then performs a clean `pending → acquiring` for every
+				// prior node state.
+				const from = yield* Ref.get(entry.statusRef);
+				yield* Ref.set(entry.statusRef, 'pending');
+				if (from !== 'pending') yield* onTransition(key, from, 'pending');
 				mutableEntries.set(key, {
 					node: entry.node,
 					statusRef: entry.statusRef,
@@ -260,17 +276,30 @@ export const buildDependencyReaderFor = (
 			// Programmer error: the plugin reached outside its declared
 			// dependencies. The type system normally rules this out — defending
 			// here keeps the runtime honest in the face of cast escapes.
-			throw new Error(
-				`DependencyReader: resource '${resource.id}' not in this plugin's declared dependencies`,
-			);
+			throw new DependencyReaderViolation({
+				kind: 'undeclared-dependency',
+				target: resource.id,
+			});
 		}
 		const value = readResolvedSync(registry, key);
 		if (value === undefined) {
-			throw new Error(
-				`DependencyReader: upstream '${key}' has no resolved value yet — ` +
-					'supervisor must mark the entry ready before downstream acquire.',
-			);
+			throw new DependencyReaderViolation({
+				kind: 'unresolved-upstream',
+				target: key,
+			});
 		}
 		return value;
 	};
 };
+
+/** Tagged defect surfaced when a plugin's `start` callback reads a
+ *  dependency outside its declared `dependsOn` set, or an upstream
+ *  that hasn't been marked ready yet. Throws synchronously inside the
+ *  dependency-reader closure; the Effect runtime captures it as a
+ *  defect the cascade-formatter projects via `_tag`. The `kind`
+ *  discriminator and `target` carry the offending name; consumers
+ *  read both. */
+export class DependencyReaderViolation extends Data.TaggedError('DependencyReaderViolation')<{
+	readonly kind: 'undeclared-dependency' | 'unresolved-upstream';
+	readonly target: string;
+}> {}

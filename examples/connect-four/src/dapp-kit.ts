@@ -3,9 +3,9 @@ import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/de
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { accounts } from './generated/accounts.js';
-import { dappKitConfig } from './generated/dapp-kit/config.js';
-import { suiNetwork } from './generated/sui/network.js';
+import { accounts } from '@generated/accounts.js';
+import { dappKitConfig } from '@generated/dapp-kit/config.js';
+import { suiNetwork } from '@generated/sui/network.js';
 
 const devstackNetwork = 'localnet' as const;
 const autoApprove = import.meta.env.VITE_CONNECT_FOUR_AUTO_APPROVE === '1';

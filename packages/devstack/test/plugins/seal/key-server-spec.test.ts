@@ -22,6 +22,7 @@
 // Lives at `test/plugins/seal/key-server-spec.test.ts` per the
 // mirror-src/ rule.
 
+import { dirname } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -35,10 +36,18 @@ import {
 	HOST_GATEWAY_EXTRA_HOSTS,
 	INSIDE_CONFIG_PATH,
 	INSIDE_MASTER_KEY_ENVFILE,
-	sealNetworkCreateSpec,
 	type KeyServerSpecInputs,
 } from '../../../src/plugins/seal/key-server.ts';
+import { withSubnetAddressing } from '../../../src/substrate/runtime/subnet-broker.ts';
 import { SEAL_KEY_SERVER_ENDPOINT_NAME } from '../../../src/plugins/seal/routable.ts';
+
+// Pick a sample service path that matches the substrate's
+// `${runtimeRoot}/seal/${serviceName}` layout. `runtimeRootHostPath`
+// is derived in the spec as `dirname(dirname(servicePath))` — we
+// reuse the same derivation here so assertions stay in lockstep if
+// the substrate-side path convention shifts.
+const SAMPLE_SERVICE_PATH = '/tmp/devstack/runtime/seal/seal';
+const SAMPLE_RUNTIME_ROOT = dirname(dirname(SAMPLE_SERVICE_PATH));
 
 const SAMPLE_INPUTS: KeyServerSpecInputs = {
 	name: 'seal',
@@ -51,7 +60,7 @@ const SAMPLE_INPUTS: KeyServerSpecInputs = {
 		role: 'key-server',
 	},
 	suiNetwork: 'seal-seal-net',
-	servicePath: '/tmp/devstack/runtime/seal/seal',
+	servicePath: SAMPLE_SERVICE_PATH,
 	configFingerprint: 'package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:9000',
 	routedHostname: 'seal.seal.app.localhost',
 	routedUrl: 'http://seal.seal.app.localhost',
@@ -92,7 +101,7 @@ describe('seal network addressing', () => {
 			stack: 'main',
 			sealName: 'seal',
 		});
-		const spec = sealNetworkCreateSpec(
+		const spec = withSubnetAddressing(
 			{
 				name: buildSealNetworkName('private-content', 'main', 'seal'),
 				app: 'private-content',
@@ -123,18 +132,18 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(CONTAINER_ENV.MASTER_KEY_ENVFILE).toBe(INSIDE_MASTER_KEY_ENVFILE);
 		expect(ensureSpec.env?.CONFIG_PATH).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
 		expect(ensureSpec.env?.MASTER_KEY_ENVFILE).toBe('/devstack/runtime/seal/seal/master-key.env');
-		expect(ensureSpec.configHash).toContain('runtime=/tmp/devstack/runtime');
+		expect(ensureSpec.configHash).toContain(`runtime=${SAMPLE_RUNTIME_ROOT}`);
 		expect(ensureSpec.configHash).toContain(
 			'config=/devstack/runtime/seal/seal/key-server-config.yaml',
 		);
 		expect(ensureSpec.configHash).toContain(
 			'content=package=0x7|keyServer=0xabc123|nodeUrl=http://host.docker.internal:9000',
 		);
-		// Sanity: master-key envfile path the spec uses for the bind-
-		// mount source is under the servicePath dir (so the host file
-		// the entrypoint shell sources is the rendered one).
-		expect(spec.masterKeyEnvFileHostPath.startsWith(SAMPLE_INPUTS.servicePath)).toBe(true);
-		expect(spec.masterKeyEnvFileHostPath.endsWith('/master-key.env')).toBe(true);
+		// The master-key envfile + rendered config are published into the
+		// container via the single `runtimeRootHostPath` bind-mount; the
+		// inside-container paths (sourced by the entrypoint shell) point
+		// under `INSIDE_RUNTIME_ROOT`.
+		expect(ensureSpec.env?.MASTER_KEY_ENVFILE).toBe('/devstack/runtime/seal/seal/master-key.env');
 	});
 
 	it('routing[] carries the seal-key-server entrypoint (invariant #5)', () => {
@@ -165,13 +174,34 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		expect(spec.readyTimeoutMs).toBe(12345);
 	});
 
-	it('config + envfile host paths use the substrate-provided servicePath', () => {
+	it('runtime root + container paths derive from the substrate-provided servicePath', () => {
 		const spec = buildKeyServerSpec(SAMPLE_INPUTS);
-		expect(spec.configHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/key-server-config.yaml`);
-		expect(spec.masterKeyEnvFileHostPath).toBe(`${SAMPLE_INPUTS.servicePath}/master-key.env`);
-		expect(spec.runtimeRootHostPath).toBe('/tmp/devstack/runtime');
+		expect(spec.runtimeRootHostPath).toBe(SAMPLE_RUNTIME_ROOT);
 		expect(spec.configContainerPath).toBe('/devstack/runtime/seal/seal/key-server-config.yaml');
 		expect(spec.masterKeyEnvFileContainerPath).toBe('/devstack/runtime/seal/seal/master-key.env');
+	});
+
+	it('asserts servicePath lives ≥2 segments under a non-root runtimeRootHostPath', () => {
+		// The single bind-mount publishes `runtimeRootHostPath` into the
+		// container — if the `dirname(dirname(...))` walk-up collapses
+		// the root to '/', the bind would publish the entire host root.
+		// This is the same family of footgun fixed in
+		// `walrus/deploy-paths.ts` (review fix phase 22a).
+		//
+		// Sibling layouts that DO have at least two parent segments
+		// resolve fine — the spec-builder just treats
+		// `dirname(dirname(servicePath))` as the runtime root.
+		expect(() =>
+			buildKeyServerSpec({ ...SAMPLE_INPUTS, servicePath: '/totally/elsewhere/seal' }),
+		).not.toThrow();
+		// One-segment servicePath collapses runtimeRootHostPath to '/'.
+		expect(() => buildKeyServerSpec({ ...SAMPLE_INPUTS, servicePath: '/seal' })).toThrow(
+			/runtimeRootHostPath/,
+		);
+		// Even shorter — the root itself.
+		expect(() => buildKeyServerSpec({ ...SAMPLE_INPUTS, servicePath: '/' })).toThrow(
+			/runtimeRootHostPath/,
+		);
 	});
 
 	it('mounts the stack root instead of fresh leaf files for Docker Desktop visibility', () => {
@@ -179,7 +209,7 @@ describe('buildKeyServerSpec — distilled-doc invariants', () => {
 		const ensureSpec = buildKeyServerEnsureContainerSpec(spec);
 		expect(ensureSpec.mounts).toEqual([
 			{
-				source: '/tmp/devstack/runtime',
+				source: SAMPLE_RUNTIME_ROOT,
 				target: '/devstack/runtime',
 				readonly: true,
 			},

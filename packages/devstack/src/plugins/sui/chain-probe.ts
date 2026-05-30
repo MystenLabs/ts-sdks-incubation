@@ -15,7 +15,8 @@
 // surface exists for explicit "I want to know if the chain is
 // reachable" callers (the doctor command, debugging).
 
-import { Effect, Schema } from 'effect';
+import { Effect } from 'effect';
+import type { ClientWithCoreApi } from '@mysten/sui/client';
 
 import type {
 	ChainProbe,
@@ -24,6 +25,7 @@ import type {
 	ChainProbeSchema,
 } from '../../contracts/chain-probe.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
+import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 
 /**
  * Sui's chain-key shape — discriminated so the probe can dispatch
@@ -34,51 +36,14 @@ export type SuiProbeKey =
 	| { readonly kind: 'object'; readonly objectId: string }
 	| { readonly kind: 'transaction'; readonly digest: string };
 
-/** Validated subset of `client.core.getObject(...).object`. We
- *  narrow to the fields verify probes actually consult — the SDK
- *  exposes more (digest, content, json, display) but those are
- *  out of scope here. */
-const ObjectOwnerSchema = Schema.Union([
-	Schema.Struct({
-		$kind: Schema.Literal('AddressOwner'),
-		AddressOwner: Schema.String,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Shared'),
-		Shared: Schema.Struct({ initialSharedVersion: Schema.String }),
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Immutable'),
-		Immutable: Schema.Literal(true),
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('ConsensusAddressOwner'),
-		ConsensusAddressOwner: Schema.Unknown,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Parent'),
-		Parent: Schema.Unknown,
-	}),
-	Schema.Struct({
-		$kind: Schema.Literal('Unknown'),
-		Unknown: Schema.Unknown,
-	}),
-]);
-
-/** Validated SDK response shape: `{ object: { objectId, type, ... } }`.
- *  Substrate-redesign note: today's code validates `version` as a
- *  string but it's semantically a bigint — branded type recommendation
- *  carried in the Opportunities section. */
-export const SuiObjectShapeSchema = Schema.Struct({
-	objectId: Schema.String,
-	type: Schema.String,
-	version: Schema.String,
-	owner: ObjectOwnerSchema,
-});
-
-export const SuiGetObjectResponseSchema = Schema.Struct({
-	object: SuiObjectShapeSchema,
-});
+// Note: this probe decodes against the CALLER-supplied `schema`
+// argument (see `makeSuiChainProbe`), never a local literal. Earlier
+// revisions also exported `SuiObjectShapeSchema` /
+// `SuiGetObjectResponseSchema` to "document the SDK shape", but they
+// had zero consumers (the contract's `ChainProbeSchema<Shape>` is what
+// validates), so per STYLE_GUIDE §5 (no orphan exports) they were
+// removed. Re-add a concrete object schema only if a caller actually
+// decodes through it.
 
 /** Plugin-internal SDK shim — the type the plugin's acquire body
  *  hands to the probe factory + the account's sign/execute closure.
@@ -140,10 +105,10 @@ export interface SuiSdkShim {
 			readonly timeout?: number;
 		}) => Promise<unknown>;
 	};
-	/** Opaque client reference for `Transaction.build({ client })`.
-	 *  The Sui barrel wires the resolved `SuiGrpcClient` through; the
-	 *  shim layer doesn't type-narrow it (mirrors `MintSdkShim.client`). */
-	readonly client: unknown;
+	/** Client reference for `Transaction.build({ client })` and every
+	 *  `client.core.*` call. The Sui barrel wires the resolved
+	 *  `SuiGrpcClient` through; consumers cast no further. */
+	readonly client: ClientWithCoreApi;
 }
 
 /** Construct the chain-probe instance for a resolved Sui client +
@@ -166,7 +131,7 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 					_tag: 'ChainProbeError',
 					reason: isNotFound(cause) ? 'not-found' : 'transient',
 					chain,
-					detail: stringifyCause(cause),
+					detail: formatUnknownError(cause),
 				}),
 			}).pipe(
 				// Lenient mode coerces both not-found and transient into a
@@ -191,7 +156,7 @@ export const makeSuiChainProbe = (sdk: SuiSdkShim, chain: string): ChainProbe<Su
 					_tag: 'ChainProbeError',
 					reason: 'decode-failed',
 					chain,
-					detail: stringifyCause(issue.cause ?? issue),
+					detail: formatUnknownError(issue.cause ?? issue),
 				}),
 			});
 			return decoded;
@@ -217,26 +182,39 @@ const projectTransactionPayload = (raw: unknown): unknown | null => {
 	return raw;
 };
 
-/** Heuristic: SDK errors carrying "not found" / "Not exist" in
- *  the message are treated as not-found; everything else is
- *  transient. The substrate's lenient-retry profile re-runs the
- *  probe on a transient bucket; not-found is terminal. */
+/** Heuristic: SDK errors carrying object/transaction-shape "not found"
+ *  markers are treated as terminal not-found; everything else is
+ *  transient. The substrate's lenient-retry profile re-runs the probe
+ *  on a transient bucket; not-found is terminal.
+ *
+ *  Limitation: `@mysten/sui` does NOT surface a structured status code
+ *  on its SDK errors — the substrate only sees an `Error` message. We
+ *  therefore narrow the substring matches as much as possible to avoid
+ *  misclassifying network-layer "endpoint does not exist" or generic
+ *  "not found" prose as terminal:
+ *
+ *  - We require the matched phrase to refer to the OBJECT or
+ *    TRANSACTION rather than the endpoint. Concretely we look for the
+ *    SDK's canonical "object not found" / "object does not exist" /
+ *    "no such object" wording and the equivalent "transaction not
+ *    found" / "transaction does not exist" wording.
+ *  - We DO NOT match the bare substring "not found" alone (that
+ *    catches "endpoint does not exist", DNS prose, etc. — all of
+ *    which are network-layer transients).
+ *
+ *  If `@mysten/sui` surfaces a structured error class with an
+ *  `httpStatus` (or equivalent) in the future, swap this for an
+ *  exact 404 / -32000 check. */
 const isNotFound = (cause: unknown): boolean => {
 	const msg = (cause as { message?: string })?.message?.toLowerCase() ?? '';
 	return (
-		msg.includes('not found') ||
-		msg.includes('does not exist') ||
-		msg.includes('no such object') ||
-		msg.includes('not exist')
+		// SDK-side `getObject` / `getTransaction` not-found markers.
+		/\bobject\b.*\bnot found\b/u.test(msg) ||
+		/\bobject\b.*\bdoes not exist\b/u.test(msg) ||
+		/\bno such object\b/u.test(msg) ||
+		// SDK-side `getTransaction` not-found markers — terminal for
+		// this probe (the queried digest will never materialise).
+		/\btransaction\b.*\bnot found\b/u.test(msg) ||
+		/\btransaction\b.*\bdoes not exist\b/u.test(msg)
 	);
-};
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
 };

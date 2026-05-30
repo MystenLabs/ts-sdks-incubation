@@ -4,6 +4,7 @@
 // node:fs-sync). The two surfaces share the same disk-side
 // invariants: mkdir-parent → O_EXCL temp → write → fsync → rename.
 
+import * as nodeFs from 'node:fs';
 import {
 	existsSync,
 	mkdtempSync,
@@ -16,7 +17,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Effect, Schema } from 'effect';
+import { Effect, Exit, FileSystem, Option, PlatformError, Schema } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { describe, expect, it } from '@effect/vitest';
 
@@ -171,6 +172,252 @@ describe('atomicWriteFileSync (node:fs sync)', () => {
 			atomicWriteJsonSync(target, { round: 2 });
 			expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ round: 2 });
 			expect(readdirSync(root)).toEqual(['doc.json']);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+// Failure-injection tests for both surfaces. The Effect surface
+// uses `FileSystem.makeNoop` overrides; the sync surface uses
+// `vi.spyOn` against `node:fs`. Both surfaces share the same
+// invariant: ANY mid-flight failure (open / write / fsync / rename)
+// must unlink the tempfile so the directory has no `*.tmp.*`
+// stragglers.
+//
+// The Effect surface tempfile lives in `dirname(path)` with the
+// shape `<basename>.tmp.<pid>.<8-hex>` — see `atomic-write.ts`
+// `tempSuffix()` + the `tmp` const. The assertion below greps the
+// dispatch directory for any sibling whose name starts with
+// `<basename>.tmp.` rather than guessing the random suffix.
+
+const tempLeakSiblings = (root: string, finalName: string): ReadonlyArray<string> =>
+	readdirSync(root).filter((name) => name.startsWith(`${finalName}.tmp.`));
+
+/** Helper: build a `PlatformError` with a system-error reason. */
+const fakePlatformError = (method: string, path: string, description: string) =>
+	PlatformError.systemError({
+		module: 'FileSystem',
+		method,
+		_tag: 'PermissionDenied',
+		description,
+		pathOrDescriptor: path,
+		cause: new Error(description),
+	});
+
+/**
+ * Build a fake `FileSystem` that records every method call we care
+ * about and injects a typed failure on the requested `failOn` stage.
+ *
+ * The atomic-write impl pipes through `Effect.catch(failStage(...))`
+ * which converts a typed `PlatformError` into `AtomicWriteFailed`
+ * carrying the stage discriminator — that's the assertion target.
+ */
+interface FakeFsObservations {
+	readonly removed: string[];
+	tempPath: string | null;
+}
+
+const makeFailingFs = (
+	failOn: 'open' | 'writeAll' | 'sync' | 'rename',
+): {
+	readonly fs: FileSystem.FileSystem;
+	readonly observations: FakeFsObservations;
+} => {
+	const observations: FakeFsObservations = { removed: [], tempPath: null };
+	const fileFor = (path: string): FileSystem.File =>
+		({
+			[FileSystem.FileTypeId]: FileSystem.FileTypeId,
+			fd: 0 as FileSystem.File['fd'],
+			stat: Effect.fail(fakePlatformError('stat', path, 'not implemented')),
+			seek: () => Effect.void,
+			sync:
+				failOn === 'sync'
+					? Effect.fail(fakePlatformError('sync', path, `fake sync failure for ${path}`))
+					: Effect.void,
+			read: () => Effect.fail(fakePlatformError('read', path, 'not implemented')),
+			readAlloc: () => Effect.fail(fakePlatformError('readAlloc', path, 'not implemented')),
+			truncate: () => Effect.fail(fakePlatformError('truncate', path, 'not implemented')),
+			write: () => Effect.fail(fakePlatformError('write', path, 'not implemented')),
+			writeAll:
+				failOn === 'writeAll'
+					? () =>
+							Effect.fail(fakePlatformError('writeAll', path, `fake writeAll failure for ${path}`))
+					: () => Effect.void,
+		}) as unknown as FileSystem.File;
+	const fs = FileSystem.makeNoop({
+		makeDirectory: () => Effect.void,
+		open: (path) => {
+			observations.tempPath = path;
+			if (failOn === 'open') {
+				return Effect.fail(fakePlatformError('open', path, `fake open failure for ${path}`));
+			}
+			// `open` returns a scope-bound `File` — wrap in
+			// `Effect.acquireRelease` so the scope finalizer is a no-op
+			// (mirrors real `fs.open` scope semantics).
+			return Effect.acquireRelease(Effect.succeed(fileFor(path)), () => Effect.void);
+		},
+		remove: (path) => {
+			observations.removed.push(path);
+			return Effect.void;
+		},
+		rename: (oldPath) => {
+			if (failOn === 'rename') {
+				return Effect.fail(
+					fakePlatformError('rename', oldPath, `fake rename failure for ${oldPath}`),
+				);
+			}
+			return Effect.void;
+		},
+	});
+	return { fs, observations };
+};
+
+describe('atomicWriteFile (Effect/FileSystem) — failure paths leave no temp file', () => {
+	it.effect('open throw: AtomicWriteFailed (stage=open-temp), no temp to clean', () =>
+		Effect.gen(function* () {
+			const { fs, observations } = makeFailingFs('open');
+			const exit = yield* atomicWriteFile(
+				'/virtual/target.bin',
+				new TextEncoder().encode('payload'),
+			).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const errOpt = Exit.findErrorOption(exit);
+			expect(Option.isSome(errOpt)).toBe(true);
+			if (Option.isSome(errOpt)) {
+				expect(errOpt.value._tag).toBe('AtomicWriteFailed');
+				expect(errOpt.value.stage).toBe('open-temp');
+			}
+			// Cleanup still fires (Effect.onError runs on ANY failure path).
+			// The tempfile name was captured by our recording `open`, and
+			// `remove` was called on the SAME tempfile.
+			expect(observations.tempPath).not.toBeNull();
+			expect(observations.removed).toContain(observations.tempPath);
+		}),
+	);
+
+	it.effect('write throw: AtomicWriteFailed (stage=write), tempfile cleaned', () =>
+		Effect.gen(function* () {
+			const { fs, observations } = makeFailingFs('writeAll');
+			const exit = yield* atomicWriteFile(
+				'/virtual/target.bin',
+				new TextEncoder().encode('payload'),
+			).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const errOpt = Exit.findErrorOption(exit);
+			expect(Option.isSome(errOpt)).toBe(true);
+			if (Option.isSome(errOpt)) {
+				expect(errOpt.value._tag).toBe('AtomicWriteFailed');
+				expect(errOpt.value.stage).toBe('write');
+			}
+			expect(observations.tempPath).not.toBeNull();
+			expect(observations.removed).toContain(observations.tempPath);
+		}),
+	);
+
+	it.effect('fsync throw: AtomicWriteFailed (stage=fsync), tempfile cleaned', () =>
+		Effect.gen(function* () {
+			const { fs, observations } = makeFailingFs('sync');
+			const exit = yield* atomicWriteFile(
+				'/virtual/target.bin',
+				new TextEncoder().encode('payload'),
+			).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const errOpt = Exit.findErrorOption(exit);
+			expect(Option.isSome(errOpt)).toBe(true);
+			if (Option.isSome(errOpt)) {
+				expect(errOpt.value._tag).toBe('AtomicWriteFailed');
+				expect(errOpt.value.stage).toBe('fsync');
+			}
+			expect(observations.tempPath).not.toBeNull();
+			expect(observations.removed).toContain(observations.tempPath);
+		}),
+	);
+
+	it.effect('rename throw: AtomicWriteFailed (stage=rename), tempfile cleaned', () =>
+		Effect.gen(function* () {
+			const { fs, observations } = makeFailingFs('rename');
+			const exit = yield* atomicWriteFile(
+				'/virtual/target.bin',
+				new TextEncoder().encode('payload'),
+			).pipe(Effect.provideService(FileSystem.FileSystem, fs), Effect.exit);
+			expect(Exit.isFailure(exit)).toBe(true);
+			const errOpt = Exit.findErrorOption(exit);
+			expect(Option.isSome(errOpt)).toBe(true);
+			if (Option.isSome(errOpt)) {
+				expect(errOpt.value._tag).toBe('AtomicWriteFailed');
+				expect(errOpt.value.stage).toBe('rename');
+			}
+			expect(observations.tempPath).not.toBeNull();
+			expect(observations.removed).toContain(observations.tempPath);
+		}),
+	);
+});
+
+// atomicWriteJson relays through atomicWriteFile, so we cover one
+// representative stage (rename throw) to confirm the JSON surface
+// inherits the tempfile-cleanup contract.
+describe('atomicWriteJson (Effect/FileSystem) — failure inherits tempfile cleanup', () => {
+	it.effect('rename throw: surfaces AtomicWriteFailed, no tempfile leaked', () =>
+		Effect.gen(function* () {
+			const { fs, observations } = makeFailingFs('rename');
+			const Doc = Schema.Struct({ n: Schema.Number });
+			const exit = yield* atomicWriteJson('/virtual/doc.json', Doc, { n: 1 }).pipe(
+				Effect.provideService(FileSystem.FileSystem, fs),
+				Effect.exit,
+			);
+			expect(Exit.isFailure(exit)).toBe(true);
+			expect(observations.removed).toContain(observations.tempPath);
+		}),
+	);
+});
+
+// Sync surface counterparts via real-filesystem failure conditions.
+// The sync impl's tempfile-cleanup contract is "if writeFileSync
+// succeeded (tempfile exists) and then open/fsync/rename throws, the
+// finally block unlinks the tempfile". Triggering each individual
+// stage failure without monkey-patching is brittle — destructured
+// imports in `atomic-write.ts` capture the symbols at module-load and
+// are NOT reachable via `vi.spyOn(nodeFs, ...)`. We reproduce the
+// canonical failures using real fs preconditions:
+//   - `rename` failure → pre-existing directory at the target path
+//     causes EISDIR when renameSync(tmp, target) fires AFTER fsync
+//     succeeds. Exercises the post-fsync, pre-rename cleanup branch.
+//   - `writeFileSync` failure → parent path is a regular file, so
+//     mkdirSync(dirname) fails with ENOTDIR. The function throws
+//     before any tempfile is created — proves the early-fail path
+//     also leaks nothing.
+describe('atomicWriteFileSync (node:fs sync) — failure paths leave no temp file', () => {
+	it('rename throw (EISDIR via pre-existing directory at target): tempfile unlinked', () => {
+		const root = freshTmp();
+		try {
+			const target = join(root, 'doc.bin');
+			// renameSync(tmp, target) fails with EISDIR when target is
+			// an existing directory. The finally-block runs
+			// unlinkSync(tmp) — proving the post-fsync, pre-rename
+			// cleanup branch.
+			nodeFs.mkdirSync(target, { recursive: true });
+			expect(() => atomicWriteFileSync(target, 'payload')).toThrow();
+			// No tempfile siblings — the finally block ran unlinkSync(tmp).
+			expect(tempLeakSiblings(root, 'doc.bin')).toEqual([]);
+			// Target still exists as a directory.
+			expect(statSync(target).isDirectory()).toBe(true);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('mkdir-parent throw (ENOTDIR via parent-as-file): no tempfile created, no leak', () => {
+		const root = freshTmp();
+		try {
+			// Create a regular file where the parent would need to be a
+			// directory; mkdirSync(parent) fails with ENOTDIR.
+			const parentFile = join(root, 'parent-as-file');
+			nodeFs.writeFileSync(parentFile, 'x');
+			const target = join(parentFile, 'doc.bin');
+			expect(() => atomicWriteFileSync(target, 'payload')).toThrow();
+			// No tempfile sibling under `root` matching the doc.bin lineage.
+			expect(tempLeakSiblings(root, 'doc.bin')).toEqual([]);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}

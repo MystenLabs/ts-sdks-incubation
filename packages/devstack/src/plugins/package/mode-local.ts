@@ -33,16 +33,18 @@ import {
 	type PackagePublishObjectChange,
 	type LocalPackagePublishOutput,
 } from './publish-output.ts';
-import type {
-	ArtifactPublishError,
-	ArtifactPublisher,
+import {
+	artifactPublishError,
+	type ArtifactPublishError,
+	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
+import type { SuiProbeKey } from '../sui/index.ts';
 import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import { mvrSlugify } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
+import { PackageSpans } from './spans.ts';
 
 /** Cache-stored payload — the stable id verify re-confirms on
  *  every cycle. Distilled doc Invariant 8: the probe MUST consume
@@ -107,12 +109,22 @@ export interface PublishExecutor {
 		readonly packageName: string;
 	}) => Effect.Effect<LocalPackagePublishOutput, PublishError, Scope.Scope>;
 
-	/** Post-publish fullnode/indexer ready-probe. Distilled doc
-	 *  Invariant 5: publish-tx commit precedes index visibility.
-	 *  Polls `getObject(packageId)` until success or a 10s ceiling
-	 *  at ~200ms cadence. Failure raises `PublishError('parse')`
-	 *  per the distilled doc's phase catalog ("stuck indexer"). */
-	readonly waitForReady: (packageId: string) => Effect.Effect<void, PublishError, Scope.Scope>;
+	/** Post-publish fullnode/indexer ready HINT. Distilled doc
+	 *  Invariant 5: publish-tx commit precedes index visibility. This
+	 *  is BEST-EFFORT — the concrete executor swallows transient
+	 *  `getObject` misses (cold index races) because the publisher
+	 *  account's `signAndExecute` already calls `waitForTransaction`
+	 *  before returning, AND the downstream `parse` phase only
+	 *  inspects the publish output. A typed `PublishError('parse')`
+	 *  surfaces only when the `getObject` infrastructure itself
+	 *  faults (network down / SDK throws non-recoverably), NOT when
+	 *  the object is merely not-yet-indexed.
+	 *
+	 *  The "Hint" suffix encodes the contract: callers MUST NOT treat
+	 *  a successful return as "package definitely queryable now". */
+	readonly postPublishReadyHint: (
+		packageId: string,
+	) => Effect.Effect<void, PublishError, Scope.Scope>;
 }
 
 export interface LocalModeInputs {
@@ -218,6 +230,44 @@ export const acquireLocal = (
 	inputs: LocalModeInputs,
 ): Effect.Effect<LocalModeOutputs, PublishError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
+		// Intra-stack name collision guard.
+		//
+		// The registry is keyed by symbolic `packageName`; two
+		// `localPackage('foo', ...)` calls in the same stack would both
+		// call `register({ name: 'foo', ... })` and the second `set`
+		// would silently overwrite the first. Upstream's
+		// `resolveGraph` (substrate/runtime/lifecycle/dep-graph.ts:127)
+		// explicitly documents "we don't enforce uniqueness at runtime;
+		// the duplicate just resolves to the latest declaration" —
+		// compile-time `MissingProviders` only catches collisions on
+		// the user-typed dependency path, NOT two members declared on
+		// the same stack with the same id. We catch the collision here
+		// so the user sees a typed parse-phase failure instead of a
+		// confusing "wrong packageId" downstream.
+		//
+		// The check tolerates re-entry from the SAME `localPackage(...)`
+		// call (warm restart / re-acquire on the same scope): a
+		// pre-existing entry with the SAME `sourcePath` is the
+		// previous cycle's register, not a collision.
+		const existing = yield* registry.find(inputs.packageName);
+		if (
+			existing !== null &&
+			existing.kind === 'local' &&
+			existing.sourcePath !== inputs.sourcePath
+		) {
+			return yield* Effect.fail(
+				publishError('parse', {
+					sourcePath: inputs.sourcePath,
+					packageName: inputs.packageName,
+					message:
+						`localPackage('${inputs.packageName}') is declared twice in the same stack ` +
+						`with different sourcePaths (${existing.sourcePath} vs ${inputs.sourcePath}). ` +
+						`The substrate is name-blind at runtime and the second declaration would ` +
+						`silently overwrite the first registry entry. Pick distinct package names ` +
+						`(the symbolic name is the registry key consumers look up).`,
+				}),
+			);
+		}
 		// Distilled doc §Move-specific: hash inputs are `(sourceHash,
 		// signerAddress)`. The hashing helper strips Move.lock pinned
 		// sections (Invariant 2) so warm restarts hit the cache.
@@ -226,23 +276,20 @@ export const acquireLocal = (
 
 		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
 
-		// The in-process registry is consulted on the `register`
-		// callback (verify-hit path) to recover `mvrPlaceholder` +
-		// `captured` columns when the substrate hands back the bare
-		// `{objectId, type}` verify shape; see the register body below.
-		const priorEntry = yield* registry.find(inputs.packageName);
-
 		// We capture the produce-side output out-of-band so the
-		// returned `LocalModeOutputs.output` can expose it; the artifact publisher
-		// substrate's `Produced | Verified` discrimination collapses
-		// the output away.
+		// returned `LocalModeOutputs.output` can expose it. The
+		// substrate hands back the decoded `CachedPackageEntry` on
+		// every path; `producedOutput` is the freshly-emitted output
+		// from THIS cycle (cache miss only).
 		let producedOutput: LocalPackagePublishOutput | null = null;
 
-		const resolved = yield* publisher.publish<CachedPackageEntry, typeof PackageVerifyShape.Type>({
+		const entry: CachedPackageEntry = yield* publisher.publish<
+			CachedPackageEntry,
+			typeof PackageVerifyShape.Type
+		>({
 			namespace: 'package',
 			chain: inputs.chainId,
 			contentHash: inputsHash,
-			verifySchema: PackageVerifyShape,
 			verify: (cached) =>
 				cached.output === undefined
 					? Effect.succeed(null)
@@ -252,28 +299,27 @@ export const acquireLocal = (
 			// it to `ArtifactPublishError` at the substrate boundary.
 			produce: Effect.gen(function* () {
 				yield* Effect.annotateCurrentSpan({
-					'package.publish.package': inputs.packageName,
-					'package.publish.sourcePath': inputs.sourcePath,
-					'package.publish.chainId': inputs.chainId,
-					'package.publish.publisher': inputs.publisherAddress,
+					[PackageSpans.publish.package]: inputs.packageName,
+					[PackageSpans.publish.sourcePath]: inputs.sourcePath,
+					[PackageSpans.publish.chainId]: inputs.chainId,
+					[PackageSpans.publish.publisher]: inputs.publisherAddress,
 				});
 
 				// Produce 1/5 — scrub locks. Distilled doc §Move-specific
-				// concerns + Invariant 14: strip pinned sections from BOTH
-				// the package's own Move.lock AND every
+				// concerns + Invariant 14: strip pinned sections from every
 				// `~/.move/git/**/Move.lock` (vendored dep caches) before
-				// invoking the build. Uses the unified `stripPinnedSections`
-				// (re-exported through `build.ts` → from
-				// `../sui/move-lock-scrub.ts`) — NO duplicate.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'scrub' });
-				yield* scrubLocksHost(inputs.sourcePath, '~/.move', {
-					packageLockFailures: inputs.executor.scrubsInsideContainer ? 'best-effort' : 'fatal',
-				});
+				// invoking the build. The package's own Move.lock is scrubbed
+				// inside the container on a disposable copy, so the developer's
+				// checked-in source is left untouched host-side. Uses the
+				// unified `stripPinnedSections` (re-exported through `build.ts`
+				// → from `../sui/move-lock-scrub.ts`) — NO duplicate.
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'scrub' });
+				yield* scrubLocksHost(inputs.sourcePath, '~/.move');
 
 				// Produce 2/5 — build. Executor dispatches between (a)
 				// per-app build container, (b) `docker run --rm`, (c) host
 				// `sui` CLI.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'build' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'build' });
 				const buildOutput: BuildOutput = yield* inputs.executor
 					.build({
 						sourcePath: inputs.sourcePath,
@@ -302,7 +348,7 @@ export const acquireLocal = (
 				// Produce 3/5 — publish-tx. Construct `Transaction.publish`,
 				// sign + execute via the publisher's account signer, decode
 				// the output.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'publish-tx' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'publish-tx' });
 				const output: LocalPackagePublishOutput = yield* inputs.executor.publishTx({
 					modules: buildOutput.modules,
 					dependencies: buildOutput.dependencies,
@@ -312,18 +358,24 @@ export const acquireLocal = (
 				producedOutput = output;
 
 				// Produce 4/5 — wait-for-index. Distilled doc Invariant 5:
-				// publish-tx commit precedes index visibility. Without this
-				// gate, downstream tx builders fail with "Dependent package
-				// not found". Failure surfaces as `PublishError('parse')`
-				// per the distilled doc's phase catalog ("stuck indexer").
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'waiting-for-index' });
-				yield* inputs.executor.waitForReady(output.packageId);
+				// publish-tx commit precedes index visibility. This is a
+				// hint-only probe (see `postPublishReadyHint` doc on
+				// `PublishExecutor`): the publisher account's
+				// `signAndExecute` already awaits `waitForTransaction`, so
+				// the typical race is closed before we reach here.
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
+				// Best-effort only: the executor's hint swallows transient
+				// `getObject` misses and logs at debug, so its error channel
+				// collapses to `never` (see `publish-executor.ts →
+				// postPublishReadyHint`). No re-stamp is needed because no
+				// failure surfaces here.
+				yield* inputs.executor.postPublishReadyHint(output.packageId);
 
 				// Produce 5/5 — parse. Distilled doc §Move-specific
 				// concerns: pick the `'published'` change for packageId;
 				// pick the `UpgradeCap`-typed `'created'` change for the
 				// upgrade cap.
-				yield* Effect.annotateCurrentSpan({ 'package.publish.phase': 'parse' });
+				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'parse' });
 				const published = pickPublishedChange(output.objectChanges);
 				if (!published?.objectId) {
 					return yield* Effect.fail(
@@ -340,10 +392,14 @@ export const acquireLocal = (
 				);
 
 				// Capture spec — user-declared projection from output to
-				// typed object id map. Distilled doc §Outputs + Invariant:
-				// safe to swallow individual key failures (callback form
-				// is user code), but a callback throw bubbles up as a
-				// PublishError('parse') so the user catches the typo.
+				// typed object id map. Distilled doc §Outputs: the callback
+				// is user code, so a throw is a USER BUG (typo / missing
+				// field) — surface as `PublishError('parse')` so the user
+				// catches the mistake instead of silently shipping a stale
+				// captured map. The cache-HIT path performs the symmetric
+				// recompute post-`publisher.publish` (see comment block
+				// below the `publisher.publish` call) — both paths bubble
+				// the same `PublishError('parse')` shape.
 				const captured: Readonly<Record<string, string>> = inputs.capture
 					? yield* Effect.try({
 							try: () => inputs.capture!(output),
@@ -368,76 +424,98 @@ export const acquireLocal = (
 				return entry;
 			}).pipe(
 				Effect.mapError(
-					(err): ArtifactPublishError => ({
-						_tag: 'ArtifactPublishError',
-						reason: 'produce-failed',
-						detail: `package.publish ${err.phase}: ${err.message}`,
-					}),
+					(err): ArtifactPublishError =>
+						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
 				),
 			),
-			// Register: on EVERY cycle. Distilled doc Invariant 6.
-			// The publisher hands us either `Produced` (CachedPackageEntry)
-			// or `Verified` (`{ objectId, type }` from the verifySchema).
-			// On verify-hit we project to a synthesized entry; on produce
-			// we already have the full shape. The cache-hit path needs
-			// to thread through the cached mvrPlaceholder + output. Recompute
-			// `captured` from the current capture spec when cached output is
-			// present so changing capture keys does not require a republish.
+			// Register: on EVERY cycle. Distilled doc Invariant 6. The
+			// substrate hands the decoded `CachedPackageEntry` payload
+			// here on both verify-hit and freshly-produced paths.
+			//
+			// Register writes the entry verbatim using `artifact.captured`
+			// (produce-time on miss; cached on hit). The user's `capture`
+			// callback is NOT re-run here — `register`'s contract is
+			// `Effect.Effect<void, never>` (primitives/artifact-publisher.ts)
+			// and a user-bug throw needs a typed failure channel. The
+			// post-publish recompute below (cache-hit branch) re-runs
+			// `capture` so renamed/typo keys surface IDENTICALLY to the
+			// cache-miss path (mode-local.ts:346-357) — i.e., as
+			// `PublishError('parse')`.
 			register: (artifact) =>
 				Effect.gen(function* () {
-					const entry: CachedPackageEntry =
-						'packageId' in artifact
-							? {
-									...artifact,
-									captured:
-										inputs.capture !== undefined && artifact.output !== undefined
-											? (() => {
-													try {
-														return inputs.capture(artifact.output);
-													} catch {
-														return artifact.captured;
-													}
-												})()
-											: artifact.captured,
-								}
-							: {
-									// Verify-hit path: project from the bare
-									// `{ objectId, type }` probe shape using the
-									// previously-resolved registry entry to recover
-									// `mvrPlaceholder` + `captured`. If no prior
-									// entry exists (first cold-boot verify hit —
-									// unusual; implies a different process wrote
-									// the cache), we fall back to safe defaults.
-									packageId: artifact.objectId,
-									publisher: inputs.publisherAddress,
-									mvrPlaceholder:
-										priorEntry && priorEntry.kind === 'local'
-											? priorEntry.mvrPlaceholder
-											: mvrPlaceholder,
-									captured: priorEntry && priorEntry.kind === 'local' ? priorEntry.captured : {},
-									upgradeCapId:
-										priorEntry && priorEntry.kind === 'local' ? priorEntry.upgradeCapId : undefined,
-								};
 					const r: ResolvedLocalPackage = {
 						kind: 'local',
 						name: inputs.packageName,
-						packageId: entry.packageId,
-						upgradeCapId: entry.upgradeCapId,
+						packageId: artifact.packageId,
+						upgradeCapId: artifact.upgradeCapId,
 						sourcePath: inputs.sourcePath,
-						mvrPlaceholder: entry.mvrPlaceholder,
-						captured: entry.captured,
+						mvrPlaceholder: artifact.mvrPlaceholder,
+						captured: artifact.captured,
 					};
 					yield* registry.set(r.name, r);
 				}),
 		});
 
-		// Project the cached/verified entry back to the resolved shape.
-		// The publisher's `Produced | Verified` union — Produced is
-		// CachedPackageEntry (full); Verified is `{ objectId, type }`
-		// from the verify schema. Both collapse onto the registry's
-		// projected `ResolvedLocalPackage` — and `register` already
-		// performed that projection. Re-read the registry to recover
-		// the unified shape regardless of which arm fired.
+		// Post-publish capture recompute — cache-hit ONLY.
+		//
+		// Symmetric with the produce-time capture (L346-357): the user's
+		// `capture` callback is user code; a throw is a user bug (typo /
+		// renamed key against a stale cached output) and MUST surface as
+		// `PublishError('parse')` so the user sees the mistake instead of
+		// silently carrying forward `artifact.captured` (the historical
+		// `try { ... } catch { return artifact.captured }` hid renamed
+		// keys behind stale data — A5 of the remediation plan).
+		//
+		// Cache miss: `producedOutput` was set inside `produce`, the
+		// produce-time capture already ran (Effect.try → PublishError),
+		// and the substrate cached the produced entry. Re-running here
+		// would be redundant and would double-throw on user bugs.
+		//
+		// Cache hit: `producedOutput` is null, `entry.output` came from
+		// the cached payload, and `entry.captured` is whatever the user's
+		// `capture` returned at the time of the original publish. We
+		// re-run `capture(entry.output)` so warm restarts with renamed
+		// capture keys (a) reflect the new shape in the registry without
+		// requiring a republish, and (b) FAIL LOUDLY on user-callback
+		// throws — the symmetric counterpart to the produce-time guard.
+		const cacheHit = producedOutput === null;
+		if (cacheHit && inputs.capture !== undefined && entry.output !== undefined) {
+			const recomputedCaptured: Readonly<Record<string, string>> = yield* Effect.try({
+				try: () => inputs.capture!(entry.output!),
+				catch: (cause): PublishError =>
+					publishError('parse', {
+						sourcePath: inputs.sourcePath,
+						packageName: inputs.packageName,
+						message: 'capture callback threw',
+						cause,
+					}),
+			}).pipe(
+				// Match the produce-body `mapError` projection (L373-379)
+				// so callers see ONE consistent failure shape on
+				// `capture` throws — `ArtifactPublishError('produce-failed')`
+				// with `detail: "package.publish parse: capture callback
+				// threw"` — regardless of whether the bug surfaces on a
+				// cache miss (inside `produce`) or a cache hit (here).
+				Effect.mapError(
+					(err): ArtifactPublishError =>
+						artifactPublishError('produce-failed', `package.publish ${err.phase}: ${err.message}`),
+				),
+			);
+			yield* registry.set(inputs.packageName, {
+				kind: 'local',
+				name: inputs.packageName,
+				packageId: entry.packageId,
+				upgradeCapId: entry.upgradeCapId,
+				sourcePath: inputs.sourcePath,
+				mvrPlaceholder: entry.mvrPlaceholder,
+				captured: recomputedCaptured,
+			});
+		}
+
+		// Project the cached entry back to the resolved shape. The
+		// publisher returned the decoded `CachedPackageEntry`; re-read
+		// the registry to recover the canonical `ResolvedLocalPackage`
+		// shape (`register` ran on every cycle and wrote it).
 		const final = yield* registry.find(inputs.packageName);
 		if (!final || final.kind !== 'local') {
 			// Defensive — register fires unconditionally; missing entry
@@ -455,16 +533,8 @@ export const acquireLocal = (
 			);
 		}
 
-		// Silence the unused-binding lint for the artifact publisher `resolved` — the
-		// substrate's `Produced | Verified` return is informational
-		// here (we project through the registry instead).
-		void resolved;
-
-		const cachedOutput =
-			'packageId' in resolved && 'output' in resolved ? (resolved.output ?? null) : null;
-
 		return {
 			resolved: final,
-			output: producedOutput ?? cachedOutput,
+			output: producedOutput ?? entry.output ?? null,
 		};
 	});

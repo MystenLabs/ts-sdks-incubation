@@ -50,6 +50,8 @@ import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
 	type AccountFundingResult,
+	type AppliedFunding,
+	type AppliedFundingEntry,
 	type FundingBalanceReader,
 	type ProjectedFunding,
 	type ProjectedFundingEntry,
@@ -60,16 +62,21 @@ import { resolveEnvVariant } from './variants/env.ts';
 import { resolveInlineVariant } from './variants/inline.ts';
 import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
-import type { SuiSdkShim } from '../sui/chain-probe.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
-import type { TransactionSignerScope } from '../../substrate/runtime/sui-execute/index.ts';
+import {
+	extractExecuteDigest,
+	type ExecutedFailure,
+	type TransactionSignerScope,
+} from '../../substrate/runtime/sui-execute/index.ts';
 import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
-import type { ForkAdminSurface } from '../sui/index.ts';
+import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
+import { type ForkAdminSurface, type SuiSdkShim, SuiSpans } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
+import { AccountSpans } from './spans.ts';
 
 // -----------------------------------------------------------------------------
 // User-facing options shape
@@ -151,7 +158,9 @@ export interface AccountValue {
 	 *  For impersonation accounts, routes through Sui's fork
 	 *  admin `impersonate` surface; for real signers, routes
 	 *  through the SDK's executeTransaction surface. */
-	readonly signAndExecute: (tx: Uint8Array) => Effect.Effect<TxResult, AccountSignError>;
+	readonly signAndExecute: (
+		tx: Uint8Array,
+	) => Effect.Effect<SignAndExecuteResult, AccountSignError>;
 	/** Run a full account-bound transaction critical section.
 	 *  Callers that must serialize `Transaction.build({ client })`
 	 *  together with signing/execution use the signer passed to this
@@ -171,13 +180,29 @@ export interface AccountValue {
 }
 
 /** Submit result projection — kept narrow so downstream consumers
- *  don't depend on the full @mysten/sui execute envelope. */
+ *  don't depend on the full @mysten/sui execute envelope. Populated
+ *  only when the on-chain execution succeeded (the `'Transaction'`
+ *  variant of `SignAndExecuteResult`). */
 export interface TxResult {
 	readonly digest: string;
 	readonly effects: unknown;
 	readonly objectChanges: ReadonlyArray<unknown>;
 	readonly balanceChanges: ReadonlyArray<unknown>;
 }
+
+/** Outcome of `signAndExecute`. Mirrors the SDK's discriminated
+ *  `SuiClientTypes.TransactionResult` shape — on-chain failures are
+ *  a RETURN VALUE (callers dispatch on `$kind`), NOT an error. Only
+ *  transport / lifecycle failures (sign refused, RPC unreachable,
+ *  finality wait broke) surface through `AccountSignError`.
+ *
+ *  The on-chain `FailedTransaction` projection is the substrate
+ *  `ExecutedFailure` shape — single source of truth lives in
+ *  `substrate/runtime/sui-execute/index.ts`. An envelope without a
+ *  digest fails at projection with `AccountSignError(phase: 'no-digest')`. */
+export type SignAndExecuteResult =
+	| { readonly $kind: 'Transaction'; readonly Transaction: TxResult }
+	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: ExecutedFailure };
 
 export interface AccountTransactionSigner extends TransactionSignerScope<AccountSignError> {
 	readonly signAndExecute: AccountValue['signAndExecute'];
@@ -310,19 +335,46 @@ export interface AccountAcquireContext {
 	readonly projectedFunding?: ProjectedFunding;
 }
 
-const FUNDING_BALANCE_TIMEOUT_MS = 5_000;
+/** Sum an owner's coin balances for `coinType` via `listCoins`. Used in
+ *  fork mode, where `getBalance` / `listBalances` panic under the fork
+ *  guard — `listCoins` is the only balance-bearing read fork mode allows. */
+const sumBalanceViaListCoins = async (
+	sdk: SuiSdkShim,
+	owner: string,
+	coinType: string | undefined,
+): Promise<bigint> => {
+	let total = 0n;
+	let cursor: string | null = null;
+	do {
+		const page = await sdk.core.listCoins({
+			owner,
+			coinType: coinType ?? '0x2::sui::SUI',
+			cursor,
+			limit: 200,
+		});
+		for (const coin of page.objects) {
+			total += BigInt(coin.balance);
+		}
+		cursor = page.hasNextPage ? page.cursor : null;
+	} while (cursor !== null);
+	return total;
+};
 
-const makeFundingBalanceReader = (sdk: SuiSdkShim): FundingBalanceReader => ({
+const makeFundingBalanceReader = (sdk: SuiSdkShim, forkMode: boolean): FundingBalanceReader => ({
 	readBalance: ({ owner, coinType }) =>
 		Effect.promise(async () => {
 			try {
-				return balanceAmountFromSdkResponse(await sdk.core.getBalance({ owner, coinType }));
+				// Fork mode forbids getBalance/listBalances (they panic under the
+				// fork guard); sum coins via the fork-safe listCoins instead.
+				return forkMode
+					? await sumBalanceViaListCoins(sdk, owner, coinType)
+					: balanceAmountFromSdkResponse(await sdk.core.getBalance({ owner, coinType }));
 			} catch {
 				return null;
 			}
 		}).pipe(
 			Effect.timeoutOrElse({
-				duration: `${FUNDING_BALANCE_TIMEOUT_MS} millis`,
+				duration: `${FUNDING_BALANCE_READ_TIMEOUT_MS} millis`,
 				orElse: () => Effect.succeed(null),
 			}),
 		),
@@ -448,60 +500,84 @@ const projectTxResult = (
 	raw: unknown,
 	accountName: string,
 	address: string,
-): Effect.Effect<TxResult, AccountSignError> => {
-	// Defensive shape: the SDK's TransactionResult is
-	// `{$kind, Transaction?, FailedTransaction?}` — `Transaction.digest`
-	// is the canonical id we need. We do best-effort projection here
-	// rather than schema-decode (the shape is wide + the SDK pins it).
-	const r = raw as {
-		$kind?: 'Transaction' | 'FailedTransaction';
-		Transaction?: {
-			digest?: string;
-			effects?: unknown;
-			objectTypes?: Readonly<Record<string, string>>;
-			balanceChanges?: ReadonlyArray<unknown>;
+): Effect.Effect<SignAndExecuteResult, AccountSignError> =>
+	Effect.gen(function* () {
+		// The SDK's `SuiClientTypes.TransactionResult` is a discriminated
+		// union — `{$kind: 'Transaction', Transaction: {...}}` or
+		// `{$kind: 'FailedTransaction', FailedTransaction: {...}}` —
+		// where each variant carries a non-optional `digest`. Mirror the
+		// shape on-channel so callers dispatch on `$kind`; on-chain
+		// failures are a RETURN VALUE, not an error.
+		const r = raw as {
+			$kind?: 'Transaction' | 'FailedTransaction';
+			Transaction?: {
+				digest?: string;
+				effects?: unknown;
+				objectTypes?: Readonly<Record<string, string>>;
+				balanceChanges?: ReadonlyArray<unknown>;
+			};
+			FailedTransaction?: {
+				digest?: string;
+				status?: { readonly error?: string | { readonly message?: string } };
+			};
 		};
-		FailedTransaction?: {
-			digest?: string;
+		if (r.$kind === 'FailedTransaction') {
+			const failed = r.FailedTransaction ?? {};
+			if (failed.digest === undefined) {
+				return yield* Effect.fail(
+					accountSignError({
+						phase: 'no-digest',
+						accountName,
+						address,
+						message:
+							`Account '${accountName}': executeTransaction returned a FailedTransaction ` +
+							`without a digest — protocol violation, got ` +
+							`${JSON.stringify(r).slice(0, 200)}`,
+					}),
+				);
+			}
+			const errorRaw = failed.status?.error;
+			const executionError =
+				typeof errorRaw === 'string'
+					? errorRaw
+					: typeof errorRaw === 'object' &&
+						  errorRaw !== null &&
+						  'message' in errorRaw &&
+						  typeof errorRaw.message === 'string'
+						? errorRaw.message
+						: undefined;
+			return {
+				$kind: 'FailedTransaction',
+				FailedTransaction: {
+					digest: failed.digest,
+					...(executionError !== undefined ? { executionError } : {}),
+				},
+			};
+		}
+		const tx = r.Transaction;
+		if (tx?.digest === undefined) {
+			return yield* Effect.fail(
+				accountSignError({
+					phase: 'no-digest',
+					accountName,
+					address,
+					message:
+						`Account '${accountName}': executeTransaction returned a malformed envelope — ` +
+						`expected $kind:'Transaction'|'FailedTransaction' with a digest, got ` +
+						`${JSON.stringify(r).slice(0, 200)}`,
+				}),
+			);
+		}
+		return {
+			$kind: 'Transaction',
+			Transaction: {
+				digest: tx.digest,
+				effects: tx.effects ?? null,
+				objectChanges: projectObjectChanges(tx.effects, tx.objectTypes ?? {}),
+				balanceChanges: tx.balanceChanges ?? [],
+			},
 		};
-	};
-	if (r.$kind === 'FailedTransaction') {
-		return Effect.fail(
-			accountSignError({
-				phase: 'submit',
-				accountName,
-				address,
-				message: `Account '${accountName}': transaction execution failed on-chain (digest=${r.FailedTransaction?.digest ?? '<unknown>'}).`,
-			}),
-		);
-	}
-	const tx = r.Transaction;
-	if (tx?.digest === undefined) {
-		return Effect.fail(
-			accountSignError({
-				phase: 'submit',
-				accountName,
-				address,
-				message: `Account '${accountName}': executeTransaction returned no digest. Raw shape=${JSON.stringify(r).slice(0, 200)}.`,
-			}),
-		);
-	}
-	return Effect.succeed({
-		digest: tx.digest,
-		effects: tx.effects ?? null,
-		objectChanges: projectObjectChanges(tx.effects, tx.objectTypes ?? {}),
-		balanceChanges: tx.balanceChanges ?? [],
 	});
-};
-
-const extractExecuteDigest = (raw: unknown): string | undefined => {
-	const r = raw as {
-		$kind?: 'Transaction' | 'FailedTransaction';
-		Transaction?: { readonly digest?: string };
-		FailedTransaction?: { readonly digest?: string };
-	};
-	return r.$kind === 'FailedTransaction' ? r.FailedTransaction?.digest : r.Transaction?.digest;
-};
 
 const projectObjectChanges = (
 	effects: unknown,
@@ -639,14 +715,20 @@ const buildClosures = (
 				}),
 			).pipe(
 				Effect.withSpan('devstack.plugin.account.transactionSigner', {
-					attributes: { 'account.name': accountName, 'account.address': resolved.address },
+					attributes: {
+						[AccountSpans.name]: accountName,
+						[AccountSpans.address]: resolved.address,
+					},
 				}),
 			);
 		return {
 			signAndExecute: (tx) =>
 				withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
 					Effect.withSpan('devstack.plugin.account.signAndExecute', {
-						attributes: { 'account.name': accountName, 'account.address': resolved.address },
+						attributes: {
+							[AccountSpans.name]: accountName,
+							[AccountSpans.address]: resolved.address,
+						},
 					}),
 				),
 			withTransactionSigner,
@@ -699,8 +781,7 @@ const buildClosures = (
 						}),
 				});
 			}
-			const result = yield* projectTxResult(raw, accountName, resolved.address);
-			return result;
+			return yield* projectTxResult(raw, accountName, resolved.address);
 		});
 
 	const transactionSigner: AccountTransactionSigner = {
@@ -718,14 +799,20 @@ const buildClosures = (
 			}),
 		).pipe(
 			Effect.withSpan('devstack.plugin.account.transactionSigner', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
 	const signTransaction: AccountValue['signTransaction'] = (tx) =>
 		withTransactionSigner((locked) => locked.signTransaction(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signTransaction', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
@@ -737,14 +824,20 @@ const buildClosures = (
 			signPersonalWith(signer, msg, accountName, resolved.address),
 		).pipe(
 			Effect.withSpan('devstack.plugin.account.signPersonalMessage', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
 	const signAndExecute: AccountValue['signAndExecute'] = (tx) =>
 		withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
 			Effect.withSpan('devstack.plugin.account.signAndExecute', {
-				attributes: { 'account.name': accountName, 'account.address': resolved.address },
+				attributes: {
+					[AccountSpans.name]: accountName,
+					[AccountSpans.address]: resolved.address,
+				},
 			}),
 		);
 
@@ -765,17 +858,17 @@ export const acquireAccount = (
 		yield* validateAccountName(opts.name);
 
 		yield* Effect.annotateCurrentSpan({
-			'account.name': opts.name,
-			'account.variant': opts.kind,
-			'sui.mode': ctx.sui.mode,
+			[AccountSpans.name]: opts.name,
+			[AccountSpans.variant]: opts.kind,
+			[SuiSpans.mode]: ctx.sui.mode,
 		});
 
 		// --- variant dispatch ----------------------------------------
 		const resolved = yield* resolveVariant(opts, ctx);
 
 		yield* Effect.annotateCurrentSpan({
-			'account.address': resolved.address,
-			'account.scheme': resolved.scheme,
+			[AccountSpans.address]: resolved.address,
+			[AccountSpans.scheme]: resolved.scheme,
 		});
 
 		// --- lease broker handle (captured once; both funding and the
@@ -783,7 +876,7 @@ export const acquireAccount = (
 		//     callers serialize through the substrate broker's per-key
 		//     FIFO queue) -------------------------------------------
 		const broker = yield* LeaseBrokerService;
-		const balanceReader = makeFundingBalanceReader(ctx.sui.sdk);
+		const balanceReader = makeFundingBalanceReader(ctx.sui.sdk, ctx.sui.mode === 'fork');
 
 		const defaultFunding: ProjectedFundingEntry | null =
 			opts.kind === 'ephemeral' && opts.funding === undefined
@@ -797,11 +890,16 @@ export const acquireAccount = (
 			defaultFunding === null
 				? (ctx.projectedFunding ?? [])
 				: [defaultFunding, ...(ctx.projectedFunding ?? [])];
-		const appliedDefaultFunding: ProjectedFundingEntry[] = [];
+		const appliedDefaultFunding: AppliedFundingEntry[] = [];
 
 		// --- default funding (bare ephemeral only) -------------------
 		if (defaultFunding !== null) {
-			yield* fundEphemeralDefault({
+			// Outcome distinguishes a real faucet call (`'funded'`) from
+			// the pre-existing-balance short-circuit (`'already-satisfied'`),
+			// so the registry projection doesn't mislabel a no-faucet-call
+			// entry as funded. `'skipped'` (zero amount) drops out entirely
+			// per the same invariant as the cross-cutting pass.
+			const outcome = yield* fundEphemeralDefault({
 				accountName: opts.name,
 				address: resolved.address,
 				amountMist: defaultFunding.amount,
@@ -811,8 +909,8 @@ export const acquireAccount = (
 				broker,
 				balanceReader,
 			});
-			if (defaultFunding.amount > 0n) {
-				appliedDefaultFunding.push(defaultFunding);
+			if (outcome !== 'skipped') {
+				appliedDefaultFunding.push({ ...defaultFunding, outcome });
 			}
 		}
 
@@ -849,7 +947,7 @@ export const acquireAccount = (
 		// empty `projectedFunding` is a no-op (matches the "Optional
 		// Faucet is a noop" invariant).
 		const projected = ctx.projectedFunding ?? [];
-		let appliedCrossCuttingFunding: ProjectedFunding = [];
+		let appliedCrossCuttingFunding: AppliedFunding = [];
 		if (projected.length > 0) {
 			appliedCrossCuttingFunding = yield* applyCrossCuttingFunding({
 				accountName: opts.name,

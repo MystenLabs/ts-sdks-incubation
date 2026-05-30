@@ -42,23 +42,22 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import type { AccountResourceId } from '../account/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import { suiResource } from '../sui/index.ts';
 
 import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
-import { SEAL_ERROR_TAGS, type SealError } from './errors.ts';
-import type { ForkUpstream } from './mode/fork-known.ts';
+import { sealError, SEAL_ERROR_TAGS, type SealError } from './errors.ts';
+import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
 import {
 	buildSealNetworkName,
 	DEFAULT_KEY_SERVER_PORT,
 	deriveSealSubnetPrefix,
-	sealNetworkCreateSpec,
 } from './key-server.ts';
+import { withSubnetAddressing } from '../../substrate/runtime/subnet-broker.ts';
 import {
 	bootLocalKeygen,
 	resolveLocalKeygenOptions,
@@ -73,6 +72,7 @@ import {
 import { buildSealKeyServerPublicRoute, makeSealRoutable } from './routable.ts';
 import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.ts';
 import { bootSealService, type SealMode } from './service.ts';
+import { DEFAULT_SEAL_VERSION } from './bootstrap-assets/source-fetch.ts';
 
 const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
 
@@ -98,6 +98,7 @@ export {
 	SEAL_ERROR_TAGS,
 } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
+export { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -174,7 +175,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 	// Synchronous factory-time defaults. Localnet-signer-required is
 	// enforced by the typed `signer:` field on
 	// SealLocalKeygenOptions.
-	const resolved = resolveLocalKeygenOptions(opts, '<default-seal-version>');
+	const resolved = resolveLocalKeygenOptions(opts, DEFAULT_SEAL_VERSION);
 
 	const sealResource = makeSealResource(resolved.name);
 
@@ -182,6 +183,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		id: sealResource.id,
 		dependsOn: { sui: suiResource, signer: opts.signer },
 		role: 'service',
+		section: 'service',
 		pluginKey: sealPluginKey(resolved.name),
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -213,9 +215,17 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				// bundle. The dir must exist before the key-server's
 				// bind-mounts (config yaml + master-key env-file).
 				const servicePath = path.join(stackPaths.stackRoot, 'seal', resolved.name);
-				yield* fs
-					.makeDirectory(servicePath, { recursive: true })
-					.pipe(Effect.catch(() => Effect.void));
+				yield* fs.makeDirectory(servicePath, { recursive: true }).pipe(
+					Effect.catch((cause) =>
+						Effect.fail(
+							sealError('config-render', {
+								name: resolved.name,
+								message: `seal.config-render: failed to create service directory at ${servicePath} — downstream config + master-key writes would all fail; surfacing the underlying filesystem error.`,
+								cause,
+							}),
+						),
+					),
+				);
 
 				// Cross-container DNS: seal's key-server dials sui RPC via
 				// `host.docker.internal`. The sui plugin binds a brokered
@@ -247,7 +257,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 					sealName: resolved.name,
 				});
 				yield* runtime.ensureNetwork(
-					sealNetworkCreateSpec(
+					withSubnetAddressing(
 						{
 							name: sealNetworkName,
 							app: identity.app,
@@ -339,9 +349,10 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	return definePlugin({
 		id: sealResource.id,
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
-				const mode: SealMode = { mode: 'live', name, ...opts };
+				const mode: SealMode = { mode: 'live', name, resolved: validated };
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {
@@ -355,21 +366,45 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 	});
 };
 
-/** Build the fork-known-mode plugin. Same structure as live, but with
- *  dynamic capabilities so the codegen bindings carry the REAL
- *  objectId / keyServerUrl resolved at acquire (the user-supplied
- *  options may be undefined → resolved by the upstream lookup). */
+/** Build the fork-known-mode plugin. Structurally symmetric with
+ *  `buildLivePlugin` — both resolve their `{objectId, keyServerUrl}`
+ *  tuple at factory time via `validateLiveInputs` (the fork-known
+ *  side maps `upstream → KnownNetwork` first via
+ *  `validateForkKnownInputs`) and thread it through SealMode's
+ *  `resolved:` envelope.
+ *
+ *  Capabilities are kept on the dynamic shape (callback form)
+ *  rather than precomputed — leaves room for a future on-acquire
+ *  override path (e.g. the substrate dynamically rewrites the
+ *  bindings) without restructuring the factory. Not load-bearing
+ *  today; static capabilities would also work. */
 const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 	const name = opts.name ?? DEFAULT_NAME;
 	const sealResource = makeSealResource(name);
 	const snap = makeKnownSnapshotable({ name });
+	// Validate inputs at factory time so misconfigurations fail
+	// before any plugin row starts work — symmetric with
+	// `buildLivePlugin`'s factory-boundary `validateLiveInputs` call.
+	// `validateForkKnownInputs` maps the upstream alias to a
+	// `KnownNetwork` and runs the same validation pipeline as live mode.
+	const validated = validateForkKnownInputs({ name, ...opts });
 
 	return definePlugin({
 		id: sealResource.id,
 		role: 'task',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
-				const mode: SealMode = { mode: 'fork-known', name, ...opts };
+				// Symmetric with the live branch's `{ mode, name, resolved }`
+				// envelope. `upstream` rides through for downstream
+				// span attribution; `resolved` carries the validated
+				// `{objectId, keyServerUrl}` tuple.
+				const mode: SealMode = {
+					mode: 'fork-known',
+					name,
+					upstream: opts.upstream,
+					resolved: validated,
+				};
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				return {

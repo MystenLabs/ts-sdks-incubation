@@ -42,6 +42,8 @@
 
 import { Effect, FileSystem, Path, Schema, type Scope } from 'effect';
 
+import { decodeJsonText } from '../../../substrate/runtime/runtime-decode.ts';
+
 import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
@@ -50,7 +52,7 @@ import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
 } from '../../../primitives/artifact-publisher.ts';
-import type { AccountValue } from '../../account/service.ts';
+import type { AccountValue } from '../../account/index.ts';
 import {
 	parseMasterKeyEnvFile,
 	renderSealKeyServerConfig,
@@ -63,13 +65,16 @@ import {
 	type SealSuiSdk,
 } from '../deploy.ts';
 import { sealError, type SealError } from '../errors.ts';
+import { SealSpans } from '../spans.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { MASTER_KEY_ENVFILE_BASENAME, runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
-import { makeKeyManager, stubRotate } from '../key-manager.ts';
+import { makeKeyManager } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
 import type { SealKeyServerEntry, SealLocalKeygenResolved } from '../registry-publish.ts';
 import { resolveDefaultSealCargoImage } from '../bootstrap-assets/cargo-image.ts';
 import { resolveDefaultSealSource } from '../bootstrap-assets/source-fetch.ts';
 import { atomicWriteFile } from '../../../substrate/runtime/atomic-write.ts';
+import { versionedDocSchema } from '../../../substrate/versioned-doc-schema.ts';
 
 // ---------------------------------------------------------------------------
 // Options (factory-time)
@@ -171,8 +176,7 @@ interface PersistedLocalKeygenState extends PersistedLocalKeygenKeyMaterial {
 const LOCAL_KEYGEN_STATE_VERSION = 1;
 const LOCAL_KEYGEN_STATE_BASENAME = 'local-keygen-state.v1.json';
 
-const PersistedLocalKeygenMetadataSchema = Schema.Struct({
-	version: Schema.Literal(LOCAL_KEYGEN_STATE_VERSION),
+const PersistedLocalKeygenMetadataSchema = versionedDocSchema(LOCAL_KEYGEN_STATE_VERSION, {
 	publicKey: Schema.String,
 });
 
@@ -186,18 +190,18 @@ const readPersistedLocalKeygenMetadata = (
 ): Effect.Effect<PersistedLocalKeygenMetadata | null, never, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const raw = yield* fs
-			.readFileString(localKeygenMetadataPath(servicePath))
-			.pipe(Effect.catch(() => Effect.succeed(null)));
+		const path = localKeygenMetadataPath(servicePath);
+		const raw = yield* fs.readFileString(path).pipe(Effect.catch(() => Effect.succeed(null)));
 		if (raw === null) return null;
-		const parsed = yield* Effect.try({
-			try: () => JSON.parse(raw) as unknown,
-			catch: () => null,
+		// Parse + decode failures here mean "no usable persisted metadata"
+		// and the caller treats this as a miss; the typed
+		// `RuntimeDecodeIssue` carries the parse/decode diagnostic for
+		// debugging but is collapsed to `null` so the boot loop falls
+		// through to a fresh keygen.
+		return yield* decodeJsonText(PersistedLocalKeygenMetadataSchema, raw, {
+			source: path,
+			mkError: (issue) => issue,
 		}).pipe(Effect.catch(() => Effect.succeed(null)));
-		if (parsed === null) return null;
-		return yield* Schema.decodeUnknownEffect(PersistedLocalKeygenMetadataSchema)(parsed).pipe(
-			Effect.catch(() => Effect.succeed(null)),
-		);
 	});
 
 const stagePersistedLocalKeygenMetadata = (
@@ -245,6 +249,64 @@ const readPersistedLocalKeygenState = (
 			masterKeyEnvFile,
 		};
 	});
+
+/** BLS12-381 master key — 32 bytes, persisted as 64 hex chars. */
+const BLS_MASTER_KEY_HEX_LEN = 64;
+/** BLS12-381 G2 uncompressed public key — 96 bytes, persisted as 192 hex chars. */
+const BLS_PUBLIC_KEY_HEX_LEN = 192;
+const HEX_ONLY_RE = /^[0-9a-fA-F]+$/;
+
+/** Stricter decode than the JSON-shape Schema alone — verifies the
+ *  persisted master key + public key are well-formed BLS12-381 hex of
+ *  the expected widths. The Schema validation alone accepts any
+ *  string, so a corrupt-on-disk JSON whose `publicKey` was overwritten
+ *  to a shorter / wrong-width value would otherwise be silently
+ *  reused on boot — leading to a master-key / KeyServer mismatch
+ *  (the master-key.env carries one key, the registered KeyServer's
+ *  on-chain `publicKey` carries a different one). Distilled-doc
+ *  invariant #6 (keypair B8 verify cascade) covers the on-chain
+ *  side; this is the on-disk side.
+ *
+ *  We cannot in-process re-derive the G2 public key from the master
+ *  scalar without bundling a BLS12-381 implementation (the keygen
+ *  binary owns this in cargo-land). The width invariant is the
+ *  cheapest defense that catches the realistic corruption modes:
+ *  truncated writes, hand-edited JSON, stale persistence from an
+ *  older devstack version. */
+const validatePersistedKeyMaterialShape = (
+	material: PersistedLocalKeygenKeyMaterial,
+	name: string,
+): Effect.Effect<void, SealError> => {
+	if (material.masterKey.length !== BLS_MASTER_KEY_HEX_LEN || !HEX_ONLY_RE.test(material.masterKey)) {
+		return Effect.fail(
+			sealError('config-render', {
+				name,
+				message:
+					`seal.local-keygen: persisted master key in ${MASTER_KEY_ENVFILE_BASENAME} ` +
+					`is not ${BLS_MASTER_KEY_HEX_LEN}-char hex (got ${material.masterKey.length} chars). ` +
+					'The on-disk state is corrupt; delete the seal service directory and ' +
+					're-boot to regenerate, or restore from a known-good snapshot.',
+			}),
+		);
+	}
+	if (
+		material.publicKey.length !== BLS_PUBLIC_KEY_HEX_LEN ||
+		!HEX_ONLY_RE.test(material.publicKey)
+	) {
+		return Effect.fail(
+			sealError('config-render', {
+				name,
+				message:
+					`seal.local-keygen: persisted publicKey in ${LOCAL_KEYGEN_STATE_BASENAME} ` +
+					`is not ${BLS_PUBLIC_KEY_HEX_LEN}-char hex (got ${material.publicKey.length} chars). ` +
+					'The on-disk state is corrupt; reusing it would publish a KeyServer ' +
+					'whose on-chain publicKey diverges from the local master key. ' +
+					'Delete the seal service directory and re-boot to regenerate.',
+			}),
+		);
+	}
+	return Effect.void;
+};
 
 const sealConfigFingerprint = (parts: {
 	readonly packageId: string;
@@ -367,9 +429,7 @@ const startLocalKeygenContainer = (
 			{ objectId: state.keyServerObjectId, weight: 1 },
 		];
 		const keyManager = makeKeyManager({
-			name: opts.name,
 			masterKeyEnvFile: state.masterKeyEnvFile,
-			rotateImpl: stubRotate(opts.name),
 		});
 		return {
 			keyServer: {
@@ -407,10 +467,20 @@ export const bootLocalKeygen = (
 		// The cargo image's resolver honors `SEAL_CARGO_IMAGE_OVERRIDE`
 		// for the pre-baked path; falls back to a documented seam error
 		// pointing at the override hatch.
-		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime);
+		const cargoImage: ImageRef = yield* resolveDefaultSealCargoImage(deps.runtime, {
+			app: deps.labels.app,
+			stack: deps.labels.stack,
+		});
 
 		const persisted = yield* readPersistedLocalKeygenState(deps.servicePath);
 		if (persisted !== null) {
+			// Defensive invariant — if the on-disk publicKey or master key
+			// has the wrong shape, the ArtifactPublisher cache might
+			// happily reuse a stale on-chain KeyServer whose registered
+			// publicKey no longer matches the master key the daemon
+			// loads at boot. Refuse to proceed so the operator gets a
+			// clear typed error instead of a silently-broken stack.
+			yield* validatePersistedKeyMaterialShape(persisted, opts.name);
 			const artifacts = yield* ensureLocalKeygenArtifacts(deps, opts, persisted.publicKey);
 			const refreshed = yield* stageResolvedLocalKeygenState(deps, opts, artifacts, persisted);
 			return yield* startLocalKeygenContainer(deps, opts, cargoImage, refreshed);
@@ -442,9 +512,9 @@ export const bootLocalKeygen = (
 		),
 		Effect.withSpan('devstack.plugin.seal.localKeygen.boot', {
 			attributes: {
-				'devstack.plugin': 'seal',
-				'seal.name': opts.name,
-				'seal.version': opts.version,
+				[SpanAttr.plugin]: 'seal',
+				[SealSpans.name]: opts.name,
+				[SealSpans.version]: opts.version,
 			},
 		}),
 	);

@@ -53,7 +53,7 @@ export const _customHealthSink = capabilitySink('custom-health', (decl, ctx) => 
 	const pluginKey = ctx.pluginKey;
 
 	// @ts-expect-error -- sink callbacks receive the registered payload, not an open object
-	decl.timeoutMs;
+	void decl.timeoutMs;
 
 	void kind;
 	void url;

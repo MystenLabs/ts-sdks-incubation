@@ -101,22 +101,21 @@ const pickNumber = (json: Record<string, unknown>, key: string): number | undefi
 	return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 };
 
-const pickMetadata = (change: CoinDiscoveryObjectChange): Omit<DiscoveredMetadata, 'id'> | null => {
+/** Project the `json` payload of a `created` object change into the
+ *  metadata fields the discovery aggregate consumes. Always returns a
+ *  `Partial<...>` (never `null`) — an empty object is the natural "no
+ *  fields recognised" outcome and lets callers spread unconditionally
+ *  without an `??` fallback. */
+const pickMetadata = (
+	change: CoinDiscoveryObjectChange,
+): Partial<Omit<DiscoveredMetadata, 'id'>> => {
 	const json = change.json;
-	if (json === null || typeof json !== 'object' || Array.isArray(json)) return null;
+	if (json === null || typeof json !== 'object' || Array.isArray(json)) return {};
 	const record = json as Record<string, unknown>;
 	const decimals = pickNumber(record, 'decimals');
 	const symbol = pickString(record, 'symbol');
 	const displayName = pickString(record, 'name');
 	const iconUrl = pickString(record, 'iconUrl') ?? pickString(record, 'icon_url');
-	if (
-		decimals === undefined &&
-		symbol === undefined &&
-		displayName === undefined &&
-		iconUrl === undefined
-	) {
-		return null;
-	}
 	return {
 		...(decimals === undefined ? {} : { decimals }),
 		...(symbol === undefined ? {} : { symbol }),
@@ -158,7 +157,7 @@ export const discoverCoinsFromPublish = (
 		if (metaInner !== null && change.objectId !== undefined) {
 			metadata.set(metaInner, {
 				id: change.objectId,
-				...(pickMetadata(change) ?? {}),
+				...pickMetadata(change),
 			});
 			continue;
 		}
@@ -170,7 +169,7 @@ export const discoverCoinsFromPublish = (
 		if (currencyInner !== null && change.objectId !== undefined) {
 			metadata.set(currencyInner, {
 				id: change.objectId,
-				...(pickMetadata(change) ?? {}),
+				...pickMetadata(change),
 			});
 		}
 	}

@@ -42,12 +42,13 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { suiResource } from '../sui/index.ts';
+import { suiResource, SuiSpans } from '../sui/index.ts';
+
+import { AccountSpans } from './spans.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
-import { ACCOUNT_ERROR_TAGS } from './errors.ts';
+import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
@@ -159,17 +160,39 @@ const fundingProviders = (
 		: [provider as AnyResourceRef];
 };
 
-const fundingAmountToBigInt = (amount: number | bigint): bigint => {
+/** Validate a SUI funding amount and project it to bigint MIST.
+ *  Returns a typed-error Effect so a bad amount surfaces as
+ *  `AccountAcquireError(phase: 'validate-funding')` on the failure
+ *  channel — NOT a synchronous throw lifted to a defect when called
+ *  from inside the acquire body's `Effect.gen`. */
+const fundingAmountToBigInt = (
+	amount: number | bigint,
+	accountName: string,
+): Effect.Effect<bigint, AccountAcquireError> => {
 	if (typeof amount === 'bigint') {
 		if (amount < 0n) {
-			throw new TypeError(`SUI funding amount must be a non-negative integer in MIST.`);
+			return Effect.fail(
+				accountAcquireError({
+					phase: 'validate-funding',
+					accountName,
+					variant: 'ephemeral',
+					message: `Account '${accountName}': SUI funding amount must be a non-negative integer in MIST (got ${amount}).`,
+				}),
+			);
 		}
-		return amount;
+		return Effect.succeed(amount);
 	}
 	if (!Number.isSafeInteger(amount) || amount < 0) {
-		throw new TypeError(`SUI funding amount must be a non-negative safe integer in MIST.`);
+		return Effect.fail(
+			accountAcquireError({
+				phase: 'validate-funding',
+				accountName,
+				variant: 'ephemeral',
+				message: `Account '${accountName}': SUI funding amount must be a non-negative safe integer in MIST (got ${amount}).`,
+			}),
+		);
 	}
-	return BigInt(amount);
+	return Effect.succeed(BigInt(amount));
 };
 
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
@@ -216,6 +239,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// tasks acquire their value, publish contributions, then reach
 		// `done`.
 		role: 'task',
+		section: 'account',
 		start: (deps) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedDeps] = deps;
@@ -234,25 +258,32 @@ export const account = <const N extends string, const Funding extends AccountFun
 				// Project each funding dependency value to a
 				// `{fullCoinType, amount}` projection. Dependency order
 				// mirrors `fundingEntries`, after the hard Sui upstream.
+				// SUI amount validation lives on the failure channel so a
+				// negative / non-integer amount surfaces as a typed
+				// `AccountAcquireError(phase: 'validate-funding')` instead
+				// of a defect (the old sync-throw lifted to a defect when
+				// run inside this `Effect.gen`).
 				let coinIndex = 0;
-				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = fundingEntryList.map(
-					(entry) => {
-						if (entry.coin === 'sui') {
-							return {
-								coin: 'SUI',
-								fullCoinType: SUI_FULL_COIN_TYPE,
-								amount: fundingAmountToBigInt(entry.amount),
-							};
-						}
-						const resolvedCoin = resolvedCoinValues[coinIndex]!;
-						coinIndex += 1;
-						return {
-							coin: coinLabelFor(resolvedCoin),
-							fullCoinType: resolvedCoin.fullCoinType,
-							amount: entry.amount,
-						};
-					},
-				);
+				const projectedFundingMutable: ProjectedFundingEntry[] = [];
+				for (const entry of fundingEntryList) {
+					if (entry.coin === 'sui') {
+						const amount = yield* fundingAmountToBigInt(entry.amount, name);
+						projectedFundingMutable.push({
+							coin: 'SUI',
+							fullCoinType: SUI_FULL_COIN_TYPE,
+							amount,
+						});
+						continue;
+					}
+					const resolvedCoin = resolvedCoinValues[coinIndex]!;
+					coinIndex += 1;
+					projectedFundingMutable.push({
+						coin: coinLabelFor(resolvedCoin),
+						fullCoinType: resolvedCoin.fullCoinType,
+						amount: entry.amount,
+					});
+				}
+				const projectedFunding: ReadonlyArray<ProjectedFundingEntry> = projectedFundingMutable;
 
 				const acquireCtx: AccountAcquireContext = {
 					sui: {
@@ -267,10 +298,10 @@ export const account = <const N extends string, const Funding extends AccountFun
 					emitAutoPromotionEvent: () =>
 						Effect.logWarning('account funding auto-promoted for fork mode').pipe(
 							Effect.annotateLogs({
-								[SpanAttr.accountName]: name,
-								[SpanAttr.accountFundingFrom]: 'faucet',
-								[SpanAttr.accountFundingTo]: 'pay-from-seed-via-impersonate',
-								[SpanAttr.suiMode]: 'fork',
+								[AccountSpans.name]: name,
+								[AccountSpans.fundingFrom]: 'faucet',
+								[AccountSpans.fundingTo]: 'pay-from-seed-via-impersonate',
+								[SuiSpans.mode]: 'fork',
 							}),
 						),
 					projectedFunding,
@@ -316,39 +347,84 @@ export const account = <const N extends string, const Funding extends AccountFun
 	});
 };
 
-const fundingProjectionForResult = (funding: AccountFundingResult): AccountRegistryFunding => {
+/** @internal — exported only for the projection regression test
+ *  (`test/plugins/account/funding-projection.test.ts`). Projects the runtime
+ *  `AccountFundingResult` (requested + applied) into the registry's
+ *  per-row funded/already-satisfied/skipped status. */
+export const fundingProjectionForResult = (
+	funding: AccountFundingResult,
+): AccountRegistryFunding => {
 	if (funding.requested.length === 0) {
 		return { status: 'skipped', balanceMist: null, requestedMist: null, entries: [] };
 	}
 
-	const appliedKeys = new Set(funding.applied.map(fundingEntryKey));
-	const entries = funding.requested.map((entry) => ({
-		coin: entry.coin,
-		fullCoinType: entry.fullCoinType,
-		amount: entry.amount.toString(),
-		status: appliedKeys.has(fundingEntryKey(entry)) ? ('funded' as const) : ('skipped' as const),
-	}));
+	// Positional outcome consume so the projection can distinguish a
+	// real faucet call (`funded`) from the pre-existing-balance
+	// short-circuit (`already-satisfied`). `applied` is an
+	// order-preserving SUBSEQUENCE of `requested`:
+	// `applyCrossCuttingFunding` (and the default-funding pass) iterate
+	// `requested` in order and only push a processed entry onto
+	// `applied`, dropping zero-amount and no-strategy entries. So we
+	// walk a cursor through `applied` and adopt its outcome for the
+	// matching requested row by (fullCoinType, amount) — a keyed Map
+	// would collapse duplicate (coin, amount) entries and mislabel the
+	// genuinely-funded first row as `already-satisfied`. An entry the
+	// funding pass never reached (zero-amount, or absent from `applied`)
+	// does not match the cursor and projects as `skipped` without
+	// advancing it.
+	let appliedCursor = 0;
+	const entries = funding.requested.map((entry) => {
+		const candidate = funding.applied[appliedCursor];
+		const matches =
+			candidate !== undefined &&
+			candidate.fullCoinType === entry.fullCoinType &&
+			candidate.amount === entry.amount;
+		const outcome = matches ? candidate.outcome : undefined;
+		if (matches) {
+			appliedCursor += 1;
+		}
+		return {
+			coin: entry.coin,
+			fullCoinType: entry.fullCoinType,
+			amount: entry.amount.toString(),
+			status:
+				outcome === 'funded'
+					? ('funded' as const)
+					: outcome === 'already-satisfied'
+						? ('already-satisfied' as const)
+						: ('skipped' as const),
+		};
+	});
 	const requestedMist =
 		funding.requested
 			.find((entry) => entry.fullCoinType === SUI_FULL_COIN_TYPE)
 			?.amount.toString() ?? null;
-	const fundedCount = entries.filter((entry) => entry.status === 'funded').length;
+	const settledCount = entries.filter(
+		(entry) => entry.status === 'funded' || entry.status === 'already-satisfied',
+	).length;
 	return {
-		status: fundedCount === entries.length ? 'funded' : fundedCount === 0 ? 'skipped' : 'unknown',
+		// `funded` here means "every requested entry is satisfied" —
+		// either the faucet succeeded or the pre-existing balance
+		// already covered it. `unknown` covers the mixed partial-success
+		// case so consumers can distinguish from "nothing ran at all".
+		status: settledCount === entries.length ? 'funded' : settledCount === 0 ? 'skipped' : 'unknown',
 		balanceMist: null,
 		requestedMist,
 		entries,
 	};
 };
 
-const fundingEntryKey = (entry: ProjectedFundingEntry): string =>
-	`${entry.fullCoinType}:${entry.amount}`;
-
 // ---------------------------------------------------------------------------
 // Re-exports for advanced callers (Coin, Wallet, Package)
 // ---------------------------------------------------------------------------
 
-export type { AccountOptions, ResolvedAccountOptions, AccountValue, TxResult } from './service.ts';
+export type {
+	AccountOptions,
+	ResolvedAccountOptions,
+	AccountValue,
+	SignAndExecuteResult,
+	TxResult,
+} from './service.ts';
 export type {
 	AccountError,
 	AccountAcquireError,
@@ -365,9 +441,13 @@ export type {
 	AccountFundingResult,
 	AccountFundingRequest,
 	AccountFundingStrategy,
+	AppliedFunding,
+	AppliedFundingEntry,
+	AppliedFundingOutcome,
 	CoinMember,
 	CrossCuttingFundingEntry,
 	CrossCuttingFundingProvider,
+	FundEphemeralDefaultOutcome,
 	ProjectedFunding,
 	ProjectedFundingEntry,
 	SuiFundingEntry,
@@ -382,3 +462,4 @@ export type {
 export { accountRegistryKey } from './registry.ts';
 export type { SyntheticImpersonationSigner } from './variants/impersonate.ts';
 export type { SignatureScheme, ResolvedKeypair } from './keypair.ts';
+export { AccountSpans } from './spans.ts';

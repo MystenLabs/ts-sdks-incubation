@@ -15,8 +15,6 @@ import type { AccountValue } from '../../../src/plugins/account/service.ts';
 import {
 	buildSealPublishTransaction,
 	buildRegisterKeyServerMoveCall,
-	parseSealPublishOutput,
-	parseRegisterKeyServerOutput,
 	pickPackageWriteObjectId,
 	pickUpgradeCapObjectId,
 	pickCreatedKeyServerObjectId,
@@ -132,12 +130,6 @@ const chainProbeNotReached: ChainProbe<SealObjectProbeKey> = {
 };
 
 describe('seal deploy publish helpers', () => {
-	it('parses legacy publish stdout for historical stub coverage', () => {
-		expect(parseSealPublishOutput('package_id: 0xabc123\n')).toEqual({
-			packageId: '0xabc123',
-		});
-	});
-
 	it('builds the SDK publish tx with sender, publish modules, and UpgradeCap transfer', () => {
 		const tx = new FakePublishTx();
 
@@ -291,7 +283,7 @@ describe('seal deploy publish helpers', () => {
 						chain: chainId('localnet'),
 						movePackagePath: sourcePath,
 						signer: signerNotReached,
-						sdk: { client: {} },
+						sdk: { client: {} as never },
 						runtime,
 						buildImage: { digest: 'sha256:sui' },
 						chainProbe: chainProbeNotReached,
@@ -321,12 +313,6 @@ describe('seal deploy publish helpers', () => {
 });
 
 describe('seal deploy register helpers', () => {
-	it('parses legacy register-key-server stdout for the stub e2e path', () => {
-		expect(parseRegisterKeyServerOutput('key_server_object_id: 0xabc123\n')).toEqual({
-			objectId: '0xabc123',
-		});
-	});
-
 	it('builds the SDK register Move call with the signer sender and BLS public key bytes', () => {
 		const tx = new FakeRegisterTx();
 

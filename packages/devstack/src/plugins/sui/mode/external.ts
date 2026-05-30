@@ -14,8 +14,8 @@
 //   - The chain-id fetch IS the only readiness sentinel; must have
 //     a bounded timeout.
 //
-// Local-RPC mode contributes a `NetworkResolver` and a `ChainProbe`
-// but does NOT contribute a `Snapshotable`-managed container or a
+// Local-RPC mode contributes a `ChainProbe` and a `Codegenable` but
+// does NOT contribute a `Snapshotable`-managed container or a
 // `Routable` entrypoint (the caller's own router fronts the RPC).
 //
 // Boot sequence:
@@ -32,15 +32,18 @@
 //        - Otherwise, the gate is a trivially-succeeding no-op
 //          (callers that need funds must arrange them externally).
 //   4. Assemble the resolved `SuiClient` and return it alongside the
-//      `ResolvedSuiNetwork` projection (consumed by the codegen +
-//      network-resolver contributions at the barrel).
+//      `ResolvedSuiNetwork` projection (consumed by the codegen
+//      contribution at the barrel).
 
 import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -66,7 +69,7 @@ export interface LocalRpcModeBootResult {
  *  conditional on `faucetUrl`. */
 export const bootLocalRpcMode = (
 	opts: SuiLocalRpcOptions,
-): Effect.Effect<LocalRpcModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LocalRpcModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Construct the grpc client ----------------------------------
 		// `network: 'localnet'` is semantically correct: external is a
@@ -82,7 +85,7 @@ export const bootLocalRpcMode = (
 			catch: (cause): SuiPluginError =>
 				suiPluginError(
 					'chain-id-fetch',
-					`sui local-rpc mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${stringifyCause(cause)}`,
+					`sui local-rpc mode: SuiGrpcClient construction failed for rpcUrl=${opts.rpcUrl}: ${formatUnknownError(cause)}`,
 					cause,
 				),
 		});
@@ -104,7 +107,7 @@ export const bootLocalRpcMode = (
 				: noopWaitForTransactionsReady;
 
 		// ----- 4. Assemble + return ------------------------------------------
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl: opts.rpcUrl,
@@ -124,16 +127,6 @@ export const bootLocalRpcMode = (
 		return { resolved, client };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.sui.localRpc.boot', {
-			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'local-rpc' },
+			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'local-rpc' },
 		}),
 	);
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

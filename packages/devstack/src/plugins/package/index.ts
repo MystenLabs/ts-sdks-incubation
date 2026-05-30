@@ -23,6 +23,7 @@
 
 import { Effect } from 'effect';
 
+import { projection } from '../../api/define-capabilities.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -38,10 +39,8 @@ import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import type { ChainId } from '../../substrate/brand.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
-import { suiResource } from '../sui/index.ts';
-import type { SuiProbeKey } from '../sui/chain-probe.ts';
-import type { AccountResourceId } from '../account/index.ts';
-import type { AccountValue } from '../account/service.ts';
+import { suiResource, type SuiProbeKey } from '../sui/index.ts';
+import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import { makeKnownCodegenable, makeLocalCodegenable } from './codegen.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
@@ -96,6 +95,7 @@ export type { PublishError } from './errors.ts';
 export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
+export { PackageSpans } from './spans.ts';
 
 /** Resolved value carried by the package resource. Local packages also
  *  expose the publish output so manifest emitters and capture-spec
@@ -181,27 +181,26 @@ interface PackageRegistryProjectionContribution {
 }
 
 const makePackageProjectionContribution = (
-	projection: PackageRegistryProjectionContribution,
+	contribution: PackageRegistryProjectionContribution,
 ): ProjectionDecl => {
 	const updatedAt = Date.now();
-	return {
-		kind: 'projection',
-		event: {
-			tag: 'package.updated',
-			package: {
-				key: `package/${projection.name}` as `package/${string}`,
-				rowKey: null,
-				name: projection.name,
-				kind: projection.kind,
-				packageId: projection.packageId,
-				upgradeCapId: projection.upgradeCapId,
-				mvrPlaceholder: projection.mvrPlaceholder,
-				sourcePath: projection.sourcePath,
-				updatedAt,
-			},
-			at: updatedAt,
+	const key = `package/${contribution.name}` as `package/${string}`;
+	return projection({
+		kind: 'package',
+		key,
+		payload: {
+			key,
+			rowKey: null,
+			name: contribution.name,
+			kind: contribution.kind,
+			packageId: contribution.packageId,
+			upgradeCapId: contribution.upgradeCapId,
+			mvrPlaceholder: contribution.mvrPlaceholder,
+			sourcePath: contribution.sourcePath,
+			updatedAt,
 		},
-	};
+		at: updatedAt,
+	});
 };
 
 // ---------------------------------------------------------------------------
@@ -245,6 +244,7 @@ const buildLocalPlugin = <
 		id: packageRef.id,
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		role: 'task',
+		section: 'package',
 		watch: {
 			// File-watcher contribution — restart on Move source edits.
 			// Distilled doc §Outputs: literal-path Packages contribute
@@ -289,6 +289,7 @@ const buildLocalPlugin = <
 					sdk: sui.sdk,
 					account: publisherAccount,
 					runtime: containerRuntime,
+					forkMode: sui.fork !== null,
 					...(sui.buildImage !== null ? { buildImage: sui.buildImage } : {}),
 				});
 
@@ -326,6 +327,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		id: packageRef.id,
 		dependsOn: { sui: suiResource },
 		role: 'task',
+		section: 'package',
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;

@@ -13,8 +13,8 @@
 //     wallet-standard / MVR / known-deployment lookups find the
 //     right published ids.
 //
-// Live mode contributes a `NetworkResolver`, a `ChainProbe`, and a
-// `Codegenable` — but NO managed container, NO `Routable`, and the
+// Live mode contributes a `ChainProbe` and a `Codegenable` — but NO
+// managed container, NO `Routable`, and the
 // build container is forced to the host CLI path (no in-stack
 // build image). The latter is flagged in the distilled-doc Open
 // questions as a candidate to revisit.
@@ -38,8 +38,11 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { suiPluginError, type SuiPluginError } from '../errors.ts';
+import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
+import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
+import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -124,15 +127,17 @@ const resolveEndpoints = (
 /** Build the live-mode boot Effect. */
 export const bootLiveMode = (
 	opts: SuiLiveOptions,
-): Effect.Effect<LiveModeBootResult, SuiPluginError, Scope.Scope> =>
+): Effect.Effect<LiveModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve endpoints ------------------------------------------
 		const endpoints = yield* resolveEndpoints(opts);
 
 		yield* Effect.annotateCurrentSpan({
-			'sui.live.network': opts.network,
-			'sui.live.rpcUrl': endpoints.rpcUrl,
-			'sui.live.faucetUrl': endpoints.faucetUrl ?? '<none>',
+			[SuiSpans.liveNetwork]: opts.network,
+			[SuiSpans.liveRpcUrl]: endpoints.rpcUrl,
+			...(endpoints.faucetUrl !== undefined
+				? { [SuiSpans.liveFaucetUrl]: endpoints.faucetUrl }
+				: {}),
 		});
 
 		// ----- 2. Construct the grpc client ----------------------------------
@@ -145,7 +150,7 @@ export const bootLiveMode = (
 			catch: (cause): SuiPluginError =>
 				suiPluginError(
 					'chain-id-fetch',
-					`sui live mode: SuiGrpcClient construction failed for rpcUrl=${endpoints.rpcUrl}: ${stringifyCause(cause)}`,
+					`sui live mode: SuiGrpcClient construction failed for rpcUrl=${endpoints.rpcUrl}: ${formatUnknownError(cause)}`,
 					cause,
 				),
 		});
@@ -168,7 +173,7 @@ export const bootLiveMode = (
 				: noopWaitForTransactionsReady;
 
 		// ----- 5. Assemble + return ------------------------------------------
-		const { client } = assembleSuiClient({
+		const { client } = yield* assembleSuiClient({
 			sdkClient,
 			chain,
 			rpcUrl: endpoints.rpcUrl,
@@ -195,16 +200,6 @@ export const bootLiveMode = (
 		return { resolved, client };
 	}).pipe(
 		Effect.withSpan('devstack.plugin.sui.live.boot', {
-			attributes: { 'devstack.plugin': 'sui', 'sui.mode': 'live' },
+			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'live' },
 		}),
 	);
-
-const stringifyCause = (cause: unknown): string => {
-	if (cause instanceof Error) return cause.message;
-	if (typeof cause === 'string') return cause;
-	try {
-		return JSON.stringify(cause);
-	} catch {
-		return String(cause);
-	}
-};

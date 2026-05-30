@@ -16,30 +16,12 @@
 // reads are snapshot-consistent. Cross-process atomicity (when the
 // same log lands in two devstack processes via a shared file)
 // is delegated to the cross-process lock primitive in
-// `../cross-process-lock.ts`.
+// `../cross-process/lock.ts`.
 
 import { Context, Effect, Layer, Ref } from 'effect';
-import { Data } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { Redactor, redactValue } from './redaction.ts';
 import { SpanAttr } from './spans.ts';
-
-// -----------------------------------------------------------------------------
-// Errors
-// -----------------------------------------------------------------------------
-
-/** Single tagged error class for every logger failure mode.
- *
- *  The architecture says service-specific errors do NOT live in L0
- *  (§ L0). `LoggerError` is engine-level — the only failure modes are
- *  buffer-write contention (defected up) and over-large lines that
- *  the bounded buffer refused to truncate. */
-export class LoggerError extends Data.TaggedError('LoggerError')<{
-	readonly reason: 'buffer-write-failed' | 'line-too-large';
-	readonly tag: string;
-	readonly cause?: unknown;
-}> {}
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -120,17 +102,14 @@ export interface LoggerShape {
 	readonly clearTag: (tag: string) => Effect.Effect<void>;
 }
 
-export class Logger extends Context.Service<Logger, LoggerShape>()(
-	'@devstack-rewrite/substrate/Logger',
-) {}
+export class Logger extends Context.Service<Logger, LoggerShape>()('@devstack/substrate/Logger') {}
 
 /** Layer that constructs the per-stack Logger. Stateful (holds the
  *  per-tag ring buffers in a Ref); the substrate provides one per
  *  stack-scope. */
-export const layerLogger: Layer.Layer<Logger, never, Redactor> = Layer.effect(
+export const layerLogger: Layer.Layer<Logger> = Layer.effect(
 	Logger,
 	Effect.gen(function* () {
-		const redactor = yield* Redactor;
 		const buffers = yield* Ref.make<ReadonlyMap<string, TagBuffer>>(new Map());
 
 		const truncateLine = (s: string): string =>
@@ -153,15 +132,12 @@ export const layerLogger: Layer.Layer<Logger, never, Redactor> = Layer.effect(
 			pluginKey: PluginKey | null,
 			payload: LogPayload,
 		) {
-			const redactionRules = yield* redactor.rules;
 			const line: LogLine = {
 				tag,
 				pluginKey,
 				level: payload.level,
-				message: truncateLine(yield* redactor.redact(payload.message)),
-				fields: redactValue(payload.fields ?? {}, redactionRules) as Readonly<
-					Record<string, unknown>
-				>,
+				message: truncateLine(payload.message),
+				fields: payload.fields ?? {},
 				at: Date.now(),
 			};
 			yield* appendInternal(line);

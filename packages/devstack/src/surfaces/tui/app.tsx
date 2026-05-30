@@ -31,6 +31,7 @@ import type { SubscribableState } from '../../substrate/projection.ts';
 import { Dashboard, type SnapshotStatus } from './dashboard.tsx';
 import {
 	appendEventLogLine,
+	appendEventLogLines,
 	eventLogLineFromEvent,
 	shutdownRequestedLine,
 	type EventLogLine,
@@ -55,6 +56,11 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	const [snapshotStatus, setSnapshotStatus] = useState<SnapshotStatus | null>(null);
 	const eventSeq = useRef(0);
 	const shutdownLogged = useRef(false);
+	// Latest projection rows for `sectionLookup`. Held in a ref so the
+	// event-subscription effect doesn't re-fire when state changes — it
+	// reads the up-to-date snapshot through the ref instead.
+	const rowsRef = useRef(state.rows);
+	rowsRef.current = state.rows;
 
 	useEffect(() => {
 		// Stream.runForEach pulls each new state from the
@@ -72,11 +78,34 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	}, [stateRef]);
 
 	useEffect(() => {
+		const sectionLookup = (pluginKey: string) =>
+			rowsRef.current.find((row) => row.key === pluginKey)?.section;
+		// Microtask batching: a burst of N events used to trigger N
+		// `setEventLog` calls, each forcing a React render. We instead
+		// accumulate derived lines in `pendingLines` and flush them
+		// inside a single `queueMicrotask` callback — one `setEventLog`
+		// per tick regardless of burst size. The sidecar `setSnapshotStatus`
+		// updates stay per-event (they're idempotent and don't drive the
+		// hot path).
+		let pendingLines: Array<EventLogLine | null> = [];
+		let flushScheduled = false;
+		const scheduleFlush = (): void => {
+			if (flushScheduled) return;
+			flushScheduled = true;
+			queueMicrotask(() => {
+				flushScheduled = false;
+				if (pendingLines.length === 0) return;
+				const drained = pendingLines;
+				pendingLines = [];
+				setEventLog((prev) => appendEventLogLines(prev, drained));
+			});
+		};
 		const fiber = Effect.runFork(
 			Stream.runForEach(events, (event) =>
 				Effect.sync(() => {
-					const line = eventLogLineFromEvent(event, eventSeq.current++);
-					setEventLog((prev) => appendEventLogLine(prev, line));
+					const line = eventLogLineFromEvent(event, eventSeq.current++, sectionLookup);
+					pendingLines.push(line);
+					scheduleFlush();
 					switch (event.tag) {
 						case 'snapshot.captureStarted':
 							setSnapshotStatus({
@@ -143,6 +172,13 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 		);
 		return () => {
 			Effect.runFork(Fiber.interrupt(fiber));
+			// Final flush: drain any batched lines synchronously so an
+			// unmount immediately after a burst doesn't lose the tail.
+			if (pendingLines.length > 0) {
+				const drained = pendingLines;
+				pendingLines = [];
+				setEventLog((prev) => appendEventLogLines(prev, drained));
+			}
 		};
 	}, [events]);
 

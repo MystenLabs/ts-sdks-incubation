@@ -37,11 +37,11 @@ import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import { expectNonEmptyArray } from '../../substrate/runtime/config-validation.ts';
-import { IdentityContext } from '../../substrate/runtime/paths.ts';
+import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
+import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 
 import { makeCodegenable } from './codegen.ts';
-import { POSTGRES_ERROR_TAGS, postgresConfigError, postgresPluginError } from './errors.ts';
+import { POSTGRES_ERROR_TAGS, postgresPluginError, type PostgresError } from './errors.ts';
 import { makePostgresRoutable } from './routable.ts';
 import { bootPostgresService, type Postgres, type PostgresServiceOptions } from './service.ts';
 import { makeSnapshotable } from './snapshot.ts';
@@ -84,15 +84,14 @@ export interface PostgresPluginOptions extends PostgresServiceOptions {
 
 const buildPlugin = (opts: PostgresPluginOptions) => {
 	const name = opts.name ?? 'postgres';
-	const databases = expectNonEmptyArray(opts.databases ?? ['devstack'], {
-		field: 'databases',
-		message: 'postgres(): `databases` must be non-empty',
-		mkError: postgresConfigError,
-	});
+	// Validation (databases non-empty) runs inside `bootPostgresService` via
+	// `resolveOptions`; the resolved bundle's `databases` flows through to
+	// the snapshot + codegen decls.
 
 	return definePlugin({
 		id: postgresResource.id,
 		role: 'service',
+		section: 'service',
 		start: () =>
 			Effect.gen(function* () {
 				// Substrate-context plumbing supplies real
@@ -101,37 +100,39 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				// before this body runs.
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
-				const { handle } = yield* bootPostgresService(runtime, identity, opts);
+				const paths = yield* StackPathsService;
+				const { handle } = yield* bootPostgresService(runtime, identity, paths.stackRoot, opts);
 				return handle;
 			}).pipe(
 				// Distilled-doc § Invariants: already-typed errors must
 				// NOT be re-wrapped by the catch-all unknown handler.
-				// `catchTag` runs first; anything unknown falls into the
-				// catch-all and surfaces as `phase: 'unknown'`.
-				Effect.catchTags({
-					PostgresPluginError: Effect.fail,
-					PostgresConfigError: Effect.fail,
-					PostgresConnectionTimeout: Effect.fail,
-					DatabaseCreateFailed: Effect.fail,
-				}),
-				Effect.catch((cause) =>
-					Effect.fail(postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause)),
+				// `passthroughOrWrap` lets the POSTGRES_ERROR_TAGS union
+				// through unchanged; anything else surfaces as
+				// `phase: 'unknown'`.
+				passthroughOrWrap.for<PostgresError>()(POSTGRES_ERROR_TAGS, (cause) =>
+					postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause),
 				),
 			),
 		errorContributions: postgresErrorContributions,
 		// Dynamic capability factory: receives the resolved
 		// `Postgres` handle + acquire context. Stamps the REAL
-		// app/stack into the snapshot decl and the REAL
-		// networkAlias + derived password into the codegen
-		// bindings — the static-form placeholders (`<app>`,
-		// `<stack>`, `<network-alias>`, `<derived-at-acquire>`)
-		// are gone.
+		// app/stack into the snapshot decl and the per-stack
+		// network alias + derived password into the codegen
+		// bindings.
+		//
+		// Codegen `host` is `value.networkAlias` — the per-stack
+		// alias Docker registers via `--network-alias` on the
+		// container's primary network. Dialing the alias resolves
+		// in-container regardless of which parallel stack the
+		// caller belongs to; the per-stack container name still
+		// resolves too, but is not parallel-stack-portable when
+		// emitted into committed codegen output.
 		capabilities: ({ value, runtime }): PostgresCapabilities => {
 			const snap = makeSnapshotable({
 				app: runtime.identity.app,
 				stack: runtime.identity.stack,
 				name,
-				databases,
+				databases: value.databases,
 			});
 			const codegen = makeCodegenable({
 				name,
@@ -191,3 +192,5 @@ export type { PostgresIdentityPayload } from './snapshot.ts';
 // code that reads the codegen output and builds a per-database URL
 // at runtime).
 export { credentialedUrl, plainUrl, withDatabase } from './connection.ts';
+
+export { PostgresSpans } from './spans.ts';

@@ -96,7 +96,7 @@ export interface ScopedRefMap<K extends string, V> {
  * ```
  */
 export const defineScopedRefMap = <K extends string, V>(name: string) => {
-	const serviceId = `@devstack-rewrite/substrate/ScopedRefMap/${name}`;
+	const serviceId = `@devstack/substrate/ScopedRefMap/${name}`;
 
 	class Service extends Context.Service<Service, ScopedRefMap<K, V>>()(serviceId) {}
 

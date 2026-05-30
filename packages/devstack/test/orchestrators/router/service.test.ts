@@ -16,11 +16,11 @@
 // Subpath import — the barrel re-exports `NodeRedis` which transitively
 // requires `ioredis`, an optional peer not installed in this package.
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
-import { Effect, Layer, SubscriptionRef } from 'effect';
-import { describe, expect, it } from '@effect/vitest';
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { Cause, Effect, Layer, Logger, SubscriptionRef } from 'effect';
+import { afterAll, describe, expect, it } from '@effect/vitest';
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { CORS_MIDDLEWARE_FILENAME } from '../../../src/orchestrators/router/cors.ts';
 import { layerEntrypointRegistry } from '../../../src/orchestrators/router/entrypoints.ts';
@@ -51,7 +51,24 @@ import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
-const makeTmpDir = (): string => mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+// Per-test temp dirs (~24 callers below). Each is captured here so a
+// single `afterAll` can remove them at the end of the file — the
+// router service tests pass these dirs deep into Effect-driven code
+// where wrapping each `it.effect` body with `withTempRoot` would
+// require restructuring every test, so we use the same array-and-
+// sweep pattern as the other large `makeTmpDir`-style test files.
+const allocatedTmpDirs: string[] = [];
+afterAll(() => {
+	for (const dir of allocatedTmpDirs.splice(0)) {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+const makeTmpDir = (): string => {
+	const dir = mkdtempSync(join(tmpdir(), 'devstack-router-test-'));
+	allocatedTmpDirs.push(dir);
+	return dir;
+};
 
 const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
 	resolveContainer: (target) => Effect.succeed({ host: '172.20.0.5', port: target.containerPort }),
@@ -90,8 +107,8 @@ const makeTestProfile = (dispatchDir: string): RouterProfile => ({
 	dispatchDir,
 	containerName: 'devstack-router-test',
 	networkName: 'devstack-router-test',
-	bootstrapLockFile: join(dispatchDir, '..', 'locks', 'bootstrap.lock'),
-	dispatchLockFile: join(dispatchDir, '..', 'locks', 'dispatch.lock'),
+	bootstrapLockFile: join(dispatchDir, 'locks', 'bootstrap.lock'),
+	dispatchLockFile: join(dispatchDir, 'locks', 'dispatch.lock'),
 });
 
 const makeLease = (profile: RouterProfile): RouteLeaseMetadata => ({
@@ -690,6 +707,50 @@ describe('RouterService.contributeRoute', () => {
 		}),
 	);
 
+	it.live(
+		'publishes deferred-readiness routes without probing the upstream during contribution',
+		() =>
+			Effect.gen(function* () {
+				const dir = makeTmpDir();
+				const profile = makeTestProfile(dir);
+				let calls = 0;
+				const fetch: HttpProbeFetch = async () => {
+					calls += 1;
+					return new Response('not ready', { status: 503 });
+				};
+
+				yield* Effect.scoped(
+					Effect.gen(function* () {
+						const router = yield* RouterService;
+						yield* router.boot();
+						const endpoint = yield* router.contributeRoute({
+							kind: 'routable',
+							endpointName: 'wallet-app',
+							dispatchId: walletApiDispatch,
+							upstream: { type: 'host-loopback', port: 6173 },
+							cors: true,
+							wireProtocol: 'http',
+							readiness: 'deferred',
+						});
+
+						expect(endpoint.url).toBe('http://api.my-app.localhost:6173');
+						expect(calls).toBe(0);
+						expect(readdirSync(dir).filter((name) => name.startsWith('10-'))).toHaveLength(1);
+						const applied = yield* SubscriptionRef.get(router.applied);
+						expect(applied).toHaveLength(1);
+					}).pipe(
+						Effect.provide(
+							makeStackLayerWithRouteReadinessProbe(profile, fetch, {
+								timeoutMs: 20,
+								intervalMs: 5,
+								requestTimeoutMs: 5,
+							}),
+						),
+					),
+				);
+			}),
+	);
+
 	it.live('removes the dispatch file when public route readiness never arrives', () =>
 		Effect.gen(function* () {
 			const dir = makeTmpDir();
@@ -760,6 +821,119 @@ describe('RouterService.contributeRoute', () => {
 			);
 		}),
 	);
+
+	// Phase A of commit 12ecae8d added `tapCause + logWarning` BEFORE
+	// `Effect.ignore` on the scope-close cleanup pipeline so leaked
+	// dispatch files surface in logs instead of getting silently
+	// swallowed. This test pins that contract: when the cleanup's
+	// `acquireStackLock` fails (we simulate this by replacing the lock
+	// file's parent directory with a regular file after a successful
+	// contribute), the scope-close still succeeds (Effect.ignore
+	// swallows the failure) AND a Warn-level log entry is emitted
+	// carrying the dispatchFileId + the underlying cause.
+	//
+	// Captured-logger Layer per Effect v4 `Logger.layer([…])` —
+	// REPLACES the default logger with a recording one so the
+	// finalizer's `Effect.logWarning(...)` lands in `captured` and the
+	// test's stdout stays quiet.
+	it.effect('scope-close cleanup failure surfaces via logWarning before Effect.ignore', () => {
+		// `Logger.layer([...])` requires `Logger<unknown, unknown>` (Message is
+		// contravariant; loggers must accept any input shape). But Effect's
+		// runtime contract delivers `message` as `ReadonlyArray<unknown>` for
+		// multi-arg log calls — `logWarning('text', annotations)` arrives as
+		// `[text, annotations]`. Project that contract once at the recording
+		// boundary so downstream reads stay typed instead of casting at every
+		// access site.
+		interface CapturedLog {
+			readonly logLevel: string;
+			readonly message: ReadonlyArray<unknown>;
+			readonly cause: Cause.Cause<unknown>;
+		}
+		const captured: CapturedLog[] = [];
+		const captureLogger = Logger.make<unknown, void>((options) => {
+			captured.push({
+				logLevel: options.logLevel as unknown as string,
+				message: options.message as ReadonlyArray<unknown>,
+				cause: options.cause,
+			});
+		});
+		const captureLayer = Logger.layer([captureLogger]);
+
+		return Effect.gen(function* () {
+			const dir = makeTmpDir();
+			const profile = makeTestProfile(dir);
+			const fileId = yield* dispatchFileId({ identity, dispatch: walletApiDispatch });
+			const fname = dispatchFilename(fileId);
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const router = yield* RouterService;
+					yield* router.boot();
+					// Successful contribute — uses the working lock path.
+					// The inner scope holds the contributor scope so the
+					// scope-close finalizer runs on inner-scope close.
+					yield* Effect.scoped(
+						Effect.gen(function* () {
+							yield* router.contributeRoute({
+								kind: 'routable',
+								endpointName: 'wallet-app',
+								dispatchId: { serviceKey: 'wallet.my-app.main', role: 'api' },
+								upstream: { type: 'host-loopback', port: 6173 },
+								cors: true,
+								wireProtocol: 'http',
+							});
+							expect(readdirSync(dir)).toContain(fname);
+							// Sabotage the lock path: replace the locks/
+							// directory with a regular file. The finalizer's
+							// acquireStackLock(profile.dispatchLockFile)
+							// internally calls mkdirSync(dirname(lockfile), …)
+							// which fails ENOTDIR — surfacing as
+							// StackLockIoError. removeDispatchFile is wrapped
+							// in `Effect.ignore` internally, so the ONLY
+							// failure path through the cleanup `Effect.scoped`
+							// block is the lock acquisition.
+							const locksDir = dirname(profile.dispatchLockFile);
+							rmSync(locksDir, { recursive: true, force: true });
+							writeFileSync(locksDir, 'sabotage');
+							expect(statSync(locksDir).isFile()).toBe(true);
+						}),
+					);
+					// Scope-close ran the finalizer; cleanup failed; the
+					// failure was logged + swallowed by Effect.ignore.
+					// The dispatch file is leaked on disk (we couldn't
+					// acquire the lock to remove it), but the warning
+					// surfaces that fact.
+					expect(readdirSync(dir)).toContain(fname);
+				}).pipe(Effect.provide(makeStackLayer(profile))),
+			);
+
+			// Assert: at least one Warn log fired carrying the cleanup
+			// banner + the dispatchFileId. The annotations object
+			// `{ dispatchFileId, cause }` is the second message arg
+			// passed in service.ts:927-930.
+			const cleanupWarns = captured.filter(
+				(entry) =>
+					entry.logLevel === 'Warn' &&
+					Array.isArray(entry.message) &&
+					typeof entry.message[0] === 'string' &&
+					(entry.message[0] as string).includes('router scope-close cleanup failed'),
+			);
+			expect(cleanupWarns.length).toBeGreaterThan(0);
+			const warn = cleanupWarns[0]!;
+			const annotations = warn.message[1] as { dispatchFileId: string; cause: unknown };
+			expect(annotations.dispatchFileId).toBe(fileId);
+			// The cause is a Cause<StackLockError>; assert it has the
+			// v4 `reasons` array shape so the underlying lock-
+			// acquisition failure is genuinely surfaced (not an empty
+			// cause). Per STYLE_GUIDE §1, walk reasons via
+			// `Cause.isFailReason` rather than the v3 `_tag === 'Fail'`
+			// brittleness.
+			const cause = annotations.cause as Cause.Cause<unknown>;
+			expect(Array.isArray(cause.reasons)).toBe(true);
+			const failReasons = cause.reasons.filter(Cause.isFailReason);
+			expect(failReasons.length).toBeGreaterThan(0);
+		}).pipe(Effect.provide(captureLayer));
+	});
 
 	it.effect('applied SubscriptionRef tracks adds + removes', () =>
 		Effect.gen(function* () {

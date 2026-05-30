@@ -541,6 +541,24 @@ const walletValue = (result: BootResult): WalletValue => {
 	return wallet!;
 };
 
+const chainIdValue = (result: BootResult): string => {
+	const sui = result.resolvedValues.get('sui#0') as { readonly chain?: unknown } | undefined;
+	expect(sui, 'sui resolved value should be present').toBeDefined();
+	expect(sui!.chain, 'sui resolved value should carry a chain id').toEqual(expect.any(String));
+	return sui!.chain as string;
+};
+
+interface PackageBootValue {
+	readonly packageId: string;
+}
+
+const packageValue = (result: BootResult, key: string): PackageBootValue => {
+	const pkg = result.resolvedValues.get(key) as PackageBootValue | undefined;
+	expect(pkg, `${key} resolved value should be present`).toBeDefined();
+	expect(pkg!.packageId, `${key} should carry a packageId`).toMatch(/^0x[0-9a-f]+$/i);
+	return pkg!;
+};
+
 const accountAddress = (values: ReadonlyMap<string, unknown>, key: string): string => {
 	const account = values.get(key) as { readonly address?: unknown } | undefined;
 	expect(account, `${key} resolved value should be present`).toBeDefined();
@@ -588,10 +606,7 @@ describe('private-content boots end-to-end @e2e', () => {
 		expect(
 			warmDurationMs,
 			`warm restart took ${Math.round(warmDurationMs)}ms after cold boot took ${Math.round(coldDurationMs)}ms`,
-		).toBeLessThan(coldDurationMs);
-		expect(warmDurationMs, `warm restart took ${Math.round(warmDurationMs)}ms`).toBeLessThan(
-			WARM_RESTART_BUDGET_MS,
-		);
+		).toBeLessThan(WARM_RESTART_BUDGET_MS);
 
 		expect(warm.result.runtimeRoot).toBe(cold.result.runtimeRoot);
 		expect(warm.result.routerDispatchDir).toBe(cold.result.routerDispatchDir);
@@ -603,5 +618,37 @@ describe('private-content boots end-to-end @e2e', () => {
 		}
 		expect(walrusValue(warm.result).walCoinType).toBe(walrusValue(cold.result).walCoinType);
 		expect(walrusValue(warm.result).packageConfig).toEqual(walrusValue(cold.result).packageConfig);
+
+		// Decryption-critical identities: a warm restart MUST reuse the
+		// cold-boot deployment, not republish. If the Sui chain
+		// re-genesis'd (unclean container exit) or the artifact-publisher's
+		// lenient verify forced a re-publish on a transient RPC blip, these
+		// ids drift — and any content encrypted/stored against the cold-boot
+		// deployment becomes permanently undecryptable. This is the
+		// regression guard for the "can't decrypt old content after a
+		// restart" failure; without it the test above passes even while
+		// every id silently churns.
+		expect(chainIdValue(warm.result), 'Sui chainId must survive a warm restart').toBe(
+			chainIdValue(cold.result),
+		);
+		expect(
+			packageValue(warm.result, 'package:vault#2').packageId,
+			'vault packageId (Seal policy + seal_approve target) must survive a warm restart',
+		).toBe(packageValue(cold.result, 'package:vault#2').packageId);
+		expect(
+			sealValue(warm.result).objectId,
+			'Seal key-server objectId must survive a warm restart',
+		).toBe(sealValue(cold.result).objectId);
+		expect(
+			sealValue(warm.result).serverConfigs.map((cfg) => cfg.objectId),
+			'Seal serverConfigs objectIds must survive a warm restart',
+		).toEqual(sealValue(cold.result).serverConfigs.map((cfg) => cfg.objectId));
+		expect(
+			walrusValue(warm.result).walrusPackageId,
+			'walrus package id must survive a warm restart',
+		).toBe(walrusValue(cold.result).walrusPackageId);
+		expect(walrusValue(warm.result).walPackageId, 'WAL package id must survive a warm restart').toBe(
+			walrusValue(cold.result).walPackageId,
+		);
 	}, 600_000);
 });

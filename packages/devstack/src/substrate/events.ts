@@ -7,13 +7,7 @@
 
 import type { EndpointKey, PluginKey } from './brand.ts';
 import type { LifecycleStatus, PhaseNarration } from './lifecycle.ts';
-import type {
-	AccountProjection,
-	BuildEntry,
-	Endpoint,
-	PackageProjection,
-	StructuredError,
-} from './projection.ts';
+import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
 
 export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
@@ -56,13 +50,16 @@ export type EngineEvent =
 			readonly endpoint: Endpoint;
 	  }
 	| {
-			readonly tag: 'account.updated';
-			readonly account: AccountProjection;
-			readonly at: number;
-	  }
-	| {
-			readonly tag: 'package.updated';
-			readonly package: PackageProjection;
+			/** Name-blind projection update. Plugins emit this with a
+			 *  `kind` discriminator the L3 projection orchestrator (today:
+			 *  the reducer in `runtime/projection/update.ts`) decodes
+			 *  per-kind. Substrate stays unaware of which plugins produce
+			 *  which projection shapes — the kind→decoder mapping is owned
+			 *  by the consuming orchestrator. */
+			readonly tag: 'projection.updated';
+			readonly kind: string;
+			readonly key: string;
+			readonly payload: unknown;
 			readonly at: number;
 	  }
 	| {
@@ -134,11 +131,13 @@ export type EngineEvent =
 	| {
 			readonly tag: 'snapshot.captureSkipped';
 			readonly reason: 'already-running';
+			readonly snapshotId: string;
+			readonly name?: string;
 			readonly at: number;
 	  }
 	| {
 			readonly tag: 'snapshot.captureFailed';
-			readonly snapshotId?: string;
+			readonly snapshotId: string;
 			readonly name?: string;
 			readonly summary: string;
 			readonly at: number;
@@ -152,6 +151,21 @@ export type EngineEvent =
 	| {
 			readonly tag: 'snapshot.restored';
 			readonly snapshotId: string;
+			readonly at: number;
+	  }
+	| {
+			readonly tag: 'engine.orchestrator.dispatchFailed';
+			readonly pluginKey: PluginKey;
+			readonly kind: string;
+			readonly message: string;
+			/** Underlying-cause discriminator (the failing sink error's
+			 *  `_tag`, e.g. `RouterBootFailed`) when one is recoverable
+			 *  from the wrapped cause. Optional + additive: omitted when
+			 *  the cause carries no tag, so the closed-sum vocabulary is
+			 *  unchanged for consumers that ignore it. Surfaced so an
+			 *  operator can tell WHICH orchestrator sink broke (dead RPC
+			 *  routing vs codegen collision) without parsing the message. */
+			readonly causeType?: string;
 			readonly at: number;
 	  };
 

@@ -5,25 +5,26 @@
 // `PriceInfoObject`s for the requested feeds. This is intentionally not a
 // top-level devstack plugin; DeepBook owns the oracle wiring it needs.
 
-import { createHash } from 'node:crypto';
-
-import { Effect, Schema, type Scope } from 'effect';
+import { Effect, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 import { fromBase64, fromHex, toHex } from '@mysten/sui/utils';
 
-import type { ArtifactPublisher } from '../../../primitives/artifact-publisher.ts';
-import type {
-	ResolvedSigner,
-	SuiExecuteClient,
-} from '../../../substrate/runtime/sui-execute/index.ts';
-import { executeSuiTx } from '../../../substrate/runtime/sui-execute/index.ts';
 import {
-	chainId as brandChainId,
-	contentHash as brandContentHash,
-	type ContentHash,
-} from '../../../substrate/brand.ts';
-import type { SuiSdkShim } from '../../sui/chain-probe.ts';
+	artifactPublishError,
+	type ArtifactPublisher,
+} from '../../../primitives/artifact-publisher.ts';
+import { acquireOnChainArtifact } from '../../internal/acquire-on-chain-artifact.ts';
+import type { ResolvedSigner } from '../../../substrate/runtime/sui-execute/index.ts';
+import {
+	executeSuiTx,
+	formatExecutedFailure,
+} from '../../../substrate/runtime/sui-execute/index.ts';
+import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
+import { chainId as brandChainId } from '../../../substrate/brand.ts';
+import type { SuiSdkShim } from '../../sui/index.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
+import { stableContentHash } from '../hash.ts';
+import { DeepbookSpans } from '../spans.ts';
 import type { PythFeed, PythHandle, PythPriceFeedId } from '../types.ts';
 
 export interface PythDeployment {
@@ -43,24 +44,8 @@ interface CachedPythHandle {
 	readonly feeds: ReadonlyArray<CachedPythFeed>;
 }
 
-const CachedPythFeedSchema = Schema.Struct({
-	symbol: Schema.String,
-	feedId: Schema.String,
-	priceInfoObjectId: Schema.String,
-	price: Schema.String,
-	expo: Schema.Number,
-});
-
-const CachedPythHandleSchema = Schema.Struct({
-	packageId: Schema.String,
-	feeds: Schema.Array(CachedPythFeedSchema),
-});
-
 const DEFAULT_EXPO = -8;
 const PYTH_GAS_BUDGET = 200_000_000;
-
-const stableContentHash = (input: string): ContentHash =>
-	brandContentHash(createHash('sha256').update(input).digest('hex'));
 
 const normalizeFeedId = (feedId: string): string => feedId.replace(/^0x/i, '').toLowerCase();
 
@@ -117,24 +102,17 @@ const buildVerifyProbe = (
 	cached: CachedPythHandle,
 ): Effect.Effect<CachedPythHandle | null, never> =>
 	Effect.gen(function* () {
-		for (const feed of cached.feeds) {
-			const raw = yield* Effect.tryPromise({
-				try: () => sdk.core.getObject({ objectId: feed.priceInfoObjectId }),
-				catch: () => null,
-			}).pipe(Effect.catch(() => Effect.succeed(null)));
-			if (raw === null || raw === undefined) return null;
-		}
+		const results = yield* probeManyLenient(
+			cached.feeds.map((feed) =>
+				Effect.tryPromise({
+					try: () => sdk.core.getObject({ objectId: feed.priceInfoObjectId }),
+					catch: () => null,
+				}).pipe(Effect.catch(() => Effect.succeed(null))),
+			),
+		);
+		if (results.some((raw) => raw === null || raw === undefined)) return null;
 		return cached;
 	});
-
-type SuiTransactionBuildClient = Parameters<Transaction['build']>[0] extends
-	| { readonly client?: infer C }
-	| undefined
-	? C
-	: never;
-
-const transactionBuildClient = (sdk: SuiSdkShim): SuiTransactionBuildClient =>
-	sdk.client as SuiTransactionBuildClient;
 
 const addI64 = (tx: Transaction, packageId: string, value: bigint | number) => {
 	const raw = BigInt(value);
@@ -178,37 +156,6 @@ const addPriceInfo = (tx: Transaction, packageId: string, feed: PythFeed, timest
 	});
 };
 
-const priceObjectClient = (
-	sdk: SuiSdkShim,
-): {
-	readonly getObjects: (args: {
-		readonly objectIds: ReadonlyArray<string>;
-		readonly include: { readonly json: boolean };
-	}) => Promise<{
-		readonly objects: ReadonlyArray<
-			| Error
-			| {
-					readonly objectId: string;
-					readonly json?: unknown;
-			  }
-		>;
-	}>;
-} =>
-	sdk.client as {
-		readonly getObjects: (args: {
-			readonly objectIds: ReadonlyArray<string>;
-			readonly include: { readonly json: boolean };
-		}) => Promise<{
-			readonly objects: ReadonlyArray<
-				| Error
-				| {
-						readonly objectId: string;
-						readonly json?: unknown;
-				  }
-			>;
-		}>;
-	};
-
 const feedIdBytesFromJson = (bytes: unknown): Uint8Array | null => {
 	if (typeof bytes === 'string' && bytes.length > 0) {
 		try {
@@ -242,8 +189,8 @@ const mapCreatedPriceObjects = async (
 	sdk: SuiSdkShim,
 	objectIds: ReadonlyArray<string>,
 ): Promise<ReadonlyMap<string, string>> => {
-	const objects = await priceObjectClient(sdk).getObjects({
-		objectIds,
+	const objects = await sdk.client.core.getObjects({
+		objectIds: [...objectIds],
 		include: { json: true },
 	});
 	const result = new Map<string, string>();
@@ -282,100 +229,104 @@ export const initLocalPythFeeds = (
 	Effect.gen(function* () {
 		if (feeds.length === 0) return null;
 
-		const cached = yield* publisher
-			.publish<CachedPythHandle, CachedPythHandle>({
-				namespace: 'deepbook/pyth',
-				chain: brandChainId(chain),
-				contentHash: pythInputsHash(pkg, signer, feeds),
-				verifySchema: CachedPythHandleSchema,
-				verify: (entry) => buildVerifyProbe(sdk, entry),
-				produce: Effect.gen(function* () {
-					const receipt = yield* executeSuiTx({
-						client: sdk.client as SuiExecuteClient,
-						signer,
-						build: async () => {
-							const tx = new Transaction();
-							tx.setSender(signer.address);
-							tx.setGasBudget(PYTH_GAS_BUDGET);
-							const timestamp = 0n;
-							const priceInfos = feeds.map((feed) =>
-								addPriceInfo(tx, pkg.packageId, feed, timestamp),
-							);
-							tx.moveCall({
-								target: `${pkg.packageId}::pyth::create_price_feeds`,
-								arguments: [
-									tx.makeMoveVec({
-										type: `${pkg.packageId}::price_info::PriceInfo`,
-										elements: priceInfos,
-									}),
-								],
-							});
-							return tx.build({ client: transactionBuildClient(sdk) });
-						},
-					}).pipe(
-						Effect.mapError(
-							(err) =>
-								({
-									_tag: 'ArtifactPublishError',
-									reason: 'produce-failed',
-									detail: `pyth feed transaction failed: ${err.message}`,
-								}) as const,
+		const cached = yield* acquireOnChainArtifact<CachedPythHandle, CachedPythHandle>(publisher, {
+			namespace: 'deepbook/pyth',
+			chain: brandChainId(chain),
+			contentHash: pythInputsHash(pkg, signer, feeds),
+			verify: (entry) => buildVerifyProbe(sdk, entry),
+			produce: Effect.gen(function* () {
+				const result = yield* executeSuiTx({
+					client: sdk.client,
+					signer,
+					build: async () => {
+						const tx = new Transaction();
+						tx.setSender(signer.address);
+						tx.setGasBudget(PYTH_GAS_BUDGET);
+						const timestamp = 0n;
+						const priceInfos = feeds.map((feed) =>
+							addPriceInfo(tx, pkg.packageId, feed, timestamp),
+						);
+						tx.moveCall({
+							target: `${pkg.packageId}::pyth::create_price_feeds`,
+							arguments: [
+								tx.makeMoveVec({
+									type: `${pkg.packageId}::price_info::PriceInfo`,
+									elements: priceInfos,
+								}),
+							],
+						});
+						return tx.build({ client: sdk.client });
+					},
+				}).pipe(
+					Effect.mapError((err) =>
+						artifactPublishError(
+							'produce-failed',
+							`pyth feed transaction failed: ${err.message}`,
+						),
+					),
+				);
+				if (result.$kind === 'FailedTransaction') {
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
+							`pyth feed transaction on-chain execution failed ` +
+								formatExecutedFailure(result.FailedTransaction),
 						),
 					);
+				}
+				const receipt = result.Transaction;
 
-					const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
-					if (created.length !== feeds.length) {
-						return yield* Effect.fail({
-							_tag: 'ArtifactPublishError' as const,
-							reason: 'produce-failed' as const,
-							detail:
-								`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
+				const created = pickCreatedPriceInfoObjects(receipt.objectChanges);
+				if (created.length !== feeds.length) {
+					return yield* Effect.fail(
+						artifactPublishError(
+							'produce-failed',
+							`expected ${feeds.length} Pyth PriceInfoObject creations, got ${created.length} ` +
 								`(digest=${receipt.digest}).`,
-						});
-					}
-					const idsByFeed = yield* Effect.tryPromise({
-						try: () => mapCreatedPriceObjects(sdk, created),
-						catch: (cause) =>
-							({
-								_tag: 'ArtifactPublishError',
-								reason: 'produce-failed',
-								detail: `failed to read created Pyth PriceInfoObjects: ${
-									cause instanceof Error ? cause.message : String(cause)
-								}`,
-							}) as const,
-					});
-					const cachedFeeds: CachedPythFeed[] = [];
-					for (const feed of feeds) {
-						const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
-						if (priceInfoObjectId === undefined) {
-							return yield* Effect.fail({
-								_tag: 'ArtifactPublishError' as const,
-								reason: 'produce-failed' as const,
-								detail: `created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
-							});
-						}
-						cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
-					}
-					return { packageId: pkg.packageId, feeds: cachedFeeds };
-				}),
-				register: () => Effect.void,
-			})
-			.pipe(
-				Effect.mapError(
-					(err): DeepbookPluginError =>
-						deepbookPluginError(
-							'pyth-feed',
-							err._tag === 'ArtifactPublishError' ? err.detail : String(err),
 						),
-				),
-			);
+					);
+				}
+				const idsByFeed = yield* Effect.tryPromise({
+					try: () => mapCreatedPriceObjects(sdk, created),
+					catch: (cause) =>
+						artifactPublishError(
+							'produce-failed',
+							`failed to read created Pyth PriceInfoObjects: ${
+								cause instanceof Error ? cause.message : String(cause)
+							}`,
+						),
+				});
+				const cachedFeeds: CachedPythFeed[] = [];
+				for (const feed of feeds) {
+					const priceInfoObjectId = idsByFeed.get(normalizeFeedId(feed.feedId));
+					if (priceInfoObjectId === undefined) {
+						return yield* Effect.fail(
+							artifactPublishError(
+								'produce-failed',
+								`created Pyth PriceInfoObject for '${feed.symbol}' was not found by feed id.`,
+							),
+						);
+					}
+					cachedFeeds.push(toCachedFeed(feed, priceInfoObjectId));
+				}
+				return { packageId: pkg.packageId, feeds: cachedFeeds };
+			}),
+		}).pipe(
+			Effect.mapError(
+				(err): DeepbookPluginError =>
+					deepbookPluginError(
+						'pyth-feed',
+						err._tag === 'ArtifactPublishError' ? err.detail : String(err),
+					),
+			),
+		);
 
 		return fromCachedHandle(cached);
 	}).pipe(
 		Effect.withSpan('devstack.plugin.deepbook.pyth.initFeeds', {
 			attributes: {
-				'pyth.packageId': pkg.packageId,
-				'pyth.feed.count': feeds.length,
+				[DeepbookSpans.pyth.packageId]: pkg.packageId,
+				[DeepbookSpans.pyth.feedCount]: feeds.length,
 			},
 		}),
 	);

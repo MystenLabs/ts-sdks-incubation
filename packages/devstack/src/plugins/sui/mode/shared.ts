@@ -50,11 +50,7 @@ export interface WaitForTransactionsReady {
 
 /** Fork admin surface — mode-narrowed. Only the fork-mode factory's
  *  resolved value carries this; local/local-rpc/live values have a
- *  type-level `null`.
- *
- *  Distilled-doc opportunity: today's `Fiber` handle is discarded
- *  at the auto-tick call site; the `autoTickHandle` field below
- *  preserves it for a future cadence-change surface. */
+ *  type-level `null`. */
 export interface ForkAdminSurface {
 	readonly status: Effect.Effect<
 		{ readonly checkpoint: string; readonly clock: number },

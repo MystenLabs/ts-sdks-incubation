@@ -14,6 +14,7 @@
 // Both halves are scope-bound — the underlying poll fiber is forked
 // into the surrounding Scope and stops when the Scope closes.
 
+import { existsSync, statSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
@@ -21,7 +22,14 @@ import { Effect, Option, Ref, Stream, Scope } from 'effect';
 
 import type { EngineCommand } from '../../../events.ts';
 import { decodeUnknownSync } from '../../runtime-decode.ts';
-import { type CommandChannelError, appendRecord, ensureFile, tailRecords } from './file-channel.ts';
+import { selfPid } from '../self-pid.ts';
+import {
+	type CommandChannelError,
+	CommandChannelIoError,
+	appendRecord,
+	ensureFile,
+	tailRecords,
+} from './file-channel.ts';
 import {
 	COMMAND_CHANNEL_PROTOCOL_VERSION,
 	CommandRecordSchema,
@@ -52,7 +60,19 @@ export const commandChannelPaths = (stackRoot: string): CommandChannelPaths => (
 export interface PublishedCommand {
 	/** Per-record id used to correlate `ack` / `error` replies. */
 	readonly id: string;
+	/** Byte offset of the events file at publish time. `awaitCompletion`
+	 *  tails from here so each await scans only events appended after the
+	 *  command was published, instead of replaying the whole file on every
+	 *  call (O(N·total) rescans). A reply can only land at-or-after this
+	 *  offset because the supervisor reads the command before acking. */
+	readonly fromOffset: number;
 }
+
+/** Default bound for `awaitCompletion` when the caller passes no
+ *  `timeoutMillis`. A correlated ack/error normally lands within tens of
+ *  ms; an absent reply (supervisor died mid-handle, dropped record) must
+ *  NOT park the await fiber forever, so the wait is always bounded. */
+export const DEFAULT_AWAIT_COMPLETION_MILLIS = 30_000;
 
 /**
  * Publisher half: append a typed command, optionally await its
@@ -68,10 +88,11 @@ export interface CommandChannelPublisher {
 		command: EngineCommand,
 	) => Effect.Effect<PublishedCommand, CommandChannelError>;
 	readonly awaitCompletion: (
-		id: string,
+		published: PublishedCommand,
 		options?: { readonly timeoutMillis?: number },
 	) => Effect.Effect<
-		{ readonly ok: true } | { readonly ok: false; readonly message: string },
+		| { readonly ok: true; readonly payload?: unknown }
+		| { readonly ok: false; readonly message: string; readonly payload?: unknown },
 		CommandChannelError
 	>;
 	readonly events: Stream.Stream<EventRecord, CommandChannelError, Scope.Scope>;
@@ -96,7 +117,7 @@ export const makeCommandChannelPublisher = (
 		yield* ensureFile(paths.commandsFile);
 		yield* ensureFile(paths.eventsFile);
 		const state: PublisherState = { seq: yield* Ref.make(0) };
-		const pid = process.pid;
+		const pid = selfPid();
 		const host = nodeHostname();
 
 		const publish = (
@@ -105,6 +126,15 @@ export const makeCommandChannelPublisher = (
 			Effect.gen(function* () {
 				const seq = yield* nextSeq(state);
 				const id = `${pid}-${seq}-${randomUUID().slice(0, 8)}`;
+				// Snapshot the events-file size BEFORE appending the command:
+				// any correlated reply is appended strictly after the
+				// supervisor observes this command, so a tail from this offset
+				// cannot miss the reply while skipping the entire backlog.
+				const fromOffset = yield* Effect.try({
+					try: () => (existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0),
+					catch: (cause) =>
+						new CommandChannelIoError({ path: paths.eventsFile, stage: 'stat', cause }),
+				});
 				const record: CommandRecord = {
 					protocol: COMMAND_CHANNEL_PROTOCOL_VERSION,
 					seq,
@@ -115,7 +145,7 @@ export const makeCommandChannelPublisher = (
 					command,
 				};
 				yield* appendRecord(paths.commandsFile, record);
-				return { id };
+				return { id, fromOffset };
 			});
 
 		const decodeEvent = (raw: unknown): EventRecord =>
@@ -127,22 +157,28 @@ export const makeCommandChannelPublisher = (
 		const events: Stream.Stream<EventRecord, CommandChannelError, Scope.Scope> = tailRecords(
 			paths.eventsFile,
 			(raw) => decodeEvent(raw),
-			{ fromOffset: 'current' },
+			{ fromOffset: 'current', onDecodeError: 'skip' },
 		);
 
 		const findReply = (
 			id: string,
+			fromOffset: number,
 		): Effect.Effect<
 			Option.Option<Extract<EventRecord, { kind: 'ack' | 'error' }>>,
 			CommandChannelError,
 			Scope.Scope
 		> =>
-			// Start at 'start' so awaitCompletion picks up an ack that
-			// landed before the await call attached. The filter by id is
-			// the actual correlation; replaying old records is cheap.
+			// Tail from the publish-time offset rather than 'start': the
+			// reply is always appended after this point, so scanning the
+			// whole file on every await (O(N·total)) is wasteful. The filter
+			// by id is the actual correlation.
+			// `onDecodeError: 'skip'` keeps the tail alive across truncated /
+			// corrupt lines from a peer's mid-flight atomic append, per
+			// STYLE_GUIDE §20 NDJSON tolerance rule.
 			Stream.runHead(
 				tailRecords(paths.eventsFile, (raw) => decodeEvent(raw), {
-					fromOffset: 'start',
+					fromOffset,
+					onDecodeError: 'skip',
 				}).pipe(
 					Stream.filter(
 						(rec): rec is Extract<EventRecord, { kind: 'ack' | 'error' }> =>
@@ -153,32 +189,36 @@ export const makeCommandChannelPublisher = (
 			);
 
 		const awaitCompletion = (
-			id: string,
+			published: PublishedCommand,
 			options: { readonly timeoutMillis?: number } = {},
 		): Effect.Effect<
-			{ readonly ok: true } | { readonly ok: false; readonly message: string },
+			| { readonly ok: true; readonly payload?: unknown }
+			| { readonly ok: false; readonly message: string; readonly payload?: unknown },
 			CommandChannelError
 		> => {
-			const withScope = Effect.scoped(findReply(id));
-			const final =
-				options.timeoutMillis !== undefined
-					? withScope.pipe(
-							Effect.timeoutOption(`${options.timeoutMillis} millis`),
-							Effect.map((outer) => Option.flatten(outer)),
-						)
-					: withScope;
+			// Always bound the wait: a missing reply (supervisor died, dropped
+			// record) must NOT park the fiber forever, so an absent
+			// `timeoutMillis` falls back to `DEFAULT_AWAIT_COMPLETION_MILLIS`.
+			const timeoutMillis = options.timeoutMillis ?? DEFAULT_AWAIT_COMPLETION_MILLIS;
+			const final = Effect.scoped(findReply(published.id, published.fromOffset)).pipe(
+				Effect.timeoutOption(`${timeoutMillis} millis`),
+				Effect.map((outer) => Option.flatten(outer)),
+			);
 			return final.pipe(
 				Effect.map((reply) => {
 					const inner = Option.getOrNull(reply);
 					if (inner === null) {
-						return options.timeoutMillis !== undefined
-							? { ok: false as const, message: 'timed out waiting for ack' }
-							: { ok: false as const, message: 'no reply' };
+						return { ok: false as const, message: 'timed out waiting for ack' };
 					}
-					if (inner.kind === 'ack') return { ok: true as const };
+					if (inner.kind === 'ack') {
+						return inner.payload !== undefined
+							? { ok: true as const, payload: inner.payload }
+							: { ok: true as const };
+					}
 					return {
 						ok: false as const,
 						message: inner.detail ? `${inner.message}: ${inner.detail}` : inner.message,
+						...(inner.payload !== undefined ? { payload: inner.payload } : {}),
 					};
 				}),
 			);
@@ -204,11 +244,16 @@ export interface CommandChannelSubscriberOptions {
 export interface CommandChannelSubscriber {
 	readonly commands: Stream.Stream<CommandRecord, CommandChannelError, Scope.Scope>;
 	readonly publishEvent: (event: unknown) => Effect.Effect<void, CommandChannelError>;
-	readonly ack: (correlatesTo: string, detail?: string) => Effect.Effect<void, CommandChannelError>;
+	readonly ack: (
+		correlatesTo: string,
+		detail?: string,
+		payload?: unknown,
+	) => Effect.Effect<void, CommandChannelError>;
 	readonly fail: (
 		correlatesTo: string,
 		message: string,
 		detail?: string,
+		payload?: unknown,
 	) => Effect.Effect<void, CommandChannelError>;
 }
 
@@ -259,7 +304,11 @@ export const makeCommandChannelSubscriber = (
 				});
 			});
 
-		const ack = (correlatesTo: string, detail?: string): Effect.Effect<void, CommandChannelError> =>
+		const ack = (
+			correlatesTo: string,
+			detail?: string,
+			payload?: unknown,
+		): Effect.Effect<void, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSubSeq(state);
 				yield* writeEvent({
@@ -269,6 +318,7 @@ export const makeCommandChannelSubscriber = (
 					kind: 'ack',
 					correlatesTo,
 					...(detail !== undefined ? { detail } : {}),
+					...(payload !== undefined ? { payload } : {}),
 				});
 			});
 
@@ -276,6 +326,7 @@ export const makeCommandChannelSubscriber = (
 			correlatesTo: string,
 			message: string,
 			detail?: string,
+			payload?: unknown,
 		): Effect.Effect<void, CommandChannelError> =>
 			Effect.gen(function* () {
 				const seq = yield* nextSubSeq(state);
@@ -287,6 +338,7 @@ export const makeCommandChannelSubscriber = (
 					correlatesTo,
 					message,
 					...(detail !== undefined ? { detail } : {}),
+					...(payload !== undefined ? { payload } : {}),
 				});
 			});
 

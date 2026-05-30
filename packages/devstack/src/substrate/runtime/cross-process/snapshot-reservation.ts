@@ -10,21 +10,27 @@
 //
 // Discipline:
 //   - Acquire is atomic O_EXCL create with a JSON body carrying
-//     `{ creatorPid, creatorStartTime, createdAt }`.
+//     `{ version: 1, creatorPid, creatorStartTime, createdAt, hostname }`.
 //   - Release is `unlink`.
-//   - Orphan sweep: on the next claim, if the body's creator pid is
-//     dead (PID + start-time check), the reservation is unlinked. This
-//     mirrors the roster's stale-PID reclaim.
+//   - Orphan sweep: on the next claim, the body's `hostname` is checked
+//     first. Foreign-host reservations short-circuit as alive (NFS-safe
+//     conservative default — `kill(pid, 0)` is meaningless on a remote
+//     kernel). Same-host reservations fall through to the PID +
+//     start-time check, which mirrors the roster's stale-PID reclaim.
 //   - Acquire DOES NOT retry — snapshot is a one-shot intent; the
 //     caller surfaces the structured error to the user immediately.
 
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { hostname as nodeHostname } from 'node:os';
 
 import { Data, Effect, Scope } from 'effect';
 
 import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
-import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
+import { SpanAttr } from '../observability/spans.ts';
 import { checkHolderLiveness } from './liveness.ts';
+import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
+import { selfPid } from './self-pid.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -46,25 +52,19 @@ export type SnapshotReservationError = SnapshotReservationHeldError | SnapshotRe
 // Codec
 // -----------------------------------------------------------------------------
 
-const parseReservation = (raw: string): SnapshotReservation | null => {
-	try {
-		return decodeJsonTextSync(SnapshotReservationSchema, raw, {
-			source: 'snapshot.reservation',
-			mkError: (issue) => issue,
-		});
-	} catch {
-		return null;
-	}
-};
+const parseReservation = (raw: string): SnapshotReservation | null =>
+	parseVersionedDocumentBodyOrNull(raw, SnapshotReservationSchema, 'snapshot.reservation');
 
 // -----------------------------------------------------------------------------
 // Acquire / release
 // -----------------------------------------------------------------------------
 
-const ownReservation = (startTime: number): SnapshotReservation => ({
-	creatorPid: process.pid,
+const ownReservation = (startTime: number | null): SnapshotReservation => ({
+	version: 1,
+	creatorPid: selfPid(),
 	creatorStartTime: startTime,
 	createdAt: Date.now(),
+	hostname: nodeHostname(),
 });
 
 /**
@@ -82,7 +82,7 @@ export const sweepOrphan = (
 	path: string,
 ): Effect.Effect<{ readonly swept: boolean }, SnapshotReservationError> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.snapshot-reservation.path': path });
+		yield* Effect.annotateCurrentSpan({ [SpanAttr.snapshotReservationPath]: path });
 		if (!existsSync(path)) return { swept: false };
 		const raw = yield* Effect.try({
 			try: () => readFileSync(path, 'utf8'),
@@ -90,27 +90,44 @@ export const sweepOrphan = (
 		});
 		const reservation = parseReservation(raw);
 		if (reservation === null) {
-			// Malformed body — the creator wrote a half-written file then
-			// died. Treat as orphan: unlink it so future acquires don't
-			// fail forever.
-			yield* Effect.try({
-				try: () => unlinkSync(path),
+			// Malformed body — the creator may have written a half-written
+			// file. Reclaim ONLY through the shared re-stat guard: gating a
+			// bare mtime read + unlink races a competitor who legitimately
+			// reclaims the garbage and writes a fresh valid O_EXCL body in
+			// the window — the unlink would clobber that LIVE reservation.
+			// `reclaimUnparseableStaleFile` honors the SAME mtime staleness
+			// window stack-lock uses (a body younger than the window is
+			// presumed mid-write and left alone) AND re-confirms the file
+			// is still the same stale, unparseable inode immediately before
+			// unlinking.
+			const outcome = yield* Effect.try({
+				try: () => reclaimUnparseableStaleFile(path, parseReservation),
 				catch: (cause) => new SnapshotReservationIoError({ path, cause }),
 			});
-			return { swept: true };
+			return { swept: outcome === 'reclaimed' };
 		}
+		// Foreign-host reservation: NFS-safe — we cannot probe a remote
+		// kernel for pid liveness, so treat the peer as alive (matches
+		// the roster's `trustForeignHosts` policy). Before adding the
+		// `hostname` field we synthesized a holder with hostname='' and
+		// passed ownHost='', which bypassed the foreign-host fast-path
+		// in `checkHolderLiveness` and probed PID/startTime locally — a
+		// live remote process could be declared dead and its reservation
+		// unlinked. The fix is to short-circuit here.
+		const ownHost = nodeHostname();
+		if (reservation.hostname !== ownHost) return { swept: false };
 		// PID-liveness check: synthesize a roster-shaped holder so the
 		// shared liveness predicate applies.
 		const liveness = yield* checkHolderLiveness(
 			{
 				pid: reservation.creatorPid,
 				startTime: reservation.creatorStartTime,
-				hostname: '',
+				hostname: reservation.hostname,
 				claimedAt: reservation.createdAt,
 				heartbeatAt: reservation.createdAt,
 				intent: 'snapshot',
 			},
-			'',
+			ownHost,
 		).pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 		if (liveness === 'alive') return { swept: false };
 		yield* Effect.try({
@@ -134,10 +151,10 @@ export const sweepOrphan = (
  */
 export const acquireReservation = (
 	path: string,
-	startTime: number,
+	startTime: number | null,
 ): Effect.Effect<SnapshotReservation, SnapshotReservationError, Scope.Scope> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.snapshot-reservation.path': path });
+		yield* Effect.annotateCurrentSpan({ [SpanAttr.snapshotReservationPath]: path });
 		// One-shot orphan sweep before our O_EXCL attempt. The sweep is
 		// idempotent: if a peer just wrote the reservation while we ran
 		// the sweep, the O_EXCL create fails below and we surface the
