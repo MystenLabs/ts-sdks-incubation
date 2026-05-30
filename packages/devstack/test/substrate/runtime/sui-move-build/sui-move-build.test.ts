@@ -142,7 +142,10 @@ describe('sui-move-build helpers', () => {
 				join(workspace, 'packages', 'demo', 'Move.toml'),
 				'[package]\nname = "demo"\n[dependencies]\ntoken = { local = "../token" }\n',
 			);
-			await writeFile(join(workspace, 'packages', 'token', 'Move.toml'), '[package]\nname = "token"\n');
+			await writeFile(
+				join(workspace, 'packages', 'token', 'Move.toml'),
+				'[package]\nname = "token"\n',
+			);
 
 			// Drive ONLY the stage step the production script emits (the first
 			// `cp -a /workspace/. <scratch>/`), rebased onto the fixture: rewrite

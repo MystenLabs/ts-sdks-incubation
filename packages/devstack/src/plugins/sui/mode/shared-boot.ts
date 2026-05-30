@@ -29,7 +29,12 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { makeSuiChainProbe, type SuiSdkShim, type SuiProbeKey } from '../chain-probe.ts';
-import { suiConfigError, suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
+import {
+	suiConfigError,
+	suiPluginError,
+	type SuiConfigError,
+	type SuiPluginError,
+} from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SuiSpans } from '../spans.ts';
@@ -294,7 +299,8 @@ export const assembleSuiClient = (parts: {
 			hostGateway: parts.hostGateway ?? {
 				rpcUrl: toDockerHostGatewayUrl(parts.rpcUrl),
 				faucetUrl: parts.faucetUrl === undefined ? null : toDockerHostGatewayUrl(parts.faucetUrl),
-				graphqlUrl: parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
+				graphqlUrl:
+					parts.graphqlUrl === undefined ? null : toDockerHostGatewayUrl(parts.graphqlUrl),
 			},
 			chain: brandChainId(chain),
 			waitForTransactionsReady: parts.waitForTransactionsReady,

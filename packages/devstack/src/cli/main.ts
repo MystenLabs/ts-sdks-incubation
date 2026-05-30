@@ -26,11 +26,7 @@ import { Effect } from 'effect';
 
 import { readProjectionSnapshot } from '../substrate/runtime/index.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
-import {
-	dispatch,
-	type CliDeps,
-	CliUsageError,
-} from '../surfaces/cli/index.ts';
+import { dispatch, type CliDeps, CliUsageError } from '../surfaces/cli/index.ts';
 import { emitFailure, nodeProcessIO } from '../surfaces/cli/output.ts';
 import { ENV_VARS } from '../surfaces/cli/flags.ts';
 import { defaultProbes } from './doctor-probes.ts';
@@ -312,11 +308,7 @@ const argvSkipsConfigPreload = (argv: ReadonlyArray<string>): boolean => {
 const configStateDirBestEffort = async (
 	configPath: string | undefined,
 ): Promise<string | undefined> => {
-	const loaded = await Effect.runPromise(
-		makeConfigLoader()
-			.load(configPath)
-			.pipe(Effect.option),
-	);
+	const loaded = await Effect.runPromise(makeConfigLoader().load(configPath).pipe(Effect.option));
 	if (loaded._tag === 'None') return undefined;
 	const options = (loaded.value.stack as { readonly options?: { readonly stateDir?: string } })
 		.options;

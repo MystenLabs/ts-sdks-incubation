@@ -31,7 +31,10 @@ import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { DEFAULT_PORT_WINDOW, PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
+import {
+	DEFAULT_PORT_WINDOW,
+	PortBrokerService,
+} from '../../substrate/runtime/port-broker/index.ts';
 import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { suiResource } from '../sui/index.ts';
 import type { AccountResourceId } from '../account/index.ts';

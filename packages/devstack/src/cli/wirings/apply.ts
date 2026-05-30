@@ -35,14 +35,8 @@ import {
 	layerBuiltInPluginRuntime,
 } from '../../orchestrators/built-in-plugin-layers.ts';
 import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
-import {
-	type CliError,
-	CliInternalError,
-} from '../../surfaces/cli/errors.ts';
-import {
-	type CommandResult,
-	probeSupervisorPresence,
-} from '../../surfaces/cli/commands/index.ts';
+import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
+import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 

@@ -319,22 +319,16 @@ const tryRecoverEntry = (
 		// (omitting the field) — otherwise the staged tag would still
 		// win the resolution race and we'd be re-running attempt #1.
 		const stagedFirst = yield* runtime
-			.tagImage(
-				{ digest: entry.digest, tag: entry.stagedImageTag },
-				entry.targetImageName,
-				{ removeSourceAfterTag: true },
-			)
+			.tagImage({ digest: entry.digest, tag: entry.stagedImageTag }, entry.targetImageName, {
+				removeSourceAfterTag: true,
+			})
 			.pipe(
 				Effect.as(true as const),
 				Effect.catch(() => Effect.succeed(false as const)),
 			);
 		if (stagedFirst) return true;
 		const digestFallback = yield* runtime
-			.tagImage(
-				{ digest: entry.digest },
-				entry.targetImageName,
-				{ removeSourceAfterTag: true },
-			)
+			.tagImage({ digest: entry.digest }, entry.targetImageName, { removeSourceAfterTag: true })
 			.pipe(
 				Effect.as(true as const),
 				Effect.catch(() => Effect.succeed(false as const)),
@@ -437,17 +431,15 @@ export const recoverPendingRestore = (
 		let markerCleared = false;
 		if (stillPending.length === 0) {
 			yield* removePendingMarker(stackRoot).pipe(
-				Effect.catchTag(
-					'SnapshotRestorePendingMarkerIoError',
-					(err: RestorePendingMarkerIoError) =>
-						Effect.fail(
-							new RestorePendingRecoveryError({
-								kind: 'marker-io',
-								path: err.path,
-								detail: err.detail,
-								cause: err.cause,
-							}),
-						),
+				Effect.catchTag('SnapshotRestorePendingMarkerIoError', (err: RestorePendingMarkerIoError) =>
+					Effect.fail(
+						new RestorePendingRecoveryError({
+							kind: 'marker-io',
+							path: err.path,
+							detail: err.detail,
+							cause: err.cause,
+						}),
+					),
 				),
 			);
 			markerCleared = true;

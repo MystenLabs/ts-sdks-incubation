@@ -92,9 +92,9 @@ describe('renderSealKeyServerConfig', () => {
 		// The SemVer field has a WIDER whitelist (`<>=^~* |`) so `>=0.4.5`
 		// renders, but a `"`/`${}` must still be refused — assert both arms
 		// so a future widening of the SemVer regex can't open an injection.
-		expect(
-			renderSealKeyServerConfig({ ...HAPPY, tsSdkVersionRequirement: '>=0.4.5' }),
-		).toContain('ts_sdk_version_requirement: ">=0.4.5"');
+		expect(renderSealKeyServerConfig({ ...HAPPY, tsSdkVersionRequirement: '>=0.4.5' })).toContain(
+			'ts_sdk_version_requirement: ">=0.4.5"',
+		);
 
 		const err = renderError({
 			...HAPPY,

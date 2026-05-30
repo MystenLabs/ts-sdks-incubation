@@ -49,10 +49,8 @@ export const stackRootFor = (runtimeRoot: string, stack: string): string =>
  *  on `error: supervisor live for <app>/<stack>` (exit 40). `runStack`
  *  (`api/run-stack.ts`) already prefers its explicit option over
  *  `stack.options.stackName`; this keeps the CLI consistent with it. */
-const effectiveStackName = (
-	identity: ResolvedIdentity,
-	stack?: SupervisedStack,
-): string => identity.explicitStack ?? stack?.options.stackName ?? identity.stack;
+const effectiveStackName = (identity: ResolvedIdentity, stack?: SupervisedStack): string =>
+	identity.explicitStack ?? stack?.options.stackName ?? identity.stack;
 
 export const identityValueFor = (
 	identity: ResolvedIdentity,

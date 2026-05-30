@@ -354,8 +354,7 @@ describe('package publish executor', () => {
 						getObject: () => Promise.reject(new Error('hint-rpc-down')),
 						getTransaction: () => Promise.reject(new Error('stub')),
 						getBalance: () => Promise.reject(new Error('stub')),
-						listCoins: () =>
-							Promise.resolve({ objects: [], hasNextPage: false, cursor: null }),
+						listCoins: () => Promise.resolve({ objects: [], hasNextPage: false, cursor: null }),
 						executeTransaction: () => Promise.reject(new Error('stub')),
 						waitForTransaction: () => Promise.reject(new Error('stub')),
 					},
@@ -374,28 +373,25 @@ describe('package publish executor', () => {
 			}),
 	);
 
-	it(
-		'publishError("parse") shape — packageName is optional, never overloaded with on-chain id',
-		() => {
-			// Regression: previously the hint threw
-			// `publishError('parse', { packageName: packageId, ... })`,
-			// stamping the on-chain `0x…` id into the symbolic name
-			// slot — the user's error display showed `packageName=0x...`.
-			// The fix made `packageName` optional on the error class and
-			// removed the overload at the throw site (the on-chain id is
-			// now carried in `message` where it's unambiguous; `mode-local`
-			// re-stamps `packageName` + `sourcePath` from the outer inputs
-			// when the error bubbles through).
-			const err = publishError('parse', {
-				message: 'postPublishReadyHint(0xpkg-onchain-id) failed',
-				cause: new Error('hint-rpc-down'),
-			});
-			expect(err._tag).toBe('PublishError');
-			expect(err.phase).toBe('parse');
-			expect(err.packageName).toBeUndefined();
-			expect(err.message).toContain('0xpkg-onchain-id');
-		},
-	);
+	it('publishError("parse") shape — packageName is optional, never overloaded with on-chain id', () => {
+		// Regression: previously the hint threw
+		// `publishError('parse', { packageName: packageId, ... })`,
+		// stamping the on-chain `0x…` id into the symbolic name
+		// slot — the user's error display showed `packageName=0x...`.
+		// The fix made `packageName` optional on the error class and
+		// removed the overload at the throw site (the on-chain id is
+		// now carried in `message` where it's unambiguous; `mode-local`
+		// re-stamps `packageName` + `sourcePath` from the outer inputs
+		// when the error bubbles through).
+		const err = publishError('parse', {
+			message: 'postPublishReadyHint(0xpkg-onchain-id) failed',
+			cause: new Error('hint-rpc-down'),
+		});
+		expect(err._tag).toBe('PublishError');
+		expect(err.phase).toBe('parse');
+		expect(err.packageName).toBeUndefined();
+		expect(err.message).toContain('0xpkg-onchain-id');
+	});
 
 	it.effect('publishes with an impersonation account through account.signAndExecute', () =>
 		Effect.gen(function* () {

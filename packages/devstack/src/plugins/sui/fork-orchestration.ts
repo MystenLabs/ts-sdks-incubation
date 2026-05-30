@@ -126,7 +126,11 @@ const isForkHolderAlive = (holder: ForkLockHolder): boolean => {
 };
 
 const readForkHolder = (path: string): ForkLockHolder | null =>
-	parseVersionedDocumentBodyOrNull(safeReadHolderRaw(path), ForkLockHolderSchema, 'sui-fork.holder');
+	parseVersionedDocumentBodyOrNull(
+		safeReadHolderRaw(path),
+		ForkLockHolderSchema,
+		'sui-fork.holder',
+	);
 
 /** Read the holder file's bytes, returning `''` (→ parses to null) on
  *  any I/O error. A missing/unreadable holder means "no live claim";

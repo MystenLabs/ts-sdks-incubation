@@ -32,12 +32,7 @@
  *                         is masked by the lenient probe — does NOT raise
  *                         this).
  */
-export type ActionPhase =
-	| 'discriminator'
-	| 'build'
-	| 'sign'
-	| 'execute-failed'
-	| 'verify';
+export type ActionPhase = 'discriminator' | 'build' | 'sign' | 'execute-failed' | 'verify';
 
 /** Single tagged action error. */
 export interface ActionError {

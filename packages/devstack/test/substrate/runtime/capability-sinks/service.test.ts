@@ -411,13 +411,9 @@ describe('CapabilitySinksService', () => {
 						reasons: ReadonlyArray<{ _tag: string; error?: { _tag: string; kind?: string } }>;
 					}
 				).reasons;
-				const failTags = reasons
-					.filter((r) => r._tag === 'Fail')
-					.map((r) => r.error?._tag);
+				const failTags = reasons.filter((r) => r._tag === 'Fail').map((r) => r.error?._tag);
 				expect(failTags).toContain('UnknownContributionKind');
-				const kinds = reasons
-					.filter((r) => r._tag === 'Fail')
-					.map((r) => r.error?.kind);
+				const kinds = reasons.filter((r) => r._tag === 'Fail').map((r) => r.error?.kind);
 				expect(kinds).toContain('never-registered-kind');
 			}
 		}).pipe(Effect.scoped, Effect.provide(layerCapabilitySinks)),

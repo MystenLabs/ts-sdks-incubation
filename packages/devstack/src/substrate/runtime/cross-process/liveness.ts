@@ -159,11 +159,7 @@ const hashStartTimeStamp = (stamp: string): number => {
  *  Returns `'alive' | 'dead'`. Never throws. Effect-wrapped so callers
  *  compose under spans. */
 export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolderLiveness')(
-	function* (
-		holder: RosterHolder,
-		ownHost: string = nodeHostname(),
-		cache?: LivenessCache,
-	) {
+	function* (holder: RosterHolder, ownHost: string = nodeHostname(), cache?: LivenessCache) {
 		// Foreign-host: NFS-safe — we can't verify, assume alive.
 		if (holder.hostname !== ownHost) {
 			return 'alive' as const;

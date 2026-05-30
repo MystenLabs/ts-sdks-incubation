@@ -612,13 +612,7 @@ const startHostProcess = (
 					Effect.gen(function* () {
 						shuttingDown = true;
 						if (exitStatus !== null) return;
-						yield* terminateChild(
-							spawned,
-							options.shutdownGraceMs,
-							ctx.logger,
-							ctx.pluginKey,
-							tag,
-						);
+						yield* terminateChild(spawned, options.shutdownGraceMs, ctx.logger, ctx.pluginKey, tag);
 					}),
 				);
 				return spawned;

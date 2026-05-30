@@ -54,7 +54,9 @@ const MAX_ROW_LOG_LINES = 100;
 // reducer so the optional `prevalidated` parameter can reference it.
 // -----------------------------------------------------------------------------
 
-type DecodeResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly cause: unknown };
+type DecodeResult<T> =
+	| { readonly ok: true; readonly value: T }
+	| { readonly ok: false; readonly cause: unknown };
 
 // -----------------------------------------------------------------------------
 // Pure reducer
@@ -99,9 +101,7 @@ export const applyEvent = (
 	const fact = factFromEvent(event);
 	if (fact !== null) {
 		return withTouched({
-			rows: upsertRow(state.rows, fact.pluginKey, (row) =>
-				applyLifecycleFact(row, fact.delta),
-			),
+			rows: upsertRow(state.rows, fact.pluginKey, (row) => applyLifecycleFact(row, fact.delta)),
 		});
 	}
 

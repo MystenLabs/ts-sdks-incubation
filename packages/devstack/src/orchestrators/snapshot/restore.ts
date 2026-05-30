@@ -335,8 +335,7 @@ const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): S
 	return tags;
 };
 
-const mintRestoreStagingTag = (): string =>
-	`devstack-snapshot:restore-${mintRandomSuffix(24)}`;
+const mintRestoreStagingTag = (): string => `devstack-snapshot:restore-${mintRandomSuffix(24)}`;
 
 const mapMarkerIoError =
 	(phase: RestorePhaseError['phase']) =>
@@ -1006,9 +1005,7 @@ export const runRestore = (
 				//    an outer interrupt cannot tear the handoff between
 				//    promote and `clearRestorePendingMarker`.
 				if (stagedImages.length > 0) {
-					const pendingDocAfterSwap = yield* readRestorePendingMarker(
-						inputs.runtimeStackRoot,
-					);
+					const pendingDocAfterSwap = yield* readRestorePendingMarker(inputs.runtimeStackRoot);
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {
 							yield* promoteStagedImages(

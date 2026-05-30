@@ -48,11 +48,7 @@ import { suiResource, SuiSpans } from '../sui/index.ts';
 import { AccountSpans } from './spans.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
-import {
-	ACCOUNT_ERROR_TAGS,
-	accountAcquireError,
-	type AccountAcquireError,
-} from './errors.ts';
+import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
@@ -411,8 +407,7 @@ export const fundingProjectionForResult = (
 		// either the faucet succeeded or the pre-existing balance
 		// already covered it. `unknown` covers the mixed partial-success
 		// case so consumers can distinguish from "nothing ran at all".
-		status:
-			settledCount === entries.length ? 'funded' : settledCount === 0 ? 'skipped' : 'unknown',
+		status: settledCount === entries.length ? 'funded' : settledCount === 0 ? 'skipped' : 'unknown',
 		balanceMist: null,
 		requestedMist,
 		entries,

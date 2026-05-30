@@ -153,7 +153,11 @@ const runStartKeyServerToFailure = (
 ): Promise<Exit.Exit<{ readonly containerName: string }, SealError>> =>
 	Effect.runPromiseExit(
 		Effect.scoped(
-			startKeyServer(runtimeWithFailingProbe(probeFailure), buildKeyServerSpec(SPEC_INPUTS), 'seal'),
+			startKeyServer(
+				runtimeWithFailingProbe(probeFailure),
+				buildKeyServerSpec(SPEC_INPUTS),
+				'seal',
+			),
 		),
 	);
 

@@ -83,12 +83,13 @@ const FAUCET_ERROR_TAGS = [
 // Exhaustiveness: every member of the `FaucetError` union must appear in
 // the list above. If a new tag is added to the union and not here, this
 // assignment fails to type-check (the residual union is non-`never`).
-type _FaucetTagsExhaustive = Exclude<
-	FaucetError['_tag'],
-	(typeof FAUCET_ERROR_TAGS)[number]
-> extends never
-	? true
-	: ['FAUCET_ERROR_TAGS is missing a FaucetError _tag', Exclude<FaucetError['_tag'], (typeof FAUCET_ERROR_TAGS)[number]>];
+type _FaucetTagsExhaustive =
+	Exclude<FaucetError['_tag'], (typeof FAUCET_ERROR_TAGS)[number]> extends never
+		? true
+		: [
+				'FAUCET_ERROR_TAGS is missing a FaucetError _tag',
+				Exclude<FaucetError['_tag'], (typeof FAUCET_ERROR_TAGS)[number]>,
+			];
 const _faucetTagsExhaustive: _FaucetTagsExhaustive = true;
 void _faucetTagsExhaustive;
 
@@ -236,9 +237,10 @@ describe('Error catalog parity (errors.mdx <-> plugin errors.ts)', () => {
 				`'${phase}'`,
 			);
 		}
-		expect(actionLine, 'catalog ActionError line resurrected the removed parse phase').not.toContain(
-			"'parse'",
-		);
+		expect(
+			actionLine,
+			'catalog ActionError line resurrected the removed parse phase',
+		).not.toContain("'parse'");
 	});
 
 	it('FaucetExhausted is documented via attempts, not a nonexistent kind discriminator', () => {
@@ -260,9 +262,10 @@ describe('Error catalog parity (errors.mdx <-> plugin errors.ts)', () => {
 		expect(catalog, 'errors.mdx still advertises a FaucetExhausted.kind field').not.toMatch(
 			/FaucetExhausted[^\n]*kind:/,
 		);
-		expect(catalog, 'errors.mdx catch-example still branches on the nonexistent err.kind').not.toContain(
-			'err.kind',
-		);
+		expect(
+			catalog,
+			'errors.mdx catch-example still branches on the nonexistent err.kind',
+		).not.toContain('err.kind');
 	});
 
 	it('the missing-strategy tag is the substrate StrategyNotFoundError, never a Faucet* tag', () => {

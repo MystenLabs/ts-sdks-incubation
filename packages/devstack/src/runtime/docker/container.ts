@@ -1095,8 +1095,7 @@ export const ensureContainer = (
 
 							const ips = yield* readIps(spec.name);
 							const refreshedFacts = yield* inspectContainer(spec.name);
-							const ports =
-								refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
+							const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
 
 							// Record cross-process claim. The scope finalizer
 							// (already registered) will release it on scope

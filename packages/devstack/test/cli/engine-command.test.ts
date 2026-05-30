@@ -32,7 +32,10 @@ const accepting: ReadonlyArray<{ readonly label: string; readonly value: EngineC
 	{ label: 'shutdown.requested', value: { tag: 'shutdown.requested' } },
 	{ label: 'snapshot.restore w/ snapshotId', value: { tag: 'snapshot.restore', snapshotId: 's1' } },
 	{ label: 'snapshot.delete w/ snapshotId', value: { tag: 'snapshot.delete', snapshotId: 's1' } },
-	{ label: 'advance-clock.requested w/ toMillis', value: { tag: 'advance-clock.requested', toMillis: 1000 } },
+	{
+		label: 'advance-clock.requested w/ toMillis',
+		value: { tag: 'advance-clock.requested', toMillis: 1000 },
+	},
 	{
 		label: 'shutdown.hardKillRequested SIGINT',
 		value: { tag: 'shutdown.hardKillRequested', signal: 'SIGINT', exitCode: 130, at: 5 },
@@ -64,9 +67,15 @@ const accepting: ReadonlyArray<{ readonly label: string; readonly value: EngineC
 const rejecting: ReadonlyArray<{ readonly label: string; readonly value: unknown }> = [
 	// snapshot.restore / delete — snapshotId required + must be a string.
 	{ label: 'snapshot.restore missing snapshotId', value: { tag: 'snapshot.restore' } },
-	{ label: 'snapshot.restore non-string snapshotId', value: { tag: 'snapshot.restore', snapshotId: 7 } },
+	{
+		label: 'snapshot.restore non-string snapshotId',
+		value: { tag: 'snapshot.restore', snapshotId: 7 },
+	},
 	{ label: 'snapshot.delete missing snapshotId', value: { tag: 'snapshot.delete' } },
-	{ label: 'snapshot.delete non-string snapshotId', value: { tag: 'snapshot.delete', snapshotId: null } },
+	{
+		label: 'snapshot.delete non-string snapshotId',
+		value: { tag: 'snapshot.delete', snapshotId: null },
+	},
 	// advance-clock — toMillis required + numeric.
 	{ label: 'advance-clock missing toMillis', value: { tag: 'advance-clock.requested' } },
 	{
@@ -96,7 +105,10 @@ const rejecting: ReadonlyArray<{ readonly label: string; readonly value: unknown
 	// string (a wrong-typed optional must still be refused).
 	{ label: 'apply.requested numeric pluginKey', value: { tag: 'apply.requested', pluginKey: 1 } },
 	// snapshot.capture — both fields OPTIONAL but wrong-typed must refuse.
-	{ label: 'snapshot.capture numeric snapshotId', value: { tag: 'snapshot.capture', snapshotId: 1 } },
+	{
+		label: 'snapshot.capture numeric snapshotId',
+		value: { tag: 'snapshot.capture', snapshotId: 1 },
+	},
 	{ label: 'snapshot.capture numeric name', value: { tag: 'snapshot.capture', name: 5 } },
 	// Structural rejections.
 	{ label: 'null', value: null },

@@ -62,12 +62,7 @@ export {
 export { runWipe, SNAPSHOTS_DIR_NAME, WipePhaseError, type WipeInputs } from './wipe.ts';
 
 // Prune
-export {
-	PrunePhaseError,
-	runPrune,
-	type PruneInputs,
-	type PruneResult,
-} from './prune.ts';
+export { PrunePhaseError, runPrune, type PruneInputs, type PruneResult } from './prune.ts';
 
 // Identity guard
 export {

@@ -35,7 +35,10 @@ import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
 import { SuiSpans } from '../spans.ts';
 import { acquireForkDataDirHolder, wrapWithForkGuard } from '../fork-orchestration.ts';
-import { FORK_IMPERSONATION_GAS_BUDGET, verifyForkImpersonationSender } from '../fork-transaction.ts';
+import {
+	FORK_IMPERSONATION_GAS_BUDGET,
+	verifyForkImpersonationSender,
+} from '../fork-transaction.ts';
 import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
 import { toDockerHostGatewayUrl } from './shared.ts';
@@ -177,11 +180,7 @@ export const bootForkMode = (
 	portBroker: PortBroker,
 	paths: StackPaths,
 	opts: SuiForkOptions,
-): Effect.Effect<
-	ForkModeBootResult,
-	SuiPluginError | SuiConfigError,
-	Scope.Scope
-> =>
+): Effect.Effect<ForkModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const autoTickIntervalMs = yield* resolveAutoTickIntervalMs(opts.autoTick);
 		// Fold the faucet whale into the seed BEFORE the data-dir key /

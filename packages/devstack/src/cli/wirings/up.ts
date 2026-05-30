@@ -46,7 +46,10 @@ import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
 } from '../../orchestrators/built-in-plugin-layers.ts';
-import { captureSnapshot, SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
+import {
+	captureSnapshot,
+	SnapshotOrchestratorService,
+} from '../../orchestrators/snapshot/index.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -325,7 +328,11 @@ const installCommandChannelBridge = (params: {
 									Effect.andThen(subscriber.ack(record.id)),
 									Effect.catchCause((cause) =>
 										subscriber
-											.fail(record.id, 'command failed', Cause.pretty(cause as Cause.Cause<unknown>))
+											.fail(
+												record.id,
+												'command failed',
+												Cause.pretty(cause as Cause.Cause<unknown>),
+											)
 											.pipe(Effect.catch(() => Effect.void)),
 									),
 								);

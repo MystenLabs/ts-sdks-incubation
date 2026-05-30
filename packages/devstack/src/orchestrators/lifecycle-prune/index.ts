@@ -311,8 +311,7 @@ const sharedKindFor = (app: string, stack: string): SharedGroupKind | null => {
  *  router-stack naming predicate. */
 export const isRouterLifecyclePruneGroup = (
 	group: Pick<LifecyclePruneGroup, 'app' | 'stack'>,
-): boolean =>
-	group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
+): boolean => group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
 
 // Internal aliases for back-compat call sites in this file.
 const isRouterGroup = isRouterLifecyclePruneGroup;

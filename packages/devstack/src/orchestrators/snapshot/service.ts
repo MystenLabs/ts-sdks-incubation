@@ -58,11 +58,7 @@ import {
 	type IdentityContributionConflictError,
 	type IdentityGuardError,
 } from './identity-guard.ts';
-import {
-	runPrune,
-	type PruneResult,
-	type PrunePhaseError,
-} from './prune.ts';
+import { runPrune, type PruneResult, type PrunePhaseError } from './prune.ts';
 import {
 	recoverPendingRestore,
 	type RestorePendingRecoveryError,
@@ -167,7 +163,11 @@ export interface SnapshotOrchestrator {
 
 	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
 	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
-	readonly prune: () => Effect.Effect<PruneResult, SnapshotOrchestratorError, FileSystem.FileSystem>;
+	readonly prune: () => Effect.Effect<
+		PruneResult,
+		SnapshotOrchestratorError,
+		FileSystem.FileSystem
+	>;
 
 	/** Recover from a snapshot-restore that crashed mid-way through the
 	 *  post-publish Docker handoff. Reads the on-disk pending marker,
@@ -193,8 +193,7 @@ export class SnapshotOrchestratorService extends Context.Service<
 /** Mint a snapshot id when the caller didn't pass one. Carries an
  *  8-hex random suffix from `crypto.randomUUID()` (STYLE_GUIDE §17) so
  *  concurrent saves don't silently overwrite. */
-const mintId = (prefix = 'snap'): string =>
-	`${prefix}-${Date.now()}-${mintRandomSuffix(8)}`;
+const mintId = (prefix = 'snap'): string => `${prefix}-${Date.now()}-${mintRandomSuffix(8)}`;
 
 const mintSnapshotId = (): Effect.Effect<SnapshotId, SnapshotDescriptorError> => {
 	const raw = mintId();

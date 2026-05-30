@@ -1180,7 +1180,10 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 		});
 
 		it('falls back to env when neither --flag nor --flag=value is present', () => {
-			const out = identityInputsFromArgv([], { DEVSTACK_APP: 'envapp', DEVSTACK_STACK: 'envstack' });
+			const out = identityInputsFromArgv([], {
+				DEVSTACK_APP: 'envapp',
+				DEVSTACK_STACK: 'envstack',
+			});
 			expect(out.app).toBe('envapp');
 			expect(out.stack).toBe('envstack');
 		});
@@ -1220,7 +1223,11 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			expect(stderr.join('')).toBe('');
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: false;
-				readonly error: { readonly code: string; readonly exitCode: number; readonly summary: string };
+				readonly error: {
+					readonly code: string;
+					readonly exitCode: number;
+					readonly summary: string;
+				};
 			};
 			expect(envelope.ok).toBe(false);
 			expect(envelope.error.code).toBe('USAGE');

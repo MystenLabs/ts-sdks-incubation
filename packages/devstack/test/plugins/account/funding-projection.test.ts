@@ -34,7 +34,10 @@ describe('fundingProjectionForResult', () => {
 		const wal = requested();
 		const result: AccountFundingResult = {
 			requested: [sui, wal],
-			applied: [applied('funded', { coin: 'SUI', fullCoinType: SUI_FULL_COIN_TYPE, amount: 1_000_000n }), applied('already-satisfied')],
+			applied: [
+				applied('funded', { coin: 'SUI', fullCoinType: SUI_FULL_COIN_TYPE, amount: 1_000_000n }),
+				applied('already-satisfied'),
+			],
 		};
 
 		const out = fundingProjectionForResult(result);

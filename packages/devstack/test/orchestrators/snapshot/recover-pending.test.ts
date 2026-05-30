@@ -21,9 +21,7 @@ import {
 } from '../../../src/orchestrators/snapshot/index.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
-const stubRuntime = (
-	overrides: Partial<ContainerRuntime> = {},
-): ContainerRuntime =>
+const stubRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntime =>
 	({
 		// Only `tagImage` is consulted by the recovery scanner. The
 		// rest of the contract is filled with `Effect.die` so any
@@ -336,64 +334,62 @@ describe('recoverPendingRestore', () => {
 			),
 	);
 
-	it.effect(
-		'keeps an entry pending when both source attempts fail and the target is absent',
-		() =>
-			withTempRoot('devstack-recover-pending', (root) =>
-				Effect.gen(function* () {
-					const stackRoot = join(root, 'stack');
-					writePendingMarkerRaw(stackRoot, [
-						{
-							plugin: 'postgres',
-							role: 'db',
-							targetImageName: 'devstack-build:pg-db',
-							stagedImageTag: 'devstack-snapshot:restore-aaaa',
-							digest: 'sha256:pg-db-digest',
-						},
-					]);
-					// Both source attempts fail AND the target probe fails too
-					// — the canonical transient-daemon-error shape. The scanner
-					// must NOT drop the marker: the entry stays pending so the
-					// next supervise retries instead of silently losing the
-					// in-flight restore.
-					const tagCalls: {
-						readonly src: ImageRef;
-						readonly newTag: string;
-					}[] = [];
-					const runtime = stubRuntime({
-						tagImage: (src, newTag) =>
-							Effect.gen(function* () {
-								tagCalls.push({ src, newTag });
-								return yield* Effect.fail({
-									_tag: 'ContainerRuntimeError',
-									reason: 'daemon-unreachable',
-									detail: 'transient daemon error',
-								} as ContainerRuntimeError);
-							}),
-					});
-					const summary = yield* recoverPendingRestore(stackRoot, runtime).pipe(
-						Effect.provide(NodeFileSystem.layer),
-					);
-					expect(summary.recovered).toBe(0);
-					expect(summary.stillPending).toHaveLength(1);
-					expect(summary.stillPending[0]?.role).toBe('db');
-					expect(summary.markerCleared).toBe(false);
-					expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(true);
-					const rewritten = JSON.parse(
-						readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
-					) as { readonly containers: ReadonlyArray<{ readonly role: string }> };
-					expect(rewritten.containers).toHaveLength(1);
-					expect(rewritten.containers[0]?.role).toBe('db');
-					// All three runtime calls fired: both promote attempts plus
-					// the identity probe (expected content digest → target
-					// name); every one failed transiently.
-					expect(tagCalls).toHaveLength(3);
-					expect(tagCalls[2]).toEqual({
-						src: { digest: 'sha256:pg-db-digest' },
-						newTag: 'devstack-build:pg-db',
-					});
-				}),
-			),
+	it.effect('keeps an entry pending when both source attempts fail and the target is absent', () =>
+		withTempRoot('devstack-recover-pending', (root) =>
+			Effect.gen(function* () {
+				const stackRoot = join(root, 'stack');
+				writePendingMarkerRaw(stackRoot, [
+					{
+						plugin: 'postgres',
+						role: 'db',
+						targetImageName: 'devstack-build:pg-db',
+						stagedImageTag: 'devstack-snapshot:restore-aaaa',
+						digest: 'sha256:pg-db-digest',
+					},
+				]);
+				// Both source attempts fail AND the target probe fails too
+				// — the canonical transient-daemon-error shape. The scanner
+				// must NOT drop the marker: the entry stays pending so the
+				// next supervise retries instead of silently losing the
+				// in-flight restore.
+				const tagCalls: {
+					readonly src: ImageRef;
+					readonly newTag: string;
+				}[] = [];
+				const runtime = stubRuntime({
+					tagImage: (src, newTag) =>
+						Effect.gen(function* () {
+							tagCalls.push({ src, newTag });
+							return yield* Effect.fail({
+								_tag: 'ContainerRuntimeError',
+								reason: 'daemon-unreachable',
+								detail: 'transient daemon error',
+							} as ContainerRuntimeError);
+						}),
+				});
+				const summary = yield* recoverPendingRestore(stackRoot, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+				expect(summary.recovered).toBe(0);
+				expect(summary.stillPending).toHaveLength(1);
+				expect(summary.stillPending[0]?.role).toBe('db');
+				expect(summary.markerCleared).toBe(false);
+				expect(existsSync(join(stackRoot, RESTORE_PENDING_FILE_NAME))).toBe(true);
+				const rewritten = JSON.parse(
+					readFileSync(join(stackRoot, RESTORE_PENDING_FILE_NAME), 'utf8'),
+				) as { readonly containers: ReadonlyArray<{ readonly role: string }> };
+				expect(rewritten.containers).toHaveLength(1);
+				expect(rewritten.containers[0]?.role).toBe('db');
+				// All three runtime calls fired: both promote attempts plus
+				// the identity probe (expected content digest → target
+				// name); every one failed transiently.
+				expect(tagCalls).toHaveLength(3);
+				expect(tagCalls[2]).toEqual({
+					src: { digest: 'sha256:pg-db-digest' },
+					newTag: 'devstack-build:pg-db',
+				});
+			}),
+		),
 	);
 
 	it.effect(
@@ -512,5 +508,4 @@ describe('recoverPendingRestore', () => {
 			}),
 		),
 	);
-
 });

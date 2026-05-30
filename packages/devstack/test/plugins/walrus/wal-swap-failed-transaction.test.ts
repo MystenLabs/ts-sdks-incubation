@@ -57,10 +57,7 @@ vi.mock('@mysten/sui/transactions', () => ({
 	},
 }));
 
-import {
-	swapAccountSuiForWal,
-	type WalSwapSdk,
-} from '../../../src/plugins/walrus/wal-swap.ts';
+import { swapAccountSuiForWal, type WalSwapSdk } from '../../../src/plugins/walrus/wal-swap.ts';
 import type {
 	AccountValue,
 	SignAndExecuteResult,
@@ -100,9 +97,7 @@ const stubAccount = (opts: {
 		body({
 			signTransaction: () => Effect.succeed({ bytes: 'aa', signature: 'sig' }),
 			signAndExecute: () =>
-				opts.signError !== undefined
-					? Effect.fail(opts.signError)
-					: Effect.succeed(opts.result!),
+				opts.signError !== undefined ? Effect.fail(opts.signError) : Effect.succeed(opts.result!),
 		}),
 });
 
