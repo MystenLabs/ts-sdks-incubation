@@ -47,11 +47,15 @@ import type { ResolvedRoute } from '../../src/orchestrators/router/file-provider
 import {
 	RouterService,
 	UpstreamResolverService,
+	layerDockerUpstreamResolver,
 	layerRouterConfigLiteral,
 	layerRouterService,
 } from '../../src/orchestrators/router/service.ts';
 import type { EndpointUrl } from '../../src/orchestrators/router/service.ts';
-import { layerTraefikContainerOpsStub } from '../../src/orchestrators/router/traefik-container.ts';
+import {
+	layerTraefikContainerOpsDocker,
+	layerTraefikContainerOpsStub,
+} from '../../src/orchestrators/router/traefik-container.ts';
 import {
 	MoveCodegenService,
 	MoveSummaryRunnerService,
@@ -171,6 +175,14 @@ export type BootOptions = BootSource & {
 	 *  plugins reach ready. Output is always rooted under this boot's
 	 *  temp runtime dir, never under examples/src. */
 	readonly runCodegen?: boolean;
+	/** Opt-in: wire the REAL Traefik container ops + docker upstream resolver
+	 *  (exactly like `devstack up`) instead of the fake host-loopback resolver.
+	 *  The fake resolver returns 127.0.0.1, which only reaches host-published
+	 *  ports (fine for the sui RPC) — but NOT the container-to-container routed
+	 *  endpoints like the Walrus storage-node HTTP API the SDK PUTs slivers to.
+	 *  Heavier (boots a real Traefik); set it only when a test drives routed
+	 *  container traffic. */
+	readonly useRealRouter?: boolean;
 };
 
 export interface BootRoutableDelivery {
@@ -273,19 +285,31 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		resolveContainer: (target) => Effect.succeed({ host: '127.0.0.1', port: target.containerPort }),
 		resolveHostLoopback: (target) => Effect.succeed({ host: '127.0.0.1', port: target.port }),
 	});
+	const routerConfig = layerRouterConfigLiteral({
+		disabled: false,
+		profile: routerProfile,
+		image: 'traefik:v3.5',
+	});
+	// `useRealRouter` wires the same real Traefik + docker upstream resolver as
+	// `devstack up`, so container-to-container routed endpoints (e.g. the Walrus
+	// storage-node API the SDK writes slivers to) actually route.
+	// `withSpawnerAdapter` supplies the DockerHost + DockerSpawner they need.
 	const withRouter = layerRouterService.pipe(
 		Layer.provideMerge(
-			Layer.mergeAll(
-				platformBase,
-				layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
-				layerTraefikContainerOpsStub,
-				fakeRouterUpstreams,
-				layerRouterConfigLiteral({
-					disabled: false,
-					profile: routerProfile,
-					image: 'traefik:v3.5',
-				}),
-			),
+			opts.useRealRouter === true
+				? Layer.mergeAll(
+						layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
+						layerTraefikContainerOpsDocker,
+						layerDockerUpstreamResolver(routerProfile),
+						routerConfig,
+					).pipe(Layer.provideMerge(withSpawnerAdapter))
+				: Layer.mergeAll(
+						platformBase,
+						layerEntrypointRegistry(BUILT_IN_ENTRYPOINTS),
+						layerTraefikContainerOpsStub,
+						fakeRouterUpstreams,
+						routerConfig,
+					),
 		),
 	);
 	const stubMoveLayers = Layer.mergeAll(
