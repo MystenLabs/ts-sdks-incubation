@@ -108,15 +108,67 @@ export const makeWalrusClient = (
 		storageNodeUrlScheme: walrus.mode === 'local' ? 'http' : 'https',
 	});
 
+/** writeBlob, retried. A blob write fans slivers out to every storage node;
+ *  immediately after a snapshot pauses+commits+unpauses those containers (the
+ *  matrix writes S2 right after `snapshot.capture`), the first write can fail
+ *  with "too many failures while writing blob to nodes" while the nodes
+ *  re-settle. Retry across that window — real walrus clients retry node writes
+ *  too. Returns the content-addressed blob id. */
+export const writeBlobWithRetry = async (
+	walrusClient: WalrusClient,
+	args: {
+		readonly blob: Uint8Array;
+		readonly signer: Ed25519Keypair;
+		readonly epochs: number;
+		readonly deletable: boolean;
+	},
+): Promise<{ readonly blobId: string }> => {
+	let lastErr: unknown;
+	for (let attempt = 0; attempt < 5; attempt++) {
+		try {
+			const written = await walrusClient.writeBlob(args);
+			return { blobId: written.blobId };
+		} catch (err) {
+			lastErr = err;
+			if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 3_000));
+		}
+	}
+	throw lastErr;
+};
+
+/** One created/mutated object from a transaction's effects: its id plus
+ *  (when `objectTypes` was requested) its fully-qualified Move type. Lets a
+ *  probe resolve a SHARED object's id — which `listOwnedObjects` can't see —
+ *  straight from the creating tx (e.g. the vault `File`). */
+export interface ExecutedChange {
+	readonly objectId: string;
+	readonly objectType: string | undefined;
+}
+
+/** First changed object whose Move type equals `type` (e.g.
+ *  `${vaultPackageId}::vault::File`). Used to recover a shared object's id
+ *  from the tx that created it. */
+export const createdObjectOfType = (
+	changes: ReadonlyArray<ExecutedChange>,
+	type: string,
+): string | undefined => changes.find((c) => c.objectType === type)?.objectId;
+
 /** Sign a freshly-built transaction with the fresh keypair and execute it
  *  through the harness's grpc client, waiting for finality. Mirrors the
  *  account plugin's execute path (executeTransaction + waitForTransaction)
- *  but with a real Signer instead of the lease-brokered closures. */
+ *  but with a real Signer instead of the lease-brokered closures. Returns the
+ *  flat `changes` array (id + type per changed object), projected from the
+ *  same `effects.changedObjects` / `objectTypes` envelope the substrate's
+ *  `executeSuiTx` reads — so callers can find a created shared object by type. */
 export const signAndExecuteAs = async (
 	client: ClientWithCoreApi,
 	keypair: Ed25519Keypair,
 	build: (tx: Transaction) => void,
-): Promise<{ readonly digest: string | undefined; readonly raw: unknown }> => {
+): Promise<{
+	readonly digest: string | undefined;
+	readonly raw: unknown;
+	readonly changes: ReadonlyArray<ExecutedChange>;
+}> => {
 	const tx = new Transaction();
 	tx.setSender(keypair.toSuiAddress());
 	build(tx);
@@ -125,13 +177,28 @@ export const signAndExecuteAs = async (
 	const raw = await client.core.executeTransaction({
 		transaction: bytes,
 		signatures: [signature],
-		include: { effects: true },
+		include: { effects: true, objectTypes: true },
 	});
 	const digest = extractExecuteDigest(raw);
 	if (digest !== undefined) {
 		await client.core.waitForTransaction({ digest });
 	}
-	return { digest, raw };
+	const env = raw as {
+		readonly Transaction?: {
+			readonly effects?: {
+				readonly changedObjects?: ReadonlyArray<{ readonly objectId?: string }>;
+			};
+			readonly objectTypes?: Readonly<Record<string, string>>;
+		};
+	};
+	const types = env.Transaction?.objectTypes ?? {};
+	const changes: ExecutedChange[] = [];
+	for (const ch of env.Transaction?.effects?.changedObjects ?? []) {
+		if (typeof ch.objectId === 'string') {
+			changes.push({ objectId: ch.objectId, objectType: types[ch.objectId] });
+		}
+	}
+	return { digest, raw, changes };
 };
 
 /** Total SUI balance for an owner (best-effort parse of the nested gRPC
@@ -203,6 +270,15 @@ export const makeEnv = (
 	opts: { readonly fund: boolean },
 ): Effect.Effect<ProbeEnv, unknown> =>
 	Effect.gen(function* () {
+		// Guard the resolved-value lookups: a restore that fails to bring a
+		// subsystem back up surfaces here as an undefined resolved value
+		// (`suiOf(ctx)` → reading `.sdk` of undefined). Dump the keys the boot
+		// DID resolve so the failure names what's missing instead of a cryptic
+		// deref crash four frames deep.
+		if (suiOf(ctx) === undefined) {
+			const keys = [...ctx.resolvedValues.keys()].join(', ');
+			return yield* Effect.die(`makeEnv: no resolved 'sui#N' value; boot resolved: [${keys}]`);
+		}
 		const suiClient = suiClientOf(ctx);
 		const address = keypair.toSuiAddress();
 		if (opts.fund) {
@@ -220,8 +296,13 @@ export const makeEnv = (
 			seal: sealOf(ctx),
 			vaultPackageId: vaultPackageIdOf(ctx),
 		};
+		const deepbook = findResolved(ctx, /^deepbook[:/]/) as
+			| { readonly packageId?: string }
+			| undefined;
 		console.log(
-			`[snapshot-matrix] env actor=${address} walCoinType=${env.walrus.walCoinType} funded=${opts.fund}`,
+			`[snapshot-matrix] ids actor=${address} walCoinType=${env.walrus.walCoinType} ` +
+				`sealObjectId=${env.seal.objectId} vaultPkg=${env.vaultPackageId} ` +
+				`deepbookPkg=${deepbook?.packageId} funded=${opts.fund}`,
 		);
 		return env;
 	});

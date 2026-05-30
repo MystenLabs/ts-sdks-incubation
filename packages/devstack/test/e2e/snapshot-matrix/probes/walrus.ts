@@ -12,7 +12,7 @@
 // directly to each `walrus-node-i` vhost, which only routes through the real
 // Traefik, not the harness's host-loopback fake resolver.
 
-import { makeWalrusClient, type ProbeEnv } from '../clients.ts';
+import { makeWalrusClient, writeBlobWithRetry, type ProbeEnv } from '../clients.ts';
 import type { Probe } from '../probe.ts';
 
 interface WalrusHandle {
@@ -28,7 +28,7 @@ export const walrusProbe: Probe<WalrusHandle> = {
 		const payload = new TextEncoder().encode(
 			`snapshot-matrix walrus ${label} ${env.address} ${'z'.repeat(48)}`,
 		);
-		const written = await walrusClient.writeBlob({
+		const written = await writeBlobWithRetry(walrusClient, {
 			blob: payload,
 			signer: env.keypair,
 			epochs: 5,
@@ -39,13 +39,15 @@ export const walrusProbe: Probe<WalrusHandle> = {
 	async exists(env: ProbeEnv, handle: WalrusHandle): Promise<boolean> {
 		const walrusClient = makeWalrusClient(env.suiClient, env.walrus);
 		// readBlob can briefly race a just-certified write, so retry a few times
-		// before concluding the blob is absent.
+		// before concluding the blob is absent. A rolled-back blob (S2 after a
+		// restore) also lands here — readBlob throws and we return false, which
+		// is the correct "did not survive" answer.
 		for (let attempt = 0; attempt < 4; attempt++) {
 			try {
 				const read = await walrusClient.readBlob({ blobId: handle.blobId });
 				if (read.length > 0) return true;
 			} catch {
-				// transient — fall through to retry
+				// transient, or a genuinely-absent blob — fall through to retry.
 			}
 			if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 2_000));
 		}
