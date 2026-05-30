@@ -15,8 +15,9 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createYoga } from 'graphql-yoga';
+import { createYoga, type CORSOptions } from 'graphql-yoga';
 import { dashboardSchema, type DashboardContext } from './schema.ts';
+import { checkOrigin, type OriginPolicy } from './origin-policy.ts';
 import type { HttpRequestListener } from '../../substrate/runtime/scoped-http-server.ts';
 
 export interface DashboardListenerOptions {
@@ -24,6 +25,12 @@ export interface DashboardListenerOptions {
 	 *  The dashboard is single-tenant, so this is constant for the server's
 	 *  lifetime and handed to yoga as a static `context` factory. */
 	readonly context: DashboardContext;
+	/** Stack-scoped origin allowlist (see `origin-policy.ts`). Gates the CORS
+	 *  reflection on `/graphql`: an Origin in the allowlist is echoed back; a
+	 *  missing Origin (server-side / readiness probe) gets a normal response
+	 *  with no CORS headers; any other Origin is denied (no `Access-Control-
+	 *  Allow-Origin` → the browser blocks the cross-origin read/write). */
+	readonly originPolicy: OriginPolicy;
 	/** GraphQL path. Defaults to `/graphql`. */
 	readonly graphqlEndpoint?: string;
 	/** Override the bundled UI assets dir (mainly for tests). Defaults to the
@@ -95,45 +102,36 @@ document.getElementById('restart').onclick = async () => {
 </script>
 </body></html>`;
 
-/** True when `origin` is a loopback/localhost origin (any scheme, any port):
- *  hostname is exactly `localhost`, `127.0.0.1`, `[::1]`, or ends with
- *  `.localhost`. Used to gate CORS — see `loopbackCorsOptions`. */
-const isLoopbackOrigin = (origin: string): boolean => {
-	let host: string;
-	try {
-		// `URL.hostname` normalizes IPv6 (`[::1]` → `::1`) and strips the port.
-		host = new URL(origin).hostname.toLowerCase();
-	} catch {
-		return false;
-	}
-	return (
-		host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')
-	);
-};
-
-/** CORS policy for the control plane.
+/** CORS policy for the control plane, driven by the stack-scoped origin
+ *  allowlist (`origin-policy.ts`).
  *
  *  The GraphQL schema exposes DESTRUCTIVE mutations (wipe/prune/shutdown/
  *  restart/restoreSnapshot/deleteSnapshot/mint). Since JSON POSTs are
  *  preflighted, a correct CORS policy is a real defense: it stops any
- *  internet site the user happens to be visiting from driving a cross-origin
- *  request against the loopback dashboard.
+ *  site the user happens to be visiting — INCLUDING a sibling devstack
+ *  stack on another `*.localhost` host — from driving a cross-origin
+ *  request against this stack's dashboard.
  *
- *  We reflect the request `Origin` back ONLY when it is a loopback/localhost
- *  origin — that keeps the same-origin bundled SPA AND the Vite dev origin
- *  (`*.localhost` / `localhost:<port>`) working, while denying every other
- *  origin (no `Access-Control-Allow-Origin` header → the browser blocks the
- *  cross-origin read/write). `credentials` stays `false`. */
-const loopbackCorsOptions = (
-	request: Request,
-): { origin: string[]; credentials: boolean } | false => {
-	const origin = request.headers.get('origin');
-	// No Origin header (same-origin / non-CORS request) → no CORS headers
-	// needed. A non-loopback Origin is denied the same way.
-	if (origin === null || !isLoopbackOrigin(origin)) return false;
-	// Reflect this exact origin (single-element array → echoed verbatim).
-	return { origin: [origin], credentials: false };
-};
+ *  We reflect the request `Origin` back ONLY when it is in THIS stack's
+ *  allowlist (the dashboard's own router-fronted origin + direct loopback
+ *  origins + caller-supplied `allowedOrigins`). The same-origin bundled SPA
+ *  is served from the routed origin, so its `Origin` is in the allowlist and
+ *  works. Every other origin — including a bare `*.localhost` from another
+ *  stack — is denied (no `Access-Control-Allow-Origin` → the browser blocks
+ *  the cross-origin read/write). A missing Origin (server-side tooling, the
+ *  readiness probe) yields no CORS headers but a normal response.
+ *  `credentials` stays `false`. */
+const corsOptionsFor =
+	(policy: OriginPolicy) =>
+	(request: Request): CORSOptions => {
+		const origin = request.headers.get('origin');
+		// No Origin (same-origin / non-CORS request) or a forbidden Origin →
+		// no CORS headers. `false` denies; CORS never alters the status, so a
+		// no-Origin server-side request still gets its normal 200 response.
+		if (checkOrigin(policy, origin) !== 'ok') return false;
+		// Reflect this exact origin (single-element array → echoed verbatim).
+		return { origin: [origin as string], credentials: false };
+	};
 
 /** Strip query/hash and decode a request path into a relative file path. */
 const requestPathname = (url: string): string => {
@@ -196,11 +194,12 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 		graphqlEndpoint,
 		graphiql: true,
 		landingPage: false,
-		// Loopback-origin allowlist (see `loopbackCorsOptions`): reflect only
-		// localhost/127.0.0.1/[::1]/*.localhost origins so the bundled SPA and
-		// the Vite dev origin work while arbitrary internet sites are denied
-		// cross-origin access to the destructive control-plane mutations.
-		cors: loopbackCorsOptions,
+		// Stack-scoped origin allowlist (see `corsOptionsFor` / `origin-policy.ts`):
+		// reflect only origins in THIS stack's allowlist so the same-origin bundled
+		// SPA works while arbitrary sites — including a sibling stack on another
+		// `*.localhost` host — are denied cross-origin access to the destructive
+		// control-plane mutations.
+		cors: corsOptionsFor(opts.originPolicy),
 	});
 	const fallbackPage = testPage(graphqlEndpoint);
 

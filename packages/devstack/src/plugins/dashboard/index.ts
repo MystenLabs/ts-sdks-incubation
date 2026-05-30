@@ -17,16 +17,32 @@ import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ControlPlaneService } from '../../substrate/runtime/control-plane/service.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
+import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
 import { buildDashboardDomain } from './domain.ts';
-import { makeDashboardRoutable } from './routable.ts';
+import { resolveOriginPolicy } from './origin-policy.ts';
+import {
+	DASHBOARD_ENTRYPOINT_PORT,
+	DASHBOARD_ROUTE_ROLE,
+	makeDashboardRoutable,
+} from './routable.ts';
 import { makeDashboardListener } from './server.ts';
 
 export interface DashboardOptions {
 	/** Preferred loopback port; the broker forward-scans if it's busy. */
 	readonly port?: number;
-	/** Bind address for the loopback listener. Defaults to `127.0.0.1`. */
+	/** NIC the HTTP server binds. Defaults to `'0.0.0.0'` because the router
+	 *  runs in Docker and must reach this host process through the host-gateway
+	 *  address on native Linux (a `127.0.0.1`-only listener is unreachable from
+	 *  the host-gateway IP). The public dashboard URL stays router-fronted and
+	 *  stack-scoped. */
 	readonly bindAddress?: string;
+	/** Extra origins merged on top of the dashboard's own router-fronted origin
+	 *  for this stack (and the direct loopback origins). Useful for headless
+	 *  test runners and custom dev hosts. The dashboard does NOT auto-allowlist
+	 *  a bare `*.localhost` form — that is not stack-scoped, so a sibling stack
+	 *  could drive the destructive control-plane mutations cross-origin. */
+	readonly allowedOrigins?: ReadonlyArray<string>;
 	// Note on log retention: the queryable cross-service log store the
 	// dashboard reads is process-scoped and owned by the SUPERVISOR (not this
 	// plugin), so its capacity is configured there. Tune it with the
@@ -44,7 +60,13 @@ export interface DashboardValue {
 }
 
 const dashboardResource = resource<'dashboard', DashboardValue>('dashboard');
-const DASHBOARD_DEFAULT_BIND = '127.0.0.1';
+// `0.0.0.0`: the router runs in Docker, so on native Linux it reaches this
+// host process through the Docker host-gateway address instead of host
+// loopback — a `127.0.0.1`-only listener is unreachable from that IP, which
+// produced a 502 from Traefik and the `RouteReadinessProbeFailed` WARN. The
+// published dashboard URL remains stack-scoped through the router. Mirrors
+// `WALLET_DEFAULT_BIND_ADDRESS`.
+const DASHBOARD_DEFAULT_BIND = '0.0.0.0';
 
 /** Construct the devstack dashboard plugin. */
 export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
@@ -83,10 +105,43 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 					...(opts.port === undefined ? {} : { preferredPort: opts.port }),
 				});
 
+				// Derive the dashboard's OWN router-fronted origin for this stack.
+				// The bundled SPA is served same-origin from this hostname, so the
+				// browser's `Origin` on `/graphql` is exactly this value — it MUST
+				// be in the allowlist. Host = `<role:api>.<app>.<stack>.localhost`
+				// (per `routedHostname`), port = the router entrypoint port (9810),
+				// which is the port the browser actually uses, NOT the broker
+				// loopback port. Router-derivation failure → `null` (allowlist still
+				// includes the direct loopback + caller origins).
+				const routedDashboardOrigin = yield* routedHostname(identity, DASHBOARD_ROUTE_ROLE).pipe(
+					Effect.map((hostname) =>
+						renderUrl({ protocol: 'http', hostname, port: DASHBOARD_ENTRYPOINT_PORT }),
+					),
+					Effect.orElseSucceed(() => null),
+				);
+
+				// Direct loopback origins: when the dashboard is reached on the raw
+				// broker port (host-loopback fallback / direct tooling) the SPA's
+				// same-origin `Origin` is the loopback form. Both 127.0.0.1 and
+				// localhost name the same listener; allow both for this stack's port.
+				const directOrigins = [
+					`http://127.0.0.1:${allocated.port}`,
+					`http://localhost:${allocated.port}`,
+				];
+
+				const originPolicy = yield* resolveOriginPolicy({
+					app: identity.app,
+					stack: identity.stack,
+					routedDashboardOrigin,
+					directOrigins,
+					extraOrigins: opts.allowedOrigins ?? [],
+				});
+
 				const server = yield* listenScopedHttpServer({
 					bindAddress,
 					port: allocated.port,
 					listener: makeDashboardListener({
+						originPolicy,
 						context: {
 							state: control.state,
 							publishCommand: control.publishCommand,

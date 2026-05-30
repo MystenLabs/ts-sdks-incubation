@@ -10,6 +10,13 @@ import { emptyControlPlaneDomain } from '../../substrate/runtime/control-plane/d
 import { emptyDashboardDomain } from './domain.ts';
 import type { EngineCommand } from '../../substrate/events.ts';
 import { makeDashboardListener } from './server.ts';
+import type { OriginPolicy } from './origin-policy.ts';
+
+// Stack-scoped allowlist standing in for what `resolveOriginPolicy` produces:
+// this stack's own routed dashboard origin. A DIFFERENT `*.localhost` origin
+// (a sibling stack) is NOT in the set, so it must be denied.
+const ALLOWED_ORIGIN = 'http://api.dashboard-demo.localhost:9810';
+const TEST_ORIGIN_POLICY: OriginPolicy = { allowed: new Set([ALLOWED_ORIGIN]) };
 
 // Exercises the full API + server path the way it runs in production:
 // Pothos schema → graphql-yoga → node:http. Executing through HTTP (rather
@@ -39,6 +46,7 @@ beforeAll(async () => {
 	server = createServer(
 		makeDashboardListener({
 			assetsDir,
+			originPolicy: TEST_ORIGIN_POLICY,
 			context: {
 				state,
 				publishCommand: (command) =>
@@ -114,16 +122,28 @@ describe('dashboard http server (Pothos schema + yoga)', () => {
 		});
 	});
 
-	it('reflects CORS for a loopback origin, denies an internet origin', async () => {
-		// Loopback origin (Vite dev / *.localhost) → reflected.
+	it('reflects CORS for the stack-scoped routed origin, denies other origins', async () => {
+		// This stack's own routed dashboard origin (same-origin SPA) → reflected.
 		const allowed = await fetch(`${baseUrl}/graphql`, {
 			method: 'OPTIONS',
 			headers: {
-				origin: 'http://app.localhost:5173',
+				origin: ALLOWED_ORIGIN,
 				'access-control-request-method': 'POST',
 			},
 		});
-		expect(allowed.headers.get('access-control-allow-origin')).toBe('http://app.localhost:5173');
+		expect(allowed.headers.get('access-control-allow-origin')).toBe(ALLOWED_ORIGIN);
+
+		// A DIFFERENT `*.localhost` origin (a sibling stack) → denied. The old
+		// loopback policy would have reflected this; the stack-scoped policy
+		// closes that cross-stack hole.
+		const siblingStack = await fetch(`${baseUrl}/graphql`, {
+			method: 'OPTIONS',
+			headers: {
+				origin: 'http://api.other-stack.localhost:9810',
+				'access-control-request-method': 'POST',
+			},
+		});
+		expect(siblingStack.headers.get('access-control-allow-origin')).toBeNull();
 
 		// Arbitrary internet origin → no allow-origin header (denied).
 		const denied = await fetch(`${baseUrl}/graphql`, {
@@ -134,6 +154,21 @@ describe('dashboard http server (Pothos schema + yoga)', () => {
 			},
 		});
 		expect(denied.headers.get('access-control-allow-origin')).toBeNull();
+	});
+
+	it('answers a no-Origin request normally (readiness-probe / curl path)', async () => {
+		// A request with NO Origin header is not a cross-origin browser request;
+		// CORS governs only the ACAO header, never the status. The readiness
+		// probe / curl must still get a normal 200 + no ACAO header.
+		const res = await fetch(`${baseUrl}/graphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: '{ ping }' }),
+		});
+		expect(res.status).toBe(200);
+		expect(res.headers.get('access-control-allow-origin')).toBeNull();
+		const body = (await res.json()) as { data?: { ping?: string } };
+		expect(body.data?.ping).toBe('pong');
 	});
 
 	it('reserves /graphql even when the path is percent-encoded', async () => {
@@ -185,6 +220,7 @@ describe('dashboard http server (UI bundle absent → API test page fallback)', 
 		fbServer = createServer(
 			makeDashboardListener({
 				assetsDir: emptyDir,
+				originPolicy: TEST_ORIGIN_POLICY,
 				context: {
 					state,
 					publishCommand: () => Effect.void,
