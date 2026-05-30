@@ -43,7 +43,7 @@ const runtimeImportSmoke = [
 ].join('\n');
 
 const removedSubpathSmoke = `
-for (const subpath of ['browser', 'browser/setup', 'contracts', 'substrate', 'vite']) {
+for (const subpath of ['browser', 'browser/setup', 'contracts', 'substrate']) {
 \ttry {
 \t\tawait import(\`@mysten-incubation/devstack/\${subpath}\`);
 \t} catch (error) {
