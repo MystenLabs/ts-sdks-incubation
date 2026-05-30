@@ -36,9 +36,9 @@ import {
 } from '../../ui/index.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-/** Health states for the browser-direct key-server probe. A reachable server
- *  (any HTTP response) is `healthy`; only a connection/CORS failure degrades to
- *  `unreachable`. */
+/** Health states for the browser-direct key-server probe. A 2xx on `/health`
+ *  (or an opaque ping that resolves when CORS blocks the read) is `healthy`; a
+ *  non-2xx or a connection/CORS failure degrades to `unreachable`. */
 type ProbeState = 'probing' | 'healthy' | 'unreachable';
 
 interface ProbeResult {
@@ -50,25 +50,31 @@ interface ProbeResult {
 /**
  * Probe the key-server directly from the browser. We hit the same `/health`
  * route devstack's own readiness probe uses (returns `{name, version,
- * status: "up"}` on a healthy daemon).
+ * status: "up"}` with a 2xx on a healthy daemon).
  *
- * Healthy = the socket is up and serving HTTP. A 2xx/3xx on `/health` is the
- * clean case, but ANY HTTP response — including a 4xx — proves the server is
- * listening and handling requests (the daemon's `/v1/*` API replies 400 to a
- * bare GET, which still means it's up). A CORS-opaque response that resolves
- * likewise means the socket is alive. Only a network/CORS *rejection* (the
- * fetch promise throwing) means we genuinely couldn't reach it.
+ * Healthy = a 2xx on `/health`. A non-2xx (404/502/503) is NOT healthy: a real
+ * daemon answers `/health` with 2xx, so a non-2xx means a wrong URL or an
+ * intermediary sitting in front of a down daemon — painting that green would
+ * hide an outage. We only fall back to the opaque-reachability nuance when the
+ * fetch itself *throws* (CORS-opaque or network): a no-cors ping that resolves
+ * proves the socket is alive even though the browser can't read the status —
+ * the in-process key server may still serve Seal in that case. A network/CORS
+ * rejection on both means we genuinely couldn't reach it.
  */
 const probeKeyServer = async (baseUrl: string): Promise<ProbeResult> => {
 	const root = baseUrl.replace(/\/+$/, '');
 	const url = `${root}/health`;
 	try {
 		const res = await fetch(url, { method: 'GET', mode: 'cors' });
-		// Any HTTP status means the server is listening and serving — healthy.
-		return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
+		if (res.ok) {
+			return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
+		}
+		// Non-2xx on /health — a healthy daemon returns 2xx here, so this is a
+		// wrong URL or a proxy in front of a down daemon. Don't paint it green.
+		return { state: 'unreachable', detail: `HTTP ${res.status} on ${url} (expected 2xx)` };
 	} catch (err) {
-		// CORS-opaque or network failure. Try a no-cors reachability ping: if it
-		// resolves, the socket is alive even though we can't read the body.
+		// CORS-opaque or network failure. A no-cors ping that resolves proves the
+		// socket is alive even though we can't read the status/body.
 		try {
 			await fetch(url, { method: 'GET', mode: 'no-cors' });
 			return { state: 'healthy', detail: `reachable (opaque) · ${url}` };

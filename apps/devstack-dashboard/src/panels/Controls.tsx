@@ -382,6 +382,17 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 		return () => clearTimeout(timer);
 	}, [capture]);
 
+	// Live elapsed ticker. The capture/restore banners read `Date.now() -
+	// startedAt`, which otherwise only recomputes when the component re-renders
+	// for another reason (the ~15s catalog poll) — so the readout jumps 2s→17s.
+	// A 1s tick while either is in flight makes the elapsed time count live.
+	const [, setTick] = useState(0);
+	useEffect(() => {
+		if (capture === null && restoring === null) return;
+		const id = setInterval(() => setTick((t) => t + 1), 1000);
+		return () => clearInterval(id);
+	}, [capture, restoring]);
+
 	// Snapshot catalog table columns.
 	const snapColumns: ReadonlyArray<Column<SnapshotEntry>> = [
 		{

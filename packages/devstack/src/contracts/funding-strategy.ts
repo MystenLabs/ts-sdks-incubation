@@ -41,7 +41,13 @@ import type { Effect } from 'effect';
 export interface AccountFundingRequest<A = unknown> {
 	readonly address: string;
 	readonly amount: bigint;
-	readonly account: A;
+	/** Resolved handle for the funded account, when one is available. Present
+	 *  for the boot-time funding pass (the funded address IS a stack account) and
+	 *  required by account-spending strategies (`requiresRecipientAccount`), which
+	 *  swap the recipient's own SUI. Mint-style strategies that transfer to a
+	 *  passive recipient ignore it, so it is optional — a caller funding an
+	 *  arbitrary `0x…` recipient (e.g. the dashboard) may leave it undefined. */
+	readonly account?: A;
 }
 
 /** Strategy interface a contributing plugin satisfies to participate in
@@ -54,4 +60,13 @@ export interface AccountFundingStrategy<E = unknown, A = unknown> {
 	 *  The dispatcher must not acquire the same non-reentrant
 	 *  per-address lease outside the strategy. */
 	readonly usesAccountSigner?: boolean;
+	/** True when the strategy spends the *recipient's own* funds (an
+	 *  account-owned swap — WAL/DEEP buy the coin with the recipient's SUI), so
+	 *  the recipient MUST be a resolved account with a signer (`req.account`).
+	 *  Distinct from `usesAccountSigner`: a mint-style strategy signs with the
+	 *  publisher's account (so `usesAccountSigner` is true) yet transfers to a
+	 *  *passive* recipient that need not be a stack account, leaving this false.
+	 *  Callers (e.g. the dashboard fund action) gate the "recipient must be an
+	 *  account" check on this flag, not on `usesAccountSigner`. */
+	readonly requiresRecipientAccount?: boolean;
 }

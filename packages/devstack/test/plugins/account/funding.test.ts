@@ -385,7 +385,8 @@ describe('account cross-cutting funding dispatch', () => {
 							Effect.gen(function* () {
 								const holders = yield* broker.holders();
 								expect(holders.size).toBe(0);
-								yield* req.account.withTransactionSigner(() =>
+								// The boot funding dispatcher always supplies the account handle.
+								yield* req.account!.withTransactionSigner(() =>
 									Effect.sync(() => {
 										signerBodyRan = true;
 									}),

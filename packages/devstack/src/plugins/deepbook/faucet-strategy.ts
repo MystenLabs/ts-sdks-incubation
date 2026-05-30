@@ -63,9 +63,12 @@ const decimalToRaw = (
 const applyInputBuffer = (raw: bigint, bufferBps: bigint): bigint =>
 	(raw * (10_000n + bufferBps) + 9_999n) / 10_000n;
 
-const buildDeepbookClient = (req: AccountFundingRequest, suiSdk: SuiSdkShim): DeepBookClient =>
+const buildDeepbookClient = (
+	account: NonNullable<AccountFundingRequest['account']>,
+	suiSdk: SuiSdkShim,
+): DeepBookClient =>
 	new DeepBookClient({
-		address: req.account.address,
+		address: account.address,
 		client: suiSdk.client as DeepBookCompatibleClient,
 		network: 'testnet',
 	});
@@ -74,11 +77,25 @@ export const makeDeepbookDeepFundingStrategy = (
 	opts: DeepbookDeepFundingStrategyOptions,
 ): DeepbookDeepFundingStrategy => ({
 	usesAccountSigner: true,
+	// The swap buys DEEP with the recipient account's own SUI, so the recipient
+	// must be a resolved account with a signer — funding an arbitrary 0x address
+	// is rejected by the dispatcher/dashboard on this flag.
+	requiresRecipientAccount: true,
 	request: (req) =>
 		Effect.gen(function* () {
 			if (req.amount <= 0n) return;
 
-			const deepBook = buildDeepbookClient(req, opts.suiSdk);
+			const account = req.account;
+			if (account === undefined) {
+				return yield* Effect.fail(
+					deepbookPluginError(
+						'fund-deep',
+						'DeepBook DEEP funding spends the recipient account’s own SUI, so it requires a resolved account signer.',
+					),
+				);
+			}
+
+			const deepBook = buildDeepbookClient(account, opts.suiSdk);
 			const quote = yield* Effect.tryPromise({
 				try: () => deepBook.getQuoteQuantityIn(DEEPBOOK_DEEP_POOL_KEY, req.amount, false),
 				catch: (cause): DeepbookPluginError =>
@@ -115,13 +132,13 @@ export const makeDeepbookDeepFundingStrategy = (
 			const deepAmountRaw = yield* decimalToRaw(quote.deepRequired, DEEP_SCALAR, 'ceil');
 
 			yield* signAndDispatch({
-				signerSource: req.account,
+				signerSource: account,
 				buildTxBytes: () =>
 					Effect.gen(function* () {
 						const tx = yield* Effect.try({
 							try: () => {
 								const transaction = new Transaction();
-								transaction.setSender(req.account.address);
+								transaction.setSender(account.address);
 								const [baseCoin, quoteCoin, deepCoin] = transaction.add(
 									deepBook.deepBook.swapExactQuantity({
 										poolKey: DEEPBOOK_DEEP_POOL_KEY,
@@ -159,7 +176,7 @@ export const makeDeepbookDeepFundingStrategy = (
 				mapSignError: (cause): DeepbookPluginError =>
 					deepbookPluginError(
 						'fund-deep',
-						`DeepBook DEEP funding transaction failed for account '${req.account.name}'.`,
+						`DeepBook DEEP funding transaction failed for account '${account.name}'.`,
 						{ cause },
 					),
 				onFailed: (failure) =>
@@ -167,7 +184,7 @@ export const makeDeepbookDeepFundingStrategy = (
 						deepbookPluginError(
 							'fund-deep',
 							`DeepBook DEEP funding transaction failed on-chain ` +
-								`for account '${req.account.name}' (address=${req.account.address}) ` +
+								`for account '${account.name}' (address=${account.address}) ` +
 								formatExecutedFailure(failure),
 						),
 					),
@@ -176,8 +193,8 @@ export const makeDeepbookDeepFundingStrategy = (
 		}).pipe(
 			Effect.withSpan('devstack.plugin.deepbook.fundDeep', {
 				attributes: {
-					[AccountSpans.name]: req.account.name,
-					[AccountSpans.address]: req.account.address,
+					[AccountSpans.name]: req.account?.name ?? '(unresolved)',
+					[AccountSpans.address]: req.account?.address ?? req.address,
 					[DeepbookSpans.fundCoin]: DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
 					[DeepbookSpans.fundAmount]: req.amount.toString(),
 				},

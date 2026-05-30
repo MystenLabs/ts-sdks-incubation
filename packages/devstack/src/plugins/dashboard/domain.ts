@@ -730,20 +730,27 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			});
 		}
 
-		// WAL/DEEP: a coin is fundable iff a `coinType:<fullCoinType>` strategy
-		// is actually registered (the walrus/deepbook plugin contributed one).
-		// Derive the display symbol from the coin type's module path
-		// (`::wal::WAL` → WAL, `::deep::DEEP` → DEEP) so we stay name-blind on
-		// the coin VALUE while still labeling the pill.
+		// A coin is fundable iff a `coinType:<fullCoinType>` strategy is actually
+		// registered (the walrus/deepbook/coin plugin contributed one). Derive the
+		// display symbol from the coin type's module path (`::wal::WAL` → WAL,
+		// `::deep::DEEP` → DEEP) so we stay name-blind on the coin VALUE while
+		// still labeling the pill. `requiresAccountSigner` is read from the
+		// strategy's own `requiresRecipientAccount` flag — NOT assumed true for
+		// every coin: WAL/DEEP swaps spend the recipient's SUI (true), but a
+		// managed-coin MINT strategy transfers to a passive recipient (false), so
+		// it can fund any 0x address.
 		for (const key of keys) {
 			if (!key.startsWith('coinType:')) continue;
 			const coinType = key.slice('coinType:'.length);
 			if (coinType === SUI_FULL_COIN_TYPE) continue;
+			const strategy = yield* strategyRegistry
+				.get<typeof key, AccountFundingStrategy<unknown, AccountValue>>(key)
+				.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
 			out.push({
 				symbol: coinSymbolFromType(coinType),
 				coinType,
 				honorsAmount: true,
-				requiresAccountSigner: true,
+				requiresAccountSigner: strategy?.requiresRecipientAccount ?? false,
 			});
 		}
 		return out;
@@ -846,13 +853,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				} satisfies DashboardFundResult;
 			}
 
-			// The swap spends the recipient account's own SUI, so the recipient
-			// MUST be a resolved account in the stack. Match by address.
+			// Match the recipient to a resolved account, if one holds this address.
 			const values = yield* control.resolvedValues;
 			const account = matching(values, (id) => id.startsWith('account/'))
 				.map(({ value }) => value as AccountShape)
 				.find((v) => str(v.address) === recipient);
-			if (account === undefined) {
+
+			// Account-spending strategies (WAL/DEEP) swap the recipient's OWN SUI,
+			// so the recipient must BE a resolved account with a signer. Mint-style
+			// strategies (managed coins) transfer to a passive recipient, so any 0x
+			// address is fine — gate the rejection on the strategy's flag, not on
+			// the coin being non-SUI.
+			if (strategy.requiresRecipientAccount === true && account === undefined) {
 				return {
 					ok: false,
 					detail:
@@ -863,7 +875,11 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 			}
 
 			return yield* strategy
-				.request({ address: recipient, amount, account: account as unknown as AccountValue })
+				.request({
+					address: recipient,
+					amount,
+					...(account === undefined ? {} : { account: account as unknown as AccountValue }),
+				})
 				.pipe(
 					Effect.map(
 						(): DashboardFundResult => ({

@@ -75,8 +75,15 @@ export const isoToMillis = (iso: string | null | undefined): number | null => {
 //   - `kind.__typename`       — the `TransactionKind` union member, e.g.
 //                               `ProgrammableTransaction`, `GenesisTransaction`
 
-/** Which side of an address's history to read. */
-export type TxDirection = 'sent' | 'received';
+/**
+ * Which slice of transaction history to read.
+ *   - `sent`     — txs an address signed (`sentAddress`)
+ *   - `received` — every tx that touched an address (`affectedAddress`)
+ *   - `object`   — every tx that used/affected an object (`affectedObject`)
+ * The first two are the address view; `object` is the object view (an object id
+ * isn't a signer, so its history is "transactions that use this object").
+ */
+export type TxDirection = 'sent' | 'received' | 'object';
 
 /** Tx execution outcome, normalized from the GraphQL `ExecutionStatus` enum. */
 export type TxOutcome = 'success' | 'failure' | 'unknown';
@@ -95,16 +102,18 @@ export interface AddressTransaction {
 	readonly timestampMs: number | null;
 }
 
-// `first: N` with no cursor returns the FIRST N matching transactions
-// (oldest-first); we sort newest-first client-side so the table reads top-down.
-// The per-tx selection is type-checked against the Sui schema by `graphql()`:
+// `last: N` returns the most recent N matching transactions (the connection
+// pages oldest-first, so `first: N` would return the EARLIEST N — ancient
+// history on a busy id); we then sort newest-first client-side so the table
+// reads top-down. The per-tx selection is type-checked against the Sui schema
+// by `graphql()`:
 //   - `effects.status` is the `ExecutionStatus` enum (SUCCESS | FAILURE)
 //   - `kind.__typename` is the `TransactionKind` union member
 // `sentAddress` filters to txs the address signed; `affectedAddress` to every tx
 // that touched it (the received/affected superset).
 const ADDRESS_TXS_SENT = graphql(`
 	query AddressSentTxs($addr: SuiAddress!, $limit: Int!) {
-		transactions(first: $limit, filter: { sentAddress: $addr }) {
+		transactions(last: $limit, filter: { sentAddress: $addr }) {
 			nodes {
 				digest
 				sender {
@@ -124,7 +133,27 @@ const ADDRESS_TXS_SENT = graphql(`
 
 const ADDRESS_TXS_RECEIVED = graphql(`
 	query AddressReceivedTxs($addr: SuiAddress!, $limit: Int!) {
-		transactions(first: $limit, filter: { affectedAddress: $addr }) {
+		transactions(last: $limit, filter: { affectedAddress: $addr }) {
+			nodes {
+				digest
+				sender {
+					address
+				}
+				effects {
+					status
+					timestamp
+				}
+				kind {
+					__typename
+				}
+			}
+		}
+	}
+`);
+
+const OBJECT_TXS_AFFECTED = graphql(`
+	query ObjectAffectedTxs($addr: SuiAddress!, $limit: Int!) {
+		transactions(last: $limit, filter: { affectedObject: $addr }) {
 			nodes {
 				digest
 				sender {
@@ -146,11 +175,11 @@ const toOutcome = (status: 'SUCCESS' | 'FAILURE' | null | undefined): TxOutcome 
 	status === 'SUCCESS' ? 'success' : status === 'FAILURE' ? 'failure' : 'unknown';
 
 /**
- * An address's recent transactions on one side of its history. `sent` filters by
- * `sentAddress` (signed by the address); `received` filters by `affectedAddress`
- * (every tx that touched it — incoming transfers it didn't sign included).
- * Returns newest-first, capped at `limit`. Transactions without a digest are
- * dropped (a digest is required to navigate to the tx detail).
+ * Recent transactions for one filter on an id's history. `sent` filters by
+ * `sentAddress` (signed by the address); `received` by `affectedAddress` (every
+ * tx that touched it); `object` by `affectedObject` (every tx that used/affected
+ * the object). Returns newest-first, capped at `limit`. Transactions without a
+ * digest are dropped (a digest is required to navigate to the tx detail).
  */
 export const fetchAddressTransactions = async (
 	graphqlUrl: string,
@@ -158,7 +187,12 @@ export const fetchAddressTransactions = async (
 	direction: TxDirection,
 	limit = 25,
 ): Promise<ReadonlyArray<AddressTransaction>> => {
-	const query = direction === 'sent' ? ADDRESS_TXS_SENT : ADDRESS_TXS_RECEIVED;
+	const query =
+		direction === 'sent'
+			? ADDRESS_TXS_SENT
+			: direction === 'object'
+				? OBJECT_TXS_AFFECTED
+				: ADDRESS_TXS_RECEIVED;
 	const client = suiGraphqlClient(graphqlUrl);
 	const { data, errors } = await client.query({ query, variables: { addr: address, limit } });
 	if (errors?.length) throw new Error(errors.map((e) => e.message).join('; '));

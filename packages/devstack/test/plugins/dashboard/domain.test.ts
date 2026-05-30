@@ -196,7 +196,11 @@ describe('dashboard fundableCoins', () => {
 			resolved: [suiNode('sui:localnet')],
 			registry: makeStubRegistry({
 				'faucet:request:sui:localnet': { request: () => Effect.void },
-				[`coinType:${WAL_TYPE}`]: { usesAccountSigner: true, request: () => Effect.void },
+				[`coinType:${WAL_TYPE}`]: {
+					usesAccountSigner: true,
+					requiresRecipientAccount: true,
+					request: () => Effect.void,
+				},
 			}),
 		});
 		const coins = await Effect.runPromise(domain.fundableCoins);
@@ -205,6 +209,26 @@ describe('dashboard fundableCoins', () => {
 			coinType: WAL_TYPE,
 			honorsAmount: true,
 			requiresAccountSigner: true,
+		});
+	});
+
+	it('lists a managed coin as NOT account-signed (mint transfers to a passive recipient)', async () => {
+		// The coin plugin auto-mounts a `coinType:` mint strategy that sets
+		// usesAccountSigner (publisher self-lease) but NOT requiresRecipientAccount
+		// — it mints to any address, so it must not demand a resolved account.
+		const MANAGED = '0xmanaged::token::TOKEN';
+		const domain = makeFundDomain({
+			resolved: [suiNode('sui:localnet')],
+			registry: makeStubRegistry({
+				[`coinType:${MANAGED}`]: { usesAccountSigner: true, request: () => Effect.void },
+			}),
+		});
+		const coins = await Effect.runPromise(domain.fundableCoins);
+		expect(coins).toContainEqual({
+			symbol: 'TOKEN',
+			coinType: MANAGED,
+			honorsAmount: true,
+			requiresAccountSigner: false,
 		});
 	});
 });
@@ -256,6 +280,7 @@ describe('dashboard fundAccount action', () => {
 			registry: makeStubRegistry({
 				[`coinType:${WAL_TYPE}`]: {
 					usesAccountSigner: true,
+					requiresRecipientAccount: true,
 					request: (req: { address: string; amount: bigint; account: { name: unknown } }) => {
 						seen.push(req);
 						return Effect.void;
@@ -276,7 +301,11 @@ describe('dashboard fundAccount action', () => {
 		const domain = makeFundDomain({
 			resolved: [suiNode('sui:localnet')],
 			registry: makeStubRegistry({
-				[`coinType:${WAL_TYPE}`]: { usesAccountSigner: true, request: () => Effect.void },
+				[`coinType:${WAL_TYPE}`]: {
+					usesAccountSigner: true,
+					requiresRecipientAccount: true,
+					request: () => Effect.void,
+				},
 			}),
 		});
 		const result = await Effect.runPromise(
@@ -284,6 +313,33 @@ describe('dashboard fundAccount action', () => {
 		);
 		expect(result.ok).toBe(false);
 		expect(result.detail).toContain('not a resolved account');
+	});
+
+	it('funds a managed coin to a passive 0x recipient that is NOT a stack account', async () => {
+		// A managed-coin mint strategy (no requiresRecipientAccount) mints to any
+		// address — it must NOT be rejected for a pasted recipient, and the
+		// request runs without an account handle.
+		const MANAGED = '0xmanaged::token::TOKEN';
+		const seen: Array<{ address: string; amount: bigint; account?: unknown }> = [];
+		const domain = makeFundDomain({
+			resolved: [suiNode('sui:localnet')],
+			registry: makeStubRegistry({
+				[`coinType:${MANAGED}`]: {
+					usesAccountSigner: true,
+					request: (req: { address: string; amount: bigint; account?: unknown }) => {
+						seen.push(req);
+						return Effect.void;
+					},
+				},
+			}),
+		});
+		const result = await Effect.runPromise(
+			domain.fundAccount({ recipient: RECIPIENT, coinType: MANAGED, amountBaseUnits: '750' }),
+		);
+		expect(result.ok).toBe(true);
+		expect(seen).toHaveLength(1);
+		expect(seen[0]!.amount).toBe(750n);
+		expect(seen[0]!.account).toBeUndefined();
 	});
 
 	it('rejects WAL funding with a non-positive amount', async () => {
