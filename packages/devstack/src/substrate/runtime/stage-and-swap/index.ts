@@ -70,8 +70,11 @@ export interface StageAndSwapPreservedPath {
 	/** When `false`, the backed-up live copy is preserved into staging ONLY if
 	 *  staging does not already carry the path — so a value the build already
 	 *  placed there (e.g. a deploy cache untarred from the snapshot's host-tree)
-	 *  WINS over the live copy. Defaults to `true` (always overwrite the staging
-	 *  copy with the live one). */
+	 *  WINS over the live copy. For a `directory` entry the skip is
+	 *  all-or-nothing, not a per-file merge: if staging already has the dir, the
+	 *  ENTIRE live copy is dropped, including any sub-path that existed only live
+	 *  (post-snapshot drift) — the intended "restore-to-snapshot wins" semantic.
+	 *  Defaults to `true` (always overwrite the staging copy with the live one). */
 	readonly overwrite?: boolean;
 }
 
