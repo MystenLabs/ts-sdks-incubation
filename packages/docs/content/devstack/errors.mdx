@@ -23,9 +23,8 @@ discriminator slots; full shapes (and the helper constructors) live in each plug
 
 ## Action
 
-- `ActionError` —
-  `phase: 'discriminator' | 'build' | 'sign' | 'execute-failed' | 'verify'`. Single tag covers all
-  `action(...)` failure paths.
+- `ActionError` — `phase: 'discriminator' | 'build' | 'sign' | 'execute-failed' | 'verify'`. Single
+  tag covers all `action(...)` failure paths.
 
 ## Coin
 
@@ -128,8 +127,7 @@ import { Effect } from 'effect';
 const program = someEffect.pipe(
 	Effect.catchTags({
 		AccountAcquireError: (err) => Effect.logError(`account boot failed at phase ${err.phase}`),
-		FaucetExhausted: (err) =>
-			Effect.logError(`faucet gave up after ${err.attempts} attempts`),
+		FaucetExhausted: (err) => Effect.logError(`faucet gave up after ${err.attempts} attempts`),
 	}),
 );
 ```

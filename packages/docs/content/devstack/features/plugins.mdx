@@ -7,8 +7,8 @@ A plugin is a function that returns a stack member. The root package exports the
 `contracts` and `substrate` are internal source modules, not package subpaths for app or plugin
 author imports.
 
-A plugin returned by `definePlugin(...)` is a `{ id, role, section, dependsOn?, start, capabilities? }`
-bundle.
+A plugin returned by `definePlugin(...)` is a
+`{ id, role, section, dependsOn?, start, capabilities? }` bundle.
 
 - `id` — graph identity and the default resource id; the resolved value is published under this id.
 - `role` — lifecycle classification. `'service'` means a long-lived resource (a container, an HTTP
