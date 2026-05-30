@@ -14,8 +14,8 @@
 		"@fontsource-variable/geist-mono": "catalog:",
 		"@mysten/sui": "catalog:",
 		"@tanstack/react-query": "catalog:",
-		"graphql": "catalog:",
 		"gql.tada": "catalog:",
+		"graphql": "catalog:",
 		"react": "catalog:",
 		"react-dom": "catalog:",
 		"recharts": "catalog:"
