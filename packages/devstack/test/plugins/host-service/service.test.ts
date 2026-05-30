@@ -262,17 +262,12 @@ describe('acquireHostService', () => {
 		expect(value.url).toBe('http://127.0.0.1:6173');
 	});
 
-	it.live('treats any HTTP response (including 5xx) as host-service readiness', () =>
+	it.live('readies an HTTP host-service when its health check returns 200', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const port = yield* Effect.promise(findFreePort);
-				// The host-service contract is "listener up", NOT "app logic
-				// healthy". A 500 at `/` is the canonical "Vite/Next SSR route
-				// threw during initial compile" case — the listener is bound and
-				// the framework is up. Such a server MUST satisfy readiness;
-				// rejecting 5xx (an `r => r.status < 500` validator) would kill
-				// it after the timeout. This case fails if that regression
-				// returns, pinning the listener-up readiness contract.
+				// A server that returns 200 at `/` satisfies the health-check
+				// readiness contract and readies promptly.
 				const options = normalizeHostServiceOptions({
 					name: 'frontend',
 					command: process.execPath,
@@ -281,8 +276,8 @@ describe('acquireHostService', () => {
 						[
 							"const http = require('node:http');",
 							'const server = http.createServer((_req, res) => {',
-							'  res.statusCode = 500;',
-							"  res.end('compiling');",
+							'  res.statusCode = 200;',
+							"  res.end('ready');",
 							'});',
 							"server.listen(Number(process.env.PORT), '127.0.0.1');",
 						].join(' '),
@@ -300,6 +295,54 @@ describe('acquireHostService', () => {
 				expect(value.url).toBe(`http://127.0.0.1:${port}`);
 			}),
 		),
+	);
+
+	it.live(
+		'does NOT ready an HTTP host-service that never returns 200 (health check requires 200)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const port = yield* Effect.promise(findFreePort);
+					// Readiness is a 200 health check. A server that is "listener up"
+					// but only ever returns 500 (a dev server still compiling at `/`)
+					// must NOT be treated as ready — it keeps polling and the acquire
+					// fails at the readiness timeout. Pins the require-200 contract: a
+					// listener-up `() => true` validator would wrongly pass here.
+					const options = normalizeHostServiceOptions({
+						name: 'frontend',
+						command: process.execPath,
+						args: [
+							'-e',
+							[
+								"const http = require('node:http');",
+								'const server = http.createServer((_req, res) => {',
+								'  res.statusCode = 500;',
+								"  res.end('compiling');",
+								'});',
+								"server.listen(Number(process.env.PORT), '127.0.0.1');",
+							].join(' '),
+						],
+						ready: { kind: 'http', timeoutMs: 600, intervalMs: 50 },
+					});
+
+					const exit = yield* Effect.exit(
+						acquireHostService(options, {
+							allocatePort: () => Effect.succeed(port),
+							logger: fakeLogger,
+							pluginKey: pluginKey('host-service-test#1'),
+							processEnv: { PATH: '/usr/bin' },
+						}),
+					);
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(Option.isSome(error)).toBe(true);
+					if (Option.isSome(error)) {
+						expect(error.value.phase).toBe('ready');
+						expect(error.value.message).toContain('did not become ready');
+					}
+				}),
+			),
 	);
 
 	it('fails acquire when the process emits an error before readiness', async () => {

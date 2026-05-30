@@ -342,17 +342,13 @@ const httpReady = (
 			endpoint: url,
 			timeoutMs,
 			intervalMs,
-			// The host-service readiness contract is "listener up", NOT "app
-			// logic healthy" — we are proving the dev server bound its port,
-			// not that every route returns 2xx. App-level 4xx/5xx responses
-			// can be transient while devstack writes generated files: real
-			// dev servers (Vite/Next SSR routes that throw during the initial
-			// compile) legitimately return 500 at `/` while the listener is up
-			// and the framework is healthy. Rejecting 5xx here would kill such
-			// a server after the readiness timeout. Any HTTP response proves
-			// the listener; accept it. Callers needing app-health gating should
-			// use a `log` probe keyed on their framework's ready line.
-			validate: () => true,
+			// HTTP readiness is a health check: require a 200. Point `url` at an
+			// endpoint that returns 200 once the service is actually ready (the
+			// default is the service root). Anything else — a still-compiling
+			// dev server, a 5xx, a redirect — keeps polling until the readiness
+			// timeout. Use a `log` probe instead when 200-at-a-URL isn't the
+			// right readiness signal.
+			validate: (response) => response.status === 200,
 		}).pipe(
 			Effect.mapError(
 				(cause) =>

@@ -105,7 +105,7 @@ preparing for a release.
 ### Development Workflow
 
 1. Turbo ensures dependencies are built before dependents.
-2. Biome (lint + format) is enforced across the codebase.
+2. oxlint and Prettier (lint + format) are enforced across the codebase.
 3. Tests must pass before changes are merged.
 4. Breaking changes don't need a deprecation cycle (see "Project status" above) —
    rename/restructure/delete in place and update every callsite in the same commit.
@@ -151,9 +151,9 @@ script that reaches a Sui node must do the same.
 Every `@mysten/*` package ships LLM-optimized documentation in its own
 `docs/` directory. Before writing or modifying code that touches a `@mysten/*`
 package, find and read the relevant docs locally — **don't guess at API shape,
-don't grep `node_modules/**/\*.d.ts` for type names, don't search the web**.
+don't grep `node_modules/**/\*.d.ts`for type names, don't search the web**.
 The shipped docs are the ground truth for the version installed in this repo
-(currently `@mysten/sui` 2.x; `experimental` and other 1.x surfaces are gone).
+(currently`@mysten/sui`2.x;`experimental` and other 1.x surfaces are gone).
 
 Workflow:
 
