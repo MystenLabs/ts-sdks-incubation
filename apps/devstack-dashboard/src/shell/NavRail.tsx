@@ -135,7 +135,9 @@ export const NavRail = ({
 									key={item.id}
 									type="button"
 									className={'nav-item ' + (active ? 'on' : '')}
-									onClick={() => navigate(item.id)}
+									onClick={() =>
+										item.pluginKey ? navigate('plugin', item.pluginKey) : navigate(item.id)
+									}
 									title={collapsed ? item.label : undefined}
 									style={
 										collapsed
