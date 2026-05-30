@@ -18,18 +18,24 @@ import type { Effect, SubscriptionRef } from 'effect';
 import type { EngineCommand } from '../../../substrate/events.ts';
 import type { SubscribableState } from '../../../substrate/projection.ts';
 import type { ControlPlaneDomain } from '../../../substrate/runtime/control-plane/service.ts';
+import type { DashboardDomain } from '../domain.ts';
 
 /** Per-request GraphQL context for the dashboard control plane. Resolvers
  *  read the live projection ref, the command publisher, and the
- *  plugin-domain accessor surface from here (3rd resolver arg), so the
+ *  plugin-domain accessor surfaces from here (3rd resolver arg), so the
  *  schema carries no closed-over state. */
 export interface DashboardContext {
 	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly publishCommand: (command: EngineCommand) => Effect.Effect<void>;
-	/** Typed accessors for data the browser cannot reach directly:
-	 *  snapshot catalog + restore/delete, postgres wire-protocol stats,
-	 *  deepbook/seal/coin capability ids, fork-vs-local mode. */
+	/** Generic, name-blind control-plane accessors: snapshot catalog +
+	 *  restore/delete, the observability rings, and the resolved-values
+	 *  seam. (Plugin-name-aware shaping lives in `pluginDomain`.) */
 	readonly domain: ControlPlaneDomain;
+	/** Plugin-name-aware accessors the dashboard plugin shapes from the
+	 *  generic control-plane `resolvedValues`: fork-vs-local mode,
+	 *  deepbook/seal/coin capability ids, postgres wire-protocol stats,
+	 *  and the coin mint action. */
+	readonly pluginDomain: DashboardDomain;
 }
 
 interface SchemaTypes {

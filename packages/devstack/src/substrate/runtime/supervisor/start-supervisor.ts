@@ -264,7 +264,6 @@ export const startSupervisor = (
 			pluginContext,
 			graph,
 			registry,
-			identity,
 			logStore,
 			spanStore,
 		});

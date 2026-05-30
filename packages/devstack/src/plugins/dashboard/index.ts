@@ -12,9 +12,13 @@
 
 import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
+import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
+import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { ControlPlaneService } from '../../substrate/runtime/control-plane/service.ts';
+import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
+import { buildDashboardDomain } from './domain.ts';
 import { makeDashboardRoutable } from './routable.ts';
 import { makeDashboardListener } from './server.ts';
 
@@ -52,6 +56,24 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
+				const identity = yield* IdentityContext;
+				// The ContainerRuntime drives the Postgres `psql` exec-probe.
+				// It is in the base substrate plugin context in production
+				// wiring; read it optionally so bare smoke-test paths that
+				// don't layer it degrade `postgresStats` to unavailable
+				// rather than failing acquisition.
+				const containerRuntimeOpt = yield* Effect.serviceOption(ContainerRuntimeService);
+				const containerRuntime: ContainerRuntime | null =
+					containerRuntimeOpt._tag === 'Some' ? containerRuntimeOpt.value : null;
+
+				// Plugin-name-aware shaping lives HERE (the plugin layer is
+				// allowed to name plugins), built off the generic, name-blind
+				// control-plane `resolvedValues` seam + the container runtime.
+				const pluginDomain = buildDashboardDomain({
+					control: control.domain,
+					identity,
+					containerRuntime,
+				});
 
 				const bindAddress = opts.bindAddress ?? DASHBOARD_DEFAULT_BIND;
 				const allocated = yield* portBroker.allocate({
@@ -69,6 +91,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 							state: control.state,
 							publishCommand: control.publishCommand,
 							domain: control.domain,
+							pluginDomain,
 						},
 					}),
 					onListenError: (cause) =>

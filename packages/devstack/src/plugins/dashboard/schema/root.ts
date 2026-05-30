@@ -149,7 +149,7 @@ builder.queryType({
 		mode: t.field({
 			type: StackMode,
 			nullable: true,
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.mode),
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.mode),
 		}),
 		/** Snapshot catalog: id/label/created/participants/containers. */
 		snapshots: t.field({
@@ -160,24 +160,24 @@ builder.queryType({
 		 *  state. (Pool prices / order books are chain-direct.) */
 		deepbookInfo: t.field({
 			type: [DeepbookInfo],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.deepbook),
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.deepbook),
 		}),
 		/** Seal key-server deployments: objectId/threshold/mode/keyServers. */
 		sealInfo: t.field({
 			type: [SealInfo],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.seal),
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.seal),
 		}),
 		/** Coin treasury caps (drives Mint) + addressing facts. (Supply /
 		 *  metadata are chain-direct.) */
 		coinCaps: t.field({
 			type: [CoinCap],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.coinCaps),
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.coinCaps),
 		}),
 		/** Postgres wire-protocol stats per instance (db size, connections,
 		 *  per-table rows/size). The browser cannot speak the PG protocol. */
 		postgresStats: t.field({
 			type: [PostgresStats],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.postgresStats),
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.postgresStats),
 		}),
 
 		// --- Observability (Console "Logs" + "Traces" tabs) ---------------
@@ -383,7 +383,7 @@ builder.mutationType({
 			},
 			resolve: (_parent, args, ctx) =>
 				Effect.runPromise(
-					ctx.domain.mintCoin({
+					ctx.pluginDomain.mintCoin({
 						coinType: args.input.coinType,
 						recipient: args.input.recipient,
 						amountBaseUnits: args.input.amountBaseUnits,

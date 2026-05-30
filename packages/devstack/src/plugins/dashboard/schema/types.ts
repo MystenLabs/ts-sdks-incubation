@@ -28,16 +28,16 @@ import {
 	WireProtocol,
 } from './enums.ts';
 import type { Health } from './enums.ts';
+import type { ControlPlaneSnapshotEntry } from '../../../substrate/runtime/control-plane/service.ts';
 import type {
-	ControlPlaneCoinCap,
-	ControlPlaneDeepbookInfo,
-	ControlPlaneDeepbookPool,
-	ControlPlanePostgresStats,
-	ControlPlanePostgresTable,
-	ControlPlaneSealInfo,
-	ControlPlaneSealKeyServer,
-	ControlPlaneSnapshotEntry,
-} from '../../../substrate/runtime/control-plane/service.ts';
+	DashboardCoinCap,
+	DashboardDeepbookInfo,
+	DashboardDeepbookPool,
+	DashboardPostgresStats,
+	DashboardPostgresTable,
+	DashboardSealInfo,
+	DashboardSealKeyServer,
+} from '../domain.ts';
 import type {
 	LogRecord,
 	SpanRecord,
@@ -348,7 +348,7 @@ export const SnapshotEntry = builder
 	});
 
 export const DeepbookPool = builder
-	.objectRef<ControlPlaneDeepbookPool>('DeepbookPool')
+	.objectRef<DashboardDeepbookPool>('DeepbookPool')
 	.implement({
 		description: 'A DeepBook pool object id + coin types (prices are chain-direct).',
 		fields: (t) => ({
@@ -360,7 +360,7 @@ export const DeepbookPool = builder
 	});
 
 export const DeepbookInfo = builder
-	.objectRef<ControlPlaneDeepbookInfo>('DeepbookInfo')
+	.objectRef<DashboardDeepbookInfo>('DeepbookInfo')
 	.implement({
 		description: 'A DeepBook deployment: registry/admin/pool ids + market-maker state.',
 		fields: (t) => ({
@@ -380,7 +380,7 @@ export const DeepbookInfo = builder
 	});
 
 export const SealKeyServer = builder
-	.objectRef<ControlPlaneSealKeyServer>('SealKeyServer')
+	.objectRef<DashboardSealKeyServer>('SealKeyServer')
 	.implement({
 		description: 'One Seal key-server config (objectId + weight).',
 		fields: (t) => ({
@@ -389,7 +389,7 @@ export const SealKeyServer = builder
 		}),
 	});
 
-export const SealInfo = builder.objectRef<ControlPlaneSealInfo>('SealInfo').implement({
+export const SealInfo = builder.objectRef<DashboardSealInfo>('SealInfo').implement({
 	description: 'A Seal key-server deployment (objectId/threshold/mode/keyServers).',
 	fields: (t) => ({
 		pluginKey: t.exposeString('pluginKey'),
@@ -403,7 +403,7 @@ export const SealInfo = builder.objectRef<ControlPlaneSealInfo>('SealInfo').impl
 	}),
 });
 
-export const CoinCap = builder.objectRef<ControlPlaneCoinCap>('CoinCap').implement({
+export const CoinCap = builder.objectRef<DashboardCoinCap>('CoinCap').implement({
 	description: "A coin's treasury-cap id (drives Mint) + addressing facts.",
 	fields: (t) => ({
 		pluginKey: t.exposeString('pluginKey'),
@@ -418,7 +418,7 @@ export const CoinCap = builder.objectRef<ControlPlaneCoinCap>('CoinCap').impleme
 });
 
 export const PostgresTable = builder
-	.objectRef<ControlPlanePostgresTable>('PostgresTable')
+	.objectRef<DashboardPostgresTable>('PostgresTable')
 	.implement({
 		description: 'Per-table row estimate + total size (bytes).',
 		fields: (t) => ({
@@ -430,7 +430,7 @@ export const PostgresTable = builder
 	});
 
 export const PostgresStats = builder
-	.objectRef<ControlPlanePostgresStats>('PostgresStats')
+	.objectRef<DashboardPostgresStats>('PostgresStats')
 	.implement({
 		description:
 			'Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.',

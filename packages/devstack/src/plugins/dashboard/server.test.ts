@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { Effect, SubscriptionRef } from 'effect';
 import { emptyProjection } from '../../substrate/runtime/projection/state-ref.ts';
 import { emptyControlPlaneDomain } from '../../substrate/runtime/control-plane/domain.ts';
+import { emptyDashboardDomain } from './domain.ts';
 import type { EngineCommand } from '../../substrate/events.ts';
 import { makeDashboardListener } from './server.ts';
 
@@ -45,6 +46,7 @@ beforeAll(async () => {
 						recorded.push(command);
 					}),
 				domain: emptyControlPlaneDomain,
+				pluginDomain: emptyDashboardDomain,
 			},
 		}),
 	);
@@ -139,7 +141,12 @@ describe('dashboard http server (UI bundle absent → API test page fallback)', 
 		fbServer = createServer(
 			makeDashboardListener({
 				assetsDir: emptyDir,
-				context: { state, publishCommand: () => Effect.void, domain: emptyControlPlaneDomain },
+				context: {
+					state,
+					publishCommand: () => Effect.void,
+					domain: emptyControlPlaneDomain,
+					pluginDomain: emptyDashboardDomain,
+				},
 			}),
 		);
 		await new Promise<void>((resolve) => fbServer.listen(0, '127.0.0.1', resolve));
