@@ -707,3 +707,150 @@ describe('bootstrap dispatch bind mount adoption', () => {
 		}),
 	);
 });
+
+// Router coexistence: a live SHARED router that publishes a SUPERSET of
+// the entrypoints this stack needs (another build's extra `:9810`
+// listener) must be adoptable — extra entrypoints can't mis-route
+// Host-header dispatch. A router MISSING a required entrypoint (subset),
+// or one carrying a different image / spec-version, must STILL be a
+// mismatch so the live-route fail-safe (RouterBootFailed) stays intact.
+describe('routerSpecMatches superset-entrypoint coexistence', () => {
+	const required: ReadonlyArray<Entrypoint> = [
+		{ name: 'wallet-app', port: 6173, protocol: 'http' },
+	];
+	// Same required listener PLUS an extra one from a co-resident build.
+	const superset: ReadonlyArray<Entrypoint> = [
+		{ name: 'wallet-app', port: 6173, protocol: 'http' },
+		{ name: 'other-build', port: 9810, protocol: 'http' },
+	];
+
+	it.effect('adopts a shared router with a SUPERSET of the required entrypoints', () =>
+		Effect.gen(function* () {
+			// Existing router is built against the wider `superset` set, so
+			// its published port bindings + Traefik command args carry the
+			// extra `:9810` listener on top of everything this stack needs.
+			const { calls, layer } = makeOps(matchingExisting(superset));
+			const report = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: [],
+			}).pipe(Effect.provide(layer));
+
+			expect(report.decision).toBe('adopt');
+			expect(calls).toEqual([
+				`ensureNetwork:${profile.networkName}`,
+				`inspect:${profile.containerName}`,
+			]);
+		}),
+	);
+
+	it.effect('adopts a SUPERSET router even while protected route leases are live', () =>
+		Effect.gen(function* () {
+			// The exact regression: superset router + live routes must NOT
+			// trip the RouterBootFailed fail-safe — it must adopt.
+			const { calls, layer } = makeOps(matchingExisting(superset));
+			const report = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: ['live-route'],
+			}).pipe(Effect.provide(layer));
+
+			expect(report.decision).toBe('adopt');
+			expect(calls).toEqual([
+				`ensureNetwork:${profile.networkName}`,
+				`inspect:${profile.containerName}`,
+			]);
+		}),
+	);
+
+	it.effect('does NOT adopt a router MISSING a required entrypoint (subset)', () =>
+		Effect.gen(function* () {
+			// Existing router only published the `:9810` listener; it is
+			// missing the `:6173` entrypoint this stack requires. A subset is
+			// a genuine mismatch → recreate fresh.
+			const subset: ReadonlyArray<Entrypoint> = [
+				{ name: 'other-build', port: 9810, protocol: 'http' },
+			];
+			const { calls, layer } = makeOps(matchingExisting(subset));
+			const report = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: [],
+			}).pipe(Effect.provide(layer));
+
+			expect(report.decision).toBe('recreate-fresh');
+			expect(calls).toContain(`forceRemove:${profile.containerName}`);
+		}),
+	);
+
+	it.effect('fails safe on a subset router when protected route leases are live', () =>
+		Effect.gen(function* () {
+			// Subset (missing required entrypoint) + live routes → the
+			// fail-safe must still fire; we must not destroy live routing.
+			const subset: ReadonlyArray<Entrypoint> = [
+				{ name: 'other-build', port: 9810, protocol: 'http' },
+			];
+			const { calls, layer } = makeOps(matchingExisting(subset));
+			const err = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: ['live-route'],
+			})
+				.pipe(Effect.provide(layer))
+				.pipe(Effect.flip);
+
+			expect(err._tag).toBe('RouterBootFailed');
+			expect(calls).toEqual([
+				`ensureNetwork:${profile.networkName}`,
+				`inspect:${profile.containerName}`,
+			]);
+		}),
+	);
+
+	it.effect('does NOT adopt a SUPERSET router running a DIFFERENT image', () =>
+		Effect.gen(function* () {
+			// Superset entrypoints, but a different image tag — a profile
+			// singleton cannot reconcile image in place. Still a mismatch.
+			const { calls, layer } = makeOps(matchingExisting(superset, { image: 'traefik:v3.4' }));
+			const report = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: [],
+			}).pipe(Effect.provide(layer));
+
+			expect(report.decision).toBe('recreate-fresh');
+			expect(calls).toContain(`forceRemove:${profile.containerName}`);
+		}),
+	);
+
+	it.effect('does NOT adopt a SUPERSET router from a DIFFERENT spec version', () =>
+		Effect.gen(function* () {
+			// Superset entrypoints, but an older container spec-version label.
+			// Spec-version stays an exact-match dimension → mismatch.
+			const { calls, layer } = makeOps(
+				matchingExisting(superset, {
+					labels: {
+						[LabelKey.managed]: 'true',
+						[LabelKey.kind]: ROUTER_KIND_LABEL_VALUE,
+						[ROUTER_PROFILE_LABEL]: profile.id,
+						[LabelKey.specVersion]: 'spec-version-from-an-older-build',
+					},
+				}),
+			);
+			const report = yield* bootstrap({
+				image: 'traefik:v3.5',
+				entrypoints: required,
+				profile,
+				protectedRouteLeaseIds: [],
+			}).pipe(Effect.provide(layer));
+
+			expect(report.decision).toBe('recreate-fresh');
+			expect(calls).toContain(`forceRemove:${profile.containerName}`);
+		}),
+	);
+});

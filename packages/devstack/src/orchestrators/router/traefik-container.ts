@@ -209,11 +209,19 @@ const mountedDispatchDirMatches = (
 	existing.dispatchMount.readOnly &&
 	sameHostPath(existing.dispatchMount.source, expected);
 
-const sameStrings = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
-	left.length === right.length && left.every((value, index) => value === right[index]);
-
-const sameStringSet = (left: ReadonlyArray<string>, right: ReadonlyArray<string>): boolean =>
-	sameStrings([...new Set(left)].sort(), [...new Set(right)].sort());
+/** `existing ⊇ required` — every required value is present in the
+ *  existing set; the existing set MAY carry extras. Used for the
+ *  entrypoint/port/command dimensions so a SHARED router that publishes
+ *  a SUPERSET of the entrypoints this stack needs (e.g. another build's
+ *  extra `:9810` listener) is still adoptable. Extra entrypoints are
+ *  harmless: routes dispatch by Host header on the shared entrypoints,
+ *  so a wider listener set cannot mis-route a narrower stack. A router
+ *  MISSING a required entrypoint (subset) still fails this check and so
+ *  stays a mismatch. */
+const supersetOf = (existing: ReadonlyArray<string>, required: ReadonlyArray<string>): boolean => {
+	const have = new Set(existing);
+	return required.every((value) => have.has(value));
+};
 
 const portBindingPair = (binding: string): string | null => {
 	const [container, host] = binding.split('=');
@@ -225,11 +233,17 @@ const portBindingPair = (binding: string): string | null => {
 	return `${containerPort}=${hostIp}:${hostPort}`;
 };
 
+// Superset-tolerant (existing ⊇ required): a router that publishes the
+// required port bindings plus extras (another build's wider entrypoint
+// set) is still a match. A router MISSING a required binding (subset)
+// is not. The exactness that protects against genuine incompatibilities
+// lives in the image-tag / spec-version / dispatch-mount / network /
+// profile-label dimensions of `routerSpecMatches`.
 const portBindingsMatch = (
 	existing: ReadonlyArray<string>,
 	entrypoints: ReadonlyArray<Entrypoint>,
 ): boolean =>
-	sameStringSet(
+	supersetOf(
 		existing.flatMap((binding) => {
 			const pair = portBindingPair(binding);
 			return pair === null ? [] : [pair];
@@ -264,11 +278,21 @@ export const routerProfileLabelsMatch = (
 	return true;
 };
 
+// Adoptability of a live SHARED router. EXACT on the dimensions a
+// profile singleton can never reconcile in place — image tag,
+// spec-version + profile labels (via `routerProfileLabelsMatch`),
+// dispatch-dir bind mount, network membership. SUPERSET-tolerant only
+// on the entrypoint dimension (port bindings + the derived Traefik
+// command args): a router whose published entrypoints are a superset of
+// what this stack needs is adoptable, because extra entrypoints can't
+// mis-route Host-header dispatch. A router MISSING a required entrypoint
+// (subset), or carrying a different image/spec-version, is still a
+// mismatch — keeping the fail-safe intact when live routes exist.
 const routerSpecMatches = (existing: InspectedTraefikContainer, inputs: BootstrapInputs): boolean =>
 	existing.image === inputs.image &&
 	mountedDispatchDirMatches(existing, inputs.profile.dispatchDir) &&
 	portBindingsMatch(existing.portBindings, inputs.entrypoints) &&
-	sameStringSet(existing.command, traefikExpectedCommand(inputs.entrypoints)) &&
+	supersetOf(existing.command, traefikExpectedCommand(inputs.entrypoints)) &&
 	existing.networks.includes(inputs.profile.networkName) &&
 	routerProfileLabelsMatch(existing.labels, inputs.profile);
 
