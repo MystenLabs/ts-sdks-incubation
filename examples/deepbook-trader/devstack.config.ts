@@ -6,6 +6,7 @@ import {
 	defineDevstack,
 	account,
 	coin,
+	dashboard,
 	DEEP_PRICE_FEED_ID,
 	deepbook,
 	HOST_SERVICE_PORT_TOKEN,
@@ -294,7 +295,7 @@ const app = hostService({
 });
 
 const stack: Stack = defineDevstack({
-	members: [localnet, app],
+	members: [localnet, app, dashboard()],
 	stackName: 'deepbook-trader',
 });
 

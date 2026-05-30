@@ -14,7 +14,7 @@ import { Banner, Button, EmptyState, Icon, IconButton, Input } from './ui/index.
 import { NavRail } from './shell/NavRail.tsx';
 import { StatusHeader } from './shell/StatusHeader.tsx';
 import { CommandPalette, type Command } from './shell/CommandPalette.tsx';
-import { NAV_ITEMS } from './shell/nav.ts';
+import { buildNav, navItems } from './shell/nav.ts';
 import type { PanelProps } from './panels/types.ts';
 
 import { OverviewPanel } from './panels/Overview.tsx';
@@ -150,6 +150,11 @@ const Shell = () => {
 	const data = useProjection(endpoint);
 	const { projection } = data;
 
+	// Nav sections are derived from the live projection so the Plugins group only
+	// lists plugins actually present in the running stack (and hides when none).
+	// Computed unconditionally (hooks rule) — empty rows before the first frame.
+	const navSections = useMemo(() => buildNav(projection?.rows ?? []), [projection?.rows]);
+
 	// --- Persisted setters ---------------------------------------------------
 
 	const applyEndpoint = useCallback((next: string) => {
@@ -206,7 +211,7 @@ const Shell = () => {
 	// --- Command palette entries ---------------------------------------------
 
 	const commands = useMemo<ReadonlyArray<Command>>(() => {
-		const nav: Command[] = NAV_ITEMS.map((item) => ({
+		const nav: Command[] = navItems(navSections).map((item) => ({
 			id: `go:${item.id}`,
 			label: `Go to ${item.label}`,
 			icon: item.icon,
@@ -224,7 +229,7 @@ const Shell = () => {
 			},
 		];
 		return [...nav, ...actions];
-	}, [restart, snapshot, codegen]);
+	}, [navSections, restart, snapshot, codegen]);
 
 	// --- Global keyboard shortcuts -------------------------------------------
 
@@ -334,6 +339,7 @@ const Shell = () => {
 			<div className="atmos" />
 
 			<NavRail
+				sections={navSections}
 				route={route.param ? `${route.name}:${route.param}` : route.name}
 				collapsed={collapsed}
 				onToggleCollapsed={toggleCollapsed}

@@ -143,6 +143,23 @@ const senderOf = (tx: SuiClientTypes.Transaction): string | null =>
 export const fetchChainHead = async (rpcUrl: string): Promise<ChainHead> => {
 	const client = await chainClient(rpcUrl);
 	const { response } = await client.ledgerService.getServiceInfo({});
+	const head = response.checkpointHeight ?? 0n;
+	// `getServiceInfo` carries no transaction total — only the head checkpoint's
+	// `CheckpointSummary.total_network_transactions` (running count since genesis)
+	// exposes it. Read just that field from the head checkpoint so callers can
+	// derive a real TPS from Δ(totalTransactions)/Δt across head ticks.
+	let totalTransactions: number | null = null;
+	try {
+		const { response: cp } = await client.ledgerService.getCheckpoint({
+			checkpointId: { oneofKind: 'sequenceNumber', sequenceNumber: head },
+			readMask: { paths: ['summary.total_network_transactions'] },
+		});
+		const total = cp.checkpoint?.summary?.totalNetworkTransactions;
+		totalTransactions = total === undefined ? null : num(total);
+	} catch {
+		// Node may not have the head checkpoint yet (just starting); keep null.
+		totalTransactions = null;
+	}
 	return {
 		chainId: response.chainId ?? null,
 		chain: response.chain ?? null,
@@ -153,6 +170,7 @@ export const fetchChainHead = async (rpcUrl: string): Promise<ChainHead> => {
 			response.lowestAvailableCheckpoint === undefined
 				? null
 				: num(response.lowestAvailableCheckpoint),
+		totalTransactions,
 	};
 };
 
@@ -346,6 +364,32 @@ export const fetchCoinMeta = async (rpcUrl: string, coinType: string): Promise<C
 		iconUrl: coinMetadata.iconUrl,
 		metadataId: coinMetadata.id,
 	};
+};
+
+/**
+ * Total supply of a coin, read from its `TreasuryCap` object. A `TreasuryCap<T>`
+ * wraps a `Supply<T>` under `total_supply`, whose `value: u64` is the minted
+ * total (base units). The parsed Move `json` shape can nest the value either as
+ * `total_supply.value` or `total_supply.fields.value` depending on the node's
+ * BCS→JSON projection, so both are probed. Returns the raw base-unit string
+ * (decimals are applied by the caller), or null when unreadable.
+ */
+export const fetchTotalSupply = async (
+	rpcUrl: string,
+	treasuryCapId: string,
+): Promise<string | null> => {
+	const client = await chainClient(rpcUrl);
+	const { object } = await client.core.getObject({ objectId: treasuryCapId, include: { json: true } });
+	const fields = object.json as Record<string, unknown> | null | undefined;
+	if (!fields) return null;
+	const supply = fields.total_supply as Record<string, unknown> | null | undefined;
+	if (!supply) return null;
+	// Defensive: the inner `Supply` struct may be flattened (`{ value }`) or kept
+	// under a nested `fields` envelope (`{ fields: { value } }`).
+	const inner = (supply.fields as Record<string, unknown> | undefined) ?? supply;
+	const value = inner.value;
+	if (value === undefined || value === null) return null;
+	return String(value);
 };
 
 /** All non-zero balances owned by an address (first page). */

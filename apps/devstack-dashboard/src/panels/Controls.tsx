@@ -219,7 +219,17 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 
 	const onCapture = (name: string): void => {
 		setNaming(null);
-		void dispatch('capture', 'Capture snapshot', () => captureSnapshot(endpoint, name));
+		void (async () => {
+			await dispatch('capture', 'Capture snapshot', () => captureSnapshot(endpoint, name));
+			// The capture mutation resolves before the orchestrator finishes writing
+			// the snapshot catalog, so the immediate refetch in `dispatch` can miss the
+			// new entry. Re-poll a few times (backing off) so the snapshot appears
+			// automatically without a manual reload.
+			for (const delayMs of [600, 1200, 2400]) {
+				await new Promise((r) => setTimeout(r, delayMs));
+				await snapshotsQuery.refetch();
+			}
+		})();
 	};
 
 	const onAdvanceClock = (toMillis: number): void => {

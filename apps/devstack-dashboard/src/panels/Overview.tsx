@@ -4,12 +4,14 @@
 // live `projection` + client `activity` feed via the `lib/` seams; no values
 // are fabricated.
 //
-// Live chain KPIs (Checkpoint + checkpoint-rate) read browser-direct from the
-// node via `useChainHead`. There is no historical series source today, so the
-// only trend visuals are HONEST rolling mini-series accumulated from live head
-// ticks while this panel is mounted — empty on first paint, filling as the head
-// advances. The design's "tx / day" bar + "active accounts" area charts are
-// omitted: no real series feeds them (see TODO below).
+// Live chain KPIs (Checkpoint + TPS) read browser-direct from the node via
+// `useChainHead`. TPS is a REAL transactions-per-second figure derived from
+// Δ(totalTransactions)/Δt between head ticks, where `totalTransactions` is the
+// head checkpoint's `total_network_transactions` running count. There is no
+// historical series source today, so the only trend visuals are HONEST rolling
+// mini-series accumulated from live head ticks while this panel is mounted —
+// empty on first paint, filling as the head advances. The design's "tx / day"
+// bar + "active accounts" area charts are omitted: no real series feeds them.
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import {
@@ -75,16 +77,20 @@ export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 	const recent = activity.slice(0, RECENT_ACTIVITY_LIMIT);
 
 	// Live head — refetches every ~2s (see useChain). We roll checkpoint numbers
-	// into one mini-series and derive a checkpoint-rate (cp/s) from consecutive
-	// (Δcheckpoint / Δt) deltas into a second. True tx/s is unavailable from the
-	// head read, so we surface the honest checkpoint rate rather than fake TPS.
+	// into one mini-series and derive a REAL tx/s (TPS) from consecutive
+	// Δ(totalTransactions)/Δt deltas, where `totalTransactions` is the head
+	// checkpoint's running `total_network_transactions`. If that count is
+	// genuinely unavailable we fall back to the honest checkpoint rate (cp/s).
 	const head = useChainHead(chain);
 	const [cpSeries, sampleCp] = useRollingSeries(chain.network);
 	const [rateSeries, sampleRate] = useRollingSeries(chain.network);
-	const prev = useRef<{ cp: number; t: number } | null>(null);
+	const prev = useRef<{ cp: number; tx: number | null; t: number } | null>(null);
 	const [rate, setRate] = useState<number | null>(null);
+	// Whether the head exposes a real total-transaction count (drives the label).
+	const [hasTps, setHasTps] = useState(false);
 
 	const checkpoint = head.data?.checkpoint ?? null;
+	const totalTx = head.data?.totalTransactions ?? null;
 	const headTs = head.data?.timestampMs ?? null;
 	useEffect(() => {
 		if (checkpoint === null) return;
@@ -92,15 +98,28 @@ export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 		const now = headTs ?? Date.now();
 		const last = prev.current;
 		if (last && now > last.t) {
-			const cps = ((checkpoint - last.cp) * 1000) / (now - last.t);
-			if (Number.isFinite(cps) && cps >= 0) {
-				setRate(cps);
-				sampleRate(Number(cps.toFixed(2)));
+			const dt = now - last.t;
+			// Prefer real TPS from the transaction-total delta; fall back to cp/s.
+			let value: number | null = null;
+			if (totalTx !== null && last.tx !== null) {
+				const tps = ((totalTx - last.tx) * 1000) / dt;
+				if (Number.isFinite(tps) && tps >= 0) {
+					value = tps;
+					setHasTps(true);
+				}
+			}
+			if (value === null) {
+				const cps = ((checkpoint - last.cp) * 1000) / dt;
+				if (Number.isFinite(cps) && cps >= 0) value = cps;
+			}
+			if (value !== null) {
+				setRate(value);
+				sampleRate(Number(value.toFixed(2)));
 			}
 		}
-		prev.current = { cp: checkpoint, t: now };
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample fns are stable enough; keyed off checkpoint movement only
-	}, [checkpoint, headTs]);
+		prev.current = { cp: checkpoint, tx: totalTx, t: now };
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample fns are stable enough; keyed off head movement only
+	}, [checkpoint, totalTx, headTs]);
 
 	const chainLive = chain.rpcUrl !== null;
 
@@ -138,7 +157,7 @@ export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 						<Kpi
 							label="Throughput"
 							value={rate !== null ? rate.toFixed(2) : '—'}
-							sub="cp / s"
+							sub={hasTps ? 'TPS' : 'cp / s'}
 							token="green"
 							icon="activity"
 							live={rate !== null}

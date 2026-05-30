@@ -18,6 +18,7 @@ import {
 	fetchPackage,
 	fetchReferenceGasPrice,
 	fetchSuiBalance,
+	fetchTotalSupply,
 	fetchTransaction,
 } from './chain.ts';
 import type {
@@ -142,6 +143,23 @@ export const useCoinMeta = (
 		queryFn: () => fetchCoinMeta(source.rpcUrl as string, coinType as string),
 		enabled: enabled(source) && coinType !== null,
 		staleTime: DETAIL_STALE_MS,
+	});
+
+/**
+ * Total supply (base units, as a string) for a coin, read from its TreasuryCap
+ * object. Gated on a non-null `treasuryCapId` (and rpcUrl). Treated as detail-
+ * stable: supply only moves on mint/burn, so a longer stale window is fine.
+ */
+export const useTotalSupply = (
+	source: ChainSource,
+	treasuryCapId: string | null,
+): UseQueryResult<string | null> =>
+	useQuery({
+		queryKey: ['chain', source.network, 'totalSupply', treasuryCapId],
+		queryFn: () => fetchTotalSupply(source.rpcUrl as string, treasuryCapId as string),
+		enabled: enabled(source) && treasuryCapId !== null,
+		staleTime: HEAD_STALE_MS,
+		refetchInterval: HEAD_STALE_MS * 4,
 	});
 
 /** All non-zero balances owned by an address. */

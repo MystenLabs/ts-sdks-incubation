@@ -135,6 +135,13 @@ export interface ChainHead {
 	readonly timestampMs: number | null;
 	/** Lowest checkpoint for which data is available (pruning watermark). */
 	readonly lowestAvailableCheckpoint: number | null;
+	/**
+	 * Total transactions committed since genesis (running count) as of the head
+	 * checkpoint, from `CheckpointSummary.total_network_transactions`. Drives a
+	 * real TPS via Δ(total)/Δt across head ticks. Null when the head checkpoint
+	 * isn't yet readable.
+	 */
+	readonly totalTransactions: number | null;
 }
 
 /** Coin metadata + on-chain supply. */

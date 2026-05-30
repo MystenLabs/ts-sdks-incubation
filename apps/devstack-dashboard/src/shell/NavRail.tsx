@@ -7,10 +7,12 @@ import type { StatusToken } from '../lib/derive.ts';
 import type { CyclePhase } from '../lib/types.ts';
 import { Icon } from '../ui/index.ts';
 import { humanize } from '../lib/format.ts';
-import { NAV_SECTIONS } from './nav.ts';
+import type { NavSection } from './nav.ts';
 import { phaseToken } from './phase.ts';
 
 export interface NavRailProps {
+	/** Nav sections to render, derived from the live projection. */
+	readonly sections: ReadonlyArray<NavSection>;
 	/** Current route id (`overview`, `services`, …, or `plugin:<key>`). */
 	readonly route: string;
 	readonly collapsed: boolean;
@@ -30,6 +32,7 @@ const railBackground =
 	'linear-gradient(180deg, color-mix(in oklab, var(--bg-panel) 70%, var(--bg-base)), var(--bg-base))';
 
 export const NavRail = ({
+	sections,
 	route,
 	collapsed,
 	onToggleCollapsed,
@@ -112,7 +115,7 @@ export const NavRail = ({
 				className="col scroll-y grow"
 				style={{ gap: 1, padding: collapsed ? '12px 10px' : '14px 12px' }}
 			>
-				{NAV_SECTIONS.map((section, si) => (
+				{sections.map((section, si) => (
 					<div key={section.label ?? `top-${si}`} className="col" style={{ gap: 1 }}>
 						{section.label &&
 							(collapsed ? (

@@ -3,10 +3,10 @@
 // Real data: `fetchCoinCaps(endpoint)` (control-plane GraphQL) gives each
 // coin's full type, decimals, symbol, source, packageId, and treasuryCapId
 // (the cap that *would* drive a mint). Per-coin metadata (name / icon-symbol)
-// is read browser-direct from the chain via `useCoinMeta`. Total supply is NOT
-// reachable from the available chain helpers (the `getCoinMetadata` read
-// returns metadata, not the treasury-cap supply), so the Supply column renders
-// an honest "—" with a tooltip rather than a fabricated number.
+// is read browser-direct from the chain via `useCoinMeta`. Total supply is read
+// browser-direct from the coin's TreasuryCap object via `useTotalSupply`
+// (`TreasuryCap<T>` wraps a `Supply<T>` whose `total_supply.value` is the minted
+// base-unit total). Coins without a treasury cap keep an honest "—".
 //
 // Mint: there is NO `mint` GraphQL mutation in the control-plane schema
 // (`src/lib/api.ts` exposes none; the backend `coin/mint.ts` capability is not
@@ -16,12 +16,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { type CoinCap, fetchCoinCaps, restartPlugin } from '../../lib/api.ts';
 import { truncateMiddle } from '../../lib/format.ts';
-import { useCoinMeta } from '../../lib/useChain.ts';
+import { useCoinMeta, useTotalSupply } from '../../lib/useChain.ts';
 import { useToast } from '../../lib/toast.tsx';
 import {
 	Badge,
 	Banner,
 	type Column,
+	CoinAmount,
 	CoinIcon,
 	CopyChip,
 	DataTable,
@@ -164,12 +165,8 @@ const CoinTable = ({ caps, chain, onMint, activeMint }: CoinTableProps) => {
 			key: 'supply',
 			header: 'Supply',
 			align: 'right',
-			width: 110,
-			render: () => (
-				<Tooltip label="Total supply isn't exposed by the available chain reads.">
-					<span style={{ color: 'var(--tx-dim)' }}>—</span>
-				</Tooltip>
-			),
+			width: 130,
+			render: (c) => <SupplyCell cap={c} chain={chain} />,
 		},
 		{
 			key: 'source',
@@ -222,6 +219,33 @@ const CoinCell = ({ cap, chain }: { cap: CoinCap; chain: ChainSource }) => {
 			<span style={{ fontWeight: 550 }}>{symbol}</span>
 		</span>
 	);
+};
+
+/**
+ * Total-supply cell. When the coin has a treasury cap, reads its real minted
+ * total browser-direct from the TreasuryCap object (`useTotalSupply`) and scales
+ * it by the coin's decimals via `CoinAmount`. Without a cap the supply is genuinely
+ * unknowable from the chain reads available, so an honest "—" is shown.
+ */
+const SupplyCell = ({ cap, chain }: { cap: CoinCap; chain: ChainSource }) => {
+	const supply = useTotalSupply(chain, cap.treasuryCapId ?? null);
+	if (!cap.treasuryCapId) {
+		return (
+			<Tooltip label="No treasury cap for this coin — total supply isn't readable.">
+				<span style={{ color: 'var(--tx-dim)' }}>—</span>
+			</Tooltip>
+		);
+	}
+	if (supply.isLoading) return <span style={{ color: 'var(--tx-dim)' }}>…</span>;
+	if (supply.isError || supply.data == null) {
+		return (
+			<Tooltip label="Couldn't read total supply from the treasury cap object.">
+				<span style={{ color: 'var(--tx-dim)' }}>—</span>
+			</Tooltip>
+		);
+	}
+	const symbol = cap.symbol ?? cap.fullCoinType.split('::').pop() ?? '';
+	return <CoinAmount mist={supply.data} decimals={cap.decimals} symbol={symbol} />;
 };
 
 interface MintFormProps {

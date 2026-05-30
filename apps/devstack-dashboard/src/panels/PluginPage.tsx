@@ -7,6 +7,7 @@
 import type { ComponentType, ReactNode } from 'react';
 import { Icon, type IconName, StatusBadge, EmptyState } from '../ui/index.ts';
 import { humanize } from '../lib/format.ts';
+import { rowForPlugin } from '../lib/derive.ts';
 import { PLUGINS } from '../shell/nav.ts';
 import type { Row } from '../lib/types.ts';
 import type { PanelProps } from './types.ts';
@@ -46,18 +47,6 @@ const metaFor = (key: string): { label: string; icon: IconName } => {
 	return known ? { label: known.label, icon: known.icon } : { label: humanize(key), icon: 'plug' };
 };
 
-/**
- * Find the projection row backing a plugin page. Matches the row whose `key` is
- * exactly the plugin key, or is namespaced beneath it (`<key>:…`, `<key>-…`,
- * `<key>.…`). The previous `key.includes(key)` substring match was fragile —
- * e.g. `seal` would have matched an unrelated `unseal`/`reseal` row.
- */
-export const rowForPlugin = (rows: ReadonlyArray<Row>, key: string): Row | null => {
-	const exact = rows.find((r) => r.key === key);
-	if (exact) return exact;
-	return rows.find((r) => /^[:.\-]/.test(r.key.slice(key.length)) && r.key.startsWith(key)) ?? null;
-};
-
 /** Generic fallback for plugin keys without a registered view. */
 const GenericPluginView = ({ pluginKey, row }: PluginViewProps) => {
 	const { label, icon } = metaFor(pluginKey);
@@ -68,6 +57,27 @@ const GenericPluginView = ({ pluginKey, row }: PluginViewProps) => {
 					icon={icon}
 					title={`${label} panel coming soon`}
 					hint="This plugin's domain view hasn't been wired to the dashboard yet."
+				/>
+			</div>
+		</PluginScaffold>
+	);
+};
+
+/**
+ * Explicit "not in this stack" state. The nav lists every known plugin, so a
+ * plugin route can be selected for a plugin the running stack doesn't include
+ * (no managed projection row). Rather than silently bounce to Overview, render
+ * an honest empty state telling the user how to add it.
+ */
+const NotInStackView = ({ pluginKey }: { pluginKey: string }) => {
+	const { label, icon } = metaFor(pluginKey);
+	return (
+		<PluginScaffold label={label} icon={icon} row={null} subtitle="Not part of this stack.">
+			<div className="panel">
+				<EmptyState
+					icon={icon}
+					title={`${label} isn't part of this stack`}
+					hint={`Add \`${pluginKey}()\` to your devstack config to see this panel.`}
 				/>
 			</div>
 		</PluginScaffold>
@@ -127,6 +137,11 @@ export const PluginScaffold = ({
 export const PluginPanel = (props: PanelProps & { pluginKey: string }) => {
 	const { pluginKey } = props;
 	const row = rowForPlugin(props.projection.rows, pluginKey);
+	// The nav lists every known plugin, but only plugins actually in the running
+	// stack have a managed projection row. When the selected plugin has none,
+	// render an explicit "not in this stack" state instead of its (data-less)
+	// panel — honest over a silent redirect.
+	if (row === null) return <NotInStackView pluginKey={pluginKey} />;
 	const View = PLUGIN_VIEWS[pluginKey] ?? GenericPluginView;
 	return <View {...props} row={row} />;
 };

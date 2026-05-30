@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
 	account,
+	dashboard,
 	defineDevstack,
 	localPackage,
 	sui,
@@ -38,7 +39,7 @@ const devWallet = wallet({
 	accounts: [publisher, alice, bob],
 });
 const stack: Stack = defineDevstack({
-	members: [forkedNetwork, greeting, devWallet],
+	members: [forkedNetwork, greeting, devWallet, dashboard()],
 	stackName: 'fork-greeting',
 });
 

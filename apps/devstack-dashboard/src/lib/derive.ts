@@ -192,6 +192,51 @@ export const errorSummary = (error: StructuredError | null): string => {
 export const rowNarration = (row: Pick<Row, 'status' | 'phase' | 'lastError'>): string =>
 	row.status === 'failed' ? errorSummary(row.lastError) || 'Failed' : (row.phase ?? '');
 
+// --- Plugin presence -------------------------------------------------------
+
+/**
+ * Map a nav/registry plugin key to the prefix its managed projection rows use.
+ * Most plugins namespace their rows as `<key>:<name>` (e.g. `deepbook:dex`),
+ * but the registry pluralises one: the nav key is `coins` while the supervisor
+ * stamps `coin:<symbol>` rows. Centralising the mapping here keeps the nav and
+ * the plugin page from diverging. Unlisted keys map to themselves.
+ */
+const PLUGIN_ROW_PREFIX: Record<string, string> = {
+	coins: 'coin',
+};
+
+/** The projection row-key prefix a plugin's managed rows carry. */
+export const pluginRowPrefix = (pluginKey: string): string =>
+	PLUGIN_ROW_PREFIX[pluginKey] ?? pluginKey;
+
+/**
+ * Find the projection row backing a plugin. Matches the row whose `key` is
+ * exactly the plugin's row prefix, or is namespaced beneath it (`<prefix>:…`,
+ * `<prefix>-…`, `<prefix>.…`). A plain substring match would be fragile —
+ * e.g. `seal` would wrongly match an unrelated `unseal`/`reseal` row.
+ */
+export const rowForPlugin = (rows: ReadonlyArray<Row>, pluginKey: string): Row | null => {
+	const prefix = pluginRowPrefix(pluginKey);
+	const exact = rows.find((r) => r.key === prefix);
+	if (exact) return exact;
+	return (
+		rows.find((r) => r.key.startsWith(prefix) && /^[:.\-]/.test(r.key.slice(prefix.length))) ?? null
+	);
+};
+
+/** Whether a plugin has at least one managed row in the projection. */
+export const pluginPresent = (rows: ReadonlyArray<Row>, pluginKey: string): boolean =>
+	rowForPlugin(rows, pluginKey) !== null;
+
+/**
+ * Filter a list of known plugin keys down to those actually present in the
+ * running stack (one managed projection row each), preserving input order.
+ */
+export const presentPlugins = (
+	rows: ReadonlyArray<Row>,
+	pluginKeys: ReadonlyArray<string>,
+): ReadonlyArray<string> => pluginKeys.filter((key) => pluginPresent(rows, key));
+
 export interface RowGroup {
 	readonly section: RowSection;
 	readonly label: string;
