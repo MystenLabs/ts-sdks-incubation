@@ -15,6 +15,7 @@ import {
 import { PostAcquireTasksService } from '../../substrate/runtime/post-acquire-tasks.ts';
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
+import { IdentityContext, RuntimeRoot } from '../../substrate/runtime/paths.ts';
 
 import {
 	HOST_SERVICE_ERROR_TAGS,
@@ -72,6 +73,16 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 				const logger = yield* Logger;
 				const currentPlugin = yield* CurrentPluginKey;
 				const postAcquireTasks = yield* PostAcquireTasksService;
+				// Effective stack + runtime root for this supervised run, so
+				// the host-service can publish them into the spawned child's
+				// env. The Vite plugin runs IN that child and re-discovers the
+				// manifest via `resolveDiscoveryEnv(process.env)`; `--stack` is
+				// a CLI flag that never reaches the child otherwise. Sourced
+				// from the same boot-wired `Identity` / `RuntimeRoot` the rest
+				// of the run uses, so the values point at the real manifest at
+				// `<root>/stacks/<stack>/manifest.json`.
+				const identity = yield* IdentityContext;
+				const { root: runtimeRoot } = yield* RuntimeRoot;
 				const acquireContext = {
 					allocatePort: (preferredPort) =>
 						portBroker
@@ -83,6 +94,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 							.pipe(Effect.map((allocation) => allocation.port)),
 					logger,
 					pluginKey: currentPlugin.key,
+					discoveryIdentity: { stack: identity.stack, runtimeRoot },
 				} satisfies HostServiceAcquireContext;
 				const prepared = yield* prepareHostService(normalized, acquireContext);
 				yield* postAcquireTasks.register({

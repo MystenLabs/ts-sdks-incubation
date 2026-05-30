@@ -126,6 +126,27 @@ export interface HostServiceAcquireContext {
 	readonly pluginKey: PluginKey;
 	readonly spawner?: HostProcessSpawner;
 	readonly processEnv?: NodeJS.ProcessEnv;
+	/**
+	 * Stack identity to publish into the spawned child's environment so
+	 * that in-process build integrations running INSIDE that child (the
+	 * `devstack` Vite plugin in particular) can re-discover the active
+	 * stack's manifest. `--stack` is a CLI flag, not an env var, and the
+	 * supervisor process does not mutate its own `process.env`, so without
+	 * this the child would inherit no `DEVSTACK_STACK` /
+	 * `DEVSTACK_RUNTIME_ROOT` and the Vite plugin's
+	 * `resolveDiscoveryEnv(process.env)` would fall back to the `main`
+	 * stack — aliasing `@generated` at the wrong stack's codegen output.
+	 *
+	 * `stack` is the effective stack name (`Identity.stack`); `runtimeRoot`
+	 * is the absolute on-disk runtime root (`RuntimeRoot.root`). The two
+	 * map directly onto the `<runtimeRoot>/stacks/<stack>/manifest.json`
+	 * path the supervisor writes and `discoverManifestPath` reads. Optional
+	 * so non-supervised callers (and tests) can omit them.
+	 */
+	readonly discoveryIdentity?: {
+		readonly stack: string;
+		readonly runtimeRoot: string;
+	};
 }
 
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
@@ -476,7 +497,25 @@ const startHostProcess = (
 ): Effect.Effect<void, HostServiceAcquireError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const rendered = renderCommand(options, port);
+		// Per-stack discovery identity for in-child build integrations
+		// (the `devstack` Vite plugin). These are a LOW-precedence base
+		// layer: the inherited process env and the user's explicit
+		// `options.env` both spread on top, so a user-set
+		// `DEVSTACK_STACK` / `DEVSTACK_RUNTIME_ROOT` always wins. The
+		// literal var names + the `RUNTIME_ROOT`-over-`STATE_DIR`
+		// preference mirror `resolveDiscoveryEnv` (the plugin's reader);
+		// `runtimeRoot` is absolute, so `discoverManifestPath` resolves
+		// `<runtimeRoot>/stacks/<stack>/manifest.json` directly — exactly
+		// where the supervisor writes the manifest.
+		const discoveryEnv: NodeJS.ProcessEnv =
+			ctx.discoveryIdentity === undefined
+				? {}
+				: {
+						DEVSTACK_STACK: ctx.discoveryIdentity.stack,
+						DEVSTACK_RUNTIME_ROOT: ctx.discoveryIdentity.runtimeRoot,
+					};
 		const env: NodeJS.ProcessEnv = {
+			...discoveryEnv,
 			...(ctx.processEnv ?? process.env),
 			...rendered.env,
 			PORT: String(port),

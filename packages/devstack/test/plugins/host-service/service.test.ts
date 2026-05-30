@@ -7,9 +7,10 @@ import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Effect, Exit, Fiber, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
-import { pluginKey } from '../../../src/substrate/brand.ts';
+import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
+import { IdentityContext, RuntimeRoot } from '../../../src/substrate/runtime/paths.ts';
 import {
 	PortBrokerService,
 	type AllocateOptions,
@@ -403,6 +404,15 @@ describe('acquireHostService', () => {
 						Effect.provideService(PortBrokerService, broker),
 						Effect.provideService(Logger, fakeLogger),
 						Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
+						// The host-service start now reads Identity + RuntimeRoot to publish
+						// DEVSTACK_STACK / DEVSTACK_RUNTIME_ROOT into the spawned child's env
+						// (so the in-child Vite plugin re-discovers the active stack's manifest).
+						Effect.provideService(IdentityContext, {
+							app: appName('host-service-test'),
+							stack: stackName('host-service-test'),
+							chain: chainId('localnet'),
+						}),
+						Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
 					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
 				expect(value.url).toBe('http://127.0.0.1:6173');
