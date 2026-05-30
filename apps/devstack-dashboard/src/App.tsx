@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useState, type JSX, type ReactNode } from 'react';
 import { useRoute, navigate } from './lib/router.ts';
 import { useProjection } from './lib/useProjection.ts';
+import { useMode } from './lib/useChain.ts';
 import { summarize } from './lib/derive.ts';
 import { captureSnapshot, restartStack, runCodegen } from './lib/api.ts';
 import { suiRpcUrl } from './lib/chain.ts';
@@ -154,6 +155,13 @@ const Shell = () => {
 	// lists plugins actually present in the running stack (and hides when none).
 	// Computed unconditionally (hooks rule) — empty rows before the first frame.
 	const navSections = useMemo(() => buildNav(projection?.rows ?? []), [projection?.rows]);
+
+	// Resolved stack mode (fork / local / live). The projection's
+	// `identity.network` is the node's network family ("sui:local" — a fork runs
+	// a LOCAL node loaded with forked upstream state), so it does NOT distinguish
+	// fork from a plain local stack. The control plane exposes the real mode
+	// separately; surface it so the header/footer read "fork" instead of "local".
+	const stackMode = useMode(endpoint, projection?.identity.network ?? '').data ?? null;
 
 	// --- Persisted setters ---------------------------------------------------
 
@@ -332,6 +340,11 @@ const Shell = () => {
 				height: '100%',
 				display: 'grid',
 				gridTemplateColumns: `${collapsed ? 'var(--nav-w-collapsed)' : 'var(--nav-w)'} 1fr`,
+				// Bound the single grid row to the viewport (minmax(0,1fr), not the
+				// default min-content) so the nav + main columns can shrink below
+				// their content height and scroll internally instead of overflowing
+				// past `body { overflow: hidden }`. Pairs with minHeight:0 below.
+				gridTemplateRows: 'minmax(0, 1fr)',
 				zIndex: 1,
 				background: railBackground,
 			}}
@@ -347,13 +360,14 @@ const Shell = () => {
 				cycleId={projection.cycle.id}
 				ready={summary.ready}
 				total={summary.total}
-				mode={projection.identity.network}
+				mode={stackMode === 'fork' ? 'fork' : projection.identity.network}
 				failedCount={summary.failed}
 			/>
 
-			<div className="col" style={{ minWidth: 0, height: '100%' }}>
+			<div className="col" style={{ minWidth: 0, minHeight: 0, height: '100%' }}>
 				<StatusHeader
 					projection={projection}
+					mode={stackMode}
 					connection={data.connection}
 					onOpenPalette={() => setPaletteOpen(true)}
 					onToggleTheme={toggleTheme}
@@ -361,7 +375,7 @@ const Shell = () => {
 					onRestart={restart}
 				/>
 
-				<main className="scroll-y grow" style={{ padding: '24px 26px' }}>
+				<main className="scroll-y grow" style={{ padding: '24px 26px', minHeight: 0 }}>
 					{data.connection === 'error' && data.projection != null && (
 						<Banner tone="warn" title="Reconnecting…" className="mb-[18px]">
 							Lost the live connection — showing the last snapshot.
