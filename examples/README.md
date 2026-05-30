@@ -15,7 +15,7 @@ be committed.
 | [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.                                 | `pnpm --filter @mysten-incubation/connect-four dev`    |
 | [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader with dev-wallet connection, local DeepBook publish, DEEP/SUI pool seeding, and live SUI-to-DEEP swaps. | `pnpm --filter @mysten-incubation/deepbook-trader dev` |
 | [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.                                 | `pnpm --filter @mysten-incubation/private-content dev` |
-| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint, burn, and transfer flows.                                                      | `pnpm --filter @mysten-incubation/token-studio dev`    |
+| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint and transfer flows.                                                             | `pnpm --filter @mysten-incubation/token-studio dev`    |
 
 The `dev` scripts run the built workspace devstack CLI directly. Turbo builds workspace
 dependencies when needed, and devstack supervises the local services plus each

@@ -123,7 +123,7 @@ export function useCoinBalance(address: string | undefined) {
 
 /**
  * Returns a callback that invalidates every read of the coin's state — call
- * after a successful mint/transfer/burn so balances and supply re-fetch.
+ * after a successful mint/transfer so balances and supply re-fetch.
  */
 export function useInvalidateCoinReads() {
 	const qc = useQueryClient();
