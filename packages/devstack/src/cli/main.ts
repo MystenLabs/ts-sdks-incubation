@@ -49,7 +49,7 @@ import {
 	runSnapshotDeleteDirect,
 	runSnapshotRestoreDirect,
 } from './wirings/snapshot.ts';
-import { runWipeDirect } from './wirings/wipe.ts';
+import { runWipeDirect, runWipePlanDirect } from './wirings/wipe.ts';
 import { makeConfigLoader, resolveConfigPath } from './wirings/config-loader.ts';
 import type { ResolvedIdentity } from './wirings/identity.ts';
 
@@ -175,6 +175,7 @@ const buildDirectDeps = (identity: ResolvedIdentity): CliDeps => {
 		config: { loader: makeConfigLoader() },
 		wipe: {
 			wipe: () => runWipeDirect(identity),
+			plan: () => runWipePlanDirect(identity),
 			confirm: nodeConfirmPrompt,
 		},
 	};

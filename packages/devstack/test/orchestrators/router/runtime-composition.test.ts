@@ -111,6 +111,7 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 	list: Effect.die('unused snapshot list'),
 	delete: () => Effect.die('unused snapshot delete'),
 	wipe: () => Effect.die('unused snapshot wipe'),
+	wipePlan: () => Effect.die('unused snapshot wipePlan'),
 	prune: () => Effect.die('unused snapshot prune'),
 	recoverPendingRestore: Effect.die('unused snapshot recoverPendingRestore'),
 } satisfies SnapshotOrchestrator);

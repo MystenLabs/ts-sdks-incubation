@@ -8,14 +8,13 @@
 
 import { Effect, FileSystem, Logger } from 'effect';
 
-import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
+import {
+	SnapshotOrchestratorService,
+	type WipeTargets,
+} from '../../orchestrators/snapshot/index.ts';
 import { removeRouterDispatchFilesForStack } from '../../orchestrators/router/cleanup.ts';
 
-import {
-	ensureNoLiveSupervisor,
-	identityValueFor,
-	type ResolvedIdentity,
-} from './identity.ts';
+import { ensureNoLiveSupervisor, identityValueFor, type ResolvedIdentity } from './identity.ts';
 import { buildDirectSnapshotLayers } from './build-verb-layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
 
@@ -42,3 +41,26 @@ export const runWipeDirect = (identity: ResolvedIdentity): Effect.Effect<void, u
 			Effect.provide(Logger.layer([Logger.consolePretty()])),
 		);
 	});
+
+/** Read-only enumeration of the concrete targets a real `wipe` would
+ *  remove — backs `devstack wipe --dry-run`. Deliberately does NOT
+ *  `ensureNoLiveSupervisor` (a preview must work whether or not a
+ *  supervisor is attached; it mutates nothing) and skips the router
+ *  dispatch-file removal (that is a destructive side effect of the real
+ *  wipe, not part of the preview). */
+export const runWipePlanDirect = (
+	identity: ResolvedIdentity,
+): Effect.Effect<WipeTargets, unknown> =>
+	Effect.gen(function* () {
+		const snapshot = yield* SnapshotOrchestratorService;
+		const fs = yield* FileSystem.FileSystem;
+		return yield* provideFileSystem(fs, snapshot.wipePlan({}));
+	}).pipe(
+		Effect.provide(
+			buildDirectSnapshotLayers({
+				identity: identityValueFor(identity),
+				runtimeRoot: identity.runtimeRoot,
+			}),
+		),
+		Effect.provide(Logger.layer([Logger.consolePretty()])),
+	);

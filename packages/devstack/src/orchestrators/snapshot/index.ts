@@ -59,7 +59,15 @@ export {
 } from './pending-marker.ts';
 
 // Wipe
-export { runWipe, SNAPSHOTS_DIR_NAME, WipePhaseError, type WipeInputs } from './wipe.ts';
+export {
+	CACHE_DIR_NAME,
+	planWipe,
+	runWipe,
+	SNAPSHOTS_DIR_NAME,
+	WipePhaseError,
+	type WipeInputs,
+	type WipeTargets,
+} from './wipe.ts';
 
 // Prune
 export { PrunePhaseError, runPrune, type PruneInputs, type PruneResult } from './prune.ts';

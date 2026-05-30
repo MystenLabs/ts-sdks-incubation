@@ -69,7 +69,7 @@ import {
 	stageAndSwap,
 	type StageAndSwapError,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
-import { runWipe, type WipePhaseError } from './wipe.ts';
+import { planWipe, runWipe, type WipePhaseError, type WipeTargets } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
 // The service shape
@@ -160,6 +160,16 @@ export interface SnapshotOrchestrator {
 		readonly keepSnapshots?: boolean;
 		readonly keepCache?: boolean;
 	}) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
+
+	/** Enumerate the concrete teardown targets a `wipe` of the same
+	 *  `(app, stack)` would remove WITHOUT removing anything — the
+	 *  read-only preview behind `devstack wipe --dry-run`. Same args as
+	 *  `wipe` so the preview honors the same `keepSnapshots`/`keepCache`
+	 *  preservation policy the real wipe applies. */
+	readonly wipePlan: (args: {
+		readonly keepSnapshots?: boolean;
+		readonly keepCache?: boolean;
+	}) => Effect.Effect<WipeTargets, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
 	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
@@ -567,6 +577,21 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				);
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
 
+		const wipePlan: SnapshotOrchestrator['wipePlan'] = (args) =>
+			// Read-only: no stack-lock / reservation. `planWipe` only lists
+			// matching containers and reads the stack-root directory, so it
+			// is safe to run without serializing against peers (a concurrent
+			// mutation just makes the preview slightly stale — acceptable for
+			// a dry-run estimate).
+			planWipe({
+				labelMatch: { app: identity.app, stack: identity.stack },
+				stackRoot: paths.stackRoot,
+				stateFilePath: paths.stateFile,
+				runtime,
+				keepSnapshots: args.keepSnapshots,
+				keepCache: args.keepCache,
+			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
+
 		const prune: SnapshotOrchestrator['prune'] = () =>
 			Effect.scoped(
 				Effect.gen(function* () {
@@ -591,6 +616,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			list,
 			delete: del,
 			wipe,
+			wipePlan,
 			prune,
 			recoverPendingRestore: recoverPendingRestoreImpl,
 		});

@@ -391,11 +391,36 @@ export const collectLifecyclePruneInventory = (
 			const { app, stack, bucket } = entry;
 			const routerGroup = app === ROUTER_SHARED_APP;
 			const livePids = routerGroup ? [] : yield* livePidsForStack(options.runtimeRoot, stack);
+			// Liveness is the OR of two independent signals so a live stack
+			// is never mis-reported `live:false` (and so never swept by
+			// `devstack prune --all`):
+			//
+			//   1. The per-stack roster carries a live holder (`livePids`
+			//      — the SAME `<root>/stacks/<stack>/roster.json` probe
+			//      `ensureNoLiveSupervisor` / `probeSupervisorPresence` use;
+			//      see `livePidsForStack`). Authoritative supervisor-presence
+			//      signal; also yields the PID detail.
+			//   2. The Docker daemon reports a RUNNING container for the
+			//      group. A `devstack up` supervisor always has running
+			//      containers, so this catches a live stack even when the
+			//      roster probe transiently comes back empty — a missing/
+			//      stale roster file, a holder reaped by a peer sweep, or a
+			//      `ps -o lstart` start-time hiccup that harvests a live
+			//      holder as dead. Running containers are a daemon-
+			//      authoritative "not idle" signal, so this only ever ADDS
+			//      protection; it never reclassifies as idle a stack the
+			//      roster probe alone would have protected.
+			//
+			// The router branch already keyed liveness on
+			// `runningContainers > 0` (router singletons carry no per-stack
+			// roster); folding the same signal into normal groups makes the
+			// classification uniform and closes the under-report.
+			const live = livePids.length > 0 || bucket.runningContainers > 0;
 			groups.push({
 				key: lifecyclePruneGroupKey(app, stack),
 				app,
 				stack,
-				live: routerGroup ? bucket.runningContainers > 0 : livePids.length > 0,
+				live,
 				livePids,
 				shared: isSharedGroup(app, stack),
 				sharedKind: sharedKindFor(app, stack),
