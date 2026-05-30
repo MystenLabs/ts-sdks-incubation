@@ -10,16 +10,11 @@
 // selected, surface an honest "routed via <plugin>" note instead of a request
 // that would 4xx. "Recent requests" is local session state (no server history).
 
-import {
-	type ChangeEvent,
-	type FormEvent,
-	type ReactNode,
-	useMemo,
-	useState,
-} from 'react';
+import { type ChangeEvent, type FormEvent, type ReactNode, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PanelProps } from './types.ts';
 import type { Endpoint, Projection } from '../lib/types.ts';
+import { pluginPresent } from '../lib/derive.ts';
 import { timeAgo, truncateMiddle } from '../lib/format.ts';
 import { useToast } from '../lib/toast.tsx';
 import {
@@ -77,15 +72,6 @@ const findFaucetEndpoint = (endpoints: ReadonlyArray<Endpoint>): Endpoint | null
 	endpoints.find((e) => /faucet/i.test(e.name)) ??
 	null;
 
-/** True when any row/endpoint in the projection belongs to the named plugin. */
-const hasPlugin = (projection: Projection, needle: string): boolean => {
-	const re = new RegExp(needle, 'i');
-	return (
-		projection.rows.some((r) => re.test(r.key)) ||
-		projection.endpoints.some((e) => re.test(e.pluginKey) || re.test(e.name))
-	);
-};
-
 /**
  * The faucet-enabled coin set: SUI is always dispatchable; WAL/DEEP only appear
  * when their plugins are present, and are flagged non-dispatchable with an
@@ -93,13 +79,13 @@ const hasPlugin = (projection: Projection, needle: string): boolean => {
  */
 const faucetCoins = (projection: Projection): ReadonlyArray<CoinOption> => {
 	const coins: CoinOption[] = [{ symbol: 'SUI', dispatchable: true }];
-	if (hasPlugin(projection, 'walrus'))
+	if (pluginPresent(projection.rows, 'walrus'))
 		coins.push({
 			symbol: 'WAL',
 			dispatchable: false,
 			note: 'WAL is acquired by swapping SUI through the walrus exchange — not a browser faucet. Request SUI here, then exchange.',
 		});
-	if (hasPlugin(projection, 'deepbook'))
+	if (pluginPresent(projection.rows, 'deepbook'))
 		coins.push({
 			symbol: 'DEEP',
 			dispatchable: false,
@@ -141,10 +127,7 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 
 	const recipientValid = HEX_ADDRESS.test(recipient);
 	const canRequest =
-		faucet !== null &&
-		recipientValid &&
-		selectedCoin.dispatchable &&
-		state !== 'requesting';
+		faucet !== null && recipientValid && selectedCoin.dispatchable && state !== 'requesting';
 
 	const request = async (e: FormEvent) => {
 		e.preventDefault();
@@ -324,12 +307,7 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 						<ErrorBanner error={error} onRetry={state === 'requesting' ? undefined : request} />
 					)}
 
-					<Button
-						type="submit"
-						variant="primary"
-						disabled={!canRequest}
-						style={{ height: 38 }}
-					>
+					<Button type="submit" variant="primary" disabled={!canRequest} style={{ height: 38 }}>
 						{state === 'requesting' ? (
 							<>
 								<span className="dot dot-white dot-pulse" /> Requesting…

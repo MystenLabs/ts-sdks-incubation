@@ -52,3 +52,7 @@ export const formatFields = (fields: Record<string, unknown>): string =>
 /** Wall-clock `HH:MM:SS` (24h) for a log/span timestamp. */
 export const clock24 = (millis: number): string =>
 	new Date(millis).toLocaleTimeString('en', { hour12: false });
+
+/** Toggle a value in/out of a readonly set-like array (filter when present, append when absent). */
+export const toggleInSet = <T>(cur: ReadonlyArray<T>, value: T): ReadonlyArray<T> =>
+	cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value];

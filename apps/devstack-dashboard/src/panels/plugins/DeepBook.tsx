@@ -18,10 +18,10 @@
 //     the spread slider are read-only/disabled with an inline note. "Seed
 //     liquidity" is likewise disabled (no browser-safe mutation exists).
 
-import { type ReactNode, useEffect, useState } from 'react';
-import { fetchDeepbookInfo, restartPlugin } from '../../lib/api.ts';
+import { type ReactNode } from 'react';
+import { restartPlugin } from '../../lib/api.ts';
 import type { DeepbookInfo } from '../../lib/api.ts';
-import { useObject } from '../../lib/useChain.ts';
+import { useDeepbookInfo, useObject } from '../../lib/useChain.ts';
 import { groupDigits, truncateMiddle } from '../../lib/format.ts';
 import { navigate } from '../../lib/router.ts';
 import { useToast } from '../../lib/toast.tsx';
@@ -34,11 +34,10 @@ import {
 	Panel,
 	SectionHead,
 	Slider,
-	StatusBadge,
 	Switch,
 	Tooltip,
 } from '../../ui/index.ts';
-import type { PluginViewProps } from '../PluginPage.tsx';
+import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
 const EM_DASH = '—';
 
@@ -138,115 +137,72 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 	const { success, info } = useToast();
 	const network = chain.network;
 
-	const [deployments, setDeployments] = useState<ReadonlyArray<DeepbookInfo>>([]);
-	const [loading, setLoading] = useState(true);
-
-	// Load the DeepBook deployment(s) from the control plane; re-runs when the
+	// Load the DeepBook deployment(s) from the control plane; re-keyed when the
 	// connected stack (endpoint/network) changes.
-	useEffect(() => {
-		let alive = true;
-		setLoading(true);
-		fetchDeepbookInfo(endpoint)
-			.then((list) => {
-				if (alive) setDeployments(list);
-			})
-			.catch(() => {
-				if (alive) setDeployments([]);
-			})
-			.finally(() => {
-				if (alive) setLoading(false);
-			});
-		return () => {
-			alive = false;
-		};
-	}, [endpoint, network]);
+	const deepbookQuery = useDeepbookInfo(endpoint, network);
+	const deployments: ReadonlyArray<DeepbookInfo> = deepbookQuery.data ?? [];
+	const loading = deepbookQuery.isLoading;
 
 	// One DeepBook deployment backs a plugin page; if several resolve, the row's
 	// pluginKey picks the matching one, else the first.
 	const info0 =
 		(row ? deployments.find((d) => d.pluginKey === row.key) : undefined) ?? deployments[0] ?? null;
 
-	const subtitle = 'CLOB · liquidity';
-	const phase = row?.phase ?? info0?.pluginKey ?? 'deepbook';
-
-	const header = (
-		<div className="row between wrap" style={{ gap: 12 }}>
-			<div className="row" style={{ gap: 13 }}>
-				<div
-					style={{
-						width: 42,
-						height: 42,
-						borderRadius: 11,
-						display: 'grid',
-						placeItems: 'center',
-						background: 'color-mix(in oklab, var(--c-blue) 16%, transparent)',
-						color: 'var(--c-blue)',
-						flex: 'none',
-						boxShadow: '0 0 0 1px color-mix(in oklab, var(--c-blue) 28%, transparent)',
-					}}
-				>
-					<Icon name="box" size={21} />
-				</div>
-				<div>
-					<div className="row" style={{ gap: 10 }}>
-						<h2 style={{ fontSize: 19 }}>DeepBook</h2>
-						{row && <StatusBadge status={row.status} />}
-					</div>
-					<span style={{ fontSize: 12.5, color: 'var(--tx-mid)' }}>
-						{subtitle} ·{' '}
-						<span className="mono" style={{ color: 'var(--tx-lo)' }}>
-							{phase}
-						</span>
-					</span>
-				</div>
-			</div>
-			<div className="row" style={{ gap: 8 }}>
-				<button
-					className="btn btn-sm"
-					onClick={() => {
-						const key = info0?.pluginKey ?? row?.key;
-						if (!key) return;
-						void restartPlugin(endpoint, key)
-							.then((r) =>
-								r.ok ? success(r.message ?? 'Restart requested') : info(r.message ?? 'Restart failed'),
-							)
-							.catch((e: unknown) => info(e instanceof Error ? e.message : String(e)));
-					}}
-				>
-					<Icon name="refresh" size={13} /> Restart
-				</button>
-				{row && (
-					<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
-						Logs &amp; events
+	const header = (children: ReactNode) => (
+		<PluginScaffold
+			label="DeepBook"
+			icon="box"
+			row={row}
+			token="blue"
+			subtitle="CLOB · liquidity"
+			phase={row?.phase ?? info0?.pluginKey ?? 'deepbook'}
+			actions={
+				<>
+					<button
+						className="btn btn-sm"
+						onClick={() => {
+							const key = info0?.pluginKey ?? row?.key;
+							if (!key) return;
+							void restartPlugin(endpoint, key)
+								.then((r) =>
+									r.ok
+										? success(r.message ?? 'Restart requested')
+										: info(r.message ?? 'Restart failed'),
+								)
+								.catch((e: unknown) => info(e instanceof Error ? e.message : String(e)));
+						}}
+					>
+						<Icon name="refresh" size={13} /> Restart
 					</button>
-				)}
-			</div>
-		</div>
+					{row && (
+						<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
+							Logs &amp; events
+						</button>
+					)}
+				</>
+			}
+		>
+			{children}
+		</PluginScaffold>
 	);
 
 	if (loading && deployments.length === 0) {
-		return (
-			<div className="col" style={{ gap: 18 }}>
-				{header}
-				<Panel pad>
-					<EmptyState icon="box" title="Loading DeepBook…" />
-				</Panel>
-			</div>
+		return header(
+			<Panel pad>
+				<EmptyState icon="box" title="Loading DeepBook…" />
+			</Panel>,
 		);
 	}
 
 	if (!info0) {
-		return (
-			<div className="col" style={{ gap: 18 }}>
-				{header}
-				<Panel pad>
-					<EmptyState
-						icon="box"
-						title="No DeepBook deployment"
-						hint="The control plane reports no resolved DeepBook plugin for this stack."
-					/>
-				</Panel>
-			</div>
+		return header(
+			<Panel pad>
+				<EmptyState
+					icon="box"
+					title="No DeepBook deployment"
+					hint="The control plane reports no resolved DeepBook plugin for this stack."
+				/>
+			</Panel>,
 		);
 	}
 
@@ -257,10 +213,8 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 	const hasIndexer = Boolean(info0.indexerUrl);
 	const mmRunning = info0.marketMakerRunning;
 
-	return (
-		<div className="col" style={{ gap: 18 }}>
-			{header}
-
+	return header(
+		<>
 			{/* KPIs. Volume/trends need the indexer; shown as unavailable when absent. */}
 			<div
 				style={{
@@ -428,6 +382,6 @@ export const DeepBookView = ({ row, endpoint, chain }: PluginViewProps) => {
 					</Panel>
 				</div>
 			</div>
-		</div>
+		</>,
 	);
 };

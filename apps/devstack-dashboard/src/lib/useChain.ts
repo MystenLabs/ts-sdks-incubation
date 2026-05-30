@@ -6,6 +6,7 @@
 // and the network with `projection.identity.network`, then pass both in; hooks
 // stay disabled until an `rpcUrl` is available.
 
+import { useEffect, useRef, useState } from 'react';
 import { useQuery, type UseQueryResult } from '@tanstack/react-query';
 import {
 	fetchBalances,
@@ -21,6 +22,18 @@ import {
 	fetchTotalSupply,
 	fetchTransaction,
 } from './chain.ts';
+import {
+	type CoinCap,
+	type DeepbookInfo,
+	fetchCoinCaps,
+	fetchDeepbookInfo,
+	fetchMode,
+	fetchPostgresStats,
+	fetchSealInfo,
+	type PostgresStats,
+	type SealInfo,
+	type StackMode,
+} from './api.ts';
 import type {
 	BalanceView,
 	ChainHead,
@@ -175,13 +188,145 @@ export const useBalances = (
 	});
 
 /** SUI balance (MIST) for an address. */
-export const useSuiBalance = (
-	source: ChainSource,
-	owner: string | null,
-): UseQueryResult<string> =>
+export const useSuiBalance = (source: ChainSource, owner: string | null): UseQueryResult<string> =>
 	useQuery({
 		queryKey: ['chain', source.network, 'suiBalance', owner],
 		queryFn: () => fetchSuiBalance(source.rpcUrl as string, owner as string),
 		enabled: enabled(source) && owner !== null,
 		staleTime: HEAD_STALE_MS,
 	});
+
+// --- Control-plane domain hooks ---------------------------------------------
+//
+// React-query wrappers over the per-plugin `fetch*` helpers in `api.ts`. Keyed
+// by `endpoint` + `network` so switching stacks never serves a stale domain
+// result. Plugin panels consume these instead of hand-rolling load/error state.
+
+const DOMAIN_STALE_MS = 10_000;
+
+/** Resolved stack mode (`local` | `fork` | `live`), or null when unset. */
+export const useMode = (endpoint: string, network: string): UseQueryResult<StackMode> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'mode'],
+		queryFn: () => fetchMode(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** DeepBook deployments + pools. */
+export const useDeepbookInfo = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<ReadonlyArray<DeepbookInfo>> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'deepbook'],
+		queryFn: () => fetchDeepbookInfo(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** Seal key-server deployments. */
+export const useSealInfo = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<ReadonlyArray<SealInfo>> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'seal'],
+		queryFn: () => fetchSealInfo(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** Coin treasury-cap registry. */
+export const useCoinCaps = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<ReadonlyArray<CoinCap>> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'coinCaps'],
+		queryFn: () => fetchCoinCaps(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** Postgres wire-protocol stats per plugin instance. */
+export const usePostgresStats = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<ReadonlyArray<PostgresStats>> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'postgresStats'],
+		queryFn: () => fetchPostgresStats(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+// --- Live rolling series + chain rate ---------------------------------------
+
+/** Cap on how many samples a rolling mini-series retains. */
+const SERIES_CAP = 24;
+
+/**
+ * A short rolling numeric series accumulated from live ticks. `sample` is fed a
+ * fresh value on each update; identical consecutive values are skipped so the
+ * series only grows when the underlying metric actually moves. Resets when
+ * `resetKey` changes (e.g. switching networks). Honest by construction — it only
+ * ever holds values observed while the consumer was mounted.
+ */
+export const useRollingSeries = (
+	resetKey: string,
+): readonly [ReadonlyArray<number>, (v: number) => void] => {
+	const [series, setSeries] = useState<ReadonlyArray<number>>([]);
+	const last = useRef<number | null>(null);
+	useEffect(() => {
+		last.current = null;
+		setSeries([]);
+	}, [resetKey]);
+	const sample = (v: number) => {
+		if (!Number.isFinite(v) || last.current === v) return;
+		last.current = v;
+		setSeries((prev) => [...prev, v].slice(-SERIES_CAP));
+	};
+	return [series, sample];
+};
+
+/**
+ * Derive a live rate (per second) from head ticks. Prefers REAL TPS from
+ * Δ(totalTransactions)/Δt; falls back to the honest checkpoint rate (cp/s) when
+ * the transaction total isn't available. Returns the rate and whether it's true
+ * TPS (drives the label). Resets when `resetKey` (the network) changes.
+ */
+export const useChainRate = (
+	resetKey: string,
+	checkpoint: number | null,
+	totalTx: number | null,
+	headTs: number | null,
+): { rate: number | null; isTps: boolean } => {
+	const prev = useRef<{ cp: number; tx: number | null; t: number } | null>(null);
+	const [rate, setRate] = useState<number | null>(null);
+	const [isTps, setIsTps] = useState(false);
+	useEffect(() => {
+		prev.current = null;
+		setRate(null);
+		setIsTps(false);
+	}, [resetKey]);
+	useEffect(() => {
+		if (checkpoint === null) return;
+		const now = headTs ?? Date.now();
+		const last = prev.current;
+		if (last && now > last.t) {
+			const dt = now - last.t;
+			let value: number | null = null;
+			if (totalTx !== null && last.tx !== null) {
+				const tps = ((totalTx - last.tx) * 1000) / dt;
+				if (Number.isFinite(tps) && tps >= 0) {
+					value = tps;
+					setIsTps(true);
+				}
+			}
+			if (value === null) {
+				const cps = ((checkpoint - last.cp) * 1000) / dt;
+				if (Number.isFinite(cps) && cps >= 0) value = cps;
+			}
+			if (value !== null) setRate(value);
+		}
+		prev.current = { cp: checkpoint, tx: totalTx, t: now };
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- keyed off head movement only
+	}, [checkpoint, totalTx, headTs]);
+	return { rate, isTps };
+};

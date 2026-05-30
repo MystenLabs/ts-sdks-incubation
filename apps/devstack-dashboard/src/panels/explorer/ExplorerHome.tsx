@@ -16,13 +16,13 @@
 // This module also exports the shared `DetailSkeleton` and `isOurs` helpers used
 // by the sibling detail views (kept here to stay within the panel's file set).
 
-import { useEffect, useRef, useState } from 'react';
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
 import { gotoPackage, gotoTx } from '../../lib/router.ts';
 import type { PackageProjection, Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
 import {
 	useChainHead,
+	useChainRate,
 	useEpochInfo,
 	useLatestTransactions,
 	useReferenceGasPrice,
@@ -47,10 +47,8 @@ export const isOurs = (projection: Projection, id: string): boolean =>
 	projection.packages.some((p) => p.kind === 'local' && p.packageId === id);
 
 /** The matching package projection for an id, if this stack published it. */
-export const ourPackage = (
-	projection: Projection,
-	id: string,
-): PackageProjection | undefined => projection.packages.find((p) => p.packageId === id);
+export const ourPackage = (projection: Projection, id: string): PackageProjection | undefined =>
+	projection.packages.find((p) => p.packageId === id);
 
 /** Shared detail-loading placeholder: a header card stub + a table stub. */
 export const DetailSkeleton = () => (
@@ -78,51 +76,6 @@ const epochProgress = (startMs: number, durationMs: number | null): number | nul
 	return Math.max(0, Math.min(100, Math.round(pct)));
 };
 
-/**
- * Derive a live rate (per second) from head ticks. Prefers REAL TPS from
- * Δ(totalTransactions)/Δt; falls back to the honest checkpoint rate (cp/s) when
- * the transaction total isn't available. Returns the rate and whether it's true
- * TPS (drives the label). Resets when `resetKey` (the network) changes.
- */
-const useTps = (
-	resetKey: string,
-	checkpoint: number | null,
-	totalTx: number | null,
-	headTs: number | null,
-): { rate: number | null; isTps: boolean } => {
-	const prev = useRef<{ cp: number; tx: number | null; t: number } | null>(null);
-	const [rate, setRate] = useState<number | null>(null);
-	const [isTps, setIsTps] = useState(false);
-	useEffect(() => {
-		prev.current = null;
-		setRate(null);
-		setIsTps(false);
-	}, [resetKey]);
-	useEffect(() => {
-		if (checkpoint === null) return;
-		const now = headTs ?? Date.now();
-		const last = prev.current;
-		if (last && now > last.t) {
-			const dt = now - last.t;
-			let value: number | null = null;
-			if (totalTx !== null && last.tx !== null) {
-				const tps = ((totalTx - last.tx) * 1000) / dt;
-				if (Number.isFinite(tps) && tps >= 0) {
-					value = tps;
-					setIsTps(true);
-				}
-			}
-			if (value === null) {
-				const cps = ((checkpoint - last.cp) * 1000) / dt;
-				if (Number.isFinite(cps) && cps >= 0) value = cps;
-			}
-			if (value !== null) setRate(value);
-		}
-		prev.current = { cp: checkpoint, tx: totalTx, t: now };
-	}, [checkpoint, totalTx, headTs]);
-	return { rate, isTps };
-};
-
 export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomeProps) => {
 	const head = useChainHead(chain);
 	const epoch = useEpochInfo(chain);
@@ -133,9 +86,11 @@ export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomePro
 
 	const headData = head.data;
 	const epochData = epoch.data;
-	const progress = epochData ? epochProgress(epochData.epochStartMs, epochData.epochDurationMs) : null;
+	const progress = epochData
+		? epochProgress(epochData.epochStartMs, epochData.epochDurationMs)
+		: null;
 
-	const { rate, isTps } = useTps(
+	const { rate, isTps } = useChainRate(
 		chain.network,
 		headData?.checkpoint ?? null,
 		headData?.totalTransactions ?? null,
@@ -166,9 +121,7 @@ export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomePro
 		{
 			key: 'kind',
 			header: 'Kind',
-			render: (tx) => (
-				<span style={{ fontSize: 12, color: 'var(--tx-mid)' }}>{tx.kind}</span>
-			),
+			render: (tx) => <span style={{ fontSize: 12, color: 'var(--tx-mid)' }}>{tx.kind}</span>,
 		},
 		{
 			key: 'gas',
@@ -238,9 +191,7 @@ export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomePro
 				<Kpi
 					label="Total tx"
 					value={
-						headData?.totalTransactions != null
-							? headData.totalTransactions.toLocaleString()
-							: '—'
+						headData?.totalTransactions != null ? headData.totalTransactions.toLocaleString() : '—'
 					}
 					sub="since genesis"
 					token="magenta"
@@ -254,12 +205,7 @@ export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomePro
 					icon="activity"
 					live={rate != null}
 				/>
-				<Kpi
-					label="Protocol"
-					value={dash(epochData?.protocolVersion)}
-					sub="version"
-					icon="hash"
-				/>
+				<Kpi label="Protocol" value={dash(epochData?.protocolVersion)} sub="version" icon="hash" />
 				<Kpi
 					label="Ref gas"
 					value={gas.data != null ? gas.data.toLocaleString() : '—'}

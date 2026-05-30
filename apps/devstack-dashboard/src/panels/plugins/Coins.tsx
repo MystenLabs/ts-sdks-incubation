@@ -15,11 +15,12 @@
 // the coin's `useTotalSupply` query so the new supply shows. Coins without a
 // treasury cap stay non-mintable (the backend returns ok:false either way).
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { type CoinCap, fetchCoinCaps, mintCoin, restartPlugin } from '../../lib/api.ts';
-import { truncateMiddle } from '../../lib/format.ts';
-import { useCoinMeta, useTotalSupply } from '../../lib/useChain.ts';
+import { type CoinCap, mintCoin, restartPlugin } from '../../lib/api.ts';
+import { toBaseUnits, truncateMiddle } from '../../lib/format.ts';
+import { navigate } from '../../lib/router.ts';
+import { useCoinCaps, useCoinMeta, useTotalSupply } from '../../lib/useChain.ts';
 import { useToast } from '../../lib/toast.tsx';
 import {
 	Badge,
@@ -42,33 +43,28 @@ import type { ChainSource } from '../../lib/useChain.ts';
 import type { Projection } from '../../lib/types.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-export const CoinsView = ({ row, pluginKey, endpoint, projection, refresh, chain }: PluginViewProps) => {
+export const CoinsView = ({
+	row,
+	pluginKey,
+	endpoint,
+	projection,
+	refresh,
+	chain,
+}: PluginViewProps) => {
 	const { success, error } = useToast();
 
-	const [caps, setCaps] = useState<ReadonlyArray<CoinCap>>([]);
-	const [loadErr, setLoadErr] = useState<string | null>(null);
-	const [loading, setLoading] = useState(true);
+	// Coin treasury-cap registry from the control plane, keyed per endpoint+network.
+	const capsQuery = useCoinCaps(endpoint, chain.network);
+	const caps: ReadonlyArray<CoinCap> = capsQuery.data ?? [];
+	const loading = capsQuery.isLoading;
+	const loadErr = capsQuery.isError
+		? capsQuery.error instanceof Error
+			? capsQuery.error.message
+			: String(capsQuery.error)
+		: null;
+
 	const [mintFor, setMintFor] = useState<CoinCap | null>(null);
 	const [busy, setBusy] = useState(false);
-
-	useEffect(() => {
-		let alive = true;
-		setLoading(true);
-		setLoadErr(null);
-		fetchCoinCaps(endpoint)
-			.then((list) => {
-				if (alive) setCaps(list);
-			})
-			.catch((err) => {
-				if (alive) setLoadErr(err instanceof Error ? err.message : String(err));
-			})
-			.finally(() => {
-				if (alive) setLoading(false);
-			});
-		return () => {
-			alive = false;
-		};
-	}, [endpoint, chain.network]);
 
 	const onRestart = async () => {
 		if (busy) return;
@@ -86,13 +82,25 @@ export const CoinsView = ({ row, pluginKey, endpoint, projection, refresh, chain
 	};
 
 	return (
-		<PluginScaffold label="Coins" icon="coins" row={row} subtitle="Coin registry · treasury caps.">
-			<div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-				<button className="btn btn-sm" disabled={busy} onClick={() => void onRestart()}>
-					<Icon name="refresh" size={13} /> Restart
-				</button>
-			</div>
-
+		<PluginScaffold
+			label="Coins"
+			icon="coins"
+			row={row}
+			token="yellow"
+			subtitle="Coin registry · treasury caps."
+			actions={
+				<>
+					<button className="btn btn-sm" disabled={busy} onClick={() => void onRestart()}>
+						<Icon name="refresh" size={13} /> Restart
+					</button>
+					{row && (
+						<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
+							Logs &amp; events
+						</button>
+					)}
+				</>
+			}
+		>
 			{loadErr ? (
 				<Banner tone="danger" title="Coin registry unavailable">
 					Couldn't load coin treasury caps from the control plane: {loadErr}
@@ -115,7 +123,9 @@ export const CoinsView = ({ row, pluginKey, endpoint, projection, refresh, chain
 						<CoinTable
 							caps={caps}
 							chain={chain}
-							onMint={(cap) => setMintFor((cur) => (cur?.fullCoinType === cap.fullCoinType ? null : cap))}
+							onMint={(cap) =>
+								setMintFor((cur) => (cur?.fullCoinType === cap.fullCoinType ? null : cap))
+							}
 							activeMint={mintFor?.fullCoinType ?? null}
 						/>
 					</Panel>
@@ -209,7 +219,14 @@ const CoinTable = ({ caps, chain, onMint, activeMint }: CoinTableProps) => {
 				),
 		},
 	];
-	return <DataTable columns={columns} rows={caps} rowKey={(c) => c.fullCoinType} activeKey={activeMint ?? undefined} />;
+	return (
+		<DataTable
+			columns={columns}
+			rows={caps}
+			rowKey={(c) => c.fullCoinType}
+			activeKey={activeMint ?? undefined}
+		/>
+	);
 };
 
 /** Coin glyph + symbol cell. Resolves the display symbol from chain metadata,
@@ -261,11 +278,6 @@ interface MintFormProps {
 	readonly onCancel: () => void;
 }
 
-/** Scale a whole-token amount to base-unit integer string (amount × 10^decimals)
- *  using BigInt to avoid float error. */
-const toBaseUnits = (amount: number, decimals: number): string =>
-	(BigInt(Math.trunc(amount)) * 10n ** BigInt(decimals)).toString();
-
 const MintForm = ({ cap, accounts, endpoint, chain, onCancel }: MintFormProps) => {
 	const { success, error } = useToast();
 	const queryClient = useQueryClient();
@@ -287,7 +299,9 @@ const MintForm = ({ cap, accounts, endpoint, chain, onCancel }: MintFormProps) =
 				amountBaseUnits: toBaseUnits(amount, cap.decimals),
 			});
 			if (result.ok) {
-				success(`Minted ${amount.toLocaleString()} ${symbol}${result.digest ? ` · ${result.digest}` : ''}`);
+				success(
+					`Minted ${amount.toLocaleString()} ${symbol}${result.digest ? ` · ${result.digest}` : ''}`,
+				);
 				// Supply only moves on mint/burn — refresh the coin's total-supply read.
 				await queryClient.invalidateQueries({
 					queryKey: ['chain', chain.network, 'totalSupply', cap.treasuryCapId ?? null],

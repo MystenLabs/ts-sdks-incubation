@@ -20,7 +20,7 @@ import {
 	MultiSelect,
 	SkeletonRows,
 } from '../../ui/index.ts';
-import { STATUS_OPTIONS } from './shared.ts';
+import { STATUS_OPTIONS, toggleInSet } from './shared.ts';
 
 const POLL_MS = 2000;
 const SPAN_LIMIT = 400;
@@ -34,7 +34,7 @@ export const TracesTab = ({ endpoint }: { readonly endpoint: string }) => {
 
 	const toggle =
 		(set: (fn: (cur: ReadonlyArray<string>) => ReadonlyArray<string>) => void) => (value: string) =>
-			set((cur) => (cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value]));
+			set((cur) => toggleInSet(cur, value));
 
 	const trimmed = query.trim();
 
@@ -63,10 +63,7 @@ export const TracesTab = ({ endpoint }: { readonly endpoint: string }) => {
 		return [...all].sort((a, b) => b.startMillis - a.startMillis);
 	}, [spansQuery.data]);
 
-	const maxDur = useMemo(
-		() => Math.max(1, ...spans.map((s) => s.durationMillis)),
-		[spans],
-	);
+	const maxDur = useMemo(() => Math.max(1, ...spans.map((s) => s.durationMillis)), [spans]);
 
 	const serviceOptions = useMemo(
 		() => (servicesQuery.data ?? []).map((s) => ({ value: s, label: labelForRow(s) })),
@@ -86,7 +83,11 @@ export const TracesTab = ({ endpoint }: { readonly endpoint: string }) => {
 				header: 'Operation',
 				sortVal: (s) => s.name,
 				render: (s) => (
-					<span className="mono" style={{ fontSize: 12.5, color: 'var(--tx-hi)' }} title={s.traceId}>
+					<span
+						className="mono"
+						style={{ fontSize: 12.5, color: 'var(--tx-hi)' }}
+						title={s.traceId}
+					>
 						{s.name}
 					</span>
 				),
@@ -145,7 +146,11 @@ export const TracesTab = ({ endpoint }: { readonly endpoint: string }) => {
 					const err = isError(s.status);
 					return (
 						<span
-							style={{ fontSize: 11.5, fontWeight: 540, color: err ? 'var(--c-red)' : 'var(--c-green)' }}
+							style={{
+								fontSize: 11.5,
+								fontWeight: 540,
+								color: err ? 'var(--c-red)' : 'var(--c-green)',
+							}}
 						>
 							{err ? 'error' : 'ok'}
 						</span>
@@ -177,8 +182,7 @@ export const TracesTab = ({ endpoint }: { readonly endpoint: string }) => {
 					</span>
 				}
 			>
-				Indexed by{' '}
-				<span className="mono">devstack.plugin / endpoint / op</span> — newest first.
+				Indexed by <span className="mono">devstack.plugin / endpoint / op</span> — newest first.
 			</Banner>
 
 			<div className="row wrap" style={{ gap: 9 }}>

@@ -34,7 +34,7 @@ import {
 	StatusBadge,
 	Tooltip,
 } from '../../ui/index.ts';
-import type { PluginViewProps } from '../PluginPage.tsx';
+import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
 const EM_DASH = '—';
 
@@ -141,67 +141,40 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 
 	const clusterReady = probe.state === 'reachable';
 	const nodeCount = nodeEndpoints.length;
-	const subtitle = 'decentralized storage';
-	const phase = row?.phase ?? 'walrus';
-
-	const header = (
-		<div className="row between wrap" style={{ gap: 12 }}>
-			<div className="row" style={{ gap: 13 }}>
-				<div
-					style={{
-						width: 42,
-						height: 42,
-						borderRadius: 11,
-						display: 'grid',
-						placeItems: 'center',
-						background: 'color-mix(in oklab, var(--c-cyan) 16%, transparent)',
-						color: 'var(--c-cyan)',
-						flex: 'none',
-						boxShadow: '0 0 0 1px color-mix(in oklab, var(--c-cyan) 28%, transparent)',
-					}}
-				>
-					<Icon name="database" size={21} />
-				</div>
-				<div>
-					<div className="row" style={{ gap: 10 }}>
-						<h2 style={{ fontSize: 19 }}>Walrus</h2>
-						{row && <StatusBadge status={row.status} />}
-					</div>
-					<span style={{ fontSize: 12.5, color: 'var(--tx-mid)' }}>
-						{subtitle} ·{' '}
-						<span className="mono" style={{ color: 'var(--tx-lo)' }}>
-							{phase}
-						</span>
-					</span>
-				</div>
-			</div>
-			<div className="row" style={{ gap: 8 }}>
-				<button
-					className="btn btn-sm"
-					onClick={() => {
-						if (!row?.key) return;
-						void restartPlugin(endpoint, row.key)
-							.then((r) =>
-								r.ok ? success(r.message ?? 'Restart requested') : info(r.message ?? 'Restart failed'),
-							)
-							.catch((e: unknown) => info(e instanceof Error ? e.message : String(e)));
-					}}
-				>
-					<Icon name="refresh" size={13} /> Restart
-				</button>
-				{row && (
-					<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
-						Logs &amp; events
-					</button>
-				)}
-			</div>
-		</div>
-	);
 
 	return (
-		<div className="col" style={{ gap: 18 }}>
-			{header}
-
+		<PluginScaffold
+			label="Walrus"
+			icon="database"
+			row={row}
+			token="cyan"
+			subtitle="decentralized storage"
+			phase={row?.phase ?? 'walrus'}
+			actions={
+				<>
+					<button
+						className="btn btn-sm"
+						onClick={() => {
+							if (!row?.key) return;
+							void restartPlugin(endpoint, row.key)
+								.then((r) =>
+									r.ok
+										? success(r.message ?? 'Restart requested')
+										: info(r.message ?? 'Restart failed'),
+								)
+								.catch((e: unknown) => info(e instanceof Error ? e.message : String(e)));
+						}}
+					>
+						<Icon name="refresh" size={13} /> Restart
+					</button>
+					{row && (
+						<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
+							Logs &amp; events
+						</button>
+					)}
+				</>
+			}
+		>
 			{/* KPIs. Epoch is read from the daemon when it exposes it; cluster/shard
 			    counts beyond the per-node endpoint listing aren't reachable here. */}
 			<div
@@ -214,7 +187,11 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				<Kpi
 					label="Cluster"
 					value={
-						probe.state === 'probing' ? '…' : clusterReady ? `${nodeCount}/${nodeCount}` : `0/${nodeCount}`
+						probe.state === 'probing'
+							? '…'
+							: clusterReady
+								? `${nodeCount}/${nodeCount}`
+								: `0/${nodeCount}`
 					}
 					sub="nodes reachable"
 					token={clusterReady ? 'green' : probe.state === 'probing' ? 'yellow' : 'white'}
@@ -287,9 +264,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 					{/* Cluster nodes — derived from the per-node router endpoints. Shard
 					    and stake counts live on-chain / in the daemon and aren't reachable
 					    here, so they render as dashes rather than invented numbers. */}
-					<Panel
-						header={<SectionHead title="Cluster nodes" count={nodeCount || undefined} />}
-					>
+					<Panel header={<SectionHead title="Cluster nodes" count={nodeCount || undefined} />}>
 						{nodeCount === 0 ? (
 							<EmptyState
 								icon="database"
@@ -338,11 +313,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 							right={
 								<Tooltip label="Uploading needs the publisher encode/register/certify flow, which the dashboard doesn't implement.">
 									<button className="btn btn-sm" disabled>
-										<Icon
-											name="download"
-											size={13}
-											style={{ transform: 'rotate(180deg)' }}
-										/>{' '}
+										<Icon name="download" size={13} style={{ transform: 'rotate(180deg)' }} />{' '}
 										Upload
 									</button>
 								</Tooltip>
@@ -357,6 +328,6 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 					/>
 				</Panel>
 			</div>
-		</div>
+		</PluginScaffold>
 	);
 };

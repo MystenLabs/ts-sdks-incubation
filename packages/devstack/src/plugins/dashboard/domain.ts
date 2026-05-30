@@ -5,8 +5,9 @@
 // `resolvedValues` accessor (see `substrate/runtime/control-plane/`). This
 // module — which lives in the PLUGIN layer and is allowed to name plugins —
 // owns ALL plugin-name-aware shaping: it matches resolved plugin values by
-// resource-id prefix (`deepbook/`, `seal:`, `coin:`, `id === 'sui'`,
-// postgres-by-labels) and projects them into the app-agnostic shapes the
+// resource id (`deepbook/`-prefix, `seal:`-prefix, `coin:`-prefix,
+// `id === 'sui'`, `id === 'postgres'`) and projects them into the
+// app-agnostic shapes the
 // GraphQL schema renders. It also owns the `mode` derivation, the coin
 // `mint` action, and the Postgres `psql`-exec wire-protocol stats.
 //
@@ -18,9 +19,11 @@
 //   - Every accessor degrades to empty/`null` rather than failing, so a
 //     single missing/uninitialised plugin can't take down a dashboard
 //     query (`E = never` on the public surface).
-//   - We match plugins by resource-id PREFIX (`deepbook/`, `seal:`,
-//     `coin:`, `postgres`) rather than plugin-key substrings — the
-//     resource id is the stable identity the plugin factories mint.
+//   - We match plugins by RESOURCE ID — a prefix for the multi-instance
+//     kinds (`deepbook/`, `seal:`, `coin:`) and an exact id for the
+//     singletons (`id === 'postgres'`, `id === 'sui'`) — rather than
+//     plugin-key substrings: the resource id is the stable identity the
+//     plugin factories mint.
 
 import { Effect } from 'effect';
 

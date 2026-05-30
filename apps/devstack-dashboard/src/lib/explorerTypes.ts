@@ -152,7 +152,7 @@ export interface CoinInfo {
 	readonly description: string;
 	readonly decimals: number;
 	readonly iconUrl: string | null;
-	/** Treasury-cap object id, when discoverable. */
+	/** CoinMetadata object id, when discoverable. */
 	readonly metadataId: string | null;
 }
 

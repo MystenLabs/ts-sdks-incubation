@@ -10,8 +10,10 @@
 // rows.
 
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
-import { fetchSealInfo, restartPlugin, type SealInfo } from '../../lib/api.ts';
+import { restartPlugin, type SealInfo } from '../../lib/api.ts';
 import { truncateMiddle } from '../../lib/format.ts';
+import { navigate } from '../../lib/router.ts';
+import { useSealInfo } from '../../lib/useChain.ts';
 import { useToast } from '../../lib/toast.tsx';
 import {
 	Badge,
@@ -84,34 +86,18 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 	const { success, error } = useToast();
 	const network = chain.network;
 
-	const [info, setInfo] = useState<SealInfo | null>(null);
-	const [loadErr, setLoadErr] = useState<string | null>(null);
-	const [loading, setLoading] = useState(true);
+	// Seal deployment info from the control plane, re-keyed per endpoint+network.
+	const sealQuery = useSealInfo(endpoint, network);
+	const info: SealInfo | null = sealQuery.data?.[0] ?? null;
+	const loading = sealQuery.isLoading;
+	const loadErr = sealQuery.isError
+		? sealQuery.error instanceof Error
+			? sealQuery.error.message
+			: String(sealQuery.error)
+		: null;
+
 	const [probe, setProbe] = useState<ProbeResult>({ state: 'probing', detail: '' });
 	const [busy, setBusy] = useState(false);
-
-	// Load the Seal deployment info from the control plane (re-runs when the
-	// endpoint or network changes — i.e. a different stack is connected).
-	useEffect(() => {
-		let alive = true;
-		setLoading(true);
-		setLoadErr(null);
-		fetchSealInfo(endpoint)
-			.then((list) => {
-				if (!alive) return;
-				setInfo(list[0] ?? null);
-			})
-			.catch((err) => {
-				if (!alive) return;
-				setLoadErr(err instanceof Error ? err.message : String(err));
-			})
-			.finally(() => {
-				if (alive) setLoading(false);
-			});
-		return () => {
-			alive = false;
-		};
-	}, [endpoint, network]);
 
 	const keyServerUrl = info?.keyServerUrl ?? null;
 
@@ -147,13 +133,25 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 	const probeToken = PROBE_TOKEN[probe.state];
 
 	return (
-		<PluginScaffold label="Seal" icon="plug" row={row} subtitle="Threshold encryption · key-server set.">
-			<div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-				<button className="btn btn-sm" disabled={busy} onClick={() => void onRestart()}>
-					<Icon name="refresh" size={13} /> Restart
-				</button>
-			</div>
-
+		<PluginScaffold
+			label="Seal"
+			icon="plug"
+			row={row}
+			token="magenta"
+			subtitle="Threshold encryption · key-server set."
+			actions={
+				<>
+					<button className="btn btn-sm" disabled={busy} onClick={() => void onRestart()}>
+						<Icon name="refresh" size={13} /> Restart
+					</button>
+					{row && (
+						<button className="btn btn-sm btn-ghost" onClick={() => navigate('activity')}>
+							Logs &amp; events
+						</button>
+					)}
+				</>
+			}
+		>
 			{loadErr ? (
 				<Banner tone="danger" title="Seal info unavailable">
 					Couldn't load the Seal deployment from the control plane: {loadErr}

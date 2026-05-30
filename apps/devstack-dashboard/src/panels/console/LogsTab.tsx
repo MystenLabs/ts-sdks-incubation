@@ -12,14 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { fetchLogs, fetchLogServices, type LogRecord } from '../../lib/api.ts';
 import { labelForRow } from '../../lib/derive.ts';
 import { useToast } from '../../lib/toast.tsx';
-import {
-	Dot,
-	EmptyState,
-	Icon,
-	LevelPill,
-	MultiSelect,
-	Skeleton,
-} from '../../ui/index.ts';
+import { Dot, EmptyState, Icon, LevelPill, MultiSelect, Skeleton } from '../../ui/index.ts';
 import {
 	clock24,
 	formatFields,
@@ -29,6 +22,7 @@ import {
 	logKey,
 	logMessageColor,
 	pillLevel,
+	toggleInSet,
 } from './shared.ts';
 
 const POLL_MS = 1500;
@@ -48,7 +42,7 @@ export const LogsTab = ({ endpoint }: { readonly endpoint: string }) => {
 
 	const toggle =
 		(set: (fn: (cur: ReadonlyArray<string>) => ReadonlyArray<string>) => void) => (value: string) =>
-			set((cur) => (cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value]));
+			set((cur) => toggleInSet(cur, value));
 
 	// Service filter options (distinct services that have emitted logs). Honest:
 	// it reflects the backend's ring set, not just currently-running services.
@@ -146,12 +140,14 @@ export const LogsTab = ({ endpoint }: { readonly endpoint: string }) => {
 	};
 
 	const serviceOptions = useMemo(
-		() =>
-			(servicesQuery.data ?? []).map((s) => ({ value: s, label: labelForRow(s) })),
+		() => (servicesQuery.data ?? []).map((s) => ({ value: s, label: labelForRow(s) })),
 		[servicesQuery.data],
 	);
 
-	const errorCount = useMemo(() => filtered.filter((l) => isErrorLevel(l.level)).length, [filtered]);
+	const errorCount = useMemo(
+		() => filtered.filter((l) => isErrorLevel(l.level)).length,
+		[filtered],
+	);
 	const loading = logsQuery.isLoading;
 	const queryError = logsQuery.isError
 		? logsQuery.error instanceof Error
@@ -267,11 +263,7 @@ export const LogsTab = ({ endpoint }: { readonly endpoint: string }) => {
 				</div>
 			)}
 
-			<div
-				ref={scroller}
-				className="panel logbox-full mono scroll-y grow"
-				onScroll={onScroll}
-			>
+			<div ref={scroller} className="panel logbox-full mono scroll-y grow" onScroll={onScroll}>
 				{loading ? (
 					<div className="col" style={{ gap: 8, padding: 12 }}>
 						{Array.from({ length: 8 }).map((_, i) => (

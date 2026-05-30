@@ -67,3 +67,22 @@ export const displayHost = (endpoint: {
 	readonly url: string;
 	readonly displayUrl: string | null;
 }): string => (endpoint.displayUrl ?? endpoint.url).replace(/^https?:\/\//, '');
+
+/** Scale a whole-token amount to a base-unit integer string (amount × 10^decimals)
+ *  using BigInt to avoid float error. */
+export const toBaseUnits = (amount: number, decimals: number): string =>
+	(BigInt(Math.trunc(amount)) * 10n ** BigInt(decimals)).toString();
+
+/** Human byte size (IEC), e.g. "1.4 GB". */
+export const formatBytes = (bytes: number): string => {
+	if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+	const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+	let value = bytes;
+	let i = 0;
+	while (value >= 1024 && i < units.length - 1) {
+		value /= 1024;
+		i += 1;
+	}
+	const fixed = value >= 100 || i === 0 ? Math.round(value).toString() : value.toFixed(1);
+	return `${fixed} ${units[i]}`;
+};

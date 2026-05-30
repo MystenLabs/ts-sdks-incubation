@@ -12,6 +12,7 @@ import { labelForRow, sectionLabel, sectionToken } from '../../lib/derive.ts';
 import { timeAgo } from '../../lib/format.ts';
 import { navigate } from '../../lib/router.ts';
 import { Badge, Dot, EmptyState, MultiSelect, type MultiSelectOption } from '../../ui/index.ts';
+import { toggleInSet } from './shared.ts';
 
 // Scopes correspond to the activity item's `section`. `other` is rendered with
 // the neutral `white` token (matching the prior Console behavior).
@@ -29,16 +30,11 @@ const SCOPE_OPTIONS: ReadonlyArray<MultiSelectOption> = SCOPE_SECTIONS.map((s) =
 	token: s === 'other' ? 'white' : sectionToken(s),
 }));
 
-export const EventsTab = ({
-	activity,
-}: {
-	readonly activity: ReadonlyArray<ActivityItem>;
-}) => {
+export const EventsTab = ({ activity }: { readonly activity: ReadonlyArray<ActivityItem> }) => {
 	const [scopes, setScopes] = useState<ReadonlyArray<string>>([]);
 	const [raw, setRaw] = useState(false);
 
-	const toggleScope = (value: string) =>
-		setScopes((cur) => (cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value]));
+	const toggleScope = (value: string) => setScopes((cur) => toggleInSet(cur, value));
 
 	const filtered = useMemo(
 		() => (scopes.length === 0 ? activity : activity.filter((e) => scopes.includes(e.section))),

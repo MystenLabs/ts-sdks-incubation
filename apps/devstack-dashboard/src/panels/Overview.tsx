@@ -13,7 +13,7 @@
 // empty on first paint, filling as the head advances. The design's "tx / day"
 // bar + "active accounts" area charts are omitted: no real series feeds them.
 
-import { type ReactNode, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect } from 'react';
 import {
 	groupRows,
 	healthToken,
@@ -25,7 +25,7 @@ import {
 } from '../lib/derive.ts';
 import { displayHost, timeAgo } from '../lib/format.ts';
 import { navigate } from '../lib/router.ts';
-import { useChainHead } from '../lib/useChain.ts';
+import { useChainHead, useChainRate, useRollingSeries } from '../lib/useChain.ts';
 import {
 	CopyChip,
 	Dot,
@@ -41,29 +41,6 @@ import type { PanelProps } from './types.ts';
 
 const RECENT_ACTIVITY_LIMIT = 7;
 const ENDPOINTS_PREVIEW = 6;
-const SERIES_CAP = 24;
-
-/**
- * A short rolling numeric series accumulated from live ticks. `sample` is fed a
- * fresh value on each head update; identical consecutive values are skipped so
- * the series only grows when the underlying metric actually moves. Resets when
- * `resetKey` changes (e.g. switching networks). Honest by construction — it only
- * ever holds values observed while this panel was mounted.
- */
-const useRollingSeries = (resetKey: string): readonly [ReadonlyArray<number>, (v: number) => void] => {
-	const [series, setSeries] = useState<ReadonlyArray<number>>([]);
-	const last = useRef<number | null>(null);
-	useEffect(() => {
-		last.current = null;
-		setSeries([]);
-	}, [resetKey]);
-	const sample = (v: number) => {
-		if (!Number.isFinite(v) || last.current === v) return;
-		last.current = v;
-		setSeries((prev) => [...prev, v].slice(-SERIES_CAP));
-	};
-	return [series, sample];
-};
 
 export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 	const { rows, endpoints, accounts, packages, errors, cycle } = projection;
@@ -82,44 +59,23 @@ export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 	// checkpoint's running `total_network_transactions`. If that count is
 	// genuinely unavailable we fall back to the honest checkpoint rate (cp/s).
 	const head = useChainHead(chain);
-	const [cpSeries, sampleCp] = useRollingSeries(chain.network);
-	const [rateSeries, sampleRate] = useRollingSeries(chain.network);
-	const prev = useRef<{ cp: number; tx: number | null; t: number } | null>(null);
-	const [rate, setRate] = useState<number | null>(null);
-	// Whether the head exposes a real total-transaction count (drives the label).
-	const [hasTps, setHasTps] = useState(false);
-
 	const checkpoint = head.data?.checkpoint ?? null;
 	const totalTx = head.data?.totalTransactions ?? null;
 	const headTs = head.data?.timestampMs ?? null;
+
+	const { rate, isTps: hasTps } = useChainRate(chain.network, checkpoint, totalTx, headTs);
+	const [cpSeries, sampleCp] = useRollingSeries(chain.network);
+	const [rateSeries, sampleRate] = useRollingSeries(chain.network);
+	// Roll the live checkpoint + derived rate into mini-series. Each rolls only
+	// when its value actually moves (useRollingSeries dedupes consecutive values).
 	useEffect(() => {
-		if (checkpoint === null) return;
-		sampleCp(checkpoint);
-		const now = headTs ?? Date.now();
-		const last = prev.current;
-		if (last && now > last.t) {
-			const dt = now - last.t;
-			// Prefer real TPS from the transaction-total delta; fall back to cp/s.
-			let value: number | null = null;
-			if (totalTx !== null && last.tx !== null) {
-				const tps = ((totalTx - last.tx) * 1000) / dt;
-				if (Number.isFinite(tps) && tps >= 0) {
-					value = tps;
-					setHasTps(true);
-				}
-			}
-			if (value === null) {
-				const cps = ((checkpoint - last.cp) * 1000) / dt;
-				if (Number.isFinite(cps) && cps >= 0) value = cps;
-			}
-			if (value !== null) {
-				setRate(value);
-				sampleRate(Number(value.toFixed(2)));
-			}
-		}
-		prev.current = { cp: checkpoint, tx: totalTx, t: now };
-		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample fns are stable enough; keyed off head movement only
-	}, [checkpoint, totalTx, headTs]);
+		if (checkpoint !== null) sampleCp(checkpoint);
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample is stable enough; keyed off checkpoint movement
+	}, [checkpoint]);
+	useEffect(() => {
+		if (rate !== null) sampleRate(Number(rate.toFixed(2)));
+		// eslint-disable-next-line react-hooks/exhaustive-deps -- sample is stable enough; keyed off rate movement
+	}, [rate]);
 
 	const chainLive = chain.rpcUrl !== null;
 
@@ -141,7 +97,11 @@ export const OverviewPanel = ({ projection, activity, chain }: PanelProps) => {
 					icon="layers"
 				/>
 				{chainLive && (
-					<LiveKpi spark={cpSeries.length > 1 ? cpSeries : null} sparkType="line" sparkColor="var(--c-cyan)">
+					<LiveKpi
+						spark={cpSeries.length > 1 ? cpSeries : null}
+						sparkType="line"
+						sparkColor="var(--c-cyan)"
+					>
 						<Kpi
 							label="Checkpoint"
 							value={checkpoint !== null ? checkpoint.toLocaleString() : '—'}
