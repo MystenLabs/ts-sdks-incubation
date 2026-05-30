@@ -48,7 +48,12 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
-import { identityValueFor, stackRootFor, type ResolvedIdentity } from './identity.ts';
+import {
+	identityValueFor,
+	resolvedIdentityForStack,
+	stackRootFor,
+	type ResolvedIdentity,
+} from './identity.ts';
 import { buildVerbLayers } from './build-verb-layers.ts';
 
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
@@ -116,8 +121,15 @@ export const runApplyLive = (
 		}
 		const loaded = loadExit.value;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
-		const identityValue: Identity = identityValueFor(identity, stack);
-		const dispatch = yield* runApplyAgainstLiveSupervisor(identity, identityValue);
+		// Re-derive the identity against the EFFECTIVE stack (explicit
+		// `--stack`/`$DEVSTACK_STACK` > `config.stackName` > inferred) so
+		// the live-supervisor probe + roster paths target the same stack
+		// the operator selected — matching `snapshot.ts`. An explicit
+		// `--stack` must NOT be overridden by `config.stackName`, otherwise
+		// `apply` would probe/boot the wrong stack's supervisor.
+		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
+		const identityValue: Identity = identityValueFor(effectiveIdentity);
+		const dispatch = yield* runApplyAgainstLiveSupervisor(effectiveIdentity, identityValue);
 		if (dispatch.kind === 'live-failed') {
 			return yield* Effect.fail(dispatch.error);
 		}
@@ -129,7 +141,7 @@ export const runApplyLive = (
 			identity: identityValue,
 			stack,
 			appRoot,
-			runtimeRoot: identity.runtimeRoot,
+			runtimeRoot: effectiveIdentity.runtimeRoot,
 		});
 
 		const program = Effect.gen(function* () {

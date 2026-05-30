@@ -290,11 +290,31 @@ export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.suc
 				try: async () => {
 					const tmp = await mkdtemp(join(tmpdir(), 'devstack-move-codegen-'));
 					try {
+						// `sui move summary` keys each `package_summaries/<dir>`
+						// subdirectory by the package's NAMED ADDRESS, not its
+						// `[package].name`. These legitimately differ (the canonical
+						// example is MoveStdlib, whose package name is "MoveStdlib"
+						// but whose named address is "std"). `@mysten/codegen`'s
+						// resolver matches the summary subdir by either (1) a single
+						// `[addresses]` label or (2) the `packageName` — but it reads
+						// the Move.toml at the path WE pass it (the summary scratch
+						// dir), which has NO `[addresses]` table, so its label-based
+						// path (1) is defeated and it falls back to (2). We pass the
+						// symbolic localPackage() NAME as `packageName`, which is the
+						// `[package].name`, NOT the named address — so codegen throws
+						// "Could not identify main package directory" whenever the two
+						// differ. Recover the correct subdir name here from the REAL
+						// source Move.toml's `[addresses]` table (which devstack still
+						// has at `input.sourcePath`), falling back to the name when the
+						// source is unreadable or ambiguous (a no-op for the common
+						// case where name == address).
+						const packageName =
+							(await resolveSummaryDirName(input.sourcePath)) ?? input.packageName;
 						await generateFromPackageSummary({
 							package: {
 								path: input.summary.summaryPath ?? input.sourcePath,
 								package: input.mvrPlaceholder,
-								packageName: input.packageName,
+								packageName,
 							},
 							prune: true,
 							outputDir: tmp,
@@ -326,6 +346,54 @@ export const layerMystenMoveCodegen: Layer.Layer<MoveCodegenService> = Layer.suc
 
 const joinPath = (...parts: ReadonlyArray<string>): string =>
 	parts.map((p, i) => (i === 0 ? p.replace(/\/+$/, '') : p.replace(/^\/+|\/+$/g, ''))).join('/');
+
+/**
+ * Determine the `package_summaries/<dir>` subdirectory name for a local
+ * Move package from its REAL source `Move.toml`. `sui move summary` keys
+ * these subdirs by the NAMED ADDRESS (e.g. MoveStdlib → "std"), not the
+ * `[package].name`, so when the two differ we must hand `@mysten/codegen`
+ * the address label rather than the symbolic package name.
+ *
+ * Returns the single `[addresses]` label when the table has exactly one
+ * entry (the overwhelmingly common case — and a no-op when name == address),
+ * and `null` otherwise (unreadable Move.toml, no `[addresses]` table, or an
+ * ambiguous multi-address table) so the caller can fall back to the package
+ * name and preserve `@mysten/codegen`'s own resolution.
+ *
+ * Hand-parse rather than pull in a TOML dependency: the sibling Move-build
+ * path already harvests `{ local = "../x" }` deps from Move.toml by regex
+ * (`sui-move-build/index.ts`), and we only need the `[addresses]` section's
+ * left-hand labels — never their values.
+ */
+const resolveSummaryDirName = async (sourcePath: string): Promise<string | null> => {
+	let toml: string;
+	try {
+		toml = await readFile(join(sourcePath, 'Move.toml'), 'utf8');
+	} catch {
+		return null;
+	}
+	const labels = parseAddressLabels(toml);
+	return labels.length === 1 ? labels[0]! : null;
+};
+
+/** Left-hand labels of the `[addresses]` table in a Move.toml. Scans from
+ *  the `[addresses]` header to the next `[section]` header (or EOF) and
+ *  collects each `name = "..."` key, ignoring blank/comment lines. */
+const parseAddressLabels = (toml: string): ReadonlyArray<string> => {
+	const lines = toml.split(/\r?\n/);
+	const start = lines.findIndex((line) => /^\s*\[addresses\]\s*$/.test(line));
+	if (start === -1) return [];
+	const labels: Array<string> = [];
+	for (const line of lines.slice(start + 1)) {
+		// Next table header ends the `[addresses]` section.
+		if (/^\s*\[/.test(line)) break;
+		const stripped = line.replace(/#.*$/, '').trim();
+		if (stripped === '') continue;
+		const match = /^([A-Za-z_][\w-]*)\s*=/.exec(stripped);
+		if (match) labels.push(match[1]!);
+	}
+	return labels;
+};
 
 const generatedBcsFactoryPattern =
 	/export function ([A-Za-z_$][\w$]*)<((?:[^<>]|<[^<>]*>)+)>\((\.\.\.typeParameters: \[[\s\S]*?\n\])\) \{\n(\s*)return new (MoveStruct|MoveEnum|MoveTuple)\(/g;

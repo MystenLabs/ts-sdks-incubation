@@ -542,7 +542,7 @@ describe('cli/main', () => {
 		}
 	}, 60_000);
 
-	it('snapshot save targets the live stack named by config stackName', async () => {
+	it('snapshot save: explicit --stack overrides config stackName', async () => {
 		const appRoot = makeTempRoot('cli-live-snapshot-config-app');
 		const stateRoot = makeTempRoot('cli-live-snapshot-config-state');
 		const configPath = writeCodegenConfig(appRoot, 'config-stack');
@@ -563,12 +563,15 @@ describe('cli/main', () => {
 			.spyOn(process.stderr, 'write')
 			.mockImplementation(captureProcessWrite(stderr));
 
-		writeLiveRoster(configStackRoot);
+		// Live supervisor lives on the EXPLICIT --stack (cli-stack). Under the
+		// corrected precedence (explicit flag/env > config stackName), the verb
+		// must target cli-stack, NOT the config-declared config-stack.
+		writeLiveRoster(cliStackRoot);
 		const subscriberFiber = Effect.runFork(
 			Effect.scoped(
 				Effect.gen(function* () {
 					const subscriber = yield* makeCommandChannelSubscriber(
-						commandChannelPaths(configStackRoot),
+						commandChannelPaths(cliStackRoot),
 						{
 							fromOffset: 'start',
 							pollMillis: 20,
@@ -630,10 +633,10 @@ describe('cli/main', () => {
 			expect(observed).toHaveLength(1);
 			expect(observed[0]?.tag).toBe('snapshot.capture');
 			expect(observed[0]?.name).toBe('seeded');
-			expect(readCommandLog(configStackRoot).map((record) => record.command.tag)).toEqual([
+			expect(readCommandLog(cliStackRoot).map((record) => record.command.tag)).toEqual([
 				'snapshot.capture',
 			]);
-			expect(existsSync(join(cliStackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
+			expect(existsSync(join(configStackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME))).toBe(false);
 		} finally {
 			process.exitCode = previousExitCode;
 			stdoutSpy.mockRestore();

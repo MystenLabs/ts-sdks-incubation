@@ -68,7 +68,21 @@ import type { ResolvedIdentity } from './wirings/identity.ts';
  *    (`configStateDir`) > `$DEVSTACK_STATE_DIR` > `<cwd>/.devstack`.
  *  The flag maps to `resolveStateDir`'s top `runtimeRoot` rung and the
  *  config value to its `stateDir` rung so the flag always wins over a
- *  config-declared `defineDevstack({ stateDir })`. */
+ *  config-declared `defineDevstack({ stateDir })`.
+ *
+ *  Stack-name precedence ladder (the SAME flag-beats-config shape as
+ *  state-dir, so the two are consistent and reviewable side-by-side):
+ *    `--stack` flag / `$DEVSTACK_STACK` (`params.stack`)
+ *      > config's `defineDevstack({ stackName })`
+ *      > cwd/package inference (default `'main'`).
+ *  Config-vs-explicit resolution can't happen here (the config isn't
+ *  loaded yet for the no-config verbs), so we record the explicit value
+ *  on `ResolvedIdentity.explicitStack` and let the verb wirings apply
+ *  `config.stackName` ONLY when no explicit stack was given — see
+ *  `effectiveStackName` in `cli/wirings/identity.ts`. `params.stack` is
+ *  exactly the explicit `--stack`-or-`$DEVSTACK_STACK` value (the argv
+ *  pre-parser seeds it from env, then lets the flag overwrite it), and
+ *  is `undefined` when neither was provided. */
 const resolveIdentity = (params: {
 	readonly app: string | undefined;
 	readonly stack: string | undefined;
@@ -89,6 +103,15 @@ const resolveIdentity = (params: {
 		cwd,
 	});
 	const stacksRoot = resolvePath(runtimeRoot, 'stacks');
+	// `resolveStackName` here folds explicit (flag/env) > inferred >
+	// default. Crucially it does NOT see `config.stackName`: a non-empty
+	// `params.stack` means the operator was explicit, so `stack` already
+	// equals the explicit value and `config.stackName` must not override
+	// it downstream. An empty `params.stack` falls through to the
+	// inferred/default name, which a verb's `config.stackName` may then
+	// supersede via `effectiveStackName`.
+	const explicitStack =
+		params.stack !== undefined && params.stack.length > 0 ? params.stack : undefined;
 	const stack = resolveStackName({
 		explicit: params.stack,
 		cwd,
@@ -112,6 +135,7 @@ const resolveIdentity = (params: {
 		stacksRoot,
 		stackRoot,
 		rosterFile: resolvePath(stackRoot, 'roster.json'),
+		explicitStack,
 	};
 };
 

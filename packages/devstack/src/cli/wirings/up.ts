@@ -62,7 +62,12 @@ import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 import { makeConfigLoader } from './config-loader.ts';
 import { isEngineCommand } from './engine-command.ts';
-import { findCliSupervisorLiveError, identityValueFor, type ResolvedIdentity } from './identity.ts';
+import {
+	findCliSupervisorLiveError,
+	identityValueFor,
+	resolvedIdentityForStack,
+	type ResolvedIdentity,
+} from './identity.ts';
 import { buildVerbLayers } from './build-verb-layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
 
@@ -436,7 +441,16 @@ export const runUpLive = (
 		const loaded = loadExit.value;
 		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
 
-		const identityValue: Identity = identityValueFor(identity, stack);
+		// Re-derive the identity against the EFFECTIVE stack (explicit
+		// `--stack`/`$DEVSTACK_STACK` > `config.stackName` > inferred) so
+		// the roster lock, command channel, and container/router naming all
+		// target the same stack the operator selected — matching what
+		// `snapshot.ts` already does. Without this, an explicit `--stack`
+		// would boot the supervisor under the config's `stackName` and a
+		// concurrent default-stack `up` would falsely collide on the live
+		// supervisor (`error: supervisor live for <app>/<stack>`, exit 40).
+		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
+		const identityValue: Identity = identityValueFor(effectiveIdentity);
 
 		const appRoot = dirname(loaded.resolvedConfigPath);
 		const rendererMode = resolveUpRendererMode({
@@ -448,7 +462,7 @@ export const runUpLive = (
 			identity: identityValue,
 			stack,
 			appRoot,
-			runtimeRoot: identity.runtimeRoot,
+			runtimeRoot: effectiveIdentity.runtimeRoot,
 		});
 
 		const program = Effect.gen(function* () {
@@ -458,7 +472,7 @@ export const runUpLive = (
 			const snapshotCommandHandler = makeSnapshotCommandHandler({
 				snapshot,
 				fs,
-				runtimeRoot: identity.runtimeRoot,
+				runtimeRoot: effectiveIdentity.runtimeRoot,
 			});
 			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
