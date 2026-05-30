@@ -14,9 +14,12 @@ describe('plugins/wallet/origin-policy', () => {
 			});
 
 			expect(policy.allowed.has('http://dev.wallet-demo.localhost:5175')).toBe(true);
-			// The legacy auto-allowlisted bare `localhost:<vite>` form is gone:
-			// devstack never tracked an external vite port, so the branch that
-			// produced it was dead and was removed (STYLE_GUIDE §5).
+			// The allowlist is the ROUTED app origin only — the policy does NOT
+			// auto-add a bare-loopback `localhost:<port>` form. The dev-server's
+			// raw-loopback origin is reachable instead via the host-service's
+			// routed `value.url` (see host-service `index.ts`) or, for devs who
+			// insist on the raw Vite URL, via `allowedOrigins` (→ `extraOrigins`,
+			// covered below). See the `origin-policy.ts` history note.
 			expect(policy.allowed.has('http://localhost:5175')).toBe(false);
 		}),
 	);
@@ -30,9 +33,9 @@ describe('plugins/wallet/origin-policy', () => {
 				extraOrigins: ['http://localhost:4321', 'https://custom.example'],
 			});
 
-			expect(
-				policy.allowed.has('http://dev.private-content.private-content.localhost:6173'),
-			).toBe(true);
+			expect(policy.allowed.has('http://dev.private-content.private-content.localhost:6173')).toBe(
+				true,
+			);
 			expect(policy.allowed.has('http://localhost:4321')).toBe(true);
 			expect(policy.allowed.has('https://custom.example')).toBe(true);
 		}),

@@ -8,14 +8,32 @@
 //
 // History (removed): an earlier design auto-allowlisted a vite-port-
 // derived origin (`http://dev.<stack>.<app>.localhost:<vite-port>`,
-// plus an opt-in `http://localhost:<vite-port>`). That branch was dead:
-// devstack never tracks an external vite dev server's port — there is
-// no vite plugin and the port broker only allocates (and exposes) ports
-// for in-stack plugins, with no reader/lookup API. `vitePortForThisStack`
-// was always `null` at the only production call site, so the branch
-// never fired. Per STYLE_GUIDE §5 ("code either works or doesn't exist")
-// the whole vite-origin path — and the `allowLocalhostVite` opt-in it
-// gated — was removed rather than left as an unreachable allowlist seam.
+// plus an opt-in `http://localhost:<vite-port>`). That branch was dead
+// AT THE TIME: there was no vite plugin and the port broker only
+// allocated ports for in-stack plugins with no reader/lookup API, so
+// `vitePortForThisStack` was always `null` at the only production call
+// site and the branch never fired. Per STYLE_GUIDE §5 ("code either
+// works or doesn't exist") the whole vite-origin path — and the
+// `allowLocalhostVite` opt-in it gated — was removed rather than left as
+// an unreachable allowlist seam.
+//
+// Note (no longer dead, but deliberately NOT re-added here): with the
+// `hostService(...)` plugin devstack now DOES own the dev server's bind
+// port (the broker allocates it; Vite binds it via `--port {port}`). So
+// the raw-loopback origin (`http://127.0.0.1:<port>` /
+// `http://localhost:<port>`) the dev sees in Vite's own console banner is
+// a real, knowable origin. The canonical fix lives on the host-service
+// side instead: it now publishes the ROUTED origin as its
+// `HostServiceValue.url`, so `devstack up` output (and any consumer
+// holding the resolved host-service value) point devs at the URL whose
+// Origin THIS allowlist already accepts (the routed `routedAppOrigin`).
+// Re-adding a raw-loopback branch
+// here is intentionally deferred — it would have to thread the
+// host-service's dynamic bind port into the wallet, which runs in the
+// OPPOSITE direction of the current dependency edge (host-service
+// `dependsOn` wallet), so the wallet has no view of that port at its own
+// boot. Devs who must load the raw Vite URL can pass it via
+// `allowedOrigins` (→ `extraOrigins`) until that plumbing is justified.
 //
 // Why "origin + bearer together": bearer alone leaves a non-browser-
 // tooling bypass — curl / fetch from a service worker can forge

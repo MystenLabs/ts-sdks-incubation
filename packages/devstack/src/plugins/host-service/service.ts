@@ -105,7 +105,20 @@ export interface HostServiceValue {
 	readonly command: string;
 	readonly args: ReadonlyArray<string>;
 	readonly cwd: string;
+	/** The real loopback port the child (Vite) binds. Always the bound
+	 *  port, regardless of how `url` is shaped — readiness probes and
+	 *  direct host tooling read this. */
 	readonly port: number;
+	/** Canonical URL for this service: the router-fronted routed origin
+	 *  (`http://<endpoint>.<stack?>.<app>.localhost:5175`) when the
+	 *  supervisor derived one, the raw `http://127.0.0.1:<port>` loopback
+	 *  bind otherwise. The routed form is what the dev-wallet CORS
+	 *  allowlist accepts, so any consumer that hands this URL to a browser
+	 *  — `devstack up` output, an app or build integration holding the
+	 *  resolved `HostServiceValue` — gets a working wallet pairing.
+	 *  Consumers that need the bind target read `port`. Mirrors
+	 *  `WalletValue.url` ("router-fronted when available, loopback
+	 *  otherwise"). */
 	readonly url: string;
 }
 
@@ -147,6 +160,27 @@ export interface HostServiceAcquireContext {
 		readonly stack: string;
 		readonly runtimeRoot: string;
 	};
+	/**
+	 * Canonical router-fronted URL for this host-service's endpoint, e.g.
+	 * `http://dev.<stack>.<app>.localhost:5175`. When supplied it becomes
+	 * the published `HostServiceValue.url` so every consumer that reads
+	 * "the host-service's URL" (`devstack up` output, an app / build
+	 * integration holding the resolved value) is pointed at the URL that
+	 * actually works end-to-end — in particular the one whose Origin the
+	 * dev-wallet CORS allowlist accepts. The raw `http://127.0.0.1:<port>` loopback
+	 * bind is kept INTERNAL (Vite's listen + the readiness probe, which
+	 * derives its own loopback literal) and remains the fallback here when
+	 * no routed URL is available (router disabled, or a hostname-validation
+	 * failure in the caller's best-effort derivation). Optional + nullable
+	 * so non-supervised callers and tests fall back to loopback exactly as
+	 * before.
+	 *
+	 * Mirrors the wallet's own `WalletValue.url` rule ("router-fronted URL
+	 * when available, loopback otherwise") and the ARCHITECTURE.md
+	 * "Host-service = endpoint-defaults bus" intent that the ROUTED origin
+	 * is canonical.
+	 */
+	readonly routedUrl?: string | null;
 }
 
 const DEFAULT_SHUTDOWN_GRACE_MS = 5_000;
@@ -322,6 +356,7 @@ const hostServiceValue = (
 	options: HostServiceResolvedOptions,
 	port: number,
 	rendered: { readonly command: string; readonly args: ReadonlyArray<string> },
+	routedUrl: string | null,
 ): HostServiceValue => ({
 	name: options.serviceName,
 	endpointName: options.endpointName,
@@ -329,7 +364,11 @@ const hostServiceValue = (
 	args: rendered.args,
 	cwd: options.cwd,
 	port,
-	url: `http://127.0.0.1:${port}`,
+	// Canonical routed URL when the supervisor derived one, raw loopback
+	// otherwise. `port` above always stays the real bound loopback port —
+	// callers that need the bind target (readiness, direct host tooling)
+	// read `.port`, not `.url`.
+	url: routedUrl ?? `http://127.0.0.1:${port}`,
 });
 
 const terminateChild = (
@@ -780,7 +819,7 @@ export const prepareHostService = (
 		});
 
 		return {
-			value: hostServiceValue(options, port, rendered),
+			value: hostServiceValue(options, port, rendered, ctx.routedUrl ?? null),
 			start,
 		};
 	});

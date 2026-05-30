@@ -16,6 +16,7 @@ import { PostAcquireTasksService } from '../../substrate/runtime/post-acquire-ta
 import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
 import { IdentityContext, RuntimeRoot } from '../../substrate/runtime/paths.ts';
+import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
 
 import {
 	HOST_SERVICE_ERROR_TAGS,
@@ -83,6 +84,32 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 				// `<root>/stacks/<stack>/manifest.json`.
 				const identity = yield* IdentityContext;
 				const { root: runtimeRoot } = yield* RuntimeRoot;
+				// Best-effort canonical routed URL for this endpoint. This is the
+				// URL the dev-wallet CORS allowlist accepts (the wallet allowlists
+				// `routedHostname(identity, dev) : 5175`, NOT the raw Vite bind), so
+				// publishing it as the host-service's `value.url` points `devstack
+				// up` output (and any consumer holding the resolved value) at the
+				// URL that pairs the wallet successfully. The routed entrypoint port is the
+				// shared Traefik port for every built-in endpoint
+				// (`HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT` ===
+				// `DEFAULT_ROUTER_ENTRYPOINT_PORT`); the role is THIS service's
+				// `endpointName`, matching `makeHostServiceRoutable`'s
+				// `dispatchId.role`. A hostname-validation failure (an
+				// out-of-RFC-1035 app/stack/endpoint label) must NOT fail the
+				// host-service boot — fall back to the raw loopback `value.url` via
+				// `Effect.orElseSucceed(() => null)`. The raw bind still exists for
+				// Vite's listen + the readiness probe (which derives its own
+				// `127.0.0.1:<port>` literal independently of `value.url`).
+				const routedUrl = yield* routedHostname(identity, normalized.endpointName).pipe(
+					Effect.map((hostname) =>
+						renderUrl({
+							protocol: 'http',
+							hostname,
+							port: HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
+						}),
+					),
+					Effect.orElseSucceed(() => null),
+				);
 				const acquireContext = {
 					allocatePort: (preferredPort) =>
 						portBroker
@@ -95,6 +122,7 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					logger,
 					pluginKey: currentPlugin.key,
 					discoveryIdentity: { stack: identity.stack, runtimeRoot },
+					routedUrl,
 				} satisfies HostServiceAcquireContext;
 				const prepared = yield* prepareHostService(normalized, acquireContext);
 				yield* postAcquireTasks.register({

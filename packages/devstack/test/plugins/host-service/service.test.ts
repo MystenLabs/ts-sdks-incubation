@@ -398,24 +398,30 @@ describe('acquireHostService', () => {
 
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member
-					.start(undefined)
-					.pipe(
-						Effect.provideService(PortBrokerService, broker),
-						Effect.provideService(Logger, fakeLogger),
-						Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
-						// The host-service start now reads Identity + RuntimeRoot to publish
-						// DEVSTACK_STACK / DEVSTACK_RUNTIME_ROOT into the spawned child's env
-						// (so the in-child Vite plugin re-discovers the active stack's manifest).
-						Effect.provideService(IdentityContext, {
-							app: appName('host-service-test'),
-							stack: stackName('host-service-test'),
-							chain: chainId('localnet'),
-						}),
-						Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
-					) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
+				const start = member.start(undefined).pipe(
+					Effect.provideService(PortBrokerService, broker),
+					Effect.provideService(Logger, fakeLogger),
+					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
+					// The host-service start now reads Identity + RuntimeRoot to publish
+					// DEVSTACK_STACK / DEVSTACK_RUNTIME_ROOT into the spawned child's env
+					// (so the in-child Vite plugin re-discovers the active stack's manifest).
+					Effect.provideService(IdentityContext, {
+						app: appName('host-service-test'),
+						stack: stackName('host-service-test'),
+						chain: chainId('localnet'),
+					}),
+					Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
+				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;
 				const value = yield* start;
-				expect(value.url).toBe('http://127.0.0.1:6173');
+				// With a real Identity in context the supervised host-service
+				// publishes its CANONICAL routed URL (not the raw loopback bind):
+				// role = endpointName (`dev`), stack ≠ `main` so it's included,
+				// port = the shared Traefik entrypoint (5175). This is the URL the
+				// dev-wallet CORS allowlist accepts — see `value.url` doc + the
+				// wallet origin-policy. `.port` still reports the real bound
+				// loopback port (6173) for readiness / direct host tooling.
+				expect(value.url).toBe('http://dev.host-service-test.host-service-test.localhost:5175');
+				expect(value.port).toBe(6173);
 				expect(allocations).toEqual([
 					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
 				]);
@@ -471,6 +477,69 @@ describe('acquireHostService', () => {
 					expect(child.signals).toEqual(['SIGTERM']);
 				}),
 			),
+		);
+	});
+
+	it.effect(
+		'publishes the supplied routed URL as value.url while keeping the bound loopback port',
+		() => {
+			// The supervisor hands `routedUrl` (the canonical router-fronted
+			// origin, e.g. `http://dev.<stack>.<app>.localhost:5175`) into the
+			// acquire context so the host-service's published `value.url` is the
+			// URL the dev-wallet CORS allowlist actually accepts. `.port` stays
+			// the real bound loopback port for readiness / direct host tooling.
+			const options = normalizeHostServiceOptions({
+				name: 'frontend',
+				command: 'pnpm',
+				args: ['exec', 'vite', '--port', HOST_SERVICE_PORT_TOKEN],
+				ready: { kind: 'log', pattern: 'ready' },
+			});
+
+			return Effect.scoped(
+				Effect.gen(function* () {
+					const prepared = yield* prepareHostService(options, {
+						allocatePort: () => Effect.succeed(6173),
+						logger: fakeLogger,
+						pluginKey: pluginKey('host-service-test#0'),
+						spawner: () => new FakeChild(),
+						processEnv: { PATH: '/usr/bin' },
+						routedUrl: 'http://dev.demo.demo.localhost:5175',
+					});
+
+					expect(prepared.value.url).toBe('http://dev.demo.demo.localhost:5175');
+					expect(prepared.value.port).toBe(6173);
+				}),
+			);
+		},
+	);
+
+	it.effect('falls back to the raw loopback value.url when no routed URL is supplied', () => {
+		// No `routedUrl` (router disabled, or a hostname-validation failure in
+		// the supervisor's best-effort derivation collapsed it to null) → the
+		// raw `http://127.0.0.1:<port>` loopback bind remains the published URL,
+		// exactly as before this change. A `null` routedUrl behaves identically
+		// to an absent one.
+		const options = normalizeHostServiceOptions({
+			name: 'frontend',
+			command: 'pnpm',
+			args: ['exec', 'vite', '--port', HOST_SERVICE_PORT_TOKEN],
+			ready: { kind: 'log', pattern: 'ready' },
+		});
+
+		return Effect.scoped(
+			Effect.gen(function* () {
+				const prepared = yield* prepareHostService(options, {
+					allocatePort: () => Effect.succeed(6173),
+					logger: fakeLogger,
+					pluginKey: pluginKey('host-service-test#0'),
+					spawner: () => new FakeChild(),
+					processEnv: { PATH: '/usr/bin' },
+					routedUrl: null,
+				});
+
+				expect(prepared.value.url).toBe('http://127.0.0.1:6173');
+				expect(prepared.value.port).toBe(6173);
+			}),
 		);
 	});
 
