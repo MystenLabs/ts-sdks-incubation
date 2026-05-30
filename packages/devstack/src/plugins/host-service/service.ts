@@ -402,12 +402,15 @@ const httpReady = (
 			endpoint: url,
 			timeoutMs,
 			intervalMs,
-			// HTTP readiness is a health check: require a 200. Point `url` at an
-			// endpoint that returns 200 once the service is actually ready (the
-			// default is the service root). Anything else — a still-compiling
-			// dev server, a 5xx, a redirect — keeps polling until the readiness
-			// timeout. Use a `log` probe instead when 200-at-a-URL isn't the
-			// right readiness signal.
+			// HTTP readiness is a health check: require a 200 from the probed
+			// `url` ITSELF. `redirect: 'manual'` means a 3xx is not followed —
+			// it reads as `status 0`, so a server that 302s to a 200 login page
+			// is NOT counted as ready off the redirect target. Point `url` at an
+			// endpoint that returns 200 when the service is up (default: the
+			// service root). Anything else — a still-compiling dev server, a
+			// 5xx, a redirect — keeps polling until the readiness timeout. Use a
+			// `log` probe instead when 200-at-a-URL isn't the right signal.
+			requestInit: { redirect: 'manual' },
 			validate: (response) => response.status === 200,
 		}).pipe(
 			Effect.mapError(

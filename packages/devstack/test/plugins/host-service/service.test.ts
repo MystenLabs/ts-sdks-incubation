@@ -346,6 +346,54 @@ describe('acquireHostService', () => {
 			),
 	);
 
+	it.live(
+		'does NOT ready an HTTP host-service that only 3xx-redirects (redirects are not followed)',
+		() =>
+			Effect.scoped(
+				Effect.gen(function* () {
+					const port = yield* Effect.promise(findFreePort);
+					// `redirect: 'manual'` — the readiness probe does NOT follow a 3xx.
+					// A server that 302s at `/` (even to a would-be 200 target) must
+					// NOT be treated as ready: the probed URL itself returned a
+					// redirect, not a 200. Pins that fetch's default redirect-following
+					// can't sneak a redirect target's 200 past the health check.
+					const options = normalizeHostServiceOptions({
+						name: 'frontend',
+						command: process.execPath,
+						args: [
+							'-e',
+							[
+								"const http = require('node:http');",
+								'const server = http.createServer((_req, res) => {',
+								'  res.statusCode = 302;',
+								"  res.setHeader('Location', '/ready');",
+								"  res.end('redirecting');",
+								'});',
+								"server.listen(Number(process.env.PORT), '127.0.0.1');",
+							].join(' '),
+						],
+						ready: { kind: 'http', timeoutMs: 600, intervalMs: 50 },
+					});
+
+					const exit = yield* Effect.exit(
+						acquireHostService(options, {
+							allocatePort: () => Effect.succeed(port),
+							logger: fakeLogger,
+							pluginKey: pluginKey('host-service-test#2'),
+							processEnv: { PATH: '/usr/bin' },
+						}),
+					);
+
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(Option.isSome(error)).toBe(true);
+					if (Option.isSome(error)) {
+						expect(error.value.phase).toBe('ready');
+					}
+				}),
+			),
+	);
+
 	it('fails acquire when the process emits an error before readiness', async () => {
 		const child = new FakeChild();
 		const cause = new Error('spawn failed');
