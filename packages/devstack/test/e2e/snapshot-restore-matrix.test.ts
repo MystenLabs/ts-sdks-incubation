@@ -4,8 +4,12 @@
 // runtime root with an OFFLINE restore between them:
 //
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
-//   offline restore
+//   wipe the live deploy cache -> offline restore
 //   boot 2: assert S1 survived, assert S2 is gone, create S3 (assert exists)
+//
+// The live deploy cache is wiped before the restore, so every deploy id must
+// come back from the cache the snapshot CAPTURED (not the in-place preserve) —
+// the harder `snapshot -> wipe -> restore` lifecycle.
 //
 // S2-gone proves the rollback actually rolled back; S3 proves the stack is
 // writable again after a restore. This closes the gap that

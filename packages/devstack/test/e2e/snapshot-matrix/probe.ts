@@ -5,14 +5,19 @@
 // restore between them:
 //
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
-//   offline restore
+//   wipe the live deploy cache -> offline restore
 //   boot 2: assert S1 still exists, assert S2 is gone, create S3 (assert exists)
 //
 // S2-gone proves the rollback rolled back; S3 proves the stack is writable
 // again after restore. The fresh actor keypair is shared across both boots
 // and funded BEFORE the snapshot so its funding survives the restore.
+//
+// The live deploy cache is WIPED before the restore so survival cannot lean on
+// the in-place preserve — every deploy id must come back from the cache the
+// snapshot CAPTURED. That makes this the harder `snapshot -> wipe -> restore`
+// lifecycle and proves the snapshot is self-contained.
 
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -96,6 +101,22 @@ export const runMatrix = async (params: {
 			}),
 	});
 
+	// Simulate a `wipe` between snapshot and restore: drop the LIVE deploy/mint
+	// cache (`<stackRoot>/cache/`) so the restore CANNOT fall back to the
+	// preserved live copy — it must recover every deploy id from the cache
+	// CAPTURED into the snapshot. This exercises the harder `snapshot → wipe →
+	// restore` lifecycle; if the ids (and thus every surface below) still
+	// survive, the snapshot is genuinely self-contained, not just in-place
+	// reusable. (See DEPLOY_CACHE_NAMESPACES — captured in capture.ts, preserved
+	// in restore.ts.)
+	const liveCachePath = join(runtimeRoot, 'stacks', params.stack, 'cache');
+	if (!existsSync(liveCachePath)) {
+		// Path drift would make the wipe a no-op, letting survival lean on the
+		// in-place preserve instead of the captured cache — i.e. a false pass.
+		throw new Error(`runMatrix: expected a live deploy cache to wipe at ${liveCachePath}`);
+	}
+	rmSync(liveCachePath, { recursive: true, force: true });
+
 	// OFFLINE RESTORE — no supervisor is live between the two boots.
 	await restoreSnapshotOffline({
 		runtimeRoot,
@@ -104,7 +125,7 @@ export const runMatrix = async (params: {
 		network: 'sui:local',
 		snapshotId: params.snapshotId,
 	});
-	console.log('[snapshot-matrix] offline restore complete');
+	console.log('[snapshot-matrix] offline restore complete (live cache wiped first)');
 
 	// BOOT 2 — assert S1 survived, S2 rolled back, S3 writable.
 	const outcomes: ProbeOutcome[] = [];

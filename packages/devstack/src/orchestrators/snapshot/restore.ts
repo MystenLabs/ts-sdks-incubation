@@ -47,6 +47,7 @@ import {
 	ContributionDocSchema,
 	containerImagesBundlePath,
 	contributionPath,
+	DEPLOY_CACHE_NAMESPACES,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	type SnapshotId,
@@ -780,31 +781,6 @@ const restoreHostTree = (
 		);
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
 
-// Per-plugin deploy/mint artifact-cache namespaces whose cached payload is an
-// on-chain identity (package id, system/staking object, key-server object,
-// pool id, coin treasury/metadata). The snapshot captures the CHAIN state that
-// already contains these deploys, so on restore the cache must come along too —
-// otherwise the post-restore boot cache-MISSES, re-runs deploy/mint with FRESH
-// ids, and orphans every pre-snapshot object that referenced the old ids
-// (a blob's storage package, a coin holder's coin type, …). A warm restart
-// keeps this cache on disk and stays id-stable; restore's stage-and-swap would
-// drop it unless preserved here, so this is the restore-side half of the same
-// id-stability contract. Source of truth for each string is the plugin's
-// `publish({ namespace })` call (walrus/deploy.ts, package/mode-local.ts,
-// seal/deploy.ts, deepbook/deploy.ts + pyth, coin/mint.ts, action/service.ts);
-// a slash-prefixed namespace (`seal/package`, `deepbook/pools`) nests under its
-// root dir, so preserving the root (`cache/seal`, `cache/deepbook`) covers all
-// of that plugin's namespaces. The generic per-call `cache/entry` is NOT a
-// deploy namespace and stays dropped (restore.test.ts pins that rollback).
-const DEPLOY_CACHE_PRESERVED_NAMESPACES: ReadonlyArray<string> = [
-	'walrus-deploy',
-	'package',
-	'seal',
-	'deepbook',
-	'coin-mint',
-	'action',
-];
-
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: SNAPSHOTS_DIR_NAME, kind: 'directory' },
 	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME, kind: 'file' },
@@ -812,7 +788,16 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
 	{ relativePath: 'snapshot.reservation', kind: 'file' },
-	...DEPLOY_CACHE_PRESERVED_NAMESPACES.map(
+	// Preserve the LIVE deploy/mint caches — the in-place `snapshot → restore`
+	// fast path (no tar). The snapshot ALSO CAPTURES these (DEPLOY_CACHE_NAMESPACES
+	// in descriptor.ts, tarred in capture.ts), so a `snapshot → wipe → fresh boot
+	// → restore` still recovers the ids from the host-tree tar even though the
+	// live cache is gone; preserving the live copy here just lets an in-place
+	// restore skip relying on the tar. Either way the post-restore boot REUSES the
+	// deploy instead of re-running it with fresh ids (which would orphan every
+	// pre-snapshot object). The generic per-call `cache/entry` is NOT a deploy
+	// namespace and stays dropped (restore.test.ts pins that rollback).
+	...DEPLOY_CACHE_NAMESPACES.map(
 		(namespace): StageAndSwapPreservedPath => ({
 			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
 			kind: 'directory',

@@ -136,6 +136,6 @@ export const buildMatrixStack = (opts: MatrixStackOptions = {}): Stack => {
 
 	return defineDevstack({
 		members: [...baseMembers, deepbookPackage, dex, devWallet, dashboard()],
-		stackName: STACK_NAME,
+		stackName,
 	});
 };

@@ -182,6 +182,27 @@ export const CapturedSubtreeSchema = Schema.Struct({
 });
 export type CapturedSubtree = Schema.Schema.Type<typeof CapturedSubtreeSchema>;
 
+/** Artifact-cache namespaces (`<stackRoot>/cache/<ns>/`) whose cached payload
+ *  is an on-chain deploy/mint identity — package id, walrus system/staking
+ *  objects, seal key-server object, deepbook pool ids, coin treasury. These
+ *  must come back after a restore so the post-restore boot REUSES the deploy
+ *  instead of re-running it with fresh ids (which orphans every pre-snapshot
+ *  object). Honored by BOTH halves so the contract holds across lifecycles:
+ *  the capture TARS `cache/<ns>` into the snapshot (self-contained — survives a
+ *  `wipe` that drops the live cache), and the restore also PRESERVES the live
+ *  `cache/<ns>` (the in-place `snapshot → restore` fast path, no tar). A
+ *  slash-prefixed plugin namespace (`seal/package`, `deepbook/pools`) nests
+ *  under its root, so the root entry covers all of that plugin's namespaces.
+ *  The generic per-call `cache/entry` is NOT here and stays dropped on restore. */
+export const DEPLOY_CACHE_NAMESPACES: ReadonlyArray<string> = [
+	'walrus-deploy',
+	'package',
+	'seal',
+	'deepbook',
+	'coin-mint',
+	'action',
+];
+
 /** Identity slice that fires the cross-chain refusal guard. The
  *  orchestrator threads contributions from participating plugins
  *  through this map — `chain` is the canonical case but other plugins
