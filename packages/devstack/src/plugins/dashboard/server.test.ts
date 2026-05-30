@@ -114,6 +114,50 @@ describe('dashboard http server (Pothos schema + yoga)', () => {
 		});
 	});
 
+	it('reflects CORS for a loopback origin, denies an internet origin', async () => {
+		// Loopback origin (Vite dev / *.localhost) → reflected.
+		const allowed = await fetch(`${baseUrl}/graphql`, {
+			method: 'OPTIONS',
+			headers: {
+				origin: 'http://app.localhost:5173',
+				'access-control-request-method': 'POST',
+			},
+		});
+		expect(allowed.headers.get('access-control-allow-origin')).toBe('http://app.localhost:5173');
+
+		// Arbitrary internet origin → no allow-origin header (denied).
+		const denied = await fetch(`${baseUrl}/graphql`, {
+			method: 'OPTIONS',
+			headers: {
+				origin: 'https://evil.example.com',
+				'access-control-request-method': 'POST',
+			},
+		});
+		expect(denied.headers.get('access-control-allow-origin')).toBeNull();
+	});
+
+	it('reserves /graphql even when the path is percent-encoded', async () => {
+		// `/graphql` reached via an encoded variant is reserved for the GraphQL
+		// endpoint — it must NOT leak into the static/SPA path (which would
+		// answer with the HTML index, exposing the SPA at a `/graphql*` URL).
+		const res = await fetch(`${baseUrl}/%67raphql`, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ query: '{ ping }' }),
+		});
+		// Routed to yoga, not the SPA fallback: never the HTML index document.
+		expect(res.headers.get('content-type') ?? '').not.toContain('text/html');
+		const body = await res.text();
+		expect(body).not.toContain('<div id="root">');
+	});
+
+	it('rejects an encoded path-traversal attempt (never serves the climbed file)', async () => {
+		// `/..%2f..%2fpackage.json` decodes to a `..`-bearing path; safeResolve
+		// must reject it (SPA fallback or 404), never the traversed JSON file.
+		const res = await fetch(`${baseUrl}/..%2f..%2fpackage.json`);
+		expect(res.headers.get('content-type')).not.toContain('application/json');
+	});
+
 	it('maps mutations to engine commands', async () => {
 		recorded.length = 0;
 		// Mutations return a typed CommandResult ({ ok, command }).

@@ -178,7 +178,10 @@ interface SealShape {
 	readonly mode?: unknown;
 	readonly objectId?: unknown;
 	readonly keyServerUrl?: unknown;
-	readonly serverConfigs?: ReadonlyArray<{ readonly objectId?: unknown; readonly weight?: unknown }>;
+	readonly serverConfigs?: ReadonlyArray<{
+		readonly objectId?: unknown;
+		readonly weight?: unknown;
+	}>;
 }
 
 interface CoinShape {
@@ -434,11 +437,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				({ pluginKey, value }): DashboardCoinCap => {
 					const v = value as CoinShape;
 					const source =
-						v.source === 'registry'
-							? 'registry'
-							: v.source === 'builtin'
-								? 'builtin'
-								: 'on-chain';
+						v.source === 'registry' ? 'registry' : v.source === 'builtin' ? 'builtin' : 'on-chain';
 					return {
 						pluginKey,
 						symbol: str(v.symbol),
@@ -546,7 +545,7 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 
 	const postgresStats: DashboardDomain['postgresStats'] = Effect.gen(function* () {
 		const values = yield* control.resolvedValues;
-		const instances = matching(values, (id) => id === 'postgres' || id.startsWith('postgres'));
+		const instances = matching(values, (id) => id === 'postgres');
 		if (instances.length === 0) return [];
 		const out: DashboardPostgresStats[] = [];
 		for (const { pluginKey, value } of instances) {

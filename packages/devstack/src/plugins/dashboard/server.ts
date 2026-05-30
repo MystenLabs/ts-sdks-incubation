@@ -95,6 +95,46 @@ document.getElementById('restart').onclick = async () => {
 </script>
 </body></html>`;
 
+/** True when `origin` is a loopback/localhost origin (any scheme, any port):
+ *  hostname is exactly `localhost`, `127.0.0.1`, `[::1]`, or ends with
+ *  `.localhost`. Used to gate CORS — see `loopbackCorsOptions`. */
+const isLoopbackOrigin = (origin: string): boolean => {
+	let host: string;
+	try {
+		// `URL.hostname` normalizes IPv6 (`[::1]` → `::1`) and strips the port.
+		host = new URL(origin).hostname.toLowerCase();
+	} catch {
+		return false;
+	}
+	return (
+		host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')
+	);
+};
+
+/** CORS policy for the control plane.
+ *
+ *  The GraphQL schema exposes DESTRUCTIVE mutations (wipe/prune/shutdown/
+ *  restart/restoreSnapshot/deleteSnapshot/mint). Since JSON POSTs are
+ *  preflighted, a correct CORS policy is a real defense: it stops any
+ *  internet site the user happens to be visiting from driving a cross-origin
+ *  request against the loopback dashboard.
+ *
+ *  We reflect the request `Origin` back ONLY when it is a loopback/localhost
+ *  origin — that keeps the same-origin bundled SPA AND the Vite dev origin
+ *  (`*.localhost` / `localhost:<port>`) working, while denying every other
+ *  origin (no `Access-Control-Allow-Origin` header → the browser blocks the
+ *  cross-origin read/write). `credentials` stays `false`. */
+const loopbackCorsOptions = (
+	request: Request,
+): { origin: string[]; credentials: boolean } | false => {
+	const origin = request.headers.get('origin');
+	// No Origin header (same-origin / non-CORS request) → no CORS headers
+	// needed. A non-loopback Origin is denied the same way.
+	if (origin === null || !isLoopbackOrigin(origin)) return false;
+	// Reflect this exact origin (single-element array → echoed verbatim).
+	return { origin: [origin], credentials: false };
+};
+
 /** Strip query/hash and decode a request path into a relative file path. */
 const requestPathname = (url: string): string => {
 	const noQuery = url.split(/[?#]/, 1)[0] ?? '/';
@@ -106,9 +146,28 @@ const requestPathname = (url: string): string => {
 };
 
 /** Resolve a request pathname to an absolute file inside `root`, returning
- *  `undefined` for traversal attempts or paths that escape `root`. */
+ *  `undefined` for traversal attempts or paths that escape `root`.
+ *
+ *  Traversal is REJECTED, not re-rooted: if the normalized path still bears
+ *  a `..` segment we bail rather than stripping it and serving a different
+ *  file than was requested. The `startsWith(root)` guard then closes any
+ *  residual escape (e.g. a sibling dir sharing a prefix). */
 const safeResolve = (root: string, pathname: string): string | undefined => {
-	const rel = normalize(pathname).replace(/^(\.\.[/\\])+/, '').replace(/^[/\\]+/, '');
+	const normalized = normalize(pathname);
+	// A surviving `..` segment means the request tried to climb out of `root`;
+	// reject rather than re-root. Cover both separators and bare/trailing forms.
+	if (
+		normalized === '..' ||
+		normalized.startsWith(`..${sep}`) ||
+		normalized.startsWith('../') ||
+		normalized.includes(`${sep}..${sep}`) ||
+		normalized.includes('/../') ||
+		normalized.endsWith(`${sep}..`) ||
+		normalized.endsWith('/..')
+	) {
+		return undefined;
+	}
+	const rel = normalized.replace(/^[/\\]+/, '');
 	const abs = resolve(root, rel);
 	const rootWithSep = root.endsWith(sep) ? root : root + sep;
 	if (abs !== root && !abs.startsWith(rootWithSep)) return undefined;
@@ -137,16 +196,19 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 		graphqlEndpoint,
 		graphiql: true,
 		landingPage: false,
-		// Localhost dev tool: permissive CORS so the Vite app (different
-		// origin) and direct browser tooling can call the API.
-		cors: { origin: '*', credentials: false },
+		// Loopback-origin allowlist (see `loopbackCorsOptions`): reflect only
+		// localhost/127.0.0.1/[::1]/*.localhost origins so the bundled SPA and
+		// the Vite dev origin work while arbitrary internet sites are denied
+		// cross-origin access to the destructive control-plane mutations.
+		cors: loopbackCorsOptions,
 	});
 	const fallbackPage = testPage(graphqlEndpoint);
 
-	const isGraphql = (url: string): boolean =>
-		url === graphqlEndpoint ||
-		url.startsWith(`${graphqlEndpoint}?`) ||
-		url.startsWith(`${graphqlEndpoint}/`);
+	// Reserve `/graphql` by DECODED pathname so encoded variants
+	// (`/graphql%2F…`, `/%67raphql`) route to yoga instead of leaking into the
+	// static/SPA path. `pathname` is already query/hash-stripped + decoded.
+	const isGraphql = (pathname: string): boolean =>
+		pathname === graphqlEndpoint || pathname.startsWith(`${graphqlEndpoint}/`);
 
 	const sendFile = (res: Parameters<HttpRequestListener>[1], absPath: string): boolean => {
 		try {
@@ -163,7 +225,8 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 
 	return (req, res) => {
 		const url = req.url ?? '/';
-		if (isGraphql(url)) {
+		const pathname = requestPathname(url);
+		if (isGraphql(pathname)) {
 			void yoga(req, res);
 			return;
 		}
@@ -176,7 +239,6 @@ export const makeDashboardListener = (opts: DashboardListenerOptions): HttpReque
 			return;
 		}
 
-		const pathname = requestPathname(url);
 		const abs = pathname === '/' ? undefined : safeResolve(assetsDir, pathname);
 
 		// Serve a real static asset when one matches the request path.

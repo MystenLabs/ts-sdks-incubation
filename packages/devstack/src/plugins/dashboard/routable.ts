@@ -32,6 +32,15 @@ export const makeDashboardRoutable = (parts: {
 		role: DASHBOARD_ROUTE_ROLE,
 	},
 	upstream: { type: 'host-loopback', port: parts.port },
-	cors: true,
+	// CORS is owned by the dashboard server itself (`server.ts`
+	// `loopbackCorsOptions`): a loopback-origin allowlist that guards the
+	// destructive control-plane mutations. We deliberately do NOT attach the
+	// shared `devstack-cors` Traefik middleware here — that middleware is
+	// permissive (`*` allow-origin, allow-credentials) and, when the dashboard
+	// is reached via the router hostname, would overwrite the server's
+	// allowlist headers and re-open the cross-origin hole. `false` keeps the
+	// in-process policy authoritative on both the direct loopback port and the
+	// router-fronted hostname.
+	cors: false,
 	wireProtocol: 'http',
 });

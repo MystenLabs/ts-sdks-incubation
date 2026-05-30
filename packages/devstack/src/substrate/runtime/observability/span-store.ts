@@ -112,12 +112,24 @@ const NANOS_PER_MILLI = 1_000_000n;
 const nanosToMillis = (n: bigint): number => Number(n / NANOS_PER_MILLI);
 
 /** Derive the dashboard `service` for a span: prefer the canonical
- *  `devstack.plugin` attribute, else fall back to the leading dotted/slashed
- *  segment of the span name (e.g. `lifecycle.supervisor.runCommand` →
- *  `lifecycle`). `null` when neither is informative. */
+ *  `devstack.plugin` attribute, else fall back to the span name. Plugin
+ *  spans without the attribute use the dotted `devstack.plugin.<name>.…`
+ *  convention, so we special-case that prefix to recover `<name>` (e.g.
+ *  `devstack.plugin.postgres.acquire` → `postgres`) instead of bucketing
+ *  every plugin span under the shared `devstack` head. Other namespaced
+ *  spans fall back to the leading dotted/slashed segment
+ *  (`lifecycle.supervisor.runCommand` → `lifecycle`). `null` when neither
+ *  is informative. */
+const PLUGIN_SPAN_PREFIX = 'devstack.plugin.';
 const deriveService = (name: string, attributes: ReadonlyMap<string, unknown>): string | null => {
 	const plugin = attributes.get(SpanAttr.plugin);
 	if (typeof plugin === 'string' && plugin.length > 0) return plugin;
+	if (name.startsWith(PLUGIN_SPAN_PREFIX)) {
+		// `devstack.plugin.<name>.<op>` → `<name>` (the segment after the prefix).
+		const rest = name.slice(PLUGIN_SPAN_PREFIX.length);
+		const pluginName = rest.split(/[./]/, 1)[0];
+		if (pluginName !== undefined && pluginName.length > 0) return pluginName;
+	}
 	const head = name.split(/[./]/, 1)[0];
 	return head !== undefined && head.length > 0 && head !== name ? head : null;
 };

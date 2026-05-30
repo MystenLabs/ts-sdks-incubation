@@ -9,7 +9,7 @@
 //   4. Filters compose (service / status / search) and `limit` caps.
 //   5. The ring is bounded to capacity.
 
-import { Effect, Tracer } from 'effect';
+import { Effect, Fiber, Tracer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
@@ -82,6 +82,20 @@ describe('SpanStore + recording tracer', () => {
 		}),
 	);
 
+	it.effect('derives plugin name from a devstack.plugin.<name>.… span name', () =>
+		Effect.gen(function* () {
+			const store = yield* makeSpanStore(100);
+			yield* Effect.void.pipe(
+				// Attribute-less plugin span: the `devstack.plugin.<name>.` prefix
+				// recovers `<name>` rather than bucketing under the shared `devstack`.
+				Effect.withSpan('devstack.plugin.postgres.acquire'),
+				Effect.provideService(Tracer.Tracer, store.tracer),
+			);
+			const spans = yield* store.query();
+			expect(spans[0]!.service).toBe('postgres');
+		}),
+	);
+
 	it('applySpanFilter composes service/status/search and limit', () => {
 		const records: SpanRecord[] = [
 			{
@@ -130,6 +144,27 @@ describe('SpanStore + recording tracer', () => {
 		]);
 		expect(applySpanFilter(records, { limit: 1 }, 100).map((s) => s.name)).toEqual(['ready']);
 	});
+
+	it.effect('a fork under a tracer-bearing context records its spans', () =>
+		// Pins the supervisor-wiring assumption: `startSupervisor` provides
+		// `spanStore.tracer` onto its own effects so `Effect.forkScoped`'d
+		// fibers (command loop, background tasks) inherit it and their
+		// `lifecycle.supervisor.*` spans land in the ring — instead of hitting
+		// the default no-op tracer and evaporating.
+		Effect.gen(function* () {
+			const store = yield* makeSpanStore(100);
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const fiber = yield* Effect.forkScoped(
+						Effect.void.pipe(Effect.withSpan('lifecycle.supervisor.runCommand')),
+					);
+					yield* Fiber.join(fiber);
+				}).pipe(Effect.provideService(Tracer.Tracer, store.tracer)),
+			);
+			const spans = yield* store.query();
+			expect(spans.map((s) => s.name)).toContain('lifecycle.supervisor.runCommand');
+		}),
+	);
 
 	it.effect('bounds the ring to capacity', () =>
 		Effect.gen(function* () {
