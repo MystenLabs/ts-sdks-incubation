@@ -33,15 +33,13 @@ import type {
 	DashboardCoinCap,
 	DashboardDeepbookInfo,
 	DashboardDeepbookPool,
+	DashboardFundableCoin,
 	DashboardPostgresStats,
 	DashboardPostgresTable,
 	DashboardSealInfo,
 	DashboardSealKeyServer,
 } from '../domain.ts';
-import type {
-	LogRecord,
-	SpanRecord,
-} from '../../../substrate/runtime/observability/index.ts';
+import type { LogRecord, SpanRecord } from '../../../substrate/runtime/observability/index.ts';
 import type {
 	AccountProjection,
 	BuildEntry as BuildEntryShape,
@@ -347,47 +345,41 @@ export const SnapshotEntry = builder
 		}),
 	});
 
-export const DeepbookPool = builder
-	.objectRef<DashboardDeepbookPool>('DeepbookPool')
-	.implement({
-		description: 'A DeepBook pool object id + coin types (prices are chain-direct).',
-		fields: (t) => ({
-			name: t.exposeString('name'),
-			poolId: t.exposeString('poolId'),
-			baseCoinType: t.exposeString('baseCoinType'),
-			quoteCoinType: t.exposeString('quoteCoinType'),
-		}),
-	});
+export const DeepbookPool = builder.objectRef<DashboardDeepbookPool>('DeepbookPool').implement({
+	description: 'A DeepBook pool object id + coin types (prices are chain-direct).',
+	fields: (t) => ({
+		name: t.exposeString('name'),
+		poolId: t.exposeString('poolId'),
+		baseCoinType: t.exposeString('baseCoinType'),
+		quoteCoinType: t.exposeString('quoteCoinType'),
+	}),
+});
 
-export const DeepbookInfo = builder
-	.objectRef<DashboardDeepbookInfo>('DeepbookInfo')
-	.implement({
-		description: 'A DeepBook deployment: registry/admin/pool ids + market-maker state.',
-		fields: (t) => ({
-			pluginKey: t.exposeString('pluginKey'),
-			name: t.exposeString('name'),
-			mode: t.field({ type: DeepbookMode, resolve: (d) => d.mode }),
-			chain: t.exposeString('chain'),
-			packageId: t.exposeString('packageId'),
-			registryId: t.exposeString('registryId'),
-			adminCapId: t.exposeString('adminCapId', { nullable: true }),
-			deepTreasuryId: t.exposeString('deepTreasuryId', { nullable: true }),
-			pools: t.field({ type: [DeepbookPool], resolve: (d) => d.pools }),
-			marketMakerRunning: t.exposeBoolean('marketMakerRunning'),
-			serverUrl: t.exposeString('serverUrl', { nullable: true }),
-			indexerUrl: t.exposeString('indexerUrl', { nullable: true }),
-		}),
-	});
+export const DeepbookInfo = builder.objectRef<DashboardDeepbookInfo>('DeepbookInfo').implement({
+	description: 'A DeepBook deployment: registry/admin/pool ids + market-maker state.',
+	fields: (t) => ({
+		pluginKey: t.exposeString('pluginKey'),
+		name: t.exposeString('name'),
+		mode: t.field({ type: DeepbookMode, resolve: (d) => d.mode }),
+		chain: t.exposeString('chain'),
+		packageId: t.exposeString('packageId'),
+		registryId: t.exposeString('registryId'),
+		adminCapId: t.exposeString('adminCapId', { nullable: true }),
+		deepTreasuryId: t.exposeString('deepTreasuryId', { nullable: true }),
+		pools: t.field({ type: [DeepbookPool], resolve: (d) => d.pools }),
+		marketMakerRunning: t.exposeBoolean('marketMakerRunning'),
+		serverUrl: t.exposeString('serverUrl', { nullable: true }),
+		indexerUrl: t.exposeString('indexerUrl', { nullable: true }),
+	}),
+});
 
-export const SealKeyServer = builder
-	.objectRef<DashboardSealKeyServer>('SealKeyServer')
-	.implement({
-		description: 'One Seal key-server config (objectId + weight).',
-		fields: (t) => ({
-			objectId: t.exposeString('objectId'),
-			weight: t.exposeInt('weight'),
-		}),
-	});
+export const SealKeyServer = builder.objectRef<DashboardSealKeyServer>('SealKeyServer').implement({
+	description: 'One Seal key-server config (objectId + weight).',
+	fields: (t) => ({
+		objectId: t.exposeString('objectId'),
+		weight: t.exposeInt('weight'),
+	}),
+});
 
 export const SealInfo = builder.objectRef<DashboardSealInfo>('SealInfo').implement({
 	description: 'A Seal key-server deployment (objectId/threshold/mode/keyServers).',
@@ -417,36 +409,48 @@ export const CoinCap = builder.objectRef<DashboardCoinCap>('CoinCap').implement(
 	}),
 });
 
-export const PostgresTable = builder
-	.objectRef<DashboardPostgresTable>('PostgresTable')
-	.implement({
-		description: 'Per-table row estimate + total size (bytes).',
-		fields: (t) => ({
-			schema: t.exposeString('schema'),
-			name: t.exposeString('name'),
-			rowEstimate: t.exposeFloat('rowEstimate'),
-			totalBytes: t.exposeFloat('totalBytes'),
-		}),
-	});
+export const FundableCoin = builder.objectRef<DashboardFundableCoin>('FundableCoin').implement({
+	description:
+		'A coin the dashboard faucet can fund right now. SUI is fixed-amount; ' +
+		'WAL/DEEP honor an amount and require the recipient to be a resolved account.',
+	fields: (t) => ({
+		symbol: t.exposeString('symbol'),
+		coinType: t.exposeString('coinType'),
+		/** True when the underlying strategy honors a caller-supplied amount
+		 *  (WAL/DEEP swaps). SUI is fixed-amount (false). */
+		honorsAmount: t.exposeBoolean('honorsAmount'),
+		/** True when funding requires the recipient to BE a resolved account
+		 *  (the swap spends that account's own SUI). SUI is false. */
+		requiresAccountSigner: t.exposeBoolean('requiresAccountSigner'),
+	}),
+});
 
-export const PostgresStats = builder
-	.objectRef<DashboardPostgresStats>('PostgresStats')
-	.implement({
-		description:
-			'Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.',
-		fields: (t) => ({
-			pluginKey: t.exposeString('pluginKey'),
-			database: t.exposeString('database'),
-			// Plain (password-less) DSN only — the credentialed form never leaves
-			// the backend.
-			plainUrl: t.exposeString('plainUrl'),
-			databaseBytes: t.exposeFloat('databaseBytes'),
-			connectionCount: t.exposeInt('connectionCount'),
-			tables: t.field({ type: [PostgresTable], resolve: (p) => p.tables }),
-			available: t.exposeBoolean('available'),
-			detail: t.exposeString('detail', { nullable: true }),
-		}),
-	});
+export const PostgresTable = builder.objectRef<DashboardPostgresTable>('PostgresTable').implement({
+	description: 'Per-table row estimate + total size (bytes).',
+	fields: (t) => ({
+		schema: t.exposeString('schema'),
+		name: t.exposeString('name'),
+		rowEstimate: t.exposeFloat('rowEstimate'),
+		totalBytes: t.exposeFloat('totalBytes'),
+	}),
+});
+
+export const PostgresStats = builder.objectRef<DashboardPostgresStats>('PostgresStats').implement({
+	description:
+		'Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.',
+	fields: (t) => ({
+		pluginKey: t.exposeString('pluginKey'),
+		database: t.exposeString('database'),
+		// Plain (password-less) DSN only — the credentialed form never leaves
+		// the backend.
+		plainUrl: t.exposeString('plainUrl'),
+		databaseBytes: t.exposeFloat('databaseBytes'),
+		connectionCount: t.exposeInt('connectionCount'),
+		tables: t.field({ type: [PostgresTable], resolve: (p) => p.tables }),
+		available: t.exposeBoolean('available'),
+		detail: t.exposeString('detail', { nullable: true }),
+	}),
+});
 
 // --- Observability: LogRecord / SpanRecord -----------------------------
 //

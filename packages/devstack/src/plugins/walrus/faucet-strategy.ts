@@ -133,15 +133,26 @@ export interface WalFaucetStrategyOptions {
  *  strategy is invoked; the guard here keeps direct calls no-op. */
 export const makeWalFaucetStrategy = (opts: WalFaucetStrategyOptions): WalFaucetStrategy => ({
 	usesAccountSigner: true,
-	request: (req) =>
-		req.amount <= 0n
-			? Effect.void
-			: swapAccountSuiForWal({
-					account: req.account,
-					sdk: opts.sdk,
-					exchange: opts.exchange,
-					recipientAddress: req.address,
-					paymentMist: req.amount,
-				}).pipe(Effect.asVoid),
+	// The swap buys WAL with the recipient account's own SUI, so the recipient
+	// must be a resolved account with a signer — funding an arbitrary 0x address
+	// is rejected by the dispatcher/dashboard on this flag.
+	requiresRecipientAccount: true,
+	request: (req) => {
+		if (req.amount <= 0n) return Effect.void;
+		if (req.account === undefined) {
+			return Effect.fail(
+				walrusPluginError(
+					'fund-wal',
+					'walrus WAL funding spends the recipient account’s own SUI, so it requires a resolved account signer.',
+				),
+			);
+		}
+		return swapAccountSuiForWal({
+			account: req.account,
+			sdk: opts.sdk,
+			exchange: opts.exchange,
+			recipientAddress: req.address,
+			paymentMist: req.amount,
+		}).pipe(Effect.asVoid);
+	},
 });
-

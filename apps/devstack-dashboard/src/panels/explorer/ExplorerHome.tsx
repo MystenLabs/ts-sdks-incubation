@@ -213,16 +213,21 @@ export const ExplorerHome = ({ chain, projection, unreachable }: ExplorerHomePro
 					token="green"
 					icon="zap"
 				/>
-				<Kpi
-					label="Lowest cp"
-					value={
-						headData?.lowestAvailableCheckpoint != null
-							? headData.lowestAvailableCheckpoint.toLocaleString()
-							: '—'
-					}
-					sub="available"
-					icon="layers"
-				/>
+				<span
+					title="The lowest checkpoint the node still retains. Older checkpoints have been pruned, so chain reads can only go back this far."
+					style={{ display: 'block', minWidth: 0 }}
+				>
+					<Kpi
+						label="Oldest checkpoint"
+						value={
+							headData?.lowestAvailableCheckpoint != null
+								? headData.lowestAvailableCheckpoint.toLocaleString()
+								: '—'
+						}
+						sub="earliest retained"
+						icon="layers"
+					/>
+				</span>
 			</div>
 
 			{/* Latest transactions + packages. */}

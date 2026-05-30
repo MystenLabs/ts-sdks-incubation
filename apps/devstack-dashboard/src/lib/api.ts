@@ -371,6 +371,24 @@ export interface MintArgs {
 	readonly amountBaseUnits: string;
 }
 
+/** Outcome of a faucet fund (`FundResult`). The in-process funding
+ *  strategies return no digest, so `digest` is always null — `ok` reflects
+ *  whether the strategy's request completed; `detail` carries the reason. */
+export interface FundResult {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
+/** Variables for a fund request. `coinType` absent / SUI routes through the
+ *  fixed-amount chain faucet (amount ignored); a WAL/DEEP coin type routes
+ *  through the account-signed swap (amount honored). */
+export interface FundArgs {
+	readonly recipient: string;
+	readonly coinType?: string;
+	readonly amountBaseUnits?: string;
+}
+
 const WipeDoc = graphql(`
 	mutation Wipe {
 		wipe {
@@ -432,6 +450,15 @@ const MintDoc = graphql(`
 		}
 	}
 `);
+const FundDoc = graphql(`
+	mutation Fund($recipient: String!, $coinType: String, $amountBaseUnits: String) {
+		fund(input: { recipient: $recipient, coinType: $coinType, amountBaseUnits: $amountBaseUnits }) {
+			ok
+			detail
+			digest
+		}
+	}
+`);
 
 /** Wipe all stack state (destructive). */
 export const wipeStack = (endpoint: string): Promise<CommandResult> =>
@@ -464,6 +491,21 @@ export const deleteSnapshot = (endpoint: string, id: string): Promise<SnapshotAc
  */
 export const mintCoin = (endpoint: string, args: MintArgs): Promise<MintResult> =>
 	execute(endpoint, MintDoc, args).then((d) => d.mint);
+
+/**
+ * Fund an account/address through devstack's in-process funding strategies.
+ * SUI (`coinType` absent / canonical) is a fixed-amount faucet grant (the
+ * amount is ignored); WAL/DEEP route through an account-signed swap (the
+ * amount is honored and the recipient must be a resolved account). Returns
+ * the real processed result — `ok` + `detail` (digest is always null since
+ * the strategies don't surface one).
+ */
+export const fundAccount = (endpoint: string, args: FundArgs): Promise<FundResult> =>
+	execute(endpoint, FundDoc, {
+		recipient: args.recipient,
+		coinType: args.coinType ?? null,
+		amountBaseUnits: args.amountBaseUnits ?? null,
+	}).then((d) => d.fund);
 
 // --- Observability: logs + spans --------------------------------------------
 
@@ -698,6 +740,16 @@ const CoinCapsDoc = graphql(`
 		}
 	}
 `);
+const FundableCoinsDoc = graphql(`
+	query FundableCoins {
+		fundableCoins {
+			symbol
+			coinType
+			honorsAmount
+			requiresAccountSigner
+		}
+	}
+`);
 const PostgresStatsDoc = graphql(`
 	query PostgresStats {
 		postgresStats {
@@ -726,6 +778,8 @@ export type DeepbookInfo = ResultOf<typeof DeepbookInfoDoc>['deepbookInfo'][numb
 export type SealInfo = ResultOf<typeof SealInfoDoc>['sealInfo'][number];
 /** A coin treasury-cap entry. */
 export type CoinCap = ResultOf<typeof CoinCapsDoc>['coinCaps'][number];
+/** A coin the faucet can fund right now (drives the Faucet panel). */
+export type FundableCoin = ResultOf<typeof FundableCoinsDoc>['fundableCoins'][number];
 /** Postgres wire-protocol stats for one plugin instance. */
 export type PostgresStats = ResultOf<typeof PostgresStatsDoc>['postgresStats'][number];
 /** Resolved stack mode (`local` | `fork` | `live`), or null when unset. */
@@ -750,6 +804,11 @@ export const fetchSealInfo = (endpoint: string): Promise<ReadonlyArray<SealInfo>
 /** Coin treasury-cap registry. */
 export const fetchCoinCaps = (endpoint: string): Promise<ReadonlyArray<CoinCap>> =>
 	execute(endpoint, CoinCapsDoc).then((d) => d.coinCaps);
+
+/** Coins the faucet can actually fund right now (SUI always; WAL/DEEP when
+ *  their plugin registered a funding strategy). */
+export const fetchFundableCoins = (endpoint: string): Promise<ReadonlyArray<FundableCoin>> =>
+	execute(endpoint, FundableCoinsDoc).then((d) => d.fundableCoins);
 
 /** Postgres stats per plugin instance. */
 export const fetchPostgresStats = (endpoint: string): Promise<ReadonlyArray<PostgresStats>> =>

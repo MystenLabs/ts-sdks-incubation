@@ -1,21 +1,24 @@
 // Persistent top status header: identity + mode/phase badges, a mono health
-// summary, the ⌘K search trigger, restart/console icon-buttons, and the live
+// summary, the ⌘K search trigger, theme/console icon-buttons, and the live
 // connection indicator. Projection-derived bits are guarded behind `projection`.
 
 import { navigate } from '../lib/router.ts';
 import { summarize } from '../lib/derive.ts';
 import type { Projection } from '../lib/types.ts';
+import type { StackMode } from '../lib/api.ts';
 import type { Connection } from '../lib/useProjection.ts';
 import { Dot, Icon, IconButton } from '../ui/index.ts';
 import { phaseToken } from './phase.ts';
 
 export interface StatusHeaderProps {
 	readonly projection: Projection | null;
+	/** Resolved stack mode (fork/local/live). `identity.network` only carries the
+	 *  node's network family, so a fork is surfaced from this separate signal. */
+	readonly mode: StackMode | null;
 	readonly connection: Connection;
 	readonly onOpenPalette: () => void;
 	readonly onToggleTheme: () => void;
 	readonly theme: string;
-	readonly onRestart: () => void;
 }
 
 const CONN: Record<
@@ -31,11 +34,11 @@ const divider = <span style={{ width: 1, height: 22, background: 'var(--line)' }
 
 export const StatusHeader = ({
 	projection,
+	mode,
 	connection,
 	onOpenPalette,
 	onToggleTheme,
 	theme,
-	onRestart,
 }: StatusHeaderProps) => {
 	const conn = CONN[connection];
 
@@ -71,6 +74,22 @@ export const StatusHeader = ({
 							>
 								{projection.identity.network}
 							</span>
+							{mode === 'fork' && (
+								<span
+									className="badge"
+									title="Forked upstream network — a local node loaded with upstream state"
+									style={{
+										height: 20,
+										fontSize: 10.5,
+										textTransform: 'uppercase',
+										letterSpacing: '.06em',
+										color: 'var(--c-yellow)',
+										borderColor: 'color-mix(in oklab, var(--c-yellow) 32%, var(--line-strong))',
+									}}
+								>
+									fork
+								</span>
+							)}
 						</div>
 						{divider}
 						{(() => {
@@ -115,7 +134,6 @@ export const StatusHeader = ({
 					label={theme === 'dark' ? 'Light theme' : 'Dark theme'}
 					onClick={onToggleTheme}
 				/>
-				<IconButton icon="refresh" label="Restart stack (r)" onClick={onRestart} />
 				<IconButton icon="terminal" label="Console (l)" onClick={() => navigate('activity')} />
 				<span
 					className="badge"

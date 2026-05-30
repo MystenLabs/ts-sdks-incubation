@@ -7,23 +7,44 @@
 //     entries. There is no separate registered `proxy` endpoint (the proxy URL
 //     is a codegen binding, not a projection endpoint), so "Proxy" renders an
 //     honest "not registered" state rather than a fabricated URL.
-//   - Cluster epoch + node/shard/stake + recent blobs are NOT in the control
-//     plane and have no browser-safe chain read here. We attempt a direct HTTP
-//     probe of the aggregator's Walrus daemon API (`/v1/api`, CORS-enabled on
-//     the storage routes) to learn whether the daemon is reachable and to read
-//     whatever system/epoch info it returns. Anything we can't reach renders an
-//     honest "unavailable" empty state — never invented rows.
+//   - Storage epoch, cluster shard layout, and recent blobs are read directly
+//     from the node's Sui GraphQL endpoint (browser-direct, CORS-open) — no
+//     Walrus indexer is involved. `lib/walrus.ts` queries the on-chain Walrus
+//     events/transactions: the storage epoch from the latest `EpochChange*`
+//     event, per-node shard counts from `ShardsReceived` events, and recent
+//     blobs from `register_blob`/`certify_blob` transactions (merged by blob id).
+//     Anything genuinely unreachable still renders an honest empty state — never
+//     invented rows.
+//   - We also probe the aggregator daemon's HTTP API directly to show whether
+//     the storage daemon is reachable (reachability the GraphQL reads can't tell
+//     us about).
 //   - "Upload" requires a browser-safe multi-step publisher flow (encode +
 //     register + certify) that the dashboard does not implement, so it is
 //     disabled with an inline note.
 
 import { type ReactNode, useEffect, useState } from 'react';
 import { restartPlugin } from '../../lib/api.ts';
-import { displayHost } from '../../lib/format.ts';
-import { navigate } from '../../lib/router.ts';
+import {
+	displayHost,
+	formatBytes,
+	groupDigits,
+	timeAgo,
+	truncateMiddle,
+} from '../../lib/format.ts';
+import { navigate, gotoObject, gotoTx } from '../../lib/router.ts';
 import { useToast } from '../../lib/toast.tsx';
 import type { Endpoint } from '../../lib/types.ts';
 import {
+	walrusGraphqlUrl,
+	walrusPackageId,
+	useRecentBlobs,
+	useShardAssignments,
+	useWalrusEpoch,
+	type ShardAssignment,
+	type WalrusSource,
+} from '../../lib/walrus.ts';
+import {
+	Badge,
 	CopyChip,
 	Dot,
 	EmptyState,
@@ -37,6 +58,35 @@ import {
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
 const EM_DASH = '—';
+
+/** Inline-styled id/digest link button, matching the explorer's clickable ids. */
+const LinkButton = ({
+	onClick,
+	title,
+	children,
+}: {
+	onClick: () => void;
+	title?: string;
+	children: ReactNode;
+}) => (
+	<button
+		type="button"
+		onClick={onClick}
+		title={title}
+		style={{
+			background: 'none',
+			border: 'none',
+			padding: 0,
+			color: 'var(--c-magenta)',
+			fontSize: 12.5,
+			fontFamily: 'inherit',
+			textAlign: 'left',
+			cursor: 'pointer',
+		}}
+	>
+		{children}
+	</button>
+);
 
 /** A key/value row matching the design's `PField` (label left, value right). */
 const Field = ({ label, children }: { label: string; children: ReactNode }) => (
@@ -54,20 +104,8 @@ type DaemonState = 'probing' | 'reachable' | 'unreachable';
 
 interface DaemonProbe {
 	readonly state: DaemonState;
-	/** Optional epoch parsed from the daemon's system info, when exposed. */
-	readonly epoch: number | null;
 	readonly detail: string;
 }
-
-/** Pull a numeric epoch out of an arbitrary daemon JSON payload, if present. */
-const epochFrom = (body: unknown): number | null => {
-	if (!body || typeof body !== 'object') return null;
-	const rec = body as Record<string, unknown>;
-	const direct = rec.epoch ?? rec.currentEpoch ?? rec.current_epoch;
-	if (typeof direct === 'number') return direct;
-	if (typeof direct === 'string' && /^\d+$/.test(direct)) return Number(direct);
-	return null;
-};
 
 /**
  * Probe the Walrus aggregator daemon directly from the browser. The storage
@@ -82,30 +120,28 @@ const probeAggregator = async (baseUrl: string): Promise<DaemonProbe> => {
 	for (const url of candidates) {
 		try {
 			const res = await fetch(url, { method: 'GET', mode: 'cors' });
-			if (res.ok) {
-				let epoch: number | null = null;
-				try {
-					epoch = epochFrom(await res.clone().json());
-				} catch {
-					// Body wasn't JSON — reachability still confirmed.
-				}
-				return { state: 'reachable', epoch, detail: `HTTP ${res.status} · ${url}` };
-			}
+			if (res.ok) return { state: 'reachable', detail: `HTTP ${res.status} · ${url}` };
 			lastDetail = `HTTP ${res.status}`;
 		} catch (err) {
 			try {
 				await fetch(url, { method: 'GET', mode: 'no-cors' });
-				return { state: 'reachable', epoch: null, detail: `reachable (opaque) · ${url}` };
+				return { state: 'reachable', detail: `reachable (opaque) · ${url}` };
 			} catch {
 				lastDetail = err instanceof Error ? err.message : String(err);
 			}
 		}
 	}
-	return { state: 'unreachable', epoch: null, detail: lastDetail };
+	return { state: 'unreachable', detail: lastDetail };
 };
 
 const byName = (endpoints: ReadonlyArray<Endpoint>, name: string): Endpoint | null =>
 	endpoints.find((e) => e.name === name) ?? null;
+
+/** Shards held by the node at `index`, when the shard layout is known. */
+const shardsFor = (shards: ShardAssignment | null | undefined, index: number): number | null => {
+	if (!shards) return null;
+	return index < shards.perNode.length ? shards.perNode[index] : null;
+};
 
 export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps) => {
 	const { success, info } = useToast();
@@ -114,23 +150,34 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 
 	const aggregator = byName(endpoints, 'walrus-aggregator');
 	const publisher = byName(endpoints, 'walrus-publisher');
-	// Per-node endpoints, in index order, are the closest thing the projection
-	// has to a cluster-node listing.
+	// Per-node endpoints, in index order, are the projection's node listing.
 	const nodeEndpoints = endpoints
 		.filter((e) => e.name.startsWith('walrus-node-'))
 		.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
-	const [probe, setProbe] = useState<DaemonProbe>({ state: 'probing', epoch: null, detail: '' });
+	// Browser-direct Walrus reads over the node's Sui GraphQL endpoint.
+	const source: WalrusSource = {
+		graphqlUrl: walrusGraphqlUrl(projection.endpoints),
+		packageId: walrusPackageId(projection.packages),
+		network,
+	};
+	const epochQ = useWalrusEpoch(source);
+	const shardsQ = useShardAssignments(source);
+	const blobsQ = useRecentBlobs(source, 25);
+	const shards = shardsQ.data ?? null;
+	const blobs = blobsQ.data ?? [];
+
+	const [probe, setProbe] = useState<DaemonProbe>({ state: 'probing', detail: '' });
 
 	// Probe the aggregator daemon directly whenever the connected stack changes.
 	useEffect(() => {
 		let alive = true;
 		const url = aggregator?.url ?? null;
 		if (!url) {
-			setProbe({ state: 'unreachable', epoch: null, detail: 'no aggregator endpoint' });
+			setProbe({ state: 'unreachable', detail: 'no aggregator endpoint' });
 			return;
 		}
-		setProbe({ state: 'probing', epoch: null, detail: '' });
+		setProbe({ state: 'probing', detail: '' });
 		void probeAggregator(url).then((result) => {
 			if (alive) setProbe(result);
 		});
@@ -141,6 +188,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 
 	const clusterReady = probe.state === 'reachable';
 	const nodeCount = nodeEndpoints.length;
+	const epoch = epochQ.data ?? null;
 
 	return (
 		<PluginScaffold
@@ -175,8 +223,10 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				</>
 			}
 		>
-			{/* KPIs. Epoch is read from the daemon when it exposes it; cluster/shard
-			    counts beyond the per-node endpoint listing aren't reachable here. */}
+			{/* KPIs — storage epoch + shard count come from on-chain Walrus events
+			    over the node's GraphQL; blobs-stored is derived from the recent-blobs
+			    query (a floor: it counts blobs seen in the recent register/certify
+			    window, not the all-time total). */}
 			<div
 				style={{
 					display: 'grid',
@@ -199,12 +249,32 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				/>
 				<Kpi
 					label="Storage epoch"
-					value={probe.epoch ?? EM_DASH}
-					sub={probe.epoch === null ? 'not reported' : undefined}
+					value={epochQ.isPending ? '…' : (epoch?.epoch ?? EM_DASH)}
+					sub={
+						epoch
+							? epoch.changedAtMs
+								? timeAgo(epoch.changedAtMs)
+								: undefined
+							: epochQ.isPending
+								? undefined
+								: 'no epoch events'
+					}
 					icon="clock"
 				/>
-				<Kpi label="Blobs stored" value={EM_DASH} sub="no indexer" token="cyan" icon="box" />
-				<Kpi label="Shards" value={EM_DASH} sub="on-chain" token="blue" icon="hash" />
+				<Kpi
+					label="Blobs stored"
+					value={blobsQ.isPending ? '…' : groupDigits(blobs.length)}
+					sub={blobs.length > 0 ? 'recent window' : blobsQ.isPending ? undefined : 'none seen'}
+					token="cyan"
+					icon="box"
+				/>
+				<Kpi
+					label="Shards"
+					value={shardsQ.isPending ? '…' : (shards?.totalShards ?? EM_DASH)}
+					sub={shards ? `${shards.nodeCount} nodes` : shardsQ.isPending ? undefined : 'on-chain'}
+					token="blue"
+					icon="hash"
+				/>
 			</div>
 
 			<div
@@ -261,9 +331,10 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 						</Field>
 					</Panel>
 
-					{/* Cluster nodes — derived from the per-node router endpoints. Shard
-					    and stake counts live on-chain / in the daemon and aren't reachable
-					    here, so they render as dashes rather than invented numbers. */}
+					{/* Cluster nodes — the per-node router endpoints, enriched with the
+					    real per-node shard counts read from the chain's `ShardsReceived`
+					    events (by node index). Stake isn't exposed by those events and
+					    has no browser-safe read here, so it stays an honest dash. */}
 					<Panel header={<SectionHead title="Cluster nodes" count={nodeCount || undefined} />}>
 						{nodeCount === 0 ? (
 							<EmptyState
@@ -282,34 +353,44 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 									</tr>
 								</thead>
 								<tbody>
-									{nodeEndpoints.map((node) => (
-										<tr key={node.endpointKey}>
-											<td className="mono" style={{ fontSize: 12.5 }}>
-												{node.name}
-											</td>
-											<td className="mono tnum" style={{ color: 'var(--tx-dim)' }}>
-												{EM_DASH}
-											</td>
-											<td className="mono tnum" style={{ color: 'var(--tx-dim)' }}>
-												{EM_DASH}
-											</td>
-											<td>
-												<StatusBadge status={row?.status ?? 'ready'} />
-											</td>
-										</tr>
-									))}
+									{nodeEndpoints.map((node, i) => {
+										const nodeShards = shardsFor(shards, i);
+										return (
+											<tr key={node.endpointKey}>
+												<td className="mono" style={{ fontSize: 12.5 }}>
+													{node.name}
+												</td>
+												<td
+													className="mono tnum"
+													style={{
+														color: nodeShards === null ? 'var(--tx-dim)' : 'var(--tx-hi)',
+													}}
+												>
+													{nodeShards === null ? EM_DASH : nodeShards}
+												</td>
+												<td className="mono tnum" style={{ color: 'var(--tx-dim)' }}>
+													{EM_DASH}
+												</td>
+												<td>
+													<StatusBadge status={row?.status ?? 'ready'} />
+												</td>
+											</tr>
+										);
+									})}
 								</tbody>
 							</table>
 						)}
 					</Panel>
 				</div>
 
-				{/* Recent blobs — needs a Walrus indexer the browser can't reach; honest
-				    empty state, plus a disabled Upload (no browser-safe publish flow). */}
+				{/* Recent blobs — register/certify transactions on the node's Sui
+				    GraphQL, merged by blob id. Upload stays disabled (no browser-safe
+				    publish flow). */}
 				<Panel
 					header={
 						<SectionHead
 							title="Recent blobs"
+							count={blobs.length || undefined}
 							right={
 								<Tooltip label="Uploading needs the publisher encode/register/certify flow, which the dashboard doesn't implement.">
 									<button className="btn btn-sm" disabled>
@@ -321,11 +402,95 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 						/>
 					}
 				>
-					<EmptyState
-						icon="box"
-						title="Blob list unavailable"
-						hint="Recent blobs come from a Walrus indexer that isn't reachable from the browser for this stack. Blobs aren't fabricated here."
-					/>
+					{blobsQ.isError ? (
+						<EmptyState
+							icon="box"
+							title="Blob list unavailable"
+							hint={
+								source.graphqlUrl === null
+									? 'No Sui GraphQL endpoint is registered for this stack.'
+									: source.packageId === null
+										? 'No Walrus package was found in the projection for this stack.'
+										: `GraphQL read failed: ${
+												blobsQ.error instanceof Error ? blobsQ.error.message : 'unknown error'
+											}`
+							}
+						/>
+					) : blobsQ.isPending ? (
+						<EmptyState
+							icon="box"
+							title="Loading recent blobs…"
+							hint="Querying the node's Sui GraphQL."
+						/>
+					) : blobs.length === 0 ? (
+						<EmptyState
+							icon="box"
+							title="No recent blobs"
+							hint="No register_blob / certify_blob transactions were found on-chain for this stack yet."
+						/>
+					) : (
+						<table className="tbl">
+							<thead>
+								<tr>
+									<th>Blob</th>
+									<th>Size</th>
+									<th>Epochs</th>
+									<th>When</th>
+									<th>State</th>
+								</tr>
+							</thead>
+							<tbody>
+								{blobs.map((b) => (
+									<tr key={b.blobId}>
+										<td className="mono" style={{ fontSize: 12.5 }}>
+											{b.objectId ? (
+												<LinkButton
+													onClick={() => gotoObject(b.objectId as string)}
+													title={`blob_id ${b.blobId}`}
+												>
+													{truncateMiddle(b.objectId)}
+												</LinkButton>
+											) : (
+												<span title={`blob_id ${b.blobId}`}>{truncateMiddle(b.blobId)}</span>
+											)}
+										</td>
+										<td className="mono tnum" style={{ color: 'var(--tx-mid)' }}>
+											{b.size === null ? EM_DASH : formatBytes(b.size)}
+										</td>
+										<td className="mono tnum" style={{ color: 'var(--tx-mid)' }}>
+											{b.registeredEpoch !== null && b.endEpoch !== null
+												? `${b.registeredEpoch} → ${b.endEpoch}`
+												: b.endEpoch !== null
+													? `→ ${b.endEpoch}`
+													: EM_DASH}
+										</td>
+										<td style={{ color: 'var(--tx-mid)', fontSize: 12.5 }}>
+											{b.digest ? (
+												<LinkButton onClick={() => gotoTx(b.digest as string)} title={b.digest}>
+													{b.timestampMs ? timeAgo(b.timestampMs) : 'tx'}
+												</LinkButton>
+											) : b.timestampMs ? (
+												timeAgo(b.timestampMs)
+											) : (
+												EM_DASH
+											)}
+										</td>
+										<td>
+											{b.certified ? (
+												<Badge style={{ height: 18, fontSize: 10, color: 'var(--c-green)' }}>
+													certified
+												</Badge>
+											) : (
+												<Badge style={{ height: 18, fontSize: 10, color: 'var(--c-yellow)' }}>
+													registered
+												</Badge>
+											)}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
 				</Panel>
 			</div>
 		</PluginScaffold>

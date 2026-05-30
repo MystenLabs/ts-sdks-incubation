@@ -14,9 +14,11 @@ import type {
 	ChainHead,
 	CoinInfo,
 	DynamicFieldView,
+	EntityKind,
 	EpochInfo,
 	ObjectDetail,
 	ObjectOwnerView,
+	OwnedObjectView,
 	PackageDetail,
 	PackageModuleView,
 	TxBalanceChange,
@@ -202,10 +204,7 @@ export const fetchEpochInfo = async (rpcUrl: string): Promise<EpochInfo> => {
  * `getServiceInfo`, then `getCheckpoint` per sequence (newest first) pulling the
  * per-tx digest/effects/timestamp, until `limit` transactions are collected.
  */
-export const fetchLatestTransactions = async (
-	rpcUrl: string,
-	limit = 25,
-): Promise<TxSummary[]> => {
+export const fetchLatestTransactions = async (rpcUrl: string, limit = 25): Promise<TxSummary[]> => {
 	const client = await chainClient(rpcUrl);
 	const { response: info } = await client.ledgerService.getServiceInfo({});
 	const head = info.checkpointHeight ?? 0n;
@@ -303,6 +302,53 @@ export const fetchObject = async (rpcUrl: string, objectId: string): Promise<Obj
 	};
 };
 
+/**
+ * Resolve what a `0x…` id is. Addresses, objects, and packages are byte-identical
+ * (`0x` + 64 hex) so the only honest way to tell them apart is to probe the node:
+ *
+ *  1. `movePackageService.getPackage` — succeeds only for a published package.
+ *  2. else `core.getObject` — exists ⇒ it's an object; and if that object is a
+ *     Move package (the gRPC `objectType` for a package is the literal string
+ *     `"package"`), report `'package'` too ("an object can be a package").
+ *  3. else (neither package nor object) ⇒ treat it as a plain `'address'`.
+ *
+ * Both `getPackage` and `getObject` *throw* on not-found, so each probe is wrapped
+ * — a miss falls through to the next branch rather than propagating.
+ */
+export const resolveEntity = async (rpcUrl: string, id: string): Promise<EntityKind> => {
+	const client = await chainClient(rpcUrl);
+	try {
+		await client.movePackageService.getPackage({ packageId: id });
+		return 'package';
+	} catch {
+		// Not a package — fall through to the object probe.
+	}
+	try {
+		const { object } = await client.core.getObject({ objectId: id });
+		// A package fetched as an object reports `objectType === 'package'`.
+		return object.type === 'package' ? 'package' : 'object';
+	} catch {
+		// Neither a package nor an existing object ⇒ a bare address.
+		return 'address';
+	}
+};
+
+/** Objects owned by an address (first page), for the address view. */
+export const fetchOwnedObjects = async (
+	rpcUrl: string,
+	owner: string,
+	limit = 50,
+): Promise<OwnedObjectView[]> => {
+	const client = await chainClient(rpcUrl);
+	const { objects } = await client.core.listOwnedObjects({ owner, limit });
+	return objects.map((o) => ({
+		id: o.objectId,
+		version: o.version,
+		digest: o.digest,
+		type: o.type,
+	}));
+};
+
 /** Dynamic fields under a parent object (first page). */
 export const fetchDynamicFields = async (
 	rpcUrl: string,
@@ -379,7 +425,10 @@ export const fetchTotalSupply = async (
 	treasuryCapId: string,
 ): Promise<string | null> => {
 	const client = await chainClient(rpcUrl);
-	const { object } = await client.core.getObject({ objectId: treasuryCapId, include: { json: true } });
+	const { object } = await client.core.getObject({
+		objectId: treasuryCapId,
+		include: { json: true },
+	});
 	const fields = object.json as Record<string, unknown> | null | undefined;
 	if (!fields) return null;
 	const supply = fields.total_supply as Record<string, unknown> | null | undefined;
