@@ -6,18 +6,10 @@
 // not-found / error → an honest Banner.
 
 import { timeAgo, truncateMiddle } from '../../lib/format.ts';
-import { gotoObject } from '../../lib/router.ts';
+import { gotoAddress } from '../../lib/router.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
 import { useTransaction } from '../../lib/useChain.ts';
-import {
-	Badge,
-	Banner,
-	CopyChip,
-	Dot,
-	JsonTree,
-	Panel,
-	TxEffectsView,
-} from '../../ui/index.ts';
+import { Badge, Banner, CopyChip, Dot, JsonTree, Panel, TxEffectsView } from '../../ui/index.ts';
 import { DetailSkeleton } from './ExplorerHome.tsx';
 
 interface TxDetailProps {
@@ -79,13 +71,10 @@ export const TxDetail = ({ chain, digest }: TxDetailProps) => {
 							<button
 								type="button"
 								className="row"
-								onClick={() => gotoObject(tx.sender as string)}
+								onClick={() => gotoAddress(tx.sender as string)}
 								style={{ background: 'none', border: 'none', padding: 0, gap: 6 }}
 							>
-								<span
-									className="mono"
-									style={{ color: 'var(--c-magenta)', fontSize: 12.5 }}
-								>
+								<span className="mono" style={{ color: 'var(--c-magenta)', fontSize: 12.5 }}>
 									{truncateMiddle(tx.sender, 8, 6)}
 								</span>
 							</button>

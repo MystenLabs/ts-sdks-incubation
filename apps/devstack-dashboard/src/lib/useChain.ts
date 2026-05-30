@@ -16,6 +16,7 @@ import {
 	fetchEpochInfo,
 	fetchLatestTransactions,
 	fetchObject,
+	fetchOwnedObjects,
 	fetchPackage,
 	fetchReferenceGasPrice,
 	fetchSuiBalance,
@@ -41,6 +42,7 @@ import type {
 	DynamicFieldView,
 	EpochInfo,
 	ObjectDetail,
+	OwnedObjectView,
 	PackageDetail,
 	TxDetail,
 	TxSummary,
@@ -125,6 +127,18 @@ export const useObject = (source: ChainSource, id: string | null): UseQueryResul
 		staleTime: DETAIL_STALE_MS,
 	});
 
+/** Objects owned by an address (first page), for the address view. */
+export const useOwnedObjects = (
+	source: ChainSource,
+	address: string | null,
+): UseQueryResult<OwnedObjectView[]> =>
+	useQuery({
+		queryKey: ['chain', source.network, 'ownedObjects', address],
+		queryFn: () => fetchOwnedObjects(source.rpcUrl as string, address as string),
+		enabled: enabled(source) && address !== null,
+		staleTime: HEAD_STALE_MS,
+	});
+
 /** Dynamic fields under a parent object (first page). */
 export const useDynamicFields = (
 	source: ChainSource,
@@ -186,6 +200,15 @@ export const useBalances = (
 		enabled: enabled(source) && owner !== null,
 		staleTime: HEAD_STALE_MS,
 	});
+
+/**
+ * All non-zero balances owned by an address, for the address view. Same read as
+ * `useBalances` (and the same cache key), named for the address-view call site.
+ */
+export const useAddressBalances = (
+	source: ChainSource,
+	address: string | null,
+): UseQueryResult<BalanceView[]> => useBalances(source, address);
 
 /** SUI balance (MIST) for an address. */
 export const useSuiBalance = (source: ChainSource, owner: string | null): UseQueryResult<string> =>

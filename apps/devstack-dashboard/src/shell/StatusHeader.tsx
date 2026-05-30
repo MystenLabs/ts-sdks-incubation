@@ -1,5 +1,5 @@
 // Persistent top status header: identity + mode/phase badges, a mono health
-// summary, the ⌘K search trigger, restart/console icon-buttons, and the live
+// summary, the ⌘K search trigger, theme/console icon-buttons, and the live
 // connection indicator. Projection-derived bits are guarded behind `projection`.
 
 import { navigate } from '../lib/router.ts';
@@ -19,7 +19,6 @@ export interface StatusHeaderProps {
 	readonly onOpenPalette: () => void;
 	readonly onToggleTheme: () => void;
 	readonly theme: string;
-	readonly onRestart: () => void;
 }
 
 const CONN: Record<
@@ -40,7 +39,6 @@ export const StatusHeader = ({
 	onOpenPalette,
 	onToggleTheme,
 	theme,
-	onRestart,
 }: StatusHeaderProps) => {
 	const conn = CONN[connection];
 
@@ -136,7 +134,6 @@ export const StatusHeader = ({
 					label={theme === 'dark' ? 'Light theme' : 'Dark theme'}
 					onClick={onToggleTheme}
 				/>
-				<IconButton icon="refresh" label="Restart stack (r)" onClick={onRestart} />
 				<IconButton icon="terminal" label="Console (l)" onClick={() => navigate('activity')} />
 				<span
 					className="badge"

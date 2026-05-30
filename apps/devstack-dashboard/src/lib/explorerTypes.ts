@@ -162,3 +162,20 @@ export interface BalanceView {
 	/** Total balance in the coin's base units (MIST for SUI), as a string. */
 	readonly balance: string;
 }
+
+/**
+ * What a `0x…` id resolves to. Addresses, objects, and packages share the exact
+ * `0x` + 64-hex shape, so the concrete kind can only be told apart by probing the
+ * node (`resolveEntity` in `chain.ts`). An object that is itself a Move package
+ * resolves to `'package'`.
+ */
+export type EntityKind = 'package' | 'object' | 'address';
+
+/** A row in the address view's "Owned objects" table (cheap, list-shaped). */
+export interface OwnedObjectView {
+	readonly id: string;
+	readonly version: string;
+	readonly digest: string;
+	/** Full Move type tag (`0x2::coin::Coin<0x2::sui::SUI>`, …). */
+	readonly type: string;
+}

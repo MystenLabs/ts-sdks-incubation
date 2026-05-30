@@ -19,7 +19,7 @@ import { fundingDisplay } from '../lib/derive.ts';
 import { mistToSui } from '../lib/format.ts';
 import { type ChainSource, useBalances, useSuiBalance } from '../lib/useChain.ts';
 import { useToast } from '../lib/toast.tsx';
-import { gotoObject, navigate } from '../lib/router.ts';
+import { gotoAddress, navigate } from '../lib/router.ts';
 import {
 	AddressChip,
 	Badge,
@@ -287,7 +287,9 @@ const AccountDetail = ({ account, chain, onClose }: AccountDetailProps) => {
 					<div className="row between">
 						<span className="row" style={{ gap: 7 }}>
 							<CoinIcon symbol="SUI" size={18} />
-							<span className="mono" style={{ fontSize: 12 }}>SUI</span>
+							<span className="mono" style={{ fontSize: 12 }}>
+								SUI
+							</span>
 						</span>
 						<CoinAmount mist={suiMist} />
 					</div>
@@ -297,7 +299,9 @@ const AccountDetail = ({ account, chain, onClose }: AccountDetailProps) => {
 							<div key={b.coinType} className="row between">
 								<span className="row" style={{ gap: 7 }}>
 									<CoinIcon symbol={symbol} size={18} />
-									<span className="mono" style={{ fontSize: 12 }}>{symbol}</span>
+									<span className="mono" style={{ fontSize: 12 }}>
+										{symbol}
+									</span>
 								</span>
 								<CoinAmount mist={b.balance} symbol={symbol} />
 							</div>
@@ -336,7 +340,7 @@ const AccountDetail = ({ account, chain, onClose }: AccountDetailProps) => {
 				</Button>
 				<Button
 					disabled={!account.address}
-					onClick={() => account.address && gotoObject(account.address)}
+					onClick={() => account.address && gotoAddress(account.address)}
 				>
 					View on explorer
 				</Button>

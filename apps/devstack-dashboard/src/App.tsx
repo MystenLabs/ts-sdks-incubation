@@ -372,7 +372,6 @@ const Shell = () => {
 					onOpenPalette={() => setPaletteOpen(true)}
 					onToggleTheme={toggleTheme}
 					theme={theme}
-					onRestart={restart}
 				/>
 
 				<main className="scroll-y grow" style={{ padding: '24px 26px', minHeight: 0 }}>

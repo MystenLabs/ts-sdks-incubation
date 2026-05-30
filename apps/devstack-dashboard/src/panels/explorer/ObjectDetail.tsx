@@ -1,19 +1,35 @@
 // Object detail — `useObject(id)` for the core record (id / version / type /
 // owner / previous-tx / Move fields) plus `useDynamicFields(id)` for the
-// dynamic-field table. AddressOwner drills into the owner object; Shared /
-// Immutable / Unknown render as badges. Previous-tx drills into the transaction;
-// each dynamic field drills into its child object. Packages published by this
-// stack get an "ours" badge. Loading → `DetailSkeleton`; not-found → Banner.
+// dynamic-field table. The owner drills into its CONCRETE kind: an `AddressOwner`
+// → the address view, an `ObjectOwner` → the owning object. Shared / Immutable /
+// Unknown render as badges. Previous-tx drills into the transaction; each dynamic
+// field drills into its child object. An object can itself OWN objects/coins
+// (it can act as an owner), so — like an address — we show its owned objects +
+// balances when it holds any. Packages published by this stack get an "ours"
+// badge. Loading → `DetailSkeleton`; not-found → Banner.
 
 import { truncateMiddle } from '../../lib/format.ts';
-import { gotoObject, gotoTx } from '../../lib/router.ts';
+import { gotoAddress, gotoObject, gotoTx } from '../../lib/router.ts';
 import type { Projection } from '../../lib/types.ts';
 import type { ChainSource } from '../../lib/useChain.ts';
-import { useDynamicFields, useObject } from '../../lib/useChain.ts';
-import type { DynamicFieldView, ObjectOwnerView } from '../../lib/explorerTypes.ts';
+import {
+	useAddressBalances,
+	useDynamicFields,
+	useObject,
+	useOwnedObjects,
+} from '../../lib/useChain.ts';
+import type {
+	BalanceView,
+	DynamicFieldView,
+	ObjectOwnerView,
+	OwnedObjectView,
+} from '../../lib/explorerTypes.ts';
+import { PackageDetail } from './PackageDetail.tsx';
 import {
 	Badge,
 	Banner,
+	CoinAmount,
+	CoinIcon,
 	type Column,
 	CopyChip,
 	DataTable,
@@ -33,13 +49,28 @@ interface ObjectDetailProps {
 	readonly id: string;
 }
 
+/** Symbol from a coin type's trailing `::SYMBOL`, upper-cased (`DEEP`, `WAL`…). */
+const coinSymbol = (coinType: string): string => {
+	const tail = coinType.split('::').pop() ?? coinType;
+	return tail.toUpperCase();
+};
+
+/** Short Move type label (`Coin<SUI>` → struct + first type arg tail). */
+const typeLabel = (type: string): string => {
+	const struct = type.split('<')[0];
+	const tail = struct.split('::').slice(-2).join('::');
+	return tail || struct || type;
+};
+
 const OwnerCell = ({ owner }: { readonly owner: ObjectOwnerView }) => {
 	if ((owner.kind === 'AddressOwner' || owner.kind === 'ObjectOwner') && owner.address) {
 		const addr = owner.address;
+		// Concrete target: an AddressOwner is an address; an ObjectOwner is an object.
+		const goto = owner.kind === 'AddressOwner' ? gotoAddress : gotoObject;
 		return (
 			<button
 				type="button"
-				onClick={() => gotoObject(addr)}
+				onClick={() => goto(addr)}
 				style={{
 					background: 'none',
 					border: 'none',
@@ -54,14 +85,15 @@ const OwnerCell = ({ owner }: { readonly owner: ObjectOwnerView }) => {
 			</button>
 		);
 	}
-	return (
-		<Badge style={{ height: 19, fontSize: 10.5 }}>{owner.kind}</Badge>
-	);
+	return <Badge style={{ height: 19, fontSize: 10.5 }}>{owner.kind}</Badge>;
 };
 
 export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 	const q = useObject(chain, id);
 	const fields = useDynamicFields(chain, id);
+	// An object can act as an owner — surface what it owns/holds, same as an address.
+	const owned = useOwnedObjects(chain, id);
+	const balances = useAddressBalances(chain, id);
 
 	if (q.isLoading) return <DetailSkeleton />;
 	if (q.isError)
@@ -80,8 +112,47 @@ export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 			</Banner>
 		);
 
+	// The id may resolve to a Move package fetched as an object (the gRPC
+	// `objectType` for a package is the literal string `"package"`). Packages have
+	// no Move-struct fields/owner to show — render the package view instead.
+	if (obj.type === 'package')
+		return <PackageDetail chain={chain} projection={projection} id={obj.id} />;
+
 	const ours = isOurs(projection, obj.id);
 	const dynRows: ReadonlyArray<DynamicFieldView> = fields.data ?? [];
+	const ownedRows: ReadonlyArray<OwnedObjectView> = owned.data ?? [];
+	const balanceRows: ReadonlyArray<BalanceView> = balances.data ?? [];
+
+	const ownedColumns: ReadonlyArray<Column<OwnedObjectView>> = [
+		{
+			key: 'id',
+			header: 'Object',
+			render: (o) => (
+				<span className="mono" style={{ fontSize: 12, color: 'var(--c-cyan)' }}>
+					{truncateMiddle(o.id, 8, 6)}
+				</span>
+			),
+		},
+		{
+			key: 'type',
+			header: 'Type',
+			render: (o) => (
+				<span
+					className="mono trunc"
+					style={{ fontSize: 11.5, color: 'var(--c-blue)', maxWidth: 220 }}
+					title={o.type}
+				>
+					{typeLabel(o.type)}
+				</span>
+			),
+		},
+		{
+			key: 'chev',
+			header: '',
+			width: 36,
+			render: () => <Icon name="chevR" size={14} style={{ color: 'var(--tx-dim)' }} />,
+		},
+	];
 
 	const columns: ReadonlyArray<Column<DynamicFieldView>> = [
 		{
@@ -97,7 +168,10 @@ export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 			key: 'type',
 			header: 'Type',
 			render: (f) => (
-				<span className="mono trunc" style={{ fontSize: 11.5, color: 'var(--tx-lo)', maxWidth: 150 }}>
+				<span
+					className="mono trunc"
+					style={{ fontSize: 11.5, color: 'var(--tx-lo)', maxWidth: 150 }}
+				>
 					{f.type}
 				</span>
 			),
@@ -213,6 +287,61 @@ export const ObjectDetail = ({ chain, projection, id }: ObjectDetailProps) => {
 					)}
 				</Panel>
 			</div>
+
+			{/* Object-as-owner: an object can own objects / hold coins. Only shown
+			    when it actually owns ≥1 object or holds a balance, to avoid an empty
+			    section on the common leaf object. */}
+			{(owned.isLoading || ownedRows.length > 0 || balanceRows.length > 0) && (
+				<div
+					style={{
+						display: 'grid',
+						gridTemplateColumns: '1.3fr 1fr',
+						gap: 18,
+						alignItems: 'start',
+					}}
+				>
+					<Panel style={{ overflow: 'hidden' }}>
+						<div className="panel-pad" style={{ padding: '14px 18px' }}>
+							<SectionHead title="Owned objects" count={ownedRows.length} />
+						</div>
+						{owned.isLoading ? (
+							<SkeletonRows rows={4} cols={3} />
+						) : (
+							<DataTable
+								columns={ownedColumns}
+								rows={ownedRows}
+								rowKey={(o) => o.id}
+								onRowClick={(o) => gotoObject(o.id)}
+								empty={<EmptyState icon="box" title="No owned objects" />}
+							/>
+						)}
+					</Panel>
+
+					{balanceRows.length > 0 && (
+						<Panel pad>
+							<div className="eyebrow" style={{ marginBottom: 10 }}>
+								Balances
+							</div>
+							<div className="col" style={{ gap: 7 }}>
+								{balanceRows.map((b) => {
+									const symbol = coinSymbol(b.coinType);
+									return (
+										<div key={b.coinType} className="row between">
+											<span className="row" style={{ gap: 7 }}>
+												<CoinIcon symbol={symbol} size={18} />
+												<span className="mono" style={{ fontSize: 12 }}>
+													{symbol}
+												</span>
+											</span>
+											<CoinAmount mist={b.balance} symbol={symbol} />
+										</div>
+									);
+								})}
+							</div>
+						</Panel>
+					)}
+				</div>
+			)}
 		</div>
 	);
 };

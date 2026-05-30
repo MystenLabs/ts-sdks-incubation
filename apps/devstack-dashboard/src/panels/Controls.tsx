@@ -2,13 +2,16 @@
 //
 // Full port of the design handoff's Controls screen, wired to the real
 // control-plane API. The command grid exposes every backed mutation: Restart,
-// Apply, Codegen, Prune, Advance clock (gated to `mode === 'fork'`), Wipe and
-// Shutdown (destructive). Benign commands dispatch directly; destructive ones
-// route through a red `ConfirmDialog`. Each action toasts its `CommandResult`
-// and forces a projection refresh; a whole-grid `busy` lock disables the grid
-// while a command is in flight.
+// Apply, Codegen, Prune, Advance clock (only shown when `mode === 'fork'`), Wipe
+// and Shutdown. Benign commands dispatch directly; destructive ones (Wipe,
+// Prune, Restart stack) route through a red `ConfirmDialog` and a "destructive"
+// badge, while Shutdown takes a plain (non-red) confirm — it loses the dashboard
+// connection but no state. Each action toasts its `CommandResult` and forces a
+// projection refresh; a whole-grid `busy` lock disables the grid while a command
+// is in flight.
 //
-// "Selective restart" lists a chip per managed row → `restartPlugin`. The
+// "Selective restart" lists a chip per managed row, each gated behind its own
+// confirm → `restartPlugin`. The
 // "Snapshots" panel captures (naming dialog), shows live capture progress from
 // the projection's build stream, and renders the real snapshot catalog from
 // `fetchSnapshots` with Restore / delete (both confirmed) → `restoreSnapshot` /
@@ -72,6 +75,8 @@ interface Command {
 	readonly token: StatusToken;
 	/** Destructive: gate behind a red ConfirmDialog and badge the tile. */
 	readonly danger?: boolean;
+	/** Non-destructive but still gated behind a plain (non-red) ConfirmDialog. */
+	readonly confirm?: boolean;
 	/** Confirm body shown in the dialog (defaults to a generic prompt). */
 	readonly confirmBody?: string;
 	/** Run via the snapshot naming dialog instead of dispatching directly. */
@@ -145,10 +150,10 @@ const COMMANDS: ReadonlyArray<Command> = [
 		label: 'Shutdown',
 		icon: 'power',
 		desc: 'Graceful stop of the whole stack',
-		token: 'red',
-		danger: true,
+		token: 'yellow',
+		confirm: true,
 		confirmBody:
-			'Gracefully stop every service in the stack. The dashboard will lose its connection once the engine exits.',
+			'Gracefully stop every service in the stack. No state is lost, but the dashboard will lose its connection once the engine exits.',
 		run: (endpoint) => shutdownStack(endpoint),
 	},
 ];
@@ -159,6 +164,8 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 	const [busy, setBusy] = useState<string | null>(null);
 	// Command awaiting confirmation, or null.
 	const [confirm, setConfirm] = useState<Command | null>(null);
+	// Managed row pending selective-restart confirmation, or null.
+	const [restartRow, setRestartRow] = useState<Row | null>(null);
 	// Snapshot pending restore/delete confirmation, or null.
 	const [snapAction, setSnapAction] = useState<{
 		readonly kind: 'restore' | 'delete';
@@ -208,14 +215,18 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 		if (busy) return;
 		if (cmd.naming) setNaming(`snapshot-${Date.now()}`);
 		else if (cmd.clock) setClockTarget(Date.now());
-		else if (cmd.danger) setConfirm(cmd);
+		else if (cmd.danger || cmd.confirm) setConfirm(cmd);
 		else if (cmd.run) void dispatch(cmd.id, cmd.label, () => cmd.run!(endpoint));
 	};
 
-	const onRestartRow = (row: Row): void =>
+	const onRestartRow = (): void => {
+		const row = restartRow;
+		setRestartRow(null);
+		if (!row) return;
 		void dispatch(`restart/${row.key}`, `Restart ${labelForRow(row.key)}`, () =>
 			restartPlugin(endpoint, row.key),
 		);
+	};
 
 	const onCapture = (name: string): void => {
 		setNaming(null);
@@ -250,7 +261,9 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 					? await restoreSnapshot(endpoint, snap.id)
 					: await deleteSnapshot(endpoint, snap.id);
 			if (result.ok)
-				toast.success(result.detail ?? `Snapshot "${label}" ${kind === 'restore' ? 'restored' : 'deleted'}`);
+				toast.success(
+					result.detail ?? `Snapshot "${label}" ${kind === 'restore' ? 'restored' : 'deleted'}`,
+				);
 			else toast.error(result.detail ?? `Snapshot ${kind} failed`);
 			await snapshotsQuery.refetch();
 			if (kind === 'restore') await refresh();
@@ -381,55 +394,56 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 					gap: 14,
 				}}
 			>
-				{COMMANDS.map((cmd) => {
-					const active = busy === cmd.id;
-					// Advance-clock is disabled off-fork; otherwise the whole grid locks while busy.
-					const gated = cmd.clock && !isFork;
-					const disabled = busy !== null || gated;
-					return (
-						<button
-							key={cmd.id}
-							className="panel panel-pad"
-							disabled={disabled}
-							onClick={() => onCard(cmd)}
-							title={gated ? 'Fork mode only' : undefined}
-							style={{
-								textAlign: 'left',
-								cursor: disabled ? 'not-allowed' : 'pointer',
-								opacity: disabled && !active ? 0.5 : 1,
-								transition: '.14s',
-								display: 'flex',
-								flexDirection: 'column',
-								gap: 8,
-							}}
-						>
-							<div className="row between">
-								<div
-									style={{
-										width: 34,
-										height: 34,
-										borderRadius: 9,
-										display: 'grid',
-										placeItems: 'center',
-										background: `color-mix(in oklab, var(--c-${cmd.token}) 13%, transparent)`,
-										color: `var(--c-${cmd.token})`,
-									}}
-								>
-									<Icon name={active ? 'refresh' : cmd.icon} size={17} />
+				{COMMANDS
+					// Advance-clock only makes sense against a forked chain — omit the card
+					// entirely off-fork rather than rendering it disabled.
+					.filter((cmd) => !cmd.clock || isFork)
+					.map((cmd) => {
+						const active = busy === cmd.id;
+						const disabled = busy !== null;
+						return (
+							<button
+								key={cmd.id}
+								className="panel panel-pad"
+								disabled={disabled}
+								onClick={() => onCard(cmd)}
+								style={{
+									textAlign: 'left',
+									cursor: disabled ? 'not-allowed' : 'pointer',
+									opacity: disabled && !active ? 0.5 : 1,
+									transition: '.14s',
+									display: 'flex',
+									flexDirection: 'column',
+									gap: 8,
+								}}
+							>
+								<div className="row between">
+									<div
+										style={{
+											width: 34,
+											height: 34,
+											borderRadius: 9,
+											display: 'grid',
+											placeItems: 'center',
+											background: `color-mix(in oklab, var(--c-${cmd.token}) 13%, transparent)`,
+											color: `var(--c-${cmd.token})`,
+										}}
+									>
+										<Icon name={active ? 'refresh' : cmd.icon} size={17} />
+									</div>
+									{cmd.danger ? (
+										<Badge style={{ height: 18, fontSize: 10, color: 'var(--c-red)' }}>
+											destructive
+										</Badge>
+									) : (
+										active && <span className="dot dot-cyan dot-pulse" />
+									)}
 								</div>
-								{cmd.danger ? (
-									<Badge style={{ height: 18, fontSize: 10, color: 'var(--c-red)' }}>destructive</Badge>
-								) : (
-									active && <span className="dot dot-cyan dot-pulse" />
-								)}
-							</div>
-							<div style={{ fontWeight: 560, fontSize: 14 }}>{cmd.label}</div>
-							<div style={{ color: 'var(--tx-lo)', fontSize: 12.5 }}>
-								{gated ? 'Fork mode only' : cmd.desc}
-							</div>
-						</button>
-					);
-				})}
+								<div style={{ fontWeight: 560, fontSize: 14 }}>{cmd.label}</div>
+								<div style={{ color: 'var(--tx-lo)', fontSize: 12.5 }}>{cmd.desc}</div>
+							</button>
+						);
+					})}
 			</div>
 
 			{/* selective restart */}
@@ -446,7 +460,12 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 						{projection.rows.map((row) => {
 							const display = statusDisplay(row.status);
 							return (
-								<Button key={row.key} sm disabled={busy !== null} onClick={() => onRestartRow(row)}>
+								<Button
+									key={row.key}
+									sm
+									disabled={busy !== null}
+									onClick={() => setRestartRow(row)}
+								>
 									<Dot token={display.token} pulse={display.pulse} /> {labelForRow(row.key)}
 								</Button>
 							);
@@ -504,10 +523,10 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 				)}
 			</Panel>
 
-			{/* destructive command confirm */}
+			{/* command confirm — `danger` only for destructive commands (Wipe/Prune) */}
 			<ConfirmDialog
 				open={confirm !== null}
-				danger
+				danger={confirm?.danger ?? false}
 				title={confirm?.label ?? ''}
 				body={confirm?.confirmBody ?? `Run "${confirm?.label}"? This affects the running stack.`}
 				confirmLabel={confirm?.label}
@@ -517,6 +536,20 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 					setConfirm(null);
 					if (cmd?.run) void dispatch(cmd.id, cmd.label, () => cmd.run!(endpoint));
 				}}
+			/>
+
+			{/* selective-restart confirm — naming the resource being cycled */}
+			<ConfirmDialog
+				open={restartRow !== null}
+				title={restartRow ? `Restart ${labelForRow(restartRow.key)}?` : ''}
+				body={
+					restartRow
+						? `Cycle "${labelForRow(restartRow.key)}". State is preserved, but in-flight work on this service is interrupted.`
+						: ''
+				}
+				confirmLabel="Restart"
+				onCancel={() => setRestartRow(null)}
+				onConfirm={() => void onRestartRow()}
 			/>
 
 			{/* snapshot restore/delete confirm */}

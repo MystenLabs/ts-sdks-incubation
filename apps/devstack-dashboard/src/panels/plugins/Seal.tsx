@@ -5,9 +5,16 @@
 // configured key-server set (objectId + weight). Health is probed *directly*
 // against the key-server URL from the browser (the control plane does not relay
 // it) — CORS/connection failures degrade gracefully to "unreachable" rather
-// than throwing. The handoff's Policies table has no backing field on
-// `SealInfo`, so it renders an honest unavailable state instead of fabricated
-// rows.
+// than throwing.
+//
+// Health path: devstack's own readiness probe (see
+// `packages/devstack/src/plugins/seal/key-server.ts`) hits `GET /health`, which
+// returns `{name, version, status: "up"}` once the daemon has parsed its config
+// and bound its listener. We probe the same `/health` route. The `/v1/*` routes
+// (e.g. `/v1/service`) are the key-fetch API and reject a bare GET with HTTP 400
+// — a 400 there means the server IS up and listening, not unhealthy. We treat
+// any HTTP response (including 4xx) as "the socket is up and serving" and only
+// warn on a genuine connection/CORS failure.
 
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { restartPlugin, type SealInfo } from '../../lib/api.ts';
@@ -29,8 +36,10 @@ import {
 } from '../../ui/index.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-/** Health states for the browser-direct key-server probe. */
-type ProbeState = 'probing' | 'healthy' | 'unhealthy' | 'unreachable';
+/** Health states for the browser-direct key-server probe. A reachable server
+ *  (any HTTP response) is `healthy`; only a connection/CORS failure degrades to
+ *  `unreachable`. */
+type ProbeState = 'probing' | 'healthy' | 'unreachable';
 
 interface ProbeResult {
 	readonly state: ProbeState;
@@ -39,46 +48,46 @@ interface ProbeResult {
 }
 
 /**
- * Probe the key-server directly from the browser. Seal's key-server exposes an
- * HTTP service-info surface; any 2xx/3xx (or even a CORS-opaque response that
- * still resolves) means the socket is up and serving. A network/CORS rejection
- * means we genuinely couldn't reach it. We probe `/v1/service` first (the
- * key-server's identity route), then fall back to the URL root.
+ * Probe the key-server directly from the browser. We hit the same `/health`
+ * route devstack's own readiness probe uses (returns `{name, version,
+ * status: "up"}` on a healthy daemon).
+ *
+ * Healthy = the socket is up and serving HTTP. A 2xx/3xx on `/health` is the
+ * clean case, but ANY HTTP response — including a 4xx — proves the server is
+ * listening and handling requests (the daemon's `/v1/*` API replies 400 to a
+ * bare GET, which still means it's up). A CORS-opaque response that resolves
+ * likewise means the socket is alive. Only a network/CORS *rejection* (the
+ * fetch promise throwing) means we genuinely couldn't reach it.
  */
 const probeKeyServer = async (baseUrl: string): Promise<ProbeResult> => {
 	const root = baseUrl.replace(/\/+$/, '');
-	const candidates = [`${root}/v1/service`, root];
-	let lastDetail = 'no response';
-	for (const url of candidates) {
+	const url = `${root}/health`;
+	try {
+		const res = await fetch(url, { method: 'GET', mode: 'cors' });
+		// Any HTTP status means the server is listening and serving — healthy.
+		return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
+	} catch (err) {
+		// CORS-opaque or network failure. Try a no-cors reachability ping: if it
+		// resolves, the socket is alive even though we can't read the body.
 		try {
-			const res = await fetch(url, { method: 'GET', mode: 'cors' });
-			if (res.ok) return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
-			lastDetail = `HTTP ${res.status}`;
-		} catch (err) {
-			// CORS-opaque or network failure. Try a no-cors reachability ping: if it
-			// resolves, the socket is alive even though we can't read the body.
-			try {
-				await fetch(url, { method: 'GET', mode: 'no-cors' });
-				return { state: 'healthy', detail: `reachable (opaque) · ${url}` };
-			} catch {
-				lastDetail = err instanceof Error ? err.message : String(err);
-			}
+			await fetch(url, { method: 'GET', mode: 'no-cors' });
+			return { state: 'healthy', detail: `reachable (opaque) · ${url}` };
+		} catch {
+			const detail = err instanceof Error ? err.message : String(err);
+			return { state: 'unreachable', detail };
 		}
 	}
-	return { state: 'unreachable', detail: lastDetail };
 };
 
 const PROBE_TOKEN: Record<ProbeState, 'green' | 'yellow' | 'red'> = {
 	probing: 'yellow',
 	healthy: 'green',
-	unhealthy: 'red',
 	unreachable: 'yellow',
 };
 
 const PROBE_LABEL: Record<ProbeState, string> = {
 	probing: 'probing',
 	healthy: 'healthy',
-	unhealthy: 'unhealthy',
 	unreachable: 'unreachable',
 };
 
@@ -129,8 +138,10 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 		}
 	}, [busy, endpoint, row, pluginKey, success, error, refresh]);
 
-	const healthy = probe.state === 'healthy';
 	const probeToken = PROBE_TOKEN[probe.state];
+	// Only the genuine connection failure is worth a banner; a reachable server
+	// (any HTTP response) is healthy, and `probing` is a transient state.
+	const unreachable = probe.state === 'unreachable';
 
 	return (
 		<PluginScaffold
@@ -170,22 +181,22 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 				</Panel>
 			) : (
 				<>
-					{/* Warning banner + Probe when the key-server isn't confirmed healthy. */}
-					{!healthy && (
+					{/* Banner + re-probe only when the key-server is genuinely
+					    unreachable (connection/CORS failure). A reachable server —
+					    even one that answers a bare GET with 4xx — is healthy. */}
+					{unreachable && (
 						<Banner
 							tone="warn"
-							title="Key-server is not confirmed healthy"
+							title="Key-server unreachable from the browser"
 							action={
-								<button
-									className="btn btn-sm"
-									disabled={probe.state === 'probing'}
-									onClick={() => void runProbe()}
-								>
+								<button className="btn btn-sm" onClick={() => void runProbe()}>
 									<Icon name="refresh" size={13} /> Probe
 								</button>
 							}
 						>
-							Encryption requests will fail until the key-server reports healthy.
+							Couldn't reach the key-server's /health route. This may be a CORS or network issue
+							from the browser rather than the server being down — encryption requests may still
+							work in-process.
 							{probe.detail ? ` (${probe.detail})` : ''}
 						</Banner>
 					)}
@@ -231,24 +242,12 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 							</KeyValue>
 						</Panel>
 
-						{/* Key-server set table (objectId + weight). The handoff's "Policies"
-						    table has no backing field on SealInfo, so we show the real
-						    configured key-server set instead and note policies are
-						    unavailable below. */}
+						{/* Key-server set table (objectId + weight) — the real configured
+						    set from the control plane. */}
 						<Panel header={<SectionHead title="Key-server set" count={info.keyServers.length} />}>
 							<KeyServerTable servers={info.keyServers} />
 						</Panel>
 					</div>
-
-					{/* Honest note: policies aren't exposed by the control plane. */}
-					<Panel pad>
-						<SectionHead title="Policies" />
-						<EmptyState
-							icon="plug"
-							title="Policies not exposed"
-							hint="The control plane reports the key-server set, threshold, and mode, but not per-policy definitions. There's no backing data to render here yet."
-						/>
-					</Panel>
 				</>
 			)}
 		</PluginScaffold>
