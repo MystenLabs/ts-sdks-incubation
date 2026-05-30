@@ -357,6 +357,20 @@ export interface SnapshotActionResult {
 	readonly detail: string | null;
 }
 
+/** Outcome of a coin mint (`MintResult`); `digest` is set on success. */
+export interface MintResult {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
+/** Variables for a mint: full coin type, recipient address, base-unit amount. */
+export interface MintArgs {
+	readonly coinType: string;
+	readonly recipient: string;
+	readonly amountBaseUnits: string;
+}
+
 const WipeDoc = graphql(`
 	mutation Wipe {
 		wipe {
@@ -409,6 +423,15 @@ const DeleteSnapshotDoc = graphql(`
 		}
 	}
 `);
+const MintDoc = graphql(`
+	mutation Mint($coinType: String!, $recipient: String!, $amountBaseUnits: String!) {
+		mint(input: { coinType: $coinType, recipient: $recipient, amountBaseUnits: $amountBaseUnits }) {
+			ok
+			detail
+			digest
+		}
+	}
+`);
 
 /** Wipe all stack state (destructive). */
 export const wipeStack = (endpoint: string): Promise<CommandResult> =>
@@ -433,6 +456,14 @@ export const restoreSnapshot = (endpoint: string, id: string): Promise<SnapshotA
 /** Delete a snapshot by id. */
 export const deleteSnapshot = (endpoint: string, id: string): Promise<SnapshotActionResult> =>
 	execute(endpoint, DeleteSnapshotDoc, { id }).then((d) => d.deleteSnapshot);
+
+/**
+ * Mint a coin to a recipient. `amountBaseUnits` is already scaled by the coin's
+ * decimals (a base-unit integer string). Real on-chain execution: returns
+ * `ok:false` + a `detail` reason for built-ins / coins without a treasury cap.
+ */
+export const mintCoin = (endpoint: string, args: MintArgs): Promise<MintResult> =>
+	execute(endpoint, MintDoc, args).then((d) => d.mint);
 
 // --- Observability: logs + spans --------------------------------------------
 

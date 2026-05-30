@@ -83,6 +83,24 @@ export interface CoinValue extends ResolvedCoin {
 		signer: MintSigner,
 		opts: { readonly to: string; readonly amount: bigint; readonly treasuryCapId?: string },
 	) => Effect.Effect<MintResult, CoinError | ArtifactPublishError, Scope.Scope>;
+	/** Self-contained mint that needs NO external signer — present
+	 *  exactly when `fundingStrategy` is (witness-form coins whose
+	 *  publisher still owns the TreasuryCap). Captures the publisher
+	 *  `MintSigner` + the resolved `treasuryCapId` internally and returns
+	 *  the full `MintResult` (digest + minted-coin id), unlike
+	 *  `fundingStrategy.request` which discards the result.
+	 *
+	 *  This is the seam the control-plane dashboard mint ACTION drives:
+	 *  the supervisor reads the resolved `CoinValue` and calls this with
+	 *  `{to, amount}` — no signer threading needed, because the
+	 *  treasury-cap-owning publisher signer is already in-process here
+	 *  (the same lease-owning path `fundingStrategy` uses). The Effect is
+	 *  self-scoping (wraps `Effect.scoped` over the artifact-publisher
+	 *  round), so callers run it directly without a surrounding Scope. */
+	readonly mintFromCap?: (opts: {
+		readonly to: string;
+		readonly amount: bigint;
+	}) => Effect.Effect<MintResult, CoinError | ArtifactPublishError>;
 	/** Centralized funding strategy, present for local package coins
 	 *  whose publisher still owns the TreasuryCap. The coin barrel
 	 *  publishes it under `coinType:<fullCoinType>` so Account funding
@@ -162,6 +180,20 @@ export const acquireCoin = (
 		};
 		const fundingSigner = form.kind === 'witness' ? form.fundingSigner : undefined;
 		const fundingTreasuryCapId = resolved.treasuryCapId;
+		// Self-contained mint closure — same capture as `fundingStrategy`
+		// (publisher signer + resolved cap) but returns the full
+		// `MintResult` and self-scopes. Drives the dashboard mint action.
+		const mintFromCap: CoinValue['mintFromCap'] =
+			fundingSigner !== undefined && fundingTreasuryCapId !== undefined
+				? (opts) =>
+						Effect.scoped(
+							mint(fundingSigner, {
+								to: opts.to,
+								amount: opts.amount,
+								treasuryCapId: fundingTreasuryCapId,
+							}),
+						)
+				: undefined;
 		const fundingStrategy: CoinValue['fundingStrategy'] =
 			fundingSigner !== undefined && fundingTreasuryCapId !== undefined
 				? {
@@ -178,6 +210,7 @@ export const acquireCoin = (
 		const value: CoinValue = {
 			...resolved,
 			mint,
+			...(mintFromCap === undefined ? {} : { mintFromCap }),
 			...(fundingStrategy === undefined ? {} : { fundingStrategy }),
 		};
 		return value;

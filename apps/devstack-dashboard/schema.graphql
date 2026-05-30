@@ -201,12 +201,22 @@ type LogTail {
   truncated: Boolean!
 }
 
+"""
+The outcome of a coin mint (real result, with the on-chain tx digest on success).
+"""
+type MintResult {
+  detail: String!
+  digest: String
+  ok: Boolean!
+}
+
 type Mutation {
   advanceClock(input: MutationAdvanceClockInput!): CommandResult!
   apply(input: MutationApplyInput!): CommandResult!
   captureSnapshot(input: MutationCaptureSnapshotInput!): CommandResult!
   codegen: CommandResult!
   deleteSnapshot(input: MutationDeleteSnapshotInput!): SnapshotActionResult!
+  mint(input: MutationMintInput!): MintResult!
   prune: CommandResult!
   restart: CommandResult!
   restartPlugin(input: MutationRestartPluginInput!): CommandResult!
@@ -229,6 +239,12 @@ input MutationCaptureSnapshotInput {
 
 input MutationDeleteSnapshotInput {
   id: String!
+}
+
+input MutationMintInput {
+  amountBaseUnits: String!
+  coinType: String!
+  recipient: String!
 }
 
 input MutationRestartPluginInput {

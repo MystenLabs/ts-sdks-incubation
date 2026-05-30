@@ -86,6 +86,27 @@ const SnapshotActionResult = builder
 		}),
 	});
 
+// --- MintResult ---------------------------------------------------------
+//
+// The coin Mint action goes through the control-plane `domain` (NOT the
+// void `publishCommand`): the supervisor holds the treasury-cap-owning
+// signer in-process and returns a real ok/detail outcome plus the on-chain
+// tx `digest` on success.
+interface MintResultShape {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
+const MintResult = builder.objectRef<MintResultShape>('MintResult').implement({
+	description: 'The outcome of a coin mint (real result, with the on-chain tx digest on success).',
+	fields: (t) => ({
+		ok: t.exposeBoolean('ok'),
+		detail: t.exposeString('detail'),
+		digest: t.string({ nullable: true, resolve: (r) => r.digest }),
+	}),
+});
+
 // --- Query --------------------------------------------------------------
 builder.queryType({
 	fields: (t) => ({
@@ -346,6 +367,28 @@ builder.mutationType({
 			type: SnapshotActionResult,
 			input: { id: t.input.string({ required: true }) },
 			resolve: (_parent, args, ctx) => Effect.runPromise(ctx.domain.deleteSnapshot(args.input.id)),
+		}),
+		/** Mint a custom coin. Routes through the control-plane `domain`:
+		 *  the supervisor holds the treasury-cap-owning publisher signer
+		 *  in-process and returns a real ok/detail/digest result (the void
+		 *  `publishCommand` could not carry the tx digest). `amountBaseUnits`
+		 *  is the raw integer amount in the coin's smallest unit (string so
+		 *  large u64 values survive the wire without precision loss). */
+		mint: t.fieldWithInput({
+			type: MintResult,
+			input: {
+				coinType: t.input.string({ required: true }),
+				recipient: t.input.string({ required: true }),
+				amountBaseUnits: t.input.string({ required: true }),
+			},
+			resolve: (_parent, args, ctx) =>
+				Effect.runPromise(
+					ctx.domain.mintCoin({
+						coinType: args.input.coinType,
+						recipient: args.input.recipient,
+						amountBaseUnits: args.input.amountBaseUnits,
+					}),
+				),
 		}),
 	}),
 });

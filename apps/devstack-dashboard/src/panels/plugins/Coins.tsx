@@ -8,13 +8,16 @@
 // (`TreasuryCap<T>` wraps a `Supply<T>` whose `total_supply.value` is the minted
 // base-unit total). Coins without a treasury cap keep an honest "—".
 //
-// Mint: there is NO `mint` GraphQL mutation in the control-plane schema
-// (`src/lib/api.ts` exposes none; the backend `coin/mint.ts` capability is not
-// surfaced over GraphQL). So the Mint form renders, but submit is disabled with
-// an inline note — we never fake a successful mint.
+// Mint: the control-plane `mint` GraphQL mutation (`mintCoin` in `src/lib/api.ts`)
+// mints with the in-process treasury-cap owner's signer and returns the real
+// on-chain tx digest. The Mint form converts the entered whole-token amount to
+// base units (× 10^decimals, via BigInt) and submits; on success it invalidates
+// the coin's `useTotalSupply` query so the new supply shows. Coins without a
+// treasury cap stay non-mintable (the backend returns ok:false either way).
 
 import { useEffect, useMemo, useState } from 'react';
-import { type CoinCap, fetchCoinCaps, restartPlugin } from '../../lib/api.ts';
+import { useQueryClient } from '@tanstack/react-query';
+import { type CoinCap, fetchCoinCaps, mintCoin, restartPlugin } from '../../lib/api.ts';
 import { truncateMiddle } from '../../lib/format.ts';
 import { useCoinMeta, useTotalSupply } from '../../lib/useChain.ts';
 import { useToast } from '../../lib/toast.tsx';
@@ -121,6 +124,8 @@ export const CoinsView = ({ row, pluginKey, endpoint, projection, refresh, chain
 						<MintForm
 							cap={mintFor}
 							accounts={projection.accounts}
+							endpoint={endpoint}
+							chain={chain}
 							onCancel={() => setMintFor(null)}
 						/>
 					)}
@@ -251,14 +256,52 @@ const SupplyCell = ({ cap, chain }: { cap: CoinCap; chain: ChainSource }) => {
 interface MintFormProps {
 	readonly cap: CoinCap;
 	readonly accounts: Projection['accounts'];
+	readonly endpoint: string;
+	readonly chain: ChainSource;
 	readonly onCancel: () => void;
 }
 
-const MintForm = ({ cap, accounts, onCancel }: MintFormProps) => {
+/** Scale a whole-token amount to base-unit integer string (amount × 10^decimals)
+ *  using BigInt to avoid float error. */
+const toBaseUnits = (amount: number, decimals: number): string =>
+	(BigInt(Math.trunc(amount)) * 10n ** BigInt(decimals)).toString();
+
+const MintForm = ({ cap, accounts, endpoint, chain, onCancel }: MintFormProps) => {
+	const { success, error } = useToast();
+	const queryClient = useQueryClient();
 	const named = useMemo(() => accounts.filter((a) => a.address), [accounts]);
 	const [recipient, setRecipient] = useState(named[0]?.address ?? '');
 	const [amount, setAmount] = useState(1000);
+	const [minting, setMinting] = useState(false);
 	const symbol = cap.symbol ?? cap.fullCoinType.split('::').pop() ?? 'coin';
+
+	const canSubmit = !minting && recipient !== '' && Number.isInteger(amount) && amount > 0;
+
+	const onMint = async () => {
+		if (!canSubmit) return;
+		setMinting(true);
+		try {
+			const result = await mintCoin(endpoint, {
+				coinType: cap.fullCoinType,
+				recipient,
+				amountBaseUnits: toBaseUnits(amount, cap.decimals),
+			});
+			if (result.ok) {
+				success(`Minted ${amount.toLocaleString()} ${symbol}${result.digest ? ` · ${result.digest}` : ''}`);
+				// Supply only moves on mint/burn — refresh the coin's total-supply read.
+				await queryClient.invalidateQueries({
+					queryKey: ['chain', chain.network, 'totalSupply', cap.treasuryCapId ?? null],
+				});
+				onCancel();
+			} else {
+				error(result.detail);
+			}
+		} catch (err) {
+			error(err instanceof Error ? err.message : String(err));
+		} finally {
+			setMinting(false);
+		}
+	};
 
 	return (
 		<Panel pad className="fade-up" style={{ maxWidth: 480 }}>
@@ -274,23 +317,19 @@ const MintForm = ({ cap, accounts, onCancel }: MintFormProps) => {
 						))}
 					</Select>
 				</Field>
-				<Field label="Amount" hint={`Base units (${cap.decimals} decimals)`}>
-					<NumberInput value={amount} min={0} onChange={setAmount} />
+				<Field label="Amount" hint={`Whole ${symbol} (scaled by ${cap.decimals} decimals)`}>
+					<NumberInput value={amount} min={0} onChange={setAmount} disabled={minting} />
 				</Field>
 
-				<Banner tone="warn" title="Minting isn't wired yet">
-					Minting needs a backend signer — the control plane doesn't expose a mint mutation, so
-					this form can't submit. (The <span className="mono">coin/mint</span> capability exists in
-					devstack but isn't surfaced over GraphQL.)
-				</Banner>
-
 				<div className="row" style={{ gap: 8 }}>
-					<Tooltip label="Disabled: no backend mint mutation is available.">
-						<button className="btn btn-primary grow" disabled>
-							Mint {amount.toLocaleString()} {symbol}
-						</button>
-					</Tooltip>
-					<button className="btn" onClick={onCancel}>
+					<button
+						className="btn btn-primary grow"
+						disabled={!canSubmit}
+						onClick={() => void onMint()}
+					>
+						{minting ? 'Minting…' : `Mint ${amount.toLocaleString()} ${symbol}`}
+					</button>
+					<button className="btn" onClick={onCancel} disabled={minting}>
 						Cancel
 					</button>
 				</div>

@@ -39,6 +39,7 @@ import type {
 	ControlPlaneCoinCap,
 	ControlPlaneDeepbookInfo,
 	ControlPlaneDomain,
+	ControlPlaneMintResult,
 	ControlPlanePostgresStats,
 	ControlPlanePostgresTable,
 	ControlPlaneSealInfo,
@@ -87,6 +88,15 @@ interface CoinShape {
 	readonly source?: unknown;
 	readonly treasuryCapId?: unknown;
 	readonly packageId?: unknown;
+	/** Self-contained mint closure on the resolved coin value (present
+	 *  for witness-form coins whose publisher still owns the cap). Read
+	 *  structurally — the substrate imports no coin types. Returns an
+	 *  Effect that resolves a `{ digest }`-bearing result or fails with a
+	 *  coin/artifact-publisher tagged error. */
+	readonly mintFromCap?: (opts: {
+		readonly to: string;
+		readonly amount: bigint;
+	}) => Effect.Effect<{ readonly digest: string }, { readonly message?: unknown }>;
 }
 
 interface PostgresShape {
@@ -101,6 +111,24 @@ interface PostgresShape {
 interface SuiShape {
 	readonly mode?: unknown;
 }
+
+/** A 0x-prefixed Sui address: `0x` + 1..64 hex digits. Mirrors the
+ *  address validation the mint PTB's `tx.pure.address` ultimately
+ *  enforces, surfaced up front so the dashboard gets a clean rejection
+ *  rather than an opaque build failure. */
+const SUI_ADDRESS_RE = /^0x[0-9a-fA-F]{1,64}$/;
+
+/** A positive integer base-unit amount string (no sign, no decimal
+ *  point, no leading zeros beyond a bare `0` — which is itself rejected
+ *  as non-positive). */
+const isPositiveIntegerString = (s: string): boolean => {
+	if (!/^\d+$/.test(s)) return false;
+	try {
+		return BigInt(s) > 0n;
+	} catch {
+		return false;
+	}
+};
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const strReq = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -409,6 +437,97 @@ export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPl
 		),
 	);
 
+	// Mint ACTION — drives the dashboard Coins panel's Mint button.
+	//
+	// Signer source: the resolved coin VALUE carries a self-contained
+	// `mintFromCap` closure (present only for witness-form coins whose
+	// publisher still owns the TreasuryCap). That closure already captures
+	// the treasury-cap-owning publisher `MintSigner` + the resolved cap id
+	// in-process — the same lease-owning path `coin/service.ts`'s
+	// `fundingStrategy` uses — so the control plane mints WITHOUT threading
+	// a signer through this seam (the projection stays closed; we read the
+	// resolved value, never plugin internals).
+	//
+	// Never fails (`E = never`): every reject path (bad address, non-
+	// positive amount, no matching coin, cap-not-owned, on-chain failure)
+	// degrades to `{ ok: false, detail, digest: null }` so the dashboard
+	// query can't be taken down by a single bad mint.
+	const mintCoin: ControlPlaneDomain['mintCoin'] = (input) =>
+		Effect.gen(function* () {
+			const recipient = input.recipient.trim();
+			if (!SUI_ADDRESS_RE.test(recipient)) {
+				return {
+					ok: false,
+					detail: `invalid recipient '${input.recipient}': expected a 0x-prefixed Sui address`,
+					digest: null,
+				} satisfies ControlPlaneMintResult;
+			}
+			if (!isPositiveIntegerString(input.amountBaseUnits)) {
+				return {
+					ok: false,
+					detail: `invalid amountBaseUnits '${input.amountBaseUnits}': expected a positive integer string`,
+					digest: null,
+				} satisfies ControlPlaneMintResult;
+			}
+
+			// Locate the resolved coin whose fullCoinType matches. Match on the
+			// resolved value's `fullCoinType` (the stable on-chain type), not the
+			// resource-id prefix, so callers pass the same `coinType` the
+			// `coinCaps` query surfaced.
+			const match = resolvedMatching(graph, registry, (id) => id.startsWith('coin:'))
+				.map(([, value]) => value as CoinShape)
+				.find((v) => strReq(v.fullCoinType) === input.coinType);
+
+			if (match === undefined) {
+				return {
+					ok: false,
+					detail: `no resolved coin found for type '${input.coinType}'`,
+					digest: null,
+				} satisfies ControlPlaneMintResult;
+			}
+			if (typeof match.mintFromCap !== 'function') {
+				return {
+					ok: false,
+					detail:
+						`coin '${input.coinType}' has no in-process treasury cap signer — ` +
+						'mint is only available for local-package coins whose publisher still owns the TreasuryCap',
+					digest: null,
+				} satisfies ControlPlaneMintResult;
+			}
+
+			return yield* match
+				.mintFromCap({ to: recipient, amount: BigInt(input.amountBaseUnits) })
+				.pipe(
+					Effect.map(
+						(r): ControlPlaneMintResult => ({
+							ok: true,
+							detail: `minted ${input.amountBaseUnits} of ${input.coinType} to ${recipient}`,
+							digest: r.digest,
+						}),
+					),
+					// Typed coin/artifact-publisher failures carry `.message`.
+					Effect.catch((cause) =>
+						Effect.succeed<ControlPlaneMintResult>({
+							ok: false,
+							detail:
+								typeof cause?.message === 'string'
+									? cause.message
+									: `mint failed: ${String(cause)}`,
+							digest: null,
+						}),
+					),
+					// Residual defects (interrupts, unexpected throws) — degrade
+					// rather than crash the dashboard query.
+					Effect.catchCause((cause) =>
+						Effect.succeed<ControlPlaneMintResult>({
+							ok: false,
+							detail: `mint crashed: ${String(cause)}`,
+							digest: null,
+						}),
+					),
+				);
+		});
+
 	const postgresStats: ControlPlaneDomain['postgresStats'] = Effect.gen(function* () {
 		const instances = resolvedMatching(graph, registry, (id) => id === 'postgres' || id.startsWith('postgres'));
 		if (instances.length === 0) return [];
@@ -484,6 +603,7 @@ export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPl
 		deepbook,
 		seal,
 		coinCaps,
+		mintCoin,
 		postgresStats,
 		logs,
 		logServices,
@@ -503,6 +623,7 @@ export const emptyControlPlaneDomain: ControlPlaneDomain = {
 	deepbook: Effect.succeed([]),
 	seal: Effect.succeed([]),
 	coinCaps: Effect.succeed([]),
+	mintCoin: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
 	postgresStats: Effect.succeed([]),
 	logs: () => Effect.succeed([]),
 	logServices: Effect.succeed([]),

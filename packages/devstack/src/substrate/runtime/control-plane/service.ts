@@ -96,6 +96,25 @@ export interface ControlPlaneSealInfo {
 	readonly threshold: number;
 }
 
+/** Input for the dashboard mint ACTION. `amountBaseUnits` is the raw
+ *  integer amount in the coin's smallest unit (decimals already applied
+ *  by the caller / form) — a string so large u64 values survive the wire
+ *  without precision loss. */
+export interface ControlPlaneMintInput {
+	readonly coinType: string;
+	readonly recipient: string;
+	readonly amountBaseUnits: string;
+}
+
+/** Outcome of a dashboard mint ACTION. Mirrors the snapshot
+ *  restore/delete result shape (real result, not the void command
+ *  channel) plus the on-chain tx `digest` on success. */
+export interface ControlPlaneMintResult {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
 /** A coin's treasury-cap id (drives the Mint action) + addressing facts. */
 export interface ControlPlaneCoinCap {
 	readonly pluginKey: string;
@@ -155,6 +174,14 @@ export interface ControlPlaneDomain {
 	readonly seal: Effect.Effect<ReadonlyArray<ControlPlaneSealInfo>>;
 	/** Coin treasury caps (drives Mint). */
 	readonly coinCaps: Effect.Effect<ReadonlyArray<ControlPlaneCoinCap>>;
+	/** Mint ACTION — mints `amountBaseUnits` of `coinType` to `recipient`,
+	 *  signed in-process by the treasury-cap-owning publisher signer the
+	 *  supervisor already holds (the resolved coin value's self-contained
+	 *  `mintFromCap` closure). Returns a real ok/detail/digest result the
+	 *  void `publishCommand` could not carry. Never fails (`E = never`):
+	 *  validation / cap-missing / on-chain failure all degrade to
+	 *  `{ ok: false, detail, digest: null }`. */
+	readonly mintCoin: (input: ControlPlaneMintInput) => Effect.Effect<ControlPlaneMintResult>;
 	/** Postgres wire-protocol stats per postgres plugin instance. */
 	readonly postgresStats: Effect.Effect<ReadonlyArray<ControlPlanePostgresStats>>;
 	/** Cross-service queryable log history (the dashboard Console "Logs"
