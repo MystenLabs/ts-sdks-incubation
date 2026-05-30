@@ -158,6 +158,14 @@ export type EngineEvent =
 			readonly pluginKey: PluginKey;
 			readonly kind: string;
 			readonly message: string;
+			/** Underlying-cause discriminator (the failing sink error's
+			 *  `_tag`, e.g. `RouterBootFailed`) when one is recoverable
+			 *  from the wrapped cause. Optional + additive: omitted when
+			 *  the cause carries no tag, so the closed-sum vocabulary is
+			 *  unchanged for consumers that ignore it. Surfaced so an
+			 *  operator can tell WHICH orchestrator sink broke (dead RPC
+			 *  routing vs codegen collision) without parsing the message. */
+			readonly causeType?: string;
 			readonly at: number;
 	  };
 

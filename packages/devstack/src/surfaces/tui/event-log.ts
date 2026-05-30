@@ -142,12 +142,30 @@ export const eventLogLineFromEvent = (
 				scopeColor: 'blueBright',
 				message: `restored ${event.snapshotId}`,
 			});
+		case 'engine.orchestrator.dispatchFailed':
+			// A capability sink (e.g. `routable`) rejected, but the plugin is
+			// left `ready` on purpose (non-fatal sink — see
+			// dispatch-contributions.ts). Previously suppressed here, which
+			// meant a live-dashboard operator saw a green stack with dead
+			// RPC/wallet routing. Surface it as a warning so the failure is
+			// visible; lead with the cause `_tag` when present so the line
+			// names WHICH orchestrator broke.
+			return line({
+				id,
+				level: 'warn',
+				at,
+				scope: labelForRow(event.pluginKey),
+				scopeColor: scopeColorFor(event.pluginKey),
+				message:
+					event.causeType === undefined
+						? `routing sink '${event.kind}' failed: ${event.message}`
+						: `routing sink '${event.kind}' failed (${event.causeType}): ${event.message}`,
+			});
 		case 'endpoint.released':
 		case 'strategy.registered':
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
-		case 'engine.orchestrator.dispatchFailed':
 			return null;
 		default: {
 			const _exhaustive: never = event;

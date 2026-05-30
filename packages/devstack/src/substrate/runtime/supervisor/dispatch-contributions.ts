@@ -19,7 +19,7 @@
 //     `engine.orchestrator.dispatchFailed` event + log a warning; the
 //     plugin stays ready.
 
-import { Context, Effect, Queue, Scope, SubscriptionRef } from 'effect';
+import { Cause, Context, Effect, Queue, Scope, SubscriptionRef } from 'effect';
 
 import type { CapabilityDecl } from '../../../contracts/capability-decl.ts';
 import type { StrategyContributorDecl } from '../../../contracts/strategy-contributor.ts';
@@ -40,6 +40,55 @@ import { CapabilityFactoryFailed } from './errors.ts';
 import { noopStrategyRegistry, OptionalService, publish } from './wiring.ts';
 
 const strategyRegistryAccess = OptionalService(StrategyRegistryService);
+
+/**
+ * Render the underlying cause of a `ContributionSinkFailed` to a single
+ * human string for the operator-facing warning log.
+ *
+ * `ContributionSinkFailed.cause` is `unknown` — the failing sink may
+ * reject with an Effect `Cause`, a tagged domain error (e.g.
+ * `RouterBootFailed`, which carries the spec-mismatch `detail`), a plain
+ * `Error`, or an arbitrary value. The original wrapper only logged its
+ * own generic `err.message` ("capability sink 'routable' failed") and
+ * DROPPED this cause, so an operator saw a healthy-looking stack with
+ * dead RPC/wallet routing and no way to learn why. This recovers the
+ * real detail across all of those shapes:
+ *   - `Cause` → `Cause.pretty` (full failure tree).
+ *   - `Error` → `.stack ?? .message` (keeps the tag + detail; a
+ *     `TaggedError`'s `toString()` includes `_tag` and its fields).
+ *   - anything else → `JSON.stringify`, falling back to `String` when
+ *     the value is not serializable (cyclic / BigInt).
+ */
+const formatCause = (cause: unknown): string => {
+	if (Cause.isCause(cause)) return Cause.pretty(cause);
+	if (cause instanceof Error) return cause.stack ?? cause.message;
+	if (typeof cause === 'string') return cause;
+	try {
+		return JSON.stringify(cause) ?? String(cause);
+	} catch {
+		return String(cause);
+	}
+};
+
+/**
+ * Best-effort discriminator for the wrapped cause — the failing sink
+ * error's `_tag` (e.g. `RouterBootFailed`) when present. Feeds the
+ * additive optional `causeType` on the `dispatchFailed` event so a
+ * renderer/log consumer can route on the failure category without
+ * parsing the message. Returns `undefined` for untagged causes so the
+ * field is simply omitted.
+ */
+const causeTagOf = (cause: unknown): string | undefined => {
+	if (
+		typeof cause === 'object' &&
+		cause !== null &&
+		'_tag' in cause &&
+		typeof (cause as { _tag: unknown })._tag === 'string'
+	) {
+		return (cause as { _tag: string })._tag;
+	}
+	return undefined;
+};
 
 /**
  * Resolve a plugin's `capabilities` field to a concrete decl tuple.
@@ -156,15 +205,26 @@ export const dispatchContributions = (
 							// without misattributing to the plugin. The plugin's
 							// lifecycle state is untouched; the markFailed path
 							// in `acquireNode` is NOT taken for this branch.
+							//
+							// The underlying cause MUST travel with the warning:
+							// a non-fatal sink (e.g. `routable`) leaves the plugin
+							// `ready`, so without the cause an operator sees a
+							// healthy-looking stack with dead RPC/wallet routing
+							// and no diagnosis. `err.cause` holds the real domain
+							// error (e.g. `RouterBootFailed` + its spec-mismatch
+							// `detail`); we stringify it for the log and lift its
+							// `_tag` onto the event's additive `causeType`.
+							const causeType = causeTagOf(err.cause);
 							yield* publish(ref, hub, {
 								tag: 'engine.orchestrator.dispatchFailed',
 								pluginKey,
 								kind: err.kind,
 								message: err.message,
+								...(causeType === undefined ? {} : { causeType }),
 								at: Date.now(),
 							});
 							yield* Effect.logWarning(
-								`capability sink '${err.kind}' failed for plugin '${pluginKey}'`,
+								`capability sink '${err.kind}' failed for plugin '${pluginKey}': ${formatCause(err.cause)}`,
 							);
 						}),
 				}),

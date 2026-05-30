@@ -153,6 +153,49 @@ describe('event log derivation', () => {
 		expect(line?.scopeColor).toBe('cyan'); // sectionColor('other') === 'cyan'
 	});
 
+	it('surfaces orchestrator dispatch failures as operator warnings (was suppressed)', () => {
+		// Observability regression: this event used to return null, so a
+		// live-dashboard operator saw a green stack with dead RPC/wallet
+		// routing. The plugin is intentionally left `ready` (non-fatal
+		// sink), so the warning line is the only diagnosis. It names the
+		// failing sink kind, the cause `_tag`, and the message — scoped to
+		// the affected plugin via the section lookup.
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'engine.orchestrator.dispatchFailed',
+				pluginKey: pluginKey('sui'),
+				kind: 'routable',
+				message: 'router spec mismatch: upstream sui:rpc not reachable',
+				causeType: 'RouterBootFailed',
+				at: AT,
+			},
+			5,
+			fixedSection('service'),
+		);
+		expect(line?.level).toBe('warn');
+		expect(line?.scope).toBe('Sui');
+		expect(line?.scopeColor).toBe('cyan');
+		expect(line?.message).toContain('routable');
+		expect(line?.message).toContain('RouterBootFailed');
+		expect(line?.message).toContain('router spec mismatch: upstream sui:rpc not reachable');
+	});
+
+	it('renders a dispatch-failure warning without a cause tag when none is present', () => {
+		const line = eventLogLineFromEvent(
+			{
+				tag: 'engine.orchestrator.dispatchFailed',
+				pluginKey: pluginKey('sui'),
+				kind: 'routable',
+				message: 'sink rejected',
+				at: AT,
+			},
+			6,
+			fixedSection('service'),
+		);
+		expect(line?.level).toBe('warn');
+		expect(line?.message).toBe("routing sink 'routable' failed: sink rejected");
+	});
+
 	it('renders shutdown escalation as an operator warning', () => {
 		const line = eventLogLineFromEvent(
 			{

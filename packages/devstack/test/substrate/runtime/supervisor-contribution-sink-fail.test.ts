@@ -19,7 +19,7 @@
 // Plugin authoring stays unchanged: a registered sink that throws is
 // an orchestrator-side bug, NOT a plugin-side bug.
 
-import { Effect, Queue, Ref } from 'effect';
+import { Data, Effect, Queue, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
@@ -54,9 +54,20 @@ const codegenDecl: CodegenableDecl<'failing-emitter'> = {
 		}),
 };
 
+// Stand-in for an orchestrator-side domain error (e.g. `RouterBootFailed`):
+// a tagged error so the supervisor can lift its `_tag` onto the
+// `dispatchFailed` event's additive `causeType` and stringify its `detail`
+// into the warning log. The `detail` is the spec-mismatch text an operator
+// must see — the original bug dropped it entirely.
+class SinkBootFailed extends Data.TaggedError('SinkBootFailed')<{
+	readonly detail: string;
+}> {}
+
+const SINK_FAILURE_DETAIL = 'router spec mismatch: upstream sui:rpc not reachable';
+
 const failingSink: CapabilitySink<'codegenable', CodegenableDecl<string>> = {
 	kind: 'codegenable',
-	accept: () => Effect.fail(new Error('orchestrator-side router collision')),
+	accept: () => Effect.fail(new SinkBootFailed({ detail: SINK_FAILURE_DETAIL })),
 };
 
 // `OrchestratorSinks` is the supervisor's caller-facing bag of sinks.
@@ -125,6 +136,11 @@ describe('supervisor — ContributionSinkFailed routing (backlog #39)', () => {
 					expect(first.tag).toBe('engine.orchestrator.dispatchFailed');
 					if (first.tag === 'engine.orchestrator.dispatchFailed') {
 						expect(first.kind).toBe('codegenable');
+						// Observability regression: the underlying cause's `_tag`
+						// must ride along on the event so a renderer/log consumer
+						// can name WHICH orchestrator broke. Dropping it left the
+						// operator with a generic "sink failed" and no diagnosis.
+						expect(first.causeType).toBe('SinkBootFailed');
 					}
 
 					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });

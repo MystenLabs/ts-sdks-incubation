@@ -120,6 +120,12 @@ const levelForEvent = (event: EngineEvent): 'INFO' | 'WARN' | 'ERROR' => {
 			return event.error.severity === 'fatal' || event.error.severity === 'error'
 				? 'ERROR'
 				: 'WARN';
+		// A broken orchestrator capability sink leaves the plugin `ready`
+		// (non-fatal by design — see dispatch-contributions.ts), so this
+		// is the operator's ONLY signal that e.g. RPC/wallet routing is
+		// dead. It must not render as a routine INFO line.
+		case 'engine.orchestrator.dispatchFailed':
+			return 'WARN';
 		default:
 			return 'INFO';
 	}
@@ -208,6 +214,11 @@ const payloadFor = (event: EngineEvent): string => {
 			return kv({
 				key: event.pluginKey,
 				kind: event.kind,
+				// `causeType` (the failing sink error's `_tag`, e.g.
+				// `RouterBootFailed`) is the discriminator an operator scans
+				// for to tell dead RPC routing from a codegen collision. `kv`
+				// drops it when undefined, so untagged causes stay clean.
+				causeType: event.causeType ?? '',
 				summary: event.message,
 			});
 		case 'error.reported':

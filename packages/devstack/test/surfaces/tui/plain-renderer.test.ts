@@ -154,6 +154,39 @@ describe('plain-renderer formatters', () => {
 		expect(line).toContain('cause="stderr: private content failed | exit code: 1"');
 	});
 
+	it('formats engine.orchestrator.dispatchFailed as a WARN line carrying the cause discriminator', () => {
+		// Observability regression: a non-fatal capability sink (e.g.
+		// `routable`) rejecting leaves the plugin `ready`, so this WARN line
+		// is the operator's only signal that RPC/wallet routing is dead. It
+		// must render above INFO and name the failing sink + cause `_tag`.
+		const line = formatEventLine({
+			tag: 'engine.orchestrator.dispatchFailed',
+			pluginKey: pluginKey('sui'),
+			kind: 'routable',
+			message: "capability sink 'routable' failed",
+			causeType: 'RouterBootFailed',
+			at: STATIC_AT,
+		});
+		expect(line.startsWith('2026-05-19T20:11:32.001Z WARN')).toBe(true);
+		expect(line).toContain('engine.orchestrator.dispatchFailed');
+		expect(line).toContain('key=sui');
+		expect(line).toContain('kind=routable');
+		expect(line).toContain('causeType=RouterBootFailed');
+		expect(line).toContain('summary="capability sink \'routable\' failed"');
+	});
+
+	it('omits causeType on dispatchFailed when the cause is untagged', () => {
+		const line = formatEventLine({
+			tag: 'engine.orchestrator.dispatchFailed',
+			pluginKey: pluginKey('sui'),
+			kind: 'routable',
+			message: 'sink failed',
+			at: STATIC_AT,
+		});
+		expect(line).toContain('WARN');
+		expect(line).not.toContain('causeType=');
+	});
+
 	it('formats restart.requested for stack-wide target', () => {
 		const line = formatEventLine({
 			tag: 'restart.requested',
