@@ -63,6 +63,23 @@ catalog:
   vitest: ^2.1.9
   zod: ^3.24.1
 
+  # GraphQL — devstack dashboard API (Pothos code-first schema + yoga host)
+  graphql: ^16.11.0
+  graphql-yoga: ^5.10.4
+  '@pothos/core': ^4.3.0
+  '@pothos/plugin-relay': ^4.4.0
+  '@pothos/plugin-simple-objects': ^4.1.0
+  '@pothos/plugin-with-input': ^4.1.0
+  # Typed GraphQL client for the dashboard frontend (no codegen step beyond the
+  # generated introspection file).
+  gql.tada: ^1.8.10
+  '@0no-co/graphqlsp': ^1.12.16
+  # Geist type family used by the dashboard design system.
+  '@fontsource-variable/geist': ^5.2.5
+  '@fontsource-variable/geist-mono': ^5.2.5
+  # Charts for the dashboard (design handoff uses Recharts; shadcn charts wrap it).
+  recharts: ^2.15.0
+
   # Effect — pinned to a v4 beta that has cleared the 2-day quarantine.
   # In v4, Schema/Stream/FileSystem/Path/etc. live in core `effect`; only
   # the platform-node bindings and the vitest integration are separate.

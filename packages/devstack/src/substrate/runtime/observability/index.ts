@@ -13,6 +13,8 @@
 //   - process-lines       — shared process output line observation.
 
 export * from './logger.ts';
+export * from './log-store.ts';
+export * from './span-store.ts';
 export * from './redaction.ts';
 export * from './spans.ts';
 export * from './cascade-formatter.ts';

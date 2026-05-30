@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	account,
 	action,
+	dashboard,
 	defineDevstack,
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
@@ -44,6 +45,6 @@ const app = hostService({
 	ready: { kind: 'http' },
 	after: [openLobby, devWallet] as const,
 });
-const stack: Stack = defineDevstack({ members: [localnet, app], stackName: 'connect-four' });
+const stack: Stack = defineDevstack({ members: [localnet, app, dashboard()], stackName: 'connect-four' });
 
 export default stack;

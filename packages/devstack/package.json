@@ -55,15 +55,17 @@
 			"import": "./dist/build-integrations/runtime/index.mjs"
 		}
 	},
-	"sideEffects": false,
+	"sideEffects": true,
 	"files": [
 		"dist",
 		"images",
+		"dashboard-ui",
 		"!dist/samples",
 		"!dist/node_modules"
 	],
 	"scripts": {
-		"build": "tsdown",
+		"build": "pnpm run build:dashboard-ui && tsdown",
+		"build:dashboard-ui": "node scripts/build-dashboard-ui.mjs",
 		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
@@ -77,8 +79,14 @@
 		"@mysten/codegen": "catalog:",
 		"@mysten/deepbook-v3": "catalog:",
 		"@mysten/sui": "catalog:",
+		"@pothos/core": "catalog:",
+		"@pothos/plugin-relay": "catalog:",
+		"@pothos/plugin-simple-objects": "catalog:",
+		"@pothos/plugin-with-input": "catalog:",
 		"@stricli/core": "catalog:",
 		"effect": "catalog:",
+		"graphql": "catalog:",
+		"graphql-yoga": "catalog:",
 		"ink": "^7.0.0",
 		"react": "catalog:"
 	},

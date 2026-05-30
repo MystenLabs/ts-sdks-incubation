@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import {
 	defineDevstack,
 	account,
+	dashboard,
 	HOST_SERVICE_PORT_TOKEN,
 	hostService,
 	localPackage,
@@ -59,7 +60,7 @@ const app = hostService({
 });
 
 const stack: Stack = defineDevstack({
-	members: [localnet, app],
+	members: [localnet, app, dashboard()],
 	stackName: 'private-content',
 });
 

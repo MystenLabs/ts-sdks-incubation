@@ -14,7 +14,18 @@
 //   8. Install the scope-close finalizer (reverse-dep teardown).
 //   9. Return the handle.
 
-import { Context, Deferred, Effect, Exit, Layer, Queue, Ref, Scope, SubscriptionRef } from 'effect';
+import {
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Layer,
+	Queue,
+	Ref,
+	Scope,
+	SubscriptionRef,
+	Tracer,
+} from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineCommand, EngineEvent } from '../../events.ts';
@@ -26,7 +37,18 @@ import {
 	layerCapabilitySinksDefault,
 	type OrchestratorSinks,
 } from '../capability-sinks/index.ts';
-import { Logger, withStackSpan, type LoggerShape } from '../observability/index.ts';
+import {
+	Logger,
+	LogStore,
+	SpanStore,
+	makeLogStore,
+	makeSpanStore,
+	withStackSpan,
+	type LoggerShape,
+	type LogStoreConfig,
+} from '../observability/index.ts';
+import { ControlPlaneService } from '../control-plane/service.ts';
+import { controlPlaneDomainFromContext } from '../control-plane/domain.ts';
 import { RuntimeRoot } from '../paths.ts';
 import { declareAccount, setIdentity } from '../projection/update.ts';
 import {
@@ -96,6 +118,11 @@ export interface SupervisorStartup {
 
 export interface SupervisorStartupOptions {
 	readonly commandLoop?: boolean;
+	/** Per-service log-store tuning. Absent fields fall back to the
+	 *  `DEVSTACK_DASHBOARD_LOG_*` env vars, then the module defaults
+	 *  (2000 records/service, 256 services). Threaded into the
+	 *  process-scoped `makeLogStore` below. */
+	readonly logStore?: LogStoreConfig;
 }
 
 const pendingAccountProjection = (
@@ -208,16 +235,78 @@ export const startSupervisor = (
 		const shutdownLatch = yield* Ref.make(false);
 		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);
-		const logger = withEventPublishingLogger(baseLogger, state, hub);
-		const pluginRuntimeContext = pluginContext.pipe(
-			Context.add(Logger, Logger.of(logger)),
-		) as Context.Context<never>;
+
+		// Observability stores (process-scoped, like `state`/`hub`): a
+		// cross-service queryable log ring fed off the SAME logger path that
+		// feeds the projection's per-row tail, and a completed-span ring fed
+		// by a recording Tracer. Both survive `stack.restart` because they
+		// live in this closure (only `cycle.id` bumps on restart). The
+		// dashboard reads them via the control-plane `domain`.
+		const logStore = yield* makeLogStore(options.logStore ?? {});
+		const spanStore = yield* makeSpanStore();
+		const logger = withEventPublishingLogger(baseLogger, state, hub, logStore);
+
+		// Provide the recording Tracer to the supervisor's OWN effects too.
+		// `pluginRuntimeContext` below carries the tracer into plugin
+		// acquire/boot, but the supervisor's forked fibers (command loop,
+		// background snapshot/restart tasks), the teardown finalizer, and the
+		// `lifecycle.supervisor.*` spans run under THIS fiber's ambient context
+		// — which has no tracer unless we add one. Without this, exactly the
+		// dashboard-triggered ops (restart/snapshot/prune) the Traces tab wants
+		// would emit spans into the default no-op tracer and evaporate.
+		// `forkScoped`/finalizers inherit the context at fork/install time, so
+		// stamping the tracer onto each supervisor-owned effect captures them
+		// without double-provisioning the plugin path or disturbing any
+		// caller-provided OTel composition.
+		const traced = <A, E, R>(eff: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+			Effect.provideService(eff, Tracer.Tracer, spanStore.tracer);
 
 		// Per-plugin scopes parent off the supervisor scope.
 		const supervisorScope = yield* Effect.scope;
 
 		const emit = buildTransitionEmitter(state, hub);
 		const registry = yield* buildRegistry(graph, supervisorScope, emit);
+
+		// Build the control-plane `domain` accessor surface from the data
+		// the supervisor holds at wiring time: the resolved registry +
+		// graph, plus the (optional) snapshot orchestrator / container
+		// runtime / filesystem the caller may have layered into
+		// `pluginContext`. The projection stays CLOSED — `domain` reads
+		// resolved plugin VALUES via the name-blind registry seam, never
+		// the projection. The registry is process-scoped, so the closure
+		// stays valid across `stack.restart` (only `cycle.id` bumps).
+		const controlPlaneDomain = controlPlaneDomainFromContext({
+			pluginContext,
+			graph,
+			registry,
+			logStore,
+			spanStore,
+		});
+
+		const pluginRuntimeContext = pluginContext.pipe(
+			Context.add(Logger, Logger.of(logger)),
+			// Observability stores + the recording Tracer. The Tracer is an
+			// Effect `Context.Reference`, so adding it here makes every span
+			// run with this context (all plugin acquire/boot/op spans —
+			// `withSpan`/`spanWithLabels`) record into `spanStore` instead of
+			// hitting the default no-op native tracer. The stores themselves
+			// are exposed so the control-plane `domain` can query them.
+			Context.add(LogStore, LogStore.of(logStore)),
+			Context.add(SpanStore, SpanStore.of(spanStore)),
+			Context.add(Tracer.Tracer, spanStore.tracer),
+			// Expose the control plane (live projection + fire-and-forget
+			// command dispatch + the plugin-domain accessor surface) to
+			// in-process surfaces like the dashboard plugin. Reads the same
+			// `state` ref and `commands` queue the supervisor itself drives.
+			Context.add(
+				ControlPlaneService,
+				ControlPlaneService.of({
+					state,
+					publishCommand: (command) => Effect.asVoid(Queue.offer(commands, command)),
+					domain: controlPlaneDomain,
+				}),
+			),
+		) as Context.Context<never>;
 
 		// Declare a row for every plugin so the projection's
 		// `lifecycle.statusChanged` events have a row to attach to.
@@ -291,14 +380,16 @@ export const startSupervisor = (
 
 		const enableCommandLoop = options.commandLoop !== false;
 		if (enableCommandLoop) {
-			yield* Effect.forkScoped(installSignalHandler(commands));
+			yield* Effect.forkScoped(traced(installSignalHandler(commands)));
 			yield* Effect.forkScoped(
-				Effect.gen(function* () {
-					while (true) {
-						const command = yield* Queue.take(commands);
-						yield* Queue.offer(queuedCommands, { kind: 'fire-and-forget', command });
-					}
-				}),
+				traced(
+					Effect.gen(function* () {
+						while (true) {
+							const command = yield* Queue.take(commands);
+							yield* Queue.offer(queuedCommands, { kind: 'fire-and-forget', command });
+						}
+					}),
+				),
 			);
 		}
 
@@ -348,7 +439,7 @@ export const startSupervisor = (
 			} else if (!(yield* Ref.get(shutdownLatch))) {
 				yield* setCyclePhase(state, 'running');
 			}
-		}).pipe(Effect.withSpan('lifecycle.supervisor.initialAcquire'));
+		}).pipe(Effect.withSpan('lifecycle.supervisor.initialAcquire'), traced);
 
 		// Build the watch index up front; the supervisor exposes
 		// `notifyWatchFire` so the L0 thick watcher can call into it.
@@ -379,23 +470,26 @@ export const startSupervisor = (
 
 		// Fork the command loop.
 		if (enableCommandLoop) {
-			yield* Effect.forkScoped(commandLoop(supervisorState));
+			yield* Effect.forkScoped(traced(commandLoop(supervisorState)));
 		}
 
 		// Tear-down finalizer: closes every plugin scope in reverse-dep
 		// order. The supervisor scope itself closes when the surrounding
 		// caller closes — `Scope.close` cascades to plugin scopes.
 		yield* Effect.addFinalizer(() =>
-			Effect.gen(function* () {
-				const plan = planFullDrain(graph);
-				yield* teardownKeys(graph, registry, plan.teardownOrder).pipe(
-					Effect.catch(() => Effect.void),
-				);
-			}),
+			traced(
+				Effect.gen(function* () {
+					const plan = planFullDrain(graph);
+					yield* teardownKeys(graph, registry, plan.teardownOrder).pipe(
+						Effect.catch(() => Effect.void),
+					);
+				}),
+			),
 		);
 
 		const awaitShutdown: Effect.Effect<void> = Deferred.await(shutdownComplete).pipe(
 			Effect.withSpan('lifecycle.supervisor.awaitShutdown'),
+			traced,
 		);
 
 		const runCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
@@ -409,7 +503,7 @@ export const startSupervisor = (
 				if (Exit.isFailure(exit)) {
 					return yield* Effect.failCause(exit.cause);
 				}
-			}).pipe(Effect.withSpan('lifecycle.supervisor.runCommand'));
+			}).pipe(Effect.withSpan('lifecycle.supervisor.runCommand'), traced);
 
 		const handle = {
 			identity,
