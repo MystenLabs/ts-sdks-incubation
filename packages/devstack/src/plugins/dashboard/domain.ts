@@ -33,6 +33,16 @@ import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
 } from '../../substrate/runtime/control-plane/service.ts';
+import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
+import type { FaucetStrategy } from '../../contracts/faucet-strategy.ts';
+import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
+import type { AccountValue } from '../account/service.ts';
+// The faucet capability-key prefix is owned by the faucet plugin (single
+// source of truth). The dashboard plugin layer is allowed to name plugins,
+// so importing the key constructor is the same cross-plugin reference the
+// account funding pass (`plugins/account/funding.ts`) uses — NOT a resolved
+// plugin-VALUE import (those stay structurally narrowed below).
+import { FAUCET_CAPABILITY_KEY_PREFIX } from '../faucet/dispatcher.ts';
 
 // -----------------------------------------------------------------------------
 // App-agnostic domain shapes the GraphQL schema renders.
@@ -105,6 +115,50 @@ export interface DashboardMintResult {
 	readonly digest: string | null;
 }
 
+/** Input for the dashboard fund ACTION.
+ *
+ *  `coinType` selects the funding strategy: absent or the canonical SUI
+ *  type routes through the chain's faucet strategy (`faucet:request:<chainId>`,
+ *  fixed-amount); any other full coin type routes through the coin-specific
+ *  `coinType:<fullCoinType>` strategy (WAL exchange swap / DEEP pool swap).
+ *
+ *  `amountBaseUnits` is the raw integer amount in the coin's smallest unit
+ *  (a string so large u64 values survive the wire without precision loss).
+ *  The SUI faucet is fixed-amount and IGNORES it; WAL/DEEP honor it. */
+export interface DashboardFundInput {
+	readonly recipient: string;
+	readonly coinType?: string | null;
+	readonly amountBaseUnits?: string | null;
+}
+
+/** Outcome of a dashboard fund ACTION. The in-process funding strategies
+ *  return `void` (not a digest), so `digest` is always `null` here — kept
+ *  for shape-parity with `DashboardMintResult`. `ok:true` means the
+ *  strategy's `request(...)` completed (the faucet POST landed / the swap
+ *  executed on-chain); `detail` carries the reason on failure. */
+export interface DashboardFundResult {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
+/** One coin the dashboard faucet can actually fund, with whether the
+ *  underlying strategy honors a caller-supplied amount.
+ *
+ *  SUI is always present (fixed-amount faucet, `honorsAmount: false`).
+ *  WAL/DEEP appear only when their plugin registered a `coinType:<X>`
+ *  funding strategy AND (for WAL) carries a swap that spends the
+ *  recipient account's SUI — so `honorsAmount: true`. */
+export interface DashboardFundableCoin {
+	readonly symbol: string;
+	readonly coinType: string;
+	readonly honorsAmount: boolean;
+	/** True when funding requires the recipient to BE a resolved account in
+	 *  the stack (the swap spends that account's own SUI via its in-process
+	 *  signer). SUI is `false` (any 0x address); WAL/DEEP are `true`. */
+	readonly requiresAccountSigner: boolean;
+}
+
 export interface DashboardPostgresTable {
 	readonly schema: string;
 	readonly name: string;
@@ -149,6 +203,16 @@ export interface DashboardDomain {
 	 *  signed in-process by the treasury-cap-owning publisher signer the
 	 *  resolved coin value's self-contained `mintFromCap` closure holds. */
 	readonly mintCoin: (input: DashboardMintInput) => Effect.Effect<DashboardMintResult>;
+	/** Coins the faucet can actually fund right now (SUI always; WAL/DEEP
+	 *  only when their plugin registered a funding strategy). Drives the
+	 *  faucet panel's coin pills + amount-field gating. */
+	readonly fundableCoins: Effect.Effect<ReadonlyArray<DashboardFundableCoin>>;
+	/** Fund ACTION — reuses devstack's in-process funding strategies. SUI
+	 *  (absent/canonical type) routes through the chain faucet strategy
+	 *  (fixed-amount); WAL/DEEP route through the coin-specific funding
+	 *  strategy (account-signed exchange/pool swap). Real result — `ok`
+	 *  reflects whether the strategy's `request(...)` completed. */
+	readonly fundAccount: (input: DashboardFundInput) => Effect.Effect<DashboardFundResult>;
 }
 
 // -----------------------------------------------------------------------------
@@ -216,6 +280,22 @@ interface PostgresShape {
 
 interface SuiShape {
 	readonly mode?: unknown;
+	/** Substrate-level chain id (`'sui:localnet'`, `'sui:testnet'`,
+	 *  `'sui:mainnet-fork@123'`). Composes the faucet capability key
+	 *  (`faucet:request:<chainId>`) the SUI funding path resolves. */
+	readonly chain?: unknown;
+}
+
+/** Structural shape of the resolved account value (`account/<name>`). The
+ *  WAL/DEEP funding strategies need this handle as `req.account` — the swap
+ *  spends the recipient account's own SUI through its in-process signer.
+ *  Narrowed to the fields the strategy dispatch reads; the full
+ *  `AccountValue` is assignable to it, so we cast the matched value across
+ *  the seam without importing the account VALUE shape structurally
+ *  elsewhere. */
+interface AccountShape {
+	readonly address?: unknown;
+	readonly name?: unknown;
 }
 
 /** A 0x-prefixed Sui address: `0x` + 1..64 hex digits. Mirrors the
@@ -223,6 +303,12 @@ interface SuiShape {
  *  enforces, surfaced up front so the dashboard gets a clean rejection
  *  rather than an opaque build failure. */
 const SUI_ADDRESS_RE = /^0x[0-9a-fA-F]{1,64}$/;
+
+/** The canonical builtin SUI coin type — selects the SUI faucet funding
+ *  path. Mirrors `SUI_FULL_COIN_TYPE` in `plugins/account/funding.ts`
+ *  (inlined here so the dashboard plugin does not cross-import the account
+ *  funding module just for the string). */
+const SUI_FULL_COIN_TYPE = '0x2::sui::SUI' as const;
 
 /** A positive integer base-unit amount string (no sign, no decimal
  *  point, no leading zeros beyond a bare `0` — which is itself rejected
@@ -235,6 +321,51 @@ const isPositiveIntegerString = (s: string): boolean => {
 		return false;
 	}
 };
+
+/** Compose the chain faucet capability key (`faucet:request:<chainId>`)
+ *  the SUI funding path resolves. Uses the faucet plugin's prefix constant
+ *  (single source of truth) — same key the boot-time funding pass builds. */
+const faucetCapabilityKeyFor = (
+	chain: string,
+): `${typeof FAUCET_CAPABILITY_KEY_PREFIX}:${string}` => `${FAUCET_CAPABILITY_KEY_PREFIX}:${chain}`;
+
+/** Parse a base-unit amount string into a positive bigint, or `null` when
+ *  absent / non-positive / non-integer. */
+const parseAmount = (s: string | null | undefined): bigint | null => {
+	if (s == null) return null;
+	const trimmed = s.trim();
+	if (!isPositiveIntegerString(trimmed)) return null;
+	return BigInt(trimmed);
+};
+
+/** Derive a display symbol from a full coin type's module path
+ *  (`0x…::wal::WAL` → `WAL`, `0x…::deep::DEEP` → `DEEP`). Falls back to the
+ *  struct name, then the raw type. Keeps the dashboard name-blind on the
+ *  resolved coin VALUE while still labeling the faucet pill. */
+const coinSymbolFromType = (coinType: string): string => {
+	const parts = coinType.split('::');
+	const struct = parts[parts.length - 1];
+	return struct !== undefined && struct.length > 0 ? struct : coinType;
+};
+
+/** Extract a human detail from a faucet/funding strategy failure. The
+ *  strategy error channels are tagged structs carrying `message`/`reason`;
+ *  read them structurally without importing each plugin's error type. */
+const causeDetail = (cause: unknown): string => {
+	if (cause !== null && typeof cause === 'object') {
+		const c = cause as {
+			readonly message?: unknown;
+			readonly reason?: unknown;
+			readonly _tag?: unknown;
+		};
+		if (typeof c.message === 'string' && c.message.length > 0) return c.message;
+		if (typeof c.reason === 'string' && c.reason.length > 0) return c.reason;
+		if (typeof c._tag === 'string' && c._tag.length > 0) return c._tag;
+	}
+	return String(cause);
+};
+const faucetCauseDetail = causeDetail;
+const fundingCauseDetail = causeDetail;
 
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const strReq = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -354,10 +485,16 @@ export interface DashboardDomainDeps {
 	/** Container runtime for the Postgres `psql` exec-probe. `null` in bare
 	 *  test paths; `postgresStats` degrades to an unavailable entry then. */
 	readonly containerRuntime: ContainerRuntime | null;
+	/** The scope-local strategy registry — the SAME registry the boot-time
+	 *  account funding pass dispatches through (`plugins/account/funding.ts`).
+	 *  Drives `fundableCoins` + `fundAccount`: SUI via `faucet:request:<chainId>`,
+	 *  WAL/DEEP via `coinType:<fullCoinType>`. `null` in bare test paths; the
+	 *  fund accessors degrade to unavailable then. */
+	readonly strategyRegistry: StrategyRegistry | null;
 }
 
 export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain => {
-	const { control, identity, containerRuntime } = deps;
+	const { control, identity, containerRuntime, strategyRegistry } = deps;
 
 	const mode: DashboardDomain['mode'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
@@ -546,6 +683,211 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				);
 		});
 
+	// --- Fund ACTION + fundable-coin derivation ------------------------
+	//
+	// Reuses devstack's IN-PROCESS funding strategies — the same strategy
+	// registry the boot-time account funding pass dispatches through
+	// (`plugins/account/funding.ts`). We never re-implement signing or the
+	// exchange/pool swaps:
+	//
+	//   - SUI (absent / canonical type) → `faucet:request:<chainId>`. The SUI
+	//     faucet strategy takes `{ address, amount }` only (no account handle)
+	//     and is FIXED-AMOUNT (the standard faucet ignores `amount`). Recipient
+	//     may be ANY 0x address.
+	//   - WAL/DEEP → `coinType:<fullCoinType>`. The strategy takes
+	//     `{ address, amount, account }` and runs an account-signed swap, so
+	//     the recipient MUST be a resolved account in the stack (we match the
+	//     recipient address against the resolved `account/<name>` values and
+	//     pass the live `AccountValue` as `req.account`).
+	//
+	// Never fails (`E = never`): every reject path degrades to
+	// `{ ok:false, detail }` so a single bad fund can't take down the query.
+
+	/** The chain id the SUI funding path keys on, read from the resolved sui
+	 *  value (same `chain` field the sui codegen/snapshot decls stamp). */
+	const readChainId = control.resolvedValues.pipe(
+		Effect.map((values) => {
+			const sui = matching(values, (id) => id === 'sui')[0];
+			return sui === undefined ? null : str((sui.value as SuiShape).chain);
+		}),
+	);
+
+	const fundableCoins: DashboardDomain['fundableCoins'] = Effect.gen(function* () {
+		// SUI is always fundable when a faucet strategy is registered for the
+		// active chain; the fixed-amount faucet ignores the requested amount.
+		const out: DashboardFundableCoin[] = [];
+		if (strategyRegistry === null) return out;
+
+		const chain = yield* readChainId;
+		const keys = yield* strategyRegistry.list();
+		if (chain !== null && keys.includes(faucetCapabilityKeyFor(chain))) {
+			out.push({
+				symbol: 'SUI',
+				coinType: SUI_FULL_COIN_TYPE,
+				honorsAmount: false,
+				requiresAccountSigner: false,
+			});
+		}
+
+		// WAL/DEEP: a coin is fundable iff a `coinType:<fullCoinType>` strategy
+		// is actually registered (the walrus/deepbook plugin contributed one).
+		// Derive the display symbol from the coin type's module path
+		// (`::wal::WAL` → WAL, `::deep::DEEP` → DEEP) so we stay name-blind on
+		// the coin VALUE while still labeling the pill.
+		for (const key of keys) {
+			if (!key.startsWith('coinType:')) continue;
+			const coinType = key.slice('coinType:'.length);
+			if (coinType === SUI_FULL_COIN_TYPE) continue;
+			out.push({
+				symbol: coinSymbolFromType(coinType),
+				coinType,
+				honorsAmount: true,
+				requiresAccountSigner: true,
+			});
+		}
+		return out;
+	});
+
+	const fundAccount: DashboardDomain['fundAccount'] = (input) =>
+		Effect.gen(function* () {
+			const recipient = input.recipient.trim();
+			if (!SUI_ADDRESS_RE.test(recipient)) {
+				return {
+					ok: false,
+					detail: `invalid recipient '${input.recipient}': expected a 0x-prefixed Sui address`,
+					digest: null,
+				} satisfies DashboardFundResult;
+			}
+			if (strategyRegistry === null) {
+				return {
+					ok: false,
+					detail: 'funding unavailable: no strategy registry wired',
+					digest: null,
+				} satisfies DashboardFundResult;
+			}
+
+			const coinType = input.coinType?.trim() ?? '';
+			const isSui = coinType === '' || coinType === SUI_FULL_COIN_TYPE;
+
+			// SUI path — chain faucet strategy. Fixed-amount: we pass a nominal
+			// amount but the standard faucet ignores it. Recipient may be any
+			// 0x address (no account handle required).
+			if (isSui) {
+				const chain = yield* readChainId;
+				if (chain === null) {
+					return {
+						ok: false,
+						detail: 'cannot fund SUI: no resolved sui plugin / chain id in this stack',
+						digest: null,
+					} satisfies DashboardFundResult;
+				}
+				const key = faucetCapabilityKeyFor(chain);
+				const strategy = yield* strategyRegistry
+					.get<typeof key, FaucetStrategy>(key)
+					.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
+				if (strategy === null) {
+					return {
+						ok: false,
+						detail: `no SUI faucet strategy registered for chain '${chain}'`,
+						digest: null,
+					} satisfies DashboardFundResult;
+				}
+				// `amount` is nominal — the standard faucet grant is fixed and
+				// ignores it. Default to 1 SUI in MIST so a strategy that DID
+				// honor it lands a sane value.
+				const amount = parseAmount(input.amountBaseUnits) ?? 1_000_000_000n;
+				return yield* strategy.request({ address: recipient, amount }).pipe(
+					Effect.map(
+						(): DashboardFundResult => ({
+							ok: true,
+							detail: `requested SUI for ${recipient} (fixed-amount faucet grant)`,
+							digest: null,
+						}),
+					),
+					Effect.catch((cause) =>
+						Effect.succeed<DashboardFundResult>({
+							ok: false,
+							detail: `SUI faucet request failed: ${faucetCauseDetail(cause)}`,
+							digest: null,
+						}),
+					),
+					Effect.catchCause((cause) =>
+						Effect.succeed<DashboardFundResult>({
+							ok: false,
+							detail: `SUI faucet request crashed: ${String(cause)}`,
+							digest: null,
+						}),
+					),
+				);
+			}
+
+			// WAL/DEEP path — coin-specific account-signed funding strategy.
+			const amount = parseAmount(input.amountBaseUnits);
+			if (amount === null) {
+				return {
+					ok: false,
+					detail: `invalid amountBaseUnits '${input.amountBaseUnits ?? ''}': expected a positive integer string`,
+					digest: null,
+				} satisfies DashboardFundResult;
+			}
+
+			const key = `coinType:${coinType}` as const;
+			const strategy = yield* strategyRegistry
+				.get<typeof key, AccountFundingStrategy<unknown, AccountValue>>(key)
+				.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
+			if (strategy === null) {
+				return {
+					ok: false,
+					detail:
+						`no funding strategy registered for coin '${coinType}' — ` +
+						'WAL needs the walrus plugin (with an exchange) and DEEP needs the deepbook plugin',
+					digest: null,
+				} satisfies DashboardFundResult;
+			}
+
+			// The swap spends the recipient account's own SUI, so the recipient
+			// MUST be a resolved account in the stack. Match by address.
+			const values = yield* control.resolvedValues;
+			const account = matching(values, (id) => id.startsWith('account/'))
+				.map(({ value }) => value as AccountShape)
+				.find((v) => str(v.address) === recipient);
+			if (account === undefined) {
+				return {
+					ok: false,
+					detail:
+						`coin '${coinType}' is funded by an account-signed swap, but '${recipient}' ` +
+						'is not a resolved account in this stack — fund a configured account (the swap spends its SUI)',
+					digest: null,
+				} satisfies DashboardFundResult;
+			}
+
+			return yield* strategy
+				.request({ address: recipient, amount, account: account as unknown as AccountValue })
+				.pipe(
+					Effect.map(
+						(): DashboardFundResult => ({
+							ok: true,
+							detail: `funded ${amount} base units of ${coinType} to ${recipient}`,
+							digest: null,
+						}),
+					),
+					Effect.catch((cause) =>
+						Effect.succeed<DashboardFundResult>({
+							ok: false,
+							detail: `${coinSymbolFromType(coinType)} funding failed: ${fundingCauseDetail(cause)}`,
+							digest: null,
+						}),
+					),
+					Effect.catchCause((cause) =>
+						Effect.succeed<DashboardFundResult>({
+							ok: false,
+							detail: `${coinSymbolFromType(coinType)} funding crashed: ${String(cause)}`,
+							digest: null,
+						}),
+					),
+				);
+		});
+
 	const postgresStats: DashboardDomain['postgresStats'] = Effect.gen(function* () {
 		const values = yield* control.resolvedValues;
 		const instances = matching(values, (id) => id === 'postgres');
@@ -599,7 +941,16 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 		return out;
 	});
 
-	return { mode, deepbook, seal, coinCaps, postgresStats, mintCoin };
+	return {
+		mode,
+		deepbook,
+		seal,
+		coinCaps,
+		postgresStats,
+		mintCoin,
+		fundableCoins,
+		fundAccount,
+	};
 };
 
 /** An all-empty dashboard domain. Used by tests that exercise the
@@ -612,4 +963,6 @@ export const emptyDashboardDomain: DashboardDomain = {
 	coinCaps: Effect.succeed([]),
 	postgresStats: Effect.succeed([]),
 	mintCoin: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
+	fundableCoins: Effect.succeed([]),
+	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
 };

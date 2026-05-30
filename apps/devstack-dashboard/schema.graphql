@@ -112,6 +112,25 @@ enum ErrorSeverity {
   warn
 }
 
+"""
+The outcome of a faucet fund request (real result — ok reflects whether the in-process funding strategy completed).
+"""
+type FundResult {
+  detail: String!
+  digest: String
+  ok: Boolean!
+}
+
+"""
+A coin the dashboard faucet can fund right now. SUI is fixed-amount; WAL/DEEP honor an amount and require the recipient to be a resolved account.
+"""
+type FundableCoin {
+  coinType: String!
+  honorsAmount: Boolean!
+  requiresAccountSigner: Boolean!
+  symbol: String!
+}
+
 """One coin-type funding outcome for an account."""
 type FundingEntry {
   amount: String!
@@ -216,6 +235,7 @@ type Mutation {
   captureSnapshot(input: MutationCaptureSnapshotInput!): CommandResult!
   codegen: CommandResult!
   deleteSnapshot(input: MutationDeleteSnapshotInput!): SnapshotActionResult!
+  fund(input: MutationFundInput!): FundResult!
   mint(input: MutationMintInput!): MintResult!
   prune: CommandResult!
   restart: CommandResult!
@@ -239,6 +259,12 @@ input MutationCaptureSnapshotInput {
 
 input MutationDeleteSnapshotInput {
   id: String!
+}
+
+input MutationFundInput {
+  amountBaseUnits: String
+  coinType: String
+  recipient: String!
 }
 
 input MutationMintInput {
@@ -316,6 +342,7 @@ type Query {
   accounts(after: String, before: String, first: Int, last: Int): QueryAccountsConnection!
   coinCaps: [CoinCap!]!
   deepbookInfo: [DeepbookInfo!]!
+  fundableCoins: [FundableCoin!]!
   logServices: [String!]!
   logs(filter: LogFilter): [LogRecord!]!
   mode: StackMode

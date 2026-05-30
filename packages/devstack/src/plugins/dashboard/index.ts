@@ -14,6 +14,8 @@ import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
+import { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/index.ts';
 import { ControlPlaneService } from '../../substrate/runtime/control-plane/service.ts';
 import { IdentityContext } from '../../substrate/runtime/paths.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
@@ -88,6 +90,16 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 				const containerRuntime: ContainerRuntime | null =
 					containerRuntimeOpt._tag === 'Some' ? containerRuntimeOpt.value : null;
 
+				// The scope-local strategy registry — the SAME registry the
+				// boot-time account funding pass dispatches through. Drives the
+				// Faucet panel's `fundableCoins` + `fundAccount` (SUI via the
+				// faucet strategy, WAL/DEEP via the coin-specific funding
+				// strategies). Read optionally so bare smoke-test paths that don't
+				// layer it degrade the fund accessors to unavailable.
+				const strategyRegistryOpt = yield* Effect.serviceOption(StrategyRegistryService);
+				const strategyRegistry: StrategyRegistry | null =
+					strategyRegistryOpt._tag === 'Some' ? strategyRegistryOpt.value : null;
+
 				// Plugin-name-aware shaping lives HERE (the plugin layer is
 				// allowed to name plugins), built off the generic, name-blind
 				// control-plane `resolvedValues` seam + the container runtime.
@@ -95,6 +107,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 					control: control.domain,
 					identity,
 					containerRuntime,
+					strategyRegistry,
 				});
 
 				const bindAddress = opts.bindAddress ?? DASHBOARD_DEFAULT_BIND;

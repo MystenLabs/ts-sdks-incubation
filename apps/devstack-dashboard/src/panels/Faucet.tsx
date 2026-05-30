@@ -1,21 +1,33 @@
-// Faucet panel — request test SUI for any configured account or a pasted
-// address. The request POSTs directly to the local faucet's gas endpoint
-// (discovered from the projection's endpoint registry), not the GraphQL API.
+// Faucet panel — request test coins for any configured account or a pasted
+// address. Requests go through the control-plane `fund` GraphQL mutation,
+// which reuses devstack's IN-PROCESS funding strategies (the same registry
+// the boot-time account funding pass uses) and returns a REAL processed
+// result (ok + detail) — not browser-only optimism.
 //
-// Honest scope: the only browser-reachable faucet is the Sui HTTP faucet's
-// fixed-amount `/v2/gas` grant, which dispenses native SUI only and ignores the
-// requested amount. WAL/DEEP are not browser-POSTable — WAL is acquired by
-// swapping SUI through the walrus exchange object, DEEP via deepbook seeding —
-// so their coin pills only appear when those plugins are present and, when
-// selected, surface an honest "routed via <plugin>" note instead of a request
-// that would 4xx. "Recent requests" is local session state (no server history).
+// Honest scope per coin (driven by the backend `fundableCoins` query):
+//   - SUI is the chain's fixed-amount faucet grant — it dispenses native SUI
+//     and IGNORES any requested amount, so there is no amount input for SUI.
+//   - WAL/DEEP route through an account-signed swap (SUI → WAL exchange /
+//     DEEP_SUI pool). They honor an amount, but require the recipient to BE a
+//     resolved account in the stack (the swap spends that account's own SUI).
+//     They only appear when their plugin registered a funding strategy.
+//
+// "Recent requests" reflects the real mutation outcome (processed / failed +
+// the backend detail); it is local session state (no server history).
 
-import { type ChangeEvent, type FormEvent, type ReactNode, useMemo, useState } from 'react';
+import {
+	type ChangeEvent,
+	type FormEvent,
+	type ReactNode,
+	useEffect,
+	useMemo,
+	useState,
+} from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import type { PanelProps } from './types.ts';
-import type { Endpoint, Projection } from '../lib/types.ts';
-import { pluginPresent } from '../lib/derive.ts';
-import { timeAgo, truncateMiddle } from '../lib/format.ts';
+import { fundAccount, type FundableCoin } from '../lib/api.ts';
+import { useFundableCoins } from '../lib/useChain.ts';
+import { truncateMiddle, timeAgo } from '../lib/format.ts';
 import { useToast } from '../lib/toast.tsx';
 import {
 	Button,
@@ -33,74 +45,33 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]+$/;
 const HISTORY_CAP = 20;
 const QUICK_AMOUNTS = ['10', '100', '1000'] as const;
 
-type RequestState = 'idle' | 'requesting' | 'success';
-
-/** Why a request couldn't go through — drives the inline error banner + retry. */
-type RequestError =
-	| { readonly kind: 'exhausted'; readonly message: string }
-	| { readonly kind: 'unreachable'; readonly message: string }
-	| { readonly kind: 'body'; readonly message: string };
+type RequestState = 'idle' | 'requesting';
 
 interface HistoryEntry {
 	readonly id: number;
 	readonly coin: string;
+	/** Displayed amount, or '—' for the fixed-amount SUI grant. */
 	readonly amount: string;
 	readonly target: string;
 	readonly at: number;
 	readonly ok: boolean;
+	/** Backend detail (success summary or failure reason). */
+	readonly detail: string;
 }
-
-/** A selectable coin pill: SUI is browser-dispatchable; WAL/DEEP are plugin-gated. */
-interface CoinOption {
-	readonly symbol: string;
-	/** True only for coins this panel can POST browser-direct (SUI). */
-	readonly dispatchable: boolean;
-	/** When non-dispatchable, an honest note about how it's actually acquired. */
-	readonly note?: string;
-}
-
-/**
- * The canonical Sui HTTP faucet path is `/v2/gas`; older endpoints answered at
- * `/gas`. We normalise any already-suffixed base back to its root, then append
- * the modern path so discovery is correct regardless of how the URL was
- * registered (the projection registers the bare base URL).
- */
-const gasUrl = (base: string): string => `${base.replace(/\/(v\d+\/)?gas\/?$/, '')}/v2/gas`;
-
-const findFaucetEndpoint = (endpoints: ReadonlyArray<Endpoint>): Endpoint | null =>
-	endpoints.find((e) => e.name.toLowerCase() === 'faucet') ??
-	endpoints.find((e) => /faucet/i.test(e.name)) ??
-	null;
-
-/**
- * The faucet-enabled coin set: SUI is always dispatchable; WAL/DEEP only appear
- * when their plugins are present, and are flagged non-dispatchable with an
- * honest note (no browser-POSTable faucet exists for them).
- */
-const faucetCoins = (projection: Projection): ReadonlyArray<CoinOption> => {
-	const coins: CoinOption[] = [{ symbol: 'SUI', dispatchable: true }];
-	if (pluginPresent(projection.rows, 'walrus'))
-		coins.push({
-			symbol: 'WAL',
-			dispatchable: false,
-			note: 'WAL is acquired by swapping SUI through the walrus exchange — not a browser faucet. Request SUI here, then exchange.',
-		});
-	if (pluginPresent(projection.rows, 'deepbook'))
-		coins.push({
-			symbol: 'DEEP',
-			dispatchable: false,
-			note: 'DEEP is seeded by the deepbook plugin during boot — there is no browser-direct DEEP faucet.',
-		});
-	return coins;
-};
 
 let nextHistoryId = 1;
 
-export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
+export const FaucetPanel = ({ projection, chain, endpoint, refresh }: PanelProps) => {
 	const toast = useToast();
 	const queryClient = useQueryClient();
-	const faucet = useMemo(() => findFaucetEndpoint(projection.endpoints), [projection.endpoints]);
-	const coins = useMemo(() => faucetCoins(projection), [projection]);
+
+	// Real fundable-coin set from the backend: SUI (fixed-amount) always, plus
+	// WAL/DEEP when their plugin registered a funding strategy.
+	const coinsQuery = useFundableCoins(endpoint, chain.network);
+	const coins = useMemo<ReadonlyArray<FundableCoin>>(
+		() => coinsQuery.data ?? [],
+		[coinsQuery.data],
+	);
 
 	const fundable = useMemo(
 		() => projection.accounts.filter((a) => a.address !== null),
@@ -109,13 +80,17 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 
 	const [target, setTarget] = useState<string>(() => fundable[0]?.key ?? OTHER);
 	const [otherAddress, setOtherAddress] = useState('');
-	const [coin, setCoin] = useState('SUI');
+	const [coinType, setCoinType] = useState<string | null>(null);
 	const [amount, setAmount] = useState('100');
 	const [state, setState] = useState<RequestState>('idle');
-	const [error, setError] = useState<RequestError | null>(null);
 	const [history, setHistory] = useState<ReadonlyArray<HistoryEntry>>([]);
 
-	const selectedCoin = coins.find((c) => c.symbol === coin) ?? coins[0];
+	// Default the selected coin to the first fundable one once it loads.
+	useEffect(() => {
+		if (coinType === null && coins.length > 0) setCoinType(coins[0]!.coinType);
+	}, [coinType, coins]);
+
+	const selectedCoin = coins.find((c) => c.coinType === coinType) ?? coins[0] ?? null;
 
 	const usingOther = target === OTHER || fundable.length === 0;
 	const recipient = usingOther
@@ -126,82 +101,83 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 		: (fundable.find((a) => a.key === target)?.name ?? recipient);
 
 	const recipientValid = HEX_ADDRESS.test(recipient);
+	const amountValid = !selectedCoin?.honorsAmount || /^\d+$/.test(amount.trim());
 	const canRequest =
-		faucet !== null && recipientValid && selectedCoin.dispatchable && state !== 'requesting';
+		selectedCoin !== null && recipientValid && amountValid && state !== 'requesting';
 
 	const request = async (e: FormEvent) => {
 		e.preventDefault();
-		if (!canRequest || !faucet) return;
+		if (!canRequest || selectedCoin === null) return;
 		setState('requesting');
-		setError(null);
 
-		const url = gasUrl(faucet.url);
-		let ok = false;
-		let nextError: RequestError | null = null;
+		// SUI is fixed-amount — send no amount. WAL/DEEP honor the amount.
+		const amountBaseUnits = selectedCoin.honorsAmount ? amount.trim() : undefined;
+		let result: { ok: boolean; detail: string };
 		try {
-			const res = await fetch(url, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ FixedAmountRequest: { recipient } }),
+			result = await fundAccount(endpoint, {
+				recipient,
+				coinType: selectedCoin.coinType,
+				...(amountBaseUnits !== undefined ? { amountBaseUnits } : {}),
 			});
-			if (res.ok) {
-				ok = true;
-			} else if (res.status === 429) {
-				nextError = {
-					kind: 'exhausted',
-					message: 'Faucet exhausted or rate-limited (429) — wait a moment, then retry.',
-				};
-			} else {
-				const detail = await res.text().catch(() => '');
-				nextError = {
-					kind: 'body',
-					message: `Faucet returned HTTP ${res.status}${detail ? ` — ${detail.slice(0, 140)}` : ''}`,
-				};
-			}
-		} catch {
-			nextError = {
-				kind: 'unreachable',
-				message: `Faucet unreachable at ${url} — is the stack running?`,
-			};
+		} catch (cause) {
+			result = { ok: false, detail: `request failed: ${String(cause)}` };
 		}
 
 		setHistory((h) =>
 			[
-				{ id: nextHistoryId++, coin, amount, target: recipientName, at: Date.now(), ok },
+				{
+					id: nextHistoryId++,
+					coin: selectedCoin.symbol,
+					amount: selectedCoin.honorsAmount ? amount.trim() : '—',
+					target: recipientName,
+					at: Date.now(),
+					ok: result.ok,
+					detail: result.detail,
+				},
 				...h,
 			].slice(0, HISTORY_CAP),
 		);
 
-		if (ok) {
-			toast.success(`Dispensed SUI → ${recipientName}`);
-			setState('success');
-			// Nudge a balance refresh: the projection funding view + any cached
-			// browser-direct balance reads for this network.
+		if (result.ok) {
+			toast.success(`${selectedCoin.symbol} → ${recipientName}`);
+			// Refresh the target's balance: the projection funding view + any
+			// cached browser-direct balance reads for this network.
 			await refresh();
 			void queryClient.invalidateQueries({ queryKey: ['chain', chain.network, 'balances'] });
 			void queryClient.invalidateQueries({ queryKey: ['chain', chain.network, 'suiBalance'] });
-			window.setTimeout(() => setState('idle'), 1600);
 		} else {
-			toast.error(nextError?.message ?? 'Faucet request failed');
-			setError(nextError);
-			setState('idle');
+			toast.error(result.detail || `${selectedCoin.symbol} request failed`);
 		}
+		setState('idle');
 	};
 
-	if (!faucet) {
+	if (coinsQuery.isLoading) {
+		return (
+			<div className="col" style={{ gap: 16 }}>
+				<Header />
+				<div className="panel">
+					<EmptyState icon="drop" title="Loading faucet…" hint="Resolving fundable coins." />
+				</div>
+			</div>
+		);
+	}
+
+	if (coins.length === 0) {
 		return (
 			<div className="col" style={{ gap: 16 }}>
 				<Header />
 				<div className="panel">
 					<EmptyState
 						icon="drop"
-						title="No faucet endpoint"
-						hint="The running stack does not expose a faucet endpoint, so requests cannot be dispatched."
+						title="No fundable coins"
+						hint="The running stack has no faucet or funding strategy registered, so requests cannot be dispatched."
 					/>
 				</div>
 			</div>
 		);
 	}
+
+	const lastFailure = history.find((h) => !h.ok) ?? null;
 
 	return (
 		<div className="col" style={{ gap: 16 }}>
@@ -242,22 +218,25 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 								}
 							/>
 						)}
+						{selectedCoin?.requiresAccountSigner && usingOther && (
+							<span style={{ fontSize: 11.5, color: 'var(--tx-lo)' }}>
+								{selectedCoin.symbol} funding spends the recipient account's own SUI, so the
+								recipient must be a configured account — pasted addresses will be rejected.
+							</span>
+						)}
 					</div>
 
 					<div className="col" style={{ gap: 7 }}>
 						<span className="eyebrow">Coin</span>
 						<div className="row wrap" style={{ gap: 8 }}>
 							{coins.map((c) => {
-								const active = c.symbol === coin;
+								const active = c.coinType === selectedCoin?.coinType;
 								return (
 									<Button
-										key={c.symbol}
+										key={c.coinType}
 										type="button"
 										sm
-										onClick={() => {
-											setCoin(c.symbol);
-											setError(null);
-										}}
+										onClick={() => setCoinType(c.coinType)}
 										style={
 											active
 												? {
@@ -274,37 +253,44 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 							})}
 						</div>
 						<span style={{ fontSize: 11.5, color: 'var(--tx-lo)' }}>
-							{selectedCoin.dispatchable
-								? 'The local faucet dispenses a fixed-amount native SUI grant.'
-								: selectedCoin.note}
+							{selectedCoin === null
+								? null
+								: selectedCoin.honorsAmount
+									? `${selectedCoin.symbol} is funded by an on-chain swap from the recipient account's SUI.`
+									: 'The Sui faucet dispenses a fixed-amount native SUI grant (amount is not configurable).'}
 						</span>
 					</div>
 
-					<div className="col" style={{ gap: 7 }}>
-						<span className="eyebrow">Amount</span>
-						<div className="row" style={{ gap: 8 }}>
-							<Input
-								type="number"
-								className="mono"
-								value={amount}
-								onChange={(e: ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)}
-								style={{ width: 140 }}
-							/>
-							<div className="row" style={{ gap: 6 }}>
-								{QUICK_AMOUNTS.map((v) => (
-									<Button key={v} type="button" sm variant="ghost" onClick={() => setAmount(v)}>
-										{v}
-									</Button>
-								))}
+					{selectedCoin?.honorsAmount && (
+						<div className="col" style={{ gap: 7 }}>
+							<span className="eyebrow">Amount (base units)</span>
+							<div className="row" style={{ gap: 8 }}>
+								<Input
+									type="number"
+									className="mono"
+									value={amount}
+									onChange={(e: ChangeEvent<HTMLInputElement>) => setAmount(e.target.value)}
+									aria-invalid={!amountValid}
+									style={{
+										width: 140,
+										...(amountValid
+											? {}
+											: { borderColor: 'color-mix(in oklab, var(--c-red) 50%, var(--line))' }),
+									}}
+								/>
+								<div className="row" style={{ gap: 6 }}>
+									{QUICK_AMOUNTS.map((v) => (
+										<Button key={v} type="button" sm variant="ghost" onClick={() => setAmount(v)}>
+											{v}
+										</Button>
+									))}
+								</div>
 							</div>
 						</div>
-						<span style={{ fontSize: 11.5, color: 'var(--tx-lo)' }}>
-							The Sui faucet is fixed-amount — this value is informational.
-						</span>
-					</div>
+					)}
 
-					{error && (
-						<ErrorBanner error={error} onRetry={state === 'requesting' ? undefined : request} />
+					{lastFailure && state !== 'requesting' && (
+						<ErrorBanner detail={lastFailure.detail} onRetry={request} />
 					)}
 
 					<Button type="submit" variant="primary" disabled={!canRequest} style={{ height: 38 }}>
@@ -312,17 +298,9 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 							<>
 								<span className="dot dot-white dot-pulse" /> Requesting…
 							</>
-						) : state === 'success' ? (
-							<>
-								<Icon name="check" size={15} /> Dispensed
-							</>
-						) : selectedCoin.dispatchable ? (
-							<>
-								<Icon name="drop" size={15} /> Request {selectedCoin.symbol}
-							</>
 						) : (
 							<>
-								<Icon name="drop" size={15} /> {selectedCoin.symbol} not browser-dispatchable
+								<Icon name="drop" size={15} /> Request {selectedCoin?.symbol ?? 'coin'}
 							</>
 						)}
 					</Button>
@@ -336,7 +314,7 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 						<EmptyState
 							icon="clock"
 							title="No requests yet"
-							hint="Dispatched faucet requests from this session appear here."
+							hint="Dispatched faucet requests from this session appear here with their processed outcome."
 						/>
 					) : (
 						<table className="tbl">
@@ -351,7 +329,7 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 							</thead>
 							<tbody>
 								{history.map((h) => (
-									<tr key={h.id}>
+									<tr key={h.id} title={h.detail}>
 										<td className="mono">{h.coin}</td>
 										<td className="mono tnum">{h.amount}</td>
 										<td>
@@ -359,7 +337,12 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 										</td>
 										<td style={{ color: 'var(--tx-lo)', fontSize: 12 }}>{timeAgo(h.at)} ago</td>
 										<td>
-											<Dot token={h.ok ? 'green' : 'red'} />
+											<span className="row" style={{ gap: 6, alignItems: 'center' }}>
+												<Dot token={h.ok ? 'green' : 'red'} />
+												<span style={{ fontSize: 11, color: 'var(--tx-lo)' }}>
+													{h.ok ? 'processed' : 'failed'}
+												</span>
+											</span>
 										</td>
 									</tr>
 								))}
@@ -372,50 +355,41 @@ export const FaucetPanel = ({ projection, chain, refresh }: PanelProps) => {
 	);
 };
 
-/** Per-design inline error banner with a retry affordance. */
+/** Inline error banner carrying the backend failure detail + a retry. */
 const ErrorBanner = ({
-	error,
+	detail,
 	onRetry,
 }: {
-	readonly error: RequestError;
-	readonly onRetry?: (e: FormEvent) => void | Promise<void>;
-}): ReactNode => {
-	const label =
-		error.kind === 'exhausted'
-			? 'Faucet exhausted'
-			: error.kind === 'unreachable'
-				? 'Faucet unreachable'
-				: 'Faucet error';
-	return (
-		<div
-			className="panel panel-pad col"
-			style={{
-				gap: 6,
-				borderColor: 'color-mix(in oklab, var(--c-red) 36%, var(--line))',
-				background: 'color-mix(in oklab, var(--c-red) 7%, var(--bg-elev))',
-			}}
-		>
-			<div className="row between">
-				<span className="row" style={{ gap: 8 }}>
-					<Icon name="alert" size={14} style={{ color: 'var(--c-red)' }} />
-					<span style={{ fontWeight: 560, fontSize: 13, color: 'var(--c-red)' }}>{label}</span>
-				</span>
-				{onRetry && (
-					<Button type="button" sm variant="ghost" onClick={(e) => void onRetry(e as FormEvent)}>
-						<Icon name="refresh" size={13} /> Retry
-					</Button>
-				)}
-			</div>
-			<span style={{ fontSize: 12.5, color: 'var(--tx-mid)' }}>{error.message}</span>
+	readonly detail: string;
+	readonly onRetry: (e: FormEvent) => void | Promise<void>;
+}): ReactNode => (
+	<div
+		className="panel panel-pad col"
+		style={{
+			gap: 6,
+			borderColor: 'color-mix(in oklab, var(--c-red) 36%, var(--line))',
+			background: 'color-mix(in oklab, var(--c-red) 7%, var(--bg-elev))',
+		}}
+	>
+		<div className="row between">
+			<span className="row" style={{ gap: 8 }}>
+				<Icon name="alert" size={14} style={{ color: 'var(--c-red)' }} />
+				<span style={{ fontWeight: 560, fontSize: 13, color: 'var(--c-red)' }}>Request failed</span>
+			</span>
+			<Button type="button" sm variant="ghost" onClick={(e) => void onRetry(e as FormEvent)}>
+				<Icon name="refresh" size={13} /> Retry
+			</Button>
 		</div>
-	);
-};
+		<span style={{ fontSize: 12.5, color: 'var(--tx-mid)' }}>{detail}</span>
+	</div>
+);
 
 const Header = () => (
 	<div>
 		<h2 style={{ fontSize: 19 }}>Faucet</h2>
 		<p style={{ color: 'var(--tx-mid)', fontSize: 13, margin: '3px 0 0' }}>
-			Dispense test SUI to any configured account or a pasted address.
+			Dispense test coins to any configured account or a pasted address — processed in-process by
+			the stack's funding strategies.
 		</p>
 	</div>
 );

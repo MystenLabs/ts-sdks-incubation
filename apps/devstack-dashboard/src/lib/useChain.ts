@@ -28,9 +28,11 @@ import {
 	type DeepbookInfo,
 	fetchCoinCaps,
 	fetchDeepbookInfo,
+	fetchFundableCoins,
 	fetchMode,
 	fetchPostgresStats,
 	fetchSealInfo,
+	type FundableCoin,
 	type PostgresStats,
 	type SealInfo,
 	type StackMode,
@@ -276,6 +278,18 @@ export const usePostgresStats = (
 	useQuery({
 		queryKey: ['domain', network, endpoint, 'postgresStats'],
 		queryFn: () => fetchPostgresStats(endpoint),
+		staleTime: DOMAIN_STALE_MS,
+	});
+
+/** Coins the faucet can fund right now (SUI always; WAL/DEEP gated on a
+ *  registered funding strategy). Drives the Faucet panel's coin pills. */
+export const useFundableCoins = (
+	endpoint: string,
+	network: string,
+): UseQueryResult<ReadonlyArray<FundableCoin>> =>
+	useQuery({
+		queryKey: ['domain', network, endpoint, 'fundableCoins'],
+		queryFn: () => fetchFundableCoins(endpoint),
 		staleTime: DOMAIN_STALE_MS,
 	});
 

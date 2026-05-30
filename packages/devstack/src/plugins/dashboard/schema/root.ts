@@ -14,6 +14,7 @@ import {
 	Account,
 	CoinCap,
 	DeepbookInfo,
+	FundableCoin,
 	LogFilterInput,
 	LogRecordType,
 	Package,
@@ -107,6 +108,32 @@ const MintResult = builder.objectRef<MintResultShape>('MintResult').implement({
 	}),
 });
 
+// --- FundResult ---------------------------------------------------------
+//
+// The Faucet `fund` action routes through the control-plane `pluginDomain`,
+// reusing devstack's IN-PROCESS funding strategies (the same registry the
+// boot-time account funding pass uses): SUI via the chain faucet strategy
+// (fixed-amount), WAL/DEEP via the coin-specific account-signed swap. The
+// strategies return `void` (no digest), so `digest` is always null here —
+// kept for shape-parity with `MintResult`. `ok` reflects whether the
+// strategy's `request(...)` actually completed.
+interface FundResultShape {
+	readonly ok: boolean;
+	readonly detail: string;
+	readonly digest: string | null;
+}
+
+const FundResult = builder.objectRef<FundResultShape>('FundResult').implement({
+	description:
+		'The outcome of a faucet fund request (real result — ok reflects whether the ' +
+		'in-process funding strategy completed).',
+	fields: (t) => ({
+		ok: t.exposeBoolean('ok'),
+		detail: t.exposeString('detail'),
+		digest: t.string({ nullable: true, resolve: (r) => r.digest }),
+	}),
+});
+
 // --- Query --------------------------------------------------------------
 builder.queryType({
 	fields: (t) => ({
@@ -173,6 +200,14 @@ builder.queryType({
 			type: [CoinCap],
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.coinCaps),
 		}),
+		/** Coins the faucet can actually fund right now (drives the Faucet
+		 *  panel's coin pills + amount gating). SUI is always present when a
+		 *  faucet strategy is registered; WAL/DEEP appear only when their
+		 *  plugin contributed a funding strategy. */
+		fundableCoins: t.field({
+			type: [FundableCoin],
+			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.fundableCoins),
+		}),
 		/** Postgres wire-protocol stats per instance (db size, connections,
 		 *  per-table rows/size). The browser cannot speak the PG protocol. */
 		postgresStats: t.field({
@@ -187,8 +222,7 @@ builder.queryType({
 		logs: t.field({
 			type: [LogRecordType],
 			args: { filter: t.arg({ type: LogFilterInput, required: false }) },
-			resolve: (_parent, args, ctx) =>
-				Effect.runPromise(ctx.domain.logs(toLogFilter(args.filter))),
+			resolve: (_parent, args, ctx) => Effect.runPromise(ctx.domain.logs(toLogFilter(args.filter))),
 		}),
 		/** Distinct services currently in the log ring (filter dropdown). */
 		logServices: t.field({
@@ -313,8 +347,7 @@ builder.mutationType({
 		/** Re-run codegen against the live manifest. */
 		codegen: t.field({
 			type: CommandResult,
-			resolve: (_parent, _args, ctx) =>
-				run(ctx, 'codegen.requested', { tag: 'codegen.requested' }),
+			resolve: (_parent, _args, ctx) => run(ctx, 'codegen.requested', { tag: 'codegen.requested' }),
 		}),
 		/** Re-apply the manifest, optionally scoped to a single plugin. */
 		apply: t.fieldWithInput({
@@ -323,9 +356,7 @@ builder.mutationType({
 			resolve: (_parent, args, ctx) =>
 				run(ctx, 'apply.requested', {
 					tag: 'apply.requested',
-					...(args.input.pluginKey == null
-						? {}
-						: { pluginKey: args.input.pluginKey as PluginKey }),
+					...(args.input.pluginKey == null ? {} : { pluginKey: args.input.pluginKey as PluginKey }),
 				}),
 		}),
 		/** Wipe the live stack footprint (preserves the snapshot catalog). */
@@ -386,6 +417,29 @@ builder.mutationType({
 					ctx.pluginDomain.mintCoin({
 						coinType: args.input.coinType,
 						recipient: args.input.recipient,
+						amountBaseUnits: args.input.amountBaseUnits,
+					}),
+				),
+		}),
+		/** Fund an account/address. Routes through the control-plane
+		 *  `pluginDomain`, reusing devstack's in-process funding strategies:
+		 *  SUI (absent / canonical `coinType`) via the chain faucet strategy
+		 *  (fixed-amount — `amountBaseUnits` is ignored); WAL/DEEP via the
+		 *  coin-specific account-signed swap (`amountBaseUnits` honored, and
+		 *  the recipient must be a resolved account). Real result — `ok`
+		 *  reflects whether the strategy completed. */
+		fund: t.fieldWithInput({
+			type: FundResult,
+			input: {
+				recipient: t.input.string({ required: true }),
+				coinType: t.input.string({ required: false }),
+				amountBaseUnits: t.input.string({ required: false }),
+			},
+			resolve: (_parent, args, ctx) =>
+				Effect.runPromise(
+					ctx.pluginDomain.fundAccount({
+						recipient: args.input.recipient,
+						coinType: args.input.coinType,
 						amountBaseUnits: args.input.amountBaseUnits,
 					}),
 				),
