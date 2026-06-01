@@ -53,6 +53,17 @@ const NAME_RE = /^[a-z][a-z0-9-]*$/;
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TEMPLATE_DIR = resolve(HERE, '..', 'template');
 
+/** Workspace SDK packages whose versions are injected into the scaffolded
+ *  app at scaffold time. These appear in this package's OWN `devDependencies`
+ *  as `workspace:^`; pnpm rewrites them to the matching published version at
+ *  publish, so `create @latest` always pins matching-latest SDK versions —
+ *  mirroring `@mysten/create-dapp`. The committed template `package.json`
+ *  carries only placeholders that are always overwritten here. */
+const INJECTED_SDK_PACKAGES = [
+	'@mysten-incubation/devstack',
+	'@mysten-incubation/dev-wallet',
+] as const;
+
 export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 	if (!NAME_RE.test(opts.name)) {
 		throw new Error(
@@ -165,23 +176,52 @@ function shouldSkip(path: string): boolean {
 }
 
 function rewriteName(appDir: string, name: string): void {
+	const sdkVersions = getInjectedSdkVersions();
 	for (const file of walk(appDir)) {
 		const rel = file.slice(appDir.length + 1);
 		if (rel === 'package.json') {
-			rewritePackageJson(file, name);
+			rewritePackageJson(file, name, sdkVersions);
 		} else if (rel === 'devstack.config.ts' || rel === 'playwright.config.ts') {
 			rewriteDevstackText(file, name);
 		}
 	}
 }
 
-function rewritePackageJson(path: string, name: string): void {
+/** Read this package's OWN `package.json` (resolved from the bundled module
+ *  location, the same `HERE`/`..` anchor the template dir uses) and return the
+ *  resolved version spec for each injected SDK package. At publish, pnpm has
+ *  rewritten these `workspace:^` specs to the matching published version, so
+ *  the scaffolder injects matching-latest versions in lockstep with its own
+ *  release. In a dev checkout the specs are still `workspace:*`/`workspace:^`,
+ *  which the bundled template's resolved fallback covers. */
+function getInjectedSdkVersions(): Map<string, string> {
+	const ownPkgPath = resolve(HERE, '..', 'package.json');
+	const json = JSON.parse(readFileSync(ownPkgPath, 'utf8')) as {
+		dependencies?: Record<string, string>;
+		devDependencies?: Record<string, string>;
+	};
+	const specs = { ...json.dependencies, ...json.devDependencies };
+	const out = new Map<string, string>();
+	for (const pkg of INJECTED_SDK_PACKAGES) {
+		const spec = specs[pkg];
+		// Skip unresolved workspace specs (dev checkout): the bundled template's
+		// sync-time fallback already pins a concrete version.
+		if (spec !== undefined && !spec.startsWith('workspace:')) {
+			out.set(pkg, spec);
+		}
+	}
+	return out;
+}
+
+function rewritePackageJson(path: string, name: string, sdkVersions: Map<string, string>): void {
 	const raw = readFileSync(path, 'utf8');
 	const json = JSON.parse(raw) as {
 		name?: string;
 		version?: string;
 		private?: boolean;
 		scripts?: Record<string, string>;
+		dependencies?: Record<string, string>;
+		devDependencies?: Record<string, string>;
 	};
 	json.name = name;
 	json.private = true;
@@ -191,6 +231,18 @@ function rewritePackageJson(path: string, name: string): void {
 			json.scripts[script] = command
 				.replaceAll('DEVSTACK_APP=_template', `DEVSTACK_APP=${name}`)
 				.replaceAll('DEVSTACK_APP=template', `DEVSTACK_APP=${name}`);
+		}
+	}
+	// Overwrite the template's placeholder SDK specs with the scaffolder's own
+	// resolved (publish-time-rewritten) versions, so a scaffolded app always
+	// pins matching-latest — mirroring `@mysten/create-dapp`.
+	for (const field of ['dependencies', 'devDependencies'] as const) {
+		const deps = json[field];
+		if (deps === undefined) continue;
+		for (const [pkg, version] of sdkVersions) {
+			if (deps[pkg] !== undefined) {
+				deps[pkg] = version;
+			}
 		}
 	}
 	writeFileSync(path, `${JSON.stringify(json, null, '\t')}\n`);

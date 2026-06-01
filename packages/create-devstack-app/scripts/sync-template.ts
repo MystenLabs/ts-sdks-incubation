@@ -14,6 +14,14 @@
 // my-app && cd my-app && pnpm install` fails because pnpm can't resolve
 // monorepo-only specifiers.
 //
+// NOTE: the `workspace:*` rewrite for the `@mysten-incubation/*` SDK deps is
+// now a build-time *fallback*. At scaffold time, `src/index.ts` overwrites
+// those specs with the scaffolder's OWN resolved (publish-time-rewritten)
+// versions — the `@mysten/create-dapp` pattern — so the committed snapshot
+// here no longer needs to be the source of truth for SDK versions and won't
+// drift. The `catalog:` rewrite is NOT redundant: those deps (React, dapp-kit,
+// etc.) are not injected and still need pinning here.
+//
 // Run via `pnpm -F @mysten-incubation/create-devstack-app run sync-template`,
 // or as part of `pnpm build` (the package script chains the two).
 //
