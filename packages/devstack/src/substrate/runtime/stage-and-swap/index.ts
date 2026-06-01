@@ -67,6 +67,15 @@ export class StageAndSwapError extends Schema.TaggedErrorClass<StageAndSwapError
 export interface StageAndSwapPreservedPath {
 	readonly relativePath: string;
 	readonly kind: 'file' | 'directory';
+	/** When `false`, the backed-up live copy is preserved into staging ONLY if
+	 *  staging does not already carry the path — so a value the build already
+	 *  placed there (e.g. a deploy cache untarred from the snapshot's host-tree)
+	 *  WINS over the live copy. For a `directory` entry the skip is
+	 *  all-or-nothing, not a per-file merge: if staging already has the dir, the
+	 *  ENTIRE live copy is dropped, including any sub-path that existed only live
+	 *  (post-snapshot drift) — the intended "restore-to-snapshot wins" semantic.
+	 *  Defaults to `true` (always overwrite the staging copy with the live one). */
+	readonly overwrite?: boolean;
 }
 
 const failStage =
@@ -140,6 +149,17 @@ const preserveTargetPaths = (args: {
 			const exists = yield* fs.exists(source).pipe(Effect.catch(() => Effect.succeed(false)));
 			if (!exists) continue;
 			const target = join(args.stagingPath, relativePath);
+			// `overwrite: false` — don't clobber a path the build already placed in
+			// staging (e.g. a deploy cache the snapshot captured into the host-tree
+			// tar): that captured copy is consistent with the restored chain, so it
+			// WINS over the live copy. The live copy is only a fallback when staging
+			// doesn't already carry it (e.g. a pre-capture snapshot).
+			if (preserved.overwrite === false) {
+				const targetExists = yield* fs
+					.exists(target)
+					.pipe(Effect.catch(() => Effect.succeed(false)));
+				if (targetExists) continue;
+			}
 			yield* fs
 				.makeDirectory(dirname(target), { recursive: true })
 				.pipe(Effect.catch(failStage('preserve-target-paths', args.targetPath, args.stagingPath)));
@@ -245,14 +265,12 @@ export const stageAndSwap = <A, E>(
 				.exists(targetPath)
 				.pipe(Effect.catch(() => Effect.succeed(false)));
 			if (targetExistsForPreseed) {
-				yield* fs
-					.copy(targetPath, stagingPath, { overwrite: true, preserveTimestamps: true })
-					.pipe(
-						Effect.catch(failStage('mkdir-staging', targetPath, stagingPath)),
-						Effect.onError(() =>
-							fs.remove(stagingPath, { recursive: true, force: true }).pipe(Effect.ignore),
-						),
-					);
+				yield* fs.copy(targetPath, stagingPath, { overwrite: true, preserveTimestamps: true }).pipe(
+					Effect.catch(failStage('mkdir-staging', targetPath, stagingPath)),
+					Effect.onError(() =>
+						fs.remove(stagingPath, { recursive: true, force: true }).pipe(Effect.ignore),
+					),
+				);
 			}
 		}
 

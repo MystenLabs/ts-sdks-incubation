@@ -87,7 +87,10 @@ const baseSpec = {
 	app: 'private-content',
 	stack: 'main',
 	walrusName: 'walrus',
-	image: { digest: 'sha256:walrus', tag: 'devstack-walrus:test' },
+	images: [
+		{ digest: 'sha256:walrus', tag: 'devstack-walrus:test-node-0' },
+		{ digest: 'sha256:walrus', tag: 'devstack-walrus:test-node-1' },
+	],
 	nodeCount: 2,
 	subnetPrefix: '10.64.1',
 	containerApiPort: WALRUS_ROUTER_PORT,

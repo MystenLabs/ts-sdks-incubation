@@ -82,6 +82,15 @@ const SuiObjectExistsShape = Schema.Struct({
 	objectId: Schema.String,
 });
 
+/** A freshly RESTORED validator can take a few seconds to start serving the
+ *  committed deploy objects (sui/system/staking); retry the deploy-verify
+ *  probes across this window so a readiness race doesn't read them as
+ *  not-found and trigger a spurious redeploy — which would churn the walrus
+ *  deploy ids and orphan every pre-snapshot blob. A warm restart finds them on
+ *  the first probe; a genuinely-wiped chain still redeploys once retries lapse. */
+const WALRUS_DEPLOY_VERIFY_READINESS_RETRIES = 5;
+const WALRUS_DEPLOY_VERIFY_READINESS_DELAY = '3 seconds';
+
 const requiredDeployOutputFiles = (inputs: DeployInputs): ReadonlyArray<string> => [
 	join(inputs.outputDirHostPath, 'deploy'),
 	...Array.from({ length: inputs.committeeSize }, (_, nodeIndex) => [
@@ -458,8 +467,10 @@ export const deployWalrusContracts = (
 					// probes — fan them out via `probeManyLenient` so the
 					// substrate owns the iteration shape. Any null means
 					// "re-deploy"; both non-null gives us the composite
-					// verified payload.
-					const [system, staking] = yield* probeManyLenient([
+					// verified payload. Retry across the post-restore
+					// validator-readiness window (see the retry constants above)
+					// so a transient not-found doesn't force a spurious redeploy.
+					const probeBoth = probeManyLenient([
 						probe.get(
 							{ kind: 'object', objectId: cached.systemObject },
 							SuiObjectExistsShape,
@@ -471,6 +482,15 @@ export const deployWalrusContracts = (
 							'lenient',
 						),
 					]);
+					let [system, staking] = yield* probeBoth;
+					for (
+						let attempt = 0;
+						(system == null || staking == null) && attempt < WALRUS_DEPLOY_VERIFY_READINESS_RETRIES;
+						attempt++
+					) {
+						yield* Effect.sleep(WALRUS_DEPLOY_VERIFY_READINESS_DELAY);
+						[system, staking] = yield* probeBoth;
+					}
 					if (system === undefined || system === null) return null;
 					if (staking === undefined || staking === null) return null;
 

@@ -201,6 +201,45 @@ describe('stageAndSwap', () => {
 		),
 	);
 
+	it.effect('overwrite:false keeps the staging copy and only falls back to the live copy', () =>
+		withTempRoot('stage-and-swap-test', (root) =>
+			Effect.gen(function* () {
+				const target = join(root, 'target');
+				mkdirSync(join(target, 'captured'), { recursive: true });
+				mkdirSync(join(target, 'fallback'), { recursive: true });
+				// Live copies present in the target (→ backed up at swap time).
+				writeFileSync(join(target, 'captured', 'id'), 'live-id');
+				writeFileSync(join(target, 'fallback', 'id'), 'live-fallback');
+				const staging = join(root, 'target.staging');
+				const backup = join(root, 'target.bak');
+
+				yield* stageAndSwap({
+					targetPath: target,
+					stagingPath: staging,
+					backupPath: backup,
+					preserveFromTarget: [
+						{ relativePath: 'captured/id', kind: 'file', overwrite: false },
+						{ relativePath: 'fallback/id', kind: 'file', overwrite: false },
+					],
+					build: Effect.gen(function* () {
+						const fs = yield* FileSystem.FileSystem;
+						yield* fs.writeFileString(join(staging, 'payload'), 'x');
+						// `captured/id` already in staging (e.g. untarred from a
+						// snapshot's host-tree) — the live copy must NOT clobber it.
+						// `fallback/id` is absent from staging — the live copy fills in.
+						yield* fs.makeDirectory(join(staging, 'captured'), { recursive: true });
+						yield* fs.writeFileString(join(staging, 'captured', 'id'), 'captured-id');
+					}),
+				});
+
+				// Conflict → the staging (captured) copy wins.
+				expect(readFileSync(join(target, 'captured', 'id'), 'utf8')).toBe('captured-id');
+				// No conflict → the live copy is preserved as a fallback.
+				expect(readFileSync(join(target, 'fallback', 'id'), 'utf8')).toBe('live-fallback');
+			}).pipe(Effect.provide(NodeFileSystem.layer)),
+		),
+	);
+
 	it.effect('serializes command appends started after backup and before promote', () =>
 		withTempRoot('stage-and-swap-test', (root) =>
 			Effect.gen(function* () {

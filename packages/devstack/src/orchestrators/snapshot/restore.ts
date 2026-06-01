@@ -47,6 +47,7 @@ import {
 	ContributionDocSchema,
 	containerImagesBundlePath,
 	contributionPath,
+	DEPLOY_CACHE_NAMESPACES,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	type SnapshotId,
@@ -89,7 +90,7 @@ import {
 	readImageBundleTags,
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
-import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
+import { CACHE_DIR_NAME, SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -787,6 +788,27 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
 	{ relativePath: 'snapshot.reservation', kind: 'file' },
+	// Deploy/mint caches. The snapshot CAPTURES these (DEPLOY_CACHE_NAMESPACES in
+	// descriptor.ts, tarred in capture.ts), and that captured copy — untarred into
+	// staging, consistent with the restored chain — WINS (`overwrite: false`).
+	// This live-side entry is only a FALLBACK: it carries the deploy ids forward
+	// when staging doesn't already have them (e.g. a `snapshot → wipe → restore`
+	// where the captured copy IS present, or a pre-capture snapshot where it is
+	// not). Either way the post-restore boot REUSES the deploy instead of
+	// re-running it with fresh ids (which would orphan every pre-snapshot object).
+	// The generic per-call `cache/entry` is NOT a deploy namespace and stays
+	// dropped (restore.test.ts pins that rollback).
+	...DEPLOY_CACHE_NAMESPACES.map(
+		(namespace): StageAndSwapPreservedPath => ({
+			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
+			kind: 'directory',
+			// The snapshot-CAPTURED copy (untarred into staging) wins; only fall
+			// back to the live copy when staging doesn't carry it (e.g. a snapshot
+			// taken before deploy-cache capture existed). Avoids clobbering the
+			// snapshot-consistent id with a possibly-drifted live one.
+			overwrite: false,
+		}),
+	),
 ];
 
 // -----------------------------------------------------------------------------
