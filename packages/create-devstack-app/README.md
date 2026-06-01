@@ -6,7 +6,7 @@ The published package is `@mysten-incubation/create-devstack-app`; package manag
 create alias below to this package.
 
 ```bash
-pnpm create @mysten-incubation/devstack-app my-app
+pnpm create @mysten-incubation/devstack-app@latest my-app
 cd my-app
 pnpm dev
 ```
@@ -23,7 +23,7 @@ The scaffolder:
 ## Options
 
 ```
-pnpm create @mysten-incubation/devstack-app <name> [options]
+pnpm create @mysten-incubation/devstack-app@latest <name> [options]
 
   <name>              App name. Lowercase, dash-separated, starts with a letter.
 

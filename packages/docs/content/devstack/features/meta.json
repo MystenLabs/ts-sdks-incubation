@@ -2,6 +2,7 @@
 	"title": "Features",
 	"pages": [
 		"local-dev",
+		"dashboard",
 		"accounts-and-wallet",
 		"coins-and-funding",
 		"codegen",

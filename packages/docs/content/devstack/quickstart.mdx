@@ -6,7 +6,7 @@ description: Scaffold a devstack app or install the packages in an existing app.
 The fastest path is the scaffolded app:
 
 ```bash
-pnpm create @mysten-incubation/devstack-app my-app
+pnpm create @mysten-incubation/devstack-app@latest my-app
 cd my-app
 pnpm dev
 ```
@@ -66,17 +66,19 @@ export default defineDevstack({
 });
 ```
 
-Add a plain Vite config. The stack passes the allocated port through the `hostService` command.
+Add a Vite config. The stack passes the allocated port through the `hostService` command, and
+`devstackVitePlugin()` wires the `@generated` alias to the active stack's codegen output.
 
 ```ts title="vite.config.ts"
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 
-export default defineConfig({ plugins: [react()] });
+export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
 ```
 
-The generated files are importable from application code. For dapp-kit wiring, consume the generated
-config file and the generated Sui network file:
+The generated files are importable from application code through the `@generated` alias. For
+dapp-kit wiring, consume the generated config file and the generated Sui network file:
 
 ```ts title="src/dapp-kit.ts"
 import { createDAppKit } from '@mysten/dapp-kit-react';
@@ -84,8 +86,8 @@ import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { dappKitConfig } from './generated/dapp-kit/config.js';
-import { suiNetwork } from './generated/sui/network.js';
+import { dappKitConfig } from '@generated/dapp-kit/config.js';
+import { suiNetwork } from '@generated/sui/network.js';
 
 export const dAppKit = createDAppKit({
 	networks: [dappKitConfig.chain],

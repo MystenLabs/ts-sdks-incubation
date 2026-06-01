@@ -5,14 +5,14 @@ description: Current package API and workflow for @mysten-incubation/devstack.
 
 Devstack composes a local Sui development stack from one TypeScript config. A stack is a list of
 members such as `sui()`, `account()`, `localPackage()`, `wallet()`, `walrus()`, `seal()`,
-`deepbook()`, and `action()`.
+`deepbook()`, `action()`, and `dashboard()`.
 
 ## Install
 
 Start a new app with the create tool:
 
 ```bash
-pnpm create @mysten-incubation/devstack-app my-app
+pnpm create @mysten-incubation/devstack-app@latest my-app
 cd my-app
 pnpm dev
 ```
@@ -72,7 +72,7 @@ The public package surface is:
 - Root API: `defineDevstack`, `runStack`, built-in factories, plugin-author helpers, and public
   types.
 - Build integrations: `@mysten-incubation/devstack/vitest`, `/vitest/setup`, `/playwright`,
-  `/playwright/global-setup`, and `/runtime`.
+  `/playwright/global-setup`, `/vite`, and `/runtime`.
 
 There are no exported `contracts`, `substrate`, `advanced`, or `dapp-kit` package subpaths. App code
 reads generated files and the runtime manifest instead of importing private helpers.
@@ -85,12 +85,13 @@ reads generated files and the runtime manifest instead of importing private help
    live supervisor when one exists and one-shot otherwise.
 4. Generated files land under `src/generated` by default. Runtime state, manifests, snapshots, and
    logs stay under `.devstack/stacks/<stack>`.
-5. Use the Vitest, Playwright, or runtime subpaths from application tooling.
+5. Use the Vitest, Playwright, Vite, or runtime subpaths from application tooling.
 
 ## Start Here
 
 - [Quickstart](/devstack/quickstart) for a small app config.
 - [Local development](/devstack/features/local-dev) for state and generated output.
+- [Dashboard](/devstack/features/dashboard) to inspect a running stack in the browser.
 - [Vitest](/devstack/features/testing-vitest) and
   [Playwright](/devstack/features/testing-playwright) for test integration.
 - [Services](/devstack/features/services) for Walrus, Seal, DeepBook, and known deployments.

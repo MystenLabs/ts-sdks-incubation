@@ -11,7 +11,7 @@ The current docs live at <https://ts-sdks-incubation.vercel.app/devstack>.
 Scaffold a new app from the canonical template:
 
 ```bash
-pnpm create @mysten-incubation/devstack-app my-app
+pnpm create @mysten-incubation/devstack-app@latest my-app
 cd my-app
 pnpm dev
 ```

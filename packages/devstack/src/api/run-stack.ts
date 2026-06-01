@@ -244,18 +244,18 @@ export const runStack = (
 	// signal. `awaitShutdown` re-raises whatever this ref captured.
 	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
-	// Resolve the per-stack codegen output location: home run (effective
-	// stack === config `stackName`) → `src/generated/`; a non-home
+	// Resolve the per-stack codegen output location: primary run (effective
+	// stack === config `stackName`) → `src/generated/`; a secondary
 	// embedding → `.devstack/stacks/<stack>/generated/`. An explicit
 	// `opts.codegen.outputDir` (or the stack's own
 	// `codegen.outputDir`) is honored verbatim by the resolver. Both the
-	// home stack (`engineStack.options.stackName`) and the effective
+	// primary stack (`engineStack.options.stackName`) and the effective
 	// stack (the resolved `identity.stack`) are in scope here, mirroring
 	// the CLI's `buildVerbLayers` seam.
 	const codegenOutput = resolveCodegenOutput({
 		appRoot,
 		effectiveStack: String(identity.stack),
-		homeStack: engineStack.options.stackName,
+		primaryStack: engineStack.options.stackName,
 		explicitOutputDir: codegen?.outputDir,
 		explicitStackSubdir: codegen?.stackSubdir ?? null,
 	});

@@ -64,6 +64,10 @@ supervisor row narrates so it doesn't look hung; the content-addressed image is 
 boots. To skip the build entirely, point at a prebuilt image with `image: { pull: '…' }` or set the
 `DEVSTACK_SUI_FORK_IMAGE` environment variable.
 
+If a slow first build or a large upstream checkpoint trips the ready probe, raise `readyTimeout` (a
+`sui()` option, `Duration`; default 180s) or inspect the `sui-fork` container logs with
+`docker logs <container>` — the ready-probe timeout message points at both.
+
 ```ts
 import { defineDevstack, sui, account, localPackage } from '@mysten-incubation/devstack';
 

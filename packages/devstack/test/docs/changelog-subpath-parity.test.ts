@@ -72,10 +72,10 @@ describe('CHANGELOG subpath-claim parity (CHANGELOG.md <-> package.json#exports)
 	// declaring them as public exports. Keep this list TIGHT — anything
 	// here is an exception we explicitly accept.
 	const ALLOWLIST = new Set<string>([
-		// Internal source-tree paths the CHANGELOG cites for context
-		// (NOT subpath imports the user can `import` from):
-		// (none today — phase 22c drops the bogus claims rather than
-		//  allowlisting them.)
+		// HTTP route paths the CHANGELOG cites in prose (NOT package subpath
+		// imports the user can `import` from):
+		'/health', // Seal key-server health-probe route the dashboard hits
+		'/execute', // removed dev-wallet HTTP endpoint (DEVSTACK_WALLET_HTTP_PATH.EXECUTE)
 	]);
 
 	it('every `/segment` backtick-claim in CHANGELOG.md resolves to a real package.json export', () => {
