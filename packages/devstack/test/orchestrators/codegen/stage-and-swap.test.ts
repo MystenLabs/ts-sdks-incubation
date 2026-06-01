@@ -47,7 +47,9 @@ const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
 const baseLayer = (root: string) =>
 	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
+		Layer.provide(
+			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: `${root}-extras` }),
+		),
 		Layer.provide(nodePlatformLayer),
 	);
 

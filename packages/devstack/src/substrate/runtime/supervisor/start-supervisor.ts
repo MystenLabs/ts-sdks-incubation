@@ -261,6 +261,27 @@ export const startSupervisor = (
 		const traced = <A, E, R>(eff: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 			Effect.provideService(eff, Tracer.Tracer, spanStore.tracer);
 
+		// Submit a command to the command-loop and AWAIT its real exit.
+		// Offers a *submitted* command (carrying a completion deferred) so the
+		// single command-loop consumer runs the command in-band and signals
+		// the exit back here. Used both by the `SupervisorHandle.runCommand`
+		// programmable surface AND the in-process control plane (the dashboard
+		// restore path), so a destructive command like `snapshot.restore` —
+		// which removes live managed containers then re-acquires — never races
+		// the live supervisor out-of-band. Re-fails with the handler's cause.
+		const submitCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
+			Effect.gen(function* () {
+				const completion = yield* Deferred.make<Exit.Exit<void, unknown>>();
+				yield* Queue.offer(queuedCommands, {
+					kind: 'submitted',
+					submission: { command, completion },
+				});
+				const exit = yield* Deferred.await(completion);
+				if (Exit.isFailure(exit)) {
+					return yield* Effect.failCause(exit.cause);
+				}
+			}).pipe(Effect.withSpan('lifecycle.supervisor.submitCommand'), traced);
+
 		// Per-plugin scopes parent off the supervisor scope.
 		const supervisorScope = yield* Effect.scope;
 
@@ -303,6 +324,7 @@ export const startSupervisor = (
 				ControlPlaneService.of({
 					state,
 					publishCommand: (command) => Effect.asVoid(Queue.offer(commands, command)),
+					submitCommand,
 					domain: controlPlaneDomain,
 				}),
 			),
@@ -492,18 +514,9 @@ export const startSupervisor = (
 			traced,
 		);
 
-		const runCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
-			Effect.gen(function* () {
-				const completion = yield* Deferred.make<Exit.Exit<void, unknown>>();
-				yield* Queue.offer(queuedCommands, {
-					kind: 'submitted',
-					submission: { command, completion },
-				});
-				const exit = yield* Deferred.await(completion);
-				if (Exit.isFailure(exit)) {
-					return yield* Effect.failCause(exit.cause);
-				}
-			}).pipe(Effect.withSpan('lifecycle.supervisor.runCommand'), traced);
+		// The programmable `runCommand` surface is exactly the submit-and-await
+		// path the control plane uses; share the one implementation.
+		const runCommand = submitCommand;
 
 		const handle = {
 			identity,

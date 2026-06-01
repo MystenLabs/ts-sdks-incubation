@@ -4,14 +4,14 @@ import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQuery, type UseMutationResult } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import { accounts } from '@generated/accounts.js';
+import { accounts } from '@devstack-dev/accounts.js';
 import {
 	Game,
 	createLobby as buildCreateLobby,
 	joinLobby as buildJoinLobby,
 	play as buildPlay,
 } from '@generated/bindings/connect_four/game.js';
-import { packages } from '@generated/packages.js';
+import { config } from '@generated/config.js';
 import { selectDevstackAccount } from './dapp-kit.js';
 
 const COLS = 7;
@@ -48,7 +48,7 @@ const playerMeta: Record<Player, { readonly label: string; readonly piece: strin
 	bob: { label: 'Bob', piece: 'B' },
 };
 
-const connectFourPackageId = packages.connect_four?.packageId ?? '';
+const connectFourPackageId = config.packages.connect_four?.packageId ?? '';
 
 function isRecord(value: unknown): value is UnknownRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);

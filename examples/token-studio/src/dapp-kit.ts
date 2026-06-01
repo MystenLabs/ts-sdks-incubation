@@ -5,9 +5,9 @@ import { createDAppKit } from '@mysten/dapp-kit-react';
 import { devWalletInitializer } from '@mysten-incubation/dev-wallet';
 import { DevstackSignerAdapter, parseDevstackToken } from '@mysten-incubation/dev-wallet/adapters';
 import { SuiGrpcClient } from '@mysten/sui/grpc';
-import { accounts } from '@generated/accounts.js';
-import { dappKitConfig } from '@generated/dapp-kit/config.js';
-import { suiNetwork } from '@generated/sui/network.js';
+import { accounts } from '@devstack-dev/accounts.js';
+import { devWallet } from '@devstack-dev/dev-wallet.js';
+import { config } from '@generated/config.js';
 
 const devstackNetwork = 'localnet' as const;
 const autoApprove = import.meta.env.VITE_TOKEN_STUDIO_AUTO_APPROVE === '1';
@@ -18,15 +18,15 @@ export const dAppKit = createDAppKit({
 	createClient() {
 		return new SuiGrpcClient({
 			network: devstackNetwork,
-			baseUrl: suiNetwork.rpcUrl,
+			baseUrl: config.networks[config.network].rpc,
 		});
 	},
 	walletInitializers: [
 		devWalletInitializer({
 			adapters: [
 				new DevstackSignerAdapter({
-					serverOrigin: dappKitConfig.walletUrl,
-					token: parseDevstackToken(dappKitConfig.pairUrl),
+					serverOrigin: devWallet.walletUrl,
+					token: parseDevstackToken(devWallet.pairUrl),
 					name: 'Devstack',
 				}),
 			],

@@ -56,6 +56,16 @@ export interface ResolvedCodegenOutput {
 	/** Absolute path to the directory codegen owns and overwrites for
 	 *  THIS stack. Recorded in the manifest as `codegen.generatedDir`. */
 	readonly outputDir: string;
+	/** Absolute path to the dev-only + secret `generated-extras` tree
+	 *  for THIS stack — always
+	 *  `<appRoot>/.devstack/stacks/<effectiveStack>/generated-extras`
+	 *  (gitignored + tsconfig-excluded already). Independent of the
+	 *  primary/secondary `outputDir` branch: the runtime tree lives in
+	 *  `src/generated/` for the primary stack, but dev-extras ALWAYS
+	 *  live under `.devstack` regardless of stack. Recorded in the
+	 *  manifest as `codegen.extrasDir`; reached via the `@devstack-dev`
+	 *  Vite alias. */
+	readonly extrasDir: string;
 	/** Per-stack subdirectory under `outputDir`, threaded through to
 	 *  `CodegenRoot.stackSubdir` unchanged. `null` for the
 	 *  primary/secondary default rules (the `.devstack/stacks/<stack>`
@@ -72,6 +82,13 @@ const PRIMARY_OUTPUT_SUBPATH = 'src/generated';
  *  secondary stack — sibling of that stack's manifest. */
 const secondaryOutputDir = (appRoot: string, stack: string): string =>
 	resolve(appRoot, '.devstack', 'stacks', stack, 'generated');
+
+/** Resolve `<appRoot>/.devstack/stacks/<stack>/generated-extras` — the
+ *  dev-only + secret tree. Always under `.devstack`, for EVERY stack
+ *  (primary and secondary), so dev-extras never land in the committed
+ *  `src/generated/` tree. */
+const extrasDirFor = (appRoot: string, stack: string): string =>
+	resolve(appRoot, '.devstack', 'stacks', stack, 'generated-extras');
 
 /**
  * Resolve the codegen output location for a stack. See the module
@@ -98,6 +115,11 @@ export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): Resolved
 		const target = input.explicitOutputDir;
 		return {
 			outputDir: isAbsolute(target) ? target : resolve(appRoot, target),
+			// Dev-extras are ALWAYS under `.devstack` per stack, even when
+			// the app pins an explicit `outputDir` — they are gitignored
+			// dev-only artifacts that must not land in the app's chosen
+			// runtime tree.
+			extrasDir: extrasDirFor(appRoot, effectiveStack),
 			stackSubdir: explicitStackSubdir,
 		};
 	}
@@ -117,6 +139,7 @@ export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): Resolved
 		outputDir: isPrimary
 			? resolve(appRoot, PRIMARY_OUTPUT_SUBPATH)
 			: secondaryOutputDir(appRoot, effectiveStack),
+		extrasDir: extrasDirFor(appRoot, effectiveStack),
 		stackSubdir: null,
 	};
 };

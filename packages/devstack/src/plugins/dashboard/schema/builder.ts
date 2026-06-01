@@ -27,6 +27,12 @@ import type { DashboardDomain } from '../domain.ts';
 export interface DashboardContext {
 	readonly state: SubscriptionRef.SubscriptionRef<SubscribableState>;
 	readonly publishCommand: (command: EngineCommand) => Effect.Effect<void>;
+	/** Submit a command to the supervisor's command-loop and AWAIT its real
+	 *  exit (unlike the fire-and-forget `publishCommand`). The restore
+	 *  mutation routes through this so the destructive restore + re-acquire
+	 *  runs in-band with the single command-loop consumer and the mutation
+	 *  only resolves once services are actually back. */
+	readonly submitCommand: (command: EngineCommand) => Effect.Effect<void, unknown>;
 	/** Generic, name-blind control-plane accessors: snapshot catalog +
 	 *  restore/delete, the observability rings, and the resolved-values
 	 *  seam. (Plugin-name-aware shaping lives in `pluginDomain`.) */

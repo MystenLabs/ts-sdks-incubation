@@ -3,9 +3,9 @@
 // One emit shape: `deepbook-network`. Mirrors the resolved value's
 // stable identifiers (package id, registry id, per-pool ids).
 
-import { Effect } from 'effect';
-
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+
+import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
 export interface DeepbookPoolBinding {
 	readonly name: string;
@@ -44,15 +44,27 @@ export interface DeepbookBindings {
 	readonly indexerUrl: string | null;
 }
 
+/** Build the Codegenable contribution for a deepbook instance.
+ *
+ *  Name-keyed sibling aggregate (mirrors `coin/codegen.ts`): every
+ *  deepbook instance folds into a single `generated/deepbook.ts`
+ *  exporting `export const deepbook = { <name>: DeepbookBindings, ... }`.
+ *  Consumers read `deepbook.<name>`. `aggregateOnly` — no standalone
+ *  per-instance file. */
 export const makeDeepbookCodegenable = (
 	bindings: DeepbookBindings,
-): CodegenableDecl<'deepbook-network'> => ({
-	kind: 'codegenable',
-	emitterName: 'deepbook-network',
-	outputPath: `deepbook/${bindings.name}.ts`,
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst('deepbookBindings', bindings satisfies DeepbookBindings);
-			return ctx.done();
-		}),
-});
+): CodegenableDecl<`deepbook/${string}`> =>
+	defineSimpleConstExport({
+		emitterName: `deepbook/${bindings.name}` as `deepbook/${string}`,
+		outputPath: `deepbook/${bindings.name}.ts`,
+		exportName: bindings.name,
+		value: bindings,
+		aggregateOnly: true,
+		aggregate: {
+			kind: 'deepbook',
+			bucket: 'deepbook.ts',
+			// This decl's exported map keys by instance name — the
+			// aggregate's merge key.
+			project: (exported) => exported,
+		},
+	});

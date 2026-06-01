@@ -6,9 +6,10 @@
 		"types": ["vite/client"],
 		"paths": {
 			"@/*": ["./src/*"],
-			"@generated/*": ["./src/generated/*"]
+			"@generated/*": ["./src/generated/*"],
+			"@devstack-dev/*": ["./.devstack/stacks/deepbook-trader/generated-extras/*"]
 		}
 	},
-	"include": ["src/**/*"],
-	"exclude": ["dist", "node_modules", "e2e", ".devstack", "**/*.test.ts", "**/*.test.tsx"]
+	"include": ["src/**/*", ".devstack/stacks/deepbook-trader/generated-extras/**/*"],
+	"exclude": ["dist", "node_modules", "e2e", "**/*.test.ts", "**/*.test.tsx"]
 }

@@ -362,6 +362,7 @@ describe('buildProductionOrchestratorSinks', () => {
 						layerCodegenRoot({
 							outputDir: join(runtimeRoot, 'generated'),
 							stackSubdir: null,
+							extrasDir: join(runtimeRoot, 'generated-extras'),
 						}),
 					),
 				),
@@ -426,6 +427,7 @@ describe('buildProductionOrchestratorSinks', () => {
 							layerCodegenRoot({
 								outputDir: join(runtimeRoot, 'generated'),
 								stackSubdir: null,
+								extrasDir: join(runtimeRoot, 'generated-extras'),
 							}),
 						),
 					),

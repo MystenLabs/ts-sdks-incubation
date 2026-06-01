@@ -48,6 +48,12 @@ import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
  *  `tsconfig` `paths` entry, and its import specifiers. */
 export const DEFAULT_GENERATED_ALIAS = '@generated';
 
+/** Default import-alias prefix for the dev-only + secret
+ *  `generated-extras` tree (`accounts.ts`, `dev-wallet.ts`). The app
+ *  uses this in three derivable places: this plugin (implicit), the
+ *  `tsconfig` `paths` entry, and its import specifiers. */
+export const DEFAULT_DEV_EXTRAS_ALIAS = '@devstack-dev';
+
 /** Default primary-stack output subpath, relative to the Vite root. The
  *  cold-start fallback when no manifest / `codegen.generatedDir` is on
  *  disk yet. Mirrors `output-location.ts`'s primary rule. */
@@ -56,10 +62,15 @@ const FALLBACK_GENERATED_SUBPATH = 'src/generated';
 export interface DevstackVitePluginOptions {
 	/** Import-alias prefix. Default `'@generated'`. */
 	readonly alias?: string;
+	/** Dev-extras import-alias prefix. Default `'@devstack-dev'`. */
+	readonly devExtrasAlias?: string;
 	/** Explicit generated dir — bypasses manifest discovery entirely
 	 *  (escape hatch for unusual layouts / tests). Relative paths
 	 *  resolve against the Vite root. */
 	readonly generatedDir?: string;
+	/** Explicit dev-extras dir — bypasses manifest discovery (escape
+	 *  hatch). Relative paths resolve against the Vite root. */
+	readonly devExtrasDir?: string;
 }
 
 /** A `vite` `Plugin`'s `config` hook receives the partial user config.
@@ -91,20 +102,41 @@ export interface DevstackVitePlugin {
  *  projection and (b) throws on a version mismatch) so an out-of-date
  *  or partially-written manifest degrades to the cold-start fallback
  *  instead of crashing the dev server. */
-const readGeneratedDirFromManifest = (
+interface ManifestCodegenDirs {
+	/** Resolved stack name (from env discovery) — used to compute the
+	 *  cold-start `generated-extras` fallback when the manifest has no
+	 *  `codegen.extrasDir` yet. */
+	readonly stack: string;
+	readonly generatedDir: string | null;
+	readonly extrasDir: string | null;
+}
+
+const readCodegenDirsFromManifest = (
 	env: Readonly<Record<string, string | undefined>>,
 	cwd: string,
-): string | null => {
+): ManifestCodegenDirs | null => {
 	try {
 		const { stack, stateDir } = resolveDiscoveryEnv(env);
 		const manifestPath = discoverManifestPath({ env, stack, stateDir, cwd });
-		if (manifestPath === undefined || !existsSync(manifestPath)) return null;
+		if (manifestPath === undefined || !existsSync(manifestPath)) {
+			return { stack, generatedDir: null, extrasDir: null };
+		}
 		const parsed: unknown = JSON.parse(readFileSync(manifestPath, 'utf8'));
-		if (typeof parsed !== 'object' || parsed === null) return null;
+		if (typeof parsed !== 'object' || parsed === null) {
+			return { stack, generatedDir: null, extrasDir: null };
+		}
 		const codegen = (parsed as { readonly codegen?: unknown }).codegen;
-		if (typeof codegen !== 'object' || codegen === null) return null;
+		if (typeof codegen !== 'object' || codegen === null) {
+			return { stack, generatedDir: null, extrasDir: null };
+		}
 		const generatedDir = (codegen as { readonly generatedDir?: unknown }).generatedDir;
-		return typeof generatedDir === 'string' && generatedDir.length > 0 ? generatedDir : null;
+		const extrasDir = (codegen as { readonly extrasDir?: unknown }).extrasDir;
+		return {
+			stack,
+			generatedDir:
+				typeof generatedDir === 'string' && generatedDir.length > 0 ? generatedDir : null,
+			extrasDir: typeof extrasDir === 'string' && extrasDir.length > 0 ? extrasDir : null,
+		};
 	} catch {
 		// Discovery / read / parse failure → cold-start fallback. A
 		// best-effort alias resolver must never fail the Vite config load.
@@ -127,27 +159,47 @@ const readGeneratedDirFromManifest = (
  */
 export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): DevstackVitePlugin => {
 	const alias = options.alias ?? DEFAULT_GENERATED_ALIAS;
+	const devExtrasAlias = options.devExtrasAlias ?? DEFAULT_DEV_EXTRAS_ALIAS;
 	return {
 		name: 'devstack:generated-alias',
 		config: (config: ViteUserConfigLike) => {
 			const root = config.root ?? process.cwd();
-			// Explicit `generatedDir` wins (relative → resolved against the
-			// Vite root). Otherwise consult the manifest-recorded dir, then
-			// fall back to the primary-stack `src/generated/` for the
-			// pre-supervisor cold-start window.
-			const explicit = options.generatedDir;
+			// Read both manifest-recorded dirs once. Each alias resolves
+			// independently: explicit option > manifest dir > cold-start
+			// fallback.
+			const dirs = readCodegenDirsFromManifest(
+				process.env as Readonly<Record<string, string | undefined>>,
+				root,
+			);
+			// `@generated` → runtime tree. Explicit `generatedDir` wins;
+			// otherwise the manifest dir, then primary-stack `src/generated/`
+			// for the pre-supervisor cold-start window.
 			const generatedDir =
-				explicit !== undefined
-					? resolve(root, explicit)
-					: (readGeneratedDirFromManifest(
-							process.env as Readonly<Record<string, string | undefined>>,
+				options.generatedDir !== undefined
+					? resolve(root, options.generatedDir)
+					: (dirs?.generatedDir ?? resolve(root, FALLBACK_GENERATED_SUBPATH));
+			// `@devstack-dev` → dev-only + secret `generated-extras` tree.
+			// Mirrors `@generated`: explicit > manifest > cold-start
+			// `.devstack/stacks/<stack>/generated-extras` (the stack comes
+			// from the same env discovery the manifest read used).
+			const devExtrasDir =
+				options.devExtrasDir !== undefined
+					? resolve(root, options.devExtrasDir)
+					: (dirs?.extrasDir ??
+						resolve(
 							root,
-						) ?? resolve(root, FALLBACK_GENERATED_SUBPATH));
+							'.devstack',
+							'stacks',
+							dirs?.stack ?? 'default',
+							'generated-extras',
+						));
 			// Return a partial config; Vite merges `resolve.alias` into the
 			// existing alias map. A bare-prefix alias (no trailing `/`)
 			// matches both `@generated` and `@generated/foo.js` under Vite's
 			// default string-alias resolution.
-			return { resolve: { alias: { [alias]: generatedDir } } };
+			return {
+				resolve: { alias: { [alias]: generatedDir, [devExtrasAlias]: devExtrasDir } },
+			};
 		},
 	};
 };

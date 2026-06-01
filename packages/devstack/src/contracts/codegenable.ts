@@ -45,15 +45,16 @@ export interface CodegenEmitDone {
  */
 export interface AggregateContribution {
 	/** Which aggregate file this decl contributes to (e.g.
-	 *  `'accounts.ts'`, `'coins.ts'`, `'packages.ts'`,
-	 *  `'services.ts'`). The plugin chooses; the orchestrator treats
-	 *  it as opaque. Distinct decls that target the same `bucket`
-	 *  shallow-merge into one aggregate file. */
+	 *  `'accounts.ts'`, `'coins.ts'`, `'config.ts'`). The plugin
+	 *  chooses; the orchestrator treats it as opaque. Distinct decls
+	 *  that target the same `bucket` deep-merge into one aggregate
+	 *  file (so e.g. sui's `networks.local` and every package's
+	 *  `packages.<name>` coexist in one `config.ts`). */
 	readonly bucket: string;
 	/** Project this decl's `exported` map into the value to merge
 	 *  into the aggregate bucket. Returning `null` opts out of
 	 *  contributing for this cycle (e.g. when the emitter produced
-	 *  no usable shape). The returned record is shallow-merged onto
+	 *  no usable shape). The returned record is deep-merged onto
 	 *  the bucket; for typed shapes the plugin owns the merge
 	 *  semantics via the returned object's key set. */
 	readonly project: (
@@ -64,7 +65,27 @@ export interface AggregateContribution {
 	 *  orchestrator MUST NOT branch on this value — it is annotation-
 	 *  only. */
 	readonly kind?: string;
+	/** Where the synthesized aggregate file lands. `'generated'` is
+	 *  the canonical runtime tree (`src/generated/`); `'generated-extras'`
+	 *  routes the aggregate to the gitignored
+	 *  `.devstack/stacks/<stack>/generated-extras/` tree (dev-only +
+	 *  secret artifacts). All decls contributing to one bucket MUST
+	 *  agree on this; the orchestrator reads it from the first
+	 *  contributor it sees for the bucket. Defaults to `'generated'`. */
+	readonly outputLocation?: OutputLocation;
+	/** When `true`, the synthesized aggregate file is written with
+	 *  tightened `0o600` perms and injected into `.gitignore`. Mirrors
+	 *  `CodegenableDecl.sensitive` for aggregate files. Defaults to
+	 *  `false`. */
+	readonly sensitive?: boolean;
 }
+
+/** Which codegen output tree a decl (or aggregate) emits into.
+ *  `'generated'` is the runtime-imported `src/generated/` tree;
+ *  `'generated-extras'` is the gitignored
+ *  `.devstack/stacks/<stack>/generated-extras/` dev-only tree reached
+ *  via the `@devstack-dev` alias. */
+export type OutputLocation = 'generated' | 'generated-extras';
 
 /**
  * Codegen contribution. `Emitter` is a literal emitter name used
@@ -75,6 +96,16 @@ export interface CodegenableDecl<Emitter extends string = string> {
 	readonly emitterName: Emitter;
 	/** Relative path under the codegen staging dir. */
 	readonly outputPath: string;
+	/** Which codegen tree this decl's standalone file emits into.
+	 *  `'generated'` (default) → `src/generated/`; `'generated-extras'`
+	 *  → the gitignored `.devstack/stacks/<stack>/generated-extras/`
+	 *  dev-only tree (reached via the `@devstack-dev` alias). */
+	readonly outputLocation?: OutputLocation;
+	/** When `true`, this decl contributes ONLY to its `aggregate`
+	 *  bucket — the orchestrator skips emitting the standalone
+	 *  per-decl file. Use when the per-decl singleton has no consumer
+	 *  (the combined aggregate is the only app-facing surface). */
+	readonly aggregateOnly?: boolean;
 	/** Optional sensitivity flag — drives file permissions and
 	 *  `.gitignore` inclusion. */
 	readonly sensitive?: boolean;

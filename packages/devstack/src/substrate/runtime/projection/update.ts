@@ -179,18 +179,52 @@ export const applyEvent = (
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
-		case 'snapshot.captureStarted':
 		case 'snapshot.captureProgress':
-		case 'snapshot.captureSkipped':
-		case 'snapshot.captureFailed':
-		case 'snapshot.captured':
-		case 'snapshot.restored':
 			// Engine-internal events that don't carry a projection slice
 			// — surfaced on the live event stream for renderers that care,
 			// but contribute no field to the subscribable state. (Adding
 			// a projection field for any of these requires an architecture
 			// revision per G2.)
 			return withTouched({});
+
+		case 'snapshot.captureStarted':
+			// Capture PAUSES containers (it does not remove + re-acquire
+			// them), so the acquiring→ready row transitions that cover a
+			// restore never fire for a capture. Surface the in-flight cycle
+			// phase explicitly so the dashboard's status banner stops reading
+			// "running" while a snapshot is being taken. Returns to 'running'
+			// on the terminal capture event below.
+			return withTouched({
+				cycle: { ...state.cycle, phase: 'snapshotting' },
+			});
+
+		case 'snapshot.captureSkipped':
+		case 'snapshot.captureFailed':
+		case 'snapshot.captured':
+			// Terminal capture outcomes — the containers are resumed and the
+			// stack is live again. Clear the transient 'snapshotting' phase
+			// back to 'running'. Guarded so a stray terminal event (no active
+			// capture) can't yank the phase out of an in-flight restart/
+			// shutdown: only un-stick the phase we set ('snapshotting').
+			return withTouched({
+				cycle:
+					state.cycle.phase === 'snapshotting'
+						? { ...state.cycle, phase: 'running' }
+						: state.cycle,
+			});
+
+		case 'snapshot.restored':
+			// Published by the command-loop's `snapshot.restore` case AFTER
+			// the destructive restore (live managed containers removed) and
+			// BEFORE the follow-on full-drain re-acquire. Mark the cycle
+			// 'restoring' so the dashboard reflects the in-flight restore; the
+			// re-acquire then emits its own `restart.requested`/`restart.
+			// completed` (→ 'restarting' → 'running') plus per-row acquiring→
+			// ready transitions, which carry the rest of the restore-half
+			// status updates and settle the phase back to 'running'.
+			return withTouched({
+				cycle: { ...state.cycle, phase: 'restoring' },
+			});
 
 		case 'shutdown.escalated':
 			return withTouched({

@@ -27,7 +27,14 @@ const LifecycleStatusSchema = Schema.Literals([
 	'done',
 ]);
 const PluginRoleSchema = Schema.Literals(['service', 'task']);
-const CyclePhaseSchema = Schema.Literals(['booting', 'running', 'restarting', 'shutting-down']);
+const CyclePhaseSchema = Schema.Literals([
+	'booting',
+	'running',
+	'restarting',
+	'shutting-down',
+	'snapshotting',
+	'restoring',
+]);
 const RowSectionSchema = Schema.Literals([
 	'service',
 	'package',

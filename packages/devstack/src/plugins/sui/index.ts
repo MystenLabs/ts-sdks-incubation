@@ -333,7 +333,7 @@ export type {
 	SuiForkOptions,
 	SuiPluginMode,
 } from './mode/spec.ts';
-export type { SuiNetworkBindings } from './codegen.ts';
+export type { SuiNetworkConfigEntry } from './codegen.ts';
 export type {
 	SuiError,
 	SuiPluginError,

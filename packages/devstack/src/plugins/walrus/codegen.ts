@@ -89,7 +89,7 @@ export const makeCodegenable = (
 ): CodegenableDecl<'walrus-network'> => ({
 	kind: 'codegenable',
 	emitterName: 'walrus-network',
-	outputPath: 'walrus/network.ts',
+	outputPath: 'walrus.ts',
 	emit: (ctx) =>
 		Effect.sync(() => {
 			const bindings: WalrusBindings = {

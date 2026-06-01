@@ -180,8 +180,10 @@ describe('deepbook(opts) — primary factory', () => {
 				? member.capabilities(resolved, {} as never)
 				: member.capabilities;
 		expect(caps).toBeDefined();
+		// Name-keyed sibling aggregate: emitter is `deepbook/<name>`
+		// (default name `deepbook`); the export key is the instance name.
 		const codegen = caps?.find(
-			(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook-network',
+			(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook/deepbook',
 		) as
 			| {
 					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
@@ -190,7 +192,7 @@ describe('deepbook(opts) — primary factory', () => {
 		expect(codegen).toBeDefined();
 
 		const emitted: {
-			deepbookBindings?: {
+			deepbook?: {
 				readonly pyth: {
 					readonly packageId: string | null;
 					readonly stateId: string | null;
@@ -202,15 +204,16 @@ describe('deepbook(opts) — primary factory', () => {
 		Effect.runSync(
 			codegen!.emit({
 				exportConst: (name, value) => {
-					if (name === 'deepbookBindings') {
-						emitted.deepbookBindings = value as typeof emitted.deepbookBindings;
+					// Export key == instance name (`deepbook`).
+					if (name === 'deepbook') {
+						emitted.deepbook = value as typeof emitted.deepbook;
 					}
 				},
 				importStatement: () => {},
 				done: () => ({ _tag: 'CodegenEmitDone' }),
 			}),
 		);
-		expect(emitted.deepbookBindings?.pyth).toEqual({
+		expect(emitted.deepbook?.pyth).toEqual({
 			packageId: TESTNET_PYTH.packageId,
 			stateId: TESTNET_PYTH.stateId,
 			wormholeStateId: TESTNET_PYTH.wormholeStateId,

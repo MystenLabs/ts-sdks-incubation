@@ -158,6 +158,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 						context: {
 							state: control.state,
 							publishCommand: control.publishCommand,
+							submitCommand: control.submitCommand,
 							domain: control.domain,
 							pluginDomain,
 						},

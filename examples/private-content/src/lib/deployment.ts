@@ -1,21 +1,20 @@
 // App-level projection of generated stack bindings.
 
-import { accounts } from '@generated/accounts.js';
-import { packages } from '@generated/packages.js';
-import { sealBindings } from '@generated/seal/seal.js';
-import { services } from '@generated/services.js';
-import { walrus } from '@generated/walrus/network.js';
+import { config } from '@generated/config.js';
+import { seal } from '@generated/seal.js';
+import { walrus } from '@generated/walrus.js';
+import { accounts } from '@devstack-dev/accounts.js';
 
 export interface SealView {
 	keyServerObjectId: string;
 	keyServerUrl: string;
-	serverConfigs: typeof sealBindings.serverConfigs;
+	serverConfigs: typeof seal.seal.serverConfigs;
 }
 
-const seal: SealView = {
-	keyServerObjectId: sealBindings.objectId,
-	keyServerUrl: sealBindings.keyServerUrl,
-	serverConfigs: sealBindings.serverConfigs,
+const sealView: SealView = {
+	keyServerObjectId: seal.seal.objectId,
+	keyServerUrl: seal.seal.keyServerUrl,
+	serverConfigs: seal.seal.serverConfigs,
 };
 
 const walletAccounts = {
@@ -25,11 +24,11 @@ const walletAccounts = {
 } as const;
 
 export const deployment = {
-	rpcUrl: services.sui?.rpc.url ?? '',
-	faucetUrl: services.sui?.faucet?.url,
+	rpcUrl: config.networks[config.network].rpc ?? '',
+	faucetUrl: config.networks[config.network].faucet,
 	accounts: walletAccounts,
-	vaultPackageId: packages.vault?.packageId,
-	seal,
+	vaultPackageId: config.packages.vault?.packageId,
+	seal: sealView,
 	walrus,
 } as const;
 

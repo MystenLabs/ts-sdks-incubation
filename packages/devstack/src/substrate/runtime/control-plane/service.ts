@@ -109,6 +109,17 @@ export interface ControlPlane {
 	/** Publish a command to the supervisor (fire-and-forget). Observe the
 	 *  resulting effect via the projection `state`. */
 	readonly publishCommand: (command: EngineCommand) => Effect.Effect<void>;
+	/** Submit a command to the supervisor's command-loop and AWAIT its
+	 *  completion. Unlike `publishCommand` (fire-and-forget), this offers a
+	 *  *submitted* command carrying a completion deferred, so the caller
+	 *  blocks on the single command-loop consumer's real exit — and the
+	 *  destructive command (e.g. `snapshot.restore`, which removes live
+	 *  managed containers then re-acquires) runs in-band with the loop, not
+	 *  out-of-band against the live supervisor. Fails with the command-loop's
+	 *  cause when the handler failed. The dashboard restore path uses this so
+	 *  the mutation only resolves once restore + re-acquire actually
+	 *  completed. */
+	readonly submitCommand: (command: EngineCommand) => Effect.Effect<void, unknown>;
 	/** Generic, name-blind plugin-domain accessors (snapshot catalog,
 	 *  observability rings, resolved plugin values). See
 	 *  `ControlPlaneDomain`. */

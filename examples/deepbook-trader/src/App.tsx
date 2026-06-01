@@ -9,10 +9,10 @@ import {
 } from '@mysten/deepbook-v3';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { accounts } from '@generated/accounts.js';
 import { coins } from '@generated/coins.js';
-import { deepbookBindings } from '@generated/deepbook/deepbook.js';
-import { suiNetwork } from '@generated/sui/network.js';
+import { config } from '@generated/config.js';
+import { deepbook } from '@generated/deepbook.js';
+import { accounts } from '@devstack-dev/accounts.js';
 import { formatCoinAmount, parseCoinAmount, shortId } from './lib/format.js';
 import { useCoinBalance, useSignAndExecute } from './lib/queries.js';
 
@@ -23,6 +23,8 @@ const DBTC_SCALAR = 100_000_000;
 const DETH_SCALAR = 100_000_000;
 const DEFAULT_POOL = 'DEEP_SUI';
 const DEFAULT_TRADE_DIRECTION: TradeDirection = 'quote-to-base';
+const network = config.networks[config.network];
+const deepbookBindings = deepbook.deepbook;
 const configuredPoolCount: number = deepbookBindings.pools.length;
 const coinBindings = coins as Record<string, CoinBinding>;
 const deepCoin = requireCoinBinding('DEEP', coinBindings.deep ?? coinBindings.DEEP);
@@ -215,10 +217,10 @@ export function App() {
 							<h1 className="text-xl font-semibold tracking-normal">DeepBook Trader</h1>
 							<div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
 								<span className="font-mono" data-testid="localnet-mode">
-									{suiNetwork.mode}
+									{network.mode}
 								</span>
 								<span className="font-mono" data-testid="localnet-chain">
-									{shortId(suiNetwork.chain, 8, 6)}
+									{shortId(network.chain, 8, 6)}
 								</span>
 								<span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
 									local DeepBook
@@ -413,13 +415,9 @@ function LocalnetPanel() {
 				</span>
 			</div>
 			<div className="space-y-3 text-sm">
-				<KeyValue label="RPC" value={suiNetwork.rpcUrl} testId="localnet-rpc" />
-				<KeyValue label="Faucet" value={suiNetwork.faucetUrl ?? 'none'} testId="localnet-faucet" />
-				<KeyValue
-					label="GraphQL"
-					value={suiNetwork.graphqlUrl ?? 'none'}
-					testId="localnet-graphql"
-				/>
+				<KeyValue label="RPC" value={network.rpc} testId="localnet-rpc" />
+				<KeyValue label="Faucet" value={network.faucet ?? 'none'} testId="localnet-faucet" />
+				<KeyValue label="GraphQL" value={network.graphql ?? 'none'} testId="localnet-graphql" />
 			</div>
 		</section>
 	);

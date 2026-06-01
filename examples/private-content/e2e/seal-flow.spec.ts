@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import { connectAs } from '@mysten-incubation/devstack/playwright';
 
-import { accounts } from '../src/generated/accounts.js';
+import { accounts } from '../.devstack/stacks/private-content/generated-extras/accounts.js';
 
 /**
  * End-to-end Seal demo: alice encrypts + uploads, grants a Cap to bob, then

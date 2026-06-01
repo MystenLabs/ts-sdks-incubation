@@ -138,7 +138,41 @@ export const handleCommand = (
 			case 'snapshot.capture':
 				yield* startBackgroundSnapshotCapture(deps, cmd);
 				return;
-			case 'snapshot.restore':
+			case 'snapshot.restore': {
+				// Restore is destructive: the injected handler applies the
+				// on-disk tree AND removes the live managed containers, relying
+				// on the NEXT acquire to rebuild them. The CLI offline path gets
+				// that acquire for free (supervisor was DOWN, boots fresh after).
+				// For a LIVE supervisor (the dashboard path) nothing else
+				// re-acquires — so we chain a full drain + re-acquire here,
+				// mirroring `stack.restart`. Net effect = the manual-restart
+				// sequence the user confirmed works: apply restored tree, then
+				// drain + re-acquire every service from it. The handler runs
+				// first (and publishes `snapshot.restored`); we only re-acquire
+				// once it succeeded.
+				yield* runInjectedCommandHandler(deps, cmd);
+				const plan = planFullDrain(graph);
+				const restarted = yield* doSelectiveRestart(
+					graph,
+					registry,
+					deps.ref,
+					deps.hub,
+					new Set(plan.slice),
+					pluginContext,
+					sinks,
+					logger,
+					identity,
+					runtimeRoot,
+					parentScope,
+				).pipe(
+					Effect.as(true),
+					Effect.catch(() => Effect.succeed(false)),
+				);
+				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
+					yield* maybeRunPostAcquire(deps, options);
+				}
+				return;
+			}
 			case 'snapshot.list':
 			case 'snapshot.delete':
 			case 'wipe.requested':

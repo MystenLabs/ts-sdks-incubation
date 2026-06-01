@@ -466,7 +466,7 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 				serverUrl: null,
 				indexerUrl: null,
 			};
-			const codegen: CodegenableDecl<'deepbook-network'> = makeDeepbookCodegenable(bindings);
+			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
 			return [snap, codegen] as const;
 		},
 		errorContributions: deepbookErrorContributions,
@@ -652,7 +652,7 @@ const buildLocalPlugin = <
 				serverUrl: resolved.serverUrl,
 				indexerUrl: resolved.indexerUrl,
 			};
-			const codegen: CodegenableDecl<'deepbook-network'> = makeDeepbookCodegenable(bindings);
+			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
 			return [snap, codegen] as const;
 		},
 		errorContributions: deepbookErrorContributions,
