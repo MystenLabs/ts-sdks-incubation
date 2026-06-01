@@ -5,13 +5,13 @@
 // `src/generated/` dir — the second stack's `codegen.emitted` would
 // clobber the first's package-id / wallet-pair-token literals and break
 // the already-running app. This pure function is the single decision
-// point: it maps (appRoot, effective stack, home stack) → the output
+// point: it maps (appRoot, effective stack, primary stack) → the output
 // dir codegen owns for THIS stack.
 //
-//   - Home stack (`effectiveStack === homeStack`, no explicit
+//   - Primary stack (`effectiveStack === primaryStack`, no explicit
 //     `--stack`/`$DEVSTACK_STACK` override) → `<appRoot>/src/generated`
 //     (canonical, unchanged, committed-ignored).
-//   - Non-home stack (`test`/`e2e`/`demo`/...) →
+//   - Secondary stack (`test`/`e2e`/`demo`/...) →
 //     `<appRoot>/.devstack/stacks/<effectiveStack>/generated` — a
 //     sibling of that stack's manifest at
 //     `.devstack/stacks/<stack>/manifest.json`, already gitignored +
@@ -21,9 +21,9 @@
 //     verbatim (back-compat escape hatch); per-stack isolation is then
 //     the app's responsibility.
 //
-// The decision is made ONCE here, at the boot seam where both the home
-// and effective stack names are in scope, and the resolved absolute
-// `outputDir` is then recorded in the per-stack manifest
+// The decision is made ONCE here, at the boot seam where both the
+// primary and effective stack names are in scope, and the resolved
+// absolute `outputDir` is then recorded in the per-stack manifest
 // (`codegen.generatedDir`) so the reader (the Vite plugin) consults the
 // SAME location the writer chose — read and write are gated by one
 // decision, not two. Pure + unit-testable; no `process.env`, no I/O.
@@ -38,10 +38,11 @@ export interface ResolveCodegenOutputInput {
 	 *  identity's stack: explicit `--stack`/`$DEVSTACK_STACK` >
 	 *  `config.stackName` > inferred). */
 	readonly effectiveStack: string;
-	/** The config's declared `stackName` (`stack.options.stackName`).
-	 *  `undefined` when the config declares none — then there is no
-	 *  override to diverge from, so the run is treated as home. */
-	readonly homeStack: string | undefined;
+	/** The config's declared `stackName` (`stack.options.stackName`) —
+	 *  the primary stack. `undefined` when the config declares none —
+	 *  then there is no override to diverge from, so the run is treated
+	 *  as primary. */
+	readonly primaryStack: string | undefined;
 	/** Explicit `defineDevstack({ codegen: { outputDir } })` value, if
 	 *  the app pinned one. Honored verbatim (back-compat) — relative
 	 *  paths resolve against `appRoot`. */
@@ -57,19 +58,19 @@ export interface ResolvedCodegenOutput {
 	readonly outputDir: string;
 	/** Per-stack subdirectory under `outputDir`, threaded through to
 	 *  `CodegenRoot.stackSubdir` unchanged. `null` for the
-	 *  home/non-home default rules (the `.devstack/stacks/<stack>`
+	 *  primary/secondary default rules (the `.devstack/stacks/<stack>`
 	 *  location already isolates per stack, so no extra subdir is
 	 *  needed); only an explicit `defineDevstack({ codegen.stackSubdir })`
 	 *  populates it. */
 	readonly stackSubdir: string | null;
 }
 
-/** Default home-stack output dir (relative to `appRoot`). */
-const HOME_OUTPUT_SUBPATH = 'src/generated';
+/** Default primary-stack output dir (relative to `appRoot`). */
+const PRIMARY_OUTPUT_SUBPATH = 'src/generated';
 
 /** Resolve `<appRoot>/.devstack/stacks/<stack>/generated` for a
- *  non-home stack — sibling of that stack's manifest. */
-const nonHomeOutputDir = (appRoot: string, stack: string): string =>
+ *  secondary stack — sibling of that stack's manifest. */
+const secondaryOutputDir = (appRoot: string, stack: string): string =>
 	resolve(appRoot, '.devstack', 'stacks', stack, 'generated');
 
 /**
@@ -81,13 +82,14 @@ const nonHomeOutputDir = (appRoot: string, stack: string): string =>
  *   1. Explicit `defineDevstack({ codegen.outputDir })` → honored
  *      verbatim (relative → resolved against `appRoot`). The explicit
  *      `stackSubdir` rides along.
- *   2. Home stack (`effectiveStack === homeStack`, or no `homeStack`
- *      declared) → `<appRoot>/src/generated`, `stackSubdir: null`.
- *   3. Non-home stack → `<appRoot>/.devstack/stacks/<effectiveStack>/generated`,
+ *   2. Primary stack (`effectiveStack === primaryStack`, or no
+ *      `primaryStack` declared) → `<appRoot>/src/generated`,
+ *      `stackSubdir: null`.
+ *   3. Secondary stack → `<appRoot>/.devstack/stacks/<effectiveStack>/generated`,
  *      `stackSubdir: null`.
  */
 export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): ResolvedCodegenOutput => {
-	const { appRoot, effectiveStack, homeStack } = input;
+	const { appRoot, effectiveStack, primaryStack } = input;
 	const explicitStackSubdir = input.explicitStackSubdir ?? null;
 
 	// (1) Explicit override wins — back-compat escape hatch. Per-stack
@@ -100,21 +102,21 @@ export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): Resolved
 		};
 	}
 
-	// `homeStack === undefined` means the config declared no `stackName`,
+	// `primaryStack === undefined` means the config declared no `stackName`,
 	// so there is no config value for `effectiveStack` to diverge from —
-	// the run is the home run by definition (it falls through to the
+	// the run is the primary run by definition (it falls through to the
 	// inferred/default stack with no explicit override). Collapse it to
 	// `effectiveStack` so the equality below reads `true`.
-	const isHome = effectiveStack === (homeStack ?? effectiveStack);
+	const isPrimary = effectiveStack === (primaryStack ?? effectiveStack);
 
-	// (2) Home → canonical `src/generated`. (3) Non-home → per-stack
+	// (2) Primary → canonical `src/generated`. (3) Secondary → per-stack
 	// `.devstack/stacks/<stack>/generated`. Neither uses `stackSubdir`
 	// (the `.devstack` path already isolates per stack); an explicit
 	// `stackSubdir` only rides the explicit-outputDir branch above.
 	return {
-		outputDir: isHome
-			? resolve(appRoot, HOME_OUTPUT_SUBPATH)
-			: nonHomeOutputDir(appRoot, effectiveStack),
+		outputDir: isPrimary
+			? resolve(appRoot, PRIMARY_OUTPUT_SUBPATH)
+			: secondaryOutputDir(appRoot, effectiveStack),
 		stackSubdir: null,
 	};
 };

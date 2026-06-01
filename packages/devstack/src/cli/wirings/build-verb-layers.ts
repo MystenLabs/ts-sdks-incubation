@@ -22,11 +22,11 @@ import type { SupervisedStack } from '../../substrate/runtime/index.ts';
  *  load a config (e.g. restore/delete/wipe).
  *
  *  Resolves the per-stack codegen output location HERE — the one boot
- *  seam where both the home stack (`stack.options.stackName`) and the
+ *  seam where both the primary stack (`stack.options.stackName`) and the
  *  EFFECTIVE stack (`String(identity.stack)`, already run through the
  *  explicit-`--stack` > `config.stackName` > inferred precedence ladder
  *  by `resolvedIdentityForStack`/`identityValueFor` upstream) are in
- *  scope. The home run emits into `src/generated/`; a non-home run
+ *  scope. The primary run emits into `src/generated/`; a secondary run
  *  (concurrent `--stack e2e`/etc.) emits into
  *  `.devstack/stacks/<stack>/generated/` so the two never clobber. The
  *  resolved literal `outputDir`/`stackSubdir` flow into
@@ -41,7 +41,7 @@ export const buildVerbLayers = (params: {
 	const codegenOutput = resolveCodegenOutput({
 		appRoot: params.appRoot,
 		effectiveStack: String(params.identity.stack),
-		homeStack: params.stack.options.stackName,
+		primaryStack: params.stack.options.stackName,
 		explicitOutputDir: params.stack.options.codegen?.outputDir,
 		explicitStackSubdir: params.stack.options.codegen?.stackSubdir ?? null,
 	});

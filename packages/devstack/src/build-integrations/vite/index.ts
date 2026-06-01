@@ -5,7 +5,7 @@
 // alias prefix (default `@generated`) instead of `./generated`. This
 // plugin points that alias at the ACTIVE stack's output dir — the EXACT
 // dir codegen wrote to for the current stack — so two stacks of the
-// same app (`pnpm dev` on the home stack + `pnpm test:e2e` on a
+// same app (`pnpm dev` on the primary stack + `pnpm test:e2e` on a
 // `--stack e2e` override) resolve `@generated/*` to different
 // directories and never read each other's clobbered package-id /
 // wallet-pair-token literals.
@@ -48,9 +48,9 @@ import { discoverManifestPath, resolveDiscoveryEnv } from '../runtime/index.ts';
  *  `tsconfig` `paths` entry, and its import specifiers. */
 export const DEFAULT_GENERATED_ALIAS = '@generated';
 
-/** Default home-stack output subpath, relative to the Vite root. The
+/** Default primary-stack output subpath, relative to the Vite root. The
  *  cold-start fallback when no manifest / `codegen.generatedDir` is on
- *  disk yet. Mirrors `output-location.ts`'s home rule. */
+ *  disk yet. Mirrors `output-location.ts`'s primary rule. */
 const FALLBACK_GENERATED_SUBPATH = 'src/generated';
 
 export interface DevstackVitePluginOptions {
@@ -133,7 +133,7 @@ export const devstackVitePlugin = (options: DevstackVitePluginOptions = {}): Dev
 			const root = config.root ?? process.cwd();
 			// Explicit `generatedDir` wins (relative → resolved against the
 			// Vite root). Otherwise consult the manifest-recorded dir, then
-			// fall back to the home-stack `src/generated/` for the
+			// fall back to the primary-stack `src/generated/` for the
 			// pre-supervisor cold-start window.
 			const explicit = options.generatedDir;
 			const generatedDir =

@@ -52,7 +52,7 @@ export class ManifestExtrasLookupError extends Schema.TaggedErrorClass<ManifestE
  *  `src/generated/`. */
 export interface ManifestCodegen {
 	/** Absolute path to the directory codegen emitted into for this
-	 *  stack (home → `<appRoot>/src/generated`; non-home →
+	 *  stack (primary → `<appRoot>/src/generated`; secondary →
 	 *  `<appRoot>/.devstack/stacks/<stack>/generated`). */
 	readonly generatedDir: string;
 }

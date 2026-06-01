@@ -6,13 +6,13 @@ description: Current generated-file behavior.
 There is no root factory for generated output. The supervisor collects each member's codegenable
 capability and emits files during `devstack up` or `devstack apply`.
 
-Default root for the home stack:
+Default root for the primary stack (the one your config declares via `stackName`):
 
 ```txt
 src/generated/
 ```
 
-Non-home stacks (any run with an explicit `--stack`/`$DEVSTACK_STACK` override that diverges from
+Secondary stacks (any run with an explicit `--stack`/`$DEVSTACK_STACK` override that diverges from
 the config's `stackName`) emit to a per-stack directory instead, so two stacks of the same app can
 run side by side without clobbering each other's package-id and wallet-pair-token literals:
 
@@ -22,7 +22,7 @@ run side by side without clobbering each other's package-id and wallet-pair-toke
 
 The supervisor records the absolute output dir it chose in that stack's manifest as
 `codegen.generatedDir`, so the reader (the [Vite alias](#importing-generated-code) below) consults
-the same location the writer chose. `pnpm dev` (home stack) and `pnpm test:e2e` (an `e2e` stack)
+the same location the writer chose. `pnpm dev` (primary stack) and `pnpm test:e2e` (an `e2e` stack)
 therefore coexist with distinct generated trees.
 
 Common outputs:
@@ -39,7 +39,7 @@ deepbook/<name>.ts
 extras.ts
 ```
 
-The home/non-home rule above is the default. An app can pin an explicit output dir in the stack
+The primary/secondary rule above is the default. An app can pin an explicit output dir in the stack
 options as a back-compat escape hatch — `outputDir` (and the optional `stackSubdir`) are then
 honored verbatim, and per-stack isolation becomes the app's responsibility:
 
@@ -73,8 +73,8 @@ import { dappKitConfig } from '@generated/dapp-kit/config.js';
 
 The alias is wired by `devstackVitePlugin()`, which points `@generated` at whichever stack is
 active. It reads the active stack's manifest-recorded `codegen.generatedDir` (falling back to
-`src/generated/` before the first `up`), so an import resolves to the home stack under `pnpm dev`
-and to `.devstack/stacks/<stack>/generated/` under a non-home stack — automatically, with no import
+`src/generated/` before the first `up`), so an import resolves to the primary stack under `pnpm dev`
+and to `.devstack/stacks/<stack>/generated/` under a secondary stack — automatically, with no import
 changes.
 
 ```ts title="vite.config.ts"
