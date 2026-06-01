@@ -602,8 +602,14 @@ importers:
 
   packages/create-devstack-app:
     devDependencies:
+      '@mysten-incubation/dev-wallet':
+        specifier: workspace:^
+        version: link:../dev-wallet
+      '@mysten-incubation/devstack':
+        specifier: workspace:^
+        version: link:../devstack
       '@mysten-incubation/tsconfig':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:../tsconfig
       '@types/node':
         specifier: 'catalog:'
@@ -686,7 +692,7 @@ importers:
         version: 7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
       vitest:
         specifier: ^4.1.6
-        version: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
   packages/dev-wallet/examples/demo:
     dependencies:
@@ -808,7 +814,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.1.6
-        version: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+        version: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
   packages/docs:
     dependencies:
@@ -5921,7 +5927,6 @@ packages:
       '@vitest/ui': 4.1.6
       happy-dom: '*'
       jsdom: '*'
-      vite: ^7.3.2
     peerDependenciesMeta:
       '@edge-runtime/vm':
         optional: true
@@ -6398,7 +6403,7 @@ snapshots:
   '@effect/vitest@4.0.0-beta.65(effect@4.0.0-beta.65)(vitest@4.1.6)':
     dependencies:
       effect: 4.0.0-beta.65
-      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -8231,7 +8236,7 @@ snapshots:
       '@vitest/mocker': 4.1.6(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
       playwright: 1.58.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      vitest: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -8244,7 +8249,7 @@ snapshots:
       '@vitest/mocker': 4.1.6(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
       playwright: 1.59.1
       tinyrainbow: 3.1.0
-      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
     transitivePeerDependencies:
       - bufferutil
       - msw
@@ -8261,7 +8266,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      vitest: 4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
       ws: 8.20.0
     transitivePeerDependencies:
       - bufferutil
@@ -8279,7 +8284,7 @@ snapshots:
       pngjs: 7.0.0
       sirv: 3.0.2
       tinyrainbow: 3.1.0
-      vitest: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
+      vitest: 4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)
       ws: 8.20.0
     transitivePeerDependencies:
       - bufferutil
@@ -11426,7 +11431,7 @@ snapshots:
       - tsx
       - yaml
 
-  vitest@4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)):
+  vitest@4.1.6(@types/node@24.12.2)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4):
     dependencies:
       '@vitest/expect': 4.1.6
       '@vitest/mocker': 4.1.6(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
@@ -11453,9 +11458,19 @@ snapshots:
       '@vitest/browser-playwright': 4.1.6(playwright@1.59.1)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))(vitest@4.1.6)
       happy-dom: 20.8.4
     transitivePeerDependencies:
+      - jiti
+      - less
+      - lightningcss
       - msw
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - terser
+      - tsx
+      - yaml
 
-  vitest@4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4)):
+  vitest@4.1.6(@types/node@25.5.0)(@vitest/browser-playwright@4.1.6)(happy-dom@20.8.4)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4):
     dependencies:
       '@vitest/expect': 4.1.6
       '@vitest/mocker': 4.1.6(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))
@@ -11482,7 +11497,17 @@ snapshots:
       '@vitest/browser-playwright': 4.1.6(playwright@1.58.2)(vite@7.3.3(@types/node@25.5.0)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.4))(vitest@4.1.6)
       happy-dom: 20.8.4
     transitivePeerDependencies:
+      - jiti
+      - less
+      - lightningcss
       - msw
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - terser
+      - tsx
+      - yaml
 
   web-streams-polyfill@3.3.3: {}
 
