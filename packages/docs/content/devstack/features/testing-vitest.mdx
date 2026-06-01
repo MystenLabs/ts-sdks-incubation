@@ -7,12 +7,14 @@ Use the `vitest` subpath for node-mode unit and integration tests.
 
 ```ts title="vitest.config.ts"
 import { defineConfig } from 'vitest/config';
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
 import {
 	devstackVitestServerConfig,
 	devstackVitestTestConfig,
 } from '@mysten-incubation/devstack/vitest';
 
 export default defineConfig({
+	plugins: [devstackVitePlugin()],
 	server: devstackVitestServerConfig(),
 	test: devstackVitestTestConfig({
 		threads: 'single',
@@ -20,6 +22,9 @@ export default defineConfig({
 	}),
 });
 ```
+
+Vitest runs its own Vite pipeline, so `devstackVitePlugin()` is added here too — otherwise the
+`@generated` alias would not resolve when importing generated code under test.
 
 Current exports from `@mysten-incubation/devstack/vitest` include:
 

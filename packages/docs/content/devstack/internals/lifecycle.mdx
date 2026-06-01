@@ -21,12 +21,19 @@ const stack = defineDevstack({ members: [sui(), account('alice')], stackName: 'e
 const handle = runStack(stack, {
 	runtimeRoot: '.devstack',
 	identity: { app: 'demo', stack: 'embedded' },
+	// Optional: the sanctioned typed seam for extending the run context.
+	extendContext: (ctx) => Effect.succeed(ctx),
 });
 
 await Effect.runPromise(handle.start);
 await Effect.runPromise(handle.stop);
 await Effect.runPromise(handle.awaitShutdown);
 ```
+
+`extendContext` is the sanctioned typed seam for layering extra services onto the run context: it
+receives the built-in plugin context and returns an `Effect` yielding an extended `Context`. It
+replaced the removed `{ layers }` option — reach for it when an embedding program needs to inject
+its own capability into the supervised stack.
 
 Boot order is derived from `dependsOn` edges. Members that need Sui depend on the shared `sui`
 resource, so the stack includes one concrete `sui(...)` provider. `wallet({ accounts: 'all' })` is

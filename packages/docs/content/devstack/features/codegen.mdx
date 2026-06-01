@@ -6,11 +6,24 @@ description: Current generated-file behavior.
 There is no root factory for generated output. The supervisor collects each member's codegenable
 capability and emits files during `devstack up` or `devstack apply`.
 
-Default root:
+Default root for the home stack:
 
 ```txt
 src/generated/
 ```
+
+Non-home stacks (any run with an explicit `--stack`/`$DEVSTACK_STACK` override that diverges from
+the config's `stackName`) emit to a per-stack directory instead, so two stacks of the same app can
+run side by side without clobbering each other's package-id and wallet-pair-token literals:
+
+```txt
+.devstack/stacks/<stack>/generated/
+```
+
+The supervisor records the absolute output dir it chose in that stack's manifest as
+`codegen.generatedDir`, so the reader (the [Vite alias](#importing-generated-code) below) consults
+the same location the writer chose. `pnpm dev` (home stack) and `pnpm test:e2e` (an `e2e` stack)
+therefore coexist with distinct generated trees.
 
 Common outputs:
 
@@ -26,7 +39,9 @@ deepbook/<name>.ts
 extras.ts
 ```
 
-Configure the root in the stack options:
+The home/non-home rule above is the default. An app can pin an explicit output dir in the stack
+options as a back-compat escape hatch — `outputDir` (and the optional `stackSubdir`) are then
+honored verbatim, and per-stack isolation becomes the app's responsibility:
 
 ```ts
 import { defineDevstack, account, sui } from '@mysten-incubation/devstack';
@@ -46,13 +61,40 @@ export default defineDevstack({
 });
 ```
 
-Generated files are normal source imports. Runtime state under `.devstack/` is not importable app
-code.
+## Importing generated code
+
+Generated files are normal source imports, resolved through a configurable `@generated` alias.
+Runtime state under `.devstack/` is not importable app code.
 
 ```ts
-import { suiNetwork } from './generated/sui/network.js';
-import { dappKitConfig } from './generated/dapp-kit/config.js';
+import { suiNetwork } from '@generated/sui/network.js';
+import { dappKitConfig } from '@generated/dapp-kit/config.js';
 ```
+
+The alias is wired by `devstackVitePlugin()`, which points `@generated` at whichever stack is
+active. It reads the active stack's manifest-recorded `codegen.generatedDir` (falling back to
+`src/generated/` before the first `up`), so an import resolves to the home stack under `pnpm dev`
+and to `.devstack/stacks/<stack>/generated/` under a non-home stack — automatically, with no import
+changes.
+
+```ts title="vite.config.ts"
+import react from '@vitejs/plugin-react';
+import { defineConfig } from 'vite';
+import { devstackVitePlugin } from '@mysten-incubation/devstack/vite';
+
+export default defineConfig({ plugins: [react(), devstackVitePlugin()] });
+```
+
+The alias prefix is coordinated in three places, all using the same string (default `@generated`,
+customizable via `devstackVitePlugin({ alias: '@gen' })`):
+
+1. `devstackVitePlugin()` in `vite.config.ts` (and `vitest.config.ts` — Vitest runs its own Vite
+   pipeline; see [Vitest](/devstack/features/testing-vitest)).
+2. A `tsconfig` `paths` entry so the type checker resolves it:
+   ```json title="tsconfig.json"
+   { "compilerOptions": { "paths": { "@generated/*": ["./src/generated/*"] } } }
+   ```
+3. The import specifiers themselves: `@generated/...`.
 
 To force a re-emit, run apply:
 

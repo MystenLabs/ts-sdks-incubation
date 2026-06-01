@@ -24,7 +24,7 @@ See [`examples/README.md`](examples/README.md) for the curated tour.
 Fastest way in:
 
 ```bash
-pnpm create @mysten-incubation/devstack-app my-app
+pnpm create @mysten-incubation/devstack-app@latest my-app
 cd my-app
 pnpm dev
 ```

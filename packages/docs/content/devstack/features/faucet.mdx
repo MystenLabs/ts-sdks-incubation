@@ -101,6 +101,13 @@ substrate-level dispatch does not retry for you. Wrap your `fetch` call so non-2
 `FaucetUnreachable` or `FaucetBodyError` and so 200 OK with `{ status: { Failure } }` surfaces as
 `FaucetBodyError({ reason: 'failure-status' })`.
 
+## Dashboard fund action
+
+The [web dashboard](/devstack/features/dashboard)'s Faucet panel exposes this same funding as a
+one-click **fund** action: SUI funds a fixed amount, while WAL and DEEP take an editable amount and
+fund a resolved account. It dispatches through the same registered funding strategies described
+above — the boot-time account-funding pass and the dashboard button share one code path.
+
 ## Failure surface
 
 The faucet error union is:

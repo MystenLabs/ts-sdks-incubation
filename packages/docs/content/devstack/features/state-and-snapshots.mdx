@@ -74,7 +74,8 @@ Supported behavior:
 Important caveats:
 
 - Do not rely on cross-stack restore. Snapshot metadata carries app, stack, network, and plugin
-  identity slices; restore is expected to refuse identity drift before destructive changes.
+  identity slices (including a Sui `mode` discriminator); restore refuses identity drift with a
+  fail-closed `IdentityMismatchError` before any destructive change, never a silent restore.
 - Product evidence for non-empty wallet, Seal, Walrus, Postgres, and DeepBook roundtrips is still
   incomplete. These docs describe the supported CLI and artifact contract, not a claim that every
   service has full restore proof.
