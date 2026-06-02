@@ -3,9 +3,9 @@
 // Core: a sui localnet, one managed account (alice), a local `counter`
 // Move package, the dev wallet, and a vite host service.
 //
-// Optional plugins are wrapped in `// devstack:begin <plugin>` /
-// `// devstack:end <plugin>` fences so the scaffolder can strip the ones
-// a user opts out of. Fences sit on whole-statement boundaries (imports,
+// Optional plugins are wrapped in devstack begin/end plugin fences (see
+// src/strip.ts for the exact marker syntax) so the scaffolder can strip the
+// ones a user opts out of. Fences sit on whole-statement boundaries (imports,
 // const declarations, array elements, `after:` members) so removal never
 // breaks syntax.
 
