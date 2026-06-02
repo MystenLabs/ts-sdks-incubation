@@ -57,8 +57,8 @@ export interface ScaffoldResult {
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/;
 
-/** Bundled template directory. The build's `sync-template` script copies
- *  `examples/_template/` here so the published package is self-contained. */
+/** Bundled, authored template directory. Shipped in the published package's
+ *  `files` so the package is self-contained. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TEMPLATE_DIR = resolve(HERE, '..', 'template');
 
@@ -153,8 +153,8 @@ function copyTemplate(src: string, dst: string): void {
 	cpSync(src, dst, {
 		recursive: true,
 		// Skip generated/build artifacts that may be present in a dev checkout
-		// of `examples/_template/` (the build script normally strips them, but
-		// belt-and-braces).
+		// of the authored `template/` (e.g. after running `devstack apply`
+		// locally to author it).
 		filter: (s) => {
 			const rel = relative(src, s);
 			return rel === '' || !shouldSkip(rel);

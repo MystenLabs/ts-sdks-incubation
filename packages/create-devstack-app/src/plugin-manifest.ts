@@ -1,5 +1,5 @@
 // Per-plugin manifest for the scaffolder's interactive picker + strip
-// mechanism. The template (`examples/_template/`) is a *superset*: it carries
+// mechanism. The authored template (`template/`) is a *superset*: it carries
 // every optional plugin's files, dirs, and deps. At scaffold time the picker
 // strips the plugins the user didn't select.
 //

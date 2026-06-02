@@ -37,9 +37,7 @@
 		"LICENSE"
 	],
 	"scripts": {
-		"build": "tsdown && pnpm run sync-template",
-		"check-template": "tsx scripts/sync-template.ts --check",
-		"sync-template": "tsx scripts/sync-template.ts",
+		"build": "tsdown",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
 		"prepublishOnly": "pnpm run build"

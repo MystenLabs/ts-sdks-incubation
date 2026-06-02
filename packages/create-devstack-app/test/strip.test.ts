@@ -1,7 +1,7 @@
 // Unit tests for the fence stripper against SYNTHETIC in-memory fixtures.
-// These do NOT depend on examples/_template's content (a concurrent track
-// authors that); they pin the marker semantics the design specifies so the
-// scaffolder's strip logic is verified independently of the template.
+// These do NOT depend on the authored template's content; they pin the marker
+// semantics the design specifies so the scaffolder's strip logic is verified
+// independently of the template.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';

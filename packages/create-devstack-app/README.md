@@ -13,10 +13,12 @@ pnpm dev
 
 The scaffolder:
 
-1. Copies the canonical
-   [`examples/_template/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/examples/_template)
-   directory into `<cwd>/<name>/`.
-2. Substitutes the app name into `package.json`, `devstack.config.ts`, and `playwright.config.ts`.
+1. Prompts for which optional plugins to include (walrus, seal, deepbook), then
+   copies the canonical
+   [`template/`](https://github.com/MystenLabs/ts-sdks-incubation/tree/main/packages/create-devstack-app/template)
+   directory into `<cwd>/<name>/`, stripping the plugins you didn't select.
+2. Substitutes the app name into `package.json`, `devstack.config.ts`, and `playwright.config.ts`,
+   and injects resolved SDK versions.
 3. Runs `pnpm install`.
 4. Runs `git init` + an initial commit.
 
@@ -34,9 +36,10 @@ pnpm create @mysten-incubation/devstack-app@latest <name> [options]
 
 ## What you get
 
-A self-contained app with one Move package (`hello`), a single-Card UI with a "Send greeting"
-button, and an e2e spec exercising the connect-and-mint flow. Same `pnpm dev` / `pnpm test:e2e` /
-`pnpm build` scripts as the in-tree examples.
+A self-contained app with a `counter` Move package, a panel-based UI (a core counter panel plus a
+panel for each optional plugin you selected — walrus, seal, deepbook), unit tests, and a Playwright
+e2e spec. Same `pnpm dev` / `pnpm test` / `pnpm test:e2e` / `pnpm build` scripts as the in-tree
+examples.
 
 For the full file tree and per-file walkthrough see the
-[template's README](https://github.com/MystenLabs/ts-sdks-incubation/blob/main/examples/_template/README.md).
+[template's README](https://github.com/MystenLabs/ts-sdks-incubation/blob/main/packages/create-devstack-app/template/README.md).

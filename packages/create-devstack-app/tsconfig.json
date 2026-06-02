@@ -4,14 +4,8 @@
 		"outDir": "./dist",
 		"declaration": true,
 		"types": ["node"],
-		// `scripts/sync-template.ts` runs under `node --experimental-strip-types`,
-		// which requires explicit `.ts` import specifiers for its `../src/*`
-		// imports. The package's emit is produced by tsdown, not tsc, and the
-		// typecheck script runs `tsc --noEmit`, so allowing `.ts` specifiers here
-		// is safe.
-		"allowImportingTsExtensions": true,
 		"noEmit": true
 	},
-	"include": ["src/**/*", "scripts/**/*", "test/**/*"],
+	"include": ["src/**/*", "test/**/*"],
 	"exclude": ["dist", "node_modules", "template"]
 }

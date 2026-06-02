@@ -1,12 +1,8 @@
-// Shared list of path segments to skip when copying the template, used by
-// BOTH the build-time sync (`scripts/sync-template.ts`) and the scaffold-time
-// copy (`src/index.ts`). Keeping a single source of truth avoids the two
-// lists drifting (which previously let generated artifacts leak into the
-// bundled template or a freshly scaffolded app).
-//
-// These are generated/build artifacts that may be present in a dev checkout of
-// `examples/_template/` but must never ship in the bundled template or a
-// scaffolded app.
+// Path segments to skip when copying the authored template (`template/`) into
+// a freshly scaffolded app (`src/index.ts`). These are generated/build
+// artifacts that may appear in a dev checkout of the template (e.g. after
+// running `devstack apply` locally to author it) but must never be copied into
+// a scaffolded app.
 
 /** Path segments (any level) whose presence means the entry is skipped. */
 export const SKIP: ReadonlySet<string> = new Set([

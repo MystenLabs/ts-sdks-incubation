@@ -282,7 +282,8 @@ function escapeRegExp(s: string): string {
 }
 
 /** Validate that every `begin` has a matching `end` in a blob (no stripping).
- *  Used by sync-template's validation pass. Throws on imbalance. */
+ *  Throws on imbalance. Useful for asserting the authored template's fences are
+ *  well-formed before stripping. */
 export function assertFencesBalanced(text: string, label: string): void {
 	const stack: string[] = [];
 	const lines = text.split('\n');

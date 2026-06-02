@@ -15,8 +15,8 @@ packages:
   # Generated artifacts may contain non-npm metadata files named package.json
   # (for example Move debug info). They are not workspace projects.
   - '!**/build/**'
-  # Bundled template directory shipped with `create-devstack-app`. Mirror of
-  # `examples/_template/`; not a real workspace project.
+  # Authored template directory shipped with `create-devstack-app`; copied
+  # into a freshly scaffolded app. Not a real workspace project.
   - '!packages/create-devstack-app/template/**'
   # Vendored repositories (read-only reference for coding agents). The
   # subtree carries its own pnpm-workspace.yaml that must not nest into ours.

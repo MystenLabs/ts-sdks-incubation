@@ -35,7 +35,7 @@
 			]
 		},
 		"typecheck": {
-			"dependsOn": ["^build", "check-template"],
+			"dependsOn": ["^build"],
 			"inputs": [
 				"src/**",
 				"test/**",
@@ -51,22 +51,6 @@
 				"*.tsx",
 				"tsconfig.json",
 				"tsconfig.*.json"
-			]
-		},
-		"check-template": {
-			"inputs": [
-				"scripts/sync-template.ts",
-				"src/skip.ts",
-				"src/strip.ts",
-				"src/plugin-manifest.ts",
-				"template/**",
-				"../../examples/_template/**",
-				"!../../examples/_template/node_modules/**",
-				"!../../examples/_template/dist/**",
-				"!../../examples/_template/.devstack/**",
-				"!../../examples/_template/src/generated/**",
-				"pnpm-workspace.yaml",
-				"package.json"
 			]
 		},
 		"test:e2e": {
