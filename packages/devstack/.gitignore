@@ -2,3 +2,9 @@
 # (`pnpm build` → `build:dashboard-ui`) and shipped via the `files` array.
 # A build artifact, so kept out of source control like dist/.
 dashboard-ui/
+
+# Bundled DeepBook + sandbox-Pyth Move sources, copied at build time
+# (`pnpm build` → `build:deepbook-assets`) from
+# `src/plugins/deepbook/bootstrap-assets/move` and shipped via the `files`
+# array. A build artifact (the source-of-truth tree lives under src/).
+move-assets/

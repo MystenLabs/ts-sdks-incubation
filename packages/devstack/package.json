@@ -60,12 +60,14 @@
 		"dist",
 		"images",
 		"dashboard-ui",
+		"move-assets",
 		"!dist/samples",
 		"!dist/node_modules"
 	],
 	"scripts": {
-		"build": "pnpm run build:dashboard-ui && tsdown",
+		"build": "pnpm run build:deepbook-assets && pnpm run build:dashboard-ui && tsdown",
 		"build:dashboard-ui": "node scripts/build-dashboard-ui.mjs",
+		"build:deepbook-assets": "node scripts/build-deepbook-assets.mjs",
 		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",

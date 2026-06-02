@@ -122,4 +122,57 @@ describe('deepbook + sui.local() composes via defineDevstack', () => {
 		const dex = deepbook({ ...override, name: 'main' });
 		expect(String(dex.pluginKey)).toBe('deepbook:main');
 	});
+
+	it('no-arg deepbook() synthesizes the bundled publisher / package / pool closure', () => {
+		const suiPlugin = sui();
+		const dex = deepbook();
+
+		const stack = defineDevstack({
+			members: [suiPlugin, dex],
+			stackName: 'deepbook-oneliner-smoke',
+		});
+		const ids = readStackEngine(stack).members.map((m) => m.id);
+		// Bundled publisher + DeepBook/Pyth packages + DEEP coin are pulled
+		// into the stack closure by the synthesized `dependsOn`, even though
+		// the app only listed `sui()` + `deepbook()`.
+		expect(ids).toEqual(
+			expect.arrayContaining([
+				'sui',
+				'deepbook/deepbook',
+				'account/deepbook_publisher',
+				'account/deepbook_pyth_publisher',
+				'package:deepbook',
+				'package:pyth',
+				'coin:deepbook/deep',
+			]),
+		);
+		// No duplicate members in the closure.
+		expect(new Set(ids).size).toBe(ids.length);
+	});
+
+	it('deepbook({ mode: "local" }) with no package synthesizes the same closure', () => {
+		const dex = deepbook({ mode: 'local' });
+		expect(dex.id).toBe('deepbook/deepbook');
+		// Runtime `dependsOn` carries the synthesized members so the stack
+		// closure pulls them in. (The STATIC type is narrowed to `[sui]`; that
+		// is a type-only concern asserted by the no-arg closure test above.)
+		const depIds = dex.dependsOn.map((resource) => resource.id);
+		expect(depIds).toEqual(
+			expect.arrayContaining(['sui', 'account/deepbook_publisher', 'package:deepbook']),
+		);
+	});
+
+	it('a synthesized instance can be named without colliding', () => {
+		const dex = deepbook({ mode: 'local', name: 'arena' });
+		const stack = defineDevstack({ members: [sui(), dex], stackName: 'deepbook-named-smoke' });
+		const ids = readStackEngine(stack).members.map((m) => m.id);
+		expect(ids).toEqual(
+			expect.arrayContaining([
+				'deepbook/arena',
+				'account/deepbook_arena_publisher',
+				'package:deepbook_arena',
+				'package:pyth_arena',
+			]),
+		);
+	});
 });
