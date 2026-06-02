@@ -9,7 +9,22 @@ This is the durable backlog. Triage markers: `[ ]` todo · `[~]` in-flight · `[
 
 ---
 
-## WS1 — Restore-resume bug (devstack core + dashboard)  [x] code-complete (Docker e2e pending)
+## STATUS: WS1–WS4 all DONE + Docker-validated. Committed b73eea9d..77b2fd77 on mh/release-docs-and-fixes.
+
+### Remaining backlog (minor, non-blocking)
+- Restore `StageAndSwapError`/`ENOTEMPTY`: stale `.bak.<snapshotId>` dir on a reused state-dir makes the state-dir rename throw at restore (logged ERROR) — but restore still succeeds + services re-acquire (ok:true). Reap stale `.bak.*` or recursive-replace instead of bare rename; downgrade severity.
+- Stripper `assertNoLeftovers` uses substring `includes('// devstack:begin')` — false-positives on prose mentioning the marker. Harden to use BEGIN_RE/END_RE per line (already worked around by rewording the comment).
+- deepbook-trader `src/generated/deepbook.ts` is stale (lacks top-level registryId the new codegen emits) — clean-regen to match live shape.
+- `check-template` not wired into turbo.json typecheck/test graph — template drift can ship silently.
+- codegen bindings emits `WARN duplicate package name` (counter/deepbook/pyth/vault) — dedup by package id.
+- Dead code: `_template/src/config.ts activeNet()` unused; deepbook lib `$extend` helper unused; `DappKitConfigBindings` type misnamed (now devWallet).
+- token-studio not Docker-applied (same migration pattern as the 3 validated; expected clean).
+- Broader repo sweep (`pnpm -r typecheck`) not run — catalog vitest 2→4 bump touched shared config; devstack(1850)+create-dapp(18) suites pass, examples have no unit tests, but other packages unverified.
+
+### ⚠️ STRAY CHANGES IN THE MAIN REPO (needs user attention)
+A validation agent mistakenly operated in the NON-worktree main repo `/Users/michaelhayes/code/ts-sdks-incubation` (branch `mh/snapshot-restore-matrix-e2e`) — following absolute `/Users/.../ts-sdks-incubation/...` paths from these notes — and left uncommitted `snapshot.reacquire`/`planDrainExcluding` edits there on OLD pre-WS1 code. NOT in this worktree. The user should review/discard those main-repo changes. LESSON: pin every agent to the worktree path + verify `git rev-parse --show-toplevel`/branch before edits; never use the bare main-repo absolute paths from notes/memory.
+
+## WS1 — Restore-resume bug (devstack core + dashboard)  [x] DONE + Docker-validated (services resume, status transitions, restore mutation returns 200/ok — no 502; dashboard+host-service excluded from restore drain)
 
 Root cause (verified): dashboard `restoreSnapshot` (`plugins/dashboard/schema/root.ts:388`) → `domain.restoreSnapshot` (`substrate/runtime/control-plane/domain.ts:133`) runs `runRestore` in-process while supervisor is live. `runRestore` removes captured containers (`orchestrators/snapshot/restore.ts:1039`, `:263`) and relies on next acquire to rebuild — which never fires. `command-loop.ts:141-147` lumps `snapshot.restore` with list/delete/wipe (no re-acquire), unlike `stack.restart` (`:53-75`). Status stuck because `projection/update.ts:182-193` maps all `snapshot.*` to `withTouched({})`.
 
