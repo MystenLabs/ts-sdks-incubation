@@ -72,20 +72,53 @@ export interface RegisterDevstackDevWalletResult {
 declare global {
 	// eslint-disable-next-line no-var
 	var __DEV_WALLET_INJECTED__: boolean | undefined;
+	/** In-flight (or settled) registration promise. Published BEFORE the first
+	 *  `await` so concurrent evaluations (HMR / double import) coalesce onto a
+	 *  single registration instead of each constructing + registering + mounting
+	 *  their own wallet. See `registerDevstackDevWallet`. */
+	// eslint-disable-next-line no-var
+	var __devstackDevWalletPromise__: Promise<RegisterDevstackDevWalletResult> | undefined;
 }
 
 /**
  * Construct + register the devstack dev wallet on the current page and wire
  * the Playwright `connectAs` slot. Idempotent: a second call is a no-op and
  * returns the existing instance.
+ *
+ * Idempotency is enforced SYNCHRONOUSLY: an in-flight registration promise is
+ * published on `globalThis.__devstackDevWalletPromise__` before the first
+ * `await`, so two evaluations that race in before the first one finishes both
+ * resolve to the SAME wallet instead of double-registering.
  */
-export async function registerDevstackDevWallet(
+export function registerDevstackDevWallet(
 	config: RegisterDevstackDevWalletConfig,
 ): Promise<RegisterDevstackDevWalletResult> {
-	const existing = (globalThis as { __devstackDevWallet__?: RegisterDevstackDevWalletResult })
-		.__devstackDevWallet__;
-	if (existing !== undefined) return existing;
+	const g = globalThis as {
+		__devstackDevWallet__?: RegisterDevstackDevWalletResult;
+		__devstackDevWalletPromise__?: Promise<RegisterDevstackDevWalletResult>;
+	};
+	// Fast path: a prior call already completed.
+	if (g.__devstackDevWallet__ !== undefined) return Promise.resolve(g.__devstackDevWallet__);
+	// In-flight path: a prior call is still booting — share its promise. This
+	// guard runs before any `await`, so it closes the double-init window that a
+	// post-registration-only marker leaves open under HMR / double import.
+	if (g.__devstackDevWalletPromise__ !== undefined) return g.__devstackDevWalletPromise__;
 
+	const promise = registerDevstackDevWalletImpl(config);
+	g.__devstackDevWalletPromise__ = promise;
+	// On failure, clear the in-flight promise so a later call can retry instead
+	// of being stuck awaiting a rejected registration.
+	promise.catch(() => {
+		if (g.__devstackDevWalletPromise__ === promise) {
+			g.__devstackDevWalletPromise__ = undefined;
+		}
+	});
+	return promise;
+}
+
+async function registerDevstackDevWalletImpl(
+	config: RegisterDevstackDevWalletConfig,
+): Promise<RegisterDevstackDevWalletResult> {
 	const { mountUI = true, autoApprove = false } = config;
 	const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -146,23 +179,62 @@ export async function registerDevstackDevWallet(
 		//      (`uiWalletAccountsAreSame`, address + same wallet) and KEEPS it.
 		//      Exposed = all; active = requested.
 		//
-		// Race: dApp Kit's storage-driven auto-connect runs async on mount, so
-		// a `connectAs(...)` immediately after page load can fire before it
-		// settles. We seed storage to the requested account (so a fresh-page
-		// auto-connect lands there directly) and re-emit the NARROW change on a
-		// short bounded cadence; whichever narrow emit lands AFTER auto-connect
-		// finishes pins the active account to the requested one. We WIDEN only
-		// once, after the cadence, so the dApp ends with the full list visible.
-		// The loop caps at ~3s (within the e2e's 30s action timeout);
-		// re-emitting is idempotent.
+		// Race: dApp Kit's storage-driven auto-connect runs async on mount, so a
+		// `connectAs(...)` immediately after page load can fire before it
+		// settles. The OLD code re-emitted the narrow on a fixed ~3s cadence and
+		// then UNCONDITIONALLY widened — on a slow cold start where dApp Kit's
+		// auto-connect reconciles AFTER that window, the widen landed before
+		// reconciliation pinned the requested account, leaving the wrong active
+		// account.
+		//
+		// FIX: gate the WIDEN on an OBSERVED post-connect signal instead of a
+		// fixed timer. The wallet fires `onDAppConnected` the moment a dApp
+		// invokes `standard:connect` (dApp Kit's silent auto-connect reconcile
+		// goes through this when it actually (re)connects). We seed storage to
+		// the requested account, narrow, and keep re-emitting the narrow until we
+		// OBSERVE the dApp connect — only THEN do we widen, so the requested
+		// account is provably active at widen time. A bounded fallback timeout
+		// covers the already-authorized path where dApp Kit reconciles from its
+		// in-memory `existingAccount` without re-invoking `standard:connect`
+		// (there the active account is already the seeded/requested one and
+		// stable, so widening on the fallback is safe).
 		seedConnection(address);
-		wallet.setSelectedAccount(address);
-		for (let i = 0; i < 20; i++) {
-			await sleep(150);
+
+		// Arm the connect observer BEFORE narrowing so we can't miss an edge that
+		// fires synchronously in response to our `change` emission.
+		let connectObserved = false;
+		let onConnect: (() => void) | undefined;
+		const connected = new Promise<'connect'>((resolve) => {
+			onConnect = () => {
+				connectObserved = true;
+				resolve('connect');
+			};
+		});
+		const unsubscribe = wallet.onDAppConnected(onConnect!);
+
+		try {
 			wallet.setSelectedAccount(address);
+			// Bounded fallback: cap total narrow-hold at ~3s (within the e2e's 30s
+			// action timeout). We re-emit the narrow every 150ms so any dApp Kit
+			// auto-connect that lands mid-cadence reconciles to the requested
+			// account; the loop exits early the instant a connect is observed.
+			const MAX_ITERS = 20;
+			const STEP_MS = 150;
+			for (let i = 0; i < MAX_ITERS && !connectObserved; i++) {
+				const raced = await Promise.race([sleep(STEP_MS).then(() => 'tick' as const), connected]);
+				if (raced === 'connect') break;
+				// Re-emit the narrow so a still-settling auto-connect re-resolves
+				// to the requested account (idempotent).
+				wallet.setSelectedAccount(address);
+			}
+		} finally {
+			unsubscribe();
 		}
-		// Restore the full exposed account set; the requested account stays
-		// active (see phase 2 above).
+		// WIDEN: the requested account is now active — either because we observed
+		// the dApp connect (connect-driven) or because the bounded fallback
+		// elapsed with the requested account already stable. Restoring the full
+		// exposed set keeps it active (dApp Kit's resolver matches it by address;
+		// see phase 2 above) while the dApp sees alice / bob / carol again.
 		wallet.setSelectedAccount(null);
 	};
 
@@ -256,6 +328,11 @@ export async function registerDevstackDevWallet(
 			wallet.destroy();
 			globalThis.__DEV_WALLET_INJECTED__ = false;
 			delete (globalThis as { __devstackDevWallet__?: unknown }).__devstackDevWallet__;
+			// Clear the in-flight/settled registration promise too, so a
+			// subsequent `registerDevstackDevWallet` re-initializes rather than
+			// handing back the disposed instance.
+			delete (globalThis as { __devstackDevWalletPromise__?: unknown })
+				.__devstackDevWalletPromise__;
 		},
 	};
 	(

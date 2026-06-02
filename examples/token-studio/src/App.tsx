@@ -8,6 +8,7 @@ import { TransferForm } from './components/TransferForm.js';
 import { useConnectedAccounts } from './lib/accounts.js';
 import { deployment, isDeployed } from './lib/deployment.js';
 import { shortAddress } from './lib/coin.js';
+import { useTreasuryCapOwner } from './lib/queries.js';
 
 export function App() {
 	const deployed = isDeployed;
@@ -80,9 +81,15 @@ function DisconnectedView() {
 
 function ConnectedView({ address }: { address: string }) {
 	const accounts = useConnectedAccounts();
-	// The TreasuryCap holder is the first connected account (alice) by convention.
-	const isTreasuryHolder = address === accounts[0]?.address;
 	const label = accounts.find((a) => a.address === address)?.name ?? null;
+	// Determine the ACTUAL TreasuryCap holder by ownership, not wallet order:
+	// query the on-chain owner of the known treasuryCapId. The connected account
+	// is the holder iff its address matches that owner. While the owner is still
+	// loading (`undefined`) we DON'T show Mint — keying off wallet order would
+	// mis-flag every account on a single-account production wallet, and would
+	// transiently mis-flag during a `connectAs` narrow phase.
+	const { data: treasuryOwner } = useTreasuryCapOwner();
+	const isTreasuryHolder = treasuryOwner != null && address === treasuryOwner;
 
 	return (
 		<>

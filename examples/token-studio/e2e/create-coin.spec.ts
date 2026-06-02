@@ -61,6 +61,9 @@ test('alice mints STUDIO to bob, then bob transfers STUDIO to carol', async ({ p
 
 	await connectAs(page, 'bob');
 	await expect(page.getByText('TreasuryCap holder', { exact: true })).toHaveCount(0);
+	// Mint is gated on ACTUAL TreasuryCap ownership (queried on-chain), not on
+	// wallet order — so a non-holder (bob) must NOT see the Mint form.
+	await expect(page.locator('section').filter({ hasText: /^Mint/ })).toHaveCount(0);
 
 	const bobBeforeTransfer = await readStudioBalance(page, 'bob');
 	const carolBeforeTransfer = await readStudioBalance(page, 'carol');

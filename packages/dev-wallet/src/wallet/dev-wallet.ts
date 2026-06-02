@@ -122,6 +122,12 @@ export class DevWallet implements Wallet {
 	#requestListeners: Set<(request: PendingSigningRequest | null) => void>;
 	#pendingConnect: ConnectRequest | null;
 	#connectListeners: Set<(request: PendingConnectRequest | null) => void>;
+	/** Fired every time a dApp invokes `standard:connect` (the wallet's
+	 *  authoritative "a dApp is connecting" signal). Distinct from
+	 *  `#connectListeners`, which track the *pending-request* lifecycle for the
+	 *  approval UI. Consumers (e.g. the inject's `selectAccount`) use this to
+	 *  observe that the dApp has reached the wallet rather than racing a timer. */
+	#connectedListeners: Set<() => void>;
 	#destroyed = false;
 
 	constructor(config: DevWalletConfig) {
@@ -146,6 +152,7 @@ export class DevWallet implements Wallet {
 		this.#requestListeners = new Set();
 		this.#pendingConnect = null;
 		this.#connectListeners = new Set();
+		this.#connectedListeners = new Set();
 
 		this.#setupAdapterListeners();
 	}
@@ -347,6 +354,7 @@ export class DevWallet implements Wallet {
 		}
 		this.#requestListeners.clear();
 		this.#connectListeners.clear();
+		this.#connectedListeners.clear();
 		this.#events.all.clear();
 	}
 
@@ -446,6 +454,29 @@ export class DevWallet implements Wallet {
 		}
 	}
 
+	/**
+	 * Subscribe to the "a dApp invoked `standard:connect`" edge. Returns an
+	 * unsubscribe function. Used by the page-register entry to gate its
+	 * narrow→widen account-selection on an OBSERVED connect rather than a fixed
+	 * timer (see `src/inject/index.ts`).
+	 */
+	onDAppConnected(callback: () => void): () => void {
+		this.#connectedListeners.add(callback);
+		return () => {
+			this.#connectedListeners.delete(callback);
+		};
+	}
+
+	#notifyConnectedListeners() {
+		for (const listener of this.#connectedListeners) {
+			try {
+				listener();
+			} catch (error) {
+				console.error('[dev-wallet] onDAppConnected listener threw:', error);
+			}
+		}
+	}
+
 	#aggregateAccounts(): ReadonlyWalletAccount[] {
 		return this.#adapters.flatMap((a) => a.getAccounts().map((acc) => acc.walletAccount));
 	}
@@ -466,6 +497,12 @@ export class DevWallet implements Wallet {
 	};
 
 	#connect: StandardConnectMethod = async () => {
+		// Notify observers that a dApp has invoked `standard:connect`. This is
+		// the wallet's authoritative "a dApp reached us" edge — fired before we
+		// branch on auto/queued so it covers both the silent auto-connect path
+		// and an interactive connect.
+		this.#notifyConnectedListeners();
+
 		// Auto-connect: return all accounts immediately
 		if (this.#autoConnect) {
 			return { accounts: this.accounts };
