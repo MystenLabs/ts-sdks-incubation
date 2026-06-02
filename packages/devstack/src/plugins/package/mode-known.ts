@@ -38,7 +38,7 @@ import { Effect, Schema, type Scope } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
-import { mvrSlugify } from './dep-resolution.ts';
+import { mvrNamedForm } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedKnownPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
 
@@ -81,7 +81,10 @@ export const acquireKnown = (
 	inputs: KnownModeInputs,
 ): Effect.Effect<KnownModeOutputs, PublishError, Scope.Scope> =>
 	Effect.gen(function* () {
-		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
+		// Named MVR form (`@local/<slug>`) — see mode-local.ts. Mirrors the
+		// local path so known + local packages key the override map the
+		// same way.
+		const mvrPlaceholder = mvrNamedForm(inputs.mvrOverride ?? inputs.packageName);
 
 		const verifyError = (message: string): PublishError =>
 			publishError('verify', {

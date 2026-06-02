@@ -41,7 +41,7 @@ import {
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../sui/index.ts';
 import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
-import { mvrSlugify } from './dep-resolution.ts';
+import { mvrNamedForm } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
 import { PackageSpans } from './spans.ts';
@@ -274,7 +274,14 @@ export const acquireLocal = (
 		const sourceHash = yield* hashMoveSources(inputs.sourcePath);
 		const inputsHash = combineInputsHash(sourceHash, inputs.publisherAddress);
 
-		const mvrPlaceholder = mvrSlugify(inputs.mvrOverride ?? inputs.packageName);
+		// The MVR placeholder is the NAMED form (`@local/<slug>`), not the
+		// bare slug — it is emitted as BOTH the generated-binding package
+		// default (`options.package ?? '@local/<slug>'`) and
+		// `config.packages.<name>.mvr`, so apps can resolve bindings by
+		// name alone via an MvrClient override keyed on that string. The
+		// bare slug survives only as file stems / Move `[addresses]`
+		// resolution, which `mvrNamedForm` derives internally.
+		const mvrPlaceholder = mvrNamedForm(inputs.mvrOverride ?? inputs.packageName);
 
 		// We capture the produce-side output out-of-band so the
 		// returned `LocalModeOutputs.output` can expose it. The

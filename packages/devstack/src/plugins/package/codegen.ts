@@ -27,6 +27,7 @@
 import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import { mvrNamedFormFrom, mvrSlugify } from './dep-resolution.ts';
 import type { ResolvedLocalPackage, ResolvedKnownPackage } from './registry.ts';
 
 /** Per-network declared ids — pure literals the user supplies for
@@ -138,8 +139,10 @@ export const makeLocalCodegenable = (
 	kind: 'codegenable',
 	emitterName: 'package',
 	// Dead output path — `aggregateOnly` skips the standalone file. The
-	// distinct per-name value keeps path-resolution well-formed.
-	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
+	// distinct per-name value keeps path-resolution well-formed. Uses the
+	// BARE slug (not the `@local/<slug>` named `mvrPlaceholder`) so the
+	// path has no embedded `/`/`@`.
+	outputPath: `package/${mvrSlugify(resolved.name)}.ts`,
 	// One Package contribution per published package. The shared
 	// `'package'` emitter name is by-design — the codegen orchestrator
 	// skips its emitter-name uniqueness check for this flag.
@@ -152,6 +155,17 @@ export const makeLocalCodegenable = (
 	},
 	emit: (ctx) =>
 		Effect.sync(() => {
+			// Coerce the resolved placeholder into the current `@local/<slug>`
+			// named form at the emit seam rather than trusting it verbatim.
+			// `resolved.mvrPlaceholder` can be served from the package-publish
+			// cache (`projection.v4.json`'s `mvrPlaceholder`) on an INCREMENTAL
+			// re-apply, so a stack created before the `mvrSlugify`→`mvrNamedForm`
+			// change carries a STALE BARE slug — which fails `hasMvrName` and
+			// won't resolve. `mvrNamedFormFrom` is pure + deterministic: it
+			// preserves an already-named placeholder (so a user `mvrPlaceholder`
+			// override survives) and wraps a stale bare slug. Computed ONCE so
+			// the binding default and `config.mvr` stay equal.
+			const mvrPlaceholder = mvrNamedFormFrom(resolved.mvrPlaceholder);
 			// `packageBindings` feeds the orchestrator's `isPackageBindings`
 			// seam → the Move-bindings emitter (bindings stay in
 			// `generated/bindings/`). `__packageConfig` feeds the
@@ -159,14 +173,14 @@ export const makeLocalCodegenable = (
 			ctx.exportConst('packageBindings', {
 				name: resolved.name,
 				packageId: resolved.packageId,
-				mvrPlaceholder: resolved.mvrPlaceholder,
+				mvrPlaceholder,
 				sourcePath: resolved.sourcePath,
 				excluded: options.excluded,
 			} satisfies PackageBindings);
 			ctx.exportConst('__packageConfig', {
 				name: resolved.name,
 				packageId: resolved.packageId,
-				mvrPlaceholder: resolved.mvrPlaceholder,
+				mvrPlaceholder,
 				sourcePath: resolved.sourcePath,
 				excluded: options.excluded,
 				captured: resolved.captured,
@@ -185,7 +199,7 @@ export const makeKnownCodegenable = (
 ): CodegenableDecl<'package'> => ({
 	kind: 'codegenable',
 	emitterName: 'package',
-	outputPath: `package/${resolved.mvrPlaceholder}.ts`,
+	outputPath: `package/${mvrSlugify(resolved.name)}.ts`,
 	// Mirrors `makeLocalCodegenable` — one Package contribution per
 	// known package.
 	allowEmitterNameRepetition: true,
@@ -197,17 +211,22 @@ export const makeKnownCodegenable = (
 	},
 	emit: (ctx) =>
 		Effect.sync(() => {
+			// Defensive parity with the local emit seam: coerce to the current
+			// `@local/<slug>` named form (preserving an already-named override).
+			// Known mode recomputes its placeholder fresh every cycle so it is
+			// not cache-stale, but normalizing here keeps both emit sites uniform.
+			const mvrPlaceholder = mvrNamedFormFrom(resolved.mvrPlaceholder);
 			ctx.exportConst('packageBindings', {
 				name: resolved.name,
 				packageId: resolved.packageId,
-				mvrPlaceholder: resolved.mvrPlaceholder,
+				mvrPlaceholder,
 				sourcePath: null,
 				excluded: true, // implicit — KnownPackages never emit bindings.
 			} satisfies PackageBindings);
 			ctx.exportConst('__packageConfig', {
 				name: resolved.name,
 				packageId: resolved.packageId,
-				mvrPlaceholder: resolved.mvrPlaceholder,
+				mvrPlaceholder,
 				sourcePath: null,
 				excluded: true,
 				captured: {},
