@@ -76,6 +76,11 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 		id: dashboardResource.id,
 		role: 'service',
 		section: 'service',
+		// Operator transport: a live snapshot-restore re-acquire must leave
+		// this plugin running, or a dashboard-initiated restore would tear
+		// down the very HTTP connection it's answering on (502). It holds no
+		// restorable chain state, so staying live is safe.
+		keepAliveOnRestore: true,
 		start: () =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;

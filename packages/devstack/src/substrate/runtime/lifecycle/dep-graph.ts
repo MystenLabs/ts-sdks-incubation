@@ -69,6 +69,11 @@ export interface DepNode {
 	 *  arrays are positional peers. */
 	readonly upstreamResources: ReadonlyArray<AnyResourceRef>;
 	readonly upstreamKeys: ReadonlyArray<PluginKey>;
+	/** Plugin-declared flag: a live restore re-acquire leaves this node
+	 *  running instead of draining it. Substrate filters on this with no
+	 *  knowledge of which plugin set it (see plugin decl
+	 *  `keepAliveOnRestore`). */
+	readonly keepAliveOnRestore: boolean;
 }
 
 /** The result of resolving a member tuple. Levels are batches the
@@ -192,6 +197,7 @@ export const resolveGraph = (
 				member,
 				upstreamResources,
 				upstreamKeys,
+				keepAliveOnRestore: member.keepAliveOnRestore === true,
 			});
 		}
 

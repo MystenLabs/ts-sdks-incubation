@@ -22,7 +22,7 @@ import { SupervisorPostAcquireFailed } from './errors.ts';
 import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts';
 import { allReadyOrTerminal, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
-import { isNonRestorableTransport, planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
+import { planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
 
 const maybeRunPostAcquire = (
 	deps: SupervisorState,
@@ -151,14 +151,15 @@ export const handleCommand = (
 				// first (and publishes `snapshot.restored`); we only re-acquire
 				// once it succeeded.
 				//
-				// Drain EXCLUDES the operator transport (dashboard + host-service)
-				// so a dashboard-initiated restore doesn't tear down the very
-				// connection it's answering on — otherwise the `submitCommand`
-				// completion the resolver awaits never reaches the client (502)
-				// even though the restore + re-acquire succeeded. Those plugins
-				// hold no restorable chain state, so leaving them live is safe.
+				// Drain EXCLUDES any plugin that declared `keepAliveOnRestore`
+				// (the operator transport answering this restore) so a
+				// restore-initiating connection isn't torn down mid-flight —
+				// otherwise the `submitCommand` completion the resolver awaits
+				// never reaches the client (502) even though the restore +
+				// re-acquire succeeded. The substrate planner filters on that
+				// node flag alone, with no knowledge of which plugins set it.
 				yield* runInjectedCommandHandler(deps, cmd);
-				const plan = planFullDrainExcluding(graph, isNonRestorableTransport);
+				const plan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
 				const restarted = yield* doSelectiveRestart(
 					graph,
 					registry,

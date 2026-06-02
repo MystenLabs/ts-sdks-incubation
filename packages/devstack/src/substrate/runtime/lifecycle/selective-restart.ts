@@ -19,7 +19,7 @@
 import { Data, Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { downstreamClosure, orderByLevel, type ResolvedGraph } from './dep-graph.ts';
+import { downstreamClosure, orderByLevel, type DepNode, type ResolvedGraph } from './dep-graph.ts';
 
 /** Tagged error: a restart was requested for a key that isn't in the
  *  graph. The supervisor lifts this from `attribute()` callers that
@@ -80,32 +80,23 @@ export const planFullDrain = (graph: ResolvedGraph): RestartPlan => {
 	return { slice, teardownOrder, acquireOrder };
 };
 
-/** Plugin ids that are the operator's own transport and hold no
- *  restorable chain state — excluded from the live `snapshot.restore`
- *  re-acquire. Leaving them running is safe: the dashboard's view derives
- *  from the in-process projection (re-acquired anyway), and host-service
- *  processes read chain over the network at stable hostnames. Excluding
- *  them stops a dashboard-initiated restore from tearing down the very
- *  connection it's answering on (which surfaces to the UI as a 502 even
- *  though the restore succeeded). `stack.restart` / CLI full-restart still
- *  drains everything via `planFullDrain`. Key shape is `${id}#${ordinal}`. */
-export const isNonRestorableTransport = (key: PluginKey): boolean => {
-	const raw = String(key);
-	const hash = raw.indexOf('#');
-	const id = hash === -1 ? raw : raw.slice(0, hash);
-	return id === 'dashboard' || id.startsWith('host-service/');
-};
-
-/** `planFullDrain` minus the keys matched by `exclude`. The excluded
- *  nodes stay live while every other plugin (all chain-stateful services)
- *  is drained + re-acquired. */
+/** `planFullDrain` minus the nodes matched by `exclude`. The excluded
+ *  nodes stay live while every other plugin is drained + re-acquired.
+ *
+ *  The live `snapshot.restore` re-acquire passes a predicate over the
+ *  plugin-declared keep-alive flag so a plugin whose transport is
+ *  answering the restore isn't torn down mid-flight (which would surface
+ *  to its caller as a 502 even though the restore succeeded). This module
+ *  filters purely on the node flag — it has no knowledge of which plugins
+ *  set it. `stack.restart` / CLI full-restart still drains everything via
+ *  `planFullDrain`. */
 export const planFullDrainExcluding = (
 	graph: ResolvedGraph,
-	exclude: (key: PluginKey) => boolean,
+	exclude: (node: DepNode) => boolean,
 ): RestartPlan => {
 	const slice = new Set<PluginKey>();
-	for (const key of graph.nodes.keys()) {
-		if (!exclude(key)) slice.add(key);
+	for (const [key, node] of graph.nodes) {
+		if (!exclude(node)) slice.add(key);
 	}
 	const teardownOrder = orderByLevel(graph, slice, 'reverse');
 	const acquireOrder = orderByLevel(graph, slice, 'forward');
