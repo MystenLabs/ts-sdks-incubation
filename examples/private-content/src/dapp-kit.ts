@@ -14,20 +14,6 @@ import { config } from '@generated/config.js';
 const devstackNetwork = 'localnet' as const;
 
 /**
- * Build the MVR name -> package-id override map the grpc client uses to
- * resolve binding-default package references (the vault bindings emit
- * `options.package ?? 'vault'`). Sourced from the generated config so the
- * app's Move calls never hard-code a deployed package id.
- */
-function mvrOverrides(): Record<string, string> {
-	return Object.fromEntries(
-		Object.values(config.packages)
-			.map((p) => [p.mvr, p.byNetwork[config.network]] as const)
-			.filter(([, id]) => Boolean(id)),
-	);
-}
-
-/**
  * The MVR-resolved vault package id for the active network. Used by the
  * Seal IBE callsites (`SealClient.encrypt` / `SessionKey.create`) and the
  * Cap-type query string — consumers that are NOT tx moveCalls and so are
@@ -45,7 +31,11 @@ export const dAppKit = createDAppKit({
 		return new SuiGrpcClient({
 			network: devstackNetwork,
 			baseUrl: config.networks[config.network].rpc,
-			mvr: { overrides: { packages: mvrOverrides() } },
+			// `config.mvrOverrides` is the codegen-emitted active-network
+			// name→id map: the vault bindings default `options.package ??
+			// '@local/vault'`, and this map resolves that name to the deployed
+			// id so the app's Move calls never hard-code a package id.
+			mvr: { overrides: { packages: config.mvrOverrides } },
 		});
 	},
 });

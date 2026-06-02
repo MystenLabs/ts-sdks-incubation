@@ -95,9 +95,13 @@ interface PackageProjectionInput {
 
 /** Aggregate projection: fold this package into the combined
  *  `config.ts` aggregate under `packages.<name>` (with `byNetwork`
- *  + `objects`) and the top-level `objects.<name>` mirror. The
- *  orchestrator stays name-blind and deep-merges this with sui's
- *  `networks.local` and every other package's slice. */
+ *  + `objects`), the top-level `objects.<name>` mirror, and a top-level
+ *  `mvrOverrides` entry (`{ [mvr]: byNetwork.local }`) for the active
+ *  network. The orchestrator stays name-blind and deep-merges this with
+ *  sui's `networks.local` and every other package's slice — so the
+ *  accumulated `config.mvrOverrides` is the full active-network
+ *  name→id map an app feeds straight into dapp-kit's
+ *  `mvr.overrides.packages` (no per-app helper). */
 const projectPackageConfig = (
 	exported: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> | null => {
@@ -125,9 +129,23 @@ const projectPackageConfig = (
 		...(objects !== undefined ? { objects } : {}),
 	};
 
+	// Active-network MVR override entry — `{ [mvr]: byNetwork[activeNetwork] }`.
+	// The codegen-emitted active network is always `local` (the sui plugin
+	// projects `network: "local"`), so `byNetwork.local` IS the active id.
+	// Each package contributes one entry; the orchestrator's deep-merge
+	// accumulates every package's entry into a single top-level
+	// `config.mvrOverrides` map. Falsy ids are filtered (a package with no
+	// resolved local id contributes nothing) — exactly what the old
+	// per-app `mvrOverrides()` helper computed, so apps can consume
+	// `config.mvrOverrides` directly. Name-blind: keyed by the package's
+	// own `mvr` placeholder, never a hardcoded plugin name.
+	const activeId = byNetwork.local;
+	const mvrOverrides = activeId ? { [input.mvrPlaceholder]: activeId } : undefined;
+
 	return {
 		packages: { [input.name]: packageEntry },
 		...(objects !== undefined ? { objects: { [input.name]: objects } } : {}),
+		...(mvrOverrides !== undefined ? { mvrOverrides } : {}),
 	};
 };
 

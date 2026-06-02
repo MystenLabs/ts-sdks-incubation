@@ -440,9 +440,16 @@ describe('codegen.runEmitCycle', () => {
 								aggregate: {
 									bucket: 'config.ts',
 									project: (e) => {
-										const b = e['packageBindings'] as { readonly name: string };
+										const b = e['packageBindings'] as {
+											readonly name: string;
+											readonly mvrPlaceholder: string;
+										};
 										return {
 											packages: { [b.name]: { ...b, byNetwork: { local: '0x1' } } },
+											// Mirror the real `projectPackageConfig`: each package
+											// folds its active-network id into the shared
+											// `mvrOverrides` map keyed by its `mvr` placeholder.
+											mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
 										};
 									},
 								},
@@ -483,6 +490,7 @@ describe('codegen.runEmitCycle', () => {
 											readonly byNetwork: { readonly local: string };
 										};
 									};
+									readonly mvrOverrides: Readonly<Record<string, string>>;
 								};
 							}>,
 					);
@@ -506,6 +514,15 @@ describe('codegen.runEmitCycle', () => {
 					expect(configModule.config.networks.local.rpc).toBe('http://127.0.0.1:9000');
 					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
 					expect(configModule.config.packages.mock_usdc.byNetwork.local).toBe('0x1');
+					// Top-level `mvrOverrides` is the active-network name→id map
+					// (what the old per-app `mvrOverrides()` helper computed):
+					// keyed by the package's `mvr` placeholder, valued by
+					// `byNetwork[network]`. Apps feed it straight into
+					// dapp-kit's `mvr.overrides.packages`.
+					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
+					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
+						configModule.config.packages.mock_usdc.byNetwork.local,
+					);
 					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
 					expect(accountsModule.accounts.alice.address).toBe('0xabc');
 				}).pipe(Effect.provide(baseLayer(root))),

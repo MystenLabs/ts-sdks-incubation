@@ -13,21 +13,6 @@ import { config } from '@generated/config.js';
 
 const devstackNetwork = 'localnet' as const;
 
-/**
- * Build the MVR override map the grpc client uses to resolve the named
- * Move packages (`@local/connect-four`) the generated bindings emit as
- * their default `package`. Each entry maps the package's MVR name to its
- * on-chain id for the active generated network. `config` is sanctioned in
- * this file only; app code consumes the bindings' MVR defaults instead.
- */
-function mvrOverrides(): Record<string, string> {
-	return Object.fromEntries(
-		Object.values(config.packages)
-			.map((p) => [p.mvr, p.byNetwork[config.network]] as const)
-			.filter(([, id]) => Boolean(id)),
-	);
-}
-
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],
 	defaultNetwork: devstackNetwork,
@@ -36,7 +21,12 @@ export const dAppKit = createDAppKit({
 		return new SuiGrpcClient({
 			network: devstackNetwork,
 			baseUrl: config.networks[config.network].rpc,
-			mvr: { overrides: { packages: mvrOverrides() } },
+			// `config.mvrOverrides` is the codegen-emitted active-network
+			// name→id map: each generated Move binding defaults its `package`
+			// to `@local/<name>` (e.g. `@local/connect-four`), and this map
+			// resolves that name to its deployed id. App code consumes the
+			// bindings' MVR defaults and never touches `config.packages.*`.
+			mvr: { overrides: { packages: config.mvrOverrides } },
 		});
 	},
 });

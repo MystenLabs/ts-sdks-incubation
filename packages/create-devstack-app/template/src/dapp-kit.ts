@@ -13,23 +13,6 @@ import { config } from '@generated/config.js';
 
 const devstackNetwork = 'localnet' as const;
 
-/**
- * MVR override map so the generated Move bindings resolve by their named
- * placeholder (`@local/<name>`) against the active network's deployed id.
- * The codegen emits each binding's `package` default as `@local/<name>`
- * and mirrors that string in `config.packages.<name>.mvr`; here we point
- * each one at `byNetwork[config.network]` so no real MVR registry is hit.
- * This is the sanctioned place to read `config` — app code resolves
- * packages by name and never touches `config.packages.*.packageId`.
- */
-function mvrOverrides(): Record<string, string> {
-	return Object.fromEntries(
-		Object.values(config.packages)
-			.map((p) => [p.mvr, p.byNetwork[config.network]] as const)
-			.filter(([, id]) => Boolean(id)),
-	);
-}
-
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],
 	defaultNetwork: devstackNetwork,
@@ -38,7 +21,12 @@ export const dAppKit = createDAppKit({
 		return new SuiGrpcClient({
 			network: devstackNetwork,
 			baseUrl: config.networks[config.network].rpc,
-			mvr: { overrides: { packages: mvrOverrides() } },
+			// `config.mvrOverrides` is the codegen-emitted active-network
+			// name→id map: each generated Move binding defaults its `package`
+			// to `@local/<name>`, and this map points that name at the
+			// deployed id so no real MVR registry is hit. App code resolves
+			// packages by name and never touches `config.packages.*.packageId`.
+			mvr: { overrides: { packages: config.mvrOverrides } },
 		});
 	},
 });

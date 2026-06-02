@@ -99,7 +99,8 @@ describe('package codegen emits the named form as binding default AND config.mvr
 
 			const bindings = exported['packageBindings'] as { mvrPlaceholder: string };
 			const projected = decl.aggregate!.project(exported) as {
-				packages: Record<string, { mvr: string }>;
+				packages: Record<string, { mvr: string; byNetwork: Record<string, string> }>;
+				mvrOverrides: Record<string, string>;
 			};
 
 			const expected = '@local/connect-four';
@@ -113,6 +114,15 @@ describe('package codegen emits the named form as binding default AND config.mvr
 			// And it is a valid, resolvable named package.
 			expect(hasMvrName(expected)).toBe(true);
 			expect(isValidNamedPackage(expected)).toBe(true);
+
+			// `config.mvrOverrides` contribution is the active-network
+			// (`local`) name→id entry — exactly what the old per-app
+			// `mvrOverrides()` helper computed for this package. Keyed by
+			// the package's `mvr` placeholder, valued by `byNetwork.local`.
+			expect(projected.mvrOverrides).toEqual({ '@local/connect-four': '0xpkg' });
+			expect(projected.mvrOverrides[expected]).toBe(
+				projected.packages['connect-four']!.byNetwork['local'],
+			);
 		}),
 	);
 });
