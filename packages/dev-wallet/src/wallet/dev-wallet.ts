@@ -115,6 +115,7 @@ export class DevWallet implements Wallet {
 	readonly #clientFactory: (network: string, url: string) => ClientWithCoreApi;
 	readonly #persistNetworks: boolean;
 	#accounts: ReadonlyWalletAccount[];
+	#selectedAddress: string | null = null;
 	#events: Emitter<WalletEventsMap>;
 	#unsubscribeAdapters: (() => void)[];
 	#pendingRequest: WalletRequest | null;
@@ -166,7 +167,42 @@ export class DevWallet implements Wallet {
 	}
 
 	get accounts(): readonly ReadonlyWalletAccount[] {
-		return this.#accounts;
+		return this.#exposedAccounts();
+	}
+
+	/**
+	 * Narrow the accounts this wallet exposes to dApps (via the
+	 * wallet-standard `accounts` array + `change` events) to a single
+	 * address, or pass `null` to expose all aggregated accounts again.
+	 *
+	 * Used by the devstack page-register entry to drive headless account
+	 * selection: dApp Kit reflects the `change` event by switching its
+	 * connected account to the now-single exposed account (or, if not yet
+	 * connected, auto-connects to it). No reference to the app's dApp Kit
+	 * instance is required — selection rides the wallet-standard protocol.
+	 */
+	setSelectedAccount(address: string | null): void {
+		if (address !== null) {
+			const match = this.#accounts.find((a) => a.address.toLowerCase() === address.toLowerCase());
+			if (match === undefined) {
+				const available = this.#accounts.map((a) => a.address).join(', ');
+				throw new Error(
+					`No dev-wallet account for address "${address}". Available: ${available || '(none)'}`,
+				);
+			}
+			this.#selectedAddress = match.address;
+		} else {
+			this.#selectedAddress = null;
+		}
+		this.#events.emit('change', { accounts: this.#exposedAccounts() });
+	}
+
+	/** Accounts exposed to dApps — narrowed to the selected address when set. */
+	#exposedAccounts(): ReadonlyWalletAccount[] {
+		if (this.#selectedAddress === null) return this.#accounts;
+		return this.#accounts.filter(
+			(a) => a.address.toLowerCase() === this.#selectedAddress!.toLowerCase(),
+		);
 	}
 
 	get features(): StandardConnectFeature &
@@ -418,7 +454,7 @@ export class DevWallet implements Wallet {
 		for (const adapter of this.#adapters) {
 			const unsub = adapter.onAccountsChanged(() => {
 				this.#accounts = this.#aggregateAccounts();
-				this.#events.emit('change', { accounts: this.#accounts });
+				this.#events.emit('change', { accounts: this.#exposedAccounts() });
 			});
 			this.#unsubscribeAdapters.push(unsub);
 		}

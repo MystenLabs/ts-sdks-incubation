@@ -7,6 +7,7 @@ export default defineConfig({
 	entry: [
 		'src/index.ts',
 		'src/adapters/browser.ts',
+		'src/inject/index.ts',
 		'src/ui/index.ts',
 		'src/react/index.ts',
 		'src/client/index.ts',

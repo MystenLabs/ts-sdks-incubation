@@ -178,10 +178,10 @@ describe('devstackVitePlugin', () => {
 			);
 		}));
 
-	it('options.devExtrasDir escape hatch wins for @devstack-dev', () =>
+	it('options.extrasDir escape hatch wins for @devstack-dev', () =>
 		withTempRootSync('devstack-vite', (tmp) => {
 			const explicit = join(tmp, 'hand', 'picked', 'extras');
-			const plugin = devstackVitePlugin({ devExtrasDir: explicit });
+			const plugin = devstackVitePlugin({ extrasDir: explicit });
 			const patch = plugin.config({ root: tmp });
 			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(explicit);
 		}));
