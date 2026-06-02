@@ -31,11 +31,10 @@
 // resolves deps, writes support files, then VALIDATES (manifest paths exist;
 // shared fenced files balanced).
 //
-// CI gap: `pnpm -F @mysten-incubation/create-devstack-app run check-template`
-// is the drift detector that proves the bundled `template/` matches
-// `examples/_template/`. It is not yet wired into `turbo.json`'s
-// `typecheck`/`test` graph, so contributors should remember to run it
-// before publishing.
+// CI: `pnpm -F @mysten-incubation/create-devstack-app run check-template` is
+// the drift detector that proves the bundled `template/` matches
+// `examples/_template/`. It is wired into `turbo.json` as the `check-template`
+// task, a `dependsOn` of `typecheck`, so a stale bundled `template/` fails CI.
 
 import {
 	cpSync,

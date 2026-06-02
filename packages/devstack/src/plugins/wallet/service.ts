@@ -28,7 +28,7 @@ import { Effect } from 'effect';
 import type { FileSystem, Scope } from 'effect';
 
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
-import type { DappKitConfigBindings } from './codegen.ts';
+import type { DevWalletConfig } from './codegen.ts';
 import { walletBootError, type WalletBootError } from './errors.ts';
 import { resolveOriginPolicy } from './origin-policy.ts';
 import { acquirePairingToken, composePairUrl, tokenPath, type PairingToken } from './pairing.ts';
@@ -99,7 +99,7 @@ export interface WalletOptions<
 export interface WalletValue {
 	readonly url: string; // router-fronted URL when available, loopback otherwise
 	readonly pairUrl: string;
-	readonly bindings: DappKitConfigBindings;
+	readonly bindings: DevWalletConfig;
 	readonly localPort: number;
 	readonly token: PairingToken;
 	/** Server handle — substrate's scope finalizer chain invokes
@@ -261,7 +261,7 @@ export const acquireWallet = (
 			ctx.routerFrontedUrl ?? `http://${directUrlHostForBindAddress(bindAddress)}:${port}`;
 		const pairUrl = composePairUrl(walletUrl, token);
 
-		const bindings: DappKitConfigBindings = {
+		const bindings: DevWalletConfig = {
 			walletUrl,
 			pairUrl,
 			chain: ctx.chain,

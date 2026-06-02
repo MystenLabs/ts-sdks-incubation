@@ -16,7 +16,6 @@
 // input coin (SUI here), so faucet SUI is sufficient.
 
 import {
-	deepbook as deepbookExtension,
 	DeepBookClient,
 	OrderType,
 	SelfMatchingOptions,
@@ -112,21 +111,6 @@ export function buildDeepbookClient(
 		client: suiClient as ConstructorParameters<typeof DeepBookClient>[0]['client'],
 		address,
 		network: 'localnet',
-		packageIds: buildPackageIds(),
-		coins: buildCoinMap(),
-		pools: buildPoolMap(),
-		...(pythConfig ? { pyth: pythConfig } : {}),
-		...(balanceManagerAddress
-			? { balanceManagers: { [BALANCE_MANAGER_KEY]: { address: balanceManagerAddress } } }
-			: {}),
-	});
-}
-
-/** Register the deepbook extension on a sui client (used in panels that
- *  prefer the `$extend` form). Mirrors `examples/deepbook-trader`. */
-export function deepbookRegistration(address: string, balanceManagerAddress?: string) {
-	return deepbookExtension({
-		address,
 		packageIds: buildPackageIds(),
 		coins: buildCoinMap(),
 		pools: buildPoolMap(),

@@ -16,7 +16,7 @@
 	},
 	"dependencies": {
 		"@mysten-incubation/dev-wallet": "^0.3.0",
-		"@mysten-incubation/devstack": "^0.1.0",
+		"@mysten-incubation/devstack": "^0.1.1",
 		"@mysten/dapp-kit-core": "^1.3.0",
 		"@mysten/dapp-kit-react": "^2.0.1",
 		"@mysten/deepbook-v3": "^1.3.3",

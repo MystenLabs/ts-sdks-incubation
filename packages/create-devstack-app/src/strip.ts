@@ -29,6 +29,18 @@ import {
 const BEGIN_RE = /^\s*\/\/ devstack:begin (\S+)\s*$/;
 const END_RE = /^\s*\/\/ devstack:end (\S+)\s*$/;
 
+/** True iff `text` contains at least one REAL fence line — a `begin` or `end`
+ *  marker with an id token occupying a whole line — using the same per-line
+ *  regexes the stripper relies on. Substring checks like
+ *  `text.includes('// devstack:begin')` false-positive on prose/comments that
+ *  merely mention the marker syntax; this does not. */
+export function hasFenceLine(text: string): boolean {
+	for (const line of text.split('\n')) {
+		if (BEGIN_RE.test(line) || END_RE.test(line)) return true;
+	}
+	return false;
+}
+
 /** Text-file extensions the fence stripper scans. Shared fenced files are
  *  config/source: .ts/.tsx/.move plus the devstack/playwright configs. */
 const TEXT_EXTS = new Set(['.ts', '.tsx', '.move', '.js', '.mjs', '.cts', '.mts']);
@@ -181,8 +193,10 @@ export function stripPlugins(appDir: string, selected: ReadonlySet<PluginId>): v
 	for (const file of walkFiles(appDir)) {
 		if (!hasTextExt(file)) continue;
 		const original = readFileSync(file, 'utf8');
-		// Cheap fast-path: skip files with no fences at all.
-		if (!original.includes('// devstack:begin') && !original.includes('// devstack:end')) {
+		// Cheap fast-path: skip files with no REAL fences at all. Use the same
+		// per-line regexes the stripper uses (id token + end-of-line) so prose
+		// that merely mentions the marker syntax does not force a needless pass.
+		if (!hasFenceLine(original)) {
 			continue;
 		}
 		const { text, empty } = stripFences(original, selected);
@@ -240,7 +254,11 @@ function assertNoLeftovers(appDir: string, removedModuleKeys: ReadonlySet<string
 	for (const file of walkFiles(appDir)) {
 		if (!hasTextExt(file)) continue;
 		const text = readFileSync(file, 'utf8');
-		if (text.includes('// devstack:begin') || text.includes('// devstack:end')) {
+		// Detect leftover fences with the SAME per-line regexes the stripper
+		// uses (real id token + end-of-line), not a substring match — so prose
+		// or comments that merely mention the `// devstack:begin` marker syntax
+		// don't false-positive.
+		if (hasFenceLine(text)) {
 			throw new Error(
 				`stripPlugins guard: leftover devstack fence in ${relative(appDir, file)} after stripping.`,
 			);

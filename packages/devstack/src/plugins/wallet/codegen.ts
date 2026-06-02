@@ -66,7 +66,7 @@ import { WalletSpans } from './spans.ts';
  *                        scoped to. Surfaced so dapp-kit can pin its
  *                        active chain.
  */
-export interface DappKitConfigBindings {
+export interface DevWalletConfig {
 	readonly walletUrl: string;
 	readonly pairUrl: string;
 	readonly chain: string;
@@ -96,7 +96,7 @@ export interface DappKitConfigBindings {
  *  substrate re-evaluates with the resolved values.
  */
 export const makeWalletCodegen = (
-	resolved: DappKitConfigBindings,
+	resolved: DevWalletConfig,
 ): CodegenableDecl<'dapp-kit-config'> =>
 	defineSimpleConstExport({
 		emitterName: 'dapp-kit-config',

@@ -146,9 +146,18 @@ export const emitBindings = (
 		// Dedup by package name. First-wins; distilled-doc § "Duplicate
 		// package names": warn + skip the duplicate to avoid the HMR
 		// re-emit storm.
-		const seen = new Set<string>();
-		const targets: Array<PackageBindings> = [];
-		const skipped: Array<string> = [];
+			// Dedup by package IDENTITY (packageId + sourcePath), keyed for
+			// lookup by name. The SAME package legitimately appears more than
+			// once in the contribution set (e.g. the plugin's localPackage
+			// binding AND a coin's package reference both point at it) — that
+			// is a benign self-duplicate and is skipped SILENTLY. We only warn
+			// when two genuinely DIFFERENT packages (different id/sourcePath)
+			// collide on the same name, which is the real HMR re-emit hazard.
+			const seenIdentityByName = new Map<string, string>();
+			const identityOf = (pkg: PackageBindings): string =>
+				`${pkg.packageId} ${pkg.sourcePath ?? ''}`;
+			const targets: Array<PackageBindings> = [];
+			const skipped: Array<string> = [];
 		for (const pkg of input.packages) {
 			if (pkg.sourcePath === null) {
 				skipped.push(pkg.name);
@@ -158,16 +167,24 @@ export const emitBindings = (
 				skipped.push(pkg.name);
 				continue;
 			}
-			if (seen.has(pkg.name)) {
-				yield* Effect.logWarning(
-					`codegen.bindings: duplicate package name '${pkg.name}' — keeping ` +
-						`first and skipping duplicate to avoid HMR re-emit storm. ` +
-						`Rename one of the packages.`,
-				);
+			const identity = identityOf(pkg);
+			const seenIdentity = seenIdentityByName.get(pkg.name);
+			if (seenIdentity !== undefined) {
+				if (seenIdentity !== identity) {
+					// Two genuinely DIFFERENT packages share a name — a real
+					// collision and a real HMR re-emit hazard.
+					yield* Effect.logWarning(
+						`codegen.bindings: duplicate package name '${pkg.name}' — keeping ` +
+							`first and skipping duplicate to avoid HMR re-emit storm. ` +
+							`Rename one of the packages.`,
+					);
+				}
+				// Same identity → benign self-duplicate (e.g. localPackage +
+				// coin package ref): skip silently, no warning.
 				skipped.push(pkg.name);
 				continue;
 			}
-			seen.add(pkg.name);
+			seenIdentityByName.set(pkg.name, identity);
 			targets.push(pkg);
 		}
 		// Deterministic order: lexicographic by package name.
