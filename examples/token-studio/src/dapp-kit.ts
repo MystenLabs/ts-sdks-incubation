@@ -1,15 +1,12 @@
 // User-owned dapp-kit wiring (prod-safe).
 //
 // The browser RPC + active network come from the generated runtime config
-// (`@generated/config.js`) — safe in every build. The dev wallet is no
-// longer wired here: in DEV the devstack Vite plugin injects + registers
-// the devstack dev wallet on the page via wallet-standard, so dApp Kit
-// auto-discovers it (and the plugin also populates the Playwright
-// `connectAs` slot, `globalThis.__devstackDAppKit__`). The UI's
-// account directory is read from the connected wallet via dApp Kit
-// (`useCurrentWallet().accounts`, see `./lib/accounts.ts`). In
-// production the page carries no dev wallet and standard wallets register
-// themselves.
+// (`@generated/config.js`) — safe in every build. The dev wallet is not
+// wired here: in DEV the devstack Vite plugin injects the dev wallet on the
+// page (dApp Kit auto-discovers it via wallet-standard). The UI's account
+// directory is read from the connected wallet via dApp Kit
+// (`useCurrentWallet().accounts`, see `./lib/accounts.ts`). In production
+// the page carries no dev wallet and standard wallets register themselves.
 
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { SuiGrpcClient } from '@mysten/sui/grpc';

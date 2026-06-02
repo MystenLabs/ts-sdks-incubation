@@ -77,25 +77,6 @@ function playerForConnectedAddress(
 	return playerForGameAddress(game, address);
 }
 
-/**
- * Drive the devstack dev-wallet account switch that powers the in-app
- * "Open as Alice" / "Join as Bob" buttons. This is a DEV-only affordance:
- * the devstack Vite plugin injects + registers the dev wallet on the page
- * and wires `globalThis.__devstackDAppKit__.selectAccount`. In a production
- * build the slot is
- * absent and the currently connected wallet signs as-is.
- */
-async function selectDevstackAccount(accountName: Player): Promise<void> {
-	const slot = (
-		globalThis as {
-			__devstackDAppKit__?: { selectAccount?: (name: string) => Promise<void> };
-		}
-	).__devstackDAppKit__;
-	if (slot?.selectAccount !== undefined) {
-		await slot.selectAccount(accountName);
-	}
-}
-
 function playerForGameAddress(game: ChainGame, address: string | null | undefined): Player | null {
 	if (address === null || address === undefined) return null;
 	if (sameAddress(address, game.playerA)) return 'alice';
@@ -303,6 +284,10 @@ export function App() {
 	const client = useCurrentClient();
 	const network = useCurrentNetwork();
 	const [lobbyId, setLobbyId] = useState<string | null>(null);
+	// Address that created the open lobby (player A) — the Game object that
+	// records the seats does not exist until someone joins, so the lobby
+	// phase remembers its creator to render the right contextual status.
+	const [lobbyCreator, setLobbyCreator] = useState<string | null>(null);
 	const [gameId, setGameId] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -322,6 +307,10 @@ export function App() {
 
 	const chainGame = gameQuery.data ?? null;
 	const connectedPlayer = playerForConnectedAddress(chainGame, account?.address);
+	// During the lobby phase the connected account is player A iff it opened
+	// the lobby. Once the Game exists, `connectedPlayer` takes over.
+	const connectedIsLobbyCreator =
+		gameId === null && lobbyId !== null && sameAddress(lobbyCreator, account?.address);
 	const seatAddresses: Record<Player, string> = {
 		alice: chainGame?.playerA ?? '',
 		bob: chainGame?.playerB ?? '',
@@ -345,16 +334,24 @@ export function App() {
 	const filledCells = chainGame?.moves ?? 0;
 	const gameIsLoading = gameId !== null && (gameQuery.isLoading || chainGame === null);
 	const isBusy = isPending || activeFlow !== null;
-	const canMove = gameId !== null && !gameIsLoading && !isBusy && winner === null;
-	const ready = network !== undefined;
+	// The connected account may move only when the game is live and it is
+	// their seat's turn. Account switching is the wallet's job (the injected
+	// dev wallet in DEV, a real wallet in prod), never the app's.
+	const isConnectedPlayersTurn = connectedPlayer !== null && connectedPlayer === turn;
+	const canMove =
+		gameId !== null && !gameIsLoading && !isBusy && winner === null && isConnectedPlayersTurn;
+	const ready = network !== undefined && account !== null && account !== undefined;
+	// Anyone connected can open a lobby (they become player A). Once a lobby
+	// exists, a different connected account joins as player B.
 	const canCreateLobby = ready && lobbyId === null && gameId === null && !isBusy;
 	const canJoinLobby = ready && lobbyId !== null && gameId === null && !isBusy;
 
-	async function runAs(player: Player, flow: string, submit: () => Promise<void>) {
+	// Run a flow as the CURRENTLY CONNECTED account. The app never forces an
+	// account — whoever the wallet has connected signs the transaction.
+	async function runFlow(flow: string, submit: () => Promise<void>) {
 		setError(null);
 		setActiveFlow(flow);
 		try {
-			await selectDevstackAccount(player);
 			await submit();
 		} catch (e) {
 			setError((e as Error).message);
@@ -365,7 +362,7 @@ export function App() {
 
 	async function createLobby() {
 		if (!canCreateLobby) return;
-		await runAs('alice', 'create-lobby', async () => {
+		await runFlow('create-lobby', async () => {
 			const tx = new Transaction();
 			buildCreateLobby()(tx);
 			const result = await mutateAsync(tx);
@@ -374,13 +371,14 @@ export function App() {
 				throw new Error('create_lobby did not return a created Lobby object');
 			}
 			setLobbyId(createdLobbyId);
+			setLobbyCreator(account?.address ?? null);
 			setLastDigest(result.digest);
 		});
 	}
 
 	async function joinLobby() {
 		if (!canJoinLobby || lobbyId === null) return;
-		await runAs('bob', 'join-lobby', async () => {
+		await runFlow('join-lobby', async () => {
 			const tx = new Transaction();
 			buildJoinLobby({ arguments: { lobby: lobbyId } })(tx);
 			const result = await mutateAsync(tx);
@@ -390,13 +388,14 @@ export function App() {
 			}
 			setGameId(createdGameId);
 			setLobbyId(null);
+			setLobbyCreator(null);
 			setLastDigest(result.digest);
 		});
 	}
 
 	async function playColumn(col: number) {
 		if (!canMove || gameId === null) return;
-		await runAs(turn, `play-${col}`, async () => {
+		await runFlow(`play-${col}`, async () => {
 			const tx = new Transaction();
 			buildPlay({ arguments: { game: gameId, column: col } })(tx);
 			const result = await mutateAsync(tx);
@@ -407,26 +406,39 @@ export function App() {
 
 	function startNewGame() {
 		setLobbyId(null);
+		setLobbyCreator(null);
 		setGameId(null);
 		setLastDigest(null);
 		setError(null);
 	}
 
+	// Contextual status from the CONNECTED account's point of view, derived
+	// from its on-chain seat (`connectedPlayer`) and whose turn it is.
 	const status = gameIsLoading
 		? 'Loading on-chain game'
 		: winner === 'draw'
 			? 'Draw'
 			: winner
-				? `${playerMeta[winner].label} connects four`
+				? connectedPlayer === winner
+					? 'You connect four'
+					: `${playerMeta[winner].label} connects four`
 				: gameId === null && lobbyId === null
-					? 'Open the table'
+					? 'Create a lobby to start'
 					: gameId === null
-						? 'Seat Bob'
-						: `${playerMeta[turn].label} to move`;
+						? connectedIsLobbyCreator
+							? 'You are Player A — waiting for an opponent'
+							: 'Join the lobby as Player B'
+						: isConnectedPlayersTurn
+							? 'Your move'
+							: connectedPlayer !== null
+								? "Opponent's turn"
+								: `${playerMeta[turn].label} to move`;
 	const moveButtonLabel =
 		activeFlow?.startsWith('play-') === true
 			? 'Submitting move...'
-			: `Drop as ${playerMeta[turn].label}`;
+			: isConnectedPlayersTurn
+				? 'Your move — drop a piece'
+				: "Opponent's turn";
 	const gamePhase = gameId !== null ? 'playing' : lobbyId !== null ? 'joining' : 'opening';
 	const aliceStatus =
 		winner === 'alice'
@@ -489,14 +501,14 @@ export function App() {
 								name="alice"
 								status={aliceStatus}
 								address={seatAddresses.alice}
-								current={connectedPlayer === 'alice'}
+								current={connectedPlayer === 'alice' || connectedIsLobbyCreator}
 								active={gameId !== null && winner === null && turn === 'alice'}
 								complete={lobbyId !== null || gameId !== null}
 								actionLabel={
 									lobbyId === null && gameId === null
 										? activeFlow === 'create-lobby'
-											? 'Opening...'
-											: 'Open as Alice'
+											? 'Creating...'
+											: 'Create Lobby'
 										: undefined
 								}
 								disabled={!canCreateLobby}
@@ -513,7 +525,7 @@ export function App() {
 									lobbyId !== null && gameId === null
 										? activeFlow === 'join-lobby'
 											? 'Joining...'
-											: 'Join as Bob'
+											: 'Join Lobby'
 										: undefined
 								}
 								disabled={!canJoinLobby}
@@ -552,7 +564,7 @@ export function App() {
 								type="button"
 								disabled={!canMove || board[0]![col] !== null}
 								onClick={() => void playColumn(col)}
-								aria-label={`Drop ${playerMeta[turn].label} piece in column ${col + 1}`}
+								aria-label={`Play column ${col + 1}`}
 							>
 								{col + 1}
 							</button>
