@@ -3,16 +3,6 @@ export function shortAddress(address: string, head = 6, tail = 4): string {
 	return `${address.slice(0, head + 2)}…${address.slice(-tail)}`;
 }
 
-type AccountAddressRecord = Record<string, string | { readonly address: string }>;
-
-export function labelFor(address: string, accounts: AccountAddressRecord): string | null {
-	for (const [name, account] of Object.entries(accounts)) {
-		const accountAddress = typeof account === 'string' ? account : account.address;
-		if (accountAddress === address) return name;
-	}
-	return null;
-}
-
 export function bytesToString(bytes: Uint8Array): string {
 	return new TextDecoder().decode(bytes);
 }

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { useCurrentAccount, useCurrentClient } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentClient, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import {
 	deepbook as deepbookExtension,
@@ -12,7 +12,6 @@ import { Transaction } from '@mysten/sui/transactions';
 import { coins } from '@generated/coins.js';
 import { config } from '@generated/config.js';
 import { deepbook } from '@generated/deepbook.js';
-import { accounts } from '@devstack-dev/accounts.js';
 import { formatCoinAmount, parseCoinAmount, shortId } from './lib/format.js';
 import { useCoinBalance, useSignAndExecute } from './lib/queries.js';
 
@@ -23,7 +22,14 @@ const DBTC_SCALAR = 100_000_000;
 const DETH_SCALAR = 100_000_000;
 const DEFAULT_POOL = 'DEEP_SUI';
 const DEFAULT_TRADE_DIRECTION: TradeDirection = 'quote-to-base';
-const network = config.networks[config.network];
+// Endpoint diagnostics (rpc/chain/faucet/graphql) are genuine known config
+// values for the single generated network. We read the sole entry directly
+// rather than indexing by `config.network` — the active network *label* comes
+// from dapp-kit (`useCurrentNetwork()`), not from the generated config.
+// Single generated network — there is always exactly one entry, so the
+// non-null assertion is safe (`noUncheckedIndexedAccess` widens the index
+// access to `T | undefined`).
+const networkEndpoints = Object.values(config.networks)[0]!;
 const deepbookBindings = deepbook.deepbook;
 const configuredPoolCount: number = deepbookBindings.pools.length;
 const coinBindings = coins as Record<string, CoinBinding>;
@@ -99,6 +105,9 @@ const DEMO_MARKETS: ReadonlyArray<DemoMarket> = [
 export function App() {
 	const currentAccount = useCurrentAccount();
 	const suiClient = useCurrentClient();
+	// Active network label comes from dapp-kit (the connected client's
+	// network), not the generated config — app code never reads `config.network`.
+	const network = useCurrentNetwork();
 	const availableMarkets = useMemo(() => configuredDemoMarkets(), []);
 	const [selectedPool, setSelectedPool] = useState(DEFAULT_POOL);
 	const [tradeDirection, setTradeDirection] = useState<TradeDirection>(DEFAULT_TRADE_DIRECTION);
@@ -217,10 +226,10 @@ export function App() {
 							<h1 className="text-xl font-semibold tracking-normal">DeepBook Trader</h1>
 							<div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
 								<span className="font-mono" data-testid="localnet-mode">
-									{network.mode}
+									{network}
 								</span>
 								<span className="font-mono" data-testid="localnet-chain">
-									{shortId(network.chain, 8, 6)}
+									{shortId(networkEndpoints.chain, 8, 6)}
 								</span>
 								<span className="rounded-md bg-emerald-50 px-2 py-1 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
 									local DeepBook
@@ -415,9 +424,9 @@ function LocalnetPanel() {
 				</span>
 			</div>
 			<div className="space-y-3 text-sm">
-				<KeyValue label="RPC" value={network.rpc} testId="localnet-rpc" />
-				<KeyValue label="Faucet" value={network.faucet ?? 'none'} testId="localnet-faucet" />
-				<KeyValue label="GraphQL" value={network.graphql ?? 'none'} testId="localnet-graphql" />
+				<KeyValue label="RPC" value={networkEndpoints.rpc} testId="localnet-rpc" />
+				<KeyValue label="Faucet" value={networkEndpoints.faucet ?? 'none'} testId="localnet-faucet" />
+				<KeyValue label="GraphQL" value={networkEndpoints.graphql ?? 'none'} testId="localnet-graphql" />
 			</div>
 		</section>
 	);
@@ -454,7 +463,6 @@ function WalletPanel({
 					value={connectedAddress ?? 'not connected'}
 					testId="active-address"
 				/>
-				<KeyValue label="Demo" value={accounts.trader.address} testId="trader-address" />
 				<KeyValue
 					label="SUI"
 					value={connectedBalanceText(connectedAddress, balances.SUI, SUI_SCALAR, loading.SUI)}

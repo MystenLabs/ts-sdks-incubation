@@ -2,10 +2,14 @@
 //
 // Retargeted from examples/private-content: reads the local key server
 // config straight from `@generated/seal.js` (`seal.seal.serverConfigs` /
-// `objectId`) and the vault package id from `@generated/config.js`,
-// dropping the app-specific `deployment.ts` indirection. The panel holds
-// the ciphertext in React state (no Walrus dependency), so this lib only
-// needs encrypt + decrypt against the vault::seal_approve policy gate.
+// `objectId`). The on-chain `vault` package is referenced by NAME
+// (`@local/vault`): tx move-calls go through the generated bindings (whose
+// `package` default dapp-kit's MVR override map resolves), and the Seal
+// SDK's IBE `packageId` namespace is resolved from that same name via the
+// connected client's MVR resolver — so this lib never touches
+// `config.packages.*.packageId`. The panel holds the ciphertext in React
+// state (no Walrus dependency), so this lib only needs encrypt + decrypt
+// against the vault::seal_approve policy gate.
 
 import {
 	EncryptedObject,
@@ -16,20 +20,36 @@ import {
 } from '@mysten/seal';
 import { Transaction } from '@mysten/sui/transactions';
 
+import {
+	uploadEntry as buildUploadEntry,
+	sealApprove as buildSealApprove,
+} from '@generated/bindings/vault/vault.js';
 import { seal } from '@generated/seal.js';
-import { config } from '@generated/config.js';
 import { bytesToHex, hexToBytes } from './format.js';
 
 const SEAL_THRESHOLD = 1; // Open mode, single local key server.
 
-/** Vault package id (carries the `seal_approve` policy gate). */
-const vaultPackageId = (): string => {
-	const id = config.packages.vault?.packageId;
+/** Named MVR form of the vault package — matches the generated binding's
+ *  `package` default and `config.packages.vault.mvr`. */
+const VAULT_PACKAGE = '@local/vault';
+
+/**
+ * Resolve the vault package's on-chain id from its MVR name. Seal's IBE
+ * `packageId` namespace (and `SessionKey`) need a concrete id, not the
+ * `@local/vault` placeholder; the connected client carries dapp-kit's MVR
+ * override map, so this resolves locally with no real registry.
+ */
+async function resolveVaultPackageId(suiClient: SealCompatibleClient): Promise<string> {
+	const { package: id } = await (
+		suiClient as unknown as {
+			mvr: { resolvePackage: (o: { package: string }) => Promise<{ package: string }> };
+		}
+	).mvr.resolvePackage({ package: VAULT_PACKAGE });
 	if (id === undefined || id.length === 0) {
 		throw new Error('vault package is not deployed. Did `devstack apply` complete the seal step?');
 	}
 	return id;
-};
+}
 
 let cachedClient: SealClient | null = null;
 let cachedClientKey = '';
@@ -82,14 +102,14 @@ export function buildUploadTx(opts: {
 	sealIdBytes: Uint8Array;
 }): Transaction {
 	const tx = new Transaction();
-	tx.moveCall({
-		target: `${vaultPackageId()}::vault::upload_entry`,
-		arguments: [
-			tx.pure.string(opts.name),
-			tx.pure.vector('u8', Array.from(opts.blobId)),
-			tx.pure.vector('u8', Array.from(opts.sealIdBytes)),
-		],
-	});
+	// `package` defaults to `@local/vault` (resolved by dapp-kit's MVR map).
+	buildUploadEntry({
+		arguments: {
+			name: opts.name,
+			blobId: Array.from(opts.blobId),
+			sealId: Array.from(opts.sealIdBytes),
+		},
+	})(tx);
 	return tx;
 }
 
@@ -110,7 +130,7 @@ export async function encryptForSealId(opts: {
 	const client = getSealClient(opts.suiClient);
 	const { encryptedObject } = await client.encrypt({
 		threshold: SEAL_THRESHOLD,
-		packageId: vaultPackageId(),
+		packageId: await resolveVaultPackageId(opts.suiClient),
 		id: opts.sealIdHex,
 		data: opts.data,
 	});
@@ -132,7 +152,7 @@ export async function decryptForFile(opts: {
 	signPersonalMessage: (message: Uint8Array) => Promise<{ signature: string }>;
 }): Promise<Uint8Array> {
 	const client = getSealClient(opts.suiClient, serverConfigsForEncryptedObject(opts.encrypted));
-	const packageId = vaultPackageId();
+	const packageId = await resolveVaultPackageId(opts.suiClient);
 
 	const sessionKey = await SessionKey.create({
 		address: opts.address,
@@ -145,13 +165,13 @@ export async function decryptForFile(opts: {
 	await sessionKey.setPersonalMessageSignature(signResult.signature);
 
 	const tx = new Transaction();
-	tx.moveCall({
-		target: `${packageId}::vault::seal_approve`,
-		arguments: [
-			tx.pure.vector('u8', Array.from(hexToBytes(opts.sealIdHex))),
-			tx.object(opts.fileId),
-		],
-	});
+	// `package` defaults to `@local/vault` (resolved by dapp-kit's MVR map).
+	buildSealApprove({
+		arguments: {
+			id: Array.from(hexToBytes(opts.sealIdHex)),
+			file: tx.object(opts.fileId),
+		},
+	})(tx);
 	const txBytes = await tx.build({ client: opts.suiClient, onlyTransactionKind: true });
 
 	return client.decrypt({ data: opts.encrypted, sessionKey, txBytes });

@@ -4,8 +4,7 @@ import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
-import { dAppKit } from '../dapp-kit.js';
-import { deployment } from '../lib/deployment.js';
+import { dAppKit, vaultPackageId } from '../dapp-kit.js';
 import { stringToBytes } from '../lib/format.js';
 import { useSignAndExecute } from '../lib/queries.js';
 import { encryptForSealId, freshSealId } from '../lib/seal.js';
@@ -44,7 +43,7 @@ export function UploadForm() {
 		try {
 			if (!name.trim()) throw new Error('Name is required');
 			if (!content) throw new Error('Content is required');
-			if (!deployment.vaultPackageId) {
+			if (!vaultPackageId) {
 				throw new Error('Vault package is not deployed. Did `devstack apply` complete?');
 			}
 
@@ -62,7 +61,6 @@ export function UploadForm() {
 			const blobIdBytes = blobIdToBytes(blobId);
 
 			const tx = buildVaultUploadTransaction({
-				packageId: deployment.vaultPackageId,
 				name,
 				blobId: blobIdBytes,
 				sealId: sealIdBytes,

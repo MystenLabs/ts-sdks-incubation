@@ -18,22 +18,22 @@ import {
 	createAndShare as buildCreateAndShare,
 	incrementEntry as buildIncrement,
 } from '@generated/bindings/counter/counter.js';
-import { config } from '@generated/config.js';
 
-/** Active counter package id from the generated runtime config. */
-export const counterPackageId = config.packages.counter?.packageId ?? '';
+// No package id is threaded here: the generated builders default `package`
+// to `@local/counter`, which dapp-kit's MVR override map resolves to the
+// active network's deployed id. App code resolves Move packages by name.
 
 /** Build a tx that creates + shares a fresh `Counter` (starts at 0). */
 export function createCounterTx(): Transaction {
 	const tx = new Transaction();
-	buildCreateAndShare({ package: counterPackageId })(tx);
+	buildCreateAndShare()(tx);
 	return tx;
 }
 
 /** Build a tx that increments the shared `Counter` at `counterId` by one. */
 export function incrementTx(counterId: string): Transaction {
 	const tx = new Transaction();
-	buildIncrement({ package: counterPackageId, arguments: { counter: counterId } })(tx);
+	buildIncrement({ arguments: { counter: counterId } })(tx);
 	return tx;
 }
 

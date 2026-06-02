@@ -27,7 +27,6 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { deepbook } from '@generated/deepbook.js';
-import { config } from '@generated/config.js';
 
 /** The single local DeX instance (name-keyed default). */
 export const dex = deepbook.deepbook;
@@ -197,9 +196,4 @@ export function buildDepositAndOrderTx(args: {
 		}),
 	);
 	return tx;
-}
-
-/** Network block for the active network (rpc/chain/etc). */
-export function activeNetwork() {
-	return config.networks[config.network];
 }

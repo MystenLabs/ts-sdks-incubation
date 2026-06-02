@@ -1,18 +1,20 @@
-import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
+import {
+	useCurrentAccount,
+	useCurrentClient,
+	useCurrentNetwork,
+	useDAppKit,
+} from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQuery, type UseMutationResult } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import { accounts } from '@devstack-dev/accounts.js';
 import {
 	Game,
 	createLobby as buildCreateLobby,
 	joinLobby as buildJoinLobby,
 	play as buildPlay,
 } from '@generated/bindings/connect_four/game.js';
-import { config } from '@generated/config.js';
-import { selectDevstackAccount } from './dapp-kit.js';
 
 const COLS = 7;
 const ROWS = 6;
@@ -48,21 +50,49 @@ const playerMeta: Record<Player, { readonly label: string; readonly piece: strin
 	bob: { label: 'Bob', piece: 'B' },
 };
 
-const connectFourPackageId = config.packages.connect_four?.packageId ?? '';
-
 function isRecord(value: unknown): value is UnknownRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sameAddress(left: string | undefined, right: string | undefined): boolean {
-	return left !== undefined && right !== undefined && left.toLowerCase() === right.toLowerCase();
+function sameAddress(left: string | undefined | null, right: string | undefined | null): boolean {
+	return (
+		left !== undefined &&
+		left !== null &&
+		right !== undefined &&
+		right !== null &&
+		left.toLowerCase() === right.toLowerCase()
+	);
 }
 
-function playerForAddress(address: string | undefined): Player | null {
-	if (address === undefined) return null;
-	if (sameAddress(address, accounts.alice?.address)) return 'alice';
-	if (sameAddress(address, accounts.bob?.address)) return 'bob';
-	return null;
+/**
+ * Map the connected wallet address to a connect-four seat using the
+ * on-chain Game (the two player addresses live in the Game object). Before
+ * a Game exists there is no on-chain identity yet, so this returns null.
+ */
+function playerForConnectedAddress(
+	game: ChainGame | null,
+	address: string | undefined,
+): Player | null {
+	if (game === null) return null;
+	return playerForGameAddress(game, address);
+}
+
+/**
+ * Drive the devstack dev-wallet account switch that powers the in-app
+ * "Open as Alice" / "Join as Bob" buttons. This is a DEV-only affordance:
+ * `dapp-kit.dev.ts` wires `globalThis.__devstackDAppKit__.selectAccount`
+ * when the dev wallet initializes. In a production build the slot is
+ * absent and the currently connected wallet signs as-is.
+ */
+async function selectDevstackAccount(accountName: Player): Promise<void> {
+	const slot = (
+		globalThis as {
+			__devstackDAppKit__?: { selectAccount?: (name: string) => Promise<void> };
+		}
+	).__devstackDAppKit__;
+	if (slot?.selectAccount !== undefined) {
+		await slot.selectAccount(accountName);
+	}
 }
 
 function playerForGameAddress(game: ChainGame, address: string | null | undefined): Player | null {
@@ -270,7 +300,7 @@ function useSignAndExecute(): UseMutationResult<ExecutedTransaction, Error, Tran
 export function App() {
 	const account = useCurrentAccount();
 	const client = useCurrentClient();
-	const connectedPlayer = playerForAddress(account?.address);
+	const network = useCurrentNetwork();
 	const [lobbyId, setLobbyId] = useState<string | null>(null);
 	const [gameId, setGameId] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
@@ -290,6 +320,11 @@ export function App() {
 	});
 
 	const chainGame = gameQuery.data ?? null;
+	const connectedPlayer = playerForConnectedAddress(chainGame, account?.address);
+	const seatAddresses: Record<Player, string> = {
+		alice: chainGame?.playerA ?? '',
+		bob: chainGame?.playerB ?? '',
+	};
 	const board = useMemo(
 		() => (chainGame === null ? emptyBoard() : boardFromChain(chainGame.boardColumns)),
 		[chainGame],
@@ -310,10 +345,9 @@ export function App() {
 	const gameIsLoading = gameId !== null && (gameQuery.isLoading || chainGame === null);
 	const isBusy = isPending || activeFlow !== null;
 	const canMove = gameId !== null && !gameIsLoading && !isBusy && winner === null;
-	const canCreateLobby =
-		connectFourPackageId.length > 0 && lobbyId === null && gameId === null && !isBusy;
-	const canJoinLobby =
-		connectFourPackageId.length > 0 && lobbyId !== null && gameId === null && !isBusy;
+	const ready = network !== undefined;
+	const canCreateLobby = ready && lobbyId === null && gameId === null && !isBusy;
+	const canJoinLobby = ready && lobbyId !== null && gameId === null && !isBusy;
 
 	async function runAs(player: Player, flow: string, submit: () => Promise<void>) {
 		setError(null);
@@ -332,7 +366,7 @@ export function App() {
 		if (!canCreateLobby) return;
 		await runAs('alice', 'create-lobby', async () => {
 			const tx = new Transaction();
-			buildCreateLobby({ package: connectFourPackageId })(tx);
+			buildCreateLobby()(tx);
 			const result = await mutateAsync(tx);
 			const createdLobbyId = result.createdObjectIds[0];
 			if (createdLobbyId === undefined) {
@@ -347,7 +381,7 @@ export function App() {
 		if (!canJoinLobby || lobbyId === null) return;
 		await runAs('bob', 'join-lobby', async () => {
 			const tx = new Transaction();
-			buildJoinLobby({ package: connectFourPackageId, arguments: { lobby: lobbyId } })(tx);
+			buildJoinLobby({ arguments: { lobby: lobbyId } })(tx);
 			const result = await mutateAsync(tx);
 			const createdGameId = result.createdObjectIds[0];
 			if (createdGameId === undefined) {
@@ -363,7 +397,7 @@ export function App() {
 		if (!canMove || gameId === null) return;
 		await runAs(turn, `play-${col}`, async () => {
 			const tx = new Transaction();
-			buildPlay({ package: connectFourPackageId, arguments: { game: gameId, column: col } })(tx);
+			buildPlay({ arguments: { game: gameId, column: col } })(tx);
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 			await gameQuery.refetch();
@@ -453,7 +487,7 @@ export function App() {
 							<PlayerSeat
 								name="alice"
 								status={aliceStatus}
-								address={accounts.alice?.address ?? ''}
+								address={seatAddresses.alice}
 								current={connectedPlayer === 'alice'}
 								active={gameId !== null && winner === null && turn === 'alice'}
 								complete={lobbyId !== null || gameId !== null}
@@ -470,7 +504,7 @@ export function App() {
 							<PlayerSeat
 								name="bob"
 								status={bobStatus}
-								address={accounts.bob?.address ?? ''}
+								address={seatAddresses.bob}
 								current={connectedPlayer === 'bob'}
 								active={gameId !== null && winner === null && turn === 'bob'}
 								complete={gameId !== null}
@@ -553,7 +587,7 @@ export function App() {
 						<p className="section-label">Current signer</p>
 						{account ? (
 							<div className="account-line">
-								<span>{connectedPlayer ? playerMeta[connectedPlayer].label : 'Publisher'}</span>
+								<span>{connectedPlayer ? playerMeta[connectedPlayer].label : 'Signed in'}</span>
 								<code>{shortAddress(account.address)}</code>
 							</div>
 						) : (
@@ -563,7 +597,6 @@ export function App() {
 
 					<div className="chain-card">
 						<p className="section-label">Chain</p>
-						<ObjectLine label="Package" value={connectFourPackageId} />
 						{lobbyId !== null && <ObjectLine label="Lobby" value={lobbyId} />}
 						{gameId !== null && <ObjectLine label="Game" value={gameId} />}
 						{lastDigest && <p className="digest">tx {lastDigest}</p>}

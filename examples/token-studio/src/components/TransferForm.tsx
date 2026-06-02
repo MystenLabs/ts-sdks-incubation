@@ -1,10 +1,10 @@
 import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { deployment } from '../lib/deployment.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
+import { useDevAccounts } from '../lib/dev-accounts.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
 export function TransferForm({ self }: { self: string }) {
@@ -12,13 +12,19 @@ export function TransferForm({ self }: { self: string }) {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const others = Object.entries(deployment.accounts).filter(([, addr]) => addr !== self);
+	const others = Object.entries(useDevAccounts()).filter(([, addr]) => addr !== self);
 	const firstOther = (others[0]?.[1] ?? '') as string;
 
 	const [recipient, setRecipient] = useState<string>(firstOther);
 	const [amount, setAmount] = useState('10');
 	const [error, setError] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
+
+	// Default the recipient once the (DEV-only) seeded directory loads, if the
+	// user hasn't picked one yet.
+	useEffect(() => {
+		if (!recipient && firstOther) setRecipient(firstOther);
+	}, [recipient, firstOther]);
 
 	async function onSubmit(e: React.FormEvent) {
 		e.preventDefault();

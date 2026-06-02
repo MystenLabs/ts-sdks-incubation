@@ -1,9 +1,15 @@
 // App-level projection of generated stack bindings.
+//
+// The vault package is MVR-resolved: tx moveCalls use the vault binding
+// defaults (resolved by the grpc client's MVR overrides, see `dapp-kit.ts`),
+// and the non-moveCall Seal/query consumers import `vaultPackageId` from
+// `../dapp-kit.js`. `config.network` lives solely in `dapp-kit.ts`, so this
+// module no longer reads the generated `config` directly — only the
+// non-MVR seal + walrus runtime bindings.
 
-import { config } from '@generated/config.js';
+import { vaultPackageId } from '../dapp-kit.js';
 import { seal } from '@generated/seal.js';
 import { walrus } from '@generated/walrus.js';
-import { accounts } from '@devstack-dev/accounts.js';
 
 export interface SealView {
 	keyServerObjectId: string;
@@ -17,24 +23,13 @@ const sealView: SealView = {
 	serverConfigs: seal.seal.serverConfigs,
 };
 
-const walletAccounts = {
-	publisher: accounts.publisher,
-	alice: accounts.alice,
-	bob: accounts.bob,
-} as const;
-
 export const deployment = {
-	rpcUrl: config.networks[config.network].rpc ?? '',
-	faucetUrl: config.networks[config.network].faucet,
-	accounts: walletAccounts,
-	vaultPackageId: config.packages.vault?.packageId,
 	seal: sealView,
 	walrus,
 } as const;
 
 export const isDeployed: boolean =
-	Object.keys(deployment.accounts).length > 0 &&
-	deployment.vaultPackageId !== undefined &&
+	vaultPackageId !== undefined &&
 	deployment.walrus.packageConfig.systemObjectId.length > 0 &&
 	deployment.seal !== undefined;
 

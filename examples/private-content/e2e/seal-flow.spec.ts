@@ -1,8 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { connectAs } from '@mysten-incubation/devstack/playwright';
 
-import { accounts } from '../.devstack/stacks/private-content/generated-extras/accounts.js';
-
 /**
  * End-to-end Seal demo: alice encrypts + uploads, grants a Cap to bob, then
  * bob (after a fresh page load + connect-as) decrypts.
@@ -27,12 +25,39 @@ const FILENAME = `e2e-${Date.now()}.txt`;
 
 test.setTimeout(180_000);
 
+/**
+ * Read the full (untruncated) address of the currently connected account
+ * from the app's `connected-account` slot. The app intentionally exposes
+ * the full address via a `data-address` attribute (the visible label is
+ * truncated) so prod-path code never needs the dev `accounts` map — and
+ * this spec resolves the address it needs through the running app rather
+ * than importing the gitignored generated accounts module.
+ */
+async function connectedAddress(page: import('@playwright/test').Page): Promise<string> {
+	const slot = page.getByTestId('connected-account');
+	await expect(slot).toBeVisible({ timeout: 15_000 });
+	const address = await slot.getAttribute('data-address');
+	expect(address).toMatch(/^0x[0-9a-f]+$/);
+	return address as string;
+}
+
 test('alice encrypts + uploads, grants bob a cap, bob decrypts', async ({ page }) => {
 	// Surface key server / vault errors loudly so flakes have a hint instead
 	// of an opaque "decryption failed".
 	page.on('console', (m) => {
 		if (m.type() === 'error') console.error('[console.error]', m.text());
 	});
+
+	// --- resolve bob's address through the app (no dev accounts import) ---
+	// Connect as bob first purely to read his full address from the
+	// `connected-account` slot, then clear the persisted session so alice
+	// starts clean. The grant later targets this address via the free-form
+	// recipient input.
+	await page.goto('/');
+	await connectAs(page, 'bob');
+	const bobAddress = await connectedAddress(page);
+	await page.goto('/');
+	await page.evaluate(() => localStorage.clear());
 
 	// --- alice: upload ---
 	await page.goto('/');
@@ -65,7 +90,7 @@ test('alice encrypts + uploads, grants bob a cap, bob decrypts', async ({ page }
 	// --- alice: grant a cap to bob for the same file ---
 	const grantCard = page.locator('section').filter({ hasText: /^Grant access/ });
 	await grantCard.getByLabel(/^file$/i).selectOption(fileId);
-	await grantCard.getByLabel(/recipient/i).selectOption(accounts.bob.address);
+	await grantCard.getByTestId('grant-recipient').fill(bobAddress);
 	await grantCard.getByTestId('grant-submit').click();
 	await expect(grantCard.getByTestId('grant-tx')).toBeVisible({ timeout: 30_000 });
 

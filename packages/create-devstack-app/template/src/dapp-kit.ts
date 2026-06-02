@@ -20,6 +20,23 @@ import { config } from '@generated/config.js';
 const devstackNetwork = 'localnet' as const;
 
 /**
+ * MVR override map so the generated Move bindings resolve by their named
+ * placeholder (`@local/<name>`) against the active network's deployed id.
+ * The codegen emits each binding's `package` default as `@local/<name>`
+ * and mirrors that string in `config.packages.<name>.mvr`; here we point
+ * each one at `byNetwork[config.network]` so no real MVR registry is hit.
+ * This is the sanctioned place to read `config` — app code resolves
+ * packages by name and never touches `config.packages.*.packageId`.
+ */
+function mvrOverrides(): Record<string, string> {
+	return Object.fromEntries(
+		Object.values(config.packages)
+			.map((p) => [p.mvr, p.byNetwork[config.network]] as const)
+			.filter(([, id]) => Boolean(id)),
+	);
+}
+
+/**
  * Local dev-wallet initializer wrapper. Construction stays synchronous:
  * the kit calls `initialize()` itself, and only THEN do we reach for the
  * gitignored `@devstack-dev/*` modules — behind a dynamic import that
@@ -52,6 +69,7 @@ export const dAppKit = createDAppKit({
 		return new SuiGrpcClient({
 			network: devstackNetwork,
 			baseUrl: config.networks[config.network].rpc,
+			mvr: { overrides: { packages: mvrOverrides() } },
 		});
 	},
 	// In prod, no dev initializer — standard wallet-standard wallets

@@ -2,7 +2,7 @@ import { useCurrentClient } from '@mysten/dapp-kit-react';
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 
-import { counterPackageId, createCounterTx, incrementTx, readCounter } from '../lib/counter.js';
+import { createCounterTx, incrementTx, readCounter } from '../lib/counter.js';
 import { useSignAndExecute, waitForCreatedObjectId } from '../lib/sign.js';
 import { Panel, PanelButton } from '../ui/Panel.js';
 
@@ -61,7 +61,8 @@ export function CounterPanel({ connected }: { connected: boolean }) {
 			<div className="space-y-3">
 				<p className="text-xs text-neutral-500">
 					Package:{' '}
-					<span className="font-mono break-all">{counterPackageId || '(not deployed)'}</span>
+					<span className="font-mono break-all">@local/counter</span> (resolved via dapp-kit MVR
+					override)
 				</p>
 
 				<PanelButton testid="counter-create" disabled={!connected || isPending} onClick={onCreate}>

@@ -1,4 +1,4 @@
-import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentNetwork } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { Balances } from './components/Balances.js';
@@ -6,10 +6,15 @@ import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
 import { deployment, isDeployed } from './lib/deployment.js';
+import { useDevAccounts } from './lib/dev-accounts.js';
 import { labelFor, shortAddress } from './lib/coin.js';
 
 export function App() {
 	const deployed = isDeployed;
+	// Active network label comes from dapp-kit (the connected client's
+	// network), not from the generated config — app code never reads
+	// `config.network` directly.
+	const network = useCurrentNetwork();
 	return (
 		<div className="min-h-screen flex flex-col">
 			<header className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-950/50 backdrop-blur sticky top-0 z-10">
@@ -17,7 +22,7 @@ export function App() {
 					<div className="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-400 to-indigo-500" />
 					<div>
 						<h1 className="text-base font-semibold leading-tight">Token Studio</h1>
-						<p className="text-xs text-neutral-500 leading-tight">Sui dev-examples · localnet</p>
+						<p className="text-xs text-neutral-500 leading-tight">Sui dev-examples · {network}</p>
 					</div>
 				</div>
 				<ConnectButton />
@@ -74,7 +79,9 @@ function DisconnectedView() {
 }
 
 function ConnectedView({ address }: { address: string }) {
-	const isTreasuryHolder = address === deployment.accounts.alice;
+	const accounts = useDevAccounts();
+	// The TreasuryCap holder is the first seeded account (alice) by convention.
+	const isTreasuryHolder = address === Object.values(accounts)[0];
 	const label = labelFor(address);
 
 	return (

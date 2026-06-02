@@ -1,13 +1,13 @@
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 
-import { deployment } from '../lib/deployment.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
+import { useDevAccounts } from '../lib/dev-accounts.js';
 import { useCoinBalance } from '../lib/queries.js';
 import { Card } from '../ui/Card.js';
 
 export function Balances() {
 	const me = useCurrentAccount();
-	const entries = Object.entries(deployment.accounts) as [string, string][];
+	const entries = Object.entries(useDevAccounts()) as [string, string][];
 
 	return (
 		<Card title="Balances" subtitle="Seeded accounts and their current STUDIO holdings">

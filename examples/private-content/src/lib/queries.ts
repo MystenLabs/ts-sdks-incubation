@@ -8,7 +8,7 @@ import {
 	type UseMutationResult,
 } from '@tanstack/react-query';
 
-import { deployment } from './deployment.js';
+import { vaultPackageId } from '../dapp-kit.js';
 import { Cap as CapStruct, File as FileStruct } from '@generated/bindings/vault/vault.js';
 import { bytesToHex } from './format.js';
 import { bytesToBlobId } from './walrus.js';
@@ -96,10 +96,10 @@ export interface VaultCap {
 export function useOwnedCaps(address: string | undefined) {
 	const client: SuiGrpcClient = useCurrentClient();
 	return useQuery({
-		queryKey: ['vault', 'caps', address, deployment.vaultPackageId],
+		queryKey: ['vault', 'caps', address, vaultPackageId],
 		queryFn: async (): Promise<VaultCap[]> => {
-			if (!address || !deployment.vaultPackageId) return [];
-			const capType = `${deployment.vaultPackageId}::vault::Cap`;
+			if (!address || !vaultPackageId) return [];
+			const capType = `${vaultPackageId}::vault::Cap`;
 			const page = await client.core.listOwnedObjects({
 				owner: address,
 				type: capType,
@@ -110,7 +110,7 @@ export function useOwnedCaps(address: string | undefined) {
 				return { id: obj.objectId, fileId: parsed.file_id };
 			});
 		},
-		enabled: !!address && !!deployment.vaultPackageId,
+		enabled: !!address && !!vaultPackageId,
 	});
 }
 

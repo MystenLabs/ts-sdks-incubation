@@ -2,6 +2,7 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { deployment } from './deployment.js';
+import { devAccountLabel } from './dev-accounts.js';
 
 export const MANAGED_COIN_TYPE = deployment.managedCoinType;
 export const TREASURY_CAP_ID = deployment.treasuryCapId;
@@ -74,8 +75,5 @@ export function shortAddress(address: string, head = 6, tail = 4): string {
 }
 
 export function labelFor(address: string): string | null {
-	for (const [name, addr] of Object.entries(deployment.accounts)) {
-		if (addr === address) return name;
-	}
-	return null;
+	return devAccountLabel(address);
 }
