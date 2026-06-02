@@ -24,7 +24,12 @@ const log = (msg) => {
 };
 
 if (!existsSync(join(sourceTree, 'deepbookv3', 'deepbook', 'Move.toml'))) {
-	throw new Error(`expected bundled DeepBook Move sources at ${sourceTree}, but they are missing`);
+	throw new Error(
+		`expected DeepBook Move sources at ${sourceTree}, but they are missing. ` +
+			`The upstream deepbookv3 tree is fetched on demand — run ` +
+			`\`pnpm --filter @mysten-incubation/devstack fetch:deepbook-move\` (or \`build:deepbook-assets\`, ` +
+			`which fetches first).`,
+	);
 }
 
 log(`copying ${sourceTree} → ${shippedTree}`);
@@ -32,10 +37,11 @@ rmSync(shippedTree, { recursive: true, force: true });
 mkdirSync(dirname(shippedTree), { recursive: true });
 cpSync(sourceTree, shippedTree, {
 	recursive: true,
-	// Skip Move build artifacts / locks if any sneak in.
+	// Skip Move build artifacts / locks and the fetch marker if any sneak in.
 	filter: (src) =>
 		!src.endsWith('Move.lock') &&
 		!src.endsWith('Published.toml') &&
+		!src.endsWith('.deepbookv3-rev') &&
 		!src.includes(`${join('', 'build', '')}`),
 });
 

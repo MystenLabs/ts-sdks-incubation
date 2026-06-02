@@ -67,7 +67,8 @@
 	"scripts": {
 		"build": "pnpm run build:deepbook-assets && pnpm run build:dashboard-ui && tsdown",
 		"build:dashboard-ui": "node scripts/build-dashboard-ui.mjs",
-		"build:deepbook-assets": "node scripts/build-deepbook-assets.mjs",
+		"fetch:deepbook-move": "node scripts/fetch-deepbook-move.mjs",
+		"build:deepbook-assets": "pnpm run fetch:deepbook-move && node scripts/build-deepbook-assets.mjs",
 		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",

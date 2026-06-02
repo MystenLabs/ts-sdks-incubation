@@ -3,8 +3,14 @@
 # A build artifact, so kept out of source control like dist/.
 dashboard-ui/
 
-# Bundled DeepBook + sandbox-Pyth Move sources, copied at build time
+# Shipped DeepBook + sandbox-Pyth Move sources, assembled at build time
 # (`pnpm build` → `build:deepbook-assets`) from
 # `src/plugins/deepbook/bootstrap-assets/move` and shipped via the `files`
-# array. A build artifact (the source-of-truth tree lives under src/).
+# array. A build artifact.
 move-assets/
+
+# Upstream DeepBook (deepbookv3) Move sources — ~9k lines of third-party Move
+# fetched on demand at a pinned rev by `scripts/fetch-deepbook-move.mjs`
+# (run by `build:deepbook-assets`), NOT vendored in git. The sibling
+# `deepbook-sandbox/pyth` mock IS vendored (committed). See the fetch script.
+src/plugins/deepbook/bootstrap-assets/move/deepbookv3/
