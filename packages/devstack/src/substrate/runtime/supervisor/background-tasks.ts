@@ -13,7 +13,7 @@ import type { PluginKey } from '../../brand.ts';
 import type { EngineCommand, EngineEvent } from '../../events.ts';
 import { prettyErrorStructured } from '../observability/index.ts';
 import { PostAcquireTaskFailed } from '../post-acquire-tasks.ts';
-import { SupervisorPostAcquireFailed } from './errors.ts';
+import { SupervisorPostAcquireFailed, SupervisorRestoreFailed } from './errors.ts';
 import type { SnapshotCaptureTaskState, StackRestartTaskState, SupervisorState } from './state.ts';
 import { bestEffort, publish } from './wiring.ts';
 
@@ -24,7 +24,7 @@ import { bestEffort, publish } from './wiring.ts';
 type HandleCommandRunner = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
-) => Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope>;
+) => Effect.Effect<void, SupervisorPostAcquireFailed | SupervisorRestoreFailed, Scope.Scope>;
 
 /** `snapshot.captureFailed` / `snapshot.captureSkipped` carry a REQUIRED
  *  `snapshotId`. When the originating command carried an id, surfaces
@@ -38,12 +38,30 @@ const effectiveSnapshotId = (
 	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
 ): string => cmd.snapshotId ?? `snap-${Date.now()}`;
 
-export const runInjectedCommandHandler = (
+/**
+ * Run the injected L3 command handler and report the typed outcome.
+ *
+ * On success the handler's events are published and `ok: true` is
+ * returned. On failure the failure is surfaced on the event stream
+ * (`snapshot.captureFailed` for a capture, plus `error.reported`) AND
+ * the cause is returned to the caller so a command that must NOT
+ * proceed on a half-applied handler (e.g. `snapshot.restore`, which
+ * otherwise drains + re-acquires every service off a half-restored
+ * tree) can short-circuit and propagate the failure to `submitCommand`.
+ *
+ * Interrupt-only causes return `ok: true` (the interrupting sibling
+ * owns the lifecycle decision) — same as the void runner below.
+ */
+export const runInjectedCommandHandlerExit = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
-): Effect.Effect<void, never, never> =>
+): Effect.Effect<
+	{ readonly ok: true } | { readonly ok: false; readonly cause: Cause.Cause<unknown> },
+	never,
+	never
+> =>
 	Effect.gen(function* () {
-		if (deps.commandHandler === undefined) return;
+		if (deps.commandHandler === undefined) return { ok: true } as const;
 		const publishFromHandler = (event: EngineEvent): Effect.Effect<void, never, never> =>
 			publish(deps.ref, deps.hub, event);
 		const exit = yield* Effect.exit(
@@ -55,9 +73,9 @@ export const runInjectedCommandHandler = (
 			for (const event of exit.value) {
 				yield* publish(deps.ref, deps.hub, event);
 			}
-			return;
+			return { ok: true } as const;
 		}
-		if (Cause.hasInterruptsOnly(exit.cause)) return;
+		if (Cause.hasInterruptsOnly(exit.cause)) return { ok: true } as const;
 		if (cmd.tag === 'snapshot.capture') {
 			yield* publish(deps.ref, deps.hub, {
 				tag: 'snapshot.captureFailed',
@@ -79,7 +97,19 @@ export const runInjectedCommandHandler = (
 			level: 'error',
 			message: `command handler failed for ${cmd.tag}`,
 		});
+		return { ok: false, cause: exit.cause } as const;
 	}).pipe(Effect.withSpan('lifecycle.supervisor.injectedCommandHandler'));
+
+/**
+ * Fire-and-forget wrapper over {@link runInjectedCommandHandlerExit}:
+ * the handler's failure is already surfaced on the event stream, so the
+ * void channel suffices for capture / list / delete / wipe / prune,
+ * whose callers don't branch on the outcome.
+ */
+export const runInjectedCommandHandler = (
+	deps: SupervisorState,
+	cmd: EngineCommand,
+): Effect.Effect<void, never, never> => Effect.asVoid(runInjectedCommandHandlerExit(deps, cmd));
 
 export const startBackgroundSnapshotCapture = (
 	deps: SupervisorState,

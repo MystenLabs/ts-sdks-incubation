@@ -518,7 +518,17 @@ const resolveLocalOptions = (
 	if (opts.package && opts.publisher && opts.pools !== undefined) {
 		return opts as ResolvedLocalOptions;
 	}
-	const synth = synthesizeLocalDeepbook(name, opts.publisher);
+	// Partial override: synthesize ONLY the genuinely-missing pieces, RELATIVE
+	// to whatever the caller already supplied. Passing the explicit
+	// `package`/`publisher`/`pyth` into synthesis means the default pool's DEEP
+	// coin, registry and admin-cap all come from the EXPLICIT package (no
+	// phantom hidden-package coin type) and no duplicate `package`/`pyth`
+	// provider enters the resolved dependency closure.
+	const synth = synthesizeLocalDeepbook(name, {
+		...(opts.publisher === undefined ? {} : { publisher: opts.publisher }),
+		...(opts.package === undefined ? {} : { package: opts.package }),
+		...(opts.pyth === undefined ? {} : { pyth: opts.pyth }),
+	});
 	return {
 		...opts,
 		publisher: opts.publisher ?? synth.publisher,

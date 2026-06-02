@@ -21,6 +21,20 @@ export class SupervisorPostAcquireFailed extends Data.TaggedError('SupervisorPos
 	readonly cause: Cause.Cause<unknown>;
 }> {}
 
+/**
+ * A live `snapshot.restore` did not leave the stack in a good state.
+ * Raised by the command-loop so the submitted-command completion fails
+ * (and the dashboard mutation reports `{ ok: false, detail }`) instead
+ * of resolving success off a half-applied tree. Carries the failing
+ * cause — either the injected restore handler's failure (`reason:
+ * 'handler'`, drain skipped) or a post-restore re-acquire that left
+ * rows `failed` (`reason: 'reacquire'`).
+ */
+export class SupervisorRestoreFailed extends Data.TaggedError('SupervisorRestoreFailed')<{
+	readonly reason: 'handler' | 'reacquire';
+	readonly cause: Cause.Cause<unknown>;
+}> {}
+
 export class CapabilityFactoryFailed extends Data.TaggedError('CapabilityFactoryFailed')<{
 	readonly pluginKey: PluginKey;
 	readonly message: string;
@@ -30,6 +44,7 @@ export class CapabilityFactoryFailed extends Data.TaggedError('CapabilityFactory
 export type SupervisorError =
 	| SupervisorBootError
 	| SupervisorPostAcquireFailed
+	| SupervisorRestoreFailed
 	| CapabilityFactoryFailed
 	| PluginAcquireFailed
 	| RestartTargetMissing

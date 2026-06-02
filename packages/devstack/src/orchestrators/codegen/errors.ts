@@ -40,6 +40,30 @@ export class CodegenEmitterCollision extends Schema.TaggedErrorClass<CodegenEmit
 	},
 ) {}
 
+/** Two `Codegenable` contributions target the SAME aggregate
+ *  `bucket` but disagree on its routing/sensitivity metadata
+ *  (`outputLocation` or `sensitive`). The `AggregateContribution`
+ *  contract requires all contributors to a bucket to agree; the
+ *  orchestrator routes the synthesized aggregate from the FIRST
+ *  contributor it sees, so a silent disagreement could misroute a
+ *  sensitive aggregate into the committed `generated` tree. Detected
+ *  while folding contributions so the cycle fails fast rather than
+ *  emitting a secret with non-sensitive handling. */
+export class CodegenAggregateConflict extends Schema.TaggedErrorClass<CodegenAggregateConflict>()(
+	'CodegenAggregateConflict',
+	{
+		bucket: Schema.String,
+		field: Schema.Literals(['outputLocation', 'sensitive']),
+		/** The value the first contributor established for the bucket. */
+		established: Schema.String,
+		/** The conflicting value a later contributor declared. */
+		conflicting: Schema.String,
+		/** Emitter names: the contributor that established the value and
+		 *  the one that disagreed. */
+		emitters: Schema.Array(Schema.String),
+	},
+) {}
+
 /** A `Codegenable.emit()` wrote a value that the renderer cannot
  *  serialise (a function, a symbol, a circular reference, etc.). */
 export class CodegenRenderError extends Schema.TaggedErrorClass<CodegenRenderError>()(
@@ -102,6 +126,7 @@ export class CodegenManifestDrift extends Schema.TaggedErrorClass<CodegenManifes
 export type CodegenError =
 	| CodegenPathConflict
 	| CodegenEmitterCollision
+	| CodegenAggregateConflict
 	| CodegenRenderError
 	| CodegenEmitFailed
 	| CodegenWriteFailed

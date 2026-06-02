@@ -66,6 +66,7 @@ import {
 } from './bindings.ts';
 import { emitOne } from './emit.ts';
 import {
+	CodegenAggregateConflict,
 	CodegenEmitFailed,
 	CodegenEmitterCollision,
 	CodegenPathConflict,
@@ -340,7 +341,10 @@ const runEmitCycleInner = (
 		const aggregates = new Map<string, Record<string, unknown>>();
 		// Per-bucket location + sensitivity, read from the first decl
 		// the orchestrator sees contributing to the bucket. Drives where
-		// the synthesized aggregate file lands and its file mode.
+		// the synthesized aggregate file lands and its file mode. Every
+		// later contributor to the same bucket MUST agree (enforced
+		// below) — a silent disagreement could misroute a sensitive
+		// aggregate into the committed `generated` tree.
 		const aggregateMeta = new Map<string, AggregateMeta>();
 		const packageContribs: Array<PackageBindings> = [];
 		const sortedDecls = [...fileEmitters].sort(
@@ -368,11 +372,44 @@ const runEmitCycleInner = (
 					const bucket = aggregates.get(decl.aggregate.bucket) ?? {};
 					deepMerge(bucket, projected);
 					aggregates.set(decl.aggregate.bucket, bucket);
-					if (!aggregateMeta.has(decl.aggregate.bucket)) {
+					// First-contributor-wins for routing/sensitivity, but a
+					// LATER contributor that disagrees is a hard error — the
+					// `AggregateContribution` contract requires all
+					// contributors to a bucket to agree, and a silent
+					// mismatch could misroute a sensitive aggregate into the
+					// committed `generated` tree (secret leak).
+					const declLoc = decl.aggregate.outputLocation ?? 'generated';
+					const declSensitive = decl.aggregate.sensitive === true;
+					const established = aggregateMeta.get(decl.aggregate.bucket);
+					if (established === undefined) {
 						aggregateMeta.set(decl.aggregate.bucket, {
-							location: decl.aggregate.outputLocation ?? 'generated',
-							sensitive: decl.aggregate.sensitive === true,
+							location: declLoc,
+							sensitive: declSensitive,
+							establishedBy: decl.emitterName,
 						});
+					} else {
+						if (established.location !== declLoc) {
+							return yield* Effect.fail(
+								new CodegenAggregateConflict({
+									bucket: decl.aggregate.bucket,
+									field: 'outputLocation',
+									established: established.location,
+									conflicting: declLoc,
+									emitters: [established.establishedBy, decl.emitterName],
+								}),
+							);
+						}
+						if (established.sensitive !== declSensitive) {
+							return yield* Effect.fail(
+								new CodegenAggregateConflict({
+									bucket: decl.aggregate.bucket,
+									field: 'sensitive',
+									established: String(established.sensitive),
+									conflicting: String(declSensitive),
+									emitters: [established.establishedBy, decl.emitterName],
+								}),
+							);
+						}
 					}
 				}
 			}
@@ -422,7 +459,8 @@ const runEmitCycleInner = (
 			}
 		}
 
-		for (const aggregate of buildAggregateFiles(aggregates, aggregateMeta)) {
+		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta);
+		for (const aggregate of aggregateFiles) {
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
@@ -471,14 +509,28 @@ const runEmitCycleInner = (
 		// aggregate-only decls never write a standalone file — both are
 		// excluded here so the managed `.gitignore` only lists real
 		// sensitive files in `outputDir`.
-		const sensitivePaths = fileEmitters
-			.filter(
-				(d) =>
-					d.sensitive === true &&
-					d.aggregateOnly !== true &&
-					declLocation(d) === 'generated',
-			)
-			.map((d) => d.outputPath);
+		//
+		// Synthesized aggregate files are a SEPARATE source of sensitive
+		// runtime paths: a sensitive bucket routed to `generated` writes a
+		// real secret-bearing file in `outputDir` that the standalone-decl
+		// scan above never sees (its contributors may all be
+		// `aggregateOnly`). Without an explicit ignore line such a file
+		// would rely solely on the blanket `*` rule — and a user `!<file>`
+		// override in the preserved user block would then start tracking
+		// the secret. Include them so each gets an explicit re-ignore line.
+		const sensitivePaths = [
+			...fileEmitters
+				.filter(
+					(d) =>
+						d.sensitive === true &&
+						d.aggregateOnly !== true &&
+						declLocation(d) === 'generated',
+				)
+				.map((d) => d.outputPath),
+			...aggregateFiles
+				.filter((a) => a.sensitive && a.location === 'generated')
+				.map((a) => a.outputPath),
+		];
 		yield* writeGitignore({
 			path: paths.gitignoreFile,
 			sensitivePaths,
@@ -633,10 +685,13 @@ const validateAggregatePathAvailability = (
 /** Per-bucket location + sensitivity, captured from the first decl
  *  the orchestrator sees contributing to a bucket. The orchestrator
  *  stays name-blind; the plugin owns these on its
- *  `AggregateContribution`. */
+ *  `AggregateContribution`. `establishedBy` records the emitter name
+ *  of that first contributor so a later disagreement can quote both
+ *  sides in `CodegenAggregateConflict`. */
 interface AggregateMeta {
 	readonly location: OutputLocation;
 	readonly sensitive: boolean;
+	readonly establishedBy: string;
 }
 
 interface AggregateFile {
@@ -696,7 +751,11 @@ const buildAggregateFiles = (
 	for (const [bucket, contents] of sortedEntries) {
 		if (Object.keys(contents).length === 0) continue;
 		const stem = bucketStem(bucket);
-		const bucketMeta = meta.get(bucket) ?? { location: 'generated', sensitive: false };
+		const bucketMeta = meta.get(bucket) ?? {
+			location: 'generated' as const,
+			sensitive: false,
+			establishedBy: `aggregate/${stem}`,
+		};
 		files.push({
 			emitterName: `aggregate/${stem}`,
 			outputPath: bucket,

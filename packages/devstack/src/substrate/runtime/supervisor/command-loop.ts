@@ -9,19 +9,21 @@
 // `handleCommand` switches by tag and delegates to the per-concern
 // modules (shutdown, teardown, selective-restart, background-tasks).
 
-import { Deferred, Effect, Queue, Ref, Scope } from 'effect';
+import { Cause, Deferred, Effect, Queue, Ref, Scope } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
 import {
 	runInjectedCommandHandler,
+	runInjectedCommandHandlerExit,
 	runPostAcquireHook,
 	startBackgroundSnapshotCapture,
 	startBackgroundStackRestart,
 } from './background-tasks.ts';
-import { SupervisorPostAcquireFailed } from './errors.ts';
+import { SupervisorRestoreFailed, SupervisorPostAcquireFailed } from './errors.ts';
 import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts';
 import { allReadyOrTerminal, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
+import { publish } from './wiring.ts';
 import { planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
 
 const maybeRunPostAcquire = (
@@ -36,7 +38,7 @@ export const handleCommand = (
 	deps: SupervisorState,
 	cmd: EngineCommand,
 	options: { readonly failOnPostAcquireHook?: boolean } = {},
-): Effect.Effect<void, SupervisorPostAcquireFailed, Scope.Scope> =>
+): Effect.Effect<void, SupervisorPostAcquireFailed | SupervisorRestoreFailed, Scope.Scope> =>
 	Effect.gen(function* () {
 		const { graph, registry, pluginContext, sinks, logger, identity, runtimeRoot } = deps;
 		const parentScope = yield* Effect.scope;
@@ -158,8 +160,39 @@ export const handleCommand = (
 				// never reaches the client (502) even though the restore +
 				// re-acquire succeeded. The substrate planner filters on that
 				// node flag alone, with no knowledge of which plugins set it.
-				yield* runInjectedCommandHandler(deps, cmd);
+				//
+				// The handler runs via the TYPED-exit runner (not the
+				// error-swallowing void wrapper) so a FAILED restore (bad
+				// snapshot id, or a failure AFTER the on-disk swap)
+				// short-circuits: we must NOT drain + re-acquire every service off
+				// a half-applied tree, and the submitted-command completion must
+				// FAIL so the dashboard mutation reports `{ ok:false }` instead of
+				// resolving success on `id:"does-not-exist"`.
+				const restoreOutcome = yield* runInjectedCommandHandlerExit(deps, cmd);
+				if (!restoreOutcome.ok) {
+					return yield* Effect.fail(
+						new SupervisorRestoreFailed({ reason: 'handler', cause: restoreOutcome.cause }),
+					);
+				}
 				const plan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+				if (plan.slice.size === 0) {
+					// Empty re-acquire slice (the stack's only members are
+					// dashboard()/host-service(...), which carry `keepAliveOnRestore`):
+					// `doSelectiveRestart` emits its `restart.*` settle events
+					// per-root, so an empty slice would fire NONE and leave the
+					// projection stuck at the `restoring` phase set on
+					// `snapshot.restored`. Emit the settle ourselves so the phase
+					// returns to `running`.
+					yield* publish(deps.ref, deps.hub, {
+						tag: 'restart.completed',
+						target: 'stack',
+						at: Date.now(),
+					});
+					if (yield* allReadyOrTerminal(graph, registry)) {
+						yield* maybeRunPostAcquire(deps, options);
+					}
+					return;
+				}
 				const restarted = yield* doSelectiveRestart(
 					graph,
 					registry,
@@ -176,9 +209,27 @@ export const handleCommand = (
 					Effect.as(true),
 					Effect.catch(() => Effect.succeed(false)),
 				);
-				if (restarted && (yield* allReadyOrTerminal(graph, registry))) {
-					yield* maybeRunPostAcquire(deps, options);
+				// Feed the REAL re-acquire outcome into the completion: a valid
+				// snapshot whose re-acquire leaves any row `failed` (port conflict,
+				// broken dep) must report `{ ok:false }`, not a green dashboard with
+				// failed rows. `allReadyOrTerminal` collapses a failed/unreadable
+				// node to non-ready, so this is the all-rows-ready gate.
+				const allReady = restarted && (yield* allReadyOrTerminal(graph, registry));
+				if (!allReady) {
+					return yield* Effect.fail(
+						new SupervisorRestoreFailed({
+							reason: 'reacquire',
+							cause: Cause.fail(
+								new Error(
+									restarted
+										? 'snapshot restore re-acquire left one or more services not ready'
+										: 'snapshot restore re-acquire failed',
+								),
+							),
+						}),
+					);
 				}
+				yield* maybeRunPostAcquire(deps, options);
 				return;
 			}
 			case 'snapshot.list':
