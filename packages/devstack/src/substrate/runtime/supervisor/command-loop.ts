@@ -22,7 +22,7 @@ import { SupervisorPostAcquireFailed } from './errors.ts';
 import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts';
 import { allReadyOrTerminal, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
-import { planFullDrain } from '../lifecycle/index.ts';
+import { isNonRestorableTransport, planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
 
 const maybeRunPostAcquire = (
 	deps: SupervisorState,
@@ -150,8 +150,15 @@ export const handleCommand = (
 				// drain + re-acquire every service from it. The handler runs
 				// first (and publishes `snapshot.restored`); we only re-acquire
 				// once it succeeded.
+				//
+				// Drain EXCLUDES the operator transport (dashboard + host-service)
+				// so a dashboard-initiated restore doesn't tear down the very
+				// connection it's answering on — otherwise the `submitCommand`
+				// completion the resolver awaits never reaches the client (502)
+				// even though the restore + re-acquire succeeded. Those plugins
+				// hold no restorable chain state, so leaving them live is safe.
 				yield* runInjectedCommandHandler(deps, cmd);
-				const plan = planFullDrain(graph);
+				const plan = planFullDrainExcluding(graph, isNonRestorableTransport);
 				const restarted = yield* doSelectiveRestart(
 					graph,
 					registry,

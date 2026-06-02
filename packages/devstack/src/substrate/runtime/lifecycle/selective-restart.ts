@@ -79,3 +79,35 @@ export const planFullDrain = (graph: ResolvedGraph): RestartPlan => {
 	const acquireOrder = orderByLevel(graph, slice, 'forward');
 	return { slice, teardownOrder, acquireOrder };
 };
+
+/** Plugin ids that are the operator's own transport and hold no
+ *  restorable chain state — excluded from the live `snapshot.restore`
+ *  re-acquire. Leaving them running is safe: the dashboard's view derives
+ *  from the in-process projection (re-acquired anyway), and host-service
+ *  processes read chain over the network at stable hostnames. Excluding
+ *  them stops a dashboard-initiated restore from tearing down the very
+ *  connection it's answering on (which surfaces to the UI as a 502 even
+ *  though the restore succeeded). `stack.restart` / CLI full-restart still
+ *  drains everything via `planFullDrain`. Key shape is `${id}#${ordinal}`. */
+export const isNonRestorableTransport = (key: PluginKey): boolean => {
+	const raw = String(key);
+	const hash = raw.indexOf('#');
+	const id = hash === -1 ? raw : raw.slice(0, hash);
+	return id === 'dashboard' || id.startsWith('host-service/');
+};
+
+/** `planFullDrain` minus the keys matched by `exclude`. The excluded
+ *  nodes stay live while every other plugin (all chain-stateful services)
+ *  is drained + re-acquired. */
+export const planFullDrainExcluding = (
+	graph: ResolvedGraph,
+	exclude: (key: PluginKey) => boolean,
+): RestartPlan => {
+	const slice = new Set<PluginKey>();
+	for (const key of graph.nodes.keys()) {
+		if (!exclude(key)) slice.add(key);
+	}
+	const teardownOrder = orderByLevel(graph, slice, 'reverse');
+	const acquireOrder = orderByLevel(graph, slice, 'forward');
+	return { slice, teardownOrder, acquireOrder };
+};
