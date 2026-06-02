@@ -3,6 +3,9 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import type { ComponentType } from 'react';
 
 import { CounterPanel } from './panels/CounterPanel.js';
+// devstack:begin deepbook
+import { DeepbookPanel } from './panels/DeepbookPanel.js';
+// devstack:end deepbook
 // devstack:begin seal
 import { SealPanel } from './panels/SealPanel.js';
 // devstack:end seal
@@ -15,6 +18,9 @@ import { WalrusPanel } from './panels/WalrusPanel.js';
 // of. Each panel takes a single `connected` prop.
 const panels: ReadonlyArray<ComponentType<{ connected: boolean }>> = [
 	CounterPanel,
+	// devstack:begin deepbook
+	DeepbookPanel,
+	// devstack:end deepbook
 	// devstack:begin seal
 	SealPanel,
 	// devstack:end seal

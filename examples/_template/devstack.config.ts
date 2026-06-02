@@ -22,6 +22,9 @@ import {
 	sui,
 	type Stack,
 	wallet,
+	// devstack:begin deepbook
+	deepbook,
+	// devstack:end deepbook
 	// devstack:begin seal
 	seal,
 	// devstack:end seal
@@ -68,6 +71,12 @@ const vault = localPackage('vault', {
 const sealKeyServer = seal({ mode: 'local-keygen', signer: sealPublisher });
 // devstack:end seal
 
+// devstack:begin deepbook
+// One-liner local DeX: synthesizes a publisher, publishes DeepBook + Pyth
+// from the plugin's bundled assets, and seeds a default DEEP/SUI pool.
+const dex = deepbook();
+// devstack:end deepbook
+
 const devWallet = wallet({
 	accounts: [
 		alice,
@@ -94,6 +103,9 @@ const app = hostService({
 		vault,
 		sealKeyServer,
 		// devstack:end seal
+		// devstack:begin deepbook
+		dex,
+		// devstack:end deepbook
 	] as const,
 });
 
