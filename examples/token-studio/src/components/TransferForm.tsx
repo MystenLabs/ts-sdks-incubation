@@ -3,8 +3,8 @@ import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
+import { useConnectedAccounts } from '../lib/accounts.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
-import { useDevAccounts } from '../lib/dev-accounts.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
 export function TransferForm({ self }: { self: string }) {
@@ -12,15 +12,15 @@ export function TransferForm({ self }: { self: string }) {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const others = Object.entries(useDevAccounts()).filter(([, addr]) => addr !== self);
-	const firstOther = (others[0]?.[1] ?? '') as string;
+	const others = useConnectedAccounts().filter((a) => a.address !== self);
+	const firstOther = others[0]?.address ?? '';
 
 	const [recipient, setRecipient] = useState<string>(firstOther);
 	const [amount, setAmount] = useState('10');
 	const [error, setError] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
 
-	// Default the recipient once the (DEV-only) seeded directory loads, if the
+	// Default the recipient once the connected-account list loads, if the
 	// user hasn't picked one yet.
 	useEffect(() => {
 		if (!recipient && firstOther) setRecipient(firstOther);
@@ -58,9 +58,9 @@ export function TransferForm({ self }: { self: string }) {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{others.map(([name, addr]) => (
-								<option key={name} value={addr}>
-									{name} ({shortAddress(addr)})
+							{others.map(({ name, address }) => (
+								<option key={address} value={address}>
+									{name} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

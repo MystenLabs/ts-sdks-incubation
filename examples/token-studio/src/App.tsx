@@ -5,9 +5,9 @@ import { Balances } from './components/Balances.js';
 import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
+import { useConnectedAccounts } from './lib/accounts.js';
 import { deployment, isDeployed } from './lib/deployment.js';
-import { useDevAccounts } from './lib/dev-accounts.js';
-import { labelFor, shortAddress } from './lib/coin.js';
+import { shortAddress } from './lib/coin.js';
 
 export function App() {
 	const deployed = isDeployed;
@@ -79,10 +79,10 @@ function DisconnectedView() {
 }
 
 function ConnectedView({ address }: { address: string }) {
-	const accounts = useDevAccounts();
-	// The TreasuryCap holder is the first seeded account (alice) by convention.
-	const isTreasuryHolder = address === Object.values(accounts)[0];
-	const label = labelFor(address);
+	const accounts = useConnectedAccounts();
+	// The TreasuryCap holder is the first connected account (alice) by convention.
+	const isTreasuryHolder = address === accounts[0]?.address;
+	const label = accounts.find((a) => a.address === address)?.name ?? null;
 
 	return (
 		<>

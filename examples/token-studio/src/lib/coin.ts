@@ -2,7 +2,6 @@ import type { ClientWithCoreApi } from '@mysten/sui/client';
 import { Transaction } from '@mysten/sui/transactions';
 
 import { deployment } from './deployment.js';
-import { devAccountLabel } from './dev-accounts.js';
 
 export const MANAGED_COIN_TYPE = deployment.managedCoinType;
 export const TREASURY_CAP_ID = deployment.treasuryCapId;
@@ -72,8 +71,4 @@ export function formatStudio(raw: bigint | string | number, fractionDigits = 2):
 export function shortAddress(address: string, head = 6, tail = 4): string {
 	if (address.length <= head + tail + 2) return address;
 	return `${address.slice(0, head + 2)}…${address.slice(-tail)}`;
-}
-
-export function labelFor(address: string): string | null {
-	return devAccountLabel(address);
 }

@@ -80,8 +80,9 @@ function playerForConnectedAddress(
 /**
  * Drive the devstack dev-wallet account switch that powers the in-app
  * "Open as Alice" / "Join as Bob" buttons. This is a DEV-only affordance:
- * `dapp-kit.dev.ts` wires `globalThis.__devstackDAppKit__.selectAccount`
- * when the dev wallet initializes. In a production build the slot is
+ * the devstack Vite plugin injects + registers the dev wallet on the page
+ * and wires `globalThis.__devstackDAppKit__.selectAccount`. In a production
+ * build the slot is
  * absent and the currently connected wallet signs as-is.
  */
 async function selectDevstackAccount(accountName: Player): Promise<void> {

@@ -7,7 +7,9 @@ import {
 } from '@mysten-incubation/devstack/playwright';
 
 const env = {
-	VITE_DEEPBOOK_TRADER_AUTO_APPROVE: '1',
+	// Single devstack-wide switch the Vite plugin reads to auto-approve
+	// dev-wallet signing requests (replaces per-app VITE_*_AUTO_APPROVE).
+	DEVSTACK_AUTO_APPROVE: '1',
 };
 const stack = 'deepbook-trader' as const;
 const baseURL = 'http://dev.deepbook-trader.deepbook-trader.localhost:5175';

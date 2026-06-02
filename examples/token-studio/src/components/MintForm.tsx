@@ -4,24 +4,25 @@ import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
 import { mint as buildMint } from '@generated/bindings/token_studio/managed_coin.js';
+import { useConnectedAccounts } from '../lib/accounts.js';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
-import { useDevAccounts } from '../lib/dev-accounts.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
 export function MintForm() {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const accounts = useDevAccounts();
-	// Default recipient: bob if present, else the first seeded account.
-	const defaultRecipient = accounts.bob ?? Object.values(accounts)[0] ?? '';
+	const accounts = useConnectedAccounts();
+	// Default recipient: bob if present, else the first connected account.
+	const defaultRecipient =
+		accounts.find((a) => a.name === 'bob')?.address ?? accounts[0]?.address ?? '';
 
 	const [recipient, setRecipient] = useState<string>(defaultRecipient);
 	const [amount, setAmount] = useState('100');
 	const [error, setError] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
 
-	// Default the recipient once the (DEV-only) seeded directory loads, if the
+	// Default the recipient once the connected-account list loads, if the
 	// user hasn't picked one yet.
 	useEffect(() => {
 		if (!recipient && defaultRecipient) setRecipient(defaultRecipient);
@@ -64,9 +65,9 @@ export function MintForm() {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{Object.entries(accounts).map(([name, addr]) => (
-								<option key={name} value={addr}>
-									{name} ({shortAddress(addr)})
+							{accounts.map(({ name, address }) => (
+								<option key={address} value={address}>
+									{name} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

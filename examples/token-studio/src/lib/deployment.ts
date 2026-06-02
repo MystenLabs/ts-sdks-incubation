@@ -11,10 +11,10 @@
 // concatenation. The `packageId` below is kept purely for display (header /
 // footer) and the "is anything deployed?" gate.
 //
-// NOTE: the seeded-account directory (alice/bob/carol) is a DEV-only concept
-// and lives behind the prod-safe `./dev-accounts.ts` accessor — it is NOT
-// part of this prod-path projection (the dev-only `@devstack-dev/accounts.js`
-// map does not exist in a production build).
+// NOTE: the account directory the UI renders (alice/bob/carol in DEV) is NOT
+// part of this prod-path projection — it is read from the CONNECTED WALLET
+// via dApp Kit (`./lib/accounts.ts`, `useCurrentWallet().accounts`), so it
+// reflects whatever accounts the active wallet exposes in any build.
 //
 // `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated
 // by coin auto-discovery on every publish (see

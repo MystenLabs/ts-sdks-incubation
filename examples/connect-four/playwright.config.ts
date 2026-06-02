@@ -8,7 +8,9 @@ import {
 
 const baseURL = 'http://dev.connect-four.connect-four.localhost:5175';
 const env = {
-	VITE_CONNECT_FOUR_AUTO_APPROVE: '1',
+	// Single devstack-wide switch the Vite plugin reads to auto-approve
+	// dev-wallet signing requests (replaces per-app VITE_*_AUTO_APPROVE).
+	DEVSTACK_AUTO_APPROVE: '1',
 };
 
 export default defineConfig({

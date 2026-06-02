@@ -13,7 +13,9 @@ import {
 // (see packages/devstack/src/build-integrations/runtime/conventional-routes.ts).
 const baseURL = 'http://dev.test.template.localhost:5175';
 const env = {
-	VITE_TEMPLATE_AUTO_APPROVE: '1',
+	// Single devstack-wide switch the Vite plugin reads to auto-approve
+	// dev-wallet signing requests (replaces per-app VITE_*_AUTO_APPROVE).
+	DEVSTACK_AUTO_APPROVE: '1',
 };
 
 export default defineConfig({

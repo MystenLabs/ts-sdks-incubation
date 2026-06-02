@@ -1,16 +1,16 @@
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 
+import { useConnectedAccounts } from '../lib/accounts.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
-import { useDevAccounts } from '../lib/dev-accounts.js';
 import { useCoinBalance } from '../lib/queries.js';
 import { Card } from '../ui/Card.js';
 
 export function Balances() {
 	const me = useCurrentAccount();
-	const entries = Object.entries(useDevAccounts()) as [string, string][];
+	const accounts = useConnectedAccounts();
 
 	return (
-		<Card title="Balances" subtitle="Seeded accounts and their current STUDIO holdings">
+		<Card title="Balances" subtitle="Connected accounts and their current STUDIO holdings">
 			<div className="overflow-hidden rounded-lg border border-neutral-200 dark:border-neutral-800">
 				<table className="w-full text-sm">
 					<thead className="bg-neutral-50 dark:bg-neutral-900 text-neutral-600 dark:text-neutral-400">
@@ -21,9 +21,9 @@ export function Balances() {
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
-						{entries.map(([name, address]) => (
+						{accounts.map(({ name, address }) => (
 							<BalanceRow
-								key={name}
+								key={address}
 								name={name}
 								address={address}
 								highlight={me?.address === address}
