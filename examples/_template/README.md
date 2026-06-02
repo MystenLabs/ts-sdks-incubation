@@ -1,30 +1,44 @@
 # Template
 
-Minimal devstack starter: one Move package (`hello::mint`), two
-managed accounts, one post-publish action, and one e2e spec exercising
-the connect-and-mint flow.
+Devstack starter with one core panel and two optional plugin panels:
+
+- **Counter** (core) — create + increment a shared Move `Counter`.
+- **Seal** (optional) — encrypt a secret, register its policy on chain,
+  and decrypt it back.
+- **Walrus** (optional) — store a text blob and read it back.
+
+Optional plugins are wrapped in `// devstack:begin <plugin>` /
+`// devstack:end <plugin>` fences in the shared files (`App.tsx`,
+`devstack.config.ts`) so the scaffolder can strip the ones you opt out
+of. Plugin-specific files (`panels/`, `lib/`, `move/`, `e2e/`) are
+removed wholesale.
 
 ```
 _template/
-├── devstack.config.ts    # sui-localnet + hello package + greet action + dev-wallet + vite
-├── move/hello/           # Move package: emits a Greeting event on mint
-├── e2e/                  # Playwright: connect wallet, mint, assert digest
-└── src/                  # React UI: connect, mint, render digest
+├── devstack.config.ts    # sui-localnet + counter pkg (+ fenced seal/walrus) + dev-wallet + vite
+├── move/counter/         # core Move package: shared Counter
+├── move/vault/           # <seal> Move package: policy object for seal_approve
+├── e2e/                  # Playwright: counter / seal / walrus flows
+└── src/
+    ├── dapp-kit.ts       # prod-safe wallet wiring (dev wallet dynamically imported, DEV-gated)
+    ├── dapp-kit.dev.ts   # dev-only: accounts + connectAs slot
+    ├── panels/           # CounterPanel (core), SealPanel/WalrusPanel (optional)
+    ├── lib/              # counter / seal / walrus integrations + shared sign hook
+    └── ui/               # Panel + Card chrome
 ```
 
 ## Run
 
 ```
-pnpm dev          # devstack up: localnet + publish + greet + wallet + vite (port 5179)
-pnpm test         # typecheck + Vitest unit coverage
-pnpm test:e2e     # Playwright connect-and-mint flow
+pnpm dev          # devstack up: localnet + publish + plugins + wallet + vite
+pnpm test         # typecheck + Vitest unit coverage (counter tx builders)
+pnpm test:e2e     # Playwright counter/seal/walrus flows on the `test` stack
 ```
 
 ## See also
 
 - [examples/README.md](../README.md) — overview of every runnable app.
-- [Quickstart](https://ts-sdks-incubation.vercel.app/devstack/quickstart) — full tour
-  of the same shape you see here.
+- [Quickstart](https://ts-sdks-incubation.vercel.app/devstack/quickstart) — full tour.
 
 Use this folder as the starting point for new browser examples — see
 `examples/README.md > Adding An Example`.

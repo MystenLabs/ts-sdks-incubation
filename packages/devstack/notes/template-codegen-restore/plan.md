@@ -58,11 +58,14 @@ New capability — per-network package ids: extend `localPackage`/`knownPackage`
 - `@generated` alias = devstack vite plugin (`build-integrations/vite/index.ts`), resolves manifest `codegen.generatedDir`, stack from `DEVSTACK_STACK` env. `@devstack-dev` mirrors this → `.devstack/stacks/<stack>/generated-extras`. tsconfig `paths` entry needed too.
 - `services.ts` IS imported (token-studio, private-content `lib/deployment.ts`) — NOT dead as earlier thought; its network data folds into `config.networks`. Migrate those consumers, don't just delete.
 
-## WS3 — Template + example app overhaul  [ ]
-- [ ] Better example app that does something real (current `hello::mint` greeting is a no-op demo).
-- [ ] Wire seal + walrus + deepbook into the template (gated by picker).
-- [ ] Interactive picker in `create-devstack-app` (prompt plugins, default all selected; one template source, conditional emit).
-- [ ] Drop `accountAddressByName` from the template runtime path (accounts are dev-only now).
+## WS3 — Template + example app overhaul  [~]
+Design: `design-template.md` (per-plugin demo panels + interactive picker + dev/prod wallet split + test-stack). User decisions: per-plugin panels; interactive picker; deepbook must be a true one-liner (investigate plugin — DONE, see below).
+- [x] Phase A: `examples/_template` rebuilt — counter (core) + seal + walrus panels, dev/prod dapp-kit split (no runtime accounts; `dapp-kit.dev.ts` holds the dev-only slot), test-stack playwright, real e2e + vitest unit, fenced for picker. Binding-name assumptions flagged for Phase E.
+- [x] Phase D: `create-devstack-app` picker (@clack/prompts) + fence stripper + plugin-manifest + sync-template rework (deleted brittle cutover fixups, shared SKIP, manifest validation). typecheck + 18 unit tests pass. tsdown bundles clack.
+- [ ] Phase E1: Docker apply core+seal+walrus `_template` + typecheck + fix binding mismatches. IN PROGRESS.
+- [ ] DEEPBOOK plugin one-liner (devstack core): investigation CONFIRMS feasible — SDK + pools + codegen already work locally; gap is the plugin doesn't OWN the Move. Fix: ship DeepBook+Pyth Move as `deepbook/bootstrap-assets` (mirror seal/walrus), have `deepbook({mode:'local'})` synthesize the `localPackage('deepbook'/'pyth')` members + default pool/seed presets; make `package`/`pools` optional overrides. deepbook-trader currently vendors `move/vendor/{deepbookv3,deepbook-sandbox}` (~9.7k LOC) — that moves into the plugin.
+- [ ] Then add deepbook panel/lib/spec + fenced config/App/package.json to `_template` (manifest already reserves it).
+- [x] Drop `accountAddressByName` from template runtime (done in Phase A dapp-kit split).
 
 ## WS4 — Testing DX  [ ]
 - DECISION (user): tests run on a SEPARATE stack name (e.g. `test`) vs the dev stack (`primary`). Do NOT attach to the running dev supervisor. The supervisor already isolates stacks by name, so a distinct `DEVSTACK_STACK=test` avoids the exit-40 "supervisor live" collision entirely.

@@ -25,11 +25,17 @@
 // Run via `pnpm -F @mysten-incubation/create-devstack-app run sync-template`,
 // or as part of `pnpm build` (the package script chains the two).
 //
+// The bundled template is now the LITERAL final source: `examples/_template/`
+// is a superset (core + fenced optional plugins) that the scaffolder strips
+// per the picker. There are no post-copy "cutover fixups" — sync copies,
+// resolves deps, writes support files, then VALIDATES (manifest paths exist;
+// shared fenced files balanced).
+//
 // CI gap: `pnpm -F @mysten-incubation/create-devstack-app run check-template`
 // is the drift detector that proves the bundled `template/` matches
 // `examples/_template/`. It is not yet wired into `turbo.json`'s
 // `typecheck`/`test` graph, so contributors should remember to run it
-// before publishing; see TODO in `applyTemplateCutoverFixups` below.
+// before publishing.
 
 import {
 	cpSync,
@@ -39,11 +45,17 @@ import {
 	readFileSync,
 	readdirSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+
+// Shared with `src/index.ts` so the copy-skip list never drifts.
+import { shouldSkip } from '../src/skip.ts';
+import { OPTIONAL_PLUGINS, PLUGIN_MANIFEST } from '../src/plugin-manifest.ts';
+import { assertFencesBalanced } from '../src/strip.ts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = resolve(HERE, '..');
@@ -51,20 +63,9 @@ const REPO_ROOT = resolve(PKG_ROOT, '..', '..');
 const SRC = resolve(REPO_ROOT, 'examples', '_template');
 const DST = resolve(PKG_ROOT, 'template');
 const CHECK = process.argv.includes('--check');
-const SKIP = new Set([
-	'node_modules',
-	'build',
-	'dist',
-	'.devstack',
-	'.turbo',
-	'generated',
-	'package_summaries',
-	'test-results',
-	'playwright-report',
-	'playwright',
-	'tsconfig.app.tsbuildinfo',
-	'tsconfig.node.tsbuildinfo',
-]);
+
+/** Shared text files that carry plugin fences and must stay balanced. */
+const FENCED_SHARED_FILES = ['devstack.config.ts', 'src/App.tsx'] as const;
 
 if (!existsSync(SRC)) {
 	throw new Error(`sync-template: source ${SRC} not found. The repo layout may have changed.`);
@@ -108,19 +109,61 @@ function syncTemplate(dst: string): void {
 
 	cpSync(SRC, dst, {
 		recursive: true,
-		filter: (s) => {
-			const parts = s.split('/');
-			for (const p of parts) {
-				if (SKIP.has(p)) return false;
-				if (/^.*\.config\.(js|d\.ts)$/.test(p)) return false;
-			}
-			return true;
-		},
+		// `shouldSkip` expects a template-relative posix path; the absolute
+		// path's suffix segments are what matter, so passing the absolute path
+		// is fine (it only checks whether ANY segment is skip-listed).
+		filter: (s) => !shouldSkip(s),
 	});
 
 	resolveTemplateDeps(dst, REPO_ROOT);
-	applyTemplateCutoverFixups(dst);
 	writeTemplateSupportFiles(dst);
+	validateTemplate(dst);
+}
+
+/** Validate the synced template against the plugin manifest + fence rules.
+ *  Runs in both sync and `--check` so drift is caught early:
+ *   - every manifest `files`/`dirs` entry exists in the template;
+ *   - every shared fenced file has balanced `begin`/`end` fences. */
+function validateTemplate(templateDir: string): void {
+	const problems: string[] = [];
+
+	for (const id of OPTIONAL_PLUGINS) {
+		const entry = PLUGIN_MANIFEST[id];
+		for (const f of entry.files) {
+			const p = join(templateDir, f);
+			if (!existsSync(p) || !statSync(p).isFile()) {
+				problems.push(`plugin '${id}' manifest file missing from template: ${f}`);
+			}
+		}
+		for (const d of entry.dirs) {
+			const p = join(templateDir, d);
+			if (!existsSync(p) || !statSync(p).isDirectory()) {
+				problems.push(`plugin '${id}' manifest dir missing from template: ${d}`);
+			}
+		}
+	}
+
+	for (const rel of FENCED_SHARED_FILES) {
+		const p = join(templateDir, rel);
+		if (!existsSync(p)) {
+			problems.push(`fenced shared file missing from template: ${rel}`);
+			continue;
+		}
+		try {
+			assertFencesBalanced(readFileSync(p, 'utf8'), rel);
+		} catch (e) {
+			problems.push((e as Error).message);
+		}
+	}
+
+	if (problems.length > 0) {
+		throw new Error(
+			`sync-template validation failed:\n  - ${problems.join('\n  - ')}\n` +
+				`(Template paths/markers must match packages/create-devstack-app/src/plugin-manifest.ts. ` +
+				`If the deepbook track hasn't landed yet, its manifest files are expected to be present in ` +
+				`examples/_template/ once that track ships.)`,
+		);
+	}
 }
 
 function diffTemplateDirs(actual: string, expected: string): ReadonlyArray<string> {
@@ -221,15 +264,19 @@ function rewriteTemplateScripts(json: PkgJson): void {
 	}
 
 	const scaffoldedScripts: Record<string, string> = {
-		'devstack:apply': 'DEVSTACK_APP=template devstack apply',
+		'devstack:apply': 'DEVSTACK_APP=_template devstack apply',
 		apply: 'pnpm run devstack:apply',
-		dev: 'DEVSTACK_APP=template devstack up',
+		dev: 'DEVSTACK_APP=_template devstack up',
 		build:
-			'pnpm run devstack:apply && DEVSTACK_APP=template tsc -b && DEVSTACK_APP=template vite build',
+			'pnpm run devstack:apply && DEVSTACK_APP=_template tsc -b && DEVSTACK_APP=_template vite build',
 		preview: scripts.preview ?? 'vite preview',
 		typecheck: 'pnpm run devstack:apply && tsc -b --noEmit',
+		// `vitest run` runs the counter.test.ts unit suite (non-empty); the
+		// `_template` DEVSTACK_APP token is rewritten to the app name at scaffold.
 		test: scripts.test ?? 'pnpm run typecheck && vitest run',
-		'test:e2e': 'DEVSTACK_APP=template playwright test',
+		// e2e runs against the dedicated `test` stack: its `pnpm dev` webServer
+		// brings the stack up (no manual apply), distinct from the primary stack.
+		'test:e2e': 'DEVSTACK_APP=_template DEVSTACK_STACK=test playwright test',
 		clean: scripts.clean ?? 'rm -rf dist .turbo node_modules/.tmp',
 	};
 
@@ -286,25 +333,6 @@ function stripQuotes(s: string): string {
 	return s;
 }
 
-function applyTemplateCutoverFixups(templateDir: string): void {
-	const oldGeneratedMetadataComment =
-		/\/\/ Codegen runs before Dev \(`after: \[\.\.\., codegen\]`\), so this file\n\/\/ existing implies hello is published.*\nconst helloPackageId = packages\.hello\.packageId;/;
-	const oldPackageLabel = "Package:{' '}";
-	replaceInFile(join(templateDir, 'src', 'App.tsx'), [
-		[
-			oldGeneratedMetadataComment,
-			'// `devstack apply` emits this generated package metadata after hello is\n// published, so no deployment guard is needed here.\nconst helloPackageId = packages.hello.packageId;',
-		],
-		[oldPackageLabel, "Move package:{' '}"],
-	]);
-	replaceInFile(join(templateDir, 'src', 'dapp-kit.ts'), [
-		[
-			'(RPC URL + MVR overrides + burner-wallet adapter)',
-			'(RPC URL + MVR overrides + dev-wallet adapter)',
-		],
-	]);
-}
-
 function writeTemplateSupportFiles(templateDir: string): void {
 	// npm treats `.gitignore` specially while packing. Ship it under a neutral
 	// name and let the scaffolder restore it after copying the template.
@@ -359,36 +387,18 @@ A minimal Sui app scaffolded with \`@mysten-incubation/create-devstack-app\`.
 pnpm dev       # start the devstack supervisor and Vite app
 pnpm build     # apply the stack, typecheck, and build the app
 pnpm test      # typecheck and run unit tests
-pnpm test:e2e  # start the stack and run the Playwright mint flow
+pnpm test:e2e  # bring up the test stack and run the Playwright specs
 \`\`\`
 
 ## Project Shape
 
-- \`devstack.config.ts\` defines the local Sui stack, accounts, Move package, and dev wallet.
-- \`move/hello/\` contains the example Move package.
+- \`devstack.config.ts\` defines the local Sui stack, accounts, Move package(s), and dev wallet.
+- \`move/counter/\` contains the core example Move package.
 - \`src/dapp-kit.ts\` wires dApp Kit to the generated devstack config.
-- \`src/App.tsx\` connects the wallet and calls \`hello::mint\`.
+- \`src/App.tsx\` registers the demo panels (counter, plus any plugins you chose at scaffold).
 
 \`devstack apply\` writes runtime state under \`.devstack/\` and generated app bindings under
 \`src/generated/\`; both are ignored because they are regenerated for each checkout.
 `,
 	);
-}
-
-function replaceInFile(
-	path: string,
-	replacements: ReadonlyArray<readonly [string | RegExp, string]>,
-): void {
-	let text = readFileSync(path, 'utf8');
-	for (const [from, to] of replacements) {
-		const before = text;
-		text = text.replace(from, to);
-		if (text === before) {
-			const needle = from instanceof RegExp ? from.toString() : JSON.stringify(from);
-			throw new Error(
-				`sync-template cutover-fixup failed: substring ${needle} not found in ${path}; the upstream template has likely been edited.`,
-			);
-		}
-	}
-	writeFileSync(path, text);
 }

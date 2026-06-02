@@ -1,0 +1,10 @@
+[package]
+name = "counter"
+edition = "2024"
+version = "0.0.1"
+
+# Sui, MoveStdlib, etc. are auto-added by sui-cli (2024 edition).
+[dependencies]
+
+[addresses]
+counter = "0x0"

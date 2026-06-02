@@ -1,17 +1,19 @@
-// Minimal devstack config template.
+// Devstack template config (superset).
 //
-// Two accounts + a local Move package + one post-publish action.
-// The package's `publisher` threads the account member directly
-// (Direct Member Ref). The substrate orders alice's keypair +
-// funding strictly before the publish tx via the package's
-// dependency edge; the action then runs once the package is on chain.
+// Core: a sui localnet, one managed account (alice), a local `counter`
+// Move package, the dev wallet, and a vite host service.
+//
+// Optional plugins are wrapped in `// devstack:begin <plugin>` /
+// `// devstack:end <plugin>` fences so the scaffolder can strip the ones
+// a user opts out of. Fences sit on whole-statement boundaries (imports,
+// const declarations, array elements, `after:` members) so removal never
+// breaks syntax.
 
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
 	account,
-	action,
 	dashboard,
 	defineDevstack,
 	HOST_SERVICE_PORT_TOKEN,
@@ -20,41 +22,84 @@ import {
 	sui,
 	type Stack,
 	wallet,
+	// devstack:begin seal
+	seal,
+	// devstack:end seal
+	// devstack:begin walrus
+	walrus,
+	walCoin,
+	// devstack:end walrus
 } from '@mysten-incubation/devstack';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEV_PORT = 5179;
 
 const localnet = sui();
-const alice = account('alice');
-const bob = account('bob');
 
-const hello = localPackage('hello', {
-	sourcePath: resolve(HERE, 'move/hello'),
+// devstack:begin walrus
+const walrusCluster = walrus({ local: { nodeCount: 1 } });
+const wal = walCoin(walrusCluster);
+// devstack:end walrus
+
+const alice = account('alice', {
+	kind: 'ephemeral',
+	funding: [
+		{ coin: 'sui', amount: 1_000_000_000n },
+		// devstack:begin walrus
+		{ coin: wal, amount: 500_000_000n },
+		// devstack:end walrus
+	],
+});
+
+const counter = localPackage('counter', {
+	sourcePath: resolve(HERE, 'move/counter'),
 	publisher: alice,
 });
-const greet = action('template.greet', {
-	dependsOn: { signer: alice, pkg: hello },
-	body: (ctx, { signer, pkg }) =>
-		ctx.signAndExecute(signer, (tx) => {
-			tx.moveCall({
-				target: `${pkg.packageId}::hello::mint`,
-				arguments: [tx.pure.vector('u8', [...new TextEncoder().encode('hello')])],
-			});
-		}),
+
+// devstack:begin seal
+const sealPublisher = account('seal_publisher', {
+	kind: 'ephemeral',
+	funding: [{ coin: 'sui', amount: 1_000_000_000n }],
 });
+const vault = localPackage('vault', {
+	sourcePath: resolve(HERE, 'move/vault'),
+	publisher: sealPublisher,
+});
+const sealKeyServer = seal({ mode: 'local-keygen', signer: sealPublisher });
+// devstack:end seal
+
 const devWallet = wallet({
-	accounts: [alice, bob],
+	accounts: [
+		alice,
+		// devstack:begin seal
+		sealPublisher,
+		// devstack:end seal
+	],
 });
+
 const app = hostService({
 	name: 'app',
 	script: `pnpm exec vite --host 0.0.0.0 --strictPort --port ${HOST_SERVICE_PORT_TOKEN}`,
 	cwd: HERE,
 	port: DEV_PORT,
 	ready: { kind: 'http' },
-	after: [greet, devWallet] as const,
+	after: [
+		localnet,
+		counter,
+		devWallet,
+		// devstack:begin walrus
+		walrusCluster,
+		// devstack:end walrus
+		// devstack:begin seal
+		vault,
+		sealKeyServer,
+		// devstack:end seal
+	] as const,
 });
 
-const stack: Stack = defineDevstack({ members: [localnet, app, dashboard()], stackName: 'template' });
+const stack: Stack = defineDevstack({
+	members: [localnet, app, dashboard()],
+	stackName: 'template',
+});
 
 export default stack;
