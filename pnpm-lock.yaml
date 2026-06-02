@@ -301,31 +301,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/devstack
 
-  examples/deepbook-oneliner:
-    dependencies:
-      '@mysten-incubation/devstack':
-        specifier: workspace:*
-        version: link:../../packages/devstack
-      '@mysten/deepbook-v3':
-        specifier: 'catalog:'
-        version: 1.4.1(@mysten/sui@2.17.0(typescript@5.9.3))
-      '@mysten/sui':
-        specifier: ^2.17.0
-        version: 2.17.0(typescript@5.9.3)
-      effect:
-        specifier: 'catalog:'
-        version: 4.0.0-beta.65
-    devDependencies:
-      '@mysten-incubation/tsconfig':
-        specifier: workspace:*
-        version: link:../../packages/tsconfig
-      '@types/node':
-        specifier: 'catalog:'
-        version: 24.12.2
-      typescript:
-        specifier: 'catalog:'
-        version: 5.9.3
-
   examples/deepbook-trader:
     dependencies:
       '@mysten-incubation/dev-wallet':
