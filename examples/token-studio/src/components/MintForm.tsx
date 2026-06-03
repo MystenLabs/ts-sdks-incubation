@@ -4,7 +4,7 @@ import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
 import { mint as buildMint } from '@generated/bindings/token_studio/managed_coin.js';
-import { useConnectedAccounts } from '../lib/accounts.js';
+import { useCurrentWallet } from '@mysten/dapp-kit-react';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
@@ -12,10 +12,12 @@ export function MintForm() {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const accounts = useConnectedAccounts();
+	// The connected wallet's accounts (in DEV: alice/bob/carol), each carrying a
+	// `label` = the devstack account name.
+	const accounts = useCurrentWallet()?.accounts ?? [];
 	// Default recipient: bob if present, else the first connected account.
 	const defaultRecipient =
-		accounts.find((a) => a.name === 'bob')?.address ?? accounts[0]?.address ?? '';
+		accounts.find((a) => a.label === 'bob')?.address ?? accounts[0]?.address ?? '';
 
 	const [recipient, setRecipient] = useState<string>(defaultRecipient);
 	const [amount, setAmount] = useState('100');
@@ -65,9 +67,9 @@ export function MintForm() {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{accounts.map(({ name, address }) => (
+							{accounts.map(({ label, address }) => (
 								<option key={address} value={address}>
-									{name} ({shortAddress(address)})
+									{label ?? address} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

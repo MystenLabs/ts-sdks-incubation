@@ -1,11 +1,10 @@
-import { useCurrentAccount, useCurrentNetwork } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentNetwork, useCurrentWallet } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { Balances } from './components/Balances.js';
 import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
-import { useConnectedAccounts } from './lib/accounts.js';
 import { deployment, isDeployed } from './lib/deployment.js';
 import { shortAddress } from './lib/coin.js';
 import { useTreasuryCapOwner } from './lib/queries.js';
@@ -80,8 +79,11 @@ function DisconnectedView() {
 }
 
 function ConnectedView({ address }: { address: string }) {
-	const accounts = useConnectedAccounts();
-	const label = accounts.find((a) => a.address === address)?.name ?? null;
+	// The connected wallet exposes its accounts (in DEV the seeded dev-wallet
+	// accounts alice/bob/carol), each carrying a `label` = the devstack name.
+	const wallet = useCurrentWallet();
+	const label =
+		wallet?.accounts.find((a) => a.address === address)?.label ?? null;
 	// Determine the ACTUAL TreasuryCap holder by ownership, not wallet order:
 	// query the on-chain owner of the known treasuryCapId. The connected account
 	// is the holder iff its address matches that owner. While the owner is still

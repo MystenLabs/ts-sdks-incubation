@@ -13,8 +13,8 @@
 //
 // NOTE: the account directory the UI renders (alice/bob/carol in DEV) is NOT
 // part of this prod-path projection — it is read from the CONNECTED WALLET
-// via dApp Kit (`./lib/accounts.ts`, `useCurrentWallet().accounts`), so it
-// reflects whatever accounts the active wallet exposes in any build.
+// via dApp Kit (`useCurrentWallet().accounts`), so it reflects whatever
+// accounts the active wallet exposes in any build.
 //
 // `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated
 // by coin auto-discovery on every publish (see

@@ -5,8 +5,8 @@
 // wired here: in DEV the devstack Vite plugin injects the dev wallet on the
 // page (dApp Kit auto-discovers it via wallet-standard). The UI's account
 // directory is read from the connected wallet via dApp Kit
-// (`useCurrentWallet().accounts`, see `./lib/accounts.ts`). In production
-// the page carries no dev wallet and standard wallets register themselves.
+// (`useCurrentWallet().accounts`). In production the page carries no dev
+// wallet and standard wallets register themselves.
 
 import { createDAppKit } from '@mysten/dapp-kit-react';
 import { SuiGrpcClient } from '@mysten/sui/grpc';

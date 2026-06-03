@@ -1,9 +1,8 @@
-import { useCurrentClient } from '@mysten/dapp-kit-react';
+import { useCurrentClient, useCurrentWallet } from '@mysten/dapp-kit-react';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useEffect, useState } from 'react';
 
-import { useConnectedAccounts } from '../lib/accounts.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
@@ -12,7 +11,9 @@ export function TransferForm({ self }: { self: string }) {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const others = useConnectedAccounts().filter((a) => a.address !== self);
+	// The connected wallet's other accounts (excluding self); each carries a
+	// `label` = the devstack account name in DEV.
+	const others = (useCurrentWallet()?.accounts ?? []).filter((a) => a.address !== self);
 	const firstOther = others[0]?.address ?? '';
 
 	const [recipient, setRecipient] = useState<string>(firstOther);
@@ -58,9 +59,9 @@ export function TransferForm({ self }: { self: string }) {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{others.map(({ name, address }) => (
+							{others.map(({ label, address }) => (
 								<option key={address} value={address}>
-									{name} ({shortAddress(address)})
+									{label ?? address} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

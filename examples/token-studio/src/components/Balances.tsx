@@ -1,13 +1,14 @@
-import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentWallet } from '@mysten/dapp-kit-react';
 
-import { useConnectedAccounts } from '../lib/accounts.js';
 import { formatStudio, shortAddress } from '../lib/coin.js';
 import { useCoinBalance } from '../lib/queries.js';
 import { Card } from '../ui/Card.js';
 
 export function Balances() {
 	const me = useCurrentAccount();
-	const accounts = useConnectedAccounts();
+	// The connected wallet's accounts (empty when disconnected); each carries a
+	// `label` = the devstack account name in DEV, falling back to its address.
+	const accounts = useCurrentWallet()?.accounts ?? [];
 
 	return (
 		<Card title="Balances" subtitle="Connected accounts and their current STUDIO holdings">
@@ -21,10 +22,10 @@ export function Balances() {
 						</tr>
 					</thead>
 					<tbody className="divide-y divide-neutral-200 dark:divide-neutral-800">
-						{accounts.map(({ name, address }) => (
+						{accounts.map(({ label, address }) => (
 							<BalanceRow
 								key={address}
-								name={name}
+								name={label ?? address}
 								address={address}
 								highlight={me?.address === address}
 							/>
