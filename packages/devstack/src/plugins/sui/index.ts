@@ -34,9 +34,11 @@ import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
+import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { AcquireContext } from '../../substrate/plugin.ts';
+import type { Identity } from '../../substrate/identity.ts';
+import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
@@ -170,7 +172,14 @@ const buildPlugin = (opts: SuiOptions) => {
 		id: suiResource.id,
 		role: 'service',
 		section: 'service',
-		start: () =>
+		// Sui has no `dependsOn`, so `_deps` is always `undefined`; it is
+		// annotated explicitly because the required `ctx` 2nd param means
+		// the start closure no longer arity-matches the single-arg
+		// `PluginStart` contextual default, so TS would otherwise widen the
+		// params to `any`. `ctx` is the typed plugin-authoring surface the
+		// contribution emission below drives (Stage B inversion — replaced
+		// the legacy `capabilities` second-closure).
+		start: (_deps: undefined, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				// The substrate threads `ContainerRuntime` + `IdentityContext`
 				// via the plugin runtime context; the supervisor provides
@@ -187,35 +196,51 @@ const buildPlugin = (opts: SuiOptions) => {
 					client,
 					fundingFaucetLeaseBroker,
 				);
-				return {
+				const value = {
 					...client,
 					mode: opts.mode,
 					fundingFaucetStrategy,
 				} satisfies SuiResolvedRuntime;
+				// Stage B: emit the resolved contributions inline (was the
+				// `capabilities: ({ value, runtime }) => makePluginCapabilities(
+				// opts, value, runtime)` closure). `value` is the just-resolved
+				// runtime value the closure used to receive; `identity` is the
+				// same `Identity` the legacy `runtime.identity` carried (read
+				// here from `IdentityContext`, NOT re-fetched).
+				emitSuiCapabilities(ctx, opts, value, identity);
+				return value;
 			}),
-		capabilities: ({ value, runtime }) => makePluginCapabilities(opts, value, runtime),
 		errorContributions: suiErrorContributions,
 	});
 };
 
-/** Construct the capability tuple POST-acquire. Receives the resolved
- *  `SuiClient` + acquire context so decls can stamp REAL chain ids /
- *  rpc URLs into their fields instead of factory-time placeholders.
+/** Construct the ordered capability tuple POST-acquire. Pure helper —
+ *  receives the resolved runtime value + the stack `Identity` so decls
+ *  can stamp REAL chain ids / rpc URLs / container names into their
+ *  fields instead of factory-time placeholders.
+ *
+ *  GUARD-A: the legacy `capabilities` closure received the narrower
+ *  `SuiResolved`; `start` now passes the wider `SuiResolvedRuntime` it
+ *  builds (carrying `fundingFaucetStrategy`). The decl shapes are
+ *  byte-identical — the faucet contribution reads the SAME
+ *  `fundingFaucetStrategy` field the closure read via the
+ *  `resolved as SuiResolvedRuntime` narrowing.
  *
  *  StrategyContributor declarations here carry real post-acquire
  *  strategy values. The generic strategy sink registers them on the
  *  scope-local `StrategyRegistry`. */
-const makePluginCapabilities = (
+const buildSuiCapabilities = (
 	opts: SuiOptions,
-	resolved: SuiResolved,
-	acquireCtx: AcquireContext,
-) => {
+	resolved: SuiResolvedRuntime,
+	identity: Identity,
+): ReadonlyArray<
+	SnapshotableDecl | CodegenableDecl<'sui-network'> | StrategyContributorDecl | RoutableDecl
+> => {
 	const realChain = resolved.chain;
-	const resolvedRuntime = resolved as SuiResolvedRuntime;
 	const snap: SnapshotableDecl = makeSnapshotable(
 		opts.mode,
-		acquireCtx.identity.app,
-		acquireCtx.identity.stack,
+		identity.app,
+		identity.stack,
 		realChain,
 	);
 	const codegen: CodegenableDecl<'sui-network'> = makeCodegenable({
@@ -238,13 +263,13 @@ const makePluginCapabilities = (
 	};
 
 	const faucetContribution =
-		resolvedRuntime.fundingFaucetStrategy === null
+		resolved.fundingFaucetStrategy === null
 			? []
 			: [
 					{
 						kind: 'strategy-contributor',
 						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: resolvedRuntime.fundingFaucetStrategy,
+						strategy: resolved.fundingFaucetStrategy,
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<
 						`faucet:request:${string}`,
@@ -255,14 +280,14 @@ const makePluginCapabilities = (
 	const localRoutables =
 		opts.mode === 'local'
 			? makeSuiLocalRoutables({
-					containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-sui-validator`,
+					containerName: `devstack-${identity.app}-${identity.stack}-sui-validator`,
 					includeGraphql: true,
 				})
 			: [];
 	const forkRoutables =
 		opts.mode === 'fork'
 			? makeSuiForkRoutables({
-					containerName: `devstack-${acquireCtx.identity.app}-${acquireCtx.identity.stack}-sui-fork`,
+					containerName: `devstack-${identity.app}-${identity.stack}-sui-fork`,
 				})
 			: [];
 
@@ -273,7 +298,41 @@ const makePluginCapabilities = (
 		...faucetContribution,
 		...localRoutables,
 		...forkRoutables,
-	] as const;
+	];
+};
+
+/** Emit the pure decls from `buildSuiCapabilities` inline via the typed
+ *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
+ *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
+ *  strategy-contributor → `ctx.provides`, routable → `ctx.endpoint`).
+ *  Order + decl shapes are byte-identical to the supervisor's legacy
+ *  `capabilities`-closure harvest.
+ *
+ *  Exported as the Stage-B emit seam (mirrors coin's `emitCapabilities`):
+ *  feed a resolved `SuiResolvedRuntime` here and assert the captured
+ *  verbs to drive the contribution half of `start` without a live boot. */
+export const emitSuiCapabilities = (
+	ctx: PluginCtx,
+	opts: SuiOptions,
+	resolved: SuiResolvedRuntime,
+	identity: Identity,
+): void => {
+	for (const decl of buildSuiCapabilities(opts, resolved, identity)) {
+		switch (decl.kind) {
+			case 'snapshotable':
+				ctx.snapshotExtra(decl);
+				break;
+			case 'codegenable':
+				ctx.codegen(decl);
+				break;
+			case 'strategy-contributor':
+				ctx.provides(decl);
+				break;
+			case 'routable':
+				ctx.endpoint(decl);
+				break;
+		}
+	}
 };
 
 // ---------------------------------------------------------------------------

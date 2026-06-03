@@ -3,22 +3,20 @@ import { Effect } from 'effect';
 
 import { account } from '../../../src/plugins/account/index.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
 import {
+	emitLocalCapabilities,
 	walCoin,
 	walrus,
 	walFaucetStrategyKey,
 	type WalrusResolved,
 } from '../../../src/plugins/walrus/index.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
-const fakeAcquireContext: AcquireContext = {
-	identity: {
-		app: appName('walrus-test'),
-		stack: stackName('main'),
-		chain: chainId('sui:localnet'),
-	},
+const fakeIdentity: Identity = {
+	app: appName('walrus-test'),
+	stack: stackName('main'),
 	chain: chainId('sui:localnet'),
-	runtimeRoot: '/tmp/devstack-walrus-test',
 };
 
 const fakeWalrusResolved: WalrusResolved = {
@@ -81,20 +79,23 @@ describe('walrus WAL funding integration', () => {
 	});
 
 	it('registers the WAL faucet strategy under the resolved full coin type', () => {
-		const plugin = walrus({ local: {} });
-		if (typeof plugin.capabilities !== 'function') {
-			throw new Error('expected walrus capabilities factory');
-		}
+		// Stage B: the legacy `plugin.capabilities` second-closure is gone —
+		// `start` now emits contributions inline via the typed `ctx` verbs.
+		// Drive the exported `emitLocalCapabilities` seam (the contribution
+		// half of `start`) with a decl-capturing fake ctx and read the WAL
+		// strategy from `captured.provides` (was the returned decl array).
+		const { ctx, captured } = makeTestPluginCtx();
+		emitLocalCapabilities(ctx, {
+			name: 'walrus',
+			nodeCount: 0,
+			containerApiPort: 9000,
+			serviceKey: 'walrus.walrus',
+			resolved: fakeWalrusResolved,
+			identity: fakeIdentity,
+		});
 
-		const capabilitiesFactory = plugin.capabilities as unknown as (
-			value: WalrusResolved,
-			runtime: AcquireContext,
-		) => ReadonlyArray<{ readonly kind: string; readonly capabilityKey?: string }>;
-		const capabilities = capabilitiesFactory(fakeWalrusResolved, fakeAcquireContext);
-		const walStrategy = capabilities.find(
-			(capability) =>
-				capability.kind === 'strategy-contributor' &&
-				capability.capabilityKey === walFaucetStrategyKey('0xfeed::wal::WAL'),
+		const walStrategy = captured.provides.find(
+			(capability) => capability.capabilityKey === walFaucetStrategyKey('0xfeed::wal::WAL'),
 		);
 
 		expect(walStrategy).toBeDefined();
