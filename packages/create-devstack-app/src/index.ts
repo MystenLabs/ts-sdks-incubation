@@ -16,9 +16,9 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { composePlugins } from './compose.js';
 import { ALL_PLUGINS, type PluginId } from './plugin-manifest.js';
 import { SKIP, shouldSkip } from './skip.js';
-import { stripPlugins } from './strip.js';
 
 export interface ScaffoldOptions {
 	/** App name. Used as the directory name, package name, `DEVSTACK_APP`,
@@ -99,11 +99,11 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 
 	log(`creating ${appDir} from ${templateDir}…`);
 	copyTemplate(templateDir, appDir);
-	const stripped = ALL_PLUGINS.filter((p) => p !== 'core' && !selected.has(p));
-	if (stripped.length > 0) {
-		log(`stripping plugins: ${stripped.join(', ')}…`);
+	const omitted = ALL_PLUGINS.filter((p) => p !== 'core' && !selected.has(p));
+	if (omitted.length > 0) {
+		log(`composing without plugins: ${omitted.join(', ')}…`);
 	}
-	stripPlugins(appDir, selected);
+	composePlugins(appDir, selected);
 	rewriteName(appDir, opts.name);
 
 	let installed = false;

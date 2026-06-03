@@ -1,33 +1,7 @@
 import { useCurrentAccount } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
-import type { ComponentType } from 'react';
 
-import { CounterPanel } from './panels/CounterPanel.js';
-// devstack:begin deepbook
-import { DeepbookPanel } from './panels/DeepbookPanel.js';
-// devstack:end deepbook
-// devstack:begin seal
-import { SealPanel } from './panels/SealPanel.js';
-// devstack:end seal
-// devstack:begin walrus
-import { WalrusPanel } from './panels/WalrusPanel.js';
-// devstack:end walrus
-
-// Panel registry. Core CounterPanel is always present; optional plugin
-// panels are fenced so the scaffolder can strip the ones a user opts out
-// of. Each panel takes a single `connected` prop.
-const panels: ReadonlyArray<ComponentType<{ connected: boolean }>> = [
-	CounterPanel,
-	// devstack:begin deepbook
-	DeepbookPanel,
-	// devstack:end deepbook
-	// devstack:begin seal
-	SealPanel,
-	// devstack:end seal
-	// devstack:begin walrus
-	WalrusPanel,
-	// devstack:end walrus
-];
+import { PANELS } from './app-panels.js';
 
 export function App() {
 	const me = useCurrentAccount();
@@ -53,7 +27,7 @@ export function App() {
 			</header>
 
 			<main className="flex-1 px-6 py-8 max-w-3xl mx-auto w-full space-y-6">
-				{panels.map((PanelComponent, index) => (
+				{PANELS.map((PanelComponent, index) => (
 					<PanelComponent key={index} connected={connected} />
 				))}
 			</main>
