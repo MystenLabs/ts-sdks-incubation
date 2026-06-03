@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
 export { DevWallet, DEFAULT_NETWORK_URLS } from './wallet/dev-wallet.js';
+export { mountAndRegisterDevWallet } from './wallet/mount-and-register.js';
+export type {
+	MountAndRegisterDevWalletOptions,
+	MountAndRegisterDevWalletResult,
+} from './wallet/mount-and-register.js';
 export { devWalletInitializer } from './wallet/initializer.js';
 export type { DevWalletInitializerConfig } from './wallet/initializer.js';
 export type { SigningResult } from './wallet/signing.js';

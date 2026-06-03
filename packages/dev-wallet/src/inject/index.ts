@@ -4,12 +4,14 @@
 // Page-register entry for the devstack dev wallet.
 //
 // This is the single function the devstack Vite plugin injects into a dev
-// page. It constructs a `DevWallet` backed by the token-based
-// `DevstackSignerAdapter` (headless — signs over HTTP, no popup), registers
-// it on the page via wallet-standard (so dApp Kit auto-discovers it),
-// mounts the floating wallet UI, and wires the
-// `globalThis.__devstackDAppKit__.selectAccount(name)` slot the Playwright
-// `connectAs` helper drives.
+// page. It builds the token-based `DevstackSignerAdapter` (headless — signs
+// over HTTP, no popup) + the routed-RPC network map, then hands those to the
+// shared `mountAndRegisterDevWallet` core helper, which constructs the
+// `DevWallet`, registers it via wallet-standard (so dApp Kit auto-discovers
+// it), and mounts the floating wallet UI. The ONLY logic that lives here is
+// the devstack-integration glue: the adapter-from-config, the localStorage
+// auto-connect seed, and the `globalThis.__devstackDAppKit__.selectAccount(name)`
+// slot the Playwright `connectAs` helper drives.
 //
 // Account selection rides the wallet-standard protocol — see
 // `DevWallet.setSelectedAccount`. The slot resolves a friendly account
@@ -21,8 +23,8 @@
 // one stays active). No reference to the app's dApp Kit instance is
 // needed. See `selectAccount` below for the two-phase detail.
 
-import type { AutoApprovePolicy } from '../wallet/dev-wallet.js';
-import { DevWallet } from '../wallet/dev-wallet.js';
+import type { AutoApprovePolicy, DevWallet } from '../wallet/dev-wallet.js';
+import { mountAndRegisterDevWallet } from '../wallet/mount-and-register.js';
 import { DevstackSignerAdapter } from '../adapters/devstack-adapter.js';
 
 /** dApp Kit's default localStorage key for its "selected wallet + address"
@@ -258,7 +260,6 @@ async function registerDevstackDevWalletImpl(
 		token: config.token ?? null,
 		name: config.name ?? 'Devstack',
 	});
-	await adapter.initialize();
 
 	// The wallet EXECUTES (and simulates) `signAndExecuteTransaction` with
 	// its OWN client — adapter signing is HTTP (server-side keys), but
@@ -279,21 +280,19 @@ async function registerDevstackDevWalletImpl(
 	};
 	if (chainNetwork !== undefined) networks[chainNetwork] = rpcUrl;
 
-	const wallet = new DevWallet({
+	// Delegate the construct → init-adapter → mount-UI → register → dispose
+	// sequence to the shared dev-wallet core helper; the ONLY devstack-specific
+	// inputs are the HTTP signer adapter built above and the routed-RPC network
+	// map. (The DevstackSignerAdapter brings its own server-resolved accounts,
+	// so `createInitialAccount` stays off — we never fabricate a throwaway key.)
+	const { wallet, dispose: disposeWallet } = await mountAndRegisterDevWallet({
 		adapters: [adapter],
 		name: config.name ?? 'Devstack',
 		autoApprove,
 		networks,
 		activeNetwork: chainNetwork ?? 'localnet',
+		mountUI,
 	});
-
-	let unmountUI: (() => void) | undefined;
-	if (mountUI && typeof document !== 'undefined') {
-		const { mountDevWallet } = await import('../ui/mount.js');
-		unmountUI = mountDevWallet(wallet);
-	}
-
-	const unregister = wallet.register();
 
 	// Pre-seed dApp Kit's "selected wallet + address" storage so its
 	// storage-driven auto-connect (`autoConnect: true`) connects to the dev
@@ -323,9 +322,7 @@ async function registerDevstackDevWalletImpl(
 	const result: RegisterDevstackDevWalletResult = {
 		wallet,
 		dispose() {
-			unmountUI?.();
-			unregister();
-			wallet.destroy();
+			disposeWallet();
 			globalThis.__DEV_WALLET_INJECTED__ = false;
 			delete (globalThis as { __devstackDevWallet__?: unknown }).__devstackDevWallet__;
 			// Clear the in-flight/settled registration promise too, so a

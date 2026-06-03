@@ -3,21 +3,15 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
-import { mountDevWallet } from '../ui/mount.js';
-import type { DevWalletDockStyle } from '../ui/dev-wallet-panel.js';
-import { DevWallet, type DevWalletConfig } from '../wallet/dev-wallet.js';
+import type { DevWallet } from '../wallet/dev-wallet.js';
+import {
+	mountAndRegisterDevWallet,
+	type MountAndRegisterDevWalletOptions,
+} from '../wallet/mount-and-register.js';
 
-export interface UseDevWalletOptions extends DevWalletConfig {
-	/** Whether to call adapter.initialize() automatically. Defaults to true. */
-	autoInitialize?: boolean;
+export interface UseDevWalletOptions extends MountAndRegisterDevWalletOptions {
 	/** Whether to create an initial account after initialization (if adapter supports it). Defaults to true. */
 	createInitialAccount?: boolean;
-	/** Whether to mount the floating wallet drawer UI. Defaults to true. */
-	mountUI?: boolean;
-	/** Floating dock presentation when `mountUI` is true. Defaults to `corner-pill`. */
-	dockStyle?: DevWalletDockStyle;
-	/** Container element for the UI drawer. Defaults to document.body. */
-	container?: HTMLElement;
 }
 
 export interface UseDevWalletResult {
@@ -50,71 +44,32 @@ export function useDevWallet(options: UseDevWalletOptions): UseDevWalletResult {
 	optionsRef.current = options;
 
 	useEffect(() => {
-		const {
-			autoInitialize = true,
-			createInitialAccount = true,
-			mountUI = true,
-			dockStyle,
-			container,
-			...walletConfig
-		} = optionsRef.current;
-
 		let cancelled = false;
-		let unregister: (() => void) | undefined;
-		let unmountUI: (() => void) | undefined;
+		let dispose: (() => void) | undefined;
 
-		let devWallet: DevWallet;
-		try {
-			devWallet = new DevWallet(walletConfig);
-		} catch (err) {
-			setError(err instanceof Error ? err : new Error(String(err)));
-			setLoading(false);
-			return;
-		}
-
-		async function setup() {
-			if (autoInitialize) {
-				await Promise.all(walletConfig.adapters.map((a) => a.initialize()));
-			}
-			if (cancelled) return;
-
-			if (createInitialAccount) {
-				const hasAccounts = walletConfig.adapters.some((a) => a.getAccounts().length > 0);
-				if (!hasAccounts) {
-					const creatableAdapter = walletConfig.adapters.find(
-						(a) => a.createAccount && a.getAccounts().length === 0,
-					);
-					if (creatableAdapter?.createAccount) {
-						await creatableAdapter.createAccount({ label: 'Dev Account' });
-					}
+		// The hook keeps `createInitialAccount` defaulting to TRUE: its typical
+		// adapters (WebCrypto / InMemory) start empty and need a starter account,
+		// whereas the core helper defaults it off for managed/remote adapters.
+		mountAndRegisterDevWallet({ createInitialAccount: true, ...optionsRef.current })
+			.then((result) => {
+				if (cancelled) {
+					result.dispose();
+					return;
 				}
-			}
-			if (cancelled) return;
-
-			unregister = devWallet.register();
-
-			if (mountUI && typeof document !== 'undefined') {
-				unmountUI = mountDevWallet(devWallet, { container, dockStyle });
-			}
-
-			if (!cancelled) {
-				setWallet(devWallet);
+				dispose = result.dispose;
+				setWallet(result.wallet);
 				setLoading(false);
-			}
-		}
-
-		setup().catch((err) => {
-			if (!cancelled) {
-				setError(err instanceof Error ? err : new Error(String(err)));
-				setLoading(false);
-			}
-		});
+			})
+			.catch((err) => {
+				if (!cancelled) {
+					setError(err instanceof Error ? err : new Error(String(err)));
+					setLoading(false);
+				}
+			});
 
 		return () => {
 			cancelled = true;
-			unmountUI?.();
-			unregister?.();
-			devWallet.destroy();
+			dispose?.();
 		};
 	}, []); // eslint-disable-line react-hooks/exhaustive-deps
 

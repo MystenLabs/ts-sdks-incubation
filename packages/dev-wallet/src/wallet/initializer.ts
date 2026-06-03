@@ -6,7 +6,8 @@ import type { WalletIcon } from '@mysten/wallet-standard';
 
 import type { DevWalletDockStyle } from '../ui/dev-wallet-panel.js';
 import type { SignerAdapter } from '../types.js';
-import { DevWallet, type AutoApprovePolicy } from './dev-wallet.js';
+import type { DevWallet, AutoApprovePolicy } from './dev-wallet.js';
+import { mountAndRegisterDevWallet } from './mount-and-register.js';
 
 /**
  * Configuration for the dev wallet initializer.
@@ -66,26 +67,6 @@ export function devWalletInitializer(config: DevWalletInitializerConfig): {
 	return {
 		id: 'dev-wallet-initializer',
 		async initialize({ networks, getClient }) {
-			const { autoInitialize = true, createInitialAccount = true, mountUI = false } = config;
-
-			// Initialize adapters
-			if (autoInitialize) {
-				await Promise.all(config.adapters.map((a) => a.initialize()));
-			}
-
-			// Create initial account if needed
-			if (createInitialAccount) {
-				const hasAccounts = config.adapters.some((a) => a.getAccounts().length > 0);
-				if (!hasAccounts) {
-					const creatableAdapter = config.adapters.find(
-						(a) => a.createAccount && a.getAccounts().length === 0,
-					);
-					if (creatableAdapter?.createAccount) {
-						await creatableAdapter.createAccount({ label: 'Dev Account' });
-					}
-				}
-			}
-
 			// Map dApp Kit networks to DevWallet format.
 			// DevWallet needs a Record<string, string> of network name → URL, but
 			// the clientFactory we provide delegates to getClient, so the URLs are
@@ -95,7 +76,13 @@ export function devWalletInitializer(config: DevWalletInitializerConfig): {
 				networkUrls[network] = `dapp-kit://${network}`;
 			}
 
-			const wallet = new DevWallet({
+			// Delegate the construct → init-adapter → mount-UI → register → dispose
+			// sequence to the shared core helper; this initializer only supplies the
+			// dApp-Kit-sourced networks + client factory and the `onWalletCreated`
+			// hook. `createInitialAccount`/`autoInitialize` default to TRUE here (the
+			// initializer's historical behavior — its adapters start empty); `mountUI`
+			// defaults to FALSE (dApp Kit typically renders its own connect UI).
+			const { dispose } = await mountAndRegisterDevWallet({
 				adapters: config.adapters,
 				networks: networkUrls,
 				name: config.name,
@@ -103,28 +90,15 @@ export function devWalletInitializer(config: DevWalletInitializerConfig): {
 				autoApprove: config.autoApprove,
 				autoConnect: config.autoConnect,
 				clientFactory: (network) => getClient(network),
+				autoInitialize: config.autoInitialize ?? true,
+				createInitialAccount: config.createInitialAccount ?? true,
+				mountUI: config.mountUI ?? false,
+				dockStyle: config.dockStyle,
+				container: config.container,
+				onWalletCreated: config.onWalletCreated,
 			});
 
-			config.onWalletCreated?.(wallet);
-
-			// Mount UI if requested
-			let unmountUI: (() => void) | undefined;
-			if (mountUI && typeof document !== 'undefined') {
-				const { mountDevWallet } = await import('../ui/mount.js');
-				unmountUI = mountDevWallet(wallet, {
-					container: config.container,
-					dockStyle: config.dockStyle,
-				});
-			}
-
-			const unregister = wallet.register();
-			return {
-				unregister() {
-					unmountUI?.();
-					unregister();
-					wallet.destroy();
-				},
-			};
+			return { unregister: dispose };
 		},
 	};
 }
