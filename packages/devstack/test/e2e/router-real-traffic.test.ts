@@ -17,7 +17,7 @@ import {
 	layerTraefikContainerOpsDocker,
 	makeRouterProfile,
 	RouterService,
-	type EndpointUrl,
+	type ResolvedRoute,
 } from '../../src/orchestrators/router/index.ts';
 import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import { renderNetworkLabels } from '../../src/runtime/docker/index.ts';
@@ -156,11 +156,17 @@ const cleanupDocker = (args: {
 	docker(['network', 'rm', args.networkName], 20_000);
 };
 
+// The router now surfaces a `ResolvedRoute`; its public http endpoint URL
+// is `http://<hostname>:<entrypointPort>` (the same derivation the boot
+// adapter `endpointSinksFromRoutable` uses for non-tcp routes).
+const publicEndpointUrl = (route: ResolvedRoute): string =>
+	`http://${route.hostname}:${route.entrypointPort}`;
+
 const getThroughRouter = (
-	endpoint: EndpointUrl,
+	route: ResolvedRoute,
 ): Promise<{ readonly status: number | undefined; readonly body: string }> =>
 	new Promise((resolve, reject) => {
-		const url = new URL(endpoint.url);
+		const url = new URL(publicEndpointUrl(route));
 		const req = request(
 			{
 				hostname: '127.0.0.1',
@@ -183,17 +189,17 @@ const getThroughRouter = (
 		);
 		req.on('error', reject);
 		req.on('timeout', () => {
-			req.destroy(new Error(`timed out fetching ${endpoint.url}`));
+			req.destroy(new Error(`timed out fetching ${url.href}`));
 		});
 		req.end();
 	});
 
-const waitForRouterResponse = async (endpoint: EndpointUrl, token: string): Promise<void> => {
+const waitForRouterResponse = async (route: ResolvedRoute, token: string): Promise<void> => {
 	const deadline = Date.now() + 30_000;
 	let last: unknown = null;
 	while (Date.now() < deadline) {
 		try {
-			const response = await getThroughRouter(endpoint);
+			const response = await getThroughRouter(route);
 			if (response.status === 200 && response.body.includes(token)) return;
 			last = `status=${response.status} body=${response.body}`;
 		} catch (error) {
@@ -287,11 +293,13 @@ describe('router real Docker traffic', () => {
 						expect(inspectNetworkNames(serviceName)).toContain(profile.networkName);
 						expect(Object.keys(inspectHostPortBindings(serviceName))).toEqual([]);
 
-						const endpoint = yield* router.contributeRoute(route);
-						expect(endpoint.endpointName).toBe(ENTRYPOINT_NAME);
-						expect(endpoint.entrypointPort).toBe(entrypointPort);
-						expect(endpoint.url).toBe(`http://${endpoint.hostname}:${entrypointPort}`);
-						yield* Effect.promise(() => waitForRouterResponse(endpoint, token));
+						const resolved = yield* router.contributeRoute(route);
+						expect(resolved.entrypointName).toBe(ENTRYPOINT_NAME);
+						expect(resolved.entrypointPort).toBe(entrypointPort);
+						expect(publicEndpointUrl(resolved)).toBe(
+							`http://${resolved.hostname}:${entrypointPort}`,
+						);
+						yield* Effect.promise(() => waitForRouterResponse(resolved, token));
 					}),
 				).pipe(
 					Effect.provide(routerLayer),

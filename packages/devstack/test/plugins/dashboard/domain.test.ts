@@ -171,6 +171,130 @@ describe('dashboard mintCoin action', () => {
 	});
 });
 
+describe('dashboard narrowing fail-loud (E2)', () => {
+	/** A dashboard domain over arbitrary resolved values + no container/registry
+	 *  (so postgresStats degrades to the unavailable path but still runs the
+	 *  postgres narrow). */
+	const makeNarrowDomain = (resolved: ReadonlyArray<ControlPlaneResolvedValue>): DashboardDomain =>
+		buildDashboardDomain({
+			control: { ...emptyControlPlaneDomain, resolvedValues: Effect.succeed(resolved) },
+			identity: { app: 'demo', stack: 'main', chain: 'localnet' } as unknown as Identity,
+			containerRuntime: null,
+			strategyRegistry: null,
+		});
+
+	it('deepbook mode=broken records a narrowingFault but still resolves (E=never)', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'deepbook:demo',
+				id: 'deepbook/demo',
+				value: {
+					mode: 'broken',
+					chain: 'sui:localnet',
+					packageId: '0xpkg',
+					registryId: '0xreg',
+					pools: [],
+					marketMakerRunning: false,
+				},
+			},
+		]);
+		const [info] = await Effect.runPromise(domain.deepbook);
+		expect(info).toBeDefined();
+		// Safe display fallback so the panel renders…
+		expect(info!.mode).toBe('local');
+		// …while the drift is surfaced fail-loud.
+		expect(info!.narrowingFault).toContain('deepbook.mode');
+		expect(info!.narrowingFault).toContain('broken');
+	});
+
+	it('postgres missing port records a narrowingFault in detail but still resolves', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'postgres',
+				id: 'postgres',
+				value: {
+					databases: ['appdb'],
+					networkAlias: 'pg-host',
+					user: 'app',
+					name: 'pg-main',
+					// port intentionally absent
+				},
+			},
+		]);
+		const [stats] = await Effect.runPromise(domain.postgresStats);
+		expect(stats).toBeDefined();
+		// Container runtime is null → degrades to unavailable, never throws.
+		expect(stats!.available).toBe(false);
+		// The missing-port narrowing fault rides into the detail channel.
+		expect(stats!.detail).toContain('postgres.port');
+		expect(stats!.detail).toContain('missing');
+		// Safe display fallback (5432) still used for the DSN.
+		expect(stats!.plainUrl).toBe('postgres://pg-host:5432');
+	});
+
+	it('coin missing fullCoinType records a narrowingFault but still resolves', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'coin:demo/x',
+				id: 'coin:demo/x',
+				value: { symbol: 'X', source: 'registry', decimals: 6 },
+			},
+		]);
+		const [cap] = await Effect.runPromise(domain.coinCaps);
+		expect(cap).toBeDefined();
+		expect(cap!.fullCoinType).toBe('');
+		expect(cap!.narrowingFault).toContain('coin.fullCoinType');
+		expect(cap!.narrowingFault).toContain('missing');
+	});
+
+	it('mintCoin names the real cause when a candidate coin lacks fullCoinType (no throw)', async () => {
+		const domain = makeNarrowDomain([
+			// A coin node whose resolved value is missing fullCoinType entirely.
+			{ pluginKey: 'coin:demo/x', id: 'coin:demo/x', value: { symbol: 'X' } },
+		]);
+		const result = await Effect.runPromise(
+			domain.mintCoin({ coinType: COIN_TYPE, recipient: RECIPIENT, amountBaseUnits: '1' }),
+		);
+		expect(result.ok).toBe(false);
+		expect(result.digest).toBeNull();
+		expect(result.detail).toContain('coin.fullCoinType');
+	});
+
+	it('seal mode=bogus records a narrowingFault but still resolves', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'seal:demo',
+				id: 'seal:demo',
+				value: { mode: 'bogus', objectId: '0xobj', keyServerUrl: 'http://seal', serverConfigs: [] },
+			},
+		]);
+		const [info] = await Effect.runPromise(domain.seal);
+		expect(info).toBeDefined();
+		expect(info!.mode).toBe('local-keygen');
+		expect(info!.narrowingFault).toContain('seal.mode');
+	});
+
+	it('a well-formed deepbook value records NO narrowingFault', async () => {
+		const domain = makeNarrowDomain([
+			{
+				pluginKey: 'deepbook:demo',
+				id: 'deepbook/demo',
+				value: {
+					mode: 'known',
+					chain: 'sui:localnet',
+					packageId: '0xpkg',
+					registryId: '0xreg',
+					pools: [],
+					marketMakerRunning: false,
+				},
+			},
+		]);
+		const [info] = await Effect.runPromise(domain.deepbook);
+		expect(info!.mode).toBe('known');
+		expect(info!.narrowingFault).toBeNull();
+	});
+});
+
 describe('dashboard fundableCoins', () => {
 	it('is empty when no strategy registry is wired', async () => {
 		const domain = makeFundDomain({ resolved: [suiNode('sui:localnet')], registry: null });

@@ -28,6 +28,8 @@ import {
 	dashboardSummaryLine,
 	deriveDisplayCells,
 	deriveDashboardSummary,
+	deriveHealth,
+	deriveStackViewModel,
 	endpointsForRow,
 	endpointsSummaryForRow,
 	endpointLine,
@@ -541,6 +543,74 @@ describe('display-derivation', () => {
 			expect(dashboardSummaryLine(summary)).toBe(
 				'1/3 ready  1 active  1 waiting  1 urls  1 accounts  no errors',
 			);
+		});
+	});
+
+	describe('deriveStackViewModel + deriveHealth (reconciled divergence)', () => {
+		const stateOf = (rows: ReadonlyArray<Row>) => ({
+			rows,
+			endpoints: [] as ReadonlyArray<Endpoint>,
+			accounts: [] as ReadonlyArray<AccountProjection>,
+			packages: [] as ReadonlyArray<PackageProjection>,
+			errors: [] as ReadonlyArray<StructuredError>,
+		});
+
+		it('surfaces stoppedRows as a DISCRETE count (neither surface loses info)', () => {
+			const vm = deriveStackViewModel(
+				stateOf([
+					fakeRow({ key: pluginKey('a'), status: 'ready' }),
+					fakeRow({ key: pluginKey('b'), status: 'pending' }),
+					fakeRow({ key: pluginKey('c'), status: 'stopped' }),
+				]),
+			);
+			expect(vm).toMatchObject({
+				total: 3,
+				readyRows: 1,
+				waitingRows: 1,
+				stoppedRows: 1,
+				activeRows: 0,
+				failedRows: 0,
+			});
+		});
+
+		// The documented divergence #1: a pending-ONLY stack.
+		//   TUI policy → 'active' (waiting rolls into active)
+		//   web policy → 'empty' (pending is not ready, no active)
+		it('a pending-only stack reports DIFFERENT health per policy', () => {
+			const vm = deriveStackViewModel(
+				stateOf([fakeRow({ key: pluginKey('pending-only'), status: 'pending' })]),
+			);
+			expect(deriveHealth(vm, 'tui')).toBe('active');
+			expect(deriveHealth(vm, 'web')).toBe('empty');
+		});
+
+		// The documented divergence #2: a stopped-ONLY stack.
+		//   TUI policy → 'active' (stopped reads as not-settled)
+		//   web policy → 'ready'  (stopped folds into the ready denominator)
+		it('a stopped-only stack reports DIFFERENT health per policy', () => {
+			const vm = deriveStackViewModel(
+				stateOf([fakeRow({ key: pluginKey('stopped-only'), status: 'stopped' })]),
+			);
+			expect(deriveHealth(vm, 'tui')).toBe('active');
+			expect(deriveHealth(vm, 'web')).toBe('ready');
+		});
+
+		it('empty / failed / all-ready agree across both policies', () => {
+			const empty = deriveStackViewModel(stateOf([]));
+			expect(deriveHealth(empty, 'tui')).toBe('empty');
+			expect(deriveHealth(empty, 'web')).toBe('empty');
+
+			const failed = deriveStackViewModel(
+				stateOf([fakeRow({ key: pluginKey('boom'), status: 'failed' })]),
+			);
+			expect(deriveHealth(failed, 'tui')).toBe('blocked');
+			expect(deriveHealth(failed, 'web')).toBe('blocked');
+
+			const ready = deriveStackViewModel(
+				stateOf([fakeRow({ key: pluginKey('up'), status: 'ready' })]),
+			);
+			expect(deriveHealth(ready, 'tui')).toBe('ready');
+			expect(deriveHealth(ready, 'web')).toBe('ready');
 		});
 	});
 

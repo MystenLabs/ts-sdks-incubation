@@ -252,3 +252,60 @@ export const layerLivenessProbeScope: Layer.Layer<LivenessProbeScope> = Layer.ef
 		});
 	}),
 );
+
+// -----------------------------------------------------------------------------
+// Reaper combinator — the single home for the per-sweep liveness wiring.
+// -----------------------------------------------------------------------------
+//
+// Both the docker boot-time orphan sweep (`runtime/docker/sweep.ts`) and
+// the cross-stack lifecycle-prune orchestrator (`orchestrators/
+// lifecycle-prune/index.ts`) run a "reaper" pass: a single sweep over
+// some inventory that decides what is reclaimable. Each pass needs a
+// FRESH `LivenessProbeScope` so a recycled-PID corner case forks the OS
+// liveness probe AT MOST once per pass — and the `Effect.provide(
+// layerLivenessProbeScope)` + `checkHolderLiveness` wiring was being
+// repeated at each call site. `makeReaper` (and the `withLivenessSweepScope`
+// combinator it returns) collapses that wiring into ONE place.
+//
+// This is ABSTRACTION ONLY — it does not change WHEN either reaper runs,
+// what it sweeps, or the order of its removals. Each caller keeps its own
+// orchestration (docker/sweep stays boot-phase under stack.lock with the
+// lock held only over the claim read; lifecycle-prune stays the L4 user
+// command with its `(app, stack)` grouping). The combinator provides only
+// the per-sweep liveness scope + the shared holder-liveness probe.
+
+/** A reaper handle: a `scopeName` for the sweep plus the shared
+ *  per-sweep liveness-scope combinator every sweep pass reuses. */
+export interface Reaper {
+	/** The reaper's name — used to derive the sweep span so each pass is
+	 *  attributable. */
+	readonly scopeName: string;
+	/** Run `body` under a FRESH per-sweep `LivenessProbeScope` (a private
+	 *  cache scoped to THIS pass) so the same pid is probed at most once
+	 *  across the sweep. The wiring (`Effect.provide(layerLivenessProbeScope)`)
+	 *  lives HERE, not at the call site — so the `LivenessProbeScope` +
+	 *  `checkHolderLiveness` plumbing both reapers depend on has a single
+	 *  home. Adds no span of its own: each caller keeps its existing trace
+	 *  structure (no nesting change). */
+	readonly withLivenessSweepScope: <A, E, R>(
+		body: Effect.Effect<A, E, R | LivenessProbeScope>,
+	) => Effect.Effect<A, E, Exclude<R, LivenessProbeScope>>;
+}
+
+/** Build a reaper handle for a named sweep. The single place the
+ *  per-sweep `LivenessProbeScope` provisioning is assembled — both
+ *  `docker/sweep.ts` and `lifecycle-prune` instantiate one rather than
+ *  re-threading `layerLivenessProbeScope` themselves.
+ *
+ *  ABSTRACTION ONLY: `makeReaper` neither schedules nor reorders a
+ *  sweep. It provides the fresh per-pass liveness cache; the caller
+ *  keeps full ownership of WHAT it sweeps, WHEN, and in WHAT ORDER (and
+ *  any lock discipline around the decision). */
+export const makeReaper = (scopeName: string): Reaper => {
+	const withLivenessSweepScope = <A, E, R>(
+		body: Effect.Effect<A, E, R | LivenessProbeScope>,
+	): Effect.Effect<A, E, Exclude<R, LivenessProbeScope>> =>
+		body.pipe(Effect.provide(layerLivenessProbeScope));
+
+	return { scopeName, withLivenessSweepScope };
+};

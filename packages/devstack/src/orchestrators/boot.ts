@@ -100,7 +100,6 @@ import {
 	layerRouterService,
 	layerTraefikContainerOpsDocker,
 	RouterService,
-	type EndpointUrl,
 	type ResolvedRoute,
 } from './router/index.ts';
 import { BUILT_IN_ENTRYPOINTS } from '../plugins/router-entrypoints.ts';
@@ -480,54 +479,57 @@ export const bootRouterOrchestrator: Effect.Effect<void, never, RouterService> =
 	},
 );
 
-/** Project a `(pluginKey, EndpointUrl)` pair into the field-set both
- *  the engine event and the manifest entry stamp identically. Callers
- *  spread this and then add their output-specific fields (the engine
- *  event's branded `endpointKey` + `registeredAt`; the manifest
- *  entry's stringified `endpointKey` + `pluginKey`). */
-const routableToEndpointFields = (
+/** The single pure adapter for routable endpoints: `ResolvedRoute` (the
+ *  router's post-mint source of truth) → BOTH the projection event
+ *  (`endpoint.registered`) AND the manifest entry (`EndpointEntry`),
+ *  derived from one shared field-set so the two sinks can never diverge.
+ *
+ *  It owns the url-derivation that previously lived in the router's
+ *  `endpointFromResolvedRoute`: `tcp` routes carry `tcp://127.0.0.1:port`,
+ *  everything else `http://hostname:port`. Consumers (codegen, manifest)
+ *  translate `tcp://` to their protocol-specific scheme (`postgres://`,
+ *  `redis://`, …).
+ *
+ *  `ResolvedRoute` only carries `entrypointName`, so the endpoint name is
+ *  recovered from the original `decl.endpointName`; `pluginKey` is supplied
+ *  by the dispatcher (it is not in `ResolvedRoute`). Router-only fields
+ *  (`dispatchFileId`/`cors`/`upstreamUrl`) are discarded — the manifest and
+ *  projection schemas do not consume them. */
+export const endpointSinksFromRoutable = (
+	decl: RoutableDecl,
+	resolved: ResolvedRoute,
 	pluginKey: PluginKey,
-	endpoint: EndpointUrl,
-): {
-	readonly name: string;
-	readonly url: string;
-	readonly displayUrl: null;
-	readonly wireProtocol: EndpointUrl['wireProtocol'];
-	readonly endpointKeyString: string;
-} => ({
-	name: endpoint.endpointName,
-	url: endpoint.url,
-	displayUrl: null,
-	wireProtocol: endpoint.wireProtocol,
-	endpointKeyString: `${pluginKey}:${endpoint.endpointName}`,
-});
-
-export const endpointEventFromRoutable = (
-	pluginKey: PluginKey,
-	endpoint: EndpointUrl,
 	registeredAt = Date.now(),
-): Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> => {
-	const { endpointKeyString, ...common } = routableToEndpointFields(pluginKey, endpoint);
+): {
+	readonly event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>;
+	readonly manifestEntry: EndpointEntry;
+} => {
+	const url =
+		resolved.wireProtocol === 'tcp'
+			? `tcp://127.0.0.1:${resolved.entrypointPort}`
+			: `http://${resolved.hostname}:${resolved.entrypointPort}`;
+	const common = {
+		name: decl.endpointName,
+		url,
+		displayUrl: null,
+		wireProtocol: resolved.wireProtocol,
+	} as const;
+	const endpointKeyString = `${pluginKey}:${decl.endpointName}`;
 	return {
-		tag: 'endpoint.registered',
-		endpoint: {
-			...common,
-			endpointKey: endpointKey(endpointKeyString),
-			pluginKey,
-			registeredAt,
+		event: {
+			tag: 'endpoint.registered',
+			endpoint: {
+				...common,
+				endpointKey: endpointKey(endpointKeyString),
+				pluginKey,
+				registeredAt,
+			},
 		},
-	};
-};
-
-export const manifestEndpointEntryFromRoutable = (
-	pluginKey: PluginKey,
-	endpoint: EndpointUrl,
-): EndpointEntry => {
-	const { endpointKeyString, ...common } = routableToEndpointFields(pluginKey, endpoint);
-	return {
-		...common,
-		endpointKey: endpointKeyString,
-		pluginKey: String(pluginKey),
+		manifestEntry: {
+			...common,
+			endpointKey: endpointKeyString,
+			pluginKey: String(pluginKey),
+		},
 	};
 };
 
@@ -617,9 +619,12 @@ export const buildProductionContributionDispatcher = (): Effect.Effect<
 			routable: (decl: RoutableDecl, ctx) =>
 				router.boot().pipe(
 					Effect.andThen(router.contributeRoute(decl)),
-					Effect.flatMap((endpoint) => {
-						const event = endpointEventFromRoutable(ctx.pluginKey, endpoint);
-						const manifestEntry = manifestEndpointEntryFromRoutable(ctx.pluginKey, endpoint);
+					Effect.flatMap((resolved) => {
+						const { event, manifestEntry } = endpointSinksFromRoutable(
+							decl,
+							resolved,
+							ctx.pluginKey,
+						);
 						return manifestEndpoints
 							.register(manifestEntry)
 							.pipe(Effect.andThen(ctx.publish(event)));
@@ -811,4 +816,4 @@ export const extendBuiltInPluginContext = (
 		) as Context.Context<never>;
 	});
 
-export type { EndpointUrl, ResolvedRoute };
+export type { ResolvedRoute };

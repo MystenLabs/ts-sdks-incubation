@@ -20,17 +20,22 @@
 //   - Acquire DOES NOT retry — snapshot is a one-shot intent; the
 //     caller surfaces the structured error to the user immediately.
 
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { hostname as nodeHostname } from 'node:os';
 
 import { Data, Effect, Scope } from 'effect';
 
-import { type SnapshotReservation, SnapshotReservationSchema } from '../../cross-process.ts';
+import {
+	type RosterHolder,
+	type SnapshotReservation,
+	SnapshotReservationSchema,
+} from '../../cross-process.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
 import { SpanAttr } from '../observability/spans.ts';
 import { checkHolderLiveness } from './liveness.ts';
 import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
 import { selfPid } from './self-pid.ts';
+import { acquireExclusive } from './stack-lock.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -65,6 +70,20 @@ const ownReservation = (startTime: number | null): SnapshotReservation => ({
 	creatorStartTime: startTime,
 	createdAt: Date.now(),
 	hostname: nodeHostname(),
+});
+
+/** Synthesize a roster-shaped holder from a reservation body so the
+ *  shared liveness predicate (`checkHolderLiveness`) applies. The
+ *  holder carries the reservation's `hostname`, so the predicate's
+ *  foreign-host short-circuit (a remote-host holder is treated as
+ *  alive) fires for cross-host reservations exactly as before. */
+const reservationToHolder = (reservation: SnapshotReservation): RosterHolder => ({
+	pid: reservation.creatorPid,
+	startTime: reservation.creatorStartTime,
+	hostname: reservation.hostname,
+	claimedAt: reservation.createdAt,
+	heartbeatAt: reservation.createdAt,
+	intent: 'snapshot',
 });
 
 /**
@@ -118,17 +137,9 @@ export const sweepOrphan = (
 		if (reservation.hostname !== ownHost) return { swept: false };
 		// PID-liveness check: synthesize a roster-shaped holder so the
 		// shared liveness predicate applies.
-		const liveness = yield* checkHolderLiveness(
-			{
-				pid: reservation.creatorPid,
-				startTime: reservation.creatorStartTime,
-				hostname: reservation.hostname,
-				claimedAt: reservation.createdAt,
-				heartbeatAt: reservation.createdAt,
-				intent: 'snapshot',
-			},
-			ownHost,
-		).pipe(Effect.catch(() => Effect.succeed('alive' as const)));
+		const liveness = yield* checkHolderLiveness(reservationToHolder(reservation), ownHost).pipe(
+			Effect.catch(() => Effect.succeed('alive' as const)),
+		);
 		if (liveness === 'alive') return { swept: false };
 		yield* Effect.try({
 			try: () => unlinkSync(path),
@@ -155,42 +166,24 @@ export const acquireReservation = (
 ): Effect.Effect<SnapshotReservation, SnapshotReservationError, Scope.Scope> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({ [SpanAttr.snapshotReservationPath]: path });
-		// One-shot orphan sweep before our O_EXCL attempt. The sweep is
-		// idempotent: if a peer just wrote the reservation while we ran
-		// the sweep, the O_EXCL create fails below and we surface the
-		// structured "held" error.
-		yield* sweepOrphan(path);
-		const body = ownReservation(startTime);
-		yield* Effect.try({
-			try: () => writeFileSync(path, JSON.stringify(body), { flag: 'wx' }),
-			catch: (cause) => {
-				const code = (cause as NodeJS.ErrnoException).code;
-				if (code === 'EEXIST') {
-					let holder: SnapshotReservation | null = null;
-					try {
-						holder = parseReservation(readFileSync(path, 'utf8'));
-					} catch {
-						// Body unreadable; leave holder as null.
-					}
-					return new SnapshotReservationHeldError({ path, holder });
-				}
-				return new SnapshotReservationIoError({ path, cause });
-			},
+		// Thin wrapper over the merged O_EXCL core in the one-shot shape
+		// (`timeoutMillis: 0`): a single foreign-host-aware `sweepOrphan`
+		// then a single O_EXCL attempt. The core maps EEXIST to
+		// `SnapshotReservationHeldError` IMMEDIATELY (no loop-to-timeout)
+		// — snapshot is a one-shot intent, so the caller surfaces the
+		// structured "snapshot in progress" error at once. The unlink
+		// finalizer is registered INSIDE the core's scope (Architecture §
+		// Concurrent snapshot step 5: "It unlinks `snapshot.reservation`").
+		return yield* acquireExclusive<SnapshotReservation, SnapshotReservationError>({
+			path,
+			timeoutMillis: 0,
+			parse: parseReservation,
+			ownBody: () => ownReservation(startTime),
+			toHolder: reservationToHolder,
+			mapHeld: (holder) => new SnapshotReservationHeldError({ path, holder }),
+			mapIo: (cause) => new SnapshotReservationIoError({ path, cause }),
+			oneShotSweep: (p) => sweepOrphan(p),
 		});
-		// Finalizer: best-effort unlink on scope close. Architecture §
-		// Concurrent snapshot step 5: "It unlinks `snapshot.reservation`."
-		yield* Effect.addFinalizer(() =>
-			Effect.sync(() => {
-				try {
-					unlinkSync(path);
-				} catch {
-					// Already gone — ok. A peer's sweep may have unlinked our
-					// stale reservation if we somehow lost the process between
-					// acquire and the finalizer fire.
-				}
-			}),
-		);
-		return body;
 	}).pipe(Effect.withSpan('cross-process.snapshot-reservation.acquire'));
 
 /** Inspect (without acquiring) the current reservation. Returns the
