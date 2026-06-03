@@ -82,7 +82,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 		// down the very HTTP connection it's answering on (502). It holds no
 		// restorable chain state, so staying live is safe.
 		keepAliveOnRestore: true,
-		start: (_deps: unknown, ctx?: PluginCtx) =>
+		start: (_deps: unknown, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
@@ -182,15 +182,13 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 				// 1:1 — closure `value.localPort` is this resolved `localPort`,
 				// closure `runtime.identity.app`/`.stack` is the `identity` this
 				// `start` already holds from `IdentityContext`.
-				if (ctx !== undefined) {
-					ctx.endpoint(
-						makeDashboardRoutable({
-							app: identity.app,
-							stack: identity.stack,
-							port: resolved.localPort,
-						}),
-					);
-				}
+				ctx.endpoint(
+					makeDashboardRoutable({
+						app: identity.app,
+						stack: identity.stack,
+						port: resolved.localPort,
+					}),
+				);
 
 				return resolved;
 			}),

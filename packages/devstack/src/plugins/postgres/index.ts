@@ -86,7 +86,7 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 		id: postgresResource.id,
 		role: 'service',
 		section: 'service',
-		start: (_deps: unknown, ctx?: PluginCtx) =>
+		start: (_deps: unknown, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				// Substrate-context plumbing supplies real
 				// `ContainerRuntime` + `Identity` instances; the
@@ -113,37 +113,33 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				// too, but is not parallel-stack-portable when emitted into
 				// committed codegen output.
 				//
-				// Defensive: in production the supervisor always passes ctx;
-				// the guard keeps the body well-typed for the additive slot.
-				if (ctx !== undefined) {
-					ctx.snapshotExtra(
-						makeSnapshotable({
+				ctx.snapshotExtra(
+					makeSnapshotable({
+						app: identity.app,
+						stack: identity.stack,
+						name,
+						databases: handle.databases,
+					}),
+				);
+				ctx.codegen(
+					makeCodegenable({
+						name,
+						user: handle.user,
+						password: handle.password,
+						host: handle.networkAlias,
+						port: handle.port,
+						databases: handle.databases,
+					}),
+				);
+				if (opts.route) {
+					ctx.endpoint(
+						makePostgresRoutable({
 							app: identity.app,
 							stack: identity.stack,
 							name,
-							databases: handle.databases,
+							containerName: `${identity.app}-${identity.stack}-${name}`,
 						}),
 					);
-					ctx.codegen(
-						makeCodegenable({
-							name,
-							user: handle.user,
-							password: handle.password,
-							host: handle.networkAlias,
-							port: handle.port,
-							databases: handle.databases,
-						}),
-					);
-					if (opts.route) {
-						ctx.endpoint(
-							makePostgresRoutable({
-								app: identity.app,
-								stack: identity.stack,
-								name,
-								containerName: `${identity.app}-${identity.stack}-${name}`,
-							}),
-						);
-					}
 				}
 
 				return handle;

@@ -232,10 +232,8 @@ const ctxPlugin = definePlugin({
 	id: 'frame:ctx',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx?: PluginCtx) =>
-		Effect.gen(function* () {
-			// Defensive: in production the supervisor always passes ctx.
-			if (ctx === undefined) return yield* Effect.die('ctx missing');
+	start: (_deps: unknown, ctx: PluginCtx) =>
+		Effect.sync(() => {
 			ctx.snapshotExtra(snapDecl);
 			ctx.codegen(codegenDecl);
 			ctx.endpoint(routeDecl);
@@ -254,9 +252,8 @@ const ctxFailPlugin = definePlugin({
 	id: 'frame:ctx-fail',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx?: PluginCtx) =>
+	start: (_deps: unknown, ctx: PluginCtx) =>
 		Effect.gen(function* () {
-			if (ctx === undefined) return yield* Effect.die('ctx missing');
 			// Buffer an endpoint (and more) ...
 			ctx.endpoint(routeDecl);
 			ctx.snapshotExtra(snapDecl);

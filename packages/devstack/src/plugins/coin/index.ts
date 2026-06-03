@@ -29,7 +29,12 @@ import { createHash } from 'node:crypto';
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
+import {
+	definePlugin,
+	resource,
+	type ResourceRef,
+	type ResourceValueOf,
+} from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
@@ -299,7 +304,15 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		// `'coin'` section would ripple through every projection / TUI
 		// consumer for marginal display value.
 		section: 'action',
-		start: ({ pkg: resolved, sui }, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the destructured object no longer arity-matches the single-arg
+		// `PluginStart` contextual default, so TS would otherwise infer the
+		// bindings as `any`. The annotation reproduces the resolved
+		// dependency object the default supplied.
+		start: (
+			{ pkg: resolved, sui }: { pkg: PackageMemberValue; sui: ResourceValueOf<typeof suiResource> },
+			ctx: PluginCtx,
+		) =>
 			Effect.gen(function* () {
 				const artifactPublisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -319,7 +332,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 				// the `capabilities: ({ value }) => buildCapabilities(symbol,
 				// value)` closure). `value` is the just-resolved `CoinValue`;
 				// `symbol` is the package-scoped witness symbol in scope.
-				if (ctx !== undefined) emitCapabilities(ctx, symbol, value);
+				emitCapabilities(ctx, symbol, value);
 				return value;
 			}),
 		errorContributions: coinErrorContributions,
@@ -353,7 +366,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
-		start: ({ sui }, ctx?: PluginCtx) =>
+		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -367,7 +380,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 				// Stage B: emit inline (was `capabilities: ({ value }) =>
 				// buildCapabilities(id, value)`). `value` is the resolved
 				// `CoinValue`; `id` is the derived `coin.known` resource key.
-				if (ctx !== undefined) emitCapabilities(ctx, id, value);
+				emitCapabilities(ctx, id, value);
 				return value;
 			}),
 		errorContributions: coinErrorContributions,
@@ -389,7 +402,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
-		start: ({ sui }, ctx?: PluginCtx) =>
+		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
@@ -403,7 +416,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 				// Stage B: emit inline (was `capabilities: ({ value }) =>
 				// buildCapabilities(symbol, value)`). `value` is the resolved
 				// `CoinValue`; `symbol` is the builtin coin name (`'sui'`).
-				if (ctx !== undefined) emitCapabilities(ctx, symbol, value);
+				emitCapabilities(ctx, symbol, value);
 				return value;
 			}),
 		errorContributions: coinErrorContributions,

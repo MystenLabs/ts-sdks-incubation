@@ -214,7 +214,7 @@ export const acquireNode = (
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const start = entry.node.member.start as (
 			deps: unknown,
-			ctx?: PluginCtx,
+			ctx: PluginCtx,
 		) => Effect.Effect<unknown, unknown, any>;
 		// Stage B foundation: build the per-plugin ctx + replay buffer. The
 		// buffer stays EMPTY for every unconverted plugin (their `start`

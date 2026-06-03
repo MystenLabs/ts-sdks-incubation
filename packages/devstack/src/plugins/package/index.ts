@@ -24,7 +24,12 @@
 import { Effect } from 'effect';
 
 import { projection } from '../../api/define-capabilities.ts';
-import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
+import {
+	definePlugin,
+	resource,
+	type ResourceRef,
+	type ResourceValueOf,
+} from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CapabilityDecl } from '../../contracts/capability-decl.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -269,7 +274,18 @@ const buildLocalPlugin = <
 			],
 			cascade: true,
 		},
-		start: ({ sui, publisher: publisherAccount }, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the destructured object no longer arity-matches the single-arg
+		// `PluginStart` contextual default, so TS would otherwise infer the
+		// bindings as `any`. The annotation reproduces the resolved
+		// dependency object the default supplied.
+		start: (
+			{
+				sui,
+				publisher: publisherAccount,
+			}: { sui: ResourceValueOf<typeof suiResource>; publisher: AccountValue },
+			ctx: PluginCtx,
+		) =>
 			Effect.gen(function* () {
 				// Substrate-context primitives: ArtifactPublisher
 				// is provided by the supervisor's pluginContext;
@@ -336,7 +352,7 @@ const buildLocalPlugin = <
 				// (was the `capabilities: ({ value, runtime }) =>
 				// makeLocalCapabilities(...)` closure). `projected` is the
 				// just-resolved local value the closure used to receive.
-				if (ctx !== undefined) emitCapabilities(ctx, makeLocalCapabilities(name, opts, projected));
+				emitCapabilities(ctx, makeLocalCapabilities(name, opts, projected));
 				// Part 2 (custom-kind re-home): on a fresh publish, fold the
 				// output's coins into the per-stack CoinRegistry DIRECTLY (was
 				// the orchestrator's `publishResultSink` consuming the now-
@@ -362,7 +378,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'package',
-		start: ({ sui }, ctx?: PluginCtx) =>
+		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
@@ -378,7 +394,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 				// Stage B: emit the resolved package's contributions inline
 				// (was the `capabilities: ({ value }) =>
 				// makeKnownCapabilities(...)` closure).
-				if (ctx !== undefined) emitCapabilities(ctx, makeKnownCapabilities(name, opts, resolved));
+				emitCapabilities(ctx, makeKnownCapabilities(name, opts, resolved));
 				// Known mode never publishes — no output to walk, so
 				// the coin-discovery hook is skipped here. Users who
 				// want coin records for a knownPackage point a

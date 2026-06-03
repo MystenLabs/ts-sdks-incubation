@@ -25,6 +25,7 @@ import { account } from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { deepbook, type DeepbookResolved } from '../../../src/plugins/deepbook/index.ts';
 import { localPackage } from '../../../src/plugins/package/index.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const localMemberWithUnresolvedCoin = () => {
 	const publisher = account('publisher');
@@ -72,8 +73,9 @@ describe('deepbook local start — unresolved pool coin', () => {
 				captured: { registryId: '0xreg', adminCapId: '0xcap' },
 			};
 
+			const { ctx } = makeTestPluginCtx();
 			const exit = yield* Effect.exit(
-				member.start([sui, publisherValue, packageValue] as never) as Effect.Effect<
+				member.start([sui, publisherValue, packageValue] as never, ctx) as Effect.Effect<
 					DeepbookResolved,
 					{ readonly _tag: string },
 					never

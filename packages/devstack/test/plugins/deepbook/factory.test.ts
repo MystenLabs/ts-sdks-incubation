@@ -146,8 +146,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
+		const { ctx } = makeTestPluginCtx();
 		const resolved = Effect.runSync(
-			member.start([{ chain: chainId('sui:local') } as never]) as Effect.Effect<
+			member.start([{ chain: chainId('sui:local') } as never], ctx) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -179,9 +180,7 @@ describe('deepbook(opts) — primary factory', () => {
 		);
 		// Name-keyed sibling aggregate: emitter is `deepbook/<name>`
 		// (default name `deepbook`); the export key is the instance name.
-		const codegen = captured.codegen.find(
-			(cap) => cap.emitterName === 'deepbook/deepbook',
-		) as
+		const codegen = captured.codegen.find((cap) => cap.emitterName === 'deepbook/deepbook') as
 			| {
 					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
 			  }

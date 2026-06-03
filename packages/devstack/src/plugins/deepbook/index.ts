@@ -472,7 +472,12 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the body no longer arity-matches the single-arg `PluginStart`
+		// contextual default, so TS would otherwise infer `deps` as `any`.
+		// The annotation reproduces the resolved tuple (`[sui]`) the default
+		// supplied for this `[suiResource] as const` dependency.
+		start: (deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
 			Effect.sync(() => {
 				const [sui] = deps;
 				const chain = opts.chain ?? sui.chain;
@@ -495,22 +500,20 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 				// `capabilities: ({ value: resolved }) => [snap, codegen]`
 				// closure). `resolved` is the just-computed value; `snap` is
 				// the override-mode identity-guard snapshotable in scope.
-				if (ctx !== undefined) {
-					const bindings: DeepbookBindings = {
-						name,
-						chain: resolved.chain,
-						packageId: resolved.packageId,
-						registryId: resolved.registryId,
-						adminCapId: resolved.adminCapId,
-						deepTreasuryId: resolved.deepTreasuryId,
-						pools: [],
-						pyth: null,
-						margin: null,
-						serverUrl: null,
-						indexerUrl: null,
-					};
-					emitDeepbookContributions(ctx, { snap, bindings });
-				}
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: resolved.adminCapId,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: [],
+					pyth: null,
+					margin: null,
+					serverUrl: null,
+					indexerUrl: null,
+				};
+				emitDeepbookContributions(ctx, { snap, bindings });
 				return resolved;
 			}),
 		errorContributions: deepbookErrorContributions,
@@ -610,7 +613,13 @@ const buildLocalPlugin = <
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the body no longer arity-matches the single-arg `PluginStart`
+		// contextual default, so TS would otherwise infer `deps` as `any`.
+		// The runtime-built `dependsOn` array resolves to a heterogeneous
+		// tuple the body re-narrows via the `as unknown as` cast below, so a
+		// `readonly unknown[]` annotation is sufficient here.
+		start: (deps: readonly unknown[], ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const [sui, publisher, deepbookPackage, ...extraValues] = deps as unknown as readonly [
 					ResourceValueOf<typeof suiResource>,
@@ -714,43 +723,41 @@ const buildLocalPlugin = <
 				// `capabilities: ({ value: resolved }) => [snap, codegen]`
 				// closure). `resolved` is the just-computed value; the
 				// snapshotable is the local-mode `deepbook/<name>` subtree.
-				if (ctx !== undefined) {
-					const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
-					const bindings: DeepbookBindings = {
-						name,
-						chain: resolved.chain,
-						packageId: resolved.packageId,
-						registryId: resolved.registryId,
-						adminCapId: resolved.adminCapId,
-						deepTreasuryId: resolved.deepTreasuryId,
-						pools: resolved.pools.map((p) => ({
-							name: p.name,
-							poolId: p.poolId,
-							base: p.base,
-							quote: p.quote,
-							baseCoinType: p.baseCoinType,
-							quoteCoinType: p.quoteCoinType,
-						})),
-						pyth: resolved.pyth
-							? {
-									packageId: resolved.pyth.packageId,
-									stateId: resolved.pyth.stateId,
-									wormholeStateId: resolved.pyth.wormholeStateId,
-									feeds: resolved.pyth.feeds.map((feed) => ({
-										symbol: feed.symbol,
-										feedId: feed.feedId,
-										priceInfoObjectId: feed.priceInfoObjectId,
-										price: feed.price.toString(),
-										expo: feed.expo,
-									})),
-								}
-							: null,
-						margin: resolved.margin,
-						serverUrl: resolved.serverUrl,
-						indexerUrl: resolved.indexerUrl,
-					};
-					emitDeepbookContributions(ctx, { snap, bindings });
-				}
+				const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: resolved.adminCapId,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: resolved.pools.map((p) => ({
+						name: p.name,
+						poolId: p.poolId,
+						base: p.base,
+						quote: p.quote,
+						baseCoinType: p.baseCoinType,
+						quoteCoinType: p.quoteCoinType,
+					})),
+					pyth: resolved.pyth
+						? {
+								packageId: resolved.pyth.packageId,
+								stateId: resolved.pyth.stateId,
+								wormholeStateId: resolved.pyth.wormholeStateId,
+								feeds: resolved.pyth.feeds.map((feed) => ({
+									symbol: feed.symbol,
+									feedId: feed.feedId,
+									priceInfoObjectId: feed.priceInfoObjectId,
+									price: feed.price.toString(),
+									expo: feed.expo,
+								})),
+							}
+						: null,
+					margin: resolved.margin,
+					serverUrl: resolved.serverUrl,
+					indexerUrl: resolved.indexerUrl,
+				};
+				emitDeepbookContributions(ctx, { snap, bindings });
 				return resolved;
 			}).pipe(
 				// The body's aggregate E channel includes substrate Effects
@@ -794,10 +801,9 @@ function buildLocalPluginPublic<
  *  the plugin and attached to the runtime `dependsOn` (so the stack closure
  *  pulls them in), while the STATIC closure stays `[sui]` — the app declares
  *  only `sui()` + `deepbook()`. */
-type DeepbookSynthesizedMember = Omit<
-	ReturnType<typeof buildLocalPlugin>,
-	'dependsOn'
-> & { readonly dependsOn: readonly [typeof suiResource] };
+type DeepbookSynthesizedMember = Omit<ReturnType<typeof buildLocalPlugin>, 'dependsOn'> & {
+	readonly dependsOn: readonly [typeof suiResource];
+};
 
 /** Options for a synthesized local DeepBook (everything optional). */
 export interface DeepbookSynthesizedOptions extends DeepbookCommonOptions {
@@ -809,9 +815,7 @@ export interface DeepbookSynthesizedOptions extends DeepbookCommonOptions {
 	readonly deepTreasuryIdKey?: string;
 }
 
-const buildSynthesizedLocalPlugin = (
-	opts: DeepbookSynthesizedOptions,
-): DeepbookSynthesizedMember =>
+const buildSynthesizedLocalPlugin = (opts: DeepbookSynthesizedOptions): DeepbookSynthesizedMember =>
 	// Runtime is the full local plugin (synthesis happens in
 	// `resolveLocalOptions`); only the declared closure type is narrowed.
 	buildLocalPlugin(
@@ -848,7 +852,12 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the body no longer arity-matches the single-arg `PluginStart`
+		// contextual default, so TS would otherwise infer `deps` as `any`.
+		// The annotation reproduces the resolved tuple (`[sui]`) the default
+		// supplied for this `[suiResource] as const` dependency.
+		start: (deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
 			Effect.sync(() => {
 				const [sui] = deps;
 				const chain = opts.chain ?? known?.chain ?? sui.chain;
@@ -876,39 +885,37 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				// value; `snap` is the known-mode identity-guard snapshotable
 				// in scope. The DEEP funding strategy-contributor is emitted
 				// only when `resolved.deepFundingStrategy` is non-null.
-				if (ctx !== undefined) {
-					const bindings: DeepbookBindings = {
-						name,
-						chain: resolved.chain,
-						packageId: resolved.packageId,
-						registryId: resolved.registryId,
-						adminCapId: null,
-						deepTreasuryId: resolved.deepTreasuryId,
-						pools: [],
-						pyth: resolved.pyth
-							? {
-									packageId: resolved.pyth.packageId,
-									stateId: resolved.pyth.stateId,
-									wormholeStateId: resolved.pyth.wormholeStateId,
-									feeds: resolved.pyth.feeds.map((feed) => ({
-										symbol: feed.symbol,
-										feedId: feed.feedId,
-										priceInfoObjectId: feed.priceInfoObjectId,
-										price: feed.price.toString(),
-										expo: feed.expo,
-									})),
-								}
-							: null,
-						margin: null,
-						serverUrl: null,
-						indexerUrl: null,
-					};
-					emitDeepbookContributions(ctx, {
-						snap,
-						bindings,
-						deepFundingStrategy: resolved.deepFundingStrategy,
-					});
-				}
+				const bindings: DeepbookBindings = {
+					name,
+					chain: resolved.chain,
+					packageId: resolved.packageId,
+					registryId: resolved.registryId,
+					adminCapId: null,
+					deepTreasuryId: resolved.deepTreasuryId,
+					pools: [],
+					pyth: resolved.pyth
+						? {
+								packageId: resolved.pyth.packageId,
+								stateId: resolved.pyth.stateId,
+								wormholeStateId: resolved.pyth.wormholeStateId,
+								feeds: resolved.pyth.feeds.map((feed) => ({
+									symbol: feed.symbol,
+									feedId: feed.feedId,
+									priceInfoObjectId: feed.priceInfoObjectId,
+									price: feed.price.toString(),
+									expo: feed.expo,
+								})),
+							}
+						: null,
+					margin: null,
+					serverUrl: null,
+					indexerUrl: null,
+				};
+				emitDeepbookContributions(ctx, {
+					snap,
+					bindings,
+					deepFundingStrategy: resolved.deepFundingStrategy,
+				});
 				return resolved;
 			}),
 		errorContributions: deepbookErrorContributions,
@@ -1039,9 +1046,12 @@ export function deepbookCore<
 					localOpts as DeepbookSynthesizedOptions,
 				) as unknown as DeepbookLocalMember<Publisher, Package, Pools, Pyth>;
 			}
-			return buildLocalPluginPublic(
-				localOpts,
-			) as DeepbookLocalMember<Publisher, Package, Pools, Pyth>;
+			return buildLocalPluginPublic(localOpts) as DeepbookLocalMember<
+				Publisher,
+				Package,
+				Pools,
+				Pyth
+			>;
 		}
 		case 'override':
 			return buildOverridePlugin(resolved);

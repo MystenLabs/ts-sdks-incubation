@@ -40,7 +40,12 @@
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
+import {
+	definePlugin,
+	resource,
+	type AnyResourceRef,
+	type ResolvedDependencyList,
+} from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -334,7 +339,11 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
-		start: (deps, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the body no longer arity-matches the single-arg `PluginStart`
+		// contextual default, so TS would otherwise infer `deps` as `any`.
+		// The annotation reproduces the resolved tuple the default supplied.
+		start: (deps: ResolvedDependencyList<AccountDependencyMembers<Funding>>, ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedDeps] = deps;
 				const resolvedCoinValues = resolvedDeps.slice(
@@ -411,14 +420,12 @@ export const account = <const N extends string, const Funding extends AccountFun
 				// `yield* IdentityContext` here), and the variant kind is
 				// `opts2.kind`. The snapshot/codegen/registry/projection decl
 				// shapes + emit ORDER are byte-identical to the old closure.
-				if (ctx !== undefined) {
-					emitAccountCapabilities(ctx, resolved, {
-						name,
-						variant: opts2.kind,
-						app: identity.app,
-						stack: identity.stack,
-					});
-				}
+				emitAccountCapabilities(ctx, resolved, {
+					name,
+					variant: opts2.kind,
+					app: identity.app,
+					stack: identity.stack,
+				});
 
 				return resolved;
 			}),

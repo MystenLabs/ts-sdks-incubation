@@ -28,6 +28,7 @@
 import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
+import type { AccountValue } from '../account/index.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -211,7 +212,13 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// itself lives for the stack's lifetime.
 		role: 'service',
 		section: 'service',
-		start: (deps, ctx?: PluginCtx) =>
+		// `deps` is annotated explicitly: a required `ctx` 2nd param means
+		// the body no longer arity-matches the single-arg `PluginStart`
+		// contextual default, so TS would otherwise infer `deps` as `any`.
+		// The annotation reproduces the resolved tuple the default supplied:
+		// the hard Sui ordering edge (discarded) followed by the resolved
+		// account values.
+		start: (deps: readonly [unknown, ...(readonly AccountValue[])], ctx: PluginCtx) =>
 			Effect.gen(function* () {
 				// Pull identity, the stack-paths bundle, and the port-
 				// broker from the supervisor-provided substrate context.
@@ -321,17 +328,15 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 				// byte-identical to the closure path the supervisor harvested.
 				// The verbs are void and buffer for the supervisor's post-start
 				// replay.
-				if (ctx !== undefined) {
-					ctx.snapshotExtra(makeWalletSnapshotable());
-					ctx.codegen(makeWalletCodegen(resolved.bindings));
-					ctx.endpoint(
-						makeWalletRoutable({
-							app: identity.app,
-							stack: identity.stack,
-							port: resolved.localPort,
-						}),
-					);
-				}
+				ctx.snapshotExtra(makeWalletSnapshotable());
+				ctx.codegen(makeWalletCodegen(resolved.bindings));
+				ctx.endpoint(
+					makeWalletRoutable({
+						app: identity.app,
+						stack: identity.stack,
+						port: resolved.localPort,
+					}),
+				);
 
 				return resolved;
 			}),
