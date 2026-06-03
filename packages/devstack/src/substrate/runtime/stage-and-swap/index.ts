@@ -114,6 +114,47 @@ const errnoCode = (cause: unknown): string | undefined => {
 	return codeOf(reasonCause) ?? codeOf(directCause) ?? codeOf(cause);
 };
 
+/**
+ * Roll a backed-up target back into place after a failed publish.
+ *
+ * The forward path renamed the live target away to `backupPath`; on any
+ * subsequent failure we must put it back at `targetPath` so the world looks
+ * exactly as it did at entry (contract item 5). The naive `rename(backupPath,
+ * targetPath)` throws `ENOTEMPTY`/`EEXIST` if `targetPath` is unexpectedly
+ * non-empty — e.g. a half-written staging tree that a prior interrupted run on
+ * a reused state-dir left behind, or a leftover `.bak.<id>`. That rollback
+ * bookkeeping failing is NOT a publish failure (the ORIGINAL `cause` is what we
+ * surface); it's recoverable cosmetic state.
+ *
+ * So: reap any pre-existing `targetPath` first (recursive+force, idempotent) so
+ * the rename can't collide, then rename. If the rename STILL fails we log a
+ * recoverable WARNING and swallow it — the caller's original error is the real
+ * outcome and we must not mask it with a `restore-backup` tag.
+ */
+const restoreBackupRename = (args: {
+	readonly backupPath: string;
+	readonly targetPath: string;
+	readonly stagingPath: string;
+}): Effect.Effect<void, never, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		// Reap a non-empty destination so the rollback rename can't ENOTEMPTY.
+		yield* fs
+			.remove(args.targetPath, { recursive: true, force: true })
+			.pipe(Effect.ignore);
+		yield* fs.rename(args.backupPath, args.targetPath).pipe(
+			Effect.catch((cause) =>
+				Effect.logWarning('stage-and-swap rollback-backup restore did not complete').pipe(
+					Effect.annotateLogs({
+						[SpanAttr.stageAndSwapTargetPath]: args.targetPath,
+						[SpanAttr.stageAndSwapStagingPath]: args.stagingPath,
+						[SpanAttr.errorCode]: errnoCode(cause) ?? 'unknown',
+					}),
+				),
+			),
+		);
+	});
+
 const normalizePreservedRelativePath = (relativePath: string): string | null => {
 	const normalized = normalize(relativePath);
 	if (
@@ -310,9 +351,7 @@ export const stageAndSwap = <A, E>(
 					}).pipe(
 						Effect.catch((error) =>
 							Effect.gen(function* () {
-								yield* fs
-									.rename(backupPath, targetPath)
-									.pipe(Effect.catch(failStage('restore-backup', targetPath, stagingPath)));
+								yield* restoreBackupRename({ backupPath, targetPath, stagingPath });
 								return yield* Effect.fail(error);
 							}),
 						),
@@ -344,9 +383,7 @@ export const stageAndSwap = <A, E>(
 											// if we backed a target up, restore it verbatim before
 											// surfacing the original tag (contract item 5).
 											if (targetExists) {
-												yield* fs
-													.rename(backupPath, targetPath)
-													.pipe(Effect.catch(failStage('restore-backup', targetPath, stagingPath)));
+												yield* restoreBackupRename({ backupPath, targetPath, stagingPath });
 											}
 											return yield* failStage(
 												'cross-filesystem-fallback',
@@ -363,9 +400,7 @@ export const stageAndSwap = <A, E>(
 						// one; surface the original tag.
 						return Effect.gen(function* () {
 							if (targetExists) {
-								yield* fs
-									.rename(backupPath, targetPath)
-									.pipe(Effect.catch(failStage('restore-backup', targetPath, stagingPath)));
+								yield* restoreBackupRename({ backupPath, targetPath, stagingPath });
 							}
 							return yield* failStage('rename-into-target', targetPath, stagingPath)(cause);
 						});

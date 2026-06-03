@@ -57,6 +57,7 @@ const makeConsumerNode = (
 	}) as AnyPlugin,
 	upstreamResources,
 	upstreamKeys,
+	keepAliveOnRestore: false,
 });
 
 const setupRegistry = (
@@ -71,6 +72,7 @@ const setupRegistry = (
 				member: alice,
 				upstreamResources: [],
 				upstreamKeys: [],
+				keepAliveOnRestore: false,
 			};
 			const entry = yield* makeEntry(node, parent);
 			pluginEntries.set(key, entry);

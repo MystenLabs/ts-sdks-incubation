@@ -28,28 +28,12 @@ import {
 	stubMoveSummaryRunner,
 } from '../../../src/orchestrators/codegen/bindings.ts';
 import {
+	CodegenAggregateConflict,
 	CodegenEmitterCollision,
 	CodegenPathConflict,
 } from '../../../src/orchestrators/codegen/errors.ts';
 import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
 import { runEmitCycle } from '../../../src/orchestrators/codegen/service.ts';
-
-// `makeExtrasCodegenable` was an internal one-call factory. Reproduced
-// inline here so the codegen orchestrator's extras path stays under test
-// without resurrecting a single-use module.
-const makeExtrasCodegenable = (
-	extras: Readonly<Record<string, unknown>>,
-): CodegenableDecl<'app-extras'> => ({
-	kind: 'codegenable',
-	emitterName: 'app-extras',
-	outputPath: 'extras.ts',
-	sensitive: true,
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst('extras', extras);
-			return ctx.done();
-		}),
-});
 
 // Helper — synthesise a Codegenable for tests.
 const writeExports = (
@@ -65,6 +49,8 @@ const fakeDecl = (parts: {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly sensitive?: boolean;
+	readonly outputLocation?: 'generated' | 'generated-extras';
+	readonly aggregateOnly?: boolean;
 	readonly allowEmitterNameRepetition?: boolean;
 	readonly aggregate?: AggregateContribution;
 	readonly exports: { readonly [key: string]: unknown };
@@ -73,6 +59,8 @@ const fakeDecl = (parts: {
 	emitterName: parts.emitterName,
 	outputPath: parts.outputPath,
 	sensitive: parts.sensitive,
+	outputLocation: parts.outputLocation,
+	aggregateOnly: parts.aggregateOnly,
 	allowEmitterNameRepetition: parts.allowEmitterNameRepetition,
 	aggregate: parts.aggregate,
 	emit: (ctx) =>
@@ -102,9 +90,16 @@ const stubMoveLayers = Layer.mergeAll(
 
 const nodePlatformLayer = Layer.mergeAll(NodeFileSystem.layer, NodePath.layer);
 
+// Extras tree is a sibling of the runtime tree (mirrors production:
+// `generated-extras` lives outside `outputDir`). Tests that assert on
+// `generated-extras` artifacts import from `${root}-extras`.
+const extrasOf = (root: string): string => `${root}-extras`;
+
 const baseLayer = (root: string) =>
 	Layer.mergeAll(stubMoveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
+		Layer.provide(
+			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
+		),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -113,7 +108,9 @@ const baseLayerWithMove = (
 	moveLayers: Layer.Layer<MoveCodegenService | MoveSummaryRunnerService>,
 ) =>
 	Layer.mergeAll(moveLayers, layerCodegenPaths, nodePlatformLayer).pipe(
-		Layer.provide(layerCodegenRoot({ outputDir: root, stackSubdir: null })),
+		Layer.provide(
+			layerCodegenRoot({ outputDir: root, stackSubdir: null, extrasDir: extrasOf(root) }),
+		),
 		Layer.provide(nodePlatformLayer),
 	);
 
@@ -364,154 +361,172 @@ describe('codegen.runEmitCycle', () => {
 		}),
 	);
 
-	it.effect('emits aggregate app-facing accounts coins packages and services files', () =>
-		withTempRoot('codegen-test', (root) =>
-			Effect.gen(function* () {
-				// Each decl below carries its own `aggregate` contribution
-				// matching what the real account/coin/sui/package plugins
-				// register. The orchestrator must remain plugin-name-blind.
-				const result = yield* runEmitCycle({
-					contributions: [
-						fakeDecl({
-							emitterName: 'account/alice',
-							outputPath: 'accounts/alice.ts',
-							aggregate: {
-								bucket: 'accounts.ts',
-								project: (e) => e,
-							},
-							exports: {
-								alice: {
-									name: 'alice',
-									address: '0xabc',
-									scheme: 'ed25519',
-									source: 'real',
+	it.effect(
+		'deep-merges sui + packages into one config.ts and routes accounts to generated-extras',
+		() =>
+			withTempRoot('codegen-test', (root) =>
+				Effect.gen(function* () {
+					// Each decl below carries its own `aggregate` contribution
+					// matching what the real account/coin/sui/package plugins
+					// register. The orchestrator must remain plugin-name-blind.
+					// sui + package both deep-merge into `config.ts`; account
+					// routes to the gitignored `generated-extras` tree.
+					const result = yield* runEmitCycle({
+						contributions: [
+							fakeDecl({
+								emitterName: 'account/alice',
+								outputPath: 'accounts/alice.ts',
+								outputLocation: 'generated-extras',
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'accounts.ts',
+									outputLocation: 'generated-extras',
+									project: (e) => e,
 								},
-							},
-						}),
-						fakeDecl({
-							emitterName: 'coin/mock_usdc',
-							outputPath: 'coins/mock_usdc.ts',
-							aggregate: {
-								bucket: 'coins.ts',
-								project: (e) => e,
-							},
-							exports: {
-								mock_usdc: {
-									symbol: 'mock_usdc',
-									fullCoinType: '0x1::mock_usdc::MOCK_USDC',
-									decimals: 6,
-									source: 'registry',
+								exports: {
+									alice: {
+										name: 'alice',
+										address: '0xabc',
+										scheme: 'ed25519',
+										source: 'real',
+									},
 								},
-							},
-						}),
-						fakeDecl({
-							emitterName: 'sui-network',
-							outputPath: 'sui/network.ts',
-							aggregate: {
-								bucket: 'services.ts',
-								project: (e) => {
-									const n = e['suiNetwork'] as {
-										readonly rpcUrl: string;
-										readonly faucetUrl: string | null;
-										readonly graphqlUrl: string | null;
-									};
-									return {
-										sui: {
-											rpc: { url: n.rpcUrl },
-											faucet: n.faucetUrl === null ? null : { url: n.faucetUrl },
-											graphql: n.graphqlUrl === null ? null : { url: n.graphqlUrl },
-										},
-									};
+							}),
+							fakeDecl({
+								emitterName: 'coin/mock_usdc',
+								outputPath: 'coins/mock_usdc.ts',
+								aggregate: {
+									bucket: 'coins.ts',
+									project: (e) => e,
 								},
-							},
-							exports: {
-								suiNetwork: {
-									chain: 'sui:local',
-									mode: 'local',
-									rpcUrl: 'http://127.0.0.1:9000',
-									faucetUrl: 'http://127.0.0.1:9123',
-									graphqlUrl: null,
+								exports: {
+									mock_usdc: {
+										symbol: 'mock_usdc',
+										fullCoinType: '0x1::mock_usdc::MOCK_USDC',
+										decimals: 6,
+										source: 'registry',
+									},
 								},
-							},
-						}),
-						fakeDecl({
-							emitterName: 'package',
-							outputPath: 'package/mock-usdc.ts',
-							allowEmitterNameRepetition: true,
-							aggregate: {
-								bucket: 'packages.ts',
-								project: (e) => {
-									const b = e['packageBindings'] as { readonly name: string };
-									return { [b.name]: b };
+							}),
+							fakeDecl({
+								emitterName: 'sui-network',
+								outputPath: 'config.ts',
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'config.ts',
+									project: (e) => {
+										const n = e['__suiNetworkEntry'] as {
+											readonly rpc: string;
+										};
+										return { network: 'local', networks: { local: n } };
+									},
 								},
-							},
-							exports: {
-								packageBindings: {
-									name: 'mock_usdc',
-									packageId: '0x1',
-									mvrPlaceholder: 'mock-usdc',
-									sourcePath: null,
-									excluded: true,
+								exports: {
+									__suiNetworkEntry: {
+										chain: 'sui:local',
+										mode: 'local',
+										rpc: 'http://127.0.0.1:9000',
+										faucet: 'http://127.0.0.1:9123',
+										graphql: null,
+										forkUpstream: null,
+									},
 								},
-							},
-						}),
-						makeExtrasCodegenable({
-							openLobbyId: '0xfeed',
-							sealKeyServer: {
-								objectId: '0xseal',
-								url: 'http://seal.localhost:5175',
-							},
-						}),
-					],
-				});
-				expect(result.filesWritten.some((path) => path.endsWith('/accounts.ts'))).toBe(true);
-				expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
-				expect(result.filesWritten.some((path) => path.endsWith('/services.ts'))).toBe(true);
-				expect(result.filesWritten.some((path) => path.endsWith('/packages.ts'))).toBe(true);
-				expect(result.filesWritten.some((path) => path.endsWith('/extras.ts'))).toBe(true);
-				expect(result.bindings?.packagesEmitted).toEqual([]);
+							}),
+							fakeDecl({
+								emitterName: 'package',
+								outputPath: 'package/mock-usdc.ts',
+								allowEmitterNameRepetition: true,
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'config.ts',
+									project: (e) => {
+										const b = e['packageBindings'] as {
+											readonly name: string;
+											readonly mvrPlaceholder: string;
+										};
+										return {
+											packages: { [b.name]: { ...b, byNetwork: { local: '0x1' } } },
+											// Mirror the real `projectPackageConfig`: each package
+											// folds its active-network id into the shared
+											// `mvrOverrides` map keyed by its `mvr` placeholder.
+											mvrOverrides: { [b.mvrPlaceholder]: '0x1' },
+										};
+									},
+								},
+								exports: {
+									packageBindings: {
+										name: 'mock_usdc',
+										packageId: '0x1',
+										mvrPlaceholder: 'mock-usdc',
+										sourcePath: null,
+										excluded: true,
+									},
+								},
+							}),
+						],
+					});
+					expect(result.filesWritten.some((path) => path.endsWith('/config.ts'))).toBe(true);
+					expect(result.filesWritten.some((path) => path.endsWith('/coins.ts'))).toBe(true);
+					// accounts.ts lands in the extras tree, NOT the runtime tree.
+					expect(
+						result.filesWritten.some((path) => path.endsWith(`${extrasOf(root)}/accounts.ts`)),
+					).toBe(true);
+					expect(result.filesWritten.some((path) => path.endsWith(`${root}/accounts.ts`))).toBe(
+						false,
+					);
+					expect(result.bindings?.packagesEmitted).toEqual([]);
 
-				const accountsModule = yield* Effect.promise(
-					() =>
-						import(`${pathToFileURL(`${root}/accounts.ts`).href}?t=${Date.now()}`) as Promise<{
-							readonly accounts: { readonly alice: { readonly address: string } };
-						}>,
-				);
-				const coinsModule = yield* Effect.promise(
-					() =>
-						import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
-							readonly coins: { readonly mock_usdc: { readonly fullCoinType: string } };
-						}>,
-				);
-				const servicesModule = yield* Effect.promise(
-					() =>
-						import(`${pathToFileURL(`${root}/services.ts`).href}?t=${Date.now()}`) as Promise<{
-							readonly services: { readonly sui: { readonly rpc: { readonly url: string } } };
-						}>,
-				);
-				const packagesModule = yield* Effect.promise(
-					() =>
-						import(`${pathToFileURL(`${root}/packages.ts`).href}?t=${Date.now()}`) as Promise<{
-							readonly packages: { readonly mock_usdc: { readonly packageId: string } };
-						}>,
-				);
-				const extrasModule = yield* Effect.promise(
-					() =>
-						import(`${pathToFileURL(`${root}/extras.ts`).href}?t=${Date.now()}`) as Promise<{
-							readonly extras: {
-								readonly openLobbyId: string;
-								readonly sealKeyServer: { readonly objectId: string; readonly url: string };
-							};
-						}>,
-				);
-				expect(accountsModule.accounts.alice.address).toBe('0xabc');
-				expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
-				expect(servicesModule.services.sui.rpc.url).toBe('http://127.0.0.1:9000');
-				expect(packagesModule.packages.mock_usdc.packageId).toBe('0x1');
-				expect(extrasModule.extras.openLobbyId).toBe('0xfeed');
-				expect(extrasModule.extras.sealKeyServer.objectId).toBe('0xseal');
-			}).pipe(Effect.provide(baseLayer(root))),
-		),
+					const configModule = yield* Effect.promise(
+						() =>
+							import(`${pathToFileURL(`${root}/config.ts`).href}?t=${Date.now()}`) as Promise<{
+								readonly config: {
+									readonly network: string;
+									readonly networks: {
+										readonly local: { readonly rpc: string };
+									};
+									readonly packages: {
+										readonly mock_usdc: {
+											readonly packageId: string;
+											readonly byNetwork: { readonly local: string };
+										};
+									};
+									readonly mvrOverrides: Readonly<Record<string, string>>;
+								};
+							}>,
+					);
+					const coinsModule = yield* Effect.promise(
+						() =>
+							import(`${pathToFileURL(`${root}/coins.ts`).href}?t=${Date.now()}`) as Promise<{
+								readonly coins: { readonly mock_usdc: { readonly fullCoinType: string } };
+							}>,
+					);
+					const accountsModule = yield* Effect.promise(
+						() =>
+							import(
+								`${pathToFileURL(`${extrasOf(root)}/accounts.ts`).href}?t=${Date.now()}`
+							) as Promise<{
+								readonly accounts: { readonly alice: { readonly address: string } };
+							}>,
+					);
+					// sui's `networks.local` and the package's `packages.*`
+					// coexist in ONE config.ts (deep-merge, not last-write-wins).
+					expect(configModule.config.network).toBe('local');
+					expect(configModule.config.networks.local.rpc).toBe('http://127.0.0.1:9000');
+					expect(configModule.config.packages.mock_usdc.packageId).toBe('0x1');
+					expect(configModule.config.packages.mock_usdc.byNetwork.local).toBe('0x1');
+					// Top-level `mvrOverrides` is the active-network name→id map
+					// (what the old per-app `mvrOverrides()` helper computed):
+					// keyed by the package's `mvr` placeholder, valued by
+					// `byNetwork[network]`. Apps feed it straight into
+					// dapp-kit's `mvr.overrides.packages`.
+					expect(configModule.config.mvrOverrides).toEqual({ 'mock-usdc': '0x1' });
+					expect(configModule.config.mvrOverrides['mock-usdc']).toBe(
+						configModule.config.packages.mock_usdc.byNetwork.local,
+					);
+					expect(coinsModule.coins.mock_usdc.fullCoinType).toBe('0x1::mock_usdc::MOCK_USDC');
+					expect(accountsModule.accounts.alice.address).toBe('0xabc');
+				}).pipe(Effect.provide(baseLayer(root))),
+			),
 	);
 
 	it.effect(
@@ -663,6 +678,135 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 				expect(output).toContain(']): MoveStruct<any, string> {');
 			}).pipe(Effect.provide(baseLayerWithMove(root, moveLayers)));
 		}),
+	);
+
+	it.effect(
+		'fails fast when two contributors to one bucket disagree on outputLocation',
+		() =>
+			withTempRoot('codegen-test', (root) =>
+				Effect.gen(function* () {
+					const result = yield* runEmitCycle({
+						contributions: [
+							// First contributor establishes `generated` (non-sensitive).
+							fakeDecl({
+								emitterName: 'first',
+								outputPath: 'first.ts',
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'config.ts',
+									outputLocation: 'generated',
+									project: (e) => e,
+								},
+								exports: { a: { x: 1 } },
+							}),
+							// Later contributor disagrees: routes to extras +
+							// sensitive. MUST be rejected, not silently ignored
+							// (would otherwise land the secret in committed tree).
+							fakeDecl({
+								emitterName: 'second',
+								outputPath: 'second.ts',
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'config.ts',
+									outputLocation: 'generated-extras',
+									sensitive: true,
+									project: (e) => e,
+								},
+								exports: { b: { y: 2 } },
+							}),
+						],
+					}).pipe(Effect.flip);
+					expect(result).toBeInstanceOf(CodegenAggregateConflict);
+					if (result instanceof CodegenAggregateConflict) {
+						expect(result.bucket).toBe('config.ts');
+						expect(result.field).toBe('outputLocation');
+						expect(result.established).toBe('generated');
+						expect(result.conflicting).toBe('generated-extras');
+						expect([...result.emitters]).toEqual(['first', 'second']);
+					}
+				}).pipe(Effect.provide(baseLayer(root))),
+			),
+	);
+
+	it.effect('fails fast when two contributors to one bucket disagree on sensitive', () =>
+		withTempRoot('codegen-test', (root) =>
+			Effect.gen(function* () {
+				const result = yield* runEmitCycle({
+					contributions: [
+						fakeDecl({
+							emitterName: 'first',
+							outputPath: 'first.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'secrets.ts',
+								sensitive: false,
+								project: (e) => e,
+							},
+							exports: { a: { x: 1 } },
+						}),
+						fakeDecl({
+							emitterName: 'second',
+							outputPath: 'second.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'secrets.ts',
+								sensitive: true,
+								project: (e) => e,
+							},
+							exports: { b: { y: 2 } },
+						}),
+					],
+				}).pipe(Effect.flip);
+				expect(result).toBeInstanceOf(CodegenAggregateConflict);
+				if (result instanceof CodegenAggregateConflict) {
+					expect(result.bucket).toBe('secrets.ts');
+					expect(result.field).toBe('sensitive');
+					expect(result.established).toBe('false');
+					expect(result.conflicting).toBe('true');
+				}
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
+	);
+
+	it.effect(
+		'emits an explicit gitignore line for a sensitive aggregate routed to generated',
+		() =>
+			withTempRoot('codegen-test', (root) =>
+				Effect.gen(function* () {
+					yield* runEmitCycle({
+						contributions: [
+							// Sensitive aggregate-only contributor routed to the
+							// runtime `generated` tree. Its standalone file is
+							// skipped (aggregateOnly), so the standalone sensitive
+							// scan never sees it — only the synthesized aggregate
+							// path makes it into `.gitignore`.
+							fakeDecl({
+								emitterName: 'secret-agg',
+								outputPath: 'secret-src.ts',
+								aggregateOnly: true,
+								aggregate: {
+									bucket: 'secrets.ts',
+									outputLocation: 'generated',
+									sensitive: true,
+									project: (e) => e,
+								},
+								exports: { token: { value: 'shhh' } },
+							}),
+						],
+					});
+					const gitignore = yield* Effect.promise(() =>
+						readFile(`${root}/.gitignore`, 'utf8'),
+					);
+					// The blanket `*` is always present; assert the EXPLICIT
+					// sensitive re-ignore line for the synthesized aggregate is
+					// emitted too (under the sensitive-files documentation block).
+					expect(gitignore).toContain(
+						'# sensitive files — never commit even if you override the `*` above.',
+					);
+					const lines = gitignore.split('\n');
+					expect(lines).toContain('secrets.ts');
+				}).pipe(Effect.provide(baseLayer(root))),
+			),
 	);
 });
 

@@ -7,9 +7,10 @@ import {
 } from '@mysten/seal';
 import { Transaction } from '@mysten/sui/transactions';
 
-import { dAppKit } from '../dapp-kit.js';
+import { dAppKit, vaultPackageId } from '../dapp-kit.js';
 import { deployment } from './deployment.js';
 import { bytesToHex, hexToBytes } from './format.js';
+import * as vault from '@generated/bindings/vault/vault.js';
 
 const SEAL_THRESHOLD = 1; // Open mode, single key server.
 
@@ -38,7 +39,7 @@ export function getSealClient(
 			'getSealClient: seal bindings are missing. Did `devstack apply` complete the seal bootstrap step?',
 		);
 	}
-	const key = `${serverConfigsCacheKey(serverConfigs)}|${deployment.rpcUrl}`;
+	const key = serverConfigsCacheKey(serverConfigs);
 	if (cachedClient && cachedClientKey === key) return cachedClient;
 	cachedClient = new SealClient({
 		suiClient,
@@ -85,10 +86,10 @@ export async function encryptForSealId(opts: {
 	data: Uint8Array;
 }): Promise<Uint8Array> {
 	const seal = getSealClient(opts.suiClient);
-	if (!deployment.vaultPackageId) throw new Error('encryptForSealId: vault package not deployed');
+	if (!vaultPackageId) throw new Error('encryptForSealId: vault package not deployed');
 	const { encryptedObject } = await seal.encrypt({
 		threshold: SEAL_THRESHOLD,
-		packageId: deployment.vaultPackageId,
+		packageId: vaultPackageId,
 		id: opts.sealIdHex,
 		data: opts.data,
 	});
@@ -109,11 +110,11 @@ export async function decryptForFile(opts: {
 	encrypted: Uint8Array;
 }): Promise<Uint8Array> {
 	const seal = getSealClient(opts.suiClient, serverConfigsForEncryptedObject(opts.encrypted));
-	if (!deployment.vaultPackageId) throw new Error('decryptForFile: vault package not deployed');
+	if (!vaultPackageId) throw new Error('decryptForFile: vault package not deployed');
 
 	const sessionKey = await SessionKey.create({
 		address: opts.address,
-		packageId: deployment.vaultPackageId,
+		packageId: vaultPackageId,
 		ttlMin: 10,
 		suiClient: opts.suiClient,
 	});
@@ -122,13 +123,14 @@ export async function decryptForFile(opts: {
 	await sessionKey.setPersonalMessageSignature(signResult.signature);
 
 	const tx = new Transaction();
-	tx.moveCall({
-		target: `${deployment.vaultPackageId}::vault::seal_approve`,
-		arguments: [
-			tx.pure.vector('u8', Array.from(hexToBytes(opts.sealIdHex))),
-			tx.object(opts.fileId),
-		],
-	});
+	// Binding default (`options.package ?? 'vault'`); the grpc client's MVR
+	// overrides resolve `'vault'` to the deployed package id when the
+	// onlyTransactionKind tx is built below.
+	tx.add(
+		vault.sealApprove({
+			arguments: [Array.from(hexToBytes(opts.sealIdHex)), tx.object(opts.fileId)],
+		}),
+	);
 	const txBytes = await tx.build({ client: opts.suiClient, onlyTransactionKind: true });
 
 	return seal.decrypt({ data: opts.encrypted, sessionKey, txBytes });

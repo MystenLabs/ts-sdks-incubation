@@ -53,6 +53,10 @@ beforeAll(async () => {
 					Effect.sync(() => {
 						recorded.push(command);
 					}),
+				submitCommand: (command) =>
+					Effect.sync(() => {
+						recorded.push(command);
+					}),
 				domain: emptyControlPlaneDomain,
 				pluginDomain: emptyDashboardDomain,
 			},
@@ -224,6 +228,7 @@ describe('dashboard http server (UI bundle absent → API test page fallback)', 
 				context: {
 					state,
 					publishCommand: () => Effect.void,
+					submitCommand: () => Effect.void,
 					domain: emptyControlPlaneDomain,
 					pluginDomain: emptyDashboardDomain,
 				},

@@ -55,6 +55,12 @@ export interface ManifestCodegen {
 	 *  stack (primary → `<appRoot>/src/generated`; secondary →
 	 *  `<appRoot>/.devstack/stacks/<stack>/generated`). */
 	readonly generatedDir: string;
+	/** Absolute path to the dev-only + secret `generated-extras` tree
+	 *  for this stack (`<appRoot>/.devstack/stacks/<stack>/generated-extras`).
+	 *  The `@devstack-dev` Vite alias resolves here. Optional +
+	 *  additive — older manifests omit it; the reader falls back to
+	 *  `.devstack/stacks/<stack>/generated-extras`. */
+	readonly extrasDir?: string;
 }
 
 /** Manifest envelope. The `services` slot is open (`unknown`) at
@@ -172,6 +178,7 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 	codegen: Schema.optional(
 		Schema.Struct({
 			generatedDir: Schema.String,
+			extrasDir: Schema.optional(Schema.String),
 		}),
 	),
 });

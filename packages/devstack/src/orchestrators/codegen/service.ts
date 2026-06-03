@@ -51,6 +51,7 @@ import type {
 	CodegenableDecl,
 	CodegenEmitDone,
 	CodegenEmitContext,
+	OutputLocation,
 } from '../../contracts/codegenable.ts';
 import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
@@ -65,6 +66,7 @@ import {
 } from './bindings.ts';
 import { emitOne } from './emit.ts';
 import {
+	CodegenAggregateConflict,
 	CodegenEmitFailed,
 	CodegenEmitterCollision,
 	CodegenPathConflict,
@@ -100,19 +102,39 @@ export interface RunEmitCycleResult {
 	readonly bindings: EmitBindingsResult | null;
 }
 
+/** Resolve a decl/aggregate's absolute output path against the tree
+ *  selected by its `outputLocation`. `'generated-extras'` routes
+ *  through `paths.resolveExtras` (the gitignored dev tree); everything
+ *  else through `paths.resolve` (the staging-and-swapped runtime tree). */
+const resolveAt = (
+	paths: CodegenPaths,
+	location: OutputLocation,
+	outputPath: string,
+): Effect.Effect<string, CodegenPathConflict> =>
+	location === 'generated-extras'
+		? paths.resolveExtras(outputPath)
+		: paths.resolve(outputPath);
+
+const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
+	decl.outputLocation ?? 'generated';
+
 const buildParentModeResolver = (
 	paths: CodegenPaths,
-	decls: ReadonlyArray<Codegenable>,
+	entries: ReadonlyArray<{
+		readonly outputPath: string;
+		readonly location: OutputLocation;
+		readonly sensitive: boolean;
+	}>,
 ): Effect.Effect<(absolutePath: string) => number, CodegenPathConflict> =>
 	Effect.gen(function* () {
-		const byParent = new Map<string, Array<Pick<Codegenable, 'sensitive'>>>();
-		for (const decl of decls) {
-			const parent = dirname(yield* paths.resolve(decl.outputPath));
+		const byParent = new Map<string, Array<{ readonly sensitive?: boolean }>>();
+		for (const entry of entries) {
+			const parent = dirname(yield* resolveAt(paths, entry.location, entry.outputPath));
 			const current = byParent.get(parent);
 			if (current === undefined) {
-				byParent.set(parent, [decl]);
+				byParent.set(parent, [{ sensitive: entry.sensitive }]);
 			} else {
-				current.push(decl);
+				current.push({ sensitive: entry.sensitive });
 			}
 		}
 		const modes = new Map<string, number>();
@@ -317,11 +339,30 @@ const runEmitCycleInner = (
 		// the contributor; it never branches on plugin identity. See
 		// `CodegenableDecl.aggregate` (contracts/codegenable.ts).
 		const aggregates = new Map<string, Record<string, unknown>>();
+		// Per-bucket location + sensitivity, read from the first decl
+		// the orchestrator sees contributing to the bucket. Drives where
+		// the synthesized aggregate file lands and its file mode. Every
+		// later contributor to the same bucket MUST agree (enforced
+		// below) — a silent disagreement could misroute a sensitive
+		// aggregate into the committed `generated` tree.
+		const aggregateMeta = new Map<string, AggregateMeta>();
 		const packageContribs: Array<PackageBindings> = [];
 		const sortedDecls = [...fileEmitters].sort(
 			Order.mapInput(Order.String, (d: Codegenable) => d.outputPath),
 		);
-		const parentModeFor = yield* buildParentModeResolver(paths, fileEmitters);
+		// Parent-mode resolver must see every path that will be written —
+		// standalone decls AND synthesized aggregates — across BOTH trees.
+		// Aggregate-only decls do not write a standalone file, so they are
+		// excluded from the standalone-path set here.
+		const parentModeFor = yield* buildParentModeResolver(paths, [
+			...fileEmitters
+				.filter((d) => d.aggregateOnly !== true)
+				.map((d) => ({
+					outputPath: d.outputPath,
+					location: declLocation(d),
+					sensitive: d.sensitive === true,
+				})),
+		]);
 		for (const decl of sortedDecls) {
 			const emission = yield* runEmitter(decl);
 			const exported = emission.exports;
@@ -329,8 +370,47 @@ const runEmitCycleInner = (
 				const projected = decl.aggregate.project(exported);
 				if (projected !== null) {
 					const bucket = aggregates.get(decl.aggregate.bucket) ?? {};
-					Object.assign(bucket, projected);
+					deepMerge(bucket, projected);
 					aggregates.set(decl.aggregate.bucket, bucket);
+					// First-contributor-wins for routing/sensitivity, but a
+					// LATER contributor that disagrees is a hard error — the
+					// `AggregateContribution` contract requires all
+					// contributors to a bucket to agree, and a silent
+					// mismatch could misroute a sensitive aggregate into the
+					// committed `generated` tree (secret leak).
+					const declLoc = decl.aggregate.outputLocation ?? 'generated';
+					const declSensitive = decl.aggregate.sensitive === true;
+					const established = aggregateMeta.get(decl.aggregate.bucket);
+					if (established === undefined) {
+						aggregateMeta.set(decl.aggregate.bucket, {
+							location: declLoc,
+							sensitive: declSensitive,
+							establishedBy: decl.emitterName,
+						});
+					} else {
+						if (established.location !== declLoc) {
+							return yield* Effect.fail(
+								new CodegenAggregateConflict({
+									bucket: decl.aggregate.bucket,
+									field: 'outputLocation',
+									established: established.location,
+									conflicting: declLoc,
+									emitters: [established.establishedBy, decl.emitterName],
+								}),
+							);
+						}
+						if (established.sensitive !== declSensitive) {
+							return yield* Effect.fail(
+								new CodegenAggregateConflict({
+									bucket: decl.aggregate.bucket,
+									field: 'sensitive',
+									established: String(established.sensitive),
+									conflicting: String(declSensitive),
+									emitters: [established.establishedBy, decl.emitterName],
+								}),
+							);
+						}
+					}
 				}
 			}
 			// Move-bindings collection: any export whose shape matches
@@ -345,6 +425,10 @@ const runEmitCycleInner = (
 					packageContribs.push(value);
 				}
 			}
+			// Aggregate-only decls contribute solely to their bucket; the
+			// standalone per-decl file is skipped (the combined aggregate
+			// is the only app-facing surface).
+			if (decl.aggregateOnly === true) continue;
 			const rendered = renderFile({
 				emitterName: decl.emitterName,
 				outputPath: decl.outputPath,
@@ -355,7 +439,7 @@ const runEmitCycleInner = (
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = yield* paths.resolve(decl.outputPath);
+			const abs = yield* resolveAt(paths, declLocation(decl), decl.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
@@ -375,21 +459,22 @@ const runEmitCycleInner = (
 			}
 		}
 
-		for (const aggregate of buildAggregateFiles(aggregates)) {
+		const aggregateFiles = buildAggregateFiles(aggregates, aggregateMeta);
+		for (const aggregate of aggregateFiles) {
 			const rendered = renderFile({
 				emitterName: aggregate.emitterName,
 				outputPath: aggregate.outputPath,
-				sensitive: false,
+				sensitive: aggregate.sensitive,
 				exports: aggregate.exports,
 			});
 			if (!rendered.ok) {
 				return yield* Effect.fail(rendered.error);
 			}
-			const abs = yield* paths.resolve(aggregate.outputPath);
+			const abs = yield* resolveAt(paths, aggregate.location, aggregate.outputPath);
 			const outcome = yield* emitOne({
 				path: abs,
 				content: rendered.text,
-				mode: 0o644,
+				mode: aggregate.sensitive ? 0o600 : 0o644,
 				parentMode: parentModeFor(abs),
 			});
 			switch (outcome.outcome) {
@@ -418,9 +503,34 @@ const runEmitCycleInner = (
 			);
 		}
 
-		const sensitivePaths = fileEmitters
-			.filter((d) => d.sensitive === true)
-			.map((d) => d.outputPath);
+		// `.gitignore` covers the runtime `generated/` tree only. Decls
+		// routed to `generated-extras` live outside `outputDir` (that
+		// whole tree is gitignored at the `.devstack/` level), and
+		// aggregate-only decls never write a standalone file — both are
+		// excluded here so the managed `.gitignore` only lists real
+		// sensitive files in `outputDir`.
+		//
+		// Synthesized aggregate files are a SEPARATE source of sensitive
+		// runtime paths: a sensitive bucket routed to `generated` writes a
+		// real secret-bearing file in `outputDir` that the standalone-decl
+		// scan above never sees (its contributors may all be
+		// `aggregateOnly`). Without an explicit ignore line such a file
+		// would rely solely on the blanket `*` rule — and a user `!<file>`
+		// override in the preserved user block would then start tracking
+		// the secret. Include them so each gets an explicit re-ignore line.
+		const sensitivePaths = [
+			...fileEmitters
+				.filter(
+					(d) =>
+						d.sensitive === true &&
+						d.aggregateOnly !== true &&
+						declLocation(d) === 'generated',
+				)
+				.map((d) => d.outputPath),
+			...aggregateFiles
+				.filter((a) => a.sensitive && a.location === 'generated')
+				.map((a) => a.outputPath),
+		];
 		yield* writeGitignore({
 			path: paths.gitignoreFile,
 			sensitivePaths,
@@ -485,20 +595,34 @@ const validateUniqueness = (
 		const byPath = new Map<string, Array<string>>();
 		const byName = new Map<string, Array<string>>();
 		for (const d of decls) {
-			const ps = byPath.get(d.outputPath) ?? [];
-			ps.push(d.emitterName);
-			byPath.set(d.outputPath, ps);
+			// Aggregate-only decls write no standalone file, so their
+			// `outputPath` is a dead value — exclude them from the
+			// path-uniqueness check (many `package` decls legitimately
+			// share `config.ts`'s bucket but carry distinct dead
+			// `package/<name>.ts` outputPaths that never hit disk).
+			if (d.aggregateOnly !== true) {
+				// Key by (location, path): the same relative path in the
+				// `generated` vs `generated-extras` trees is two distinct
+				// files, so `accounts.ts` may exist in both without a
+				// false collision.
+				const pathKey = `${declLocation(d)} ${d.outputPath}`;
+				const ps = byPath.get(pathKey) ?? [];
+				ps.push(d.emitterName);
+				byPath.set(pathKey, ps);
+			}
 			if (d.allowEmitterNameRepetition === true) continue;
 			const ns = byName.get(d.emitterName) ?? [];
 			ns.push(d.outputPath);
 			byName.set(d.emitterName, ns);
 		}
-		for (const [path, emitters] of byPath) {
+		for (const [pathKey, emitters] of byPath) {
 			if (emitters.length > 1) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
 						kind: 'duplicate',
-						outputPath: path,
+						// Strip the `<location> ` prefix from the dedup key so
+						// the error names the relative path the plugin declared.
+						outputPath: pathKey.slice(pathKey.indexOf(' ') + 1),
 						emitters,
 					}),
 				);
@@ -526,29 +650,87 @@ const validateAggregatePathAvailability = (
 	decls: ReadonlyArray<Codegenable>,
 ): Effect.Effect<void, CodegenPathConflict> =>
 	Effect.gen(function* () {
-		const aggregatePaths = new Set<string>();
+		// Aggregate buckets keyed by (location, bucket). A standalone
+		// decl in the SAME tree that writes the bucket path would clash
+		// with the synthesized aggregate; a decl in the OTHER tree (or
+		// an aggregate-only decl, which writes no standalone file) does
+		// not.
+		const aggregatePaths = new Map<string, string>();
 		for (const decl of decls) {
-			if (decl.aggregate !== undefined) aggregatePaths.add(decl.aggregate.bucket);
+			if (decl.aggregate !== undefined) {
+				const location = decl.aggregate.outputLocation ?? 'generated';
+				aggregatePaths.set(`${location} ${decl.aggregate.bucket}`, decl.aggregate.bucket);
+			}
 		}
-		for (const path of aggregatePaths) {
-			const colliding = decls.filter((decl) => decl.outputPath === path);
+		for (const [key, bucket] of aggregatePaths) {
+			const location = key.slice(0, key.indexOf(' '));
+			const colliding = decls.filter(
+				(decl) =>
+					decl.aggregateOnly !== true &&
+					declLocation(decl) === location &&
+					decl.outputPath === bucket,
+			);
 			if (colliding.length > 0) {
 				return yield* Effect.fail(
 					new CodegenPathConflict({
 						kind: 'duplicate',
-						outputPath: path,
-						emitters: [...colliding.map((decl) => decl.emitterName), `aggregate/${path}`],
+						outputPath: bucket,
+						emitters: [...colliding.map((decl) => decl.emitterName), `aggregate/${bucket}`],
 					}),
 				);
 			}
 		}
 	});
 
+/** Per-bucket location + sensitivity, captured from the first decl
+ *  the orchestrator sees contributing to a bucket. The orchestrator
+ *  stays name-blind; the plugin owns these on its
+ *  `AggregateContribution`. `establishedBy` records the emitter name
+ *  of that first contributor so a later disagreement can quote both
+ *  sides in `CodegenAggregateConflict`. */
+interface AggregateMeta {
+	readonly location: OutputLocation;
+	readonly sensitive: boolean;
+	readonly establishedBy: string;
+}
+
 interface AggregateFile {
 	readonly emitterName: string;
 	readonly outputPath: string;
 	readonly exports: { readonly [key: string]: unknown };
+	readonly location: OutputLocation;
+	readonly sensitive: boolean;
 }
+
+/**
+ * Recursively merge `source` into `target`. Distinct buckets are
+ * shallow records keyed by name, but a single bucket (e.g. `config.ts`)
+ * accumulates contributions from MANY plugins into nested sub-records
+ * (`networks.local` from sui, `packages.<name>` / `objects.<name>`
+ * from each package). A shallow `Object.assign` would have the last
+ * package's `{packages:{...}}` clobber the prior ones. Deep-merge so
+ * sibling keys at every level coexist.
+ *
+ * Arrays and non-plain values overwrite (no element-wise merge — a
+ * plugin that re-emits a bucket key owns its full value). Only plain
+ * objects recurse.
+ */
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+	typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const deepMerge = (
+	target: Record<string, unknown>,
+	source: Readonly<Record<string, unknown>>,
+): void => {
+	for (const [key, value] of Object.entries(source)) {
+		const existing = target[key];
+		if (isPlainObject(existing) && isPlainObject(value)) {
+			deepMerge(existing, value);
+		} else {
+			target[key] = value;
+		}
+	}
+};
 
 /**
  * Synthesize one `AggregateFile` per non-empty bucket. The exports
@@ -556,20 +738,30 @@ interface AggregateFile {
  * so the rendered file exports `export const <stem> = { ... }`. The
  * orchestrator picks the export key from the bucket filename; the
  * stem itself is not a plugin identifier — it is the filename
- * without the `.ts` extension, derived mechanically.
+ * without the `.ts` extension, derived mechanically. The bucket's
+ * `location`/`sensitive` (from the first contributing decl) drive
+ * which tree the file lands in and its mode.
  */
 const buildAggregateFiles = (
 	buckets: ReadonlyMap<string, Record<string, unknown>>,
+	meta: ReadonlyMap<string, AggregateMeta>,
 ): ReadonlyArray<AggregateFile> => {
 	const files: Array<AggregateFile> = [];
 	const sortedEntries = [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b));
 	for (const [bucket, contents] of sortedEntries) {
 		if (Object.keys(contents).length === 0) continue;
 		const stem = bucketStem(bucket);
+		const bucketMeta = meta.get(bucket) ?? {
+			location: 'generated' as const,
+			sensitive: false,
+			establishedBy: `aggregate/${stem}`,
+		};
 		files.push({
 			emitterName: `aggregate/${stem}`,
 			outputPath: bucket,
 			exports: { [stem]: contents },
+			location: bucketMeta.location,
+			sensitive: bucketMeta.sensitive,
 		});
 	}
 	return files;

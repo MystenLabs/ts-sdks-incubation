@@ -20,7 +20,6 @@ import {
 	layerCodegenOrchestrator,
 	type Codegenable,
 } from './codegen/service.ts';
-import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import {
 	DEFAULT_TRAEFIK_IMAGE,
 	layerDockerUpstreamResolver,
@@ -56,7 +55,6 @@ import {
 	ManifestExtrasLookupError,
 	resolveManifestExtras,
 	type EndpointEntry,
-	type ManifestExtras,
 	type ManifestExtrasInput,
 } from '../substrate/manifest.ts';
 import { StackPathsService } from '../substrate/runtime/paths.ts';
@@ -76,6 +74,16 @@ export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
 	readonly outputDir?: string;
 	readonly stackSubdir?: string | null;
+	/** Absolute path to the dev-only + secret `generated-extras` tree
+	 *  for this stack. Threaded into `CodegenRoot.extrasDir`; recorded
+	 *  in the manifest as `codegen.extrasDir` for the `@devstack-dev`
+	 *  Vite alias. When omitted, falls back to
+	 *  `<appRoot>/.devstack/stacks/<stack>/generated-extras` is NOT
+	 *  derivable here (no stack name in scope), so the cold-start
+	 *  default `<outputDir>/../generated-extras`-style fallback is left
+	 *  to the resolver/Vite plugin; callers (`run-stack`, the CLI verb
+	 *  wirings) always supply the resolved value. */
+	readonly extrasDir?: string;
 }
 
 export interface ProductionRouterOptions {
@@ -154,21 +162,18 @@ const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefin
 	return isAbsolute(target) ? target : resolve(appRoot, target);
 };
 
-/** Codegenable wrapping the resolved manifest-extras blob into a
- *  generated `extras.ts` for app-side consumption. Single-callsite
- *  helper — declared here to keep the orchestrator's view of the
- *  contribution self-contained. */
-const makeExtrasCodegenable = (extras: ManifestExtras): CodegenableDecl<'app-extras'> => ({
-	kind: 'codegenable',
-	emitterName: 'app-extras',
-	outputPath: 'extras.ts',
-	sensitive: true,
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst('extras', extras);
-			return ctx.done();
-		}),
-});
+/** Fallback `generated-extras` dir for the cold-start / no-config
+ *  composition path (`buildDirectSnapshotLayers`). Callers that know
+ *  their stack (`run-stack`, the verb wirings) pass the resolved
+ *  per-stack value; this default only feeds direct-snapshot verbs that
+ *  never run codegen. */
+const productionCodegenExtrasDir = (
+	appRoot: string,
+	extrasDir: string | undefined,
+): string => {
+	const target = extrasDir ?? '.devstack/generated-extras';
+	return isAbsolute(target) ? target : resolve(appRoot, target);
+};
 
 export const layerProductionOrchestrators = (router: ProductionRouterOptions = {}) => {
 	const profile = router.profile ?? productionRouterProfile();
@@ -201,6 +206,10 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 						router.codegen?.outputDir,
 					),
 					stackSubdir: router.codegen?.stackSubdir ?? null,
+					extrasDir: productionCodegenExtrasDir(
+						router.codegen?.appRoot ?? process.cwd(),
+						router.codegen?.extrasDir,
+					),
 				}),
 			),
 		),
@@ -479,21 +488,23 @@ export const buildProductionPostAcquireHook = (
 					contributions: [],
 					endpoints,
 					extras,
-					// Record the EXACT dir codegen emits into for this stack so
-					// the read-side `@generated` alias (the Vite plugin) points
-					// where the files actually are — one decision, one source of
-					// truth (notes/per-stack-codegen-design.md §"Resolved: read
-					// and write share one gate"). `paths.outputDir` is already
-					// the resolved, stack-subdir-applied absolute path the emit
-					// pipeline writes to.
-					codegen: { generatedDir: paths.outputDir },
+					// Record the EXACT dirs codegen emits into for this stack so
+					// the read-side `@generated` / `@devstack-dev` aliases (the
+					// Vite plugin) point where the files actually are — one
+					// decision, one source of truth
+					// (notes/per-stack-codegen-design.md §"Resolved: read and
+					// write share one gate"). `paths.outputDir` is the resolved,
+					// stack-subdir-applied absolute path the runtime tree writes
+					// to; `paths.extrasDir` is the dev-only `generated-extras`
+					// tree the `@devstack-dev` alias resolves.
+					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
 				yield* writeManifest(envelope, manifestPath).pipe(
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
 				const result = yield* codegen
-					.runCycle({ extraContributions: [makeExtrasCodegenable(extras)] })
+					.runCycle()
 					.pipe(
 						Effect.provideService(CodegenPathsService, paths),
 						Effect.provideService(MoveSummaryRunnerService, summaryRunner),

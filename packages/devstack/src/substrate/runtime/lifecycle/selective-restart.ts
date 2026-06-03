@@ -19,7 +19,7 @@
 import { Data, Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { downstreamClosure, orderByLevel, type ResolvedGraph } from './dep-graph.ts';
+import { downstreamClosure, orderByLevel, type DepNode, type ResolvedGraph } from './dep-graph.ts';
 
 /** Tagged error: a restart was requested for a key that isn't in the
  *  graph. The supervisor lifts this from `attribute()` callers that
@@ -75,6 +75,29 @@ export const planRestart = (
  */
 export const planFullDrain = (graph: ResolvedGraph): RestartPlan => {
 	const slice = new Set<PluginKey>(graph.nodes.keys());
+	const teardownOrder = orderByLevel(graph, slice, 'reverse');
+	const acquireOrder = orderByLevel(graph, slice, 'forward');
+	return { slice, teardownOrder, acquireOrder };
+};
+
+/** `planFullDrain` minus the nodes matched by `exclude`. The excluded
+ *  nodes stay live while every other plugin is drained + re-acquired.
+ *
+ *  The live `snapshot.restore` re-acquire passes a predicate over the
+ *  plugin-declared keep-alive flag so a plugin whose transport is
+ *  answering the restore isn't torn down mid-flight (which would surface
+ *  to its caller as a 502 even though the restore succeeded). This module
+ *  filters purely on the node flag — it has no knowledge of which plugins
+ *  set it. `stack.restart` / CLI full-restart still drains everything via
+ *  `planFullDrain`. */
+export const planFullDrainExcluding = (
+	graph: ResolvedGraph,
+	exclude: (node: DepNode) => boolean,
+): RestartPlan => {
+	const slice = new Set<PluginKey>();
+	for (const [key, node] of graph.nodes) {
+		if (!exclude(node)) slice.add(key);
+	}
 	const teardownOrder = orderByLevel(graph, slice, 'reverse');
 	const acquireOrder = orderByLevel(graph, slice, 'forward');
 	return { slice, teardownOrder, acquireOrder };

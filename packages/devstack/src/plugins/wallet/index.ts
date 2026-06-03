@@ -338,7 +338,7 @@ export type {
 	WalletAccountsAll,
 } from './service.ts';
 export { WALLET_ACCOUNTS_ALL } from './service.ts';
-export type { DappKitConfigBindings } from './codegen.ts';
+export type { DevWalletConfig } from './codegen.ts';
 export {
 	WalletHttpPath,
 	WALLET_PROTOCOL_PREFIX,

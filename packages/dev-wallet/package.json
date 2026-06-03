@@ -19,6 +19,10 @@
 			"types": "./dist/adapters/browser.d.mts",
 			"import": "./dist/adapters/browser.mjs"
 		},
+		"./inject": {
+			"types": "./dist/inject/index.d.mts",
+			"import": "./dist/inject/index.mjs"
+		},
 		"./ui": {
 			"types": "./dist/ui/index.d.mts",
 			"import": "./dist/ui/index.mjs"

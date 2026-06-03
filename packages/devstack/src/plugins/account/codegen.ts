@@ -44,9 +44,17 @@ export const makeAccountCodegen = <Name extends string>(parts: {
 		outputPath: `accounts/${parts.name}.ts`,
 		exportName: parts.name,
 		value: parts.resolved,
+		// Dev-only surface: the combined `accounts.ts` lands in the
+		// gitignored `generated-extras` tree (reached via `@devstack-dev`),
+		// and no standalone per-account file is emitted (aggregateOnly).
+		// The template app must NOT use accounts at runtime; examples
+		// (dev-only) import them from `@devstack-dev`.
+		outputLocation: 'generated-extras',
+		aggregateOnly: true,
 		aggregate: {
 			kind: 'account',
 			bucket: 'accounts.ts',
+			outputLocation: 'generated-extras',
 			// Pass-through: this decl's exported map already keys by
 			// account name, which is the aggregate's merge key.
 			project: (exported) => exported,

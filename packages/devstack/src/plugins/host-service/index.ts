@@ -68,6 +68,12 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 		dependsOn: after,
 		role: 'service',
 		section: 'service',
+		// Operator transport: a live snapshot-restore re-acquire leaves
+		// supervised host processes running. They read chain over the
+		// network at stable hostnames and hold no restorable chain state,
+		// so draining them mid-restore only churns the connection a
+		// dashboard-initiated restore is answering on.
+		keepAliveOnRestore: true,
 		start: () =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;

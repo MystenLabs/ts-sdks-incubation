@@ -30,6 +30,7 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from '@effect/vitest';
 
 import {
+	DEFAULT_DEV_EXTRAS_ALIAS,
 	DEFAULT_GENERATED_ALIAS,
 	devstackVitePlugin,
 } from '../../../src/build-integrations/vite/index.ts';
@@ -61,6 +62,7 @@ const writeStackManifest = (
 	stateRoot: string,
 	stack: string,
 	generatedDir: string,
+	extrasDir?: string,
 ): string => {
 	const dir = join(stateRoot, 'stacks', stack);
 	mkdirSync(dir, { recursive: true });
@@ -73,7 +75,7 @@ const writeStackManifest = (
 			services: {},
 			endpoints: {},
 			extras: {},
-			codegen: { generatedDir },
+			codegen: { generatedDir, ...(extrasDir !== undefined ? { extrasDir } : {}) },
 		}),
 	);
 	return path;
@@ -145,6 +147,43 @@ describe('devstackVitePlugin', () => {
 			const plugin = devstackVitePlugin();
 			const patch = plugin.config({ root: tmp });
 			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(resolve(tmp, 'src/generated'));
+		}));
+
+	it('manifest hit → also aliases @devstack-dev at codegen.extrasDir', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
+			const extrasDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated-extras');
+			writeStackManifest(tmp, 'e2e', generatedDir, extrasDir);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			const patch = plugin.config({ root: tmp });
+			expect(patch.resolve.alias[DEFAULT_GENERATED_ALIAS]).toBe(generatedDir);
+			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(extrasDir);
+		}));
+
+	it('manifest hit without extrasDir → @devstack-dev cold-start fallback under .devstack/stacks/<stack>', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const generatedDir = join(tmp, '.devstack', 'stacks', 'e2e', 'generated');
+			// Older manifest with generatedDir but no extrasDir.
+			writeStackManifest(tmp, 'e2e', generatedDir);
+			process.env.DEVSTACK_STATE_DIR = tmp;
+			process.env.DEVSTACK_STACK = 'e2e';
+
+			const plugin = devstackVitePlugin();
+			const patch = plugin.config({ root: tmp });
+			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(
+				resolve(tmp, '.devstack', 'stacks', 'e2e', 'generated-extras'),
+			);
+		}));
+
+	it('options.extrasDir escape hatch wins for @devstack-dev', () =>
+		withTempRootSync('devstack-vite', (tmp) => {
+			const explicit = join(tmp, 'hand', 'picked', 'extras');
+			const plugin = devstackVitePlugin({ extrasDir: explicit });
+			const patch = plugin.config({ root: tmp });
+			expect(patch.resolve.alias[DEFAULT_DEV_EXTRAS_ALIAS]).toBe(explicit);
 		}));
 
 	it('manifest present but missing codegen field → cold-start fallback', () =>

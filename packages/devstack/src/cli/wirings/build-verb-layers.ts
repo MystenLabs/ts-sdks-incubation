@@ -50,6 +50,7 @@ export const buildVerbLayers = (params: {
 			appRoot: params.appRoot,
 			outputDir: codegenOutput.outputDir,
 			stackSubdir: codegenOutput.stackSubdir,
+			extrasDir: codegenOutput.extrasDir,
 		},
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(params.identity, params.runtimeRoot)));
 };

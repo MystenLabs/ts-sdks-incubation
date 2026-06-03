@@ -28,7 +28,13 @@ export interface SubscribableState {
 	readonly cycle: {
 		readonly id: number;
 		readonly startedAt: number;
-		readonly phase: 'booting' | 'running' | 'restarting' | 'shutting-down';
+		readonly phase:
+			| 'booting'
+			| 'running'
+			| 'restarting'
+			| 'shutting-down'
+			| 'snapshotting'
+			| 'restoring';
 	};
 	readonly rows: ReadonlyArray<Row>;
 	readonly endpoints: ReadonlyArray<Endpoint>;

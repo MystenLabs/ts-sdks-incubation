@@ -150,6 +150,14 @@ interface PluginSpecBase<
 	 *  `endpointSection` instead of `section`. Use sparingly — the
 	 *  default is for the plugin's normal `section` to apply uniformly. */
 	readonly endpointSection?: RowSection;
+	/** When `true`, a live snapshot-restore re-acquire leaves this plugin
+	 *  running instead of draining it. Reserved for operator-transport
+	 *  plugins that carry no restorable chain state and would tear down the
+	 *  very connection a restore is answering on if drained. Substrate's
+	 *  restore planner filters on this flag with NO knowledge of which
+	 *  plugins set it. Full restart (`stack.restart` / CLI) drains
+	 *  everything regardless. */
+	readonly keepAliveOnRestore?: true;
 }
 
 export type PluginSpec<
@@ -180,6 +188,7 @@ export interface Plugin<
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
+	readonly keepAliveOnRestore?: true;
 }
 
 export type AnyPlugin = Plugin<
@@ -330,6 +339,9 @@ export function definePlugin(
 			? {}
 			: { errorContributions: spec.errorContributions }),
 		...(spec.endpointSection === undefined ? {} : { endpointSection: spec.endpointSection }),
+		...(spec.keepAliveOnRestore === undefined
+			? {}
+			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
 	} as AnyPlugin;
 }
 

@@ -9,7 +9,9 @@ import {
 import { PRIVATE_CONTENT_APP_ORIGIN } from './devstack.shared.ts';
 
 const env = {
-	VITE_PRIVATE_CONTENT_AUTO_APPROVE: '1',
+	// Single devstack-wide switch the Vite plugin reads to auto-approve
+	// dev-wallet signing requests (replaces per-app VITE_*_AUTO_APPROVE).
+	DEVSTACK_AUTO_APPROVE: '1',
 };
 
 export default defineConfig({

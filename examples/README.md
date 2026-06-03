@@ -11,7 +11,6 @@ be committed.
 
 | App                                    | What it shows                                                                                                                   | Command                                                |
 | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [`_template`](./_template)             | Minimal starting point with one Move package, one publish action, one mint button, and one e2e spec.                            | `pnpm --filter @mysten-incubation/_template dev`       |
 | [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.                                 | `pnpm --filter @mysten-incubation/connect-four dev`    |
 | [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader with dev-wallet connection, local DeepBook publish, DEEP/SUI pool seeding, and live SUI-to-DEEP swaps. | `pnpm --filter @mysten-incubation/deepbook-trader dev` |
 | [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.                                 | `pnpm --filter @mysten-incubation/private-content dev` |
@@ -33,19 +32,20 @@ through `pnpm dev` rather than requiring a separate `devstack up` session.
 
 ## Adding An Example
 
-Use [`_template`](./_template) as the starting point for new browser examples.
-It includes one `localPackage(...)` member publishing one Move package, one
-`action(...)` member doing one post-publish transaction, a compact UI, and an
-e2e spec exercising the connect-and-mint flow.
+Scaffold a new browser app from the canonical template with
+[`create-devstack-app`](../packages/create-devstack-app):
 
-Manual path:
+```sh
+pnpm create @mysten-incubation/devstack-app <your-app>
+```
 
-1. Copy `examples/_template` to `examples/<your-app>`.
-2. Replace the package name and `DEVSTACK_APP=template` runtime identity
-   with your app name in `package.json` and `devstack.config.ts`.
-3. Pick non-conflicting port hints. Existing examples occupy ports 5170, 5173,
-   5176, 5179, and 5182; the per-stack allocator handles collisions at
-   runtime.
-4. Rename `move/hello/` to your package name and update the address in
-   `move/<pkg>/Move.toml`.
-5. Run `pnpm install`, then `pnpm --filter <your-package> dev`.
+The scaffolder copies the authored template
+([`packages/create-devstack-app/template/`](../packages/create-devstack-app/template)),
+which includes a Move package, a compact UI with core/walrus/seal/deepbook
+panels (pick which plugins to keep at scaffold time), and an e2e spec. It
+rewrites the `DEVSTACK_APP` runtime identity, tsconfig paths, and Playwright
+host tokens to your app name automatically.
+
+To grow the curated examples here, scaffold into `examples/<your-app>` and pick
+non-conflicting port hints — existing examples occupy ports 5170, 5173, 5176,
+5179, and 5182; the per-stack allocator handles collisions at runtime.

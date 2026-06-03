@@ -1,9 +1,8 @@
-import { useCurrentClient } from '@mysten/dapp-kit-react';
+import { useCurrentClient, useCurrentWallet } from '@mysten/dapp-kit-react';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { deployment } from '../lib/deployment.js';
 import { buildTransferTx, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
@@ -12,13 +11,21 @@ export function TransferForm({ self }: { self: string }) {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const others = Object.entries(deployment.accounts).filter(([, addr]) => addr !== self);
-	const firstOther = (others[0]?.[1] ?? '') as string;
+	// The connected wallet's other accounts (excluding self); each carries a
+	// `label` = the devstack account name in DEV.
+	const others = (useCurrentWallet()?.accounts ?? []).filter((a) => a.address !== self);
+	const firstOther = others[0]?.address ?? '';
 
 	const [recipient, setRecipient] = useState<string>(firstOther);
 	const [amount, setAmount] = useState('10');
 	const [error, setError] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
+
+	// Default the recipient once the connected-account list loads, if the
+	// user hasn't picked one yet.
+	useEffect(() => {
+		if (!recipient && firstOther) setRecipient(firstOther);
+	}, [recipient, firstOther]);
 
 	async function onSubmit(e: React.FormEvent) {
 		e.preventDefault();
@@ -52,9 +59,9 @@ export function TransferForm({ self }: { self: string }) {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{others.map(([name, addr]) => (
-								<option key={name} value={addr}>
-									{name} ({shortAddress(addr)})
+							{others.map(({ label, address }) => (
+								<option key={address} value={address}>
+									{label ?? address} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

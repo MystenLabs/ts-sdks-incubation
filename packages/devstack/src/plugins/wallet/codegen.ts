@@ -66,7 +66,7 @@ import { WalletSpans } from './spans.ts';
  *                        scoped to. Surfaced so dapp-kit can pin its
  *                        active chain.
  */
-export interface DappKitConfigBindings {
+export interface DevWalletConfig {
 	readonly walletUrl: string;
 	readonly pairUrl: string;
 	readonly chain: string;
@@ -96,16 +96,21 @@ export interface DappKitConfigBindings {
  *  substrate re-evaluates with the resolved values.
  */
 export const makeWalletCodegen = (
-	resolved: DappKitConfigBindings,
+	resolved: DevWalletConfig,
 ): CodegenableDecl<'dapp-kit-config'> =>
 	defineSimpleConstExport({
 		emitterName: 'dapp-kit-config',
-		outputPath: 'dapp-kit/config.ts',
-		exportName: 'dappKitConfig',
+		outputPath: 'dev-wallet.ts',
+		exportName: 'devWallet',
 		value: resolved,
-		// SENSITIVE: drives 0o600 + .gitignore. The architecture has
-		// this hook (`SnapshotableDecl` mirrors it for the snapshot
-		// subtree).
+		// Dev-only + secret-bearing: lands in the gitignored
+		// `generated-extras` tree (reached via `@devstack-dev`). The
+		// token never enters the runtime `src/generated/` tree.
+		outputLocation: 'generated-extras',
+		// SENSITIVE: drives 0o600. The architecture has this hook
+		// (`SnapshotableDecl` mirrors it for the snapshot subtree).
+		// `generated-extras` is already gitignored at the `.devstack`
+		// level, so the codegen `.gitignore` no longer lists it.
 		sensitive: true,
 		// Span annotation logs ONLY the redacted form — defense-in-
 		// depth so any debug-mode span dump doesn't leak the token.

@@ -104,6 +104,35 @@ export function useTotalSupply() {
 	});
 }
 
+/**
+ * Resolve the ADDRESS that owns the TreasuryCap, by ownership — not by wallet
+ * order. App code uses this to decide who may mint: the connected account is
+ * the treasury holder iff it matches this owner. Querying the cap's owner is
+ * the prod-correct source of truth (a single-account production wallet would
+ * otherwise make every connected user look like the holder if we keyed off
+ * wallet order). Returns `undefined` while loading / when no cap is deployed;
+ * callers should NOT show the Mint affordance until this resolves.
+ */
+export function useTreasuryCapOwner() {
+	const client = useCurrentClient();
+	return useQuery({
+		queryKey: ['treasuryCapOwner', deployment.treasuryCapId],
+		queryFn: async (): Promise<string | null> => {
+			const { object } = await client.core.getObject({
+				objectId: deployment.treasuryCapId,
+			});
+			// The TreasuryCap is an owned object; its owner is an address. Other
+			// owner kinds (shared / immutable / parent) have no minting address,
+			// so they resolve to `null` (nobody is the holder).
+			const owner = object.owner;
+			if (owner.$kind === 'AddressOwner') return owner.AddressOwner;
+			if (owner.$kind === 'ConsensusAddressOwner') return owner.ConsensusAddressOwner.owner;
+			return null;
+		},
+		enabled: deployment.treasuryCapId.length > 0,
+	});
+}
+
 export function useCoinBalance(address: string | undefined) {
 	const client = useCurrentClient();
 	return useQuery({

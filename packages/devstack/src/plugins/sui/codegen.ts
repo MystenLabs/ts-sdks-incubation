@@ -2,81 +2,78 @@
 //
 // Architecture §6: plugins emit typed `CodegenableDecl`s; the
 // codegen orchestrator stages files into the user's source tree
-// WITHOUT naming the plugin. Sui's contribution is network
-// metadata: the active RPC endpoint, the chain id, and (when
-// applicable) the resolved known-package ids.
+// WITHOUT naming the plugin. Sui's contribution is the active
+// network: the active key (`network: "local"`) plus the
+// `networks.local` entry (chain, mode, rpc, faucet, graphql,
+// forkUpstream).
 //
-// Downstream consumers — chain-aware code (e.g. SDK boots, wallet
-// pickers, frontend RPC selectors) — `import { suiNetwork } from
-// '<staging>/sui/network'`; the generated module owns that exported
-// value's type.
+// The sui contribution is `aggregateOnly` — it projects directly into
+// the combined `generated/config.ts` (`config.network` + `config.networks.local`)
+// and emits NO standalone `sui/network.ts` (nothing imports a
+// per-decl sui file anymore; consumers read `config.networks[config.network]`).
 
 import { Effect } from 'effect';
 
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ResolvedSuiNetwork } from './network-resolver.ts';
 
-/** The typed shape the emitted file exports. */
-export interface SuiNetworkBindings {
+/** The typed shape one `networks.<key>` entry in `config.ts` exports. */
+export interface SuiNetworkConfigEntry {
 	readonly chain: string;
 	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
-	readonly rpcUrl: string;
-	readonly faucetUrl: string | null;
-	readonly graphqlUrl: string | null;
+	readonly rpc: string;
+	readonly faucet: string | null;
+	readonly graphql: string | null;
 	/** Fork-only — upstream identity for known-package lookups. */
 	readonly forkUpstream: string | null;
 }
 
-/** Aggregate projection: fold the emitted `suiNetwork` shape into
- *  the cross-plugin `services.ts` aggregate at `services.sui`. The
- *  orchestrator stays plugin-name-blind; this projector owns the
- *  `{ rpc, faucet, graphql }` shape decision. */
-const projectSuiNetworkServices = (
+/** Aggregate projection: fold the resolved sui network into the
+ *  combined `config.ts` aggregate as `network: "local"` plus
+ *  `networks.local: {chain,mode,rpc,faucet,graphql,forkUpstream}`. The
+ *  orchestrator stays plugin-name-blind and deep-merges this with each
+ *  package's `packages.<name>` / `objects.<name>` contribution. */
+const projectSuiConfig = (
 	exported: Readonly<Record<string, unknown>>,
 ): Readonly<Record<string, unknown>> | null => {
-	const network = exported['suiNetwork'];
-	if (typeof network !== 'object' || network === null) return null;
-	const record = network as Readonly<Record<string, unknown>>;
-	const rpcUrl = stringField(record, 'rpcUrl');
-	const faucetUrl = stringField(record, 'faucetUrl');
-	const graphqlUrl = stringField(record, 'graphqlUrl');
+	const entry = exported['__suiNetworkEntry'];
+	if (typeof entry !== 'object' || entry === null) return null;
 	return {
-		sui: {
-			rpc: { url: rpcUrl ?? '' },
-			faucet: faucetUrl === null ? null : { url: faucetUrl },
-			graphql: graphqlUrl === null ? null : { url: graphqlUrl },
-		},
+		network: 'local',
+		networks: { local: entry },
 	};
-};
-
-const stringField = (record: Readonly<Record<string, unknown>>, key: string): string | null => {
-	const value = record[key];
-	return typeof value === 'string' && value.length > 0 ? value : null;
 };
 
 /** Construct the Codegenable contribution. Emit is byte-deterministic
  *  on unchanged input (architecture: no mtime churn on no-op
  *  cycles). */
-export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl<'sui-network'> => ({
-	kind: 'codegenable',
-	emitterName: 'sui-network',
-	outputPath: 'sui/network.ts',
-	aggregate: {
-		kind: 'sui-network',
-		bucket: 'services.ts',
-		project: projectSuiNetworkServices,
-	},
-	emit: (ctx) =>
-		Effect.sync(() => {
-			const bindings: SuiNetworkBindings = {
-				chain: resolved.chain,
-				mode: resolved.mode,
-				rpcUrl: resolved.rpc,
-				faucetUrl: resolved.faucet ?? null,
-				graphqlUrl: resolved.graphql ?? null,
-				forkUpstream: resolved.forkUpstream ?? null,
-			};
-			ctx.exportConst('suiNetwork', bindings);
-			return ctx.done();
-		}),
-});
+export const makeCodegenable = (resolved: ResolvedSuiNetwork): CodegenableDecl<'sui-network'> => {
+	const entry: SuiNetworkConfigEntry = {
+		chain: resolved.chain,
+		mode: resolved.mode,
+		rpc: resolved.rpc,
+		faucet: resolved.faucet ?? null,
+		graphql: resolved.graphql ?? null,
+		forkUpstream: resolved.forkUpstream ?? null,
+	};
+	return {
+		kind: 'codegenable',
+		emitterName: 'sui-network',
+		// Dead output path: `aggregateOnly` skips the standalone file.
+		// Kept non-empty so path-resolution never sees a bare ''.
+		outputPath: 'config.ts',
+		aggregateOnly: true,
+		aggregate: {
+			kind: 'sui-network',
+			bucket: 'config.ts',
+			project: projectSuiConfig,
+		},
+		emit: (ctx) =>
+			Effect.sync(() => {
+				// The projector reads this off the exported map; the
+				// standalone file is never written (aggregateOnly).
+				ctx.exportConst('__suiNetworkEntry', entry);
+				return ctx.done();
+			}),
+	};
+};

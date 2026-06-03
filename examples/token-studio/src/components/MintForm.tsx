@@ -1,9 +1,10 @@
 import { Transaction } from '@mysten/sui/transactions';
 import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
-import { deployment } from '../lib/deployment.js';
+import { mint as buildMint } from '@generated/bindings/token_studio/managed_coin.js';
+import { useCurrentWallet } from '@mysten/dapp-kit-react';
 import { TREASURY_CAP_ID, parseStudioAmount, shortAddress } from '../lib/coin.js';
 import { useInvalidateCoinReads, useSignAndExecute } from '../lib/queries.js';
 
@@ -11,10 +12,23 @@ export function MintForm() {
 	const invalidate = useInvalidateCoinReads();
 	const { mutateAsync, isPending } = useSignAndExecute();
 
-	const [recipient, setRecipient] = useState<string>(deployment.accounts.bob);
+	// The connected wallet's accounts (in DEV: alice/bob/carol), each carrying a
+	// `label` = the devstack account name.
+	const accounts = useCurrentWallet()?.accounts ?? [];
+	// Default recipient: bob if present, else the first connected account.
+	const defaultRecipient =
+		accounts.find((a) => a.label === 'bob')?.address ?? accounts[0]?.address ?? '';
+
+	const [recipient, setRecipient] = useState<string>(defaultRecipient);
 	const [amount, setAmount] = useState('100');
 	const [error, setError] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
+
+	// Default the recipient once the connected-account list loads, if the
+	// user hasn't picked one yet.
+	useEffect(() => {
+		if (!recipient && defaultRecipient) setRecipient(defaultRecipient);
+	}, [recipient, defaultRecipient]);
 
 	async function onSubmit(e: React.FormEvent) {
 		e.preventDefault();
@@ -23,10 +37,16 @@ export function MintForm() {
 			const raw = parseStudioAmount(amount);
 			if (raw <= 0n) throw new Error('Amount must be greater than zero');
 			const tx = new Transaction();
-			tx.moveCall({
-				target: `${deployment.packageId}::managed_coin::mint`,
-				arguments: [tx.object(TREASURY_CAP_ID), tx.pure.u64(raw), tx.pure.address(recipient)],
-			});
+			// `buildMint` defaults its package to the `@local/managed_coin`
+			// MVR name, which the client's `mvr.overrides` (see `dapp-kit.ts`)
+			// resolves to the published managed_coin package id at call time.
+			buildMint({
+				arguments: {
+					treasury: TREASURY_CAP_ID,
+					amount: raw,
+					recipient,
+				},
+			})(tx);
 			const result = await mutateAsync(tx);
 			invalidate();
 			setLastDigest(result.digest);
@@ -47,9 +67,9 @@ export function MintForm() {
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
 						>
-							{Object.entries(deployment.accounts).map(([name, addr]) => (
-								<option key={name} value={addr}>
-									{name} ({shortAddress(addr)})
+							{accounts.map(({ label, address }) => (
+								<option key={address} value={address}>
+									{label ?? address} ({shortAddress(address)})
 								</option>
 							))}
 						</select>

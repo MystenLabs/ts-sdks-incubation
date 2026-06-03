@@ -1,18 +1,20 @@
-import { useCurrentAccount, useCurrentClient, useDAppKit } from '@mysten/dapp-kit-react';
+import {
+	useCurrentAccount,
+	useCurrentClient,
+	useCurrentNetwork,
+	useDAppKit,
+} from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { Transaction } from '@mysten/sui/transactions';
 import { useMutation, useQuery, type UseMutationResult } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 
-import { accounts } from '@generated/accounts.js';
 import {
 	Game,
 	createLobby as buildCreateLobby,
 	joinLobby as buildJoinLobby,
 	play as buildPlay,
 } from '@generated/bindings/connect_four/game.js';
-import { packages } from '@generated/packages.js';
-import { selectDevstackAccount } from './dapp-kit.js';
 
 const COLS = 7;
 const ROWS = 6;
@@ -48,21 +50,31 @@ const playerMeta: Record<Player, { readonly label: string; readonly piece: strin
 	bob: { label: 'Bob', piece: 'B' },
 };
 
-const connectFourPackageId = packages.connect_four?.packageId ?? '';
-
 function isRecord(value: unknown): value is UnknownRecord {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function sameAddress(left: string | undefined, right: string | undefined): boolean {
-	return left !== undefined && right !== undefined && left.toLowerCase() === right.toLowerCase();
+function sameAddress(left: string | undefined | null, right: string | undefined | null): boolean {
+	return (
+		left !== undefined &&
+		left !== null &&
+		right !== undefined &&
+		right !== null &&
+		left.toLowerCase() === right.toLowerCase()
+	);
 }
 
-function playerForAddress(address: string | undefined): Player | null {
-	if (address === undefined) return null;
-	if (sameAddress(address, accounts.alice?.address)) return 'alice';
-	if (sameAddress(address, accounts.bob?.address)) return 'bob';
-	return null;
+/**
+ * Map the connected wallet address to a connect-four seat using the
+ * on-chain Game (the two player addresses live in the Game object). Before
+ * a Game exists there is no on-chain identity yet, so this returns null.
+ */
+function playerForConnectedAddress(
+	game: ChainGame | null,
+	address: string | undefined,
+): Player | null {
+	if (game === null) return null;
+	return playerForGameAddress(game, address);
 }
 
 function playerForGameAddress(game: ChainGame, address: string | null | undefined): Player | null {
@@ -270,8 +282,12 @@ function useSignAndExecute(): UseMutationResult<ExecutedTransaction, Error, Tran
 export function App() {
 	const account = useCurrentAccount();
 	const client = useCurrentClient();
-	const connectedPlayer = playerForAddress(account?.address);
+	const network = useCurrentNetwork();
 	const [lobbyId, setLobbyId] = useState<string | null>(null);
+	// Address that created the open lobby (player A) — the Game object that
+	// records the seats does not exist until someone joins, so the lobby
+	// phase remembers its creator to render the right contextual status.
+	const [lobbyCreator, setLobbyCreator] = useState<string | null>(null);
 	const [gameId, setGameId] = useState<string | null>(null);
 	const [lastDigest, setLastDigest] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -290,6 +306,15 @@ export function App() {
 	});
 
 	const chainGame = gameQuery.data ?? null;
+	const connectedPlayer = playerForConnectedAddress(chainGame, account?.address);
+	// During the lobby phase the connected account is player A iff it opened
+	// the lobby. Once the Game exists, `connectedPlayer` takes over.
+	const connectedIsLobbyCreator =
+		gameId === null && lobbyId !== null && sameAddress(lobbyCreator, account?.address);
+	const seatAddresses: Record<Player, string> = {
+		alice: chainGame?.playerA ?? '',
+		bob: chainGame?.playerB ?? '',
+	};
 	const board = useMemo(
 		() => (chainGame === null ? emptyBoard() : boardFromChain(chainGame.boardColumns)),
 		[chainGame],
@@ -309,17 +334,24 @@ export function App() {
 	const filledCells = chainGame?.moves ?? 0;
 	const gameIsLoading = gameId !== null && (gameQuery.isLoading || chainGame === null);
 	const isBusy = isPending || activeFlow !== null;
-	const canMove = gameId !== null && !gameIsLoading && !isBusy && winner === null;
-	const canCreateLobby =
-		connectFourPackageId.length > 0 && lobbyId === null && gameId === null && !isBusy;
-	const canJoinLobby =
-		connectFourPackageId.length > 0 && lobbyId !== null && gameId === null && !isBusy;
+	// The connected account may move only when the game is live and it is
+	// their seat's turn. Account switching is the wallet's job (the injected
+	// dev wallet in DEV, a real wallet in prod), never the app's.
+	const isConnectedPlayersTurn = connectedPlayer !== null && connectedPlayer === turn;
+	const canMove =
+		gameId !== null && !gameIsLoading && !isBusy && winner === null && isConnectedPlayersTurn;
+	const ready = network !== undefined && account !== null && account !== undefined;
+	// Anyone connected can open a lobby (they become player A). Once a lobby
+	// exists, a different connected account joins as player B.
+	const canCreateLobby = ready && lobbyId === null && gameId === null && !isBusy;
+	const canJoinLobby = ready && lobbyId !== null && gameId === null && !isBusy;
 
-	async function runAs(player: Player, flow: string, submit: () => Promise<void>) {
+	// Run a flow as the CURRENTLY CONNECTED account. The app never forces an
+	// account — whoever the wallet has connected signs the transaction.
+	async function runFlow(flow: string, submit: () => Promise<void>) {
 		setError(null);
 		setActiveFlow(flow);
 		try {
-			await selectDevstackAccount(player);
 			await submit();
 		} catch (e) {
 			setError((e as Error).message);
@@ -330,24 +362,25 @@ export function App() {
 
 	async function createLobby() {
 		if (!canCreateLobby) return;
-		await runAs('alice', 'create-lobby', async () => {
+		await runFlow('create-lobby', async () => {
 			const tx = new Transaction();
-			buildCreateLobby({ package: connectFourPackageId })(tx);
+			buildCreateLobby()(tx);
 			const result = await mutateAsync(tx);
 			const createdLobbyId = result.createdObjectIds[0];
 			if (createdLobbyId === undefined) {
 				throw new Error('create_lobby did not return a created Lobby object');
 			}
 			setLobbyId(createdLobbyId);
+			setLobbyCreator(account?.address ?? null);
 			setLastDigest(result.digest);
 		});
 	}
 
 	async function joinLobby() {
 		if (!canJoinLobby || lobbyId === null) return;
-		await runAs('bob', 'join-lobby', async () => {
+		await runFlow('join-lobby', async () => {
 			const tx = new Transaction();
-			buildJoinLobby({ package: connectFourPackageId, arguments: { lobby: lobbyId } })(tx);
+			buildJoinLobby({ arguments: { lobby: lobbyId } })(tx);
 			const result = await mutateAsync(tx);
 			const createdGameId = result.createdObjectIds[0];
 			if (createdGameId === undefined) {
@@ -355,15 +388,16 @@ export function App() {
 			}
 			setGameId(createdGameId);
 			setLobbyId(null);
+			setLobbyCreator(null);
 			setLastDigest(result.digest);
 		});
 	}
 
 	async function playColumn(col: number) {
 		if (!canMove || gameId === null) return;
-		await runAs(turn, `play-${col}`, async () => {
+		await runFlow(`play-${col}`, async () => {
 			const tx = new Transaction();
-			buildPlay({ package: connectFourPackageId, arguments: { game: gameId, column: col } })(tx);
+			buildPlay({ arguments: { game: gameId, column: col } })(tx);
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
 			await gameQuery.refetch();
@@ -372,26 +406,39 @@ export function App() {
 
 	function startNewGame() {
 		setLobbyId(null);
+		setLobbyCreator(null);
 		setGameId(null);
 		setLastDigest(null);
 		setError(null);
 	}
 
+	// Contextual status from the CONNECTED account's point of view, derived
+	// from its on-chain seat (`connectedPlayer`) and whose turn it is.
 	const status = gameIsLoading
 		? 'Loading on-chain game'
 		: winner === 'draw'
 			? 'Draw'
 			: winner
-				? `${playerMeta[winner].label} connects four`
+				? connectedPlayer === winner
+					? 'You connect four'
+					: `${playerMeta[winner].label} connects four`
 				: gameId === null && lobbyId === null
-					? 'Open the table'
+					? 'Create a lobby to start'
 					: gameId === null
-						? 'Seat Bob'
-						: `${playerMeta[turn].label} to move`;
+						? connectedIsLobbyCreator
+							? 'You are Player A — waiting for an opponent'
+							: 'Join the lobby as Player B'
+						: isConnectedPlayersTurn
+							? 'Your move'
+							: connectedPlayer !== null
+								? "Opponent's turn"
+								: `${playerMeta[turn].label} to move`;
 	const moveButtonLabel =
 		activeFlow?.startsWith('play-') === true
 			? 'Submitting move...'
-			: `Drop as ${playerMeta[turn].label}`;
+			: isConnectedPlayersTurn
+				? 'Your move — drop a piece'
+				: "Opponent's turn";
 	const gamePhase = gameId !== null ? 'playing' : lobbyId !== null ? 'joining' : 'opening';
 	const aliceStatus =
 		winner === 'alice'
@@ -453,15 +500,15 @@ export function App() {
 							<PlayerSeat
 								name="alice"
 								status={aliceStatus}
-								address={accounts.alice?.address ?? ''}
-								current={connectedPlayer === 'alice'}
+								address={seatAddresses.alice}
+								current={connectedPlayer === 'alice' || connectedIsLobbyCreator}
 								active={gameId !== null && winner === null && turn === 'alice'}
 								complete={lobbyId !== null || gameId !== null}
 								actionLabel={
 									lobbyId === null && gameId === null
 										? activeFlow === 'create-lobby'
-											? 'Opening...'
-											: 'Open as Alice'
+											? 'Creating...'
+											: 'Create Lobby'
 										: undefined
 								}
 								disabled={!canCreateLobby}
@@ -470,7 +517,7 @@ export function App() {
 							<PlayerSeat
 								name="bob"
 								status={bobStatus}
-								address={accounts.bob?.address ?? ''}
+								address={seatAddresses.bob}
 								current={connectedPlayer === 'bob'}
 								active={gameId !== null && winner === null && turn === 'bob'}
 								complete={gameId !== null}
@@ -478,7 +525,7 @@ export function App() {
 									lobbyId !== null && gameId === null
 										? activeFlow === 'join-lobby'
 											? 'Joining...'
-											: 'Join as Bob'
+											: 'Join Lobby'
 										: undefined
 								}
 								disabled={!canJoinLobby}
@@ -517,7 +564,7 @@ export function App() {
 								type="button"
 								disabled={!canMove || board[0]![col] !== null}
 								onClick={() => void playColumn(col)}
-								aria-label={`Drop ${playerMeta[turn].label} piece in column ${col + 1}`}
+								aria-label={`Play column ${col + 1}`}
 							>
 								{col + 1}
 							</button>
@@ -553,7 +600,7 @@ export function App() {
 						<p className="section-label">Current signer</p>
 						{account ? (
 							<div className="account-line">
-								<span>{connectedPlayer ? playerMeta[connectedPlayer].label : 'Publisher'}</span>
+								<span>{connectedPlayer ? playerMeta[connectedPlayer].label : 'Signed in'}</span>
 								<code>{shortAddress(account.address)}</code>
 							</div>
 						) : (
@@ -563,7 +610,6 @@ export function App() {
 
 					<div className="chain-card">
 						<p className="section-label">Chain</p>
-						<ObjectLine label="Package" value={connectFourPackageId} />
 						{lobbyId !== null && <ObjectLine label="Lobby" value={lobbyId} />}
 						{gameId !== null && <ObjectLine label="Game" value={gameId} />}
 						{lastDigest && <p className="digest">tx {lastDigest}</p>}

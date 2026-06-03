@@ -2,23 +2,16 @@ import { Card } from '../ui/Card.js';
 import { Field } from '../ui/Field.js';
 import { useMemo, useState } from 'react';
 
-import { deployment } from '../lib/deployment.js';
+import { vaultPackageId } from '../dapp-kit.js';
 import { shortAddress } from '../lib/format.js';
 import { useFile, useOwnedCaps, useSignAndExecute } from '../lib/queries.js';
 import { buildVaultGrantTransaction } from '../lib/vault-transactions.js';
 
 export function GrantForm({ self }: { self: string }) {
 	const caps = useOwnedCaps(self);
-	const others = useMemo(
-		() =>
-			Object.entries(deployment.accounts)
-				.map(([name, account]) => [name, account.address] as const)
-				.filter(([, address]) => address !== self),
-		[self],
-	);
 	const ownedFiles = useMemo(() => caps.data ?? [], [caps.data]);
 	const [fileId, setFileId] = useState('');
-	const [recipient, setRecipient] = useState(others[0]?.[1] ?? '');
+	const [recipient, setRecipient] = useState('');
 	const { mutateAsync, isPending } = useSignAndExecute({
 		invalidateKeys: [['vault']],
 	});
@@ -33,17 +26,23 @@ export function GrantForm({ self }: { self: string }) {
 		setError(null);
 		try {
 			if (!selectedFileId) throw new Error('Pick a file you uploaded');
-			if (!recipient) throw new Error('Pick a recipient');
+			const recipientAddress = recipient.trim();
+			if (!recipientAddress) throw new Error('Enter a recipient address');
+			if (!/^0x[0-9a-fA-F]+$/.test(recipientAddress)) {
+				throw new Error('Recipient must be a 0x-prefixed Sui address');
+			}
+			if (recipientAddress === self) {
+				throw new Error('Recipient must differ from the connected account');
+			}
 			if (selectedFile.data && selectedFile.data.owner !== self) {
 				throw new Error('Only the file owner can grant new caps');
 			}
-			if (!deployment.vaultPackageId) {
+			if (!vaultPackageId) {
 				throw new Error('Vault package is not deployed. Did `devstack apply` complete?');
 			}
 			const tx = buildVaultGrantTransaction({
-				packageId: deployment.vaultPackageId,
 				fileId: selectedFileId,
-				recipient,
+				recipient: recipientAddress,
 			});
 			const result = await mutateAsync(tx);
 			setLastDigest(result.digest);
@@ -80,18 +79,17 @@ export function GrantForm({ self }: { self: string }) {
 				<Field
 					label="Recipient"
 					render={(id) => (
-						<select
+						<input
 							id={id}
-							className="w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2.5 py-1.5 text-sm"
+							type="text"
+							inputMode="text"
+							spellCheck={false}
+							placeholder="0x… recipient address"
+							data-testid="grant-recipient"
+							className="w-full rounded-md border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-900 px-2.5 py-1.5 text-sm font-mono"
 							value={recipient}
 							onChange={(e) => setRecipient(e.target.value)}
-						>
-							{others.map(([name, addr]) => (
-								<option key={name} value={addr}>
-									{name} ({shortAddress(addr)})
-								</option>
-							))}
-						</select>
+						/>
 					)}
 				/>
 				<button

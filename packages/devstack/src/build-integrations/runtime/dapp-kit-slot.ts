@@ -15,7 +15,10 @@ export const DAPP_KIT_SLOT_KEY = '__devstackDAppKit__' as const;
 
 export interface DAppKitSlot {
 	/** Account switcher entry point consumed by Playwright's
-	 *  `connectAs` / `selectAccount` helpers. */
+	 *  `connectAs` / `selectAccount` helpers. App dev-account UIs do NOT
+	 *  read accounts from this slot — they read the connected wallet's
+	 *  account list directly from dApp Kit (each account's `label` is the
+	 *  devstack account name). */
 	readonly selectAccount?: (accountName: string) => void | Promise<void>;
 }
 

@@ -191,7 +191,7 @@ export {
 	type SuiLocalRpcOptions,
 	type SuiLiveOptions,
 	type SuiForkOptions,
-	type SuiNetworkBindings,
+	type SuiNetworkConfigEntry,
 	type SuiError,
 	type SuiPluginError,
 	type SuiCliError,

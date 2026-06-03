@@ -4,8 +4,8 @@ import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 import { FilesList } from './components/FilesList.js';
 import { GrantForm } from './components/GrantForm.js';
 import { UploadForm } from './components/UploadForm.js';
-import { deployment, isDeployed } from './lib/deployment.js';
-import { labelFor, shortAddress } from './lib/format.js';
+import { isDeployed } from './lib/deployment.js';
+import { shortAddress } from './lib/format.js';
 
 export function App() {
 	const deployed = isDeployed;
@@ -68,16 +68,12 @@ function DisconnectedView() {
 }
 
 function ConnectedView({ address }: { address: string }) {
-	const label = labelFor(address, deployment.accounts);
 	return (
 		<>
 			<div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/50 px-5 py-3 flex items-center justify-between text-sm">
-				<div>
+				<div data-testid="connected-account" data-address={address}>
 					<span className="text-neutral-500">Connected as </span>
-					<span className="font-medium capitalize">{label ?? 'unknown'}</span>
-					<span className="ml-2 font-mono text-xs text-neutral-500">
-						{shortAddress(address, 8, 6)}
-					</span>
+					<span className="font-mono text-xs">{shortAddress(address, 8, 6)}</span>
 				</div>
 			</div>
 			<UploadForm />

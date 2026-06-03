@@ -264,6 +264,7 @@ export const runStack = (
 			appRoot,
 			outputDir: codegenOutput.outputDir,
 			stackSubdir: codegenOutput.stackSubdir,
+			extrasDir: codegenOutput.extrasDir,
 		},
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 

@@ -3,8 +3,9 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"declaration": true,
-		"types": ["node"]
+		"types": ["node"],
+		"noEmit": true
 	},
-	"include": ["src/**/*", "scripts/**/*"],
+	"include": ["src/**/*", "test/**/*"],
 	"exclude": ["dist", "node_modules", "template"]
 }

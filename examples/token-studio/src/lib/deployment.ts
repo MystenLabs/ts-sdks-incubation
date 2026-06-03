@@ -1,39 +1,40 @@
-// App-level projection of the devstack manifest. Pulls the shapes
-// the UI cares about — the published managed_coin package, the declared
-// accounts, the localnet RPC/faucet URLs — out of the generated
-// stack handles (`./generated/{accounts,services,packages,coins}.ts`)
-// so app code never touches the raw manifest.
+// App-level projection of the devstack manifest. Pulls the shapes the UI
+// cares about — the published managed_coin's known objects and its fully
+// qualified coin type — out of the generated stack handles
+// (`@generated/coins.js`) so app code never touches the raw manifest.
 //
-// `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated by
-// coin auto-discovery on every publish (see
+// Package RESOLUTION for Move calls is handled by MVR: the generated bindings
+// default their `package` to `@local/managed_coin`, which the client resolves
+// via the `mvr.overrides` wired in `dapp-kit.ts`. So this projection carries
+// only KNOWN OBJECTS (the TreasuryCap) and the coin TYPE string — both of
+// which come straight from coin auto-discovery, never from package-id
+// concatenation. The `packageId` below is kept purely for display (header /
+// footer) and the "is anything deployed?" gate.
+//
+// NOTE: the account directory the UI renders (alice/bob/carol in DEV) is NOT
+// part of this prod-path projection — it is read from the CONNECTED WALLET
+// via dApp Kit (`useCurrentWallet().accounts`), so it reflects whatever
+// accounts the active wallet exposes in any build.
+//
+// `coins.managed_coin.{treasuryCapId, metadataId, fullCoinType}` are populated
+// by coin auto-discovery on every publish (see
 // `packages/devstack/notes/coin-auto-discovery.md`); the generated key
 // follows the witness struct name.
 
-import { accounts } from '@generated/accounts.js';
 import { coins } from '@generated/coins.js';
-import { packages } from '@generated/packages.js';
-import { services } from '@generated/services.js';
 
-const managedCoin = packages.managed_coin;
-const packageId = managedCoin?.packageId ?? '0x0';
 const studio = coins.managed_coin;
 
 export const deployment = {
-	rpcUrl: services.sui?.rpc.url ?? '',
-	faucetUrl: services.sui?.faucet?.url,
-	packageId,
-	managedCoinType: studio?.fullCoinType ?? `${packageId}::managed_coin::MANAGED_COIN`,
+	// Display-only: the published package id (header/footer + deployed gate).
+	packageId: studio?.packageId ?? '0x0',
+	// Coin TYPE string — sourced from generated coin config, never concatenated.
+	managedCoinType: studio?.fullCoinType ?? '',
+	// Known objects, sourced from coin auto-discovery.
 	treasuryCapId: studio?.treasuryCapId ?? '',
 	metadataId: studio?.metadataId ?? '',
-	upgradeCapId: '',
-	accounts: {
-		alice: accounts.alice.address,
-		bob: accounts.bob.address,
-		carol: accounts.carol.address,
-	},
 } as const;
 
 export const isDeployed: boolean = (deployment.packageId as string) !== '0x0';
 
 export type Deployment = typeof deployment;
-export type AccountName = keyof Deployment['accounts'];

@@ -41,7 +41,11 @@ import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publi
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
-import { makeKnownCodegenable, makeLocalCodegenable } from './codegen.ts';
+import {
+	makeKnownCodegenable,
+	makeLocalCodegenable,
+	type PackageNetworks,
+} from './codegen.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
 import {
@@ -93,7 +97,7 @@ export type {
 export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
 export { PACKAGE_ERROR_TAGS } from './errors.ts';
-export type { PackageBindings } from './codegen.ts';
+export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 export { PackageSpans } from './spans.ts';
 
@@ -153,6 +157,12 @@ export interface LocalPackageOptions<
 	 *  form maps output keys to object-type suffixes, e.g.
 	 *  `{ boardId: '::board::Board' }`. */
 	readonly capture?: Capture;
+	/** Per-network declared package ids (+ optional object ids) for
+	 *  prod-targeting. Pure literals, no resolution: codegen merges the
+	 *  resolved-local id into `config.packages.<name>.byNetwork.local`
+	 *  and these literals into `byNetwork.testnet` / `byNetwork.mainnet`.
+	 *  A consumer flips `config.network` (env) to select active ids. */
+	readonly networks?: PackageNetworks;
 	/** Publisher account — the signer for the publish tx. Pass the
 	 *  result of `account('alice')` (the same plugin/resource ref used
 	 *  in the rest of the stack — NOT a duplicate factory call).
@@ -169,6 +179,10 @@ export interface KnownPackageOptions {
 	readonly packageId: string;
 	readonly upgradeCapId?: string;
 	readonly mvrPlaceholder?: string;
+	/** Per-network declared package ids (+ optional object ids) for
+	 *  prod-targeting — same as `LocalPackageOptions.networks`. Pure
+	 *  literals; codegen fills `config.packages.<name>.byNetwork`. */
+	readonly networks?: PackageNetworks;
 }
 
 interface PackageRegistryProjectionContribution {
@@ -357,7 +371,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 
 const makeLocalCapabilities = (
 	name: string,
-	opts: { readonly excludeFromCodegen?: boolean },
+	opts: { readonly excludeFromCodegen?: boolean; readonly networks?: PackageNetworks },
 	resolved: LocalPackageResolved,
 	chain: ChainId,
 ) => {
@@ -378,7 +392,10 @@ const makeLocalCapabilities = (
 			mvrPlaceholder: resolved.mvrPlaceholder,
 			captured: resolved.captured,
 		},
-		{ excluded: opts.excludeFromCodegen ?? false },
+		{
+			excluded: opts.excludeFromCodegen ?? false,
+			...(opts.networks !== undefined ? { networks: opts.networks } : {}),
+		},
 	);
 	// The plugin contributes to the package-registry strategy under a
 	// fixed key — the substrate orchestrator wires all packages'
@@ -424,13 +441,16 @@ const makeKnownCapabilities = (
 	resolved: KnownPackageResolved,
 ) => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
-	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable({
-		kind: 'known',
-		name,
-		packageId: resolved.packageId,
-		upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
-		mvrPlaceholder: resolved.mvrPlaceholder,
-	});
+	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable(
+		{
+			kind: 'known',
+			name,
+			packageId: resolved.packageId,
+			upgradeCapId: resolved.upgradeCapId ?? opts.upgradeCapId,
+			mvrPlaceholder: resolved.mvrPlaceholder,
+		},
+		{ ...(opts.networks !== undefined ? { networks: opts.networks } : {}) },
+	);
 	const projection: PackageRegistryProjectionContribution = {
 		kind: 'known',
 		name,

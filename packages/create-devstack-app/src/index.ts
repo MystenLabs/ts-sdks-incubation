@@ -16,6 +16,10 @@ import {
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { composePlugins } from './compose.js';
+import { ALL_PLUGINS, type PluginId } from './plugin-manifest.js';
+import { SKIP, shouldSkip } from './skip.js';
+
 export interface ScaffoldOptions {
 	/** App name. Used as the directory name, package name, `DEVSTACK_APP`,
 	 *  and generated local router hostnames. Must match
@@ -33,6 +37,12 @@ export interface ScaffoldOptions {
 	/** Override the template source directory (testing hook). Defaults to
 	 *  the bundled `template/` next to this module. */
 	templateDir?: string;
+	/** Which plugins to keep. `core` is always implied. Unlisted optional
+	 *  plugins are removed (their files deleted, the generated barrels
+	 *  regenerated from the selected set, their deps dropped). Defaults to ALL
+	 *  plugins. Kept prompt-free so `scaffold` stays pure/testable — the
+	 *  interactive picker lives in `bin.ts`. */
+	plugins?: ReadonlyArray<PluginId>;
 	/** Where to log progress. Defaults to `console.log`. */
 	log?: (msg: string) => void;
 }
@@ -48,8 +58,8 @@ export interface ScaffoldResult {
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/;
 
-/** Bundled template directory. The build's `sync-template` script copies
- *  `examples/_template/` here so the published package is self-contained. */
+/** Bundled, authored template directory. Shipped in the published package's
+ *  `files` so the package is self-contained. */
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_TEMPLATE_DIR = resolve(HERE, '..', 'template');
 
@@ -84,8 +94,17 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 		);
 	}
 
+	// Resolve the selected plugin set: default = all; `core` always included.
+	const selected = new Set<PluginId>(opts.plugins ?? ALL_PLUGINS);
+	selected.add('core');
+
 	log(`creating ${appDir} from ${templateDir}…`);
 	copyTemplate(templateDir, appDir);
+	const omitted = ALL_PLUGINS.filter((p) => p !== 'core' && !selected.has(p));
+	if (omitted.length > 0) {
+		log(`composing without plugins: ${omitted.join(', ')}…`);
+	}
+	composePlugins(appDir, selected);
 	rewriteName(appDir, opts.name);
 
 	let installed = false;
@@ -135,8 +154,8 @@ function copyTemplate(src: string, dst: string): void {
 	cpSync(src, dst, {
 		recursive: true,
 		// Skip generated/build artifacts that may be present in a dev checkout
-		// of `examples/_template/` (the build script normally strips them, but
-		// belt-and-braces).
+		// of the authored `template/` (e.g. after running `devstack apply`
+		// locally to author it).
 		filter: (s) => {
 			const rel = relative(src, s);
 			return rel === '' || !shouldSkip(rel);
@@ -149,32 +168,6 @@ function copyTemplate(src: string, dst: string): void {
 	}
 }
 
-const SKIP = new Set([
-	'node_modules',
-	'build',
-	'dist',
-	'.devstack',
-	'.turbo',
-	'generated',
-	'package_summaries',
-	'test-results',
-	'playwright-report',
-	'playwright',
-	'tsconfig.app.tsbuildinfo',
-	'tsconfig.node.tsbuildinfo',
-]);
-
-function shouldSkip(path: string): boolean {
-	const parts = path.split('/');
-	for (const p of parts) {
-		if (SKIP.has(p)) return true;
-		// Generated config siblings (`vite.config.js`, `vite.config.d.ts`)
-		// produced by tsc-watch sessions in the source repo.
-		if (/^.*\.config\.(js|d\.ts)$/.test(p)) return true;
-	}
-	return false;
-}
-
 function rewriteName(appDir: string, name: string): void {
 	const sdkVersions = getInjectedSdkVersions();
 	for (const file of walk(appDir)) {
@@ -183,6 +176,8 @@ function rewriteName(appDir: string, name: string): void {
 			rewritePackageJson(file, name, sdkVersions);
 		} else if (rel === 'devstack.config.ts' || rel === 'playwright.config.ts') {
 			rewriteDevstackText(file, name);
+		} else if (rel === 'tsconfig.app.json' || rel === 'tsconfig.json') {
+			rewriteTsconfigPaths(file, name);
 		}
 	}
 }
@@ -253,9 +248,32 @@ function rewriteDevstackText(path: string, name: string): void {
 	writeFileSync(
 		path,
 		raw
+			// Router hostnames. The test stack uses `dev.test.<app>.localhost`,
+			// the primary/default stack `dev.<app>.localhost`. Order matters:
+			// rewrite the more-specific `dev.test.` token first so the second
+			// replace doesn't partially clobber it.
+			.replaceAll('dev.test._template.localhost', `dev.test.${name}.localhost`)
+			.replaceAll('dev.test.template.localhost', `dev.test.${name}.localhost`)
+			.replaceAll('dev._template.localhost', `dev.${name}.localhost`)
 			.replaceAll('dev.template.localhost', `dev.${name}.localhost`)
-			.replaceAll("stackName: '_template'", `stackName: '${name}'`),
+			// DEVSTACK_APP token inside playwright `command`/`env`.
+			.replaceAll('DEVSTACK_APP=_template', `DEVSTACK_APP=${name}`)
+			.replaceAll('DEVSTACK_APP=template', `DEVSTACK_APP=${name}`)
+			// Stack name.
+			.replaceAll("stackName: '_template'", `stackName: '${name}'`)
+			.replaceAll("stackName: 'template'", `stackName: '${name}'`),
 	);
+}
+
+/** Rewrite the `@devstack-dev/*` path segment `stacks/_template` →
+ *  `stacks/<name>` in the app/json tsconfig (the dev-only generated-extras
+ *  alias resolves to `./.devstack/stacks/<name>/generated-extras/*`). */
+function rewriteTsconfigPaths(path: string, name: string): void {
+	const raw = readFileSync(path, 'utf8');
+	const next = raw
+		.replaceAll('stacks/_template/', `stacks/${name}/`)
+		.replaceAll('stacks/template/', `stacks/${name}/`);
+	if (next !== raw) writeFileSync(path, next);
 }
 
 function* walk(dir: string): IterableIterator<string> {

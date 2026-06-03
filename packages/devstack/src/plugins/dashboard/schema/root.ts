@@ -385,13 +385,29 @@ builder.mutationType({
 			resolve: (_parent, _args, ctx) =>
 				run(ctx, 'shutdown.requested', { tag: 'shutdown.requested' }),
 		}),
-		/** Restore a snapshot by id. Routes through the control-plane
-		 *  `domain` so the dashboard gets a real ok/detail outcome (the void
-		 *  `publishCommand` could not carry the orchestrator's result). */
+		/** Restore a snapshot by id. Routes through the supervisor
+		 *  command-loop via `submitCommand` (NOT the in-process
+		 *  `domain.restoreSnapshot`): restore is destructive — it removes the
+		 *  live managed containers and relies on a follow-on re-acquire to
+		 *  rebuild them. Running it in-process against a live supervisor would
+		 *  race the single command-queue consumer and leave services dead until
+		 *  a manual Restart. The command-loop's `snapshot.restore` case applies
+		 *  the restored tree, publishes `snapshot.restored`, THEN drains +
+		 *  re-acquires every service (the manual-restart sequence) — and the
+		 *  submitted-command completion deferred lets this mutation await the
+		 *  real ok/detail outcome the void `publishCommand` could not carry. */
 		restoreSnapshot: t.fieldWithInput({
 			type: SnapshotActionResult,
 			input: { id: t.input.string({ required: true }) },
-			resolve: (_parent, args, ctx) => Effect.runPromise(ctx.domain.restoreSnapshot(args.input.id)),
+			resolve: (_parent, args, ctx) =>
+				Effect.runPromise(
+					ctx.submitCommand({ tag: 'snapshot.restore', snapshotId: args.input.id }).pipe(
+						Effect.as({ ok: true, detail: null as string | null }),
+						Effect.catchCause((cause) =>
+							Effect.succeed({ ok: false, detail: String(cause) as string | null }),
+						),
+					),
+				),
 		}),
 		/** Delete a snapshot by id (via the control-plane `domain`). */
 		deleteSnapshot: t.fieldWithInput({

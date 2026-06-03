@@ -1,4 +1,4 @@
-import { useCurrentAccount } from '@mysten/dapp-kit-react';
+import { useCurrentAccount, useCurrentNetwork, useCurrentWallet } from '@mysten/dapp-kit-react';
 import { ConnectButton } from '@mysten/dapp-kit-react/ui';
 
 import { Balances } from './components/Balances.js';
@@ -6,10 +6,15 @@ import { CoinHeader } from './components/CoinHeader.js';
 import { MintForm } from './components/MintForm.js';
 import { TransferForm } from './components/TransferForm.js';
 import { deployment, isDeployed } from './lib/deployment.js';
-import { labelFor, shortAddress } from './lib/coin.js';
+import { shortAddress } from './lib/coin.js';
+import { useTreasuryCapOwner } from './lib/queries.js';
 
 export function App() {
 	const deployed = isDeployed;
+	// Active network label comes from dapp-kit (the connected client's
+	// network), not from the generated config — app code never reads
+	// `config.network` directly.
+	const network = useCurrentNetwork();
 	return (
 		<div className="min-h-screen flex flex-col">
 			<header className="flex items-center justify-between px-6 py-4 border-b border-neutral-200 dark:border-neutral-800 bg-white/50 dark:bg-neutral-950/50 backdrop-blur sticky top-0 z-10">
@@ -17,7 +22,7 @@ export function App() {
 					<div className="w-8 h-8 rounded-lg bg-gradient-to-br from-sky-400 to-indigo-500" />
 					<div>
 						<h1 className="text-base font-semibold leading-tight">Token Studio</h1>
-						<p className="text-xs text-neutral-500 leading-tight">Sui dev-examples · localnet</p>
+						<p className="text-xs text-neutral-500 leading-tight">Sui dev-examples · {network}</p>
 					</div>
 				</div>
 				<ConnectButton />
@@ -74,8 +79,19 @@ function DisconnectedView() {
 }
 
 function ConnectedView({ address }: { address: string }) {
-	const isTreasuryHolder = address === deployment.accounts.alice;
-	const label = labelFor(address);
+	// The connected wallet exposes its accounts (in DEV the seeded dev-wallet
+	// accounts alice/bob/carol), each carrying a `label` = the devstack name.
+	const wallet = useCurrentWallet();
+	const label =
+		wallet?.accounts.find((a) => a.address === address)?.label ?? null;
+	// Determine the ACTUAL TreasuryCap holder by ownership, not wallet order:
+	// query the on-chain owner of the known treasuryCapId. The connected account
+	// is the holder iff its address matches that owner. While the owner is still
+	// loading (`undefined`) we DON'T show Mint — keying off wallet order would
+	// mis-flag every account on a single-account production wallet, and would
+	// transiently mis-flag during a `connectAs` narrow phase.
+	const { data: treasuryOwner } = useTreasuryCapOwner();
+	const isTreasuryHolder = treasuryOwner != null && address === treasuryOwner;
 
 	return (
 		<>

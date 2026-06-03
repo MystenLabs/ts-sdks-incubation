@@ -9,8 +9,8 @@
 //   - Warm boot (same runtime root): cache hit; body does NOT run
 //     again; receipt is surfaced from the cached payload.
 //
-// Unlike `template-boot.test.ts`, this test does NOT require docker —
-// the Sui chain-probe is stubbed below. We still flow through the
+// Unlike the docker-backed boot e2e tests, this test does NOT require
+// docker — the Sui chain-probe is stubbed below. We still flow through the
 // real artifact publisher + Cache + StrategyRegistry + StackPaths Layers, so the
 // on-disk cache shape, key derivation, schema-decode, and lenient
 // verify paths are exercised end-to-end.

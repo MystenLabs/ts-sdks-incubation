@@ -37,11 +37,13 @@
 		"LICENSE"
 	],
 	"scripts": {
-		"build": "tsdown && pnpm run sync-template",
-		"check-template": "node --experimental-strip-types scripts/sync-template.ts --check",
-		"sync-template": "node --experimental-strip-types scripts/sync-template.ts",
+		"build": "tsdown",
 		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
 		"prepublishOnly": "pnpm run build"
+	},
+	"dependencies": {
+		"@clack/prompts": "^1.0.0"
 	},
 	"devDependencies": {
 		"@mysten-incubation/dev-wallet": "workspace:^",
@@ -49,7 +51,9 @@
 		"@mysten-incubation/tsconfig": "workspace:^",
 		"@types/node": "catalog:",
 		"tsdown": "^0.21.10",
-		"typescript": "catalog:"
+		"tsx": "catalog:",
+		"typescript": "catalog:",
+		"vitest": "^4.1.6"
 	},
 	"engines": {
 		"node": ">=24.0.0"

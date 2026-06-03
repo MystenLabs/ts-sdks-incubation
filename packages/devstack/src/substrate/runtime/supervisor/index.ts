@@ -35,6 +35,7 @@ export {
 	CapabilityFactoryFailed,
 	SupervisorBootError,
 	SupervisorPostAcquireFailed,
+	SupervisorRestoreFailed,
 } from './errors.ts';
 export type { SupervisorError } from './errors.ts';
 export type { SupervisedStack } from './types.ts';

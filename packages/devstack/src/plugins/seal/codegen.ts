@@ -12,10 +12,10 @@
 //   - The emitter name `'seal-key-server'` is pinned here so the
 //     generated output and orchestrator attribution stay stable.
 
-import { Effect } from 'effect';
-
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SealKeyServerEntry } from './registry-publish.ts';
+
+import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
 
 // ---------------------------------------------------------------------------
 // Bindings shape
@@ -38,16 +38,26 @@ export interface SealBindings {
 // Decl builder
 // ---------------------------------------------------------------------------
 
-/** Build the Codegenable contribution for a seal instance. */
+/** Build the Codegenable contribution for a seal instance.
+ *
+ *  Name-keyed sibling aggregate (mirrors `coin/codegen.ts`): every
+ *  seal instance folds into a single `generated/seal.ts` exporting
+ *  `export const seal = { <name>: SealBindings, ... }`. Consumers read
+ *  `seal.<name>`. `aggregateOnly` — no standalone per-instance file. */
 export const makeSealCodegenable = (
 	bindings: SealBindings,
-): CodegenableDecl<'seal-key-server'> => ({
-	kind: 'codegenable',
-	emitterName: 'seal-key-server',
-	outputPath: `seal/${bindings.name}.ts`,
-	emit: (ctx) =>
-		Effect.sync(() => {
-			ctx.exportConst('sealBindings', bindings satisfies SealBindings);
-			return ctx.done();
-		}),
-});
+): CodegenableDecl<`seal/${string}`> =>
+	defineSimpleConstExport({
+		emitterName: `seal/${bindings.name}` as `seal/${string}`,
+		outputPath: `seal/${bindings.name}.ts`,
+		exportName: bindings.name,
+		value: bindings,
+		aggregateOnly: true,
+		aggregate: {
+			kind: 'seal',
+			bucket: 'seal.ts',
+			// This decl's exported map keys by instance name — the
+			// aggregate's merge key.
+			project: (exported) => exported,
+		},
+	});
