@@ -22,16 +22,7 @@
 // at L1 runtime either. See ARCHITECTURE.md § "Layer composition belongs at
 // L3/L4, not L0" and § "L1-never-imports-from-L2".
 
-import {
-	Context,
-	Effect,
-	FileSystem,
-	Layer,
-	Logger as EffectLogger,
-	Ref,
-	Scope,
-	SubscriptionRef,
-} from 'effect';
+import { Context, Effect, FileSystem, Layer, Ref, Scope, SubscriptionRef } from 'effect';
 import { isAbsolute, join, resolve } from 'node:path';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
@@ -62,7 +53,6 @@ import {
 	layerDockerHostDefault,
 } from '../runtime/docker/index.ts';
 import { awaitAll, readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
-import { makeProjectionRef } from '../substrate/runtime/projection/index.ts';
 import { operationalEndpointEventsFromResolvedValue } from '../substrate/runtime/projection/operational-endpoints.ts';
 import { Logger, layerLogger } from '../substrate/runtime/observability/index.ts';
 import {
@@ -309,32 +299,6 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
  *  Callers that need to capture intermediate state (errors, terminal
  *  snapshot, etc.) supply `opts.withinScope` and read off the
  *  supervisor handle directly. */
-export interface RunStackEffectOptions<
-	R = Scope.Scope,
-	ExtendR = never,
-	HookE = never,
-> extends SuperviseStackOptions<R, ExtendR, HookE> {
-	readonly runtimeRoot: string;
-	readonly loggerLayer?: Layer.Layer<never>;
-}
-
-export const runStackEffect = <R = Scope.Scope, ExtendR = never, HookE = never>(
-	stack: SupervisedStack,
-	identity: Identity,
-	opts: RunStackEffectOptions<R, ExtendR, HookE>,
-) => {
-	const substrate = buildSubstrateLayers(identity, opts.runtimeRoot);
-	const program = Effect.gen(function* () {
-		const state = yield* makeProjectionRef();
-		yield* superviseStackEffect(stack, identity, state, opts);
-	});
-
-	return program.pipe(
-		Effect.provide(substrate),
-		Effect.provide(opts.loggerLayer ?? EffectLogger.layer([])),
-	);
-};
-
 // ───────────────────────────────────────────────────────────────────────────
 // Production orchestrator assembly (formerly runtime-composition.ts)
 // ───────────────────────────────────────────────────────────────────────────
@@ -471,13 +435,6 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 		layerMystenMoveCodegen,
 	);
 };
-
-export const bootRouterOrchestrator: Effect.Effect<void, never, RouterService> = Effect.gen(
-	function* () {
-		const router = yield* RouterService;
-		yield* router.boot().pipe(Effect.orDie);
-	},
-);
 
 /** The single pure adapter for routable endpoints: `ResolvedRoute` (the
  *  router's post-mint source of truth) → BOTH the projection event
@@ -780,15 +737,12 @@ export const buildProductionPostAcquireHook = (
 // at L1 runtime — hence its home in this L3 boot module.
 // ───────────────────────────────────────────────────────────────────────────
 
-export const layerBuiltInPluginServices: Layer.Layer<CoinRegistryService | PackageRegistryService> =
-	Layer.mergeAll(layerCoinRegistry, layerPackageRegistry);
-
 /** Built-in plugin runtime: the per-stack coin + package registries.
  *  Coin auto-discovery from a fresh package publish now runs DIRECTLY in
  *  the package plugin's `start` (folding the publish output into the
  *  CoinRegistry), so the registries are the whole surface. */
 export const layerBuiltInPluginRuntime: Layer.Layer<CoinRegistryService | PackageRegistryService> =
-	layerBuiltInPluginServices;
+	Layer.mergeAll(layerCoinRegistry, layerPackageRegistry);
 
 export const extendBuiltInPluginContext = (
 	ctx: Context.Context<never>,

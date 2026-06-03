@@ -65,10 +65,6 @@ export const assertTransition = (
 		? Effect.succeed(to)
 		: Effect.die(new InvalidLifecycleTransition({ from, to }));
 
-/** Completed task status. It counts as ready, restart can return it to pending,
- *  and post-acquire failures can still mark it failed. */
-export const isTerminal = (status: LifecycleStatus): boolean => status === 'done';
-
 /** Statuses that count toward "stack is ready" — every plugin must be
  *  in one of these for the stack to surface `running`. */
 export const isReadyOrTerminal = (status: LifecycleStatus): boolean =>

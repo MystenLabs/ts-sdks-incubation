@@ -13,7 +13,6 @@
 // three.
 
 export * from './liveness.ts';
-export * from './lock.ts';
 export * from './stack-lock.ts';
 export * from './roster.ts';
 export * from './snapshot-reservation.ts';

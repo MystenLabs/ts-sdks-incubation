@@ -25,6 +25,8 @@ import type {
 	ContainerHandle,
 	TaggedImageRef,
 } from '../../contracts/container-runtime.ts';
+// Wire-shape source of truth — re-exported here for the snapshot barrel.
+import type { SnapshotCaptureProgressPhase } from '../../substrate/events.ts';
 import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { tarHostTree as streamHostTreeTar } from '../../substrate/runtime/host-tree-tar/index.ts';
 import {
@@ -107,16 +109,7 @@ export interface SnapshotParticipant {
 	readonly captureContribution: Effect.Effect<unknown>;
 }
 
-export type SnapshotCaptureProgressPhase =
-	| 'quiescing'
-	| 'pausing'
-	| 'paused'
-	| 'capturing-containers'
-	| 'saving-images'
-	| 'capturing-host-tree'
-	| 'saving-contributions'
-	| 'writing-metadata'
-	| 'resuming';
+export type { SnapshotCaptureProgressPhase };
 
 export interface SnapshotCaptureProgress {
 	readonly phase: SnapshotCaptureProgressPhase;

@@ -86,7 +86,6 @@ import {
 	type SupervisedStack,
 } from '../../src/substrate/runtime/index.ts';
 import {
-	bootRouterOrchestrator,
 	buildProductionContributionDispatcher,
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
@@ -402,8 +401,9 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				// Router traffic itself is not exercised here: the e2e
 				// harness injects a stub Traefik container layer plus a
 				// fake upstream resolver, while using the same sink delivery
-				// path as production.
-				yield* bootRouterOrchestrator;
+				// path as production. Production boots the router via the same
+				// `router.boot()` call (see boot.ts dispatcher).
+				yield* router.boot().pipe(Effect.orDie);
 				const builtInPluginContext = yield* extendBuiltInPluginContext(pluginContext);
 				const handle = yield* supervise(
 					{ _tag: 'Stack', members: stack.members, options: stack.options },

@@ -205,7 +205,6 @@ const collectPublicReachableFiles = (): ReadonlySet<string> => {
 // Format: `${srcRelativePath}#${exportedName}`.
 const KNOWN_UNCLEARED_ORPHANS: ReadonlySet<string> = new Set<string>([
 	'substrate/runtime/lifecycle/state-machine.ts#__LifecycleTableShape',
-	'substrate/runtime/lifecycle/state-machine.ts#isTerminal',
 	'substrate/runtime/projection/state-ref.ts#__NoDisplayVocab',
 	'surfaces/tui/display-derivation.ts#__TuiDisplayVocabClean',
 ]);
