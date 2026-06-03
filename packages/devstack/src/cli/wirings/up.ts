@@ -306,7 +306,11 @@ const installCommandChannelBridge = (params: {
 					Effect.gen(function* () {
 						if (!isEngineCommand(record.command)) {
 							yield* subscriber
-								.fail(record.id, 'invalid command', 'command payload did not match EngineCommand')
+								.publishReply(record.id, {
+									kind: 'error',
+									message: 'invalid command',
+									detail: 'command payload did not match EngineCommand',
+								})
 								.pipe(Effect.catch(() => Effect.void));
 							return;
 						}
@@ -324,14 +328,14 @@ const installCommandChannelBridge = (params: {
 								// legacy auto-ack path — the CLI side mints an id today, so
 								// this branch is defensive.
 								yield* params.handle.runCommand(cmd).pipe(
-									Effect.andThen(subscriber.ack(record.id)),
+									Effect.andThen(subscriber.publishReply(record.id, { kind: 'ack' })),
 									Effect.catchCause((cause) =>
 										subscriber
-											.fail(
-												record.id,
-												'command failed',
-												Cause.pretty(cause as Cause.Cause<unknown>),
-											)
+											.publishReply(record.id, {
+												kind: 'error',
+												message: 'command failed',
+												detail: Cause.pretty(cause as Cause.Cause<unknown>),
+											})
 											.pipe(Effect.catch(() => Effect.void)),
 									),
 								);
@@ -357,11 +361,11 @@ const installCommandChannelBridge = (params: {
 											return next;
 										});
 										yield* subscriber
-											.fail(
-												record.id,
-												'command failed',
-												Cause.pretty(cause as Cause.Cause<unknown>),
-											)
+											.publishReply(record.id, {
+												kind: 'error',
+												message: 'command failed',
+												detail: Cause.pretty(cause as Cause.Cause<unknown>),
+											})
 											.pipe(Effect.catch(() => Effect.void));
 									}),
 								),
@@ -369,10 +373,14 @@ const installCommandChannelBridge = (params: {
 							return;
 						}
 						yield* params.handle.runCommand(cmd).pipe(
-							Effect.andThen(subscriber.ack(record.id)),
+							Effect.andThen(subscriber.publishReply(record.id, { kind: 'ack' })),
 							Effect.catchCause((cause) =>
 								subscriber
-									.fail(record.id, 'command failed', Cause.pretty(cause as Cause.Cause<unknown>))
+									.publishReply(record.id, {
+										kind: 'error',
+										message: 'command failed',
+										detail: Cause.pretty(cause as Cause.Cause<unknown>),
+									})
 									.pipe(Effect.catch(() => Effect.void)),
 							),
 						);
@@ -428,29 +436,33 @@ const installCommandChannelBridge = (params: {
 				if (pending === null) return;
 				if (ackFromEvent.payload.kind === 'captured') {
 					yield* subscriber
-						.ack(pending.commandId, 'captured', ackFromEvent.payload)
+						.publishReply(pending.commandId, {
+							kind: 'ack',
+							detail: 'captured',
+							payload: ackFromEvent.payload,
+						})
 						.pipe(Effect.catch(() => Effect.void));
 					return;
 				}
 				if (ackFromEvent.payload.kind === 'failed') {
 					yield* subscriber
-						.fail(
-							pending.commandId,
-							'snapshot capture failed',
-							ackFromEvent.payload.summary,
-							ackFromEvent.payload,
-						)
+						.publishReply(pending.commandId, {
+							kind: 'error',
+							message: 'snapshot capture failed',
+							detail: ackFromEvent.payload.summary,
+							payload: ackFromEvent.payload,
+						})
 						.pipe(Effect.catch(() => Effect.void));
 					return;
 				}
 				// skipped
 				yield* subscriber
-					.fail(
-						pending.commandId,
-						'snapshot capture skipped',
-						ackFromEvent.payload.reason,
-						ackFromEvent.payload,
-					)
+					.publishReply(pending.commandId, {
+						kind: 'error',
+						message: 'snapshot capture skipped',
+						detail: ackFromEvent.payload.reason,
+						payload: ackFromEvent.payload,
+					})
 					.pipe(Effect.catch(() => Effect.void));
 			});
 

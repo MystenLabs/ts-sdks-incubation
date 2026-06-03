@@ -325,7 +325,7 @@ describe('cli/main', () => {
 								yield* Effect.sync(() => {
 									observed.push(record.command as { readonly tag?: string });
 								});
-								yield* subscriber.ack(record.id, 'applied');
+								yield* subscriber.publishReply(record.id, { kind: 'ack', detail: 'applied' });
 							}),
 						),
 					);
@@ -489,10 +489,14 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured', {
-									kind: 'captured',
-									snapshotId: command.snapshotId,
-									...(command.name === undefined ? {} : { name: command.name }),
+								yield* subscriber.publishReply(record.id, {
+									kind: 'ack',
+									detail: 'captured',
+									payload: {
+										kind: 'captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+									},
 								});
 							}),
 						),
@@ -598,10 +602,14 @@ describe('cli/main', () => {
 										at: Date.now(),
 									});
 								}
-								yield* subscriber.ack(record.id, 'captured', {
-									kind: 'captured',
-									snapshotId: command.snapshotId,
-									...(command.name === undefined ? {} : { name: command.name }),
+								yield* subscriber.publishReply(record.id, {
+									kind: 'ack',
+									detail: 'captured',
+									payload: {
+										kind: 'captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+									},
 								});
 							}),
 						),

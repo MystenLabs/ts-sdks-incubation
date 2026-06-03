@@ -65,6 +65,30 @@ type BufferedContribution =
 	| ProjectionDecl
 	| StrategyContributorDecl<string, unknown>;
 
+/**
+ * Thrown (as a DEFECT, not a typed failure) when a plugin emits a ctx
+ * contribution AFTER its `start` returned and the buffer was sealed
+ * (PR#3). The buffer is the SOLE source of post-start contributions and
+ * is read exactly once after `start`; a late async emission — e.g. a verb
+ * called from a fiber the plugin forked but did not await — would
+ * otherwise be silently dropped (a route that never registers, a codegen
+ * file that never emits, with the plugin still `ready`). Sealing turns
+ * that silent loss into a loud, attributable crash on the OFFENDING
+ * fiber. The verb signatures return `void`, so this surfaces as a thrown
+ * defect rather than an Effect failure. */
+export class ContributionBufferSealedError extends Error {
+	readonly _tag = 'ContributionBufferSealedError' as const;
+	constructor(pluginKey: PluginKey | null, kind: string) {
+		super(
+			`plugin${pluginKey === null ? '' : ` '${pluginKey}'`} emitted a '${kind}' contribution ` +
+				`after start() returned (the contribution buffer is sealed). Emit all ctx.* ` +
+				`contributions synchronously within start(); a late async emission would be ` +
+				`silently dropped.`,
+		);
+		this.name = 'ContributionBufferSealedError';
+	}
+}
+
 // -----------------------------------------------------------------------------
 // Per-plugin PluginCtx (Stage B foundation — P0/P0.5/P1)
 // -----------------------------------------------------------------------------
@@ -118,8 +142,21 @@ const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
  */
 const makePluginCtx = (
 	pluginContext: Context.Context<never>,
-): { readonly ctx: PluginCtx; readonly buffer: BufferedContribution[] } => {
+	pluginKey: PluginKey | null = null,
+): {
+	readonly ctx: PluginCtx;
+	readonly buffer: BufferedContribution[];
+	readonly sealBuffer: () => void;
+} => {
 	const buffer: BufferedContribution[] = [];
+	// PR#3: the buffer is read exactly once after `start` returns, then
+	// frozen. A push afterwards is a late async emission that would be
+	// silently dropped — throw a loud, attributable defect instead.
+	let frozen = false;
+	const pushOrThrow = (kind: string, decl: BufferedContribution): void => {
+		if (frozen) throw new ContributionBufferSealedError(pluginKey, kind);
+		buffer.push(decl);
+	};
 	// CacheService carries the folded-in artifact-publisher cycle via its
 	// `.publish`. A real stack always layers it (`orchestrators/boot.ts`
 	// `buildPluginContext`); bare smoke `supervise()` paths may not, so fall
@@ -130,25 +167,31 @@ const makePluginCtx = (
 	const ctx: PluginCtx = {
 		persist: (spec) => cache.publish(spec),
 		codegen: <E extends string>(decl: CodegenableDecl<E>): void => {
-			buffer.push(decl);
+			pushOrThrow('codegenable', decl);
 		},
 		endpoint: (decl: RoutableDecl): void => {
-			buffer.push(decl);
+			pushOrThrow('routable', decl);
 		},
 		snapshotExtra: (decl: SnapshotableDecl): void => {
-			buffer.push(decl);
+			pushOrThrow('snapshotable', decl);
 		},
 		publish: (decl: ProjectionDecl): void => {
-			buffer.push(decl);
+			pushOrThrow('projection', decl);
 		},
 		provides: <K extends string, S>(decl: StrategyContributorDecl<K, S>): void => {
-			buffer.push(decl);
+			pushOrThrow('strategy-contributor', decl);
 		},
 		requires: <K extends string>(capabilityKey: K) =>
 			strategyRegistry.get<K, unknown>(capabilityKey),
 		fail: (error) => Effect.fail(error) as Effect.Effect<never>,
 	};
-	return { ctx, buffer };
+	return {
+		ctx,
+		buffer,
+		sealBuffer: () => {
+			frozen = true;
+		},
+	};
 };
 
 // -----------------------------------------------------------------------------
@@ -390,7 +433,7 @@ export const acquireNode = (
 		// plugin reaches it with `yield* PluginContext`), provided into the
 		// start Effect's requirement channel below — NOT as a 2nd positional
 		// argument — which keeps `start` single-arg and `deps` auto-inferred.
-		const { ctx: pluginCtx, buffer } = makePluginCtx(pluginContext);
+		const { ctx: pluginCtx, buffer, sealBuffer } = makePluginCtx(pluginContext, key);
 		const currentPluginContext = pluginContext.pipe(
 			Context.add(CurrentPluginKey, { key }),
 			Context.add(PluginContext, pluginCtx),
@@ -428,6 +471,12 @@ export const acquireNode = (
 					Effect.succeed({ ok: true as const, value: value as unknown }),
 			}),
 		);
+		// PR#3: `start` has resolved — the contribution buffer is now FINAL and
+		// is read exactly once below. Freeze it so any late async `ctx.*`
+		// emission (a verb called from a fiber the plugin forked but did not
+		// await) crashes the OFFENDING fiber with a typed defect instead of
+		// being silently dropped.
+		sealBuffer();
 		if (result.ok) {
 			// P4: the ctx buffer (decls the 5 verbs pushed during `start`, in
 			// emit order) is the SOLE source of post-start contributions.

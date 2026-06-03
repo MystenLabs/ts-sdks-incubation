@@ -1,11 +1,15 @@
 // Background tasks: injected command handler runner, snapshot capture,
 // stack restart, and post-acquire hook.
 //
-// Each background task is forked into the supervisor's parent scope so
-// it rides the supervisor's lifetime rather than the command-loop
-// fiber. Interrupt requests use a Ref-typed handle (`idle`/`starting`/
-// `running`) so a sibling command can interrupt a running task without
-// racing the fork.
+// Each long-running background task (snapshot capture, stack restart) is
+// forked into the SUPERVISOR-LIFETIME scope via `Effect.forkIn` so it
+// rides the supervisor's lifetime rather than the command-loop fiber — a
+// forked capture must not wedge shutdown (Bug #13). The live fiber IS the
+// task's running state: it's held in a `BackgroundTaskSlot`
+// (`Ref<Fiber | null>`); a second concurrent trigger sees a non-null slot
+// and is skipped (skip-dedup), and a conflicting command reads-and-clears
+// the slot then `Fiber.interrupt`s it. This is the Effect-native
+// replacement for the hand-rolled idle/starting/running token Ref machine.
 
 import { Cause, Effect, Exit, Fiber, Ref, Scope } from 'effect';
 
@@ -14,7 +18,7 @@ import type { EngineCommand, EngineEvent } from '../../events.ts';
 import { prettyErrorStructured } from '../observability/index.ts';
 import { PostAcquireTaskFailed } from '../post-acquire-tasks.ts';
 import { SupervisorPostAcquireFailed, SupervisorRestoreFailed } from './errors.ts';
-import type { SnapshotCaptureTaskState, StackRestartTaskState, SupervisorState } from './state.ts';
+import type { BackgroundTaskSlot, SupervisorState } from './state.ts';
 import { bestEffort, publish } from './wiring.ts';
 
 // Forward reference: the stack-restart background task runs through
@@ -111,26 +115,86 @@ export const runInjectedCommandHandler = (
 	cmd: EngineCommand,
 ): Effect.Effect<void, never, never> => Effect.asVoid(runInjectedCommandHandlerExit(deps, cmd));
 
+/**
+ * Fork `body` into the supervisor-lifetime scope and claim a background
+ * task slot atomically.
+ *
+ * `Effect.forkIn(supervisorScope)` parents the fiber to the supervisor's
+ * lifetime — NOT the command-loop fiber that triggered it — so a
+ * long-running capture/restart does not block the command loop and
+ * cannot wedge a subsequent `shutdown.requested` (Bug #13). The forked
+ * fiber is created suspended (`forkIn`'s default `startImmediately`), so
+ * the CAS below runs before it executes a single step.
+ *
+ * Skip-dedup: the slot is the running state. If it is already occupied
+ * the just-forked fiber is interrupted (it never ran) and the function
+ * returns `'skipped'` so the caller can publish/log the skip. Otherwise
+ * the fiber is installed, its `ensuring` clears the slot on completion,
+ * and the function returns `'started'`.
+ */
+const forkIntoSlot = (
+	supervisorScope: Scope.Scope,
+	slot: BackgroundTaskSlot,
+	body: Effect.Effect<void, never, Scope.Scope>,
+): Effect.Effect<'started' | 'skipped', never, never> =>
+	Effect.gen(function* () {
+		// Self-clear the slot when the task settles (success OR interrupt),
+		// but only if it still holds THIS fiber — a racing interrupt
+		// (`interruptSlot`) may have already swapped it to `null`, or a
+		// subsequent task may already own the slot. Comparing on the running
+		// fiber's own id makes this self-contained (no fork-then-store hole).
+		const guarded = Effect.gen(function* () {
+			const selfId = yield* Effect.fiberId;
+			yield* body.pipe(
+				Effect.ensuring(
+					Ref.update(slot, (current) => (current !== null && current.id === selfId ? null : current)),
+				),
+			);
+		});
+		// Provide the supervisor scope to the body (so a forked restart's
+		// `doSelectiveRestart` parents its plugin scopes off the supervisor's
+		// lifetime, as the former `forkScoped` did) and fork into that same
+		// scope so the fiber rides the supervisor's lifetime — NOT the
+		// command-loop fiber that triggered it. `forkIn` does not start the
+		// fiber immediately, so the CAS-claim below runs first.
+		const fiber = yield* Effect.forkIn(Scope.provide(guarded, supervisorScope), supervisorScope);
+		const claimed = yield* Ref.modify(slot, (current) =>
+			current === null ? [true, fiber] : [false, current],
+		);
+		if (!claimed) {
+			// Slot already held by a running task — interrupt the fiber we
+			// just forked (it has not run yet) and report the skip.
+			yield* Fiber.interrupt(fiber);
+			return 'skipped' as const;
+		}
+		return 'started' as const;
+	});
+
+/**
+ * Read-and-clear a background task slot, then await the fiber's
+ * interrupt. Awaiting matters: a follow-up snapshot capture must not
+ * begin while the previous fiber is still inside `pauseAndCommit` /
+ * `saveImages`, and shutdown must not race a half-torn-down restart.
+ */
+const interruptSlot = (slot: BackgroundTaskSlot): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		const fiber = yield* Ref.getAndSet(slot, null);
+		if (fiber !== null) {
+			yield* Fiber.interrupt(fiber);
+		}
+	});
+
 export const startBackgroundSnapshotCapture = (
 	deps: SupervisorState,
 	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
-): Effect.Effect<void, never, Scope.Scope> =>
+): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		const token = yield* Ref.updateAndGet(deps.snapshotCaptureSeq, (n) => n + 1);
-		const started = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
-			state.tag === 'idle'
-				? [
-						true,
-						{
-							tag: 'starting' as const,
-							token,
-							snapshotId: cmd.snapshotId ?? null,
-						} satisfies SnapshotCaptureTaskState,
-					]
-				: [false, state],
+		const outcome = yield* forkIntoSlot(
+			deps.supervisorScope,
+			deps.snapshotCaptureTask,
+			runInjectedCommandHandler(deps, cmd),
 		);
-
-		if (!started) {
+		if (outcome === 'skipped') {
 			yield* publish(deps.ref, deps.hub, {
 				tag: 'snapshot.captureSkipped',
 				reason: 'already-running',
@@ -140,104 +204,45 @@ export const startBackgroundSnapshotCapture = (
 			});
 			return;
 		}
-
 		yield* publish(deps.ref, deps.hub, {
 			tag: 'snapshot.captureStarted',
 			...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
 			...(cmd.name === undefined ? {} : { name: cmd.name }),
 			at: Date.now(),
 		});
-
-		const fiber = yield* runInjectedCommandHandler(deps, cmd).pipe(
-			Effect.ensuring(
-				Ref.update(deps.snapshotCaptureTask, (state) =>
-					state.tag !== 'idle' && state.token === token
-						? ({ tag: 'idle' } satisfies SnapshotCaptureTaskState)
-						: state,
-				),
-			),
-			Effect.forkScoped,
-		);
-
-		yield* Ref.update(deps.snapshotCaptureTask, (state) =>
-			state.tag === 'starting' && state.token === token
-				? ({
-						tag: 'running',
-						token,
-						snapshotId: cmd.snapshotId ?? null,
-						fiber,
-					} satisfies SnapshotCaptureTaskState)
-				: state,
-		);
 	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundSnapshotCapture'));
 
 export const requestBackgroundSnapshotInterrupt = (
 	deps: Pick<SupervisorState, 'snapshotCaptureTask'>,
 ): Effect.Effect<void, never, never> =>
-	Effect.gen(function* () {
-		const fiber = yield* Ref.modify(deps.snapshotCaptureTask, (state) =>
-			state.tag === 'running'
-				? [state.fiber, { tag: 'idle' } as SnapshotCaptureTaskState]
-				: [null, state],
-		);
-		// Await the interrupt so a follow-up snapshot capture cannot begin
-		// while the previous fiber is still inside `pauseAndCommit` /
-		// `saveImages`. Mirrors `requestBackgroundStackRestartInterrupt`.
-		if (fiber !== null) {
-			yield* Fiber.interrupt(fiber);
-		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'));
+	interruptSlot(deps.snapshotCaptureTask).pipe(
+		Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'),
+	);
 
 export const startBackgroundStackRestart = (
 	deps: SupervisorState,
 	handleCommand: HandleCommandRunner,
-): Effect.Effect<void, never, Scope.Scope> =>
+): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		const token = yield* Ref.updateAndGet(deps.stackRestartSeq, (n) => n + 1);
-		const started = yield* Ref.modify(deps.stackRestartTask, (state) =>
-			state.tag === 'idle' ? [true, { tag: 'starting' as const, token }] : [false, state],
+		const outcome = yield* forkIntoSlot(
+			deps.supervisorScope,
+			deps.stackRestartTask,
+			handleCommand(deps, { tag: 'stack.restart' }).pipe(Effect.catch(() => Effect.void)),
 		);
-
-		if (!started) {
+		if (outcome === 'skipped') {
 			yield* deps.logger.log('supervisor', null, {
 				level: 'debug',
 				message: 'stack restart skipped because one is already running',
 			});
-			return;
 		}
-
-		const fiber = yield* handleCommand(deps, { tag: 'stack.restart' }).pipe(
-			Effect.catch(() => Effect.void),
-			Effect.ensuring(
-				Ref.update(deps.stackRestartTask, (state) =>
-					state.tag !== 'idle' && state.token === token
-						? ({ tag: 'idle' } satisfies StackRestartTaskState)
-						: state,
-				),
-			),
-			Effect.forkScoped,
-		);
-
-		yield* Ref.update(deps.stackRestartTask, (state) =>
-			state.tag === 'starting' && state.token === token
-				? ({ tag: 'running', token, fiber } satisfies StackRestartTaskState)
-				: state,
-		);
 	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundStackRestart'));
 
 export const requestBackgroundStackRestartInterrupt = (
 	deps: Pick<SupervisorState, 'stackRestartTask'>,
 ): Effect.Effect<void, never, never> =>
-	Effect.gen(function* () {
-		const fiber = yield* Ref.modify(deps.stackRestartTask, (state) =>
-			state.tag === 'running'
-				? [state.fiber, { tag: 'idle' } as StackRestartTaskState]
-				: [null, state],
-		);
-		if (fiber !== null) {
-			yield* Fiber.interrupt(fiber);
-		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.interruptStackRestart'));
+	interruptSlot(deps.stackRestartTask).pipe(
+		Effect.withSpan('lifecycle.supervisor.interruptStackRestart'),
+	);
 
 // -----------------------------------------------------------------------------
 // Post-acquire hook

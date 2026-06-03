@@ -20,6 +20,7 @@ import {
 	Deferred,
 	Effect,
 	Exit,
+	type Fiber,
 	Layer,
 	Queue,
 	Ref,
@@ -76,9 +77,8 @@ import {
 } from './errors.ts';
 import {
 	allReadyOrTerminal,
+	type BackgroundTaskSlot,
 	type QueuedCommand,
-	type SnapshotCaptureTaskState,
-	type StackRestartTaskState,
 	type SupervisorCommandHandler,
 	type SupervisorPostAcquireHook,
 	type SupervisorState,
@@ -233,10 +233,18 @@ export const startSupervisor = (
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const queuedCommands = yield* Queue.unbounded<QueuedCommand>();
-		const stackRestartTask = yield* Ref.make<StackRestartTaskState>({ tag: 'idle' });
-		const stackRestartSeq = yield* Ref.make(0);
-		const snapshotCaptureTask = yield* Ref.make<SnapshotCaptureTaskState>({ tag: 'idle' });
-		const snapshotCaptureSeq = yield* Ref.make(0);
+		// Background-task fiber slots: the live snapshot-capture / stack-restart
+		// fiber (or `null` when idle). The fiber IS the running state — see
+		// `BackgroundTaskSlot`. Forked into `supervisorScope` (below) via
+		// `Effect.forkIn`, interrupted via `Fiber.interrupt`.
+		const snapshotCaptureTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
+			void,
+			never
+		> | null>(null);
+		const stackRestartTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
+			void,
+			never
+		> | null>(null);
 		const shutdownLatch = yield* Ref.make(false);
 		const shutdownComplete = yield* Deferred.make<void>();
 		const initialAcquireStarted = yield* Ref.make(false);
@@ -266,14 +274,24 @@ export const startSupervisor = (
 		const traced = <A, E, R>(eff: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
 			Effect.provideService(eff, Tracer.Tracer, spanStore.tracer);
 
-		// Submit a command to the command-loop and AWAIT its real exit.
-		// Offers a *submitted* command (carrying a completion deferred) so the
-		// single command-loop consumer runs the command in-band and signals
-		// the exit back here. Used both by the `SupervisorHandle.runCommand`
-		// programmable surface AND the in-process control plane (the dashboard
-		// restore path), so a destructive command like `snapshot.restore` —
-		// which removes live managed containers then re-acquires — never races
-		// the live supervisor out-of-band. Re-fails with the handler's cause.
+		// The control-plane command verbs, both offering onto the SAME
+		// `queuedCommands` seam the single command-loop consumer drains —
+		// distinguished only by the QueuedCommand kind:
+		//   - `publishCommand` — fire-and-forget; offers a `fire-and-forget`
+		//     QueuedCommand and returns immediately.
+		//   - `submitCommand` — offers a `submitted` QueuedCommand carrying a
+		//     completion deferred, then AWAITs the real exit. So a destructive
+		//     command like `snapshot.restore` (which removes live managed
+		//     containers then re-acquires) runs in-band with the loop, never
+		//     racing the live supervisor out-of-band. Re-fails with the
+		//     handler's cause.
+		// (Both feed `queuedCommands`, NOT the public `commands` queue + bridge —
+		// that queue stays for the signal handler and cross-process callers.)
+		const publishCommand = (command: EngineCommand): Effect.Effect<void> =>
+			Effect.asVoid(Queue.offer(queuedCommands, { kind: 'fire-and-forget', command })).pipe(
+				Effect.withSpan('lifecycle.supervisor.publishCommand'),
+				traced,
+			);
 		const submitCommand = (command: EngineCommand): Effect.Effect<void, unknown> =>
 			Effect.gen(function* () {
 				const completion = yield* Deferred.make<Exit.Exit<void, unknown>>();
@@ -347,7 +365,7 @@ export const startSupervisor = (
 				ControlPlaneService,
 				ControlPlaneService.of({
 					state,
-					publishCommand: (command) => Effect.asVoid(Queue.offer(commands, command)),
+					publishCommand,
 					submitCommand,
 					domain: controlPlaneDomain,
 				}),
@@ -421,10 +439,9 @@ export const startSupervisor = (
 			ref: state,
 			hub,
 			queuedCommands,
-			stackRestartTask,
-			stackRestartSeq,
+			supervisorScope,
 			snapshotCaptureTask,
-			snapshotCaptureSeq,
+			stackRestartTask,
 			shutdownLatch,
 			shutdownComplete,
 			pluginContext: pluginRuntimeContext,

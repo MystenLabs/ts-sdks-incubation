@@ -121,10 +121,14 @@ describe('cli/main snapshot completion event matcher', () => {
 								// New protocol: ack carries the structured capture payload.
 								// `awaitCompletion` surfaces this directly so the CLI does
 								// not need to tail the events stream.
-								yield* subscriber.ack(record.id, 'captured', {
-									kind: 'captured',
-									snapshotId: command.snapshotId,
-									...(command.name === undefined ? {} : { name: command.name }),
+								yield* subscriber.publishReply(record.id, {
+									kind: 'ack',
+									detail: 'captured',
+									payload: {
+										kind: 'captured',
+										snapshotId: command.snapshotId,
+										...(command.name === undefined ? {} : { name: command.name }),
+									},
 								});
 							}),
 						),
@@ -209,16 +213,16 @@ describe('cli/main snapshot completion event matcher', () => {
 								// New protocol: a skip is now reported via `fail` with a
 								// structured payload (kind=skipped) so the CLI surfaces a
 								// `CliUnavailableError` rather than a successful ack.
-								yield* subscriber.fail(
-									record.id,
-									'snapshot capture skipped',
-									'already-running',
-									{
+								yield* subscriber.publishReply(record.id, {
+									kind: 'error',
+									message: 'snapshot capture skipped',
+									detail: 'already-running',
+									payload: {
 										kind: 'skipped',
 										snapshotId: command.snapshotId,
 										reason: 'already-running',
 									},
-								);
+								});
 							}),
 						),
 					);

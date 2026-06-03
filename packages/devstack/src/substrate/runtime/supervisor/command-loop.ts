@@ -21,7 +21,7 @@ import {
 } from './background-tasks.ts';
 import { SupervisorRestoreFailed, SupervisorPostAcquireFailed } from './errors.ts';
 import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts';
-import { allReadyOrTerminal, type SupervisorState } from './state.ts';
+import { allReadyOrTerminal, type QueuedCommand, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
 import { publish } from './wiring.ts';
 import { planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
@@ -244,21 +244,39 @@ export const handleCommand = (
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.handleCommand'));
 
+/**
+ * Dispatch one dequeued command. The loop is the SOLE consumer of the
+ * command queue, so the spine is: `dequeue → handle → await Exit →
+ * ack|fail`. Three intents:
+ *
+ *  - `submitted` — the caller (`submitCommand`, the dashboard restore
+ *    path) awaits the real exit, so run inline (`failOnPostAcquireHook`)
+ *    and feed the Exit back through the completion deferred (the ack/fail).
+ *  - fire-and-forget `stack.restart` — the watcher/keypress must not
+ *    block the loop on a full re-acquire, so it forks into the
+ *    supervisor scope (a second concurrent restart is skip-deduped).
+ *  - every other fire-and-forget — run inline, swallowing failures (the
+ *    handler already surfaced them on the event stream).
+ */
+const dispatch = (deps: SupervisorState, next: QueuedCommand): Effect.Effect<void, never, Scope.Scope> => {
+	if (next.kind === 'submitted') {
+		return Effect.gen(function* () {
+			const exit = yield* Effect.exit(
+				handleCommand(deps, next.submission.command, { failOnPostAcquireHook: true }),
+			);
+			yield* Deferred.succeed(next.submission.completion, exit).pipe(Effect.ignore);
+		});
+	}
+	if (next.command.tag === 'stack.restart') {
+		return startBackgroundStackRestart(deps, handleCommand);
+	}
+	return handleCommand(deps, next.command).pipe(Effect.catch(() => Effect.void));
+};
+
 export const commandLoop = (deps: SupervisorState): Effect.Effect<void, never, Scope.Scope> =>
 	Effect.gen(function* () {
 		while (true) {
-			const next = yield* Queue.take(deps.queuedCommands);
-			if (next.kind === 'submitted') {
-				const exit = yield* Effect.exit(
-					handleCommand(deps, next.submission.command, { failOnPostAcquireHook: true }),
-				);
-				yield* Deferred.succeed(next.submission.completion, exit).pipe(Effect.ignore);
-			} else if (next.command.tag === 'stack.restart') {
-				yield* startBackgroundStackRestart(deps, handleCommand);
-			} else {
-				yield* handleCommand(deps, next.command).pipe(Effect.catch(() => Effect.void));
-			}
-			const drained = yield* Ref.get(deps.shutdownLatch);
-			if (drained) return;
+			yield* dispatch(deps, yield* Queue.take(deps.queuedCommands));
+			if (yield* Ref.get(deps.shutdownLatch)) return;
 		}
 	}).pipe(Effect.withSpan('lifecycle.supervisor.commandLoop'));
