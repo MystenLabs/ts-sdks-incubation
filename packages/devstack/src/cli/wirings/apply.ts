@@ -14,7 +14,7 @@
 
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import { Cause, Effect, Exit, Logger, SubscriptionRef } from 'effect';
+import { Cause, Effect, Exit, FileSystem, Logger, SubscriptionRef } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -32,7 +32,6 @@ import {
 	layerBuiltInPluginRuntime,
 	superviseStackEffect,
 } from '../../orchestrators/boot.ts';
-import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
 import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
@@ -40,6 +39,7 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeConfigLoader } from './config-loader.ts';
+import { clearStaleRestoreMarker } from './restore-marker-tolerance.ts';
 import {
 	identityValueFor,
 	resolvedIdentityForStack,
@@ -142,20 +142,14 @@ export const runApplyLive = (
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
-			// Mirror the up-path recovery: reconcile any half-promoted
-			// snapshot restore from a prior supervise BEFORE the one-shot
-			// apply starts the stack. Idempotent + no-op when no marker.
-			const snapshot = yield* SnapshotOrchestratorService;
-			yield* snapshot.recoverPendingRestore.pipe(
-				Effect.tapCause((cause) =>
-					Effect.sync(() => {
-						process.stderr.write(
-							`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-						);
-					}),
-				),
-				Effect.catch(() => Effect.succeed(null)),
-			);
+			const stackPaths = yield* StackPathsService;
+			// Mirror the up-path tolerance: best-effort unlink a stale
+			// restore-pending marker left by a pre-D2 binary BEFORE the
+			// one-shot apply starts the stack. The crash-recovery scanner is
+			// gone — restore leaves images at their TARGET names so adoption
+			// re-runs them with no marker. We do NOT parse the stale file.
+			const fs = yield* FileSystem.FileSystem;
+			yield* clearStaleRestoreMarker(fs, stackPaths.stackRoot);
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
@@ -167,7 +161,6 @@ export const runApplyLive = (
 					extendContext: extendBuiltInPluginContext,
 				},
 			).pipe(Effect.provide(layerBuiltInPluginRuntime));
-			const stackPaths = yield* StackPathsService;
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});
 

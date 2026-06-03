@@ -59,11 +59,6 @@ import {
 	type IdentityGuardError,
 } from './identity-guard.ts';
 import { runPrune, type PruneResult, type PrunePhaseError } from './prune.ts';
-import {
-	recoverPendingRestore,
-	type RestorePendingRecoveryError,
-	type RestorePendingRecoverySummary,
-} from './recover-pending.ts';
 import { runRestore, type RestoreParticipant, type RestorePhaseError } from './restore.ts';
 import {
 	stageAndSwap,
@@ -80,7 +75,6 @@ import { planWipe, runWipe, type WipePhaseError, type WipeTargets } from './wipe
 export type SnapshotOrchestratorError =
 	| CapturePhaseError
 	| RestorePhaseError
-	| RestorePendingRecoveryError
 	| WipePhaseError
 	| PrunePhaseError
 	| IdentityGuardError
@@ -176,17 +170,6 @@ export interface SnapshotOrchestrator {
 	 *  byproduct images via the runtime adapter's label-scoped cleanup. */
 	readonly prune: () => Effect.Effect<
 		PruneResult,
-		SnapshotOrchestratorError,
-		FileSystem.FileSystem
-	>;
-
-	/** Recover from a snapshot-restore that crashed mid-way through the
-	 *  post-publish Docker handoff. Reads the on-disk pending marker,
-	 *  retries each outstanding image promote, and clears the marker.
-	 *  Idempotent — safe to call on every supervise startup; a no-op
-	 *  when no marker is present. */
-	readonly recoverPendingRestore: Effect.Effect<
-		RestorePendingRecoverySummary,
 		SnapshotOrchestratorError,
 		FileSystem.FileSystem
 	>;
@@ -600,11 +583,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				}),
 			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
 
-		const recoverPendingRestoreImpl: SnapshotOrchestrator['recoverPendingRestore'] =
-			recoverPendingRestore(paths.stackRoot, runtime).pipe(
-				Effect.withSpan('orchestrator.snapshot.recover-pending.entry'),
-			);
-
 		return SnapshotOrchestratorService.of({
 			registerParticipant,
 			capture,
@@ -614,7 +592,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			wipe,
 			wipePlan,
 			prune,
-			recoverPendingRestore: recoverPendingRestoreImpl,
 		});
 	}),
 );

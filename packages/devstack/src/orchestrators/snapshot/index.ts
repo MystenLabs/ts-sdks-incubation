@@ -31,32 +31,11 @@ export { captureSnapshot, type CaptureSnapshotArgs } from './capture-command.ts'
 
 // Restore
 export {
-	RESTORE_PENDING_FILE_NAME,
 	RestorePhaseError,
-	RestorePendingDocumentSchema,
 	runRestore,
-	SNAPSHOT_RESTORE_PENDING_VERSION,
 	type RestoreInputs,
-	type RestorePendingDocument,
 	type RestoreParticipant,
 } from './restore.ts';
-
-// Restore-pending recovery
-export {
-	recoverPendingRestore,
-	RestorePendingRecoveryError,
-	type RestorePendingRecoverySummary,
-} from './recover-pending.ts';
-
-// Pending marker shapes — shared between `restore.ts` (writer) and
-// `recover-pending.ts` (reader). Re-exported for tests + consumers
-// that need to inspect a marker out-of-band.
-export {
-	makePendingMarkerDocument,
-	pendingMarkerPath,
-	RestorePendingMarkerIoError,
-	type RestorePendingContainer,
-} from './pending-marker.ts';
 
 // Wipe
 export {

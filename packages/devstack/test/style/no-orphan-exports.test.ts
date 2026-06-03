@@ -206,7 +206,6 @@ const collectPublicReachableFiles = (): ReadonlySet<string> => {
 const KNOWN_UNCLEARED_ORPHANS: ReadonlySet<string> = new Set<string>([
 	'orchestrators/codegen/manifest-bridge.ts#projectPluginSlice',
 	'orchestrators/codegen/manifest-bridge.ts#projectEndpoints',
-	'orchestrators/snapshot/pending-marker.ts#RestorePendingDocumentV2',
 	'plugins/sui/mode/fork.ts#FORK_UPSTREAM_TO_KNOWN_NETWORK',
 	'primitives/artifact-publisher.ts#LENIENT_RETRY_PROFILE',
 	'substrate/events.ts#EngineEventTag',

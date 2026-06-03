@@ -25,19 +25,6 @@ import { Effect, Exit, FileSystem, Schema, Stream } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import {
-	makePendingMarkerDocument,
-	pendingMarkerPath,
-	RestorePendingMarkerIoError,
-	removePendingMarker as removePendingMarkerIo,
-	rewritePendingMarkerContainers,
-	writePendingMarker as writePendingMarkerIo,
-	RESTORE_PENDING_FILE_NAME,
-	RestorePendingDocumentSchema,
-	SNAPSHOT_RESTORE_PENDING_VERSION,
-	type RestorePendingContainer,
-	type RestorePendingDocument,
-} from './pending-marker.ts';
-import {
 	HostTreeTarError,
 	untarHostTree,
 	validateHostTreeTarEntries,
@@ -110,9 +97,6 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'retag-image',
 			'post-restore-hook',
 			'pre-cleanup',
-			'write-restore-pending',
-			'read-restore-pending',
-			'clear-restore-pending',
 			'missing-subtree-fatal',
 		]),
 		plugin: Schema.optional(Schema.String),
@@ -261,46 +245,23 @@ const removeCapturedContainers = (
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.remove-containers'));
 
 // -----------------------------------------------------------------------------
-// Post-publish Docker finalization recovery marker.
+// Post-publish Docker image finalization.
 // -----------------------------------------------------------------------------
 //
-// Recovery contract: see `pending-marker.ts` and `recover-pending.ts`.
-// Restore writes the marker BEFORE the atomic swap, rewrites it after
-// each successful promote in `promoteStagedImages` so a mid-loop
-// crash leaves the marker reflecting exactly which images still need
-// retagging, and clears it once every entry has been promoted. The
-// supervise startup hook re-runs the recovery scanner before any
-// plugin acquire.
-
-// Re-export the marker shapes restored from the dedicated module so
-// downstream tests + the recovery scanner continue to import from
-// the snapshot orchestrator barrel.
-export {
-	RESTORE_PENDING_FILE_NAME,
-	RestorePendingDocumentSchema,
-	SNAPSHOT_RESTORE_PENDING_VERSION,
-	type RestorePendingDocument,
-};
+// After the atomic swap, each staged image is re-tagged to its
+// captured target name (`promoteStagedImages`) and the original
+// captured containers are removed. There is NO crash-recovery marker:
+// the staged image is left at its TARGET name, so on the next boot the
+// supervisor's image-match adoption (`decideRunAction` in
+// `runtime/docker/container.ts`) finds the image locally by name and
+// `docker run`s it without scanning or re-tagging — the resumption
+// contract is carried by the image name itself, not an on-disk marker.
 
 interface StagedContainerImage {
 	readonly captured: CapturedContainer;
 	readonly stagedRef: ImageRef;
 	readonly stagedImageTag: string;
 }
-
-const stagedImageToPendingEntry = (image: StagedContainerImage): RestorePendingContainer => ({
-	plugin: image.captured.plugin,
-	role: image.captured.role,
-	targetImageName: image.captured.imageName,
-	stagedImageTag: image.stagedImageTag,
-	// The digest is the loaded image's content-addressed identity
-	// (carried through `stageLoadedImage` from `loadImageBundle`'s
-	// docker-load output). Persisting it in the marker lets the
-	// recovery scanner re-tag from the digest as a fallback when both
-	// `targetImageName` and `stagedImageTag` have been pruned out of
-	// the daemon between crash and restart.
-	digest: image.stagedRef.digest,
-});
 
 const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): Set<string> => {
 	const tags = new Set<string>();
@@ -311,84 +272,6 @@ const loadedBundleTags = (bundle: { readonly refs: ReadonlyArray<ImageRef> }): S
 };
 
 const mintRestoreStagingTag = (): string => `devstack-snapshot:restore-${mintRandomSuffix(24)}`;
-
-const mapMarkerIoError =
-	(phase: RestorePhaseError['phase']) =>
-	(err: RestorePendingMarkerIoError): Effect.Effect<never, RestorePhaseError> =>
-		Effect.fail(new RestorePhaseError({ phase, detail: err.detail, cause: err.cause }));
-
-const writeRestorePendingMarker = (args: {
-	readonly runtimeRoot: string;
-	readonly meta: SnapshotMetadata;
-	readonly artifactDir: string;
-	readonly stagedImages: ReadonlyArray<StagedContainerImage>;
-}): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> => {
-	if (args.stagedImages.length === 0) return Effect.void;
-	const doc = makePendingMarkerDocument({
-		meta: args.meta,
-		artifactDir: args.artifactDir,
-		containers: args.stagedImages.map(stagedImageToPendingEntry),
-	});
-	return writePendingMarkerIo(args.runtimeRoot, doc).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('write-restore-pending'),
-		),
-	);
-};
-
-const rewriteRestorePendingMarker = (
-	runtimeRoot: string,
-	doc: RestorePendingDocument,
-	stillPending: ReadonlyArray<RestorePendingContainer>,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
-	writePendingMarkerIo(runtimeRoot, rewritePendingMarkerContainers(doc, stillPending)).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('write-restore-pending'),
-		),
-	);
-
-const clearRestorePendingMarker = (
-	runtimeRoot: string,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
-	removePendingMarkerIo(runtimeRoot).pipe(
-		Effect.catchTag(
-			'SnapshotRestorePendingMarkerIoError',
-			mapMarkerIoError('clear-restore-pending'),
-		),
-	);
-
-const readRestorePendingMarker = (
-	runtimeRoot: string,
-): Effect.Effect<RestorePendingDocument | null, RestorePhaseError, FileSystem.FileSystem> =>
-	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
-		const path = pendingMarkerPath(runtimeRoot);
-		const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
-		if (!exists) return null;
-		const text = yield* fs
-			.readFileString(path)
-			.pipe(Effect.catch(failPhase('read-restore-pending', `read ${RESTORE_PENDING_FILE_NAME}`)));
-		const raw = yield* parseJsonText(text, {
-			source: path,
-			mkError: (issue) =>
-				new RestorePhaseError({
-					phase: 'read-restore-pending',
-					detail: `${RESTORE_PENDING_FILE_NAME} is not valid JSON`,
-					cause: issue.cause,
-				}),
-		});
-		return yield* decodeUnknown(RestorePendingDocumentSchema, raw, {
-			source: path,
-			mkError: (issue) =>
-				new RestorePhaseError({
-					phase: 'read-restore-pending',
-					detail: `${RESTORE_PENDING_FILE_NAME} failed schema decode`,
-					cause: issue.cause,
-				}),
-		});
-	});
 
 // -----------------------------------------------------------------------------
 // Artifact preflight — no destructive cleanup until required files are present.
@@ -672,22 +555,20 @@ const cleanupRestoreStagingImages = (
 		{ concurrency: 'unbounded' },
 	).pipe(Effect.asVoid);
 
-/** Promote each staged image to its recorded name, rewriting the
- *  on-disk pending marker after each successful tag. If the loop
- *  fails mid-way the marker reflects exactly which images are still
- *  pending (the failed entry + every entry not yet attempted), so
- *  the supervise-startup `recoverPendingRestore` only has to retry
- *  the remaining set — no scanning Docker for "which targets exist
- *  already?" required. */
+/** Promote each staged image to its recorded TARGET name. The target
+ *  name is the original image name the supervisor used for the
+ *  container, so leaving the staged image at that name lets the next
+ *  boot's image-match adoption (`decideRunAction`) find it locally and
+ *  `docker run` it — no scanner, no on-disk marker. A mid-loop failure
+ *  promotes a prefix of the images; the inner staging-cleanup scope
+ *  prunes the un-promoted staging refs, and a re-run of restore re-stages
+ *  and re-promotes from the snapshot artifact. */
 const promoteStagedImages = (
 	images: ReadonlyArray<StagedContainerImage>,
 	runtime: ContainerRuntime,
-	runtimeStackRoot: string,
-	pendingDoc: RestorePendingDocument | null,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+): Effect.Effect<void, RestorePhaseError> =>
 	Effect.gen(function* () {
-		for (let i = 0; i < images.length; i += 1) {
-			const image = images[i]!;
+		for (const image of images) {
 			yield* runtime
 				.tagImage(image.stagedRef, image.captured.imageName, {
 					removeSourceAfterTag: true,
@@ -701,15 +582,6 @@ const promoteStagedImages = (
 						),
 					),
 				);
-			// Rewrite the marker with only the still-pending entries
-			// (everything we haven't promoted yet). The final entry's
-			// rewrite leaves an empty `containers: []` marker on disk;
-			// `clearRestorePendingMarker` removes the file shortly
-			// after this function returns.
-			if (pendingDoc !== null) {
-				const stillPending = images.slice(i + 1).map(stagedImageToPendingEntry);
-				yield* rewriteRestorePendingMarker(runtimeStackRoot, pendingDoc, stillPending);
-			}
 		}
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.promote-images'));
 
@@ -800,12 +672,12 @@ export interface RestoreInputs {
  *      - Untar host-tree into staging.
  *      - Re-read contribution docs.
  *      - Load image bundles and stage verified snapshot tags.
- *      - Write a restore-pending marker into the staged root.
  *   5. Atomic swap staging → runtime root, preserving live command /
  *      event channel files and other explicit runtime-control files.
- *   6. Promote staged images to recorded refs, then remove captured
- *      managed containers by label. If this fails, the pending marker
- *      remains in the restored root for diagnosis/recovery.
+ *   6. Promote staged images to their captured TARGET names, then
+ *      remove captured managed containers by label. The image is left
+ *      at its target name so the next boot's image-match adoption
+ *      re-runs the deploy from the local image with no recovery marker.
  *   7. Post-restore hooks.
  *
  * The caller is responsible for `acquireReservation`; restore supplies
@@ -855,21 +727,21 @@ export const runRestore = (
 		yield* preflightArtifact(meta, inputs.artifactDir);
 
 		// 4. Stage filesystem content and non-destructive Docker image
-		//    refs; atomic swap on success, then promote staged images and
-		//    clear the recovery marker. The inner `Effect.scoped` keeps
+		//    refs; atomic swap on success, then promote staged images to
+		//    their target names. The inner `Effect.scoped` keeps
 		//    `cleanupRestoreStagingImages` armed across BOTH the
 		//    stage-and-swap build phase AND the post-swap Docker handoff
-		//    (promote → remove containers → clear marker). The handoff
-		//    flag flips only after `clearRestorePendingMarker` returns,
-		//    so a mid-handoff failure (e.g. promotion of image N of M
-		//    refuses) leaves the swapped tree carrying the pending
-		//    marker (re-supervise can detect the broken handoff) AND
-		//    has the inner scope clean the still-tagged staging refs so
-		//    Docker is not littered with orphan `devstack-snapshot:restore-*`
-		//    tags. The post-publish three-step sequence runs under
-		//    `Effect.uninterruptible` so an outer interrupt cannot
-		//    arrive between promote and the marker clear and tear the
-		//    handoff state.
+		//    (promote → remove captured containers). The handoff flag
+		//    flips only after `removeCapturedContainers` returns, so a
+		//    mid-handoff failure has the inner scope clean the still-tagged
+		//    staging refs so Docker is not littered with orphan
+		//    `devstack-snapshot:restore-*` tags. The post-publish sequence
+		//    runs under `Effect.uninterruptible` so an outer interrupt
+		//    cannot arrive mid-handoff and tear the state. No on-disk
+		//    recovery marker is written: `promoteStagedImages` leaves each
+		//    image at its captured TARGET name, so the next boot's
+		//    image-match adoption re-runs the deploy from the local image
+		//    with no scanner.
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
@@ -942,39 +814,23 @@ export const runRestore = (
 								}),
 							);
 						}
-						yield* writeRestorePendingMarker({
-							runtimeRoot: inputs.runtimeStagingPath,
-							meta,
-							artifactDir: inputs.artifactDir,
-							stagedImages,
-						});
 						return stagedImages;
 					}),
 				});
 
 				// 5. Docker finalization happens after filesystem publish.
-				//    Promote → remove captured containers → clear marker, all
-				//    inside the staging-cleanup scope. The pending marker
-				//    landed in the swapped runtime root as part of the
-				//    stage-and-swap; `promoteStagedImages` rewrites it after
-				//    each successful tag so a mid-loop crash leaves the
-				//    marker reflecting exactly which images still need
-				//    retagging — `recoverPendingRestore` on the next
-				//    supervise picks up the breadcrumb. Uninterruptible so
-				//    an outer interrupt cannot tear the handoff between
-				//    promote and `clearRestorePendingMarker`.
+				//    Promote → remove captured containers, inside the
+				//    staging-cleanup scope. Uninterruptible so an outer
+				//    interrupt cannot tear the handoff between promote and
+				//    container removal. Each promoted image is left at its
+				//    captured TARGET name, so the next boot's image-match
+				//    adoption re-runs the deploy from the local image — no
+				//    recovery marker, no scanner.
 				if (stagedImages.length > 0) {
-					const pendingDocAfterSwap = yield* readRestorePendingMarker(inputs.runtimeStackRoot);
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {
-							yield* promoteStagedImages(
-								stagedImages,
-								inputs.runtime,
-								inputs.runtimeStackRoot,
-								pendingDocAfterSwap,
-							);
+							yield* promoteStagedImages(stagedImages, inputs.runtime);
 							yield* removeCapturedContainers(meta, inputs.runtime, inputs.runtimeIdentity);
-							yield* clearRestorePendingMarker(inputs.runtimeStackRoot);
 							recoveryHandoffComplete = true;
 						}),
 					);

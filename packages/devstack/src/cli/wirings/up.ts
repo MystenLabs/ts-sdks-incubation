@@ -62,6 +62,7 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 import { makeConfigLoader } from './config-loader.ts';
+import { clearStaleRestoreMarker } from './restore-marker-tolerance.ts';
 import { isEngineCommand } from './engine-command.ts';
 import {
 	findCliSupervisorLiveError,
@@ -533,34 +534,15 @@ export const runUpLive = (
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const stackPaths = yield* StackPathsService;
-							// Reconcile any half-promoted snapshot restore from a
-							// prior supervise (process hard-killed mid `tagImage`
-							// loop, Docker daemon outage, etc.) BEFORE any plugin
-							// acquire fires. The scanner is idempotent and a no-op
-							// when no marker is present; partial recovery surfaces
-							// via the returned summary's `stillPending` list which
-							// we log so the operator can investigate.
-							const recovery = yield* snapshot.recoverPendingRestore.pipe(
-								Effect.tapCause((cause) =>
-									Effect.sync(() => {
-										process.stderr.write(
-											`snapshot recovery scan failed: ${Cause.pretty(cause as Cause.Cause<unknown>)}\n`,
-										);
-									}),
-								),
-								Effect.catch(() => Effect.succeed(null)),
-							);
-							if (recovery && !recovery.noMarker) {
-								const summary = `snapshot.recover-pending: inspected=${recovery.inspected} recovered=${recovery.recovered} stillPending=${recovery.stillPending.length} markerCleared=${recovery.markerCleared}`;
-								process.stderr.write(`${summary}\n`);
-								if (recovery.stillPending.length > 0) {
-									for (const entry of recovery.stillPending) {
-										process.stderr.write(
-											`  pending: ${entry.targetImageName} ← ${entry.stagedImageTag} (${entry.plugin}/${entry.role})\n`,
-										);
-									}
-								}
-							}
+							// Tolerate a stale restore-pending marker left by a
+							// pre-D2 binary that crashed mid image-promotion. The
+							// crash-recovery scanner is gone: restore now leaves
+							// promoted images at their TARGET names, so the next
+							// boot's image-match adoption re-runs the deploy from
+							// the local image with no marker. We do NOT parse the
+							// stale file — just unlink it best-effort before any
+							// plugin acquire so nothing trips over it.
+							yield* clearStaleRestoreMarker(fs, stackPaths.stackRoot);
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
 								handle,

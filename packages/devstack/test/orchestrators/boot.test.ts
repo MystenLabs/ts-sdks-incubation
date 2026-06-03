@@ -115,7 +115,6 @@ const snapshotLayer = Layer.succeed(SnapshotOrchestratorService)({
 	wipe: () => Effect.die('unused snapshot wipe'),
 	wipePlan: () => Effect.die('unused snapshot wipePlan'),
 	prune: () => Effect.die('unused snapshot prune'),
-	recoverPendingRestore: Effect.die('unused snapshot recoverPendingRestore'),
 } satisfies SnapshotOrchestrator);
 
 const codegenLayer = Layer.succeed(CodegenOrchestratorService)({
