@@ -35,6 +35,7 @@ import {
 	layerPostAcquireTasks,
 	PostAcquireTasksService,
 } from '../../../src/substrate/runtime/post-acquire-tasks.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 class FakeChild extends EventEmitter implements HostProcessChild {
 	readonly stdout = new PassThrough();
@@ -444,9 +445,11 @@ describe('acquireHostService', () => {
 			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5_000 },
 		});
 
+		const { ctx, captured } = makeTestPluginCtx();
+
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member.start(undefined).pipe(
+				const start = member.start(undefined, ctx).pipe(
 					Effect.provideService(PortBrokerService, broker),
 					Effect.provideService(Logger, fakeLogger),
 					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),
@@ -472,6 +475,16 @@ describe('acquireHostService', () => {
 				expect(value.port).toBe(6173);
 				expect(allocations).toEqual([
 					{ owner: 'host-service:frontend', preferredPort: 5170, probeHost: '0.0.0.0' },
+				]);
+				// Stage B P2: the routable endpoint is now emitted INLINE from
+				// `start` via `ctx.endpoint` (formerly the `capabilities`
+				// closure), built from the resolved `HostServiceValue` fields.
+				expect(captured.endpoint).toEqual([
+					makeHostServiceRoutable({
+						endpointName: value.endpointName,
+						serviceName: value.name,
+						port: value.port,
+					}),
 				]);
 				const postAcquireTasks = yield* PostAcquireTasksService;
 				yield* postAcquireTasks.runAll;

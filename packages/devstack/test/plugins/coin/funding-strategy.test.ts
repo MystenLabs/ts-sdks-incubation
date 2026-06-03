@@ -1,25 +1,32 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { coin, coinFundingCapabilityKey, type CoinValue } from '../../../src/plugins/coin/index.ts';
+import {
+	coinFundingCapabilityKey,
+	emitCapabilities,
+	type CoinValue,
+} from '../../../src/plugins/coin/index.ts';
 import type { AccountFundingStrategy } from '../../../src/contracts/funding-strategy.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
-const fakeAcquireContext: AcquireContext = {
-	identity: {
-		app: appName('coin-test'),
-		stack: stackName('main'),
-		chain: chainId('sui:localnet'),
-	},
-	chain: chainId('sui:localnet'),
-	runtimeRoot: '/tmp/devstack-coin-test',
-};
+// Stage B: the coin plugin emits its contributions INLINE from `start`
+// via the typed `ctx.*` verbs (see `src/substrate/plugin-ctx.ts`) instead
+// of the legacy `capabilities` second-closure. Each coin `start` resolves
+// a `CoinValue` (via `acquireCoin`) and then calls
+// `emitCapabilities(ctx, symbol, value)` — the exported emit seam. These
+// tests previously drove the now-removed public `capabilities(value, …)`
+// factory and inspected the returned decls; the equivalent is to feed a
+// hand-built resolved `CoinValue` into `emitCapabilities` against a
+// decl-capturing fake `ctx` and assert the captured `provides`. Input
+// (`value`) and output (the strategy-contributor decl) are unchanged — only
+// the call shape moved from "return" to "emit + capture".
+//
+// `symbol` matches what `coin.fromPackage(pkg, 'DEEP').start` passes:
+// the lower-cased witness symbol.
+const coinSymbol = 'deep';
 
 describe('coin funding strategy contribution', () => {
 	it('registers local package coin funding by full coin type', () => {
-		const pkg = { id: 'package:deep' } as never;
-		const member = coin.fromPackage(pkg, 'DEEP');
 		const fullCoinType = '0xabc::deep::DEEP';
 		const fundingStrategy = { request: () => Effect.void };
 		const value = {
@@ -32,14 +39,10 @@ describe('coin funding strategy contribution', () => {
 			fundingStrategy,
 		} satisfies CoinValue;
 
-		if (typeof member.capabilities !== 'function') {
-			throw new Error('expected coin capabilities factory');
-		}
-		const capabilities = member.capabilities(value, fakeAcquireContext);
-		const contribution = capabilities.find(
-			(cap) =>
-				cap.kind === 'strategy-contributor' &&
-				cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
+		const { ctx, captured } = makeTestPluginCtx();
+		emitCapabilities(ctx, coinSymbol, value);
+		const contribution = captured.provides.find(
+			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);
 
 		expect(contribution).toMatchObject({
@@ -51,7 +54,7 @@ describe('coin funding strategy contribution', () => {
 		// `AccountFundingStrategy` wrapper — not the inner narrow
 		// strategy reference. See the regression test below for why
 		// the barrel projects rather than re-exposing the literal.
-		if (contribution?.kind !== 'strategy-contributor') {
+		if (contribution === undefined) {
 			throw new Error('expected strategy-contributor contribution');
 		}
 		expect(typeof (contribution.strategy as { readonly request: unknown }).request).toBe(
@@ -71,8 +74,6 @@ describe('coin funding strategy contribution', () => {
 		// publisher both keys collapse to the same non-reentrant key and
 		// the inner acquire blocks forever. Pin the flag here — the
 		// dispatcher-side behavior is asserted in the account funding test.
-		const pkg = { id: 'package:deep' } as never;
-		const member = coin.fromPackage(pkg, 'DEEP');
 		const fullCoinType = '0xabc::deep::DEEP';
 		const value = {
 			fullCoinType,
@@ -83,16 +84,13 @@ describe('coin funding strategy contribution', () => {
 			mint: () => Effect.die('not used'),
 			fundingStrategy: { request: () => Effect.void },
 		} satisfies CoinValue;
-		if (typeof member.capabilities !== 'function') {
-			throw new Error('expected coin capabilities factory');
-		}
-		const capabilities = member.capabilities(value, fakeAcquireContext);
-		const contribution = capabilities.find(
-			(cap) =>
-				cap.kind === 'strategy-contributor' &&
-				cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
+
+		const { ctx, captured } = makeTestPluginCtx();
+		emitCapabilities(ctx, coinSymbol, value);
+		const contribution = captured.provides.find(
+			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);
-		if (contribution === undefined || contribution.kind !== 'strategy-contributor') {
+		if (contribution === undefined) {
 			throw new Error('expected strategy-contributor contribution');
 		}
 		expect((contribution.strategy as AccountFundingStrategy).usesAccountSigner).toBe(true);
@@ -116,8 +114,6 @@ describe('coin funding strategy contribution', () => {
 		//      (`{address, amount, account}`).
 		//   2. The underlying narrow coin strategy receives ONLY
 		//      `{address, amount}` — `account` was dropped honestly.
-		const pkg = { id: 'package:deep' } as never;
-		const member = coin.fromPackage(pkg, 'DEEP');
 		const fullCoinType = '0xabc::deep::DEEP';
 		const received: Array<{ readonly address: string; readonly amount: bigint }> = [];
 		const narrowStrategy = {
@@ -135,16 +131,13 @@ describe('coin funding strategy contribution', () => {
 			mint: () => Effect.die('not used'),
 			fundingStrategy: narrowStrategy,
 		} satisfies CoinValue;
-		if (typeof member.capabilities !== 'function') {
-			throw new Error('expected coin capabilities factory');
-		}
-		const capabilities = member.capabilities(value, fakeAcquireContext);
-		const contribution = capabilities.find(
-			(cap) =>
-				cap.kind === 'strategy-contributor' &&
-				cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
+
+		const { ctx, captured } = makeTestPluginCtx();
+		emitCapabilities(ctx, coinSymbol, value);
+		const contribution = captured.provides.find(
+			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);
-		if (contribution === undefined || contribution.kind !== 'strategy-contributor') {
+		if (contribution === undefined) {
 			throw new Error('expected strategy-contributor contribution');
 		}
 		// Type-level contract: the contribution's `Strategy` slot is

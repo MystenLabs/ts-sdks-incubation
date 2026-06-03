@@ -12,6 +12,7 @@
 
 import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
+import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
@@ -81,7 +82,7 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 		// down the very HTTP connection it's answering on (502). It holds no
 		// restorable chain state, so staying live is safe.
 		keepAliveOnRestore: true,
-		start: () =>
+		start: (_deps: unknown, ctx?: PluginCtx) =>
 			Effect.gen(function* () {
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
@@ -174,14 +175,24 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 						),
 				});
 
-				return { url: server.url, localPort: allocated.port } satisfies DashboardValue;
+				const resolved = { url: server.url, localPort: allocated.port } satisfies DashboardValue;
+
+				// Inline contribution (Stage B): emit the Routable via the ctx
+				// verb before returning. Maps the legacy `capabilities` closure
+				// 1:1 — closure `value.localPort` is this resolved `localPort`,
+				// closure `runtime.identity.app`/`.stack` is the `identity` this
+				// `start` already holds from `IdentityContext`.
+				if (ctx !== undefined) {
+					ctx.endpoint(
+						makeDashboardRoutable({
+							app: identity.app,
+							stack: identity.stack,
+							port: resolved.localPort,
+						}),
+					);
+				}
+
+				return resolved;
 			}),
-		capabilities: ({ value, runtime }) => [
-			makeDashboardRoutable({
-				app: runtime.identity.app,
-				stack: runtime.identity.stack,
-				port: value.localPort,
-			}),
-		],
 	});
 }

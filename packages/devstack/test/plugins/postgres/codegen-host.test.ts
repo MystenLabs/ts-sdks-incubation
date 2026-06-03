@@ -9,10 +9,11 @@
 //    [networkAlias] }` as the first `networkAttach` entry, so
 //    Docker registers the alias as a DNS entry on the attached
 //    network (see runtime/docker/container.ts:451+).
-//  - index.ts capability factory forwards `value.networkAlias` into
-//    the codegen bindings.
+//  - index.ts `start` forwards `handle.networkAlias` into the codegen
+//    bindings (Stage B: emitted inline via `ctx.codegen`, replacing
+//    the legacy `capabilities` closure).
 
-import { Effect } from 'effect';
+import { Effect, Stream } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import type {
@@ -20,47 +21,109 @@ import type {
 	CodegenEmitDone,
 	CodegenableDecl,
 } from '../../../src/contracts/codegenable.ts';
+import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import { postgres } from '../../../src/plugins/postgres/index.ts';
 import type { Postgres, PostgresServiceOptions } from '../../../src/plugins/postgres/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
+import type { Identity } from '../../../src/substrate/identity.ts';
+import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
+import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
+import { IdentityContext, StackPathsService } from '../../../src/substrate/runtime/paths.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const APP = 'private-content';
 const STACK = 'main';
+const STACK_ROOT = '/tmp/codegen-host-test-stack-root';
 
-const identity = {
+const identity: Identity = {
 	app: appName(APP),
 	stack: stackName(STACK),
 	chain: chainId('sui:local'),
 };
 
-const runtimeCtx: AcquireContext = {
-	identity,
-	chain: chainId('sui:local'),
-	runtimeRoot: '/tmp/codegen-host-test-runtime-root',
+/** Minimal `ContainerRuntime` fake that lets `bootPostgresService` run
+ *  to completion and produce a deterministic `Postgres` handle. The
+ *  handle the boot builds mirrors what the daemon would resolve:
+ *  `host` is the per-stack container DNS name, `networkAlias` is the
+ *  parallel-stack-portable `<name>-<stack>` alias. The two MUST differ
+ *  for the test to discriminate the bug. Mirrors the fake in
+ *  `service.test.ts`; only the methods `start` reaches are live. */
+const fakeRuntime: ContainerRuntime = {
+	ensureImage: () => Effect.succeed({ digest: 'sha256:postgres', tag: 'devstack-postgres:test' }),
+	ensureNetwork: () => Effect.succeed('postgres-net'),
+	ensureContainer: (spec) =>
+		Effect.sync(() => ({
+			id: 'postgres-container-id',
+			name: spec.name,
+			imageName: spec.image.tag ?? spec.image.digest,
+			status: 'running' as const,
+			ips: [],
+			labels: spec.labels,
+		})),
+	// pg_isready: ready immediately.
+	exec: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
+	runOneShot: () => Effect.die('runOneShot not used'),
+	inspectByLabels: () => Effect.die('inspectByLabels not used'),
+	followLogs: () => Stream.empty,
+	pause: () => Effect.die('pause not used'),
+	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
+	saveImage: () => Stream.empty,
+	saveImages: () => Stream.empty,
+	loadImage: () => Effect.die('loadImage not used'),
+	tagImage: () => Effect.die('tagImage not used'),
+	removeImage: () => Effect.die('removeImage not used'),
+	unpause: () => Effect.die('unpause not used'),
+	stop: () => Effect.die('stop not used'),
+	sweepOrphans: () => Effect.die('sweepOrphans not used'),
+	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
+	removeManagedImages: () => Effect.die('removeManagedImages not used'),
+	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
+	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
 };
 
-/** Build a Postgres handle that mirrors what `service.ts` resolves at
- *  runtime: `host` is the container DNS name, `networkAlias` is the
- *  (currently un-plumbed) in-network alias. The two MUST differ for
- *  the test to discriminate the bug. */
-const makePostgresHandle = (opts: PostgresServiceOptions): Postgres => {
-	const name = opts.name ?? 'postgres';
-	const containerName = `${APP}-${STACK}-${name}`;
-	const networkAlias = `${name}-${STACK}`;
-	return {
-		name,
-		user: 'devstack',
-		password: 'pg-private-contentmain',
-		host: containerName,
-		port: 5432,
-		databases: ['devstack'],
-		endpoint: `postgres://devstack:pg-private-contentmain@${containerName}:5432`,
-		plainEndpoint: `postgres://${containerName}:5432`,
-		url: (db) => `postgres://devstack:pg-private-contentmain@${containerName}:5432/${db}`,
-		containerNetwork: `devstack-${APP}-${STACK}-postgres`,
-		networkAlias,
-	};
+/** A complete-enough `StackPaths` stub. `start` reads only `stackRoot`;
+ *  the helper fields are present to satisfy the service shape. */
+const stackPaths = StackPathsService.of({
+	stackRoot: STACK_ROOT,
+	cacheDir: `${STACK_ROOT}/cache`,
+	snapshotDir: `${STACK_ROOT}/snapshots`,
+	stackLockFile: `${STACK_ROOT}/stack.lock`,
+	rosterFile: `${STACK_ROOT}/roster.json`,
+	containerClaimsFile: `${STACK_ROOT}/container-claims.json`,
+	snapshotReservationFile: `${STACK_ROOT}/snapshot.reservation`,
+	cacheEntry: (namespace, chain, contentHash) => ({
+		dir: `${STACK_ROOT}/cache/${namespace}/${chain}`,
+		file: `${STACK_ROOT}/cache/${namespace}/${chain}/${contentHash}`,
+	}),
+	cacheChainDir: (namespace, chain) => `${STACK_ROOT}/cache/${namespace}/${chain}`,
+	cacheNamespaceDir: (namespace) => `${STACK_ROOT}/cache/${namespace}`,
+});
+
+/** Drive the converted plugin's `start(deps, ctx)` against the fake
+ *  substrate. Returns the resolved handle (start's success value) and
+ *  the codegen decl captured off `ctx.codegen` (Stage B replaces the
+ *  legacy `capabilities` closure with this inline emission). */
+const runStart = (
+	opts: PostgresServiceOptions,
+): Promise<{ handle: Postgres; codegen: CodegenableDecl }> => {
+	const { ctx, captured } = makeTestPluginCtx();
+	const plugin = postgres(opts);
+	return Effect.runPromise(
+		Effect.scoped(
+			Effect.gen(function* () {
+				const handle = (yield* (
+					plugin.start as (deps: unknown, ctx?: PluginCtx) => Effect.Effect<Postgres, never>
+				)(undefined, ctx)) as Postgres;
+				const codegen = captured.codegen[0];
+				if (codegen === undefined) throw new Error('codegen decl missing from ctx capture');
+				return { handle, codegen: codegen as CodegenableDecl };
+			}).pipe(
+				Effect.provideService(ContainerRuntimeService, fakeRuntime),
+				Effect.provideService(IdentityContext, identity),
+				Effect.provideService(StackPathsService, stackPaths),
+			),
+		),
+	);
 };
 
 /** Drive a `CodegenableDecl.emit` and capture the exported record. */
@@ -76,27 +139,9 @@ const captureExports = (decl: CodegenableDecl): Effect.Effect<Record<string, unk
 	return decl.emit(ctx).pipe(Effect.as(exports));
 };
 
-const findCodegen = (caps: ReadonlyArray<{ readonly kind: string }>): CodegenableDecl => {
-	const decl = caps.find((c) => c.kind === 'codegenable');
-	if (decl === undefined) throw new Error('codegen decl missing from capabilities');
-	return decl as CodegenableDecl;
-};
-
 describe('postgres codegen host', () => {
 	it('emits the per-stack network alias (not the per-stack container name)', async () => {
-		const plugin = postgres();
-		const handle = makePostgresHandle({});
-
-		// Capability factory accepts the lowered `(value, runtime)` form
-		// after substrate normalization (substrate/plugin.ts:298-301).
-		const caps = (
-			plugin.capabilities as (
-				value: Postgres,
-				runtime: AcquireContext,
-			) => ReadonlyArray<{ readonly kind: string }>
-		)(handle, runtimeCtx);
-
-		const codegen = findCodegen(caps);
+		const { handle, codegen } = await runStart({});
 		const exported = await Effect.runPromise(captureExports(codegen));
 
 		const bindings = exported['postgresConnection'] as {
@@ -120,17 +165,7 @@ describe('postgres codegen host', () => {
 	});
 
 	it('honours a custom postgres name when emitting host', async () => {
-		const plugin = postgres({ name: 'orders' });
-		const handle = makePostgresHandle({ name: 'orders' });
-
-		const caps = (
-			plugin.capabilities as (
-				value: Postgres,
-				runtime: AcquireContext,
-			) => ReadonlyArray<{ readonly kind: string }>
-		)(handle, runtimeCtx);
-
-		const codegen = findCodegen(caps);
+		const { codegen } = await runStart({ name: 'orders' });
 		const exported = await Effect.runPromise(captureExports(codegen));
 		const bindings = exported['postgresConnection'] as { readonly host: string };
 
