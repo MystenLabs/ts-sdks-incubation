@@ -36,6 +36,15 @@ import {
 	type ManagedProcessChild,
 	type ManagedProcessExitStatus,
 } from '../process-supervisor.ts';
+import {
+	finishTarReader,
+	isSafeArchivePath,
+	makeTarReaderState,
+	processTarChunk,
+	skipEntry,
+	type TarEntry,
+	type TarEntryDirective,
+} from '../tar/reader.ts';
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -165,106 +174,6 @@ const spawnTar = (
 		return { child, stderrChunks };
 	});
 
-const TAR_BLOCK_SIZE = 512;
-const MAX_TAR_EXTENDED_PATH_BYTES = 1024 * 1024;
-
-const bytesToString = (bytes: Uint8Array): string => {
-	const nul = bytes.indexOf(0);
-	const end = nul === -1 ? bytes.length : nul;
-	return Buffer.from(bytes.subarray(0, end)).toString('utf8');
-};
-
-const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
-	if (a.length === 0) return b;
-	if (b.length === 0) return a;
-	const out = new Uint8Array(a.length + b.length);
-	out.set(a, 0);
-	out.set(b, a.length);
-	return out;
-};
-
-const consumeBytes = (buffer: Uint8Array, count: number): Uint8Array => buffer.subarray(count);
-
-const isZeroBlock = (block: Uint8Array): boolean => block.every((byte) => byte === 0);
-
-const parseTarSize = (header: Uint8Array): number | null => {
-	const raw = bytesToString(header.subarray(124, 136)).trim();
-	if (raw === '') return 0;
-	if (!/^[0-7]+$/.test(raw)) return null;
-	const parsed = Number.parseInt(raw, 8);
-	return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-};
-
-const tarPathFromHeader = (header: Uint8Array): string => {
-	const name = bytesToString(header.subarray(0, 100));
-	const prefix = bytesToString(header.subarray(345, 500));
-	return prefix === '' ? name : `${prefix}/${name}`;
-};
-
-const tarLinkPathFromHeader = (header: Uint8Array): string =>
-	bytesToString(header.subarray(157, 257));
-
-const trimExtendedPath = (bytes: Uint8Array): string => {
-	const value = Buffer.from(bytes).toString('utf8').replace(/\n$/g, '');
-	let end = value.length;
-	while (end > 0 && value.charCodeAt(end - 1) === 0) end -= 1;
-	return value.slice(0, end);
-};
-
-const isSafeArchivePath = (entryPath: string): boolean => {
-	if (
-		entryPath === '' ||
-		entryPath === '.' ||
-		entryPath.includes('\0') ||
-		entryPath.includes('\\') ||
-		entryPath.startsWith('/') ||
-		/^[A-Za-z]:/.test(entryPath)
-	) {
-		return false;
-	}
-	const meaningfulSegments = entryPath
-		.split('/')
-		.filter((segment) => segment !== '' && segment !== '.');
-	return meaningfulSegments.length > 0 && !meaningfulSegments.includes('..');
-};
-
-const parsePaxRecords = (bytes: Uint8Array): Record<string, string> => {
-	const text = Buffer.from(bytes).toString('utf8');
-	const records: Record<string, string> = {};
-	let offset = 0;
-	while (offset < text.length) {
-		const space = text.indexOf(' ', offset);
-		if (space === -1) break;
-		const lengthText = text.slice(offset, space);
-		const recordLength = Number.parseInt(lengthText, 10);
-		if (!Number.isSafeInteger(recordLength) || recordLength <= 0) break;
-		const record = text.slice(space + 1, offset + recordLength).replace(/\n$/g, '');
-		const eq = record.indexOf('=');
-		if (eq > 0) {
-			records[record.slice(0, eq)] = record.slice(eq + 1);
-		}
-		offset += recordLength;
-	}
-	return records;
-};
-
-interface TarContentState {
-	readonly kind: 'pax-local' | 'pax-global' | 'gnu-path' | 'gnu-link';
-	readonly size: number;
-	readonly paddedSize: number;
-	readonly chunks: Array<Uint8Array>;
-	readonly contentBytesRead: number;
-	readonly totalBytesRead: number;
-}
-
-interface TarValidationState {
-	buffer: Uint8Array;
-	skipRemaining: number;
-	content: TarContentState | null;
-	pendingPath: string | null;
-	pendingLinkPath: string | null;
-}
-
 const tarValidationError = (detail: string): HostTreeTarError =>
 	new HostTreeTarError({
 		stage: 'entry-validation',
@@ -272,153 +181,39 @@ const tarValidationError = (detail: string): HostTreeTarError =>
 		detail,
 	});
 
-const applyExtendedContent = (
-	state: TarValidationState,
-	content: TarContentState,
-): HostTreeTarError | null => {
-	const bytes =
-		content.chunks.length === 1
-			? content.chunks[0]!
-			: Buffer.concat(content.chunks.map((chunk) => Buffer.from(chunk)));
-	if (content.kind === 'gnu-path') {
-		state.pendingPath = trimExtendedPath(bytes);
-		return null;
-	}
-	if (content.kind === 'gnu-link') {
-		state.pendingLinkPath = trimExtendedPath(bytes);
-		return null;
-	}
-	const records = parsePaxRecords(bytes);
-	if (
-		content.kind === 'pax-global' &&
-		(records.path !== undefined || records.linkpath !== undefined)
-	) {
-		return tarValidationError('global pax path/linkpath records are not supported in snapshots');
-	}
-	if (content.kind === 'pax-local') {
-		if (records.path !== undefined) state.pendingPath = records.path;
-		if (records.linkpath !== undefined) state.pendingLinkPath = records.linkpath;
-	}
-	return null;
-};
-
-const processTarValidationChunk = (
-	state: TarValidationState,
-	chunk: Uint8Array,
-): HostTreeTarError | null => {
-	// Fast path: we're mid-skip over a large file body and this chunk is
-	// fully consumed by the skip. Avoid `concatBytes` (O(N) per call →
-	// O(N²) across a multi-MB body streamed in 64KB chunks). The buffer
-	// must be empty so we don't re-order bytes relative to the parser.
-	if (
-		state.content === null &&
-		state.skipRemaining >= chunk.length &&
-		state.buffer.length === 0
-	) {
-		state.skipRemaining -= chunk.length;
-		return null;
-	}
-	state.buffer = concatBytes(state.buffer, chunk);
-	while (state.buffer.length > 0) {
-		if (state.content !== null) {
-			const content = state.content;
-			const remaining = content.paddedSize - content.totalBytesRead;
-			const take = Math.min(remaining, state.buffer.length);
-			const contentTake = Math.max(0, Math.min(take, content.size - content.contentBytesRead));
-			if (contentTake > 0) {
-				content.chunks.push(state.buffer.subarray(0, contentTake));
-			}
-			state.content = {
-				...content,
-				contentBytesRead: content.contentBytesRead + contentTake,
-				totalBytesRead: content.totalBytesRead + take,
-			};
-			state.buffer = consumeBytes(state.buffer, take);
-			if (state.content.totalBytesRead === state.content.paddedSize) {
-				const completed = state.content;
-				state.content = null;
-				const error = applyExtendedContent(state, completed);
-				if (error !== null) return error;
-			}
-			continue;
+// Host-tree-specific validation layer on top of the shared tar reader.
+// The reader resolves entries (pax/gnu paths applied); this hook
+// rejects unsafe entry paths and unsafe hardlink/symlink targets, then
+// skips the body. The reader owns the block discipline and pax/gnu
+// parsing; the validator never reads file content.
+const hostTreeValidationHooks = {
+	onEntry: (entry: TarEntry): TarEntryDirective | HostTreeTarError => {
+		if (!isSafeArchivePath(entry.path)) {
+			return tarValidationError(`unsafe tar entry path: ${entry.path}`);
 		}
-		if (state.skipRemaining > 0) {
-			const take = Math.min(state.skipRemaining, state.buffer.length);
-			state.skipRemaining -= take;
-			state.buffer = consumeBytes(state.buffer, take);
-			continue;
+		if ((entry.typeflag === '1' || entry.typeflag === '2') && !isSafeArchivePath(entry.linkPath)) {
+			return tarValidationError(`unsafe tar link target: ${entry.linkPath}`);
 		}
-		if (state.buffer.length < TAR_BLOCK_SIZE) return null;
-		const header = state.buffer.subarray(0, TAR_BLOCK_SIZE);
-		state.buffer = consumeBytes(state.buffer, TAR_BLOCK_SIZE);
-		if (isZeroBlock(header)) continue;
-
-		const size = parseTarSize(header);
-		if (size === null) return tarValidationError('tar entry has an invalid size header');
-		const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-		const typeflag = String.fromCharCode(header[156] ?? 0).replace('\0', '');
-		if (typeflag === 'x' || typeflag === 'g' || typeflag === 'L' || typeflag === 'K') {
-			if (size > MAX_TAR_EXTENDED_PATH_BYTES) {
-				return tarValidationError('tar extended path record is too large');
-			}
-			state.content = {
-				kind:
-					typeflag === 'x'
-						? 'pax-local'
-						: typeflag === 'g'
-							? 'pax-global'
-							: typeflag === 'L'
-								? 'gnu-path'
-								: 'gnu-link',
-				size,
-				paddedSize,
-				chunks: [],
-				contentBytesRead: 0,
-				totalBytesRead: 0,
-			};
-			continue;
-		}
-
-		const entryPath = state.pendingPath ?? tarPathFromHeader(header);
-		state.pendingPath = null;
-		if (!isSafeArchivePath(entryPath)) {
-			return tarValidationError(`unsafe tar entry path: ${entryPath}`);
-		}
-		const linkPath = state.pendingLinkPath ?? tarLinkPathFromHeader(header);
-		state.pendingLinkPath = null;
-		if ((typeflag === '1' || typeflag === '2') && !isSafeArchivePath(linkPath)) {
-			return tarValidationError(`unsafe tar link target: ${linkPath}`);
-		}
-		state.skipRemaining = paddedSize;
-	}
-	return null;
-};
-
-const finishTarValidation = (state: TarValidationState): HostTreeTarError | null => {
-	if (state.content !== null) return tarValidationError('tar ended inside an extended header');
-	if (state.skipRemaining !== 0) return tarValidationError('tar ended inside file content');
-	if (state.buffer.length !== 0 && !isZeroBlock(state.buffer)) {
-		return tarValidationError('tar ended with a partial header');
-	}
-	return null;
-};
+		return skipEntry();
+	},
+	onExtendedError: (detail: string): HostTreeTarError =>
+		tarValidationError(
+			detail === 'global pax path/linkpath records are not supported'
+				? 'global pax path/linkpath records are not supported in snapshots'
+				: detail,
+		),
+} as const;
 
 export const validateHostTreeTarEntries = <R>(
 	stream: Stream.Stream<Uint8Array, HostTreeTarError, R>,
 ): Effect.Effect<void, HostTreeTarError, R> =>
 	Effect.gen(function* () {
-		const state: TarValidationState = {
-			buffer: new Uint8Array(0),
-			skipRemaining: 0,
-			content: null,
-			pendingPath: null,
-			pendingLinkPath: null,
-		};
+		const state = makeTarReaderState();
 		yield* Stream.runForEach(stream, (chunk) => {
-			const error = processTarValidationChunk(state, chunk);
+			const error = processTarChunk(state, chunk, hostTreeValidationHooks);
 			return error === null ? Effect.void : Effect.fail(error);
 		});
-		const finalError = finishTarValidation(state);
+		const finalError = finishTarReader(state, tarValidationError);
 		if (finalError !== null) return yield* Effect.fail(finalError);
 	});
 
@@ -564,13 +359,7 @@ export const untarHostTree = <R>(
 			);
 		}
 
-		const validationState: TarValidationState = {
-			buffer: new Uint8Array(0),
-			skipRemaining: 0,
-			content: null,
-			pendingPath: null,
-			pendingLinkPath: null,
-		};
+		const validationState = makeTarReaderState();
 
 		const writeChunk = (chunk: Uint8Array): Effect.Effect<void, HostTreeTarError> =>
 			Effect.callback<void, HostTreeTarError>((resume) => {
@@ -615,7 +404,7 @@ export const untarHostTree = <R>(
 		// caller skipped any earlier preflight validation.
 		yield* Stream.runForEach(stream, (chunk) =>
 			Effect.gen(function* () {
-				const validationError = processTarValidationChunk(validationState, chunk);
+				const validationError = processTarChunk(validationState, chunk, hostTreeValidationHooks);
 				if (validationError !== null) {
 					return yield* Effect.fail(validationError);
 				}
@@ -636,7 +425,7 @@ export const untarHostTree = <R>(
 			),
 		);
 
-		const finalValidationError = finishTarValidation(validationState);
+		const finalValidationError = finishTarReader(validationState, tarValidationError);
 		if (finalValidationError !== null) {
 			return yield* Effect.fail(finalValidationError);
 		}

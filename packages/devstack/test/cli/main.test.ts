@@ -3,7 +3,6 @@ import { hostname as nodeHostname } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,7 +12,6 @@ import {
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SnapshotLayout,
 	SNAPSHOT_META_VERSION,
-	writeArtifactIntegrity,
 } from '../../src/orchestrators/snapshot/index.ts';
 import type { SubscribableState } from '../../src/substrate/projection.ts';
 import {
@@ -174,9 +172,6 @@ const writeRestorableSnapshotArtifact = async (
 			),
 		);
 	}
-	await Effect.runPromise(
-		writeArtifactIntegrity(snapshotDir).pipe(Effect.provide(NodeFileSystem.layer)),
-	);
 };
 
 const writeLiveRoster = (stackRoot: string): void => {

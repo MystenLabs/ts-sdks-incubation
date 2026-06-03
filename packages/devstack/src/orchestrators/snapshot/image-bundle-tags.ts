@@ -1,5 +1,15 @@
 import { Effect, FileSystem, Schema, Stream } from 'effect';
 
+import {
+	captureEntry,
+	isSafeArchivePath,
+	makeTarReaderState,
+	processTarChunk,
+	skipEntry,
+	stopScan,
+	type TarEntry,
+	type TarEntryDirective,
+} from '../../substrate/runtime/tar/reader.ts';
 import { isRestorableContainerImageName } from './descriptor.ts';
 
 export class ImageBundleTagScanError extends Schema.TaggedErrorClass<ImageBundleTagScanError>()(
@@ -16,41 +26,7 @@ const failScan = (detail: string, cause?: unknown): ImageBundleTagScanError =>
 		...(cause === undefined ? {} : { cause }),
 	});
 
-const TAR_BLOCK_SIZE = 512;
 const MAX_DOCKER_SAVE_MANIFEST_BYTES = 1024 * 1024;
-
-const bytesToString = (bytes: Uint8Array): string => {
-	const nul = bytes.indexOf(0);
-	const end = nul === -1 ? bytes.length : nul;
-	return Buffer.from(bytes.subarray(0, end)).toString('utf8');
-};
-
-const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
-	if (a.length === 0) return b;
-	if (b.length === 0) return a;
-	const out = new Uint8Array(a.length + b.length);
-	out.set(a, 0);
-	out.set(b, a.length);
-	return out;
-};
-
-const consumeBytes = (buffer: Uint8Array, count: number): Uint8Array => buffer.subarray(count);
-
-const isZeroBlock = (block: Uint8Array): boolean => block.every((byte) => byte === 0);
-
-const parseTarSize = (header: Uint8Array): number | null => {
-	const raw = bytesToString(header.subarray(124, 136)).trim();
-	if (raw === '') return 0;
-	if (!/^[0-7]+$/.test(raw)) return null;
-	const parsed = Number.parseInt(raw, 8);
-	return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
-};
-
-const tarPathFromHeader = (header: Uint8Array): string => {
-	const name = bytesToString(header.subarray(0, 100));
-	const prefix = bytesToString(header.subarray(345, 500));
-	return prefix === '' ? name : `${prefix}/${name}`;
-};
 
 const normalizedTarEntryPath = (path: string): string => {
 	let normalized = path;
@@ -58,102 +34,66 @@ const normalizedTarEntryPath = (path: string): string => {
 	return normalized;
 };
 
-type ImageBundleMetadataEntry = 'manifest.json' | 'index.json';
-
-interface DockerSaveMetadataTarState {
-	buffer: Uint8Array;
-	skipRemaining: number;
+// Metadata-only scan state. The shared tar reader owns the block
+// discipline + pax/gnu handling; this state just collects the two
+// metadata entries we care about and a `done` flag so the stream drain
+// can short-circuit once manifest.json lands.
+interface DockerSaveMetadataState {
 	manifestBytes: Uint8Array | null;
 	indexBytes: Uint8Array | null;
-	content: {
-		readonly entry: ImageBundleMetadataEntry;
-		readonly size: number;
-		readonly paddedSize: number;
-		readonly chunks: Array<Uint8Array>;
-		readonly contentBytesRead: number;
-		readonly totalBytesRead: number;
-	} | null;
+	done: boolean;
 }
 
-const processDockerSaveMetadataChunk = (
-	state: DockerSaveMetadataTarState,
-	chunk: Uint8Array,
-): { readonly done: boolean; readonly error?: ImageBundleTagScanError } => {
-	state.buffer = concatBytes(state.buffer, chunk);
-	while (state.buffer.length > 0) {
-		if (state.content !== null) {
-			const content = state.content;
-			const remaining = content.paddedSize - content.totalBytesRead;
-			const take = Math.min(remaining, state.buffer.length);
-			const contentTake = Math.max(0, Math.min(take, content.size - content.contentBytesRead));
-			if (contentTake > 0) {
-				content.chunks.push(state.buffer.subarray(0, contentTake));
-			}
-			state.content = {
-				...content,
-				contentBytesRead: content.contentBytesRead + contentTake,
-				totalBytesRead: content.totalBytesRead + take,
-			};
-			state.buffer = consumeBytes(state.buffer, take);
-			if (state.content.totalBytesRead === state.content.paddedSize) {
-				const completed = state.content;
-				state.content = null;
-				const entryBytes =
-					completed.chunks.length === 1
-						? completed.chunks[0]!
-						: Buffer.concat(completed.chunks.map((entry) => Buffer.from(entry)));
-				if (completed.entry === 'manifest.json') {
-					state.manifestBytes = entryBytes;
-					return { done: true };
-				}
-				state.indexBytes = entryBytes;
-			}
-			continue;
-		}
-		if (state.skipRemaining > 0) {
-			const take = Math.min(state.skipRemaining, state.buffer.length);
-			state.skipRemaining -= take;
-			state.buffer = consumeBytes(state.buffer, take);
-			continue;
-		}
-		if (state.buffer.length < TAR_BLOCK_SIZE) return { done: false };
-		const header = state.buffer.subarray(0, TAR_BLOCK_SIZE);
-		state.buffer = consumeBytes(state.buffer, TAR_BLOCK_SIZE);
-		if (isZeroBlock(header)) continue;
-		const size = parseTarSize(header);
-		if (size === null) {
-			return { done: false, error: failScan('docker save bundle has invalid tar size') };
-		}
-		const paddedSize = Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
-		const entryPath = normalizedTarEntryPath(tarPathFromHeader(header));
-		if (entryPath === 'manifest.json' || entryPath === 'index.json') {
-			if (size > MAX_DOCKER_SAVE_MANIFEST_BYTES) {
-				return {
-					done: false,
-					error: failScan(`docker save ${entryPath} is too large`),
-				};
-			}
-			if (size === 0) {
-				if (entryPath === 'manifest.json') {
-					state.manifestBytes = new Uint8Array(0);
-					return { done: true };
-				}
-				state.indexBytes = new Uint8Array(0);
-				continue;
-			}
-			state.content = {
-				entry: entryPath,
-				size,
-				paddedSize,
-				chunks: [],
-				contentBytesRead: 0,
-				totalBytesRead: 0,
-			};
-			continue;
-		}
-		state.skipRemaining = paddedSize;
+// Per-entry directive for the Docker-save / OCI-layout metadata scan.
+// Docker `save` bundles are a TRUSTED-extraction path: this scanner only
+// reads manifest.json / index.json metadata and never writes any file to
+// disk, so it does NOT untar bodies. `isSafeArchivePath` is applied for
+// defense-in-depth (a malicious linkpath / escaping entry path is
+// rejected) without tightening acceptance of valid OCI bundles — only
+// the manifest/index entries are captured; all other members (layer
+// blobs, configs) are skipped as before.
+const onMetadataEntry = (
+	state: DockerSaveMetadataState,
+	entry: TarEntry,
+): TarEntryDirective | ImageBundleTagScanError => {
+	if (!isSafeArchivePath(entry.path)) {
+		return failScan(`docker save bundle has unsafe tar entry path: ${entry.path}`);
 	}
-	return { done: false };
+	if ((entry.typeflag === '1' || entry.typeflag === '2') && !isSafeArchivePath(entry.linkPath)) {
+		return failScan(`docker save bundle has unsafe tar link target: ${entry.linkPath}`);
+	}
+	const entryPath = normalizedTarEntryPath(entry.path);
+	if (entryPath === 'manifest.json' || entryPath === 'index.json') {
+		if (entry.size > MAX_DOCKER_SAVE_MANIFEST_BYTES) {
+			return failScan(`docker save ${entryPath} is too large`);
+		}
+		if (entry.size === 0) {
+			if (entryPath === 'manifest.json') {
+				state.manifestBytes = new Uint8Array(0);
+				state.done = true;
+				return stopScan();
+			}
+			state.indexBytes = new Uint8Array(0);
+			return skipEntry();
+		}
+		return captureEntry();
+	}
+	return skipEntry();
+};
+
+const onMetadataContent = (
+	state: DockerSaveMetadataState,
+	entry: TarEntry,
+	body: Uint8Array,
+): null => {
+	const entryPath = normalizedTarEntryPath(entry.path);
+	if (entryPath === 'manifest.json') {
+		state.manifestBytes = body;
+		state.done = true;
+	} else {
+		state.indexBytes = body;
+	}
+	return null;
 };
 
 const parseDockerSaveManifestTags = (
@@ -280,18 +220,21 @@ export const readImageBundleTags = (
 ): Effect.Effect<ReadonlySet<string>, ImageBundleTagScanError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		const state: DockerSaveMetadataTarState = {
-			buffer: new Uint8Array(0),
-			skipRemaining: 0,
+		const state: DockerSaveMetadataState = {
 			manifestBytes: null,
 			indexBytes: null,
-			content: null,
+			done: false,
 		};
+		const reader = makeTarReaderState();
 		yield* fs.stream(fullTarPath).pipe(
 			Stream.takeUntilEffect((chunk) => {
-				const result = processDockerSaveMetadataChunk(state, chunk);
-				if (result.error !== undefined) return Effect.fail(result.error);
-				return Effect.succeed(result.done);
+				const error = processTarChunk(reader, chunk, {
+					onEntry: (entry) => onMetadataEntry(state, entry),
+					onContent: (entry, body) => onMetadataContent(state, entry, body),
+					onExtendedError: (detail) => failScan(`docker save bundle ${detail}`),
+				});
+				if (error !== null) return Effect.fail(error);
+				return Effect.succeed(state.done);
 			}),
 			Stream.runDrain,
 			Effect.catch((cause) =>

@@ -210,9 +210,6 @@ it.effect('captures an already-paused container without unpausing it afterwards'
 			expect(Exit.isSuccess(exit)).toBe(true);
 			if (!Exit.isSuccess(exit)) return;
 			expect(exit.value.label).toBe(null);
-			expect(
-				JSON.parse(readFileSync(join(root, 'artifact', SnapshotLayout.integrityFile), 'utf8')),
-			).toMatchObject({ version: 1 });
 			expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
 			expect(unpauseCalls).toEqual([]);
 		}),
@@ -618,7 +615,6 @@ describe('snapshot capture container images', () => {
 				expect(removeImageCalls).toEqual([]);
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(true);
-				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(true);
 				expect(readFileSync(join(root, 'artifact', imageBundlePath))).toHaveLength(
 					dockerSaveBundleTarWithLateMetadata(['snapshot:validator-container']).length,
 				);
@@ -675,7 +671,6 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
-				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);
@@ -726,7 +721,6 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
-				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);
@@ -778,7 +772,6 @@ describe('snapshot capture container images', () => {
 				]);
 				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
-				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);

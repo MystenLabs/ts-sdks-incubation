@@ -23,7 +23,6 @@ import {
 	containerImagesBundlePath,
 	contributionPath,
 	snapshotIdFromString,
-	writeArtifactIntegrity,
 	type RestoreParticipant,
 	type SnapshotMetadata,
 	type SnapshotRuntimeIdentity,
@@ -197,7 +196,6 @@ const runRestoreExit = (
 ) =>
 	Effect.gen(function* () {
 		const artifactDir = writeArtifact(root, meta);
-		yield* writeArtifactIntegrity(artifactDir);
 		return yield* Effect.exit(
 			runRestore({
 				snapshotId: snapshotIdFromString(meta.id),
@@ -541,7 +539,6 @@ describe('snapshot restore safety', () => {
 				mkdirSync(join(stackRoot, 'cache'), { recursive: true });
 				writeFileSync(join(stackRoot, 'cache', 'entry'), 'cache');
 				writeFileSync(join(stackRoot, 'unrelated-runtime-state'), 'drop');
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
 				const exit = yield* Effect.exit(
 					runRestore({
@@ -628,7 +625,6 @@ describe('snapshot restore safety', () => {
 						{ startImmediately: true },
 					);
 					yield* Effect.sleep('30 millis');
-					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
 					const exit = yield* Effect.exit(
 						runRestore({
@@ -895,49 +891,6 @@ describe('snapshot restore safety', () => {
 		),
 	);
 
-	it.effect('verifies artifact integrity before loading images or replacing containers', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const events: string[] = [];
-				const meta = metadata({
-					containers: [capturedContainer()],
-				});
-				const artifactDir = writeArtifact(root, meta);
-				writeImageBundle(artifactDir);
-				const imageTarPath = join(artifactDir, imageBundlePath);
-				writeFileSync(imageTarPath, Buffer.from([1, 2, 3]));
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
-				writeFileSync(imageTarPath, Buffer.from([9, 9, 9]));
-
-				const exit = yield* Effect.exit(
-					runRestore({
-						snapshotId: snapshotIdFromString(meta.id),
-						artifactDir,
-						runtimeStackRoot: join(root, 'runtime-stack'),
-						runtimeStagingPath: join(root, 'runtime-stack.staging'),
-						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: restoreIdentityParticipants(),
-						runtime: runtimeStub(sweepCalls, { events }),
-						runtimeIdentity,
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('verify-integrity');
-					}
-				}
-				expect(events).toEqual([]);
-				expect(sweepCalls).toEqual([]);
-			}),
-		),
-	);
-
 	it.effect('cleans restore-staging image refs when a staging tag fails', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
@@ -1101,7 +1054,6 @@ describe('snapshot restore safety', () => {
 				writeFileSync(join(stackRoot, 'live-state'), 'old');
 				mkdirSync(backupPath, { recursive: true });
 				writeFileSync(join(backupPath, 'blocks-backup-rename'), 'occupied');
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
 				const exit = yield* Effect.exit(
 					runRestore({

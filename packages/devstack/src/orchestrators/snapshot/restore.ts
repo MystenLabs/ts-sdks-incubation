@@ -46,7 +46,6 @@ import {
 	isSafeSnapshotRelativePath,
 	parseSnapshotId,
 } from './descriptor.ts';
-import { verifyArtifactIntegrity } from './integrity.ts';
 import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
@@ -88,8 +87,6 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'meta-corrupt',
 			'meta-absent',
 			'read-contribution',
-			'read-integrity',
-			'verify-integrity',
 			'preflight',
 			'pre-restore-hook',
 			'untar-host-tree',
@@ -194,21 +191,6 @@ const readMeta = (
 		}
 		return meta;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.read-meta'));
-
-const verifyIntegrity = (
-	artifactDir: string,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
-	verifyArtifactIntegrity(artifactDir).pipe(
-		Effect.catchTag('SnapshotIntegrityError', (err) =>
-			Effect.fail(
-				new RestorePhaseError({
-					phase: err.kind === 'missing' ? 'read-integrity' : 'verify-integrity',
-					detail: err.detail,
-					cause: err.cause,
-				}),
-			),
-		),
-	);
 
 // -----------------------------------------------------------------------------
 // Managed-container removal by label.
@@ -696,9 +678,12 @@ export const runRestore = (
 			'devstack.snapshot.artifact': inputs.artifactDir,
 		});
 
-		// 1. Authoritative meta read.
+		// 1. Authoritative meta read. There is no separate integrity
+		//    re-hash: the artifact is atomically published (never a
+		//    half-observed tree) and never transmitted; the host-tree tar
+		//    is path-validated on extraction and the image bundle manifest
+		//    is verified before docker load.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
-		yield* verifyIntegrity(inputs.artifactDir);
 
 		// 2. Identity guard — compare the metadata's runtime identity
 		//    and plugin-contributed identity. FAIL-CLOSED before any mutation.

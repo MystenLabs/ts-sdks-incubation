@@ -73,14 +73,12 @@ export {
 	containerImagesBundlePath,
 	contributionPath,
 	IdentitySliceSchema,
-	IntegrityFileSchema,
 	OpaqueContributionStateSchema,
 	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SNAPSHOT_ID_RULE,
-	SNAPSHOT_INTEGRITY_VERSION,
 	SNAPSHOT_META_VERSION,
 	isValidSnapshotId,
 	parseSnapshotId,
@@ -89,16 +87,8 @@ export {
 	type CapturedSubtree,
 	type ContributionDoc,
 	type IdentitySlice,
-	type IntegrityFile,
 	type OpaqueContributionState,
 	type SnapshotCatalogEntry,
 	type SnapshotId,
 	type SnapshotMetadata,
 } from './descriptor.ts';
-
-export {
-	computeArtifactIntegrity,
-	SnapshotIntegrityError,
-	verifyArtifactIntegrity,
-	writeArtifactIntegrity,
-} from './integrity.ts';
