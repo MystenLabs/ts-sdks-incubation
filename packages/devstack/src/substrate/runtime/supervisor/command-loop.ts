@@ -138,17 +138,21 @@ export const handleCommand = (
 				yield* startBackgroundSnapshotCapture(deps, cmd);
 				return;
 			case 'snapshot.restore': {
-				// Restore is destructive: the injected handler applies the
-				// on-disk tree AND removes the live managed containers, relying
-				// on the NEXT acquire to rebuild them. The CLI offline path gets
-				// that acquire for free (supervisor was DOWN, boots fresh after).
-				// For a LIVE supervisor (the dashboard path) nothing else
-				// re-acquires — so we chain a full drain + re-acquire here,
-				// mirroring `stack.restart`. Net effect = the manual-restart
-				// sequence the user confirmed works: apply restored tree, then
-				// drain + re-acquire every service from it. The handler runs
-				// first (and publishes `snapshot.restored`); we only re-acquire
-				// once it succeeded.
+				// Restore is the unified reconcile's ORDERED 4-step body
+				// (redesign §2, P4) split across this loop and the injected
+				// handler: the handler (`runRestore`) runs step0 (identity-guard
+				// precondition, fail-closed) → step1 (fsPlan swap-tree(untar))
+				// → step2 R1 (HARD container rm). This loop runs step2 R2
+				// (CONVERGE recreate-from-fresh): since R1 already removed the
+				// live managed containers, the next acquire sees facts:null and
+				// creates fresh from the restored images. The CLI offline path
+				// gets that converge for free (supervisor was DOWN, boots fresh
+				// after). For a LIVE supervisor (the dashboard path) nothing else
+				// re-acquires — so we chain a drain + re-acquire here via
+				// `doSelectiveRestart`, which is itself routed through
+				// `reconcileGraph(drain)∘reconcileGraph(converge)`, mirroring
+				// `stack.restart`. The handler runs first (and publishes
+				// `snapshot.restored`); we only converge once it succeeded.
 				//
 				// Drain EXCLUDES any plugin that declared `keepAliveOnRestore`
 				// (the operator transport answering this restore) so a

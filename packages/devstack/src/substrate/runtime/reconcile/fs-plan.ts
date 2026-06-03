@@ -16,12 +16,11 @@
 //     its own error tag and never collapses the per-direction preserve
 //     predicate into a cache-policy projection (guardrail §3.1).
 //
-//   - SWAP-TREE ops (TYPED SEAM, NOT implemented — P4/P5/E own these) —
-//     `swap-tree` / `untar-artifact` / `tar-subtrees`. These publish a new
-//     tree via the UNCHANGED `stageAndSwap` primitive (NOT modified, NOT
-//     reimplemented). P2 leaves the branch a clearly-marked `Effect.die`
-//     seam with the op TYPES present; P4/P5/E import + call `stageAndSwap`
-//     here when the build bodies land.
+//   - SWAP-TREE op (`swap-tree`) — publishes a new tree via the UNCHANGED
+//     `stageAndSwap` primitive (NOT modified, NOT reimplemented). The
+//     executor only ASSEMBLES stageAndSwap's args from the op. P4
+//     implements the restore build body (`untar-artifact`); the capture
+//     build body (`tar-subtrees`) reuses the same runner in E.
 //
 // Guardrails (redesign §3): `stageAndSwap` is untouched; the preserve-list
 // builders are per-direction constants supplied by the CALLER, never
@@ -31,6 +30,7 @@ import { Effect, FileSystem } from 'effect';
 
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
+import { stageAndSwap, StageAndSwapError } from '../stage-and-swap/index.ts';
 import type { ReconcileFsOp, ReconcileFsPlan, ReconcileLabelTuple } from './spec.ts';
 
 // -----------------------------------------------------------------------------
@@ -152,15 +152,61 @@ const runReapImages = <E>(
 	});
 
 // -----------------------------------------------------------------------------
+// Per-op runner (SWAP-TREE op — P4, restore via `untar-artifact`)
+// -----------------------------------------------------------------------------
+
+/** Publish a new `targetPath` tree via the UNCHANGED `stageAndSwap`
+ *  primitive (NOT modified, NOT reimplemented). The executor only
+ *  ASSEMBLES `stageAndSwap`'s args from the op: the build body, the
+ *  staging/backup sibling paths, the per-direction `preserveFromTarget` /
+ *  `preserveOnPreseed` riders (NOT a cache-policy projection — guardrail
+ *  §3.1), and the optional publish lock. The build's success value is
+ *  observed by the caller through its OWN closure (restore pushes staged
+ *  image refs into a caller-held array), so it is discarded here. The
+ *  primitive's `StageAndSwapError` is mapped through the op's `onSwapError`
+ *  failer into the caller's error tag `E`, mirroring the DIRECT ops — the
+ *  executor never invents an error tag. */
+const runSwapTree = <E>(
+	op: Extract<ReconcileFsOp<E>, { op: 'swap-tree' }>,
+): Effect.Effect<void, E, FileSystem.FileSystem> => {
+	// `op.buildEffect` fails with the caller's `E`; `stageAndSwap` adds its
+	// own `StageAndSwapError` from the rename. Map ONLY that concrete
+	// stage-and-swap error through the op's `onSwapError` failer (the build's
+	// own `E` errors pass straight through). `catchAll` + an explicit
+	// `_tag` guard keeps this fully typed without `catchTag` widening the
+	// failer's parameter when `E` is generic.
+	const swapped: Effect.Effect<unknown, E | StageAndSwapError, FileSystem.FileSystem> = stageAndSwap(
+		{
+			targetPath: op.targetPath,
+			stagingPath: op.stagingPath,
+			backupPath: op.backupPath,
+			build: op.buildEffect,
+			...(op.preserveFromTarget === undefined
+				? {}
+				: { preserveFromTarget: op.preserveFromTarget }),
+			...(op.preserveOnPreseed === undefined ? {} : { preserveOnPreseed: op.preserveOnPreseed }),
+			...(op.publishLockPath === undefined ? {} : { publishLockPath: op.publishLockPath }),
+		},
+	);
+	return swapped.pipe(
+		Effect.catch((error: E | StageAndSwapError) =>
+			error instanceof StageAndSwapError ? op.onSwapError(error) : Effect.fail(error),
+		),
+		Effect.asVoid,
+	);
+};
+
+// -----------------------------------------------------------------------------
 // The executor
 // -----------------------------------------------------------------------------
 
 /**
  * Run an ordered `ReconcileFsPlan` in sequence, accumulating the
  * counts/ids the routed flows surface (`FsPlanResult`). DIRECT ops mutate
- * the runtime tree / image store now; the swap-tree seam dies loudly (its
- * builders land in P4/P5/E and publish through the unchanged
- * `stageAndSwap`).
+ * the runtime tree / image store; the `swap-tree` op publishes a new tree
+ * through the unchanged `stageAndSwap` (its build's success value is
+ * observed by the caller's own closure, so it does not thread back into
+ * `FsPlanResult`).
  *
  * `reap-empty` reads the preserved-child count produced by the IMMEDIATELY
  * PRECEDING `sweep-children` op (wipe's plan is always
@@ -200,19 +246,15 @@ export const executeFsPlan = <E>(
 					break;
 				}
 				case 'swap-tree': {
-					// TODO(P4/P5/E): build the staging tree via the op's `build`
-					// body (`untar-artifact` for restore / `tar-subtrees` for
-					// capture) and publish it through the UNCHANGED `stageAndSwap`
-					// (substrate/runtime/stage-and-swap). The preserve riders
+					// P4 (restore via `untar-artifact`): build the staging tree
+					// via the op's `buildEffect` and publish it through the
+					// UNCHANGED `stageAndSwap`. The preserve riders
 					// (`preserveFromTarget` / `preserveOnPreseed`) map 1:1 onto
 					// `stageAndSwap`'s args as PER-DIRECTION constants — NOT a
-					// cache-policy projection (guardrail §3.1). P2 owns no swap
-					// build, so this is an explicit seam.
-					return yield* Effect.die(
-						'fs-plan swap-tree: the swap-tree family (swap-tree / untar-artifact / ' +
-							'tar-subtrees) is a later-phase seam (P4/P5/E) that publishes through the ' +
-							'unchanged stageAndSwap — P2 implements only the direct sweep/reap ops',
-					);
+					// cache-policy projection (guardrail §3.1). The capture build
+					// body (`tar-subtrees`) reuses this same runner in E.
+					yield* runSwapTree(op);
+					break;
 				}
 			}
 		}

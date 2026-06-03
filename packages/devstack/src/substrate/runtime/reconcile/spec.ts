@@ -113,6 +113,11 @@ export interface CachePolicy {
 
 import type { Effect as EffectT, FileSystem } from 'effect';
 
+import type {
+	StageAndSwapError,
+	StageAndSwapPreservedPath,
+} from '../stage-and-swap/index.ts';
+
 /** A per-op failure mapper: turns an underlying defect into the caller's
  *  phase-tagged error so routing a flow through the executor preserves
  *  that flow's existing error tags (e.g. `WipePhaseError` /
@@ -165,30 +170,64 @@ export interface ReapImagesOp<E> {
 	readonly onError: ReconcileFsFailer<E>;
 }
 
-/** SWAP-TREE seam (NOT implemented — P4/P5/E). Publish a new `targetPath`
- *  tree by running `build` then the unchanged `stageAndSwap` rename. The
- *  preserve riders are per-direction named constants (guardrail §3.1). */
-export interface SwapTreeOp {
+/** SWAP-TREE op (IMPLEMENTED — P4 restore via `untar-artifact`; the
+ *  `tar-subtrees` capture build lands in E). Publish a new `targetPath`
+ *  tree by running `build` (which populates the staging dir) then the
+ *  UNCHANGED `stageAndSwap` rename — `stageAndSwap` is NOT modified and
+ *  NOT reimplemented; the executor only assembles its args from this op
+ *  (guardrail: stageAndSwap untouched). The build's result is observed by
+ *  the caller through its OWN closure (e.g. restore pushes staged image
+ *  refs into a caller-held array), so the executor discards it and returns
+ *  the default `FsPlanResult` — the build value never threads back through
+ *  the op vocabulary.
+ *
+ *  The preserve riders map 1:1 onto `stageAndSwap`'s args as PER-DIRECTION
+ *  named constants, NOT a cache-policy projection (guardrail §3.1):
+ *  `preserveFromTarget` is restore's per-namespace cache + control-file
+ *  list; `preserveOnPreseed` is codegen's whole-tree pre-build clone. */
+export interface SwapTreeOp<E> {
 	readonly op: 'swap-tree';
+	/** The build body's identity — `untar-artifact` (restore) /
+	 *  `tar-subtrees` (capture). Names the build so the vocabulary is
+	 *  closed; the actual work is in `build`. */
+	readonly build: 'untar-artifact' | 'tar-subtrees';
 	readonly targetPath: string;
-	/** `untar-artifact` (restore) / `tar-subtrees` (capture) are the build
-	 *  bodies of a swap-tree; named here so the vocabulary is closed. The
-	 *  builders land in P4/E. */
-	readonly build?: 'untar-artifact' | 'tar-subtrees';
-	/** Per-direction preserve riders — NOT a cache-policy projection. */
-	readonly preserveFromTarget?: boolean;
+	readonly stagingPath: string;
+	readonly backupPath: string;
+	/** The user effect that populates `stagingPath` (restore untars the
+	 *  host-tree + loads/stages the committed image bundle). Carries the
+	 *  caller's error tag `E`; its success value is observed via the
+	 *  caller's own closure (see above) and discarded by the executor. */
+	readonly buildEffect: EffectT.Effect<unknown, E, FileSystem.FileSystem>;
+	/** Per-direction preserve rider — NOT a cache-policy projection
+	 *  (guardrail §3.1). Restore supplies its per-namespace cache +
+	 *  control-file list here as a restore-direction constant. */
+	readonly preserveFromTarget?: ReadonlyArray<StageAndSwapPreservedPath>;
+	/** Per-direction preserve rider — codegen's whole-tree pre-build clone
+	 *  (mtime-stable). */
 	readonly preserveOnPreseed?: boolean;
+	/** Caller-supplied publish lock (restore blocks command/event writers
+	 *  while the stack root is momentarily absent during the rename). */
+	readonly publishLockPath?: string;
+	/** Maps `stageAndSwap`'s `StageAndSwapError` into the caller's error
+	 *  channel `E`, mirroring the failer the DIRECT ops carry. Restore
+	 *  passes an identity pass-through (it keeps `StageAndSwapError` in its
+	 *  own public signature, behavior-preserving), so the executor never
+	 *  invents an error tag and `executeFsPlan<E>` stays `Effect<…, E, …>`
+	 *  rather than widening every label-flow's error with a swap error it
+	 *  can never raise. */
+	readonly onSwapError: (cause: StageAndSwapError) => EffectT.Effect<never, E>;
 }
 
-/** One file-tree mutation op. The implemented ops are parameterized on the
- *  caller's error tag `E`; the swap-tree seam carries no failer yet (its
- *  runner lands in P4/P5/E). */
+/** One file-tree mutation op. Every op is parameterized on the caller's
+ *  error tag `E`; `swap-tree`'s `buildEffect` carries `E` directly and the
+ *  executor surfaces `E | StageAndSwapError` from the rename. */
 export type ReconcileFsOp<E> =
 	| SweepChildrenOp<E>
 	| ReapEmptyOp
 	| ReapMetaMissingOp<E>
 	| ReapImagesOp<E>
-	| SwapTreeOp;
+	| SwapTreeOp<E>;
 
 /** The staged file-tree mutation plan (redesign §2): an ordered list of
  *  ops the executor runs in sequence. */

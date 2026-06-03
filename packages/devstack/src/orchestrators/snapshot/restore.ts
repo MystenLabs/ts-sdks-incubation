@@ -57,10 +57,13 @@ import {
 	type SnapshotRuntimeIdentity,
 } from './identity-guard.ts';
 import {
-	stageAndSwap,
 	type StageAndSwapError,
 	type StageAndSwapPreservedPath,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
+import {
+	executeFsPlan,
+	type ReconcileFsOp,
+} from '../../substrate/runtime/reconcile/index.ts';
 import {
 	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
 	COMMAND_CHANNEL_EVENTS_FILE_NAME,
@@ -641,29 +644,43 @@ export interface RestoreInputs {
 }
 
 /**
- * Run the full restore. Bracketed-atomic via `stageAndSwap` at the
- * runtime-root level — external watchers never observe a half-restored
- * tree.
+ * Run the full restore. Routed through the unified reconcile (redesign §2,
+ * P4) as an ORDERED 4-step body — restore is NOT a single converge target
+ * but a destructive ordered pair around an fs swap:
  *
- * Order:
- *   1. Read meta.json (refuse if absent / corrupt — no mutation).
- *   2. Run identity-guard against runtime metadata and merged plugin
- *      contributions (refuse on any disagreement — no mutation).
- *   3. Pre-restore hooks (per-plugin validation; soft errors).
- *   4. Stage:
- *      - Untar host-tree into staging.
- *      - Re-read contribution docs.
- *      - Load image bundles and stage verified snapshot tags.
- *   5. Atomic swap staging → runtime root, preserving live command /
- *      event channel files and other explicit runtime-control files.
- *   6. Promote staged images to their captured TARGET names, then
- *      remove captured managed containers by label. The image is left
- *      at its target name so the next boot's image-match adoption
- *      re-runs the deploy from the local image with no recovery marker.
- *   7. Post-restore hooks.
+ *   step0  — PRECONDITION: identity-guard, FAIL-CLOSED BEFORE ANY MUTATION.
+ *            The runtime-identity guard + merged plugin-contribution guard
+ *            complete BEFORE the first mutation (the docker load/tag inside
+ *            the swap-tree build). On mismatch the sweep / load / tag spies
+ *            stay EMPTY — zero mutations (guardrail §3.2; restore.test
+ *            `:214/:263`). Keep the pure meta read → guard → only then
+ *            mutate ordering.
+ *   step1  — fsPlan `swap-tree(untar)`: a single-op `ReconcileFsPlan` run
+ *            through `executeFsPlan`, which publishes the new tree via the
+ *            UNCHANGED `stageAndSwap`. The build untars the host-tree +
+ *            loads/stages the committed image bundle into staging; the
+ *            atomic swap preserves the RESTORE preserve list
+ *            (`LIVE_RESTORE_PRESERVED_PATHS` — per-namespace live cache +
+ *            control files, a restore-direction constant, NOT wipe's
+ *            wholesale predicate — guardrail §3.1/§3.3). Promote staged
+ *            images to their captured TARGET names is the swap step's
+ *            docker tail.
+ *   step2 R1 — HARD container removal (target = absent, label scope,
+ *            policy-independent, unconditional, claim-bypassing) via
+ *            `removeManagedContainers`. STRICTLY before R2. Never expressed
+ *            as flip-image-and-let-decideRunAction-recreate (guardrail
+ *            §3.6).
+ *   step2 R2 — CONVERGE (recreate-from-fresh): NOT in `runRestore`. R1
+ *            removed the containers, so the NEXT acquire (the live
+ *            supervisor's `doSelectiveRestart`, itself routed through
+ *            `reconcileGraph`, or the offline CLI's next-boot acquire) sees
+ *            facts:null → fresh → creates from the RESTORED images. Verb is
+ *            recreate-from-fresh, NOT adopt.
  *
- * The caller is responsible for `acquireReservation`; restore supplies
- * the runtime-control publish lock to `stageAndSwap`.
+ * Bracketed-atomic at the runtime-root level — external watchers never
+ * observe a half-restored tree. The caller is responsible for
+ * `acquireReservation`; restore supplies the runtime-control publish lock
+ * to the swap-tree op.
  */
 export const runRestore = (
 	inputs: RestoreInputs,
@@ -678,15 +695,18 @@ export const runRestore = (
 			'devstack.snapshot.artifact': inputs.artifactDir,
 		});
 
-		// 1. Authoritative meta read. There is no separate integrity
-		//    re-hash: the artifact is atomically published (never a
-		//    half-observed tree) and never transmitted; the host-tree tar
-		//    is path-validated on extraction and the image bundle manifest
-		//    is verified before docker load.
+		// Authoritative meta read (PURE — no mutation). There is no separate
+		// integrity re-hash: the artifact is atomically published (never a
+		// half-observed tree) and never transmitted; the host-tree tar is
+		// path-validated on extraction and the image bundle manifest is
+		// verified before docker load.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
 
-		// 2. Identity guard — compare the metadata's runtime identity
-		//    and plugin-contributed identity. FAIL-CLOSED before any mutation.
+		// step0 — PRECONDITION: identity guard, FAIL-CLOSED before the FIRST
+		//    mutation. Compare the metadata's runtime identity and the merged
+		//    plugin-contributed identity; on disagreement restore refuses
+		//    HERE, before the swap-tree build's docker load/tag runs (guardrail
+		//    §3.2; restore.test sweep/load/tag === [] on mismatch).
 		yield* runRuntimeIdentityGuard(
 			{ app: meta.app, stack: meta.stack, network: meta.network },
 			inputs.runtimeIdentity,
@@ -699,8 +719,10 @@ export const runRestore = (
 		const live = yield* mergeContributions(liveContributions);
 		yield* runIdentityGuard(meta.identity, live);
 
-		// 3. Plugin-level preRestore hooks (run AFTER identity-guard so
-		//    a mismatch refuses without ever calling them).
+		// Plugin-level preRestore hooks (run AFTER identity-guard so a
+		// mismatch refuses without ever calling them). Pre-restore validation
+		// is read-only / soft; the FIRST mutation is still the docker load/tag
+		// inside the swap-tree build below.
 		for (const participant of inputs.participants) {
 			if (participant.preRestore) {
 				yield* participant.preRestore.pipe(
@@ -711,22 +733,19 @@ export const runRestore = (
 
 		yield* preflightArtifact(meta, inputs.artifactDir);
 
-		// 4. Stage filesystem content and non-destructive Docker image
-		//    refs; atomic swap on success, then promote staged images to
-		//    their target names. The inner `Effect.scoped` keeps
-		//    `cleanupRestoreStagingImages` armed across BOTH the
-		//    stage-and-swap build phase AND the post-swap Docker handoff
-		//    (promote → remove captured containers). The handoff flag
-		//    flips only after `removeCapturedContainers` returns, so a
-		//    mid-handoff failure has the inner scope clean the still-tagged
-		//    staging refs so Docker is not littered with orphan
-		//    `devstack-snapshot:restore-*` tags. The post-publish sequence
-		//    runs under `Effect.uninterruptible` so an outer interrupt
-		//    cannot arrive mid-handoff and tear the state. No on-disk
-		//    recovery marker is written: `promoteStagedImages` leaves each
-		//    image at its captured TARGET name, so the next boot's
-		//    image-match adoption re-runs the deploy from the local image
-		//    with no scanner.
+		// steps 1 + 2 (R1) — staged file content + docker handoff, inside one
+		// `Effect.scoped` that keeps `cleanupRestoreStagingImages` armed across
+		// BOTH the swap-tree build phase AND the post-swap docker handoff
+		// (promote → remove captured containers). The handoff flag flips only
+		// after `removeCapturedContainers` returns, so a mid-handoff failure
+		// has the inner scope clean the still-tagged staging refs so Docker is
+		// not littered with orphan `devstack-snapshot:restore-*` tags. The
+		// post-publish sequence runs under `Effect.uninterruptible` so an outer
+		// interrupt cannot arrive mid-handoff and tear the state. No on-disk
+		// recovery marker is written: `promoteStagedImages` leaves each image
+		// at its captured TARGET name, so R2 (the next acquire's image-match
+		// recreate-from-fresh) re-runs the deploy from the local image with no
+		// scanner.
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
@@ -736,81 +755,107 @@ export const runRestore = (
 						? cleanupRestoreStagingImages(inputs.runtime, stagedImages)
 						: Effect.void,
 				);
-				yield* stageAndSwap({
-					targetPath: inputs.runtimeStackRoot,
-					stagingPath: inputs.runtimeStagingPath,
-					backupPath: inputs.runtimeBackupPath,
-					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
-					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
-					build: Effect.gen(function* () {
-						// 4a. Untar host-tree into staging.
-						if (meta.hostTreeIncluded) {
-							yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
-						}
-						const fs = yield* FileSystem.FileSystem;
-						// 4b. Read each contribution doc — the participants'
-						//      post-restore hooks may want this; we surface it
-						//      via the participant's own reads after the
-						//      the swap lands.
-						for (const pluginKey of meta.participants) {
-							const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
-							const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
-							if (!exists) {
-								return yield* Effect.fail(
-									new RestorePhaseError({
-										phase: 'read-contribution',
-										plugin: pluginKey,
-										detail: `contribution doc absent at ${path}`,
-									}),
-								);
-							}
-						}
-						// 4c. Load + tag committed images under restore-staging
-						//     refs only after all artifact expansion/copy work
-						//     has succeeded. The Docker save manifest must match
-						//     snapshot metadata exactly before docker load mutates
-						//     the daemon; loaded refs then supply the real digest
-						//     used for staging tags.
-						const expectedTagsByBundle = expectedSnapshotTagsByBundle(meta.containers);
-						const loadedRefsBySnapshotTag = new Map<string, ImageRef>();
-						for (const [tarPath, expectedTags] of expectedTagsByBundle) {
-							const loadedRefs = yield* loadImageBundle(
-								tarPath,
-								inputs.artifactDir,
-								inputs.runtime,
-								expectedTags,
-							);
-							for (const [tag, ref] of loadedRefs) {
-								loadedRefsBySnapshotTag.set(tag, ref);
-							}
-						}
-						for (const captured of meta.containers) {
-							const loadedRef = loadedRefsBySnapshotTag.get(captured.snapshotTag);
-							if (loadedRef === undefined) {
-								return yield* failRestore(
-									'load-image',
-									`container image bundle did not return loaded ref for ${captured.snapshotTag}`,
-									captured.plugin,
-								);
-							}
-							yield* stageLoadedImage(captured, loadedRef, inputs.runtime, (image) =>
-								Effect.sync(() => {
-									stagedImages.push(image);
+
+				// step1 — fsPlan `swap-tree(untar)`: the build untars the
+				//   host-tree + loads/stages the committed image bundle into
+				//   staging; the unchanged `stageAndSwap` (assembled by the
+				//   executor from the op) publishes it atomically, preserving the
+				//   RESTORE preserve list. The build's success value (the staged
+				//   refs) is captured via the `stagedImages` closure above, so
+				//   the fs-plan result is the empty default — the build value
+				//   never threads back through the op vocabulary.
+				const swapBuild = Effect.gen(function* () {
+					// Untar host-tree into staging.
+					if (meta.hostTreeIncluded) {
+						yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
+					}
+					const fs = yield* FileSystem.FileSystem;
+					// Confirm each contribution doc is present — the
+					// participants' post-restore hooks read fresh state after
+					// the swap lands.
+					for (const pluginKey of meta.participants) {
+						const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
+						const exists = yield* fs.exists(path).pipe(Effect.catch(() => Effect.succeed(false)));
+						if (!exists) {
+							return yield* Effect.fail(
+								new RestorePhaseError({
+									phase: 'read-contribution',
+									plugin: pluginKey,
+									detail: `contribution doc absent at ${path}`,
 								}),
 							);
 						}
-						return stagedImages;
-					}),
+					}
+					// Load + tag committed images under restore-staging refs
+					// only after all artifact expansion/copy work has
+					// succeeded. The Docker save manifest must match snapshot
+					// metadata exactly before docker load mutates the daemon;
+					// loaded refs then supply the real digest used for staging
+					// tags.
+					const expectedTagsByBundle = expectedSnapshotTagsByBundle(meta.containers);
+					const loadedRefsBySnapshotTag = new Map<string, ImageRef>();
+					for (const [tarPath, expectedTags] of expectedTagsByBundle) {
+						const loadedRefs = yield* loadImageBundle(
+							tarPath,
+							inputs.artifactDir,
+							inputs.runtime,
+							expectedTags,
+						);
+						for (const [tag, ref] of loadedRefs) {
+							loadedRefsBySnapshotTag.set(tag, ref);
+						}
+					}
+					for (const captured of meta.containers) {
+						const loadedRef = loadedRefsBySnapshotTag.get(captured.snapshotTag);
+						if (loadedRef === undefined) {
+							return yield* failRestore(
+								'load-image',
+								`container image bundle did not return loaded ref for ${captured.snapshotTag}`,
+								captured.plugin,
+							);
+						}
+						yield* stageLoadedImage(captured, loadedRef, inputs.runtime, (image) =>
+							Effect.sync(() => {
+								stagedImages.push(image);
+							}),
+						);
+					}
+					return stagedImages;
 				});
 
-				// 5. Docker finalization happens after filesystem publish.
-				//    Promote → remove captured containers, inside the
-				//    staging-cleanup scope. Uninterruptible so an outer
-				//    interrupt cannot tear the handoff between promote and
-				//    container removal. Each promoted image is left at its
-				//    captured TARGET name, so the next boot's image-match
-				//    adoption re-runs the deploy from the local image — no
-				//    recovery marker, no scanner.
+				const swapTree: ReconcileFsOp<RestorePhaseError | StageAndSwapError> = {
+					op: 'swap-tree',
+					build: 'untar-artifact',
+					targetPath: inputs.runtimeStackRoot,
+					stagingPath: inputs.runtimeStagingPath,
+					backupPath: inputs.runtimeBackupPath,
+					buildEffect: swapBuild,
+					// RESTORE-DIRECTION preserve constant — per-namespace live
+					// cache + control files, NOT wipe's wholesale predicate
+					// (guardrail §3.1/§3.3).
+					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
+					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
+					// Identity pass-through — restore keeps `StageAndSwapError`
+					// in its own public signature (behavior-preserving), so the
+					// executor never invents an error tag for it.
+					onSwapError: (cause) => Effect.fail(cause),
+				};
+
+				yield* executeFsPlan<RestorePhaseError | StageAndSwapError>({ ops: [swapTree] });
+
+				// step2 R1 — HARD container removal (target = absent, label
+				//   scope, policy-INDEPENDENT, unconditional, claim-bypassing)
+				//   via `removeManagedContainers`, plus the swap step's docker
+				//   tail (promote staged images to their captured TARGET names).
+				//   Inside the staging-cleanup scope, uninterruptible so an
+				//   outer interrupt cannot tear the handoff between promote and
+				//   container removal. Each promoted image is left at its
+				//   captured TARGET name, so R2 (the next acquire's image-match
+				//   recreate-from-fresh) re-runs the deploy from the local image
+				//   — no recovery marker, no scanner. R1 is STRICTLY before R2
+				//   (R2 runs in the caller's converge after `runRestore`
+				//   returns), and is NEVER expressed as
+				//   flip-image-and-let-decideRunAction-recreate (guardrail §3.6).
 				if (stagedImages.length > 0) {
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {
@@ -825,7 +870,7 @@ export const runRestore = (
 			}),
 		);
 
-		// 6. Post-restore hooks (after the swap lands so plugins read
+		// Post-restore hooks (after the swap lands so plugins read
 		//    fresh state from the runtime root).
 		for (const participant of inputs.participants) {
 			if (participant.postRestore) {
