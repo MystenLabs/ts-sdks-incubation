@@ -77,12 +77,8 @@ import {
 	type SupervisorHandle,
 	type SupervisorPostAcquireHook,
 } from '../substrate/runtime/supervisor/index.ts';
-import type {
-	ContributionDispatchContext,
-} from '../substrate/runtime/supervisor/contribution-dispatcher.ts';
-import type {
-	SupervisorPostAcquireContext,
-} from '../substrate/runtime/supervisor/index.ts';
+import type { ContributionDispatchContext } from '../substrate/runtime/supervisor/contribution-dispatcher.ts';
+import type { SupervisorPostAcquireContext } from '../substrate/runtime/supervisor/index.ts';
 
 import {
 	layerMystenMoveCodegen,
@@ -416,18 +412,6 @@ export const layerManifestEndpointRegistry: Layer.Layer<ManifestEndpointRegistry
 		}),
 	);
 
-export interface CapabilityDeliveryObservers {
-	readonly routable?: (
-		pluginKey: PluginKey,
-		endpoint: EndpointUrl,
-		event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>,
-	) => Effect.Effect<void, never, Scope.Scope>;
-	readonly codegenable?: (
-		pluginKey: PluginKey,
-		decl: Codegenable,
-	) => Effect.Effect<void, never, Scope.Scope>;
-}
-
 export const productionRouterProfile = (options: DefaultRouterProfileOptions = {}): RouterProfile =>
 	makeDefaultRouterProfile(options);
 
@@ -614,9 +598,7 @@ const strategyContributorDispatch = (
  * over it; the substrate supervisor holds the resulting record opaquely
  * (it never imports an orchestrator service).
  */
-export const buildProductionContributionDispatcher = (
-	observers: CapabilityDeliveryObservers = {},
-): Effect.Effect<
+export const buildProductionContributionDispatcher = (): Effect.Effect<
 	ContributionDispatcher,
 	never,
 	| SnapshotOrchestratorService
@@ -640,24 +622,10 @@ export const buildProductionContributionDispatcher = (
 						const manifestEntry = manifestEndpointEntryFromRoutable(ctx.pluginKey, endpoint);
 						return manifestEndpoints
 							.register(manifestEntry)
-							.pipe(
-								Effect.andThen(ctx.publish(event)),
-								Effect.andThen(
-									observers.routable
-										? observers.routable(ctx.pluginKey, endpoint, event)
-										: Effect.void,
-								),
-							);
+							.pipe(Effect.andThen(ctx.publish(event)));
 					}),
 				),
-			codegenable: (decl: Codegenable, ctx) =>
-				codegen
-					.registerContribution(ctx.pluginKey, decl)
-					.pipe(
-						Effect.flatMap(() =>
-							observers.codegenable ? observers.codegenable(ctx.pluginKey, decl) : Effect.void,
-						),
-					),
+			codegenable: (decl: Codegenable, ctx) => codegen.registerContribution(ctx.pluginKey, decl),
 			projection: (decl: ProjectionDecl, ctx) => projectionDispatch(decl, ctx),
 			strategyContributor: (decl: StrategyContributorDecl<string, unknown>, ctx) =>
 				strategyContributorDispatch(decl, ctx),

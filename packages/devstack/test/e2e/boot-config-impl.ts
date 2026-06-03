@@ -15,7 +15,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Cause, Context, Effect, FileSystem, Layer, Logger, Ref, SubscriptionRef } from 'effect';
+import { Cause, Context, Effect, FileSystem, Layer, Logger, SubscriptionRef } from 'effect';
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcessSpawner';
@@ -47,7 +47,6 @@ import {
 	layerRouterConfigLiteral,
 	layerRouterService,
 } from '../../src/orchestrators/router/service.ts';
-import type { EndpointUrl } from '../../src/orchestrators/router/service.ts';
 import {
 	layerTraefikContainerOpsDocker,
 	layerTraefikContainerOpsStub,
@@ -179,18 +178,6 @@ export type BootOptions = BootSource & {
 	readonly useRealRouter?: boolean;
 };
 
-export interface BootRoutableDelivery {
-	readonly pluginKey: string;
-	readonly endpoint: EndpointUrl;
-}
-
-export interface BootCodegenableDelivery {
-	readonly pluginKey: string;
-	readonly emitterName: string;
-	readonly outputPath: string;
-	readonly sensitive: boolean;
-}
-
 export interface BootCodegenRun {
 	readonly outputDir: string;
 	readonly result: RunEmitCycleResult;
@@ -208,10 +195,8 @@ export interface BootResult {
 	readonly resolvedValues: ReadonlyMap<string, unknown>;
 	readonly runtimeRoot: string;
 	readonly routerDispatchDir: string;
-	readonly routerEndpoints: ReadonlyArray<BootRoutableDelivery>;
 	readonly routerAppliedRoutes: ReadonlyArray<ResolvedRoute>;
 	readonly codegenOutputDir: string;
-	readonly codegenables: ReadonlyArray<BootCodegenableDelivery>;
 	readonly codegenRun: BootCodegenRun | null;
 }
 
@@ -391,22 +376,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		) as Context.Context<never>;
 
 		const state = yield* makeProjectionRef();
-		const routerEndpointRef = yield* Ref.make<ReadonlyArray<BootRoutableDelivery>>([]);
-		const codegenableRef = yield* Ref.make<ReadonlyArray<BootCodegenableDelivery>>([]);
-		const contributionDispatcher = yield* buildProductionContributionDispatcher({
-			routable: (pluginKey, endpoint) =>
-				Ref.update(routerEndpointRef, (xs) => [...xs, { pluginKey: String(pluginKey), endpoint }]),
-			codegenable: (pluginKey, decl) =>
-				Ref.update(codegenableRef, (xs) => [
-					...xs,
-					{
-						pluginKey: String(pluginKey),
-						emitterName: decl.emitterName,
-						outputPath: decl.outputPath,
-						sensitive: decl.sensitive === true,
-					},
-				]),
-		});
+		const contributionDispatcher = yield* buildProductionContributionDispatcher();
 		const provideFileSystem = <A, E>(
 			effect: Effect.Effect<A, E, FileSystem.FileSystem>,
 		): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
@@ -491,7 +461,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 				}
 
 				const snap = yield* SubscriptionRef.get(state);
-				const codegenables = yield* Ref.get(codegenableRef);
 				const codegenRun =
 					opts.runCodegen === true
 						? ({
@@ -499,7 +468,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 								result: yield* codegen.runCycle().pipe(Effect.orDie),
 							} satisfies BootCodegenRun)
 						: null;
-				const routerEndpoints = yield* Ref.get(routerEndpointRef);
 				const routerAppliedRoutes = yield* SubscriptionRef.get(router.applied);
 				return {
 					readyKeys,
@@ -510,10 +478,8 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 					resolvedValues: readyValues,
 					runtimeRoot,
 					routerDispatchDir,
-					routerEndpoints,
 					routerAppliedRoutes,
 					codegenOutputDir,
-					codegenables,
 					codegenRun,
 				} satisfies BootResult;
 			}),
