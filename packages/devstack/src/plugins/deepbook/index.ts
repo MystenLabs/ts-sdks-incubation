@@ -37,9 +37,7 @@ import { Effect } from 'effect';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceValueOf } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
@@ -215,32 +213,6 @@ export type DeepbookOptions<
 
 const DEFAULT_NAME = 'deepbook';
 const deepbookErrorContributions = pluginErrorContributions(DEEPBOOK_ERROR_TAGS);
-
-/** Emit the deepbook contributions inline via the typed `ctx` verbs (Stage B —
- *  was each mode's `capabilities: ({ value }) => [...]` second-closure). All
- *  three modes share this emit shape and ORDER, matching the supervisor's
- *  legacy `capabilities`-closure harvest byte-for-byte:
- *    1. snapshotable          → `ctx.snapshotExtra`
- *    2. codegenable           → `ctx.codegen`
- *    3. strategy-contributor  → `ctx.provides`  (known mode only; the DEEP
- *                               funding strategy, present only when resolved). */
-const emitDeepbookContributions = (
-	ctx: PluginCtx,
-	contributions: {
-		readonly snap: SnapshotableDecl;
-		readonly bindings: DeepbookBindings;
-		readonly deepFundingStrategy?: DeepbookDeepFundingStrategy | null;
-	},
-): void => {
-	ctx.snapshotExtra(contributions.snap);
-	const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(
-		contributions.bindings,
-	);
-	ctx.codegen(codegen);
-	if (contributions.deepFundingStrategy != null) {
-		ctx.provides(makeDeepbookDeepFundingContribution(contributions.deepFundingStrategy));
-	}
-};
 
 type DeepbookLocalEmptyPoolOptions<
 	Publisher extends AccountMemberAlias,
@@ -496,10 +468,9 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 					marketMakerRunning: false,
 					deepFundingStrategy: null,
 				};
-				// Stage B: emit contributions inline (was the
-				// `capabilities: ({ value: resolved }) => [snap, codegen]`
-				// closure). `resolved` is the just-computed value; `snap` is
-				// the override-mode identity-guard snapshotable in scope.
+				// Emit contributions inline: snapshot -> codegen. `resolved` is
+				// the just-computed value; `snap` is the override-mode
+				// identity-guard snapshotable in scope. No DEEP funding.
 				const bindings: DeepbookBindings = {
 					name,
 					chain: resolved.chain,
@@ -513,7 +484,8 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 					serverUrl: null,
 					indexerUrl: null,
 				};
-				emitDeepbookContributions(ctx, { snap, bindings });
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}),
 		errorContributions: deepbookErrorContributions,
@@ -718,10 +690,9 @@ const buildLocalPlugin = <
 					marketMakerRunning: seedResults.length > 0,
 					deepFundingStrategy: null,
 				};
-				// Stage B: emit contributions inline (was the
-				// `capabilities: ({ value: resolved }) => [snap, codegen]`
-				// closure). `resolved` is the just-computed value; the
-				// snapshotable is the local-mode `deepbook/<name>` subtree.
+				// Emit contributions inline: snapshot -> codegen. `resolved` is
+				// the just-computed value; the snapshotable is the local-mode
+				// `deepbook/<name>` subtree. No DEEP funding (null in local).
 				const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
 				const bindings: DeepbookBindings = {
 					name,
@@ -756,7 +727,8 @@ const buildLocalPlugin = <
 					serverUrl: resolved.serverUrl,
 					indexerUrl: resolved.indexerUrl,
 				};
-				emitDeepbookContributions(ctx, { snap, bindings });
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}).pipe(
 				// The body's aggregate E channel includes substrate Effects
@@ -877,12 +849,11 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 							? makeDeepbookDeepFundingStrategy({ suiSdk: sui.sdk })
 							: null,
 				};
-				// Stage B: emit contributions inline (was the
-				// `capabilities: ({ value: resolved }) => [snap, codegen,
-				// ...deepFunding]` closure). `resolved` is the just-computed
-				// value; `snap` is the known-mode identity-guard snapshotable
-				// in scope. The DEEP funding strategy-contributor is emitted
-				// only when `resolved.deepFundingStrategy` is non-null.
+				// Emit contributions inline: snapshot -> codegen -> (optional
+				// DEEP funding strategy). `resolved` is the just-computed value;
+				// `snap` is the known-mode identity-guard snapshotable in scope.
+				// The DEEP funding contributor is emitted only when
+				// `resolved.deepFundingStrategy` is non-null.
 				const bindings: DeepbookBindings = {
 					name,
 					chain: resolved.chain,
@@ -909,11 +880,11 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 					serverUrl: null,
 					indexerUrl: null,
 				};
-				emitDeepbookContributions(ctx, {
-					snap,
-					bindings,
-					deepFundingStrategy: resolved.deepFundingStrategy,
-				});
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeDeepbookCodegenable(bindings));
+				if (resolved.deepFundingStrategy != null) {
+					ctx.provides(makeDeepbookDeepFundingContribution(resolved.deepFundingStrategy));
+				}
 				return resolved;
 			}),
 		errorContributions: deepbookErrorContributions,

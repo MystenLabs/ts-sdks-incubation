@@ -9,9 +9,11 @@ import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 import {
 	account,
-	emitAccountCapabilities,
+	fundingProjectionForResult,
 	type AccountRegistryEntry,
 } from '../../../src/plugins/account/index.ts';
+import { makeAccountRegistryContribution } from '../../../src/plugins/account/registry.ts';
+import { emitContributions } from '../../../src/substrate/plugin-ctx.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { DEEPBOOK_TESTNET_DEEP_COIN_TYPE, deepbook } from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
@@ -21,8 +23,7 @@ import {
 	type AccountValue,
 	validateAccountName,
 } from '../../../src/plugins/account/service.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { AcquireContext } from '../../../src/substrate/plugin.ts';
+import { chainId } from '../../../src/substrate/brand.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
@@ -53,51 +54,37 @@ const fakeResolvedAccount = {
 	signPersonalMessage: null,
 } as unknown as AccountValue;
 
-const fakeAcquireContext: AcquireContext = {
-	identity: {
-		app: appName('account-test'),
-		stack: stackName('main'),
-		chain: chainId('sui:local'),
-	},
-	chain: chainId('sui:local'),
-	runtimeRoot: '/tmp/devstack-account-test',
-};
-
-// Stage B (plugin API inversion): account no longer exposes a
-// `capabilities` second-closure. It emits its contributions INLINE from
-// `start` via the typed `ctx` verbs (the snapshot/codegen/registry/projection
-// decls). The exact value-injection point is `emitAccountCapabilities(ctx,
-// resolved, inputs)` — the contribution-emit half of `start`. We drive that
-// seam directly with a decl-capturing fake ctx (the same fixture the supervisor
-// uses) and read the `account:`-keyed strategy-contributor from
-// `captured.provides`, asserting exactly as the old closure-driven test did.
+// Account emits its contributions INLINE from `start` via the typed `ctx`
+// verbs. The funding projection asserted here flows through the registry
+// strategy-contributor decl: `start` builds a `realEntry` whose `funding`
+// is `fundingProjectionForResult(resolved.funding)`, then feeds
+// `makeAccountRegistryContribution(realEntry)` into the shared
+// `emitContributions` router. This helper rebuilds that exact decl from a
+// resolved value and reads the `account:`-keyed contribution back out of a
+// decl-capturing fake ctx — exactly the projection `start` emits.
 //
 // `member` is still constructed via `account(...)` at every call site (so
 // name-validation + the factory body still run); its `id` (`account/<name>`)
-// supplies the literal account name for the resolved value. `app`/`stack`
-// come from `fakeAcquireContext.identity` (what the old closure read off
-// `runtime.identity`). The variant kind only scopes the snapshot decl (not
-// the funding projection asserted here), so a representative `'ephemeral'`
-// drives the seam.
+// supplies the literal account name for the resolved value.
 const registryFundingFor = (
 	member: ReturnType<typeof account>,
 	funding: AccountValue['funding'] = fakeResolvedAccount.funding,
 ) => {
 	const name = member.id.slice('account/'.length);
+	const resolved = { ...fakeResolvedAccount, name, funding } as AccountValue;
+	const realEntry: AccountRegistryEntry = {
+		name,
+		address: resolved.address,
+		scheme: resolved.scheme,
+		source: resolved.source,
+		funding: fundingProjectionForResult(resolved.funding),
+	};
 	const { ctx, captured } = makeTestPluginCtx();
-	emitAccountCapabilities(
-		ctx,
-		{ ...fakeResolvedAccount, name, funding } as AccountValue,
-		{
-			name,
-			variant: 'ephemeral',
-			app: fakeAcquireContext.identity.app,
-			stack: fakeAcquireContext.identity.stack,
-		},
-	);
+	emitContributions(ctx, [
+		makeAccountRegistryContribution(realEntry as AccountRegistryEntry & { readonly name: string }),
+	]);
 	const registry = captured.provides.find(
-		(decl) =>
-			decl.capabilityKey.startsWith('account:') && 'funding' in (decl.strategy as object),
+		(decl) => decl.capabilityKey.startsWith('account:') && 'funding' in (decl.strategy as object),
 	);
 	if (registry === undefined) throw new Error('missing account registry contribution');
 	return (registry.strategy as AccountRegistryEntry).funding;

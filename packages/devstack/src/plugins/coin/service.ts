@@ -115,7 +115,7 @@ export interface CoinValue extends ResolvedCoin {
 	 *  narrowed shape; the coin barrel projects the value to the wider
 	 *  `AccountFundingStrategy` cross-plugin contract at the
 	 *  `strategy-contributor` capability boundary (see
-	 *  `coin/index.ts → buildCapabilities`), wrapping the narrow
+	 *  `coin/index.ts → coinContributions`), wrapping the narrow
 	 *  request fn so the account bus's `{address, amount, account}`
 	 *  shape is satisfied honestly at the boundary.
 	 *

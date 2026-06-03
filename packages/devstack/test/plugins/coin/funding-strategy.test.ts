@@ -2,24 +2,22 @@ import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import {
+	coinContributions,
 	coinFundingCapabilityKey,
-	emitCapabilities,
 	type CoinValue,
 } from '../../../src/plugins/coin/index.ts';
 import type { AccountFundingStrategy } from '../../../src/contracts/funding-strategy.ts';
+import { emitContributions } from '../../../src/substrate/plugin-ctx.ts';
 import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
-// Stage B: the coin plugin emits its contributions INLINE from `start`
-// via the typed `ctx.*` verbs (see `src/substrate/plugin-ctx.ts`) instead
-// of the legacy `capabilities` second-closure. Each coin `start` resolves
-// a `CoinValue` (via `acquireCoin`) and then calls
-// `emitCapabilities(ctx, symbol, value)` — the exported emit seam. These
-// tests previously drove the now-removed public `capabilities(value, …)`
-// factory and inspected the returned decls; the equivalent is to feed a
-// hand-built resolved `CoinValue` into `emitCapabilities` against a
+// The coin plugin emits its contributions INLINE from `start` via the
+// typed `ctx.*` verbs (see `src/substrate/plugin-ctx.ts`): each coin
+// `start` resolves a `CoinValue` (via `acquireCoin`) and feeds
+// `coinContributions(symbol, value)` into the shared
+// `emitContributions(ctx, …)` router. These decl-shape tests feed a
+// hand-built resolved `CoinValue` through that same pair against a
 // decl-capturing fake `ctx` and assert the captured `provides`. Input
-// (`value`) and output (the strategy-contributor decl) are unchanged — only
-// the call shape moved from "return" to "emit + capture".
+// (`value`) and output (the strategy-contributor decl) are unchanged.
 //
 // `symbol` matches what `coin.fromPackage(pkg, 'DEEP').start` passes:
 // the lower-cased witness symbol.
@@ -40,7 +38,7 @@ describe('coin funding strategy contribution', () => {
 		} satisfies CoinValue;
 
 		const { ctx, captured } = makeTestPluginCtx();
-		emitCapabilities(ctx, coinSymbol, value);
+		emitContributions(ctx, coinContributions(coinSymbol, value));
 		const contribution = captured.provides.find(
 			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);
@@ -86,7 +84,7 @@ describe('coin funding strategy contribution', () => {
 		} satisfies CoinValue;
 
 		const { ctx, captured } = makeTestPluginCtx();
-		emitCapabilities(ctx, coinSymbol, value);
+		emitContributions(ctx, coinContributions(coinSymbol, value));
 		const contribution = captured.provides.find(
 			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);
@@ -133,7 +131,7 @@ describe('coin funding strategy contribution', () => {
 		} satisfies CoinValue;
 
 		const { ctx, captured } = makeTestPluginCtx();
-		emitCapabilities(ctx, coinSymbol, value);
+		emitContributions(ctx, coinContributions(coinSymbol, value));
 		const contribution = captured.provides.find(
 			(cap) => cap.capabilityKey === coinFundingCapabilityKey(fullCoinType),
 		);

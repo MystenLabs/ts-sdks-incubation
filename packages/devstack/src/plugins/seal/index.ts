@@ -38,12 +38,8 @@ import { Effect, FileSystem, Path } from 'effect';
 import { definePlugin, type ResourceRef } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { RoutableDecl } from '../../contracts/routable.ts';
-import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
@@ -169,115 +165,16 @@ export type SealOptions<Signer extends SealSignerMember = SealSignerMember> =
 const DEFAULT_NAME = 'seal';
 
 // ---------------------------------------------------------------------------
-// Per-mode capability builders — pure helpers that RETURN the ordered decl
-// tuple; the three `start` bodies emit them inline via the typed `ctx` verbs
-// (`emit*Capabilities`) after resolving the value, instead of the legacy
-// `capabilities` second-closure. The decl shapes + emit ORDER are
-// byte-identical to the closure/array path the supervisor used to harvest.
+// The three seal `start` bodies emit their contributions inline via the typed
+// `ctx` verbs after resolving the value, instead of the legacy `capabilities`
+// second-closure. The decl shapes + emit ORDER are byte-identical to the
+// closure/array path the supervisor used to harvest.
 //
 // ⚠ ID-STABILITY: the snapshotable decl captures the seal vault / master-key
 // secret material subtree; its shape (subtree paths, container label tuple,
 // secretMaterial / missingTolerance flags) MUST stay byte-identical. Only the
 // EMISSION moves from the `capabilities` field into `start`.
 // ---------------------------------------------------------------------------
-
-/** Build the local-keygen-mode ordered decl tuple POST-acquire. Pure helper
- *  — receives the resolved `SealResolved` value + the stack identity app/stack
- *  so decls stamp the REAL objectId / keyServerUrl / serverConfigs into the
- *  codegen bindings and the real identity into the snapshot + routable decls
- *  (was the `capabilities: ({ value, runtime }) => …` closure's
- *  `value` / `runtime.identity`). */
-const buildLocalKeygenCapabilities = (
-	name: string,
-	resolvedKs: SealResolved,
-	identity: { readonly app: string; readonly stack: string },
-): readonly [SnapshotableDecl, CodegenableDecl<`seal/${string}`>, RoutableDecl] => {
-	const bindings: SealBindings = {
-		name,
-		objectId: resolvedKs.objectId,
-		keyServerUrl: resolvedKs.keyServerUrl,
-		serverConfigs: resolvedKs.serverConfigs,
-		mode: 'local-keygen',
-	};
-	const snap = makeLocalKeygenSnapshotable({
-		name,
-		app: identity.app,
-		stack: identity.stack,
-	});
-	const codegen = makeSealCodegenable(bindings);
-	const routable = makeSealRoutable({
-		name,
-		containerName: `devstack-${identity.app}-${identity.stack}-seal-${name}-key-server`,
-	});
-	return [snap, codegen, routable] as const;
-};
-
-/** Emit the pure decls from `buildLocalKeygenCapabilities` inline via the
- *  typed `ctx` verbs, routing each by its `kind` discriminator IN RETURN
- *  ORDER (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  routable → `ctx.endpoint`). Order + decl shapes are byte-identical to the
- *  supervisor's legacy `capabilities`-closure harvest.
- *
- *  Exported as the Stage-B emit seam (mirrors sui/coin): feed a resolved
- *  `SealResolved` + identity here and assert the captured verbs to drive the
- *  contribution half of `start` without a live boot. */
-export const emitLocalKeygenCapabilities = (
-	ctx: PluginCtx,
-	name: string,
-	resolvedKs: SealResolved,
-	identity: { readonly app: string; readonly stack: string },
-): void => {
-	for (const decl of buildLocalKeygenCapabilities(name, resolvedKs, identity)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-			case 'routable':
-				ctx.endpoint(decl);
-				break;
-		}
-	}
-};
-
-/** Build the known-deployment ordered decl tuple. Pure helper for live +
- *  fork-known modes. The snapshotable decl is mode-shared (empty shape, no
- *  host state); only the codegen bindings' `mode` marker differs.
- *
- *  Live mode resolves its bindings at FACTORY time (validated `{objectId,
- *  keyServerUrl}`) so it passes a precomputed `bindings`; fork-known builds
- *  bindings from the post-acquire `resolvedKs` (preserving the legacy
- *  callback-form behaviour). Both route through this single builder. */
-const buildKnownCapabilities = (
-	snap: SnapshotableDecl,
-	bindings: SealBindings,
-): readonly [SnapshotableDecl, CodegenableDecl<`seal/${string}`>] => {
-	return [snap, makeSealCodegenable(bindings)] as const;
-};
-
-/** Emit the known-deployment decls inline via the typed `ctx` verbs, routing
- *  each by its `kind` discriminator IN RETURN ORDER (snapshotable →
- *  `ctx.snapshotExtra`, codegenable → `ctx.codegen`). Byte-identical to the
- *  legacy live (`[snap, codegen]` static array) / fork-known (callback-form)
- *  harvest. */
-export const emitKnownCapabilities = (
-	ctx: PluginCtx,
-	snap: SnapshotableDecl,
-	bindings: SealBindings,
-): void => {
-	for (const decl of buildKnownCapabilities(snap, bindings)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-		}
-	}
-};
 
 /** Build the local-keygen-mode plugin. The service contributes
  *  Snapshotable (secret) + Codegenable + Routable.
@@ -422,15 +319,34 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 					mode: 'local-keygen',
 					manager: boot.keyManager,
 				};
-				// Stage B: emit the resolved contributions inline (was the
-				// `capabilities: ({ value: resolvedKs, runtime: acquireCtx }) =>
-				// …` closure). `resolvedValue` is the just-resolved `SealResolved`
-				// the closure received as `value`; `identity` is the same
-				// `Identity` the legacy `acquireCtx.identity` carried (read here
-				// from `IdentityContext` above, NOT re-fetched). The snapshotable
-				// decl stamping the seal vault / master-key secret-material
-				// subtree is byte-identical — same name/app/stack inputs.
-				emitLocalKeygenCapabilities(ctx, resolved.name, resolvedValue, identity);
+				// Emit the resolved contributions inline: snapshot (seal vault /
+				// master-key secret-material subtree) → codegen → routable (key
+				// server). `resolvedValue` is the just-resolved `SealResolved`;
+				// `identity` (from `IdentityContext`) stamps the snapshot +
+				// routable container name. The codegen bindings carry the REAL
+				// objectId / keyServerUrl / serverConfigs.
+				ctx.snapshotExtra(
+					makeLocalKeygenSnapshotable({
+						name: resolved.name,
+						app: identity.app,
+						stack: identity.stack,
+					}),
+				);
+				ctx.codegen(
+					makeSealCodegenable({
+						name: resolved.name,
+						objectId: resolvedValue.objectId,
+						keyServerUrl: resolvedValue.keyServerUrl,
+						serverConfigs: resolvedValue.serverConfigs,
+						mode: 'local-keygen',
+					}),
+				);
+				ctx.endpoint(
+					makeSealRoutable({
+						name: resolved.name,
+						containerName: `devstack-${identity.app}-${identity.stack}-seal-${resolved.name}-key-server`,
+					}),
+				);
 				return resolvedValue;
 			}),
 		errorContributions: sealErrorContributions,
@@ -467,12 +383,12 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 				const mode: SealMode = { mode: 'live', name, resolved: validated };
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
-				// Stage B: emit inline (was the static `capabilities: [snap,
-				// codegen]` array). `snap` + `bindings` are resolved at FACTORY
-				// time for live mode (validated `{objectId, keyServerUrl}`), so
-				// the emit reuses the same precomputed values — byte-identical
-				// decls in the same order.
-				emitKnownCapabilities(ctx, snap, bindings);
+				// Emit inline: snapshot → codegen. `snap` + `bindings` are
+				// resolved at FACTORY time for live mode (validated
+				// `{objectId, keyServerUrl}`), so the emit reuses the same
+				// precomputed values.
+				ctx.snapshotExtra(snap);
+				ctx.codegen(makeSealCodegenable(bindings));
 				return {
 					...resolved.keyServer,
 					mode: 'live',
@@ -534,21 +450,19 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 					mode: 'fork-known',
 					manager: null,
 				};
-				// Stage B: emit inline (was the `capabilities: ({ value:
-				// resolvedKs }) => [snap, makeSealCodegenable(bindings)]`
-				// closure). `bindings` is built from the post-acquire
-				// `resolved.keyServer` — the SAME `{objectId, keyServerUrl,
-				// serverConfigs}` fields the closure read off `resolvedKs`
-				// (which was `{ ...resolved.keyServer, mode, manager }`). The
-				// `snap` decl is factory-scoped + byte-identical.
-				const bindings: SealBindings = {
-					name,
-					objectId: resolved.keyServer.objectId,
-					keyServerUrl: resolved.keyServer.keyServerUrl,
-					serverConfigs: resolved.keyServer.serverConfigs,
-					mode: 'fork-known',
-				};
-				emitKnownCapabilities(ctx, snap, bindings);
+				// Emit inline: snapshot → codegen. `bindings` is built from the
+				// post-acquire `resolved.keyServer` (`{objectId, keyServerUrl,
+				// serverConfigs}`); `snap` is factory-scoped.
+				ctx.snapshotExtra(snap);
+				ctx.codegen(
+					makeSealCodegenable({
+						name,
+						objectId: resolved.keyServer.objectId,
+						keyServerUrl: resolved.keyServer.keyServerUrl,
+						serverConfigs: resolved.keyServer.serverConfigs,
+						mode: 'fork-known',
+					}),
+				);
 				return resolvedValue;
 			}),
 		errorContributions: sealErrorContributions,

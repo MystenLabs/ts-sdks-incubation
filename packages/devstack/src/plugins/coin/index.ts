@@ -34,8 +34,8 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
-import { PluginContext } from '../../substrate/plugin-ctx.ts';
+import type { Contribution } from '../../substrate/plugin-ctx.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
@@ -136,19 +136,26 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
 });
 
 // ---------------------------------------------------------------------------
-// Per-form capability builders — dynamic (POST-acquire). Receive the
+// Per-form contribution decls — dynamic (POST-acquire). Receive the
 // resolved `CoinValue` so codegen bindings stamp the REAL fullCoinType
 // + decimals instead of placeholder values.
 //
-// Stage B: `buildCapabilities` stays a PURE helper that RETURNS the
-// ordered decls; the three coin `start` bodies emit them inline via the
-// typed `ctx` verbs (`emitCapabilities`) after resolving the value,
-// instead of the legacy `capabilities` second-closure. The decl shapes +
-// emit ORDER are byte-identical to the closure path the supervisor used
-// to harvest.
+// `coinContributions` is a PURE decl-builder (NOT a routing wrapper): the
+// three coin `start` bodies feed its return into the shared
+// `emitContributions(ctx, …)`, which routes each decl by `kind`. Shared by
+// all three forms so the rich funding-strategy projection below lives once.
+// Decl shapes + ORDER are byte-identical to the legacy `capabilities`
+// closure the supervisor used to harvest.
+//
+// Exported for the funding-strategy decl-shape test: it feeds a hand-built
+// resolved `CoinValue` here and asserts the projected `strategy-contributor`
+// decl via `emitContributions` against a capturing ctx.
 // ---------------------------------------------------------------------------
 
-const buildCapabilities = (symbol: string, resolved: CoinValue) => {
+export const coinContributions = (
+	symbol: string,
+	resolved: CoinValue,
+): ReadonlyArray<Contribution> => {
 	const bindings: CoinBindings = {
 		symbol: resolved.symbol ?? symbol,
 		fullCoinType: resolved.fullCoinType,
@@ -216,36 +223,7 @@ const buildCapabilities = (symbol: string, resolved: CoinValue) => {
 						autoMounted: true,
 					} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>,
 				];
-	return [snap, codegen, ...fundingContribution] as const;
-};
-
-/** Emit the pure decls from `buildCapabilities` inline via the typed
- *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
- *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  strategy-contributor → `ctx.provides`). Order + decl shapes are
- *  byte-identical to the supervisor's legacy `capabilities`-closure
- *  harvest.
- *
- *  Exported as the Stage-B emit seam: this is the exact contribution-emit
- *  half of each coin `start` (`start` = resolve `value` via `acquireCoin`,
- *  then `emitCapabilities(ctx, symbol, value)`). It is the value-injection
- *  point the funding-strategy tests drive — the old tests called the now-
- *  removed public `capabilities(value, …)` factory; the equivalent is to
- *  feed a resolved `CoinValue` here and assert the captured `provides`. */
-export const emitCapabilities = (ctx: PluginCtx, symbol: string, resolved: CoinValue): void => {
-	for (const decl of buildCapabilities(symbol, resolved)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-			case 'strategy-contributor':
-				ctx.provides(decl);
-				break;
-		}
-	}
+	return [snap, codegen, ...fundingContribution];
 };
 
 // ---------------------------------------------------------------------------
@@ -319,11 +297,10 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 					chain: sui.chain,
 					publisher: artifactPublisher,
 				});
-				// Stage B: emit the resolved coin's contributions inline (was
-				// the `capabilities: ({ value }) => buildCapabilities(symbol,
-				// value)` closure). `value` is the just-resolved `CoinValue`;
-				// `symbol` is the package-scoped witness symbol in scope.
-				emitCapabilities(ctx, symbol, value);
+				// Emit the resolved coin's contributions inline. `value` is the
+				// just-resolved `CoinValue`; `symbol` is the package-scoped
+				// witness symbol in scope.
+				emitContributions(ctx, coinContributions(symbol, value));
 				return value;
 			}),
 		errorContributions: coinErrorContributions,
@@ -369,10 +346,9 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 					chain: sui.chain,
 					publisher,
 				});
-				// Stage B: emit inline (was `capabilities: ({ value }) =>
-				// buildCapabilities(id, value)`). `value` is the resolved
-				// `CoinValue`; `id` is the derived `coin.known` resource key.
-				emitCapabilities(ctx, id, value);
+				// Emit inline. `value` is the resolved `CoinValue`; `id` is the
+				// derived `coin.known` resource key.
+				emitContributions(ctx, coinContributions(id, value));
 				return value;
 			}),
 		errorContributions: coinErrorContributions,
@@ -406,10 +382,9 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 					chain: sui.chain,
 					publisher,
 				});
-				// Stage B: emit inline (was `capabilities: ({ value }) =>
-				// buildCapabilities(symbol, value)`). `value` is the resolved
-				// `CoinValue`; `symbol` is the builtin coin name (`'sui'`).
-				emitCapabilities(ctx, symbol, value);
+				// Emit inline. `value` is the resolved `CoinValue`; `symbol` is
+				// the builtin coin name (`'sui'`).
+				emitContributions(ctx, coinContributions(symbol, value));
 				return value;
 			}),
 		errorContributions: coinErrorContributions,

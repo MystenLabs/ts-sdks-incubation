@@ -32,8 +32,7 @@ import type { ProjectionDecl } from '../../contracts/projection.ts';
 import { pickCreatedByType, type LocalPackagePublishOutput } from './publish-output.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
-import { PluginContext } from '../../substrate/plugin-ctx.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import {
 	CoinRegistryService,
@@ -336,11 +335,11 @@ const buildLocalPlugin = <
 					publisher: publisherAccount,
 					publishResult: output,
 				};
-				// Stage B: emit the resolved package's contributions inline
-				// (was the `capabilities: ({ value, runtime }) =>
-				// makeLocalCapabilities(...)` closure). `projected` is the
-				// just-resolved local value the closure used to receive.
-				emitCapabilities(ctx, makeLocalCapabilities(name, opts, projected));
+				// Emit the resolved package's contributions inline via the
+				// shared `emitContributions` router. `projected` is the
+				// just-resolved local value; `makeLocalCapabilities` builds the
+				// ordered decl list (snapshot, codegen, registry, projection).
+				emitContributions(ctx, makeLocalCapabilities(name, opts, projected));
 				// Part 2 (custom-kind re-home): on a fresh publish, fold the
 				// output's coins into the per-stack CoinRegistry DIRECTLY (was
 				// the orchestrator's `publishResultSink` consuming the now-
@@ -380,10 +379,11 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 					mvrOverride: opts.mvrPlaceholder,
 				} satisfies PackageMode;
 				const { resolved } = yield* bootPackageService(publisher, probe, registry, mode);
-				// Stage B: emit the resolved package's contributions inline
-				// (was the `capabilities: ({ value }) =>
-				// makeKnownCapabilities(...)` closure).
-				emitCapabilities(ctx, makeKnownCapabilities(name, opts, resolved));
+				// Emit the resolved package's contributions inline via the
+				// shared `emitContributions` router. `makeKnownCapabilities`
+				// builds the ordered decl list (snapshot, codegen, registry,
+				// projection).
+				emitContributions(ctx, makeKnownCapabilities(name, opts, resolved));
 				// Known mode never publishes — no output to walk, so
 				// the coin-discovery hook is skipped here. Users who
 				// want coin records for a knownPackage point a
@@ -398,12 +398,12 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 };
 
 // ---------------------------------------------------------------------------
-// Capability builders — pure helpers returning the ordered decls (Stage B).
+// Capability builders — pure helpers returning the ordered decl list.
 //
-// The package `start` bodies emit these inline via the typed `ctx` verbs
-// (`emitCapabilities`) after resolving the value, instead of the legacy
-// `capabilities` second-closure. Decl shapes + emit ORDER are byte-
-// identical to the closure path the supervisor used to harvest.
+// The package `start` bodies feed these into the shared `emitContributions`
+// router after resolving the value, instead of the legacy `capabilities`
+// second-closure. Decl shapes + emit ORDER are byte-identical to the
+// closure path the supervisor used to harvest.
 //
 // NOTE (Part 2 of the Stage-B package conversion): the LOCAL builder no
 // longer appends the custom `makeLocalPackagePublishedDecl`
@@ -499,31 +499,6 @@ const makeKnownCapabilities = (
 		autoMounted: true,
 	};
 	return [snap, codegen, registryContribution, makePackageProjectionContribution(projection)];
-};
-
-/** Emit the pure decls from a capability builder inline via the typed
- *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
- *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  strategy-contributor → `ctx.provides`, projection → `ctx.publish`).
- *  Order + decl shapes are byte-identical to the supervisor's legacy
- *  `capabilities`-closure harvest. */
-const emitCapabilities = (ctx: PluginCtx, decls: ReadonlyArray<Contribution>): void => {
-	for (const decl of decls) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl as SnapshotableDecl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl as CodegenableDecl<string>);
-				break;
-			case 'strategy-contributor':
-				ctx.provides(decl as StrategyContributorDecl<string, unknown>);
-				break;
-			case 'projection':
-				ctx.publish(decl as ProjectionDecl);
-				break;
-		}
-	}
 };
 
 /** Fold a fresh local-package publish output into the per-stack

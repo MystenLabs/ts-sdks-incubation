@@ -85,11 +85,11 @@ export type StrategyFor<K extends string> = Record<K, unknown>[K];
 
 /**
  * The CLOSED union of contribution decls a plugin emits via the four
- * buffered verbs + `provides`. Discriminated by `kind`. Exposed for
- * plugin-internal helpers that build an ordered list of decls and then
- * route each to the matching `ctx` verb by its discriminant (e.g. the
- * package plugin's `emitCapabilities`). The supervisor's static dispatch
- * switches over exactly these five kinds.
+ * buffered verbs + `provides`. Discriminated by `kind`. A plugin's `start`
+ * emits these inline — either by direct `ctx.*` verb calls or, for a
+ * conditional/variadic set, through the shared {@link emitContributions}
+ * router below. The supervisor's static dispatch switches over exactly
+ * these five kinds.
  */
 export type Contribution =
 	| CodegenableDecl<string>
@@ -97,6 +97,55 @@ export type Contribution =
 	| SnapshotableDecl
 	| ProjectionDecl
 	| StrategyContributorDecl<string, unknown>;
+
+/**
+ * The ONE shared contribution router. A plugin's `start` builds an ordered
+ * (possibly conditional/variadic) list of {@link Contribution} decls and
+ * feeds it here; this routes each decl to its matching `ctx` verb by its
+ * `kind` discriminant, IN LIST ORDER:
+ *
+ *   snapshotable          → `ctx.snapshotExtra`
+ *   codegenable           → `ctx.codegen`
+ *   routable              → `ctx.endpoint`
+ *   projection            → `ctx.publish`
+ *   strategy-contributor  → `ctx.provides`
+ *
+ * This is the single exhaustive `switch` over the closed `Contribution`
+ * union — replacing the per-plugin `build*`/`emit*` wrapper pairs that each
+ * re-implemented this same routing. The supervisor mirrors this dispatch
+ * when it REPLAYS the buffered decls (`acquire-node.ts`); the verbs simply
+ * buffer here. For a fixed, unconditional set of decls a plugin may prefer
+ * direct `ctx.*` calls — but any conditional or variadic emission should
+ * route through this helper so the routing lives in exactly one place.
+ *
+ * Exhaustive: the `default` arm narrows `decl` to `never`, so adding a
+ * sixth `Contribution` kind is a compile error here until handled.
+ */
+export const emitContributions = (ctx: PluginCtx, decls: ReadonlyArray<Contribution>): void => {
+	for (const decl of decls) {
+		switch (decl.kind) {
+			case 'snapshotable':
+				ctx.snapshotExtra(decl);
+				break;
+			case 'codegenable':
+				ctx.codegen(decl);
+				break;
+			case 'routable':
+				ctx.endpoint(decl);
+				break;
+			case 'projection':
+				ctx.publish(decl);
+				break;
+			case 'strategy-contributor':
+				ctx.provides(decl);
+				break;
+			default: {
+				const _exhaustive: never = decl;
+				void _exhaustive;
+			}
+		}
+	}
+};
 
 /**
  * The minimal typed plugin-authoring context. A plugin reaches it from

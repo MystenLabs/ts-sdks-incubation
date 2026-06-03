@@ -33,13 +33,8 @@ import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
-import type { RoutableDecl } from '../../contracts/routable.ts';
-import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { Identity } from '../../substrate/identity.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
-import { PluginContext } from '../../substrate/plugin-ctx.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
@@ -200,138 +195,65 @@ const buildPlugin = (opts: SuiOptions) => {
 					mode: opts.mode,
 					fundingFaucetStrategy,
 				} satisfies SuiResolvedRuntime;
-				// Stage B: emit the resolved contributions inline (was the
-				// `capabilities: ({ value, runtime }) => makePluginCapabilities(
-				// opts, value, runtime)` closure). `value` is the just-resolved
-				// runtime value the closure used to receive; `identity` is the
-				// same `Identity` the legacy `runtime.identity` carried (read
-				// here from `IdentityContext`, NOT re-fetched).
-				emitSuiCapabilities(ctx, opts, value, identity);
+				// Emit the resolved contributions inline, top-to-bottom: the
+				// decls stamp REAL chain ids / rpc URLs / container names
+				// (`value` is the just-resolved runtime; `identity` from
+				// `IdentityContext`, NOT re-fetched). The shared
+				// `emitContributions` routes each by `kind`. Faucet (conditional
+				// on a resolved strategy) and routables (mode-dependent) are the
+				// only optional members; order is load-bearing.
+				const realChain = value.chain;
+				const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
+					value.fundingFaucetStrategy === null
+						? []
+						: [
+								{
+									kind: 'strategy-contributor',
+									capabilityKey: faucetCapabilityKey(realChain),
+									strategy: value.fundingFaucetStrategy,
+									autoMounted: true,
+								} satisfies StrategyContributorDecl<
+									`faucet:request:${string}`,
+									ReturnType<typeof suiLocalStrategy>
+								>,
+							];
+				const localRoutables =
+					opts.mode === 'local'
+						? makeSuiLocalRoutables({
+								containerName: `devstack-${identity.app}-${identity.stack}-sui-validator`,
+								includeGraphql: true,
+							})
+						: [];
+				const forkRoutables =
+					opts.mode === 'fork'
+						? makeSuiForkRoutables({
+								containerName: `devstack-${identity.app}-${identity.stack}-sui-fork`,
+							})
+						: [];
+				emitContributions(ctx, [
+					makeSnapshotable(opts.mode, identity.app, identity.stack, realChain),
+					makeCodegenable({
+						mode: opts.mode,
+						chain: realChain,
+						rpc: value.rpcUrl,
+						source: 'default',
+						...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
+						...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
+					}),
+					{
+						kind: 'strategy-contributor',
+						capabilityKey: chainProbeCapabilityKey(realChain),
+						strategy: value.chainProbe,
+						autoMounted: true,
+					} satisfies StrategyContributorDecl<`chain-probe:${string}`, ChainProbe<SuiProbeKey>>,
+					...faucetContribution,
+					...localRoutables,
+					...forkRoutables,
+				]);
 				return value;
 			}),
 		errorContributions: suiErrorContributions,
 	});
-};
-
-/** Construct the ordered capability tuple POST-acquire. Pure helper —
- *  receives the resolved runtime value + the stack `Identity` so decls
- *  can stamp REAL chain ids / rpc URLs / container names into their
- *  fields instead of factory-time placeholders.
- *
- *  GUARD-A: the legacy `capabilities` closure received the narrower
- *  `SuiResolved`; `start` now passes the wider `SuiResolvedRuntime` it
- *  builds (carrying `fundingFaucetStrategy`). The decl shapes are
- *  byte-identical — the faucet contribution reads the SAME
- *  `fundingFaucetStrategy` field the closure read via the
- *  `resolved as SuiResolvedRuntime` narrowing.
- *
- *  StrategyContributor declarations here carry real post-acquire
- *  strategy values. The generic strategy sink registers them on the
- *  scope-local `StrategyRegistry`. */
-const buildSuiCapabilities = (
-	opts: SuiOptions,
-	resolved: SuiResolvedRuntime,
-	identity: Identity,
-): ReadonlyArray<
-	SnapshotableDecl | CodegenableDecl<'sui-network'> | StrategyContributorDecl | RoutableDecl
-> => {
-	const realChain = resolved.chain;
-	const snap: SnapshotableDecl = makeSnapshotable(
-		opts.mode,
-		identity.app,
-		identity.stack,
-		realChain,
-	);
-	const codegen: CodegenableDecl<'sui-network'> = makeCodegenable({
-		mode: opts.mode,
-		chain: realChain,
-		rpc: resolved.rpcUrl,
-		source: 'default',
-		...(resolved.faucetUrl !== null ? { faucet: resolved.faucetUrl } : {}),
-		...(resolved.graphqlUrl !== null ? { graphql: resolved.graphqlUrl } : {}),
-	});
-
-	const chainProbeContribution: StrategyContributorDecl<
-		`chain-probe:${string}`,
-		ChainProbe<SuiProbeKey>
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: chainProbeCapabilityKey(realChain),
-		strategy: resolved.chainProbe,
-		autoMounted: true,
-	};
-
-	const faucetContribution =
-		resolved.fundingFaucetStrategy === null
-			? []
-			: [
-					{
-						kind: 'strategy-contributor',
-						capabilityKey: faucetCapabilityKey(realChain),
-						strategy: resolved.fundingFaucetStrategy,
-						autoMounted: true,
-					} satisfies StrategyContributorDecl<
-						`faucet:request:${string}`,
-						ReturnType<typeof suiLocalStrategy>
-					>,
-				];
-
-	const localRoutables =
-		opts.mode === 'local'
-			? makeSuiLocalRoutables({
-					containerName: `devstack-${identity.app}-${identity.stack}-sui-validator`,
-					includeGraphql: true,
-				})
-			: [];
-	const forkRoutables =
-		opts.mode === 'fork'
-			? makeSuiForkRoutables({
-					containerName: `devstack-${identity.app}-${identity.stack}-sui-fork`,
-				})
-			: [];
-
-	return [
-		snap,
-		codegen,
-		chainProbeContribution,
-		...faucetContribution,
-		...localRoutables,
-		...forkRoutables,
-	];
-};
-
-/** Emit the pure decls from `buildSuiCapabilities` inline via the typed
- *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
- *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  strategy-contributor → `ctx.provides`, routable → `ctx.endpoint`).
- *  Order + decl shapes are byte-identical to the supervisor's legacy
- *  `capabilities`-closure harvest.
- *
- *  Exported as the Stage-B emit seam (mirrors coin's `emitCapabilities`):
- *  feed a resolved `SuiResolvedRuntime` here and assert the captured
- *  verbs to drive the contribution half of `start` without a live boot. */
-export const emitSuiCapabilities = (
-	ctx: PluginCtx,
-	opts: SuiOptions,
-	resolved: SuiResolvedRuntime,
-	identity: Identity,
-): void => {
-	for (const decl of buildSuiCapabilities(opts, resolved, identity)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-			case 'strategy-contributor':
-				ctx.provides(decl);
-				break;
-			case 'routable':
-				ctx.endpoint(decl);
-				break;
-		}
-	}
 };
 
 // ---------------------------------------------------------------------------

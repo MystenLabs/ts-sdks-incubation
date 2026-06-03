@@ -2,22 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { Effect } from 'effect';
 
 import { account } from '../../../src/plugins/account/index.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
-import type { Identity } from '../../../src/substrate/identity.ts';
 import {
-	emitLocalCapabilities,
 	walCoin,
 	walrus,
 	walFaucetStrategyKey,
 	type WalrusResolved,
 } from '../../../src/plugins/walrus/index.ts';
+import { makeWalFaucetContribution } from '../../../src/plugins/walrus/faucet-strategy.ts';
+import { emitContributions } from '../../../src/substrate/plugin-ctx.ts';
 import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
-
-const fakeIdentity: Identity = {
-	app: appName('walrus-test'),
-	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
-};
 
 const fakeWalrusResolved: WalrusResolved = {
 	mode: 'local',
@@ -79,20 +72,18 @@ describe('walrus WAL funding integration', () => {
 	});
 
 	it('registers the WAL faucet strategy under the resolved full coin type', () => {
-		// Stage B: the legacy `plugin.capabilities` second-closure is gone —
-		// `start` now emits contributions inline via the typed `ctx` verbs.
-		// Drive the exported `emitLocalCapabilities` seam (the contribution
-		// half of `start`) with a decl-capturing fake ctx and read the WAL
-		// strategy from `captured.provides` (was the returned decl array).
+		// The local-mode walrus `start` emits the WAL faucet contribution
+		// inline (only when both a faucet strategy + WAL coin type resolved)
+		// via the shared `emitContributions` router. Drive that same
+		// `makeWalFaucetContribution` decl (the contribution under test)
+		// through `emitContributions` against a decl-capturing fake ctx and
+		// read the WAL strategy from `captured.provides`.
 		const { ctx, captured } = makeTestPluginCtx();
-		emitLocalCapabilities(ctx, {
-			name: 'walrus',
-			nodeCount: 0,
-			containerApiPort: 9000,
-			serviceKey: 'walrus.walrus',
-			resolved: fakeWalrusResolved,
-			identity: fakeIdentity,
-		});
+		const { walCoinType, walFaucetStrategy } = fakeWalrusResolved;
+		if (walCoinType === null || walFaucetStrategy === null) {
+			throw new Error('fixture must resolve a WAL coin type + faucet strategy');
+		}
+		emitContributions(ctx, [makeWalFaucetContribution(walFaucetStrategy, walCoinType)]);
 
 		const walStrategy = captured.provides.find(
 			(capability) => capability.capabilityKey === walFaucetStrategyKey('0xfeed::wal::WAL'),

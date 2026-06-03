@@ -43,14 +43,10 @@ import { Effect, Path } from 'effect';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
-import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { Identity } from '../../substrate/identity.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
-import { PluginContext } from '../../substrate/plugin-ctx.ts';
+import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
@@ -64,7 +60,7 @@ import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.t
 import { makeCodegenable } from './codegen.ts';
 import { walrusPluginKey } from './plugin-key.ts';
 import { WALRUS_ERROR_TAGS, walrusPluginError, type WalrusPluginError } from './errors.ts';
-import { walFaucetStrategyKey, type WalFaucetStrategy } from './faucet-strategy.ts';
+import { makeWalFaucetContribution, type WalFaucetStrategy } from './faucet-strategy.ts';
 import { bootWalrusService, type WalrusMode } from './service.ts';
 import {
 	resolveLocalClusterOptions,
@@ -278,22 +274,64 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 					walFaucetStrategy: boot.walFaucetStrategy,
 					walCoinType: boot.walCoinType,
 				};
-				// Stage B: emit the resolved contributions inline (was the
-				// `capabilities: ({ value, runtime }) => makeLocalCapabilities(
-				// …)` closure). `resolvedValue` is the just-resolved value the
-				// closure received as `value`; `identity` is the same
-				// `Identity` the closure read via `runtime.identity` (held here
-				// from `IdentityContext`, NOT re-fetched). ID-stability surfaces
-				// (deploy/blob ids via ArtifactPublisher) are untouched — only
-				// the contribution emission moved.
-				emitLocalCapabilities(ctx, {
-					name: resolved.name,
-					nodeCount: resolved.nodeCount,
-					containerApiPort: resolved.containerApiPort,
-					serviceKey: String(walrusKey),
-					resolved: resolvedValue,
-					identity,
-				});
+				// Emit the resolved contributions inline: snapshot → codegen →
+				// state-registry → (optional WAL faucet) → routables. `identity`
+				// (from `IdentityContext`) stamps the snapshot + routable
+				// container names. ID-stability surfaces (deploy/blob ids via
+				// ArtifactPublisher) live OUTSIDE this emission and are untouched.
+				const walFaucetContribution: ReadonlyArray<StrategyContributorDecl> =
+					resolvedValue.walFaucetStrategy === null || resolvedValue.walCoinType === null
+						? []
+						: [
+								makeWalFaucetContribution(
+									resolvedValue.walFaucetStrategy,
+									resolvedValue.walCoinType,
+								),
+							];
+				emitContributions(ctx, [
+					makeSnapshotable(
+						'local' satisfies WalrusSnapshotMode,
+						identity.app,
+						identity.stack,
+						resolved.name,
+						resolvedValue.chain,
+						resolved.nodeCount,
+					),
+					makeCodegenable({
+						mode: 'local',
+						chain: resolvedValue.chain,
+						walrusPackageId: resolvedValue.walrusPackageId,
+						walPackageId: resolvedValue.walPackageId,
+						walCoinType: resolvedValue.walCoinType,
+						systemObjectId: resolvedValue.packageConfig.systemObjectId,
+						stakingPoolId: resolvedValue.packageConfig.stakingPoolId,
+						exchangeIds: resolvedValue.packageConfig.exchangeIds
+							? [...resolvedValue.packageConfig.exchangeIds]
+							: [],
+						proxyUrl: resolvedValue.proxyUrl,
+						aggregatorUrl: resolvedValue.aggregatorUrl,
+						publisherUrl: resolvedValue.publisherUrl,
+						nodes: resolvedValue.nodes,
+					}),
+					{
+						kind: 'strategy-contributor',
+						capabilityKey: WALRUS_STATE_REGISTRY_KEY,
+						strategy: { noteName: resolved.name },
+						autoMounted: true,
+					} satisfies StrategyContributorDecl<
+						typeof WALRUS_STATE_REGISTRY_KEY,
+						{ readonly noteName: string }
+					>,
+					...walFaucetContribution,
+					...(makeLocalRoutables({
+						app: identity.app,
+						stack: identity.stack,
+						walrusName: resolved.name,
+						serviceKey: String(walrusKey),
+						nodeCount: resolved.nodeCount,
+						containerApiPort: resolved.containerApiPort,
+					}) as readonly RoutableDecl[]),
+				]);
 				return resolvedValue;
 			}),
 		errorContributions: walrusErrorContributions,
@@ -336,209 +374,51 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 					walFaucetStrategy: null,
 					walCoinType: null,
 				} satisfies WalrusResolved;
-				// Stage B: emit inline (was the
-				// `capabilities: ({ value, runtime }) => makeKnownCapabilities(
-				// …)` closure). `resolvedValue` is the just-computed value the
-				// closure received as `value`; `identity` is the same
-				// `Identity` the closure read via `runtime.identity` (held here
-				// from `IdentityContext`, NOT re-fetched).
-				emitKnownCapabilities(ctx, { resolved: resolvedValue, identity });
+				// Emit inline: snapshot → codegen → state-registry. Known mode
+				// emits no routable. `identity` (from `IdentityContext`) stamps
+				// the snapshot scoping.
+				ctx.snapshotExtra(
+					makeSnapshotable(
+						'known' satisfies WalrusSnapshotMode,
+						identity.app,
+						identity.stack,
+						'walrusKnownDeployment',
+						resolvedValue.chain,
+					),
+				);
+				ctx.codegen(
+					makeCodegenable({
+						mode: 'known',
+						chain: resolvedValue.chain,
+						walrusPackageId: resolvedValue.walrusPackageId,
+						walPackageId: resolvedValue.walPackageId,
+						walCoinType: resolvedValue.walCoinType,
+						systemObjectId: resolvedValue.packageConfig.systemObjectId,
+						stakingPoolId: resolvedValue.packageConfig.stakingPoolId,
+						exchangeIds: resolvedValue.packageConfig.exchangeIds
+							? [...resolvedValue.packageConfig.exchangeIds]
+							: [],
+						proxyUrl: resolvedValue.proxyUrl,
+						aggregatorUrl: resolvedValue.aggregatorUrl,
+						publisherUrl: resolvedValue.publisherUrl,
+						nodes: resolvedValue.nodes,
+					}),
+				);
+				ctx.provides({
+					kind: 'strategy-contributor',
+					capabilityKey: WALRUS_STATE_REGISTRY_KEY,
+					strategy: {
+						name: 'walrusKnownDeployment',
+						systemObjectId: resolvedValue.packageConfig.systemObjectId,
+						stakingObjectId: resolvedValue.packageConfig.stakingPoolId,
+						chain: resolvedValue.chain,
+					},
+					autoMounted: true,
+				} satisfies StrategyContributorDecl<typeof WALRUS_STATE_REGISTRY_KEY, WalrusStateEntry>);
 				return resolvedValue;
 			}),
 		errorContributions: walrusErrorContributions,
 	});
-};
-
-// ---------------------------------------------------------------------------
-// Capability builders — pure helpers that RETURN the ordered decl tuple
-// POST-acquire (was the `capabilities` second-closure). The two plugin
-// `start` bodies emit these inline via the typed `ctx` verbs (the
-// `emit*Capabilities` seams below) after resolving the value. The decl
-// shapes + emit ORDER are byte-identical to the closure path the
-// supervisor used to harvest. ID-stability surfaces (deploy/blob ids via
-// the ArtifactPublisher, snapshot capture subtree) live OUTSIDE these
-// builders and are untouched by the Stage B inversion.
-// ---------------------------------------------------------------------------
-
-const buildLocalCapabilities = (parts: {
-	readonly name: string;
-	readonly nodeCount: number;
-	readonly containerApiPort: number;
-	readonly serviceKey: string;
-	readonly resolved: WalrusResolved;
-	readonly identity: Identity;
-}): ReadonlyArray<
-	SnapshotableDecl | CodegenableDecl<'walrus-network'> | StrategyContributorDecl | RoutableDecl
-> => {
-	const { name, nodeCount, containerApiPort, serviceKey, resolved, identity } = parts;
-	const snap: SnapshotableDecl = makeSnapshotable(
-		'local' satisfies WalrusSnapshotMode,
-		identity.app,
-		identity.stack,
-		name,
-		resolved.chain,
-		nodeCount,
-	);
-	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
-		mode: 'local',
-		chain: resolved.chain,
-		walrusPackageId: resolved.walrusPackageId,
-		walPackageId: resolved.walPackageId,
-		walCoinType: resolved.walCoinType,
-		systemObjectId: resolved.packageConfig.systemObjectId,
-		stakingPoolId: resolved.packageConfig.stakingPoolId,
-		exchangeIds: resolved.packageConfig.exchangeIds ? [...resolved.packageConfig.exchangeIds] : [],
-		proxyUrl: resolved.proxyUrl,
-		aggregatorUrl: resolved.aggregatorUrl,
-		publisherUrl: resolved.publisherUrl,
-		nodes: resolved.nodes,
-	});
-	const stateRegistry: StrategyContributorDecl<
-		typeof WALRUS_STATE_REGISTRY_KEY,
-		{ readonly noteName: string }
-	> = {
-		kind: 'strategy-contributor',
-		capabilityKey: WALRUS_STATE_REGISTRY_KEY,
-		strategy: { noteName: name },
-		autoMounted: true,
-	};
-	const walFaucetContribution =
-		resolved.walFaucetStrategy === null || resolved.walCoinType === null
-			? []
-			: [
-					{
-						kind: 'strategy-contributor',
-						capabilityKey: walFaucetStrategyKey(resolved.walCoinType),
-						strategy: resolved.walFaucetStrategy,
-						autoMounted: true,
-					} satisfies StrategyContributorDecl<
-						ReturnType<typeof walFaucetStrategyKey>,
-						WalFaucetStrategy
-					>,
-				];
-	const routables = makeLocalRoutables({
-		app: identity.app,
-		stack: identity.stack,
-		walrusName: name,
-		serviceKey,
-		nodeCount,
-		containerApiPort,
-	});
-	return [
-		snap,
-		codegen,
-		stateRegistry,
-		...walFaucetContribution,
-		...(routables as readonly RoutableDecl[]),
-	];
-};
-
-/** Emit the pure decls from `buildLocalCapabilities` inline via the typed
- *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
- *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  strategy-contributor → `ctx.provides`, routable → `ctx.endpoint`).
- *  Order + decl shapes are byte-identical to the supervisor's legacy
- *  `capabilities`-closure harvest.
- *
- *  Exported as the Stage-B emit seam (mirrors coin's `emitCapabilities`):
- *  feed a resolved `WalrusResolved` + `Identity` here and assert the
- *  captured verbs to drive the contribution half of `start` without a
- *  live boot. */
-export const emitLocalCapabilities = (
-	ctx: PluginCtx,
-	parts: {
-		readonly name: string;
-		readonly nodeCount: number;
-		readonly containerApiPort: number;
-		readonly serviceKey: string;
-		readonly resolved: WalrusResolved;
-		readonly identity: Identity;
-	},
-): void => {
-	for (const decl of buildLocalCapabilities(parts)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-			case 'strategy-contributor':
-				ctx.provides(decl);
-				break;
-			case 'routable':
-				ctx.endpoint(decl);
-				break;
-		}
-	}
-};
-
-const buildKnownCapabilities = (parts: {
-	readonly resolved: WalrusResolved;
-	readonly identity: Identity;
-}): ReadonlyArray<
-	SnapshotableDecl | CodegenableDecl<'walrus-network'> | StrategyContributorDecl
-> => {
-	const { resolved, identity } = parts;
-	const snap: SnapshotableDecl = makeSnapshotable(
-		'known' satisfies WalrusSnapshotMode,
-		identity.app,
-		identity.stack,
-		'walrusKnownDeployment',
-		resolved.chain,
-	);
-	const codegen: CodegenableDecl<'walrus-network'> = makeCodegenable({
-		mode: 'known',
-		chain: resolved.chain,
-		walrusPackageId: resolved.walrusPackageId,
-		walPackageId: resolved.walPackageId,
-		walCoinType: resolved.walCoinType,
-		systemObjectId: resolved.packageConfig.systemObjectId,
-		stakingPoolId: resolved.packageConfig.stakingPoolId,
-		exchangeIds: resolved.packageConfig.exchangeIds ? [...resolved.packageConfig.exchangeIds] : [],
-		proxyUrl: resolved.proxyUrl,
-		aggregatorUrl: resolved.aggregatorUrl,
-		publisherUrl: resolved.publisherUrl,
-		nodes: resolved.nodes,
-	});
-	const stateRegistry: StrategyContributorDecl<typeof WALRUS_STATE_REGISTRY_KEY, WalrusStateEntry> =
-		{
-			kind: 'strategy-contributor',
-			capabilityKey: WALRUS_STATE_REGISTRY_KEY,
-			strategy: {
-				name: 'walrusKnownDeployment',
-				systemObjectId: resolved.packageConfig.systemObjectId,
-				stakingObjectId: resolved.packageConfig.stakingPoolId,
-				chain: resolved.chain,
-			},
-			autoMounted: true,
-		};
-	return [snap, codegen, stateRegistry];
-};
-
-/** Emit the pure decls from `buildKnownCapabilities` inline via the typed
- *  `ctx` verbs, routing each by its `kind` discriminator IN RETURN ORDER
- *  (snapshotable → `ctx.snapshotExtra`, codegenable → `ctx.codegen`,
- *  strategy-contributor → `ctx.provides`). Known mode emits no routable.
- *  Order + decl shapes are byte-identical to the supervisor's legacy
- *  `capabilities`-closure harvest. */
-export const emitKnownCapabilities = (
-	ctx: PluginCtx,
-	parts: { readonly resolved: WalrusResolved; readonly identity: Identity },
-): void => {
-	for (const decl of buildKnownCapabilities(parts)) {
-		switch (decl.kind) {
-			case 'snapshotable':
-				ctx.snapshotExtra(decl);
-				break;
-			case 'codegenable':
-				ctx.codegen(decl);
-				break;
-			case 'strategy-contributor':
-				ctx.provides(decl);
-				break;
-		}
-	}
 };
 
 export interface WalCoinValue extends AccountFundingCoinValue {
