@@ -5,13 +5,13 @@
 // implementation (`stack.lock` via O_EXCL + PID/start-time liveness)
 // lives at `./stack-lock.ts` as a free function; THIS module wraps
 // it in a Layer satisfying the typed `CrossProcessLock` service so
-// consumers (state-store, cache, etc.) yield ONE name and let
-// wiring decide whether they get the OS-advisory implementation or
-// the in-process semaphore.
+// consumers (cache, cross-process roster, etc.) yield ONE name and
+// let wiring decide whether they get the OS-advisory implementation
+// or the in-process semaphore.
 //
-// The state-store uses this for read-modify-write critical sections
-// where two processes might race to mutate the JSON. The lock is
-// SHORT-CRITICAL-SECTION: hold across read+modify+atomic-write,
+// Consumers use this for read-modify-write critical sections where
+// two processes might race to mutate an on-disk JSON artifact. The
+// lock is SHORT-CRITICAL-SECTION: hold across read+modify+atomic-write,
 // release immediately. Long lifetimes (whole-stack lifecycle) belong
 // to a separate lease, not this lock.
 
@@ -33,7 +33,7 @@ import {
  * Acquisition is cancellable: an interrupt while waiting for the
  * lock unwinds without acquiring. Acquisition while another holder
  * dies (PID cleanup) is the lock primitive's job, not the
- * state-store's.
+ * consumer's.
  *
  * Acquisition surfaces `StackLockTimeoutError` (peer contention
  * exceeded the acquire window) and `StackLockIoError` (disk failure

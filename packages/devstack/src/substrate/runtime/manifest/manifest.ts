@@ -200,8 +200,7 @@ export const buildEnvelope = (
  * Serialize and write the envelope at `path` atomically. Routes
  * through the canonical `atomicWriteFile` primitive (mkdir-parent →
  * O_EXCL temp → write → fsync → rename), so the manifest writer
- * shares ONE owner of the tempfile dance with the state-store and
- * cache.
+ * shares ONE owner of the tempfile dance with the cache.
  */
 export const writeManifest = (
 	envelope: ManifestEnvelope,

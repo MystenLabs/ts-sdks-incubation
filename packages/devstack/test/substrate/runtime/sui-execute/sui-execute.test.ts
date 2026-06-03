@@ -8,7 +8,7 @@ import {
 	SuiExecuteError,
 	type TransactionSignerScope,
 	type SuiExecuteClient,
-} from '../../../../src/substrate/runtime/sui-execute/index.ts';
+} from '../../../../src/plugins/sui/exec/index.ts';
 
 const stubSignTransaction = (_tx: Uint8Array) =>
 	Effect.succeed({ bytes: 'aa', signature: 'sig-1' });

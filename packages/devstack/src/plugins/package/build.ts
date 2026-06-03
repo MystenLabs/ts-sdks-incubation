@@ -11,8 +11,8 @@ import {
 	type BuildOutput,
 	type MoveBuildError,
 	type MoveBuildContainer,
-} from '../../substrate/runtime/sui-move-build/index.ts';
-import type { ChainBuildContainer } from '../sui/index.ts';
+	type ChainBuildContainer,
+} from '../sui/index.ts';
 import { publishError, type PublishError } from './errors.ts';
 
 export {
@@ -25,7 +25,7 @@ export {
 	type MoveBuildPhase,
 	type MoveBuildInput,
 	type MoveBuildOutput,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+} from '../sui/index.ts';
 export type { BuildOutput };
 
 export interface BuildInputs {

@@ -18,7 +18,6 @@ export type SnapshotCaptureProgressPhase =
 	| 'capturing-containers'
 	| 'saving-images'
 	| 'capturing-host-tree'
-	| 'saving-state'
 	| 'saving-contributions'
 	| 'writing-metadata'
 	| 'resuming';

@@ -25,8 +25,6 @@ const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'cross-process-lock-t
 
 const stackPathsFor = (stackRoot: string): StackPaths => ({
 	stackRoot,
-	stateFile: join(stackRoot, 'state.json'),
-	stateLockHint: join(stackRoot, 'state.json.lock'),
 	cacheDir: join(stackRoot, 'cache'),
 	snapshotDir: join(stackRoot, 'snapshots'),
 	stackLockFile: join(stackRoot, 'stack.lock'),
@@ -231,7 +229,8 @@ describe('layerCrossProcessLockFlock', () => {
 			// converted a peer-contention timeout into a fiber defect that
 			// could crash the surrounding scope. The typed shape must
 			// surface `StackLockTimeoutError` in the `E` channel so
-			// consumers (state-store) can map it to their own error.
+			// consumers (stack-lock / container ownership) can map it to
+			// their own error.
 			const root = freshRoot();
 			const stackRoot = join(root, 'app', 'main');
 			const lockPath = join(stackRoot, 'stack.lock');

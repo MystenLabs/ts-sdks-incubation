@@ -63,10 +63,7 @@ import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import {
-	DEFAULT_SUI_CLI_VERSION,
-	suiCliImageBuildContext,
-} from '../../../substrate/runtime/sui-move-build/index.ts';
+import { DEFAULT_SUI_CLI_VERSION, suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';

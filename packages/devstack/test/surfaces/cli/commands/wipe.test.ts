@@ -3,7 +3,7 @@
 // Pre-fix `wipe --dry-run` emitted only "[dry-run] would wipe selected
 // stack state" with no detail. Post-fix it calls the read-only
 // `plan()` dep and lists the containers / network+volume label scope /
-// state file / on-disk targets, both in the human lines and the
+// on-disk targets, both in the human lines and the
 // `--json` envelope's `data.targets`. When no `plan` dep is wired it
 // degrades to the generic line (and never calls the destructive
 // `wipe()`).
@@ -26,9 +26,8 @@ const TARGETS: WipeTargets = {
 	containers: ['devstack-arena-main-db', 'devstack-arena-main-svc'],
 	networkLabelMatch: { app: 'arena', stack: 'main' },
 	volumeLabelMatch: { app: 'arena', stack: 'main' },
-	stateFile: '/root/stacks/main/state.json',
 	stackRoot: '/root/stacks/main',
-	onDiskPaths: ['/root/stacks/main/runtime', '/root/stacks/main/state.json'],
+	onDiskPaths: ['/root/stacks/main/runtime'],
 	preserved: ['snapshots'],
 };
 
@@ -70,7 +69,7 @@ const ctxFor = (io: CliIO, mode: OutputMode): CommandContext => ({
 });
 
 describe('runWipe --dry-run enumeration', () => {
-	it.effect('human mode lists containers, label scope, state file, and on-disk targets', () =>
+	it.effect('human mode lists containers, label scope, and on-disk targets', () =>
 		Effect.gen(function* () {
 			const h = makeHarness();
 			let wipeCalls = 0;
@@ -86,7 +85,6 @@ describe('runWipe --dry-run enumeration', () => {
 			expect(body).toContain('devstack-arena-main-svc');
 			expect(body).toContain('devstack-arena-main-db');
 			expect(body).toContain('devstack.app=arena,devstack.stack=main');
-			expect(body).toContain('/root/stacks/main/state.json');
 			expect(body).toContain('/root/stacks/main/runtime');
 			expect(body).toContain('preserved: snapshots');
 			// Dry-run never calls the destructive wipe.
@@ -115,10 +113,7 @@ describe('runWipe --dry-run enumeration', () => {
 				'devstack-arena-main-db',
 				'devstack-arena-main-svc',
 			]);
-			expect(env.data.targets!.onDiskPaths).toEqual([
-				'/root/stacks/main/runtime',
-				'/root/stacks/main/state.json',
-			]);
+			expect(env.data.targets!.onDiskPaths).toEqual(['/root/stacks/main/runtime']);
 			expect(env.data.targets!.preserved).toEqual(['snapshots']);
 		}),
 	);

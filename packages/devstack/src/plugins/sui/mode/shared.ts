@@ -90,9 +90,10 @@ export interface SuiClient {
 		readonly faucetUrl: string | null;
 		readonly graphqlUrl: string | null;
 	};
-	/** Chain identity — downstream cache primitives fold this into
-	 *  their state-store keys so on-chain artifacts re-derive when
-	 *  the chain is wiped. Branded so consumers can hand it directly
+	/** Chain identity — the substrate's content-addressed cache folds
+	 *  this into its keys (`(namespace, chainId, contentHash)`) so
+	 *  on-chain artifacts re-derive when the chain is wiped. Branded so
+	 *  consumers can hand it directly
 	 *  to `chainProbeCapabilityKey(chain)` / `faucetCapabilityKey(chain)`
 	 *  without a cast. */
 	readonly chain: ChainId;

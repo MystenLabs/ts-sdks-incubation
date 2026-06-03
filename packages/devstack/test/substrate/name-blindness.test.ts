@@ -3,12 +3,11 @@
 // ARCHITECTURE.md §"Substrate name-blindness" requires substrate code
 // (`src/substrate/**`) to NEVER mention plugin names — `sui`, `walrus`,
 // `seal`, `wallet`, `account`, `coin`, `package`, `faucet`, `deepbook`,
-// `pyth`, `postgres`, `action`, `host`. Two L1-adjacent helpers are
-// documented exceptions (`sui-execute/`, `sui-move-build/`); a small
-// permanent allowlist covers (a) network-host overloads (NOT the
-// plugin-host), (b) substrate field shapes that name plugin-domain
-// values by design (projection field set, supervisor's branded
-// account-resource-id literal). Each entry carries a reason.
+// `pyth`, `postgres`, `action`, `host`. A small permanent allowlist
+// covers (a) network-host overloads (NOT the plugin-host), (b) substrate
+// field shapes that name plugin-domain values by design (projection
+// field set, supervisor's branded account-resource-id literal). Each
+// entry carries a reason.
 //
 // The check strips line- and block-comments before matching so a
 // documentation-only mention of "the wallet" in a header doesn't trip
@@ -59,23 +58,6 @@ const ALLOWED_FILES: ReadonlyArray<{
 	readonly path: string;
 	readonly reason: string;
 }> = [
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-execute/index.ts',
-		reason: 'Documented L1-adjacent Sui helper (ARCHITECTURE.md §Substrate name-blindness).',
-	},
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-move-build/index.ts',
-		reason:
-			'Documented L1-adjacent Sui Move build helper (ARCHITECTURE.md §Substrate name-blindness).',
-	},
-	{
-		// ARCHITECTURE.md §"Substrate name-blindness" → "Documented exceptions"
-		path: 'src/substrate/runtime/sui-ledger/object-ref.ts',
-		reason:
-			'Documented L1-adjacent Sui ledger-object-ref helper (shared by deepbook + future on-chain seeders; ARCHITECTURE.md §Substrate name-blindness).',
-	},
 	{
 		// network-host fields (`hostname`, `host:port`); NOT the
 		// host-service plugin.

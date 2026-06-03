@@ -152,8 +152,6 @@ const stackPathsFor = (stackRoot: string): StackPaths => {
 	};
 	return {
 		stackRoot,
-		stateFile: join(stackRoot, 'state.json'),
-		stateLockHint: join(stackRoot, 'state.json.lock'),
 		cacheDir,
 		snapshotDir: join(stackRoot, 'snapshots'),
 		stackLockFile: join(stackRoot, 'stack.lock'),

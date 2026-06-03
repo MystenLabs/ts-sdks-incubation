@@ -58,7 +58,6 @@ import {
 	type IdentityContributionConflictError,
 	type IdentityGuardError,
 } from './identity-guard.ts';
-import { readSnapshotStateDocument, writeSnapshotStateDocument } from './state-document.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -77,8 +76,6 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 			'save-images',
 			'tar-subtree',
 			'tar-host-tree',
-			'read-state',
-			'write-state',
 			'write-contribution',
 			'write-meta',
 			'write-integrity',
@@ -121,7 +118,6 @@ export type SnapshotCaptureProgressPhase =
 	| 'capturing-containers'
 	| 'saving-images'
 	| 'capturing-host-tree'
-	| 'saving-state'
 	| 'saving-contributions'
 	| 'writing-metadata'
 	| 'resuming';
@@ -461,7 +457,6 @@ export interface CaptureInputs {
 	readonly stack: string;
 	readonly network: string;
 	readonly runtimeStackRoot: string;
-	readonly stateFilePath: string;
 	readonly participants: ReadonlyArray<SnapshotParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly onProgress?: SnapshotProgressReporter;
@@ -503,8 +498,8 @@ export const runCapture = (
 				//    set, then pause all running managed containers before
 				//    any artifact is written. The pause finalizer covers the
 				//    entire capture pipeline so container commits, host-tree
-				//    tar, scalar state, and contribution metadata share one
-				//    consistent snapshot window.
+				//    tar, and contribution metadata share one consistent
+				//    snapshot window.
 				const capturedContainers: CapturedContainer[] = [];
 				// Two buckets:
 				//
@@ -710,28 +705,7 @@ export const runCapture = (
 					);
 				}
 
-				// 4. Copy the scalar state file (best-effort missing-OK —
-				//    empty stack on first-boot has no state.json yet).
-				const stateExists = yield* fs
-					.exists(inputs.stateFilePath)
-					.pipe(Effect.catch(() => Effect.succeed(false)));
-				if (stateExists) {
-					yield* report({
-						phase: 'saving-state',
-						detail: 'copying runtime state',
-						pausedContainers: pauseConfirmed.length,
-						totalContainers: runningContainers.length,
-					});
-					const stateDoc = yield* readSnapshotStateDocument(inputs.stateFilePath).pipe(
-						Effect.catch(failPhase('read-state', `state.json failed schema validation`)),
-					);
-					yield* writeSnapshotStateDocument(
-						`${inputs.stagingDir}/${SnapshotLayout.stateFile}`,
-						stateDoc,
-					).pipe(Effect.catch(failPhase('write-state', `write state.json failed`)));
-				}
-
-				// 5. Write per-participant contribution docs + collect identity.
+				// 4. Write per-participant contribution docs + collect identity.
 				yield* report({
 					phase: 'saving-contributions',
 					detail: `writing ${inputs.participants.length} contribution document${
@@ -798,7 +772,7 @@ export const runCapture = (
 				}
 				yield* requireIdentity(identityMerged, 'snapshot');
 
-				// 6. Write meta.json, then integrity over the full artifact.
+				// 5. Write meta.json, then integrity over the full artifact.
 				//    The caller publishes via stage-and-swap, so catalog
 				//    readers still never observe a half-written artifact.
 				yield* report({

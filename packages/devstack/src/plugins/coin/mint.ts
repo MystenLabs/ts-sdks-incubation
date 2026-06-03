@@ -13,8 +13,8 @@
 //                   need).
 //
 // Best-effort cache writes (distilled-doc Invariant 2): the mint
-// already settled on chain; a state-store IO defect just means the
-// next supervisor cycle re-mints. Don't let a StateStore failure
+// already settled on chain; a cache IO defect just means the
+// next supervisor cycle re-mints. Don't let a cache-write failure
 // roll back the mint.
 //
 // Substrate constraint: the `ArtifactPublisher.publish` shape
@@ -34,10 +34,10 @@ import {
 } from '../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
-import { formatExecutedFailure } from '../../substrate/runtime/sui-execute/index.ts';
-import { signAndDispatch } from '../../substrate/runtime/sui-execute/sign-and-dispatch.ts';
 import {
 	buildForkImpersonationTransactionBytes,
+	formatExecutedFailure,
+	signAndDispatch,
 	type ClientWithCoreApi,
 	type ForkImpersonationGasClient,
 } from '../sui/index.ts';
@@ -336,11 +336,7 @@ export const performMint = (
 							//    sui-fork binary has no simulate_transaction); other modes
 							//    use the SDK resolver, which fills gas + object versions.
 							return sdk.forkMode === true
-								? yield* buildForkImpersonationTransactionBytes(
-										tx,
-										signer.address,
-										sdk.core,
-									).pipe(
+								? yield* buildForkImpersonationTransactionBytes(tx, signer.address, sdk.core).pipe(
 										Effect.mapError(
 											(cause): ArtifactPublishError =>
 												artifactPublishError(

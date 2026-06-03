@@ -5,8 +5,9 @@
 //   - `runtime/seal/master-key.env`              (0o600 — SECRET MATERIAL)
 //   - `runtime/seal/local-keygen-state.v1.json`  (public key metadata)
 //   - `runtime/seal/key-server-config.yaml`
-//   - State-store entries (under runtime/state-store/, auto-captured
-//     by the substrate — we don't declare a subtree for those).
+//   - Content-addressed cache entries (the keypair the ArtifactPublisher
+//     persists under `cache/<namespace>/<chainId>/...`, auto-captured by
+//     the substrate's cache subtree — we don't declare a subtree for those).
 //   - Managed container — labeled tuple drives the docker commit +
 //     save path.
 //

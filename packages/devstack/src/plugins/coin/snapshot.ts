@@ -2,10 +2,12 @@
 //
 // Distilled-doc 13-coin.md §Persistence model:
 //
-//   - The mint-cache (`coin/mint/<chainId>/...`) lives in the
-//     state-store and IS captured by the substrate's auto-included
-//     subtree under `runtime/<plugin-key>/state-store/...`. We
-//     declare no extra subtrees here.
+//   - The mint-cache (namespace `coin-mint`, content-addressed by
+//     `(chainId, treasuryCapId, signer, recipient, amount)`) lives in
+//     the substrate's content-addressed cache under
+//     `cache/<namespace>/<chainId>/...` and IS captured by the
+//     substrate's auto-included cache subtree. We declare no extra
+//     subtrees here.
 //   - The `CoinRegistry` is purely in-process; nothing to capture.
 //   - Per-Layer-invocation metadata cache is also in-process.
 //

@@ -14,14 +14,14 @@ import {
 	type ArtifactPublisher,
 } from '../../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../../internal/acquire-on-chain-artifact.ts';
-import type { ResolvedSigner } from '../../../substrate/runtime/sui-execute/index.ts';
+import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
+import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import {
 	executeSuiTx,
 	formatExecutedFailure,
-} from '../../../substrate/runtime/sui-execute/index.ts';
-import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
-import { chainId as brandChainId } from '../../../substrate/brand.ts';
-import type { SuiSdkShim } from '../../sui/index.ts';
+	type ResolvedSigner,
+	type SuiSdkShim,
+} from '../../sui/index.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
 import { stableContentHash } from '../hash.ts';
 import { DeepbookSpans } from '../spans.ts';
@@ -259,10 +259,7 @@ export const initLocalPythFeeds = (
 					},
 				}).pipe(
 					Effect.mapError((err) =>
-						artifactPublishError(
-							'produce-failed',
-							`pyth feed transaction failed: ${err.message}`,
-						),
+						artifactPublishError('produce-failed', `pyth feed transaction failed: ${err.message}`),
 					),
 				);
 				if (result.$kind === 'FailedTransaction') {

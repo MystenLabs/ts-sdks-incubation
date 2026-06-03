@@ -41,7 +41,10 @@ import type { AcquireContext } from '../../substrate/plugin.ts';
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { LeaseBrokerService, type LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
+import {
+	LeaseBrokerService,
+	type LeaseBroker,
+} from '../../substrate/runtime/lease-broker/index.ts';
 import { PortBrokerService } from '../../substrate/runtime/port-broker/index.ts';
 import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
@@ -392,3 +395,37 @@ export {
 	type ChainBuildContainer,
 	type ChainBuildContainerSpec,
 } from './chain-build-container.ts';
+
+// Cross-plugin seams: hoisted exec / move / ledger helpers.
+// Consumed by Account/Action/Coin/Deepbook/Package/Seal/Walrus, which
+// previously reached into the deep `sui/exec`, `sui/move`, and
+// `sui/ledger` internal modules. These barrel entries route those
+// consumers through the sibling plugin's barrel per the
+// `plugin-boundary` invariant.
+export {
+	extractExecuteDigest,
+	formatExecutedFailure,
+	executeSuiTx,
+	isSuiStaleObjectVersionError,
+	type ResolvedSigner,
+	type ExecutedFailure,
+	type ExecutedReceipt,
+	type TransactionSignerScope,
+} from './exec/index.ts';
+export { signAndDispatch } from './exec/sign-and-dispatch.ts';
+export {
+	hashMoveSources,
+	runMoveBuild,
+	scrubLocksHost,
+	containerInnerScript,
+	extractTrailingJson,
+	parseBuildOutput,
+	stripPinnedSections,
+	type BuildOutput,
+	type MoveBuildContainer,
+	type MoveBuildError,
+	type MoveBuildPhase,
+	type MoveBuildInput,
+	type MoveBuildOutput,
+} from './move/index.ts';
+export { currentLedgerObjectRef } from './ledger/object-ref.ts';

@@ -34,7 +34,7 @@ vi.mock('@mysten/sui/transactions', () => ({
 	},
 }));
 
-import type { ResolvedSigner } from '../../../src/substrate/runtime/sui-execute/index.ts';
+import type { ResolvedSigner } from '../../../src/plugins/sui/exec/index.ts';
 import type { SuiSdkShim } from '../../../src/plugins/sui/index.ts';
 import type {
 	ArtifactPublisher,

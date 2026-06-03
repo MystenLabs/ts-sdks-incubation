@@ -11,20 +11,20 @@ Companion: `STYLE_GUIDE.md` for code-level patterns.
 
 Every component lives in exactly one layer. The allowed-imports column is the contract.
 
-| Layer                            | Contains                                                                                                                                                                                                                                                                    | Imports from                                                                                                                     | Never imports from                                          |
-| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| **L0 substrate**                 | Kernel: scheduler, lifecycle SM, event/command channels, brokers (port/lease/lock), atomic-write, cache, state-store, cross-process protocol, decode helpers, retry policy, process supervisor, observability primitives, manifest envelope, ArtifactPublisher. Name-blind. | External libs only (`effect`, `@effect/*`, Node stdlib).                                                                         | L1+. Plugin or capability-decl names.                       |
-| **L1 runtime adapters**          | `ContainerRuntime` (Docker). One backend; a swap is a major rewrite, not a layer re-point. The `ContainerRuntimeService` re-export shim exists so the public API doesn't name `runtime/docker/` directly, but internal callers reach `runtime/docker/service.ts` directly.  | L0.                                                                                                                              | L2+. Named plugins.                                         |
+| Layer                            | Contains                                                                                                                                                                                                                                                                   | Imports from                                                                                                                     | Never imports from                                          |
+| -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| **L0 substrate**                 | Kernel: scheduler, lifecycle SM, event/command channels, brokers (port/lease/lock), atomic-write, cache, cross-process protocol, decode helpers, retry policy, process supervisor, observability primitives, manifest envelope, ArtifactPublisher. Name-blind.             | External libs only (`effect`, `@effect/*`, Node stdlib).                                                                         | L1+. Plugin or capability-decl names.                       |
+| **L1 runtime adapters**          | `ContainerRuntime` (Docker). One backend; a swap is a major rewrite, not a layer re-point. The `ContainerRuntimeService` re-export shim exists so the public API doesn't name `runtime/docker/` directly, but internal callers reach `runtime/docker/service.ts` directly. | L0.                                                                                                                              | L2+. Named plugins.                                         |
 | **L2 plugins**                   | sui, postgres, walrus, seal, account, faucet, package, coin, wallet, action, deepbook, host-service. One folder each exposing `definePlugin({...})`. (TUI renderers live in L4 surfaces, not L2.)                                                                          | L0, L1, other plugins through public resource refs at factory boundaries (never internal modules).                               | Other plugins' internal modules.                            |
-| **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen. Each walks a registry of plugin capability contributions; never names services.                                                                                     | L0, L1, capability decls from `contracts/`.                                                                                      | L2 internals, named plugins, hardcoded paths.               |
-| **L4 surfaces**                  | CLI (`surfaces/cli/`), TUI (`surfaces/tui/`), programmable API, bin entry (`cli/main.ts`). Symmetric peers: subscribe to typed event stream + publish typed commands.                                                                                                       | L0 (events/commands/manifest schema), L3 capability decls + manifest writer output. Cascade-formatter.                           | L1 directly, any L2 module, any direct engine method calls. |
-| **L5 build integrations + apps** | `build-integrations/{vitest,playwright,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                         | Shared `build-integrations/runtime/` helpers, on-disk manifest, codegen-emitted files, env vars, typed global Playwright bridge. | L0–L3 directly. Engine subscription.                        |
+| **L3 orchestrators**             | snapshot, router (Traefik file-provider), watch-dispatcher, network resolver, manifest writer, codegen. Each walks a registry of plugin capability contributions; never names services.                                                                                    | L0, L1, capability decls from `contracts/`.                                                                                      | L2 internals, named plugins, hardcoded paths.               |
+| **L4 surfaces**                  | CLI (`surfaces/cli/`), TUI (`surfaces/tui/`), programmable API, bin entry (`cli/main.ts`). Symmetric peers: subscribe to typed event stream + publish typed commands.                                                                                                      | L0 (events/commands/manifest schema), L3 capability decls + manifest writer output. Cascade-formatter.                           | L1 directly, any L2 module, any direct engine method calls. |
+| **L5 build integrations + apps** | `build-integrations/{vitest,playwright,runtime}/` — host-facing integration packages. Example apps.                                                                                                                                                                        | Shared `build-integrations/runtime/` helpers, on-disk manifest, codegen-emitted files, env vars, typed global Playwright bridge. | L0–L3 directly. Engine subscription.                        |
 
 ### Layer composition lives at L3, not L0
 
 L0 imports external libs only. Layer-composition seams (`runStackEffect` and friends that assemble
-L0+L1+L2 into a runnable stack) are L3 work in `orchestrators/runtime-composition.ts`. They can't live
-in `substrate/` because they import L1 by definition. If a "substrate" file imports
+L0+L1+L2 into a runnable stack) are L3 work in `orchestrators/runtime-composition.ts`. They can't
+live in `substrate/` because they import L1 by definition. If a "substrate" file imports
 `runtime/docker/`, it's mislocated.
 
 **Built-in defaults composition seam.** `orchestrators/built-in-plugin-layers.ts` and
@@ -42,10 +42,10 @@ Substrate code must not mention `walrus`, `sui`, `seal`, `wallet`, `account`, `c
 etc. Plugin-domain shapes live at L2. Per-stack registries that need plugin-domain keys are L2
 wrapper services around the generic `defineScopedRefMap<K, V>(name)` primitive.
 
-Two L1-adjacent substrate helpers carry Sui names in their type signatures because the SDK boundary
-is mechanical and was copied 80% verbatim by two plugin authors: `substrate/runtime/sui-execute/`
-(sign + execute + envelope project) and `substrate/runtime/sui-move-build/` (Move build + summary
-projection). New L1-adjacent exceptions need explicit justification in this section.
+The Sui-named SDK-boundary helpers (sign + execute + envelope project, Move build + summary
+projection, ledger object-ref) now live under `plugins/sui/{exec,move,ledger}` as part of the
+simplification, so they no longer need a substrate name-blindness carve-out. New L1-adjacent
+exceptions need explicit justification in this section.
 
 The supervisor's projection vocabulary carries one additional documented exception: projection-key
 prefixes `account/` and `package/` are named in the closed projection field shape at
@@ -60,11 +60,11 @@ add their key under the existing prefix scheme rather than expanding the allowli
 
 ### `ContainerRuntimeService` re-export indirection
 
-The root barrel re-exports `ContainerRuntimeService` from `substrate/runtime/container-runtime.ts`
-— a thin shim that itself re-exports from `runtime/docker/service.ts`. The shim exists so the
-public API doesn't name `runtime/docker/` directly. The abstraction is one consumer deep: internal
-callers (plugins, orchestrators) import from `runtime/docker/service.ts` directly. L1 is Docker —
-a backend swap (podman, firecracker) is a major rewrite of the docker adapter, not a layer re-point.
+The root barrel re-exports `ContainerRuntimeService` from `substrate/runtime/container-runtime.ts` —
+a thin shim that itself re-exports from `runtime/docker/service.ts`. The shim exists so the public
+API doesn't name `runtime/docker/` directly. The abstraction is one consumer deep: internal callers
+(plugins, orchestrators) import from `runtime/docker/service.ts` directly. L1 is Docker — a backend
+swap (podman, firecracker) is a major rewrite of the docker adapter, not a layer re-point.
 
 ---
 
@@ -72,14 +72,14 @@ a backend swap (podman, firecracker) is a major rewrite of the docker adapter, n
 
 Declared in `src/contracts/` as a discriminated `CapabilityDecl` union (one decl per file).
 
-| Contract                | File                                | Purpose                                                                                                                                                         | Used by                                                               |
-| ----------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| **ContainerRuntime**    | `contracts/container-runtime.ts`    | Docker-like backend: ensure/start/stop/commit/build/network/volume/logs/exec/save/load/tag.                                                                     | Plugins managing long-running containers.                             |
-| **Snapshotable**        | `contracts/snapshotable.ts`         | Capture/restore: `managedContainers` label tuples + host paths + identity guard + hooks.                                                                        | Stateful plugins.                                                     |
-| **Routable**            | `contracts/routable.ts`             | HTTP/TCP route contribution: entrypoint + dispatch id + wireProtocol + upstream resolver.                                                                       | Plugins exposing endpoints.                                           |
-| **Codegenable**         | `contracts/codegenable.ts`          | Emitter contribution. Optional `aggregate?: { bucket, project }` folds exports into a shared file (e.g. `accounts.ts`). Orchestrator treats `bucket` as opaque. | Every L2 plugin.                                                      |
-| **ChainProbe**          | `contracts/chain-probe.ts`          | Chain reachability + facts (lenient verify pattern).                                                                                                            | One per chain.                                                        |
-| **StrategyContributor** | `contracts/strategy-contributor.ts` | Pluggable strategy injection.                                                                                                                                   | Faucet strategies, account variants, custom plugin extensions.        |
+| Contract                | File                                | Purpose                                                                                                                                                                                                           | Used by                                                               |
+| ----------------------- | ----------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| **ContainerRuntime**    | `contracts/container-runtime.ts`    | Docker-like backend: ensure/start/stop/commit/build/network/volume/logs/exec/save/load/tag.                                                                                                                       | Plugins managing long-running containers.                             |
+| **Snapshotable**        | `contracts/snapshotable.ts`         | Capture/restore: `managedContainers` label tuples + host paths + identity guard + hooks.                                                                                                                          | Stateful plugins.                                                     |
+| **Routable**            | `contracts/routable.ts`             | HTTP/TCP route contribution: entrypoint + dispatch id + wireProtocol + upstream resolver.                                                                                                                         | Plugins exposing endpoints.                                           |
+| **Codegenable**         | `contracts/codegenable.ts`          | Emitter contribution. Optional `aggregate?: { bucket, project }` folds exports into a shared file (e.g. `accounts.ts`). Orchestrator treats `bucket` as opaque.                                                   | Every L2 plugin.                                                      |
+| **ChainProbe**          | `contracts/chain-probe.ts`          | Chain reachability + facts (lenient verify pattern).                                                                                                                                                              | One per chain.                                                        |
+| **StrategyContributor** | `contracts/strategy-contributor.ts` | Pluggable strategy injection.                                                                                                                                                                                     | Faucet strategies, account variants, custom plugin extensions.        |
 | **Projection**          | `contracts/projection.ts`           | Read-model update emitted after acquisition. Shorthand `projection({ kind, key, payload })` stamps `tag` + `at`; the verbose `projection({ event: { tag: 'projection.updated', ... } })` form gives full control. | Plugins publishing UI/persisted state independent of strategy values. |
 
 Infrastructure contracts (outside the capability-decl union):
@@ -104,11 +104,11 @@ the account starves on a `StrategyNotFoundError` (caught as a no-op for optional
 
 Who contributes:
 
-- **Coin plugins** — `plugins/coin/index.ts` builds a `StrategyContributorDecl` with capability
-  key `coinType:<fullCoinType>` for every coin variant that declares `fundingStrategy`. Walrus and
-  Seal contribute their WAL/SEAL strategies the same way through the coin barrel.
-- **Faucet plugin** — `plugins/faucet/index.ts:defineFaucetStrategy({ chainId, strategy })` builds
-  a contributor keyed `faucet:<chainId>` for SUI funding.
+- **Coin plugins** — `plugins/coin/index.ts` builds a `StrategyContributorDecl` with capability key
+  `coinType:<fullCoinType>` for every coin variant that declares `fundingStrategy`. Walrus and Seal
+  contribute their WAL/SEAL strategies the same way through the coin barrel.
+- **Faucet plugin** — `plugins/faucet/index.ts:defineFaucetStrategy({ chainId, strategy })` builds a
+  contributor keyed `faucet:<chainId>` for SUI funding.
 - **Custom plugins** — same surface; any plugin's `capabilities` factory may return a
   `StrategyContributorDecl<Key, Strategy>` and the supervisor harvests it into the registry.
 
@@ -124,11 +124,11 @@ Shape:
 ```
 
 Consumers (`plugins/account/funding.ts`) read with `registry.get<typeof key, Strategy>(key)` and
-treat `StrategyNotFoundError` as "optional faucet is a no-op for this coin". The invariant: the
-sink is the **only** way to expose a funding strategy across plugin boundaries — bypassing it
-(e.g. a coin plugin calling `fundingStrategy.request` itself, or stashing the strategy on its
-resolved value for a sibling to import) breaks the dep-graph-free decoupling that makes
-custom funding plugins compose like built-ins.
+treat `StrategyNotFoundError` as "optional faucet is a no-op for this coin". The invariant: the sink
+is the **only** way to expose a funding strategy across plugin boundaries — bypassing it (e.g. a
+coin plugin calling `fundingStrategy.request` itself, or stashing the strategy on its resolved value
+for a sibling to import) breaks the dep-graph-free decoupling that makes custom funding plugins
+compose like built-ins.
 
 ---
 
@@ -202,10 +202,10 @@ PIDs are conservatively-alive (NFS-safe).
 
 `LivenessProbeScope` is a per-sweep Effect Service in the same module: one cache per sweep pass,
 keyed on `(pid, startTime)`, so a sweep that inspects N roster rows referencing the same PID forks
-the underlying `kill(0)` / `/proc` lookup once rather than N times. Common cases this prevents
-from blowing up: a single supervisor parent overseeing many child plugin keys; a process restart
-where the new PID is shared by multiple stale roster entries; cross-process state-store sweeps
-across siblings. The scope's lifetime is one sweep — it is not a persistent cache.
+the underlying `kill(0)` / `/proc` lookup once rather than N times. Common cases this prevents from
+blowing up: a single supervisor parent overseeing many child plugin keys; a process restart where
+the new PID is shared by multiple stale roster entries. The scope's lifetime is one sweep — it is
+not a persistent cache.
 
 ---
 
@@ -359,7 +359,7 @@ top-level plugin only if external market-makers need it.
 ```
 L0 substrate         — name-blind kernel: events/commands, paths, atomic-write,
                        cross-process protocol, artifact publisher, port-broker,
-                       state-store, cache, strategy-registry, manifest envelope.
+                       cache, strategy-registry, manifest envelope.
 
 L1 runtime adapters  — Docker. One backend. The `ContainerRuntimeService`
                        shim names it for the public API; internal callers

@@ -459,7 +459,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								stack: identity.stack,
 								network: identity.chain,
 								runtimeStackRoot: paths.stackRoot,
-								stateFilePath: paths.stateFile,
 								participants: effectiveParticipants,
 								runtime,
 								onProgress,
@@ -568,7 +567,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						yield* runWipe({
 							labelMatch: { app: identity.app, stack: identity.stack },
 							stackRoot: paths.stackRoot,
-							stateFilePath: paths.stateFile,
 							runtime,
 							keepSnapshots: args.keepSnapshots,
 							keepCache: args.keepCache,
@@ -586,7 +584,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			planWipe({
 				labelMatch: { app: identity.app, stack: identity.stack },
 				stackRoot: paths.stackRoot,
-				stateFilePath: paths.stateFile,
 				runtime,
 				keepSnapshots: args.keepSnapshots,
 				keepCache: args.keepCache,

@@ -172,7 +172,6 @@ const runCaptureExit = (
 			stack: 'main',
 			network: 'sui:local',
 			runtimeStackRoot: join(root, 'runtime-stack'),
-			stateFilePath: join(root, 'runtime-stack', SnapshotLayout.stateFile),
 			participants,
 			runtime,
 			onProgress,
@@ -247,45 +246,6 @@ it.effect('records user-facing labels in metadata without using them as artifact
 			expect(exit.value.id).toBe('snap-images');
 			expect(exit.value.label).toBe('release candidate');
 			expect(existsSync(join(root, 'artifact', 'release candidate'))).toBe(false);
-		}),
-	),
-);
-
-it.effect('refuses corrupt runtime state before publishing snapshot metadata', () =>
-	withTempRoot(TEMP_PREFIX, (root) =>
-		Effect.gen(function* () {
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			const runtime = runtimeStub({
-				handlesByRole: {},
-				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-				pauseCalls,
-				saveCalls,
-				unpauseCalls,
-			});
-			const runtimeStackRoot = join(root, 'runtime-stack');
-			mkdirSync(join(root, 'artifact'), { recursive: true });
-			mkdirSync(runtimeStackRoot, { recursive: true });
-			writeFileSync(
-				join(runtimeStackRoot, SnapshotLayout.stateFile),
-				'{"version":999,"plugins":{}}',
-			);
-
-			const exit = yield* runCaptureExit(root, runtime, [participant([])]).pipe(
-				Effect.provide(NodeFileSystem.layer),
-			);
-
-			expect(Exit.isFailure(exit)).toBe(true);
-			const error = Exit.findErrorOption(exit);
-			expect(error._tag).toBe('Some');
-			if (error._tag === 'Some') {
-				expect(error.value).toBeInstanceOf(CapturePhaseError);
-				if (error.value._tag === 'SnapshotCapturePhaseError') {
-					expect(error.value.phase).toBe('read-state');
-				}
-			}
-			expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 		}),
 	),
 );
@@ -597,7 +557,6 @@ describe('snapshot capture container images', () => {
 						stack: 'main',
 						network: 'sui:local',
 						runtimeStackRoot,
-						stateFilePath: join(runtimeStackRoot, SnapshotLayout.stateFile),
 						participants: [statefulParticipant],
 						runtime,
 						onProgress: (next) =>

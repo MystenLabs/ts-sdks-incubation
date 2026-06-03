@@ -523,63 +523,6 @@ describe('snapshot restore safety', () => {
 		),
 	);
 
-	it.effect('refuses snapshot state docs with unknown versions before restore cleanup', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const meta = metadata();
-				const artifactDir = writeArtifact(root, meta);
-				writeFileSync(
-					join(artifactDir, SnapshotLayout.stateFile),
-					JSON.stringify({ version: 999, plugins: {} }),
-				);
-
-				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('read-state');
-					}
-				}
-				expect(sweepCalls).toEqual([]);
-				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			}),
-		),
-	);
-
-	it.effect('refuses corrupt snapshot state docs before restore cleanup', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const meta = metadata();
-				const artifactDir = writeArtifact(root, meta);
-				writeFileSync(join(artifactDir, SnapshotLayout.stateFile), '{not json');
-
-				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('read-state');
-					}
-				}
-				expect(sweepCalls).toEqual([]);
-				expect(existsSync(join(root, 'runtime-stack'))).toBe(false);
-			}),
-		),
-	);
-
 	it.effect('preserves only runtime-control paths and drops plugin-owned wallet state', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {

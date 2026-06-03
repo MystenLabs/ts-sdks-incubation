@@ -68,13 +68,15 @@ import {
 	extractExecuteDigest,
 	type ExecutedFailure,
 	type TransactionSignerScope,
-} from '../../substrate/runtime/sui-execute/index.ts';
+	type ForkAdminSurface,
+	type SuiSdkShim,
+	SuiSpans,
+} from '../sui/index.ts';
 import {
 	LeaseBrokerService,
 	type LeaseBroker,
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
-import { type ForkAdminSurface, type SuiSdkShim, SuiSpans } from '../sui/index.ts';
 import { withAddressLease } from './lease.ts';
 import { AccountSpans } from './spans.ts';
 
@@ -198,7 +200,7 @@ export interface TxResult {
  *
  *  The on-chain `FailedTransaction` projection is the substrate
  *  `ExecutedFailure` shape — single source of truth lives in
- *  `substrate/runtime/sui-execute/index.ts`. An envelope without a
+ *  `plugins/sui/exec/index.ts`. An envelope without a
  *  digest fails at projection with `AccountSignError(phase: 'no-digest')`. */
 export type SignAndExecuteResult =
 	| { readonly $kind: 'Transaction'; readonly Transaction: TxResult }

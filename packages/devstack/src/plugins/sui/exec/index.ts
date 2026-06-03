@@ -1,16 +1,12 @@
-// sui-execute — substrate helper for the Sui-SDK transaction
-// roundtrip.
+// sui-execute — the Sui-SDK transaction roundtrip.
 //
-// ARCHITECTURE NOTE — substrate-name-awareness escape hatch:
-//
-// This module is the ONE blessed substrate-side Sui-aware module.
-// The substrate is otherwise strictly name-blind (see ARCHITECTURE.md
-// §"Substrate name-blindness"), but the "build → sign → execute →
-// wait → project" roundtrip is duplicated verbatim across
-// `plugins/package/publish-executor.ts` and `plugins/action/execute.ts`
-// — ~80% identical line-for-line — and the same shape is needed for
-// `seal` (deploy + key-server registration), `coin.mint`, `action`,
-// and `deepbook` (publish + pool creation).
+// Lives in `plugins/sui`; wraps `@mysten/sui` tx signing + execution.
+// Drives the "build → sign → execute → wait → project" roundtrip that
+// is otherwise duplicated verbatim across `plugins/package/publish-
+// executor.ts` and `plugins/action/execute.ts` — ~80% identical
+// line-for-line — and is also needed for `seal` (deploy + key-server
+// registration), `coin.mint`, `action`, and `deepbook` (publish + pool
+// creation).
 //
 // Lifting the dispatch here gives every Sui-tx plugin one well-tested
 // surface and surfaces the SDK-envelope shape decisions (`include:
@@ -19,12 +15,11 @@
 //
 // Boundary discipline:
 //
-//   - This module is L1-adjacent: it lives under `substrate/runtime/`
-//     but consumes opaque shapes (`unknown` SDK client; opaque
-//     signer closure). It does NOT import from `plugins/sui/*` or
-//     `@mysten/sui/*` — the caller passes in the resolved SDK ref
-//     and the signer; the substrate just orchestrates the roundtrip.
-//   - The return shape (`ExecutedReceipt`) is name-blind: a flat
+//   - Consumes the published `ClientWithCoreApi` surface from
+//     `@mysten/sui/client` plus an opaque resolved-signer closure. The
+//     caller passes in the resolved SDK ref and the signer; this helper
+//     just orchestrates the roundtrip.
+//   - The return shape (`ExecutedReceipt`) is domain-neutral: a flat
 //     digest + a uniform `objectChanges` array. Callers map to their
 //     domain shape (PublishReceipt, ActionReceipt, MintReceipt, …).
 //   - Transport / protocol failures (serialize, sign, execute, no-digest,
@@ -39,7 +34,7 @@
 import { Effect, Schema, Scope } from 'effect';
 import type { ClientWithCoreApi } from '@mysten/sui/client';
 
-import { formatUnknownError } from '../format-unknown-error.ts';
+import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 
 // ---------------------------------------------------------------------------
 // Errors — substrate-style Schema.TaggedErrorClass
@@ -66,7 +61,7 @@ export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()(
 }) {}
 
 // ---------------------------------------------------------------------------
-// Inputs / outputs — opaque at the substrate boundary
+// Inputs / outputs
 // ---------------------------------------------------------------------------
 
 /** The SDK client this helper drives. Accepts any `ClientWithCoreApi`
@@ -76,9 +71,9 @@ export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()(
 export type SuiExecuteClient = ClientWithCoreApi;
 
 /** Serialised transaction-build callback. Returns the BCS bytes ready
- *  for signing. The caller owns the `Transaction` construction — the
- *  substrate does not import `@mysten/sui/transactions` — and resolves
- *  it via `Transaction.build({ client })`. */
+ *  for signing. The caller owns the `Transaction` construction (this
+ *  helper does not import `@mysten/sui/transactions`) and resolves it
+ *  via `Transaction.build({ client })`. */
 export type SerializedTxBuilder = () => Promise<Uint8Array>;
 
 export interface TransactionSignerScope<SignError = unknown> {

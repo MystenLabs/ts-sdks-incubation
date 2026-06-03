@@ -17,12 +17,10 @@
 // (the majority) use `signAndDispatch`; lower-level callers that drive
 // the SDK client directly use `executeSuiTx`.
 //
-// Boundary discipline (matches the sui-execute escape-hatch in this
-// directory): this module is L1-adjacent — it consumes opaque shapes
-// (an `AccountValue`-like contract surface and the `SignAndExecuteResult`
-// union) but does NOT import from `plugins/*` or `@mysten/sui/*`. The
-// caller owns the transaction build, the error mapping, and the
-// dispatch bodies.
+// Lives in `plugins/sui`. Consumes opaque shapes (an `AccountValue`-like
+// contract surface and the `SignAndExecuteResult` union) without reaching
+// into any particular publisher's full contract. The caller owns the
+// transaction build, the error mapping, and the dispatch bodies.
 //
 // On-chain `FailedTransaction` is a RETURN-CHANNEL outcome (caller
 // dispatches on `$kind` via the `onFailed` callback), NOT an error —
@@ -38,21 +36,21 @@ import type { ExecutedFailure, ExecutedReceipt } from './index.ts';
 
 /** The SDK-shaped result of `lockedSigner.signAndExecute`. Mirrors the
  *  Account plugin's `SignAndExecuteResult` union; redeclared here so
- *  the substrate helper does not import from `plugins/account/*`. The
- *  Account plugin's projection uses the substrate `ExecutedFailure`
- *  shape already (single source of truth in `sui-execute/index.ts`).
- *  Generic over the success transaction shape because the Account
- *  plugin's `TxResult` widens `ExecutedReceipt` with `effects` /
- *  `balanceChanges` fields that not every caller needs to surface. */
+ *  this helper does not import from `plugins/account/*`. The Account
+ *  plugin's projection uses the `ExecutedFailure` shape already (single
+ *  source of truth in `./index.ts`). Generic over the success
+ *  transaction shape because the Account plugin's `TxResult` widens
+ *  `ExecutedReceipt` with `effects` / `balanceChanges` fields that not
+ *  every caller needs to surface. */
 export type SignAndDispatchResult<TxOk extends { readonly digest: string } = ExecutedReceipt> =
 	| { readonly $kind: 'Transaction'; readonly Transaction: TxOk }
 	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: ExecutedFailure };
 
 /** Locked-signer slice handed to the caller's tx-build closure. Narrow
- *  view of `AccountTransactionSigner` — the substrate-side contract
- *  doesn't reach into the Account plugin's surface. Generic over the
- *  signer's sign-side error (typically `AccountSignError`) and the
- *  success transaction shape. */
+ *  view of `AccountTransactionSigner` — this contract doesn't reach into
+ *  the Account plugin's surface. Generic over the signer's sign-side
+ *  error (typically `AccountSignError`) and the success transaction
+ *  shape. */
 export interface SignAndDispatchSigner<SignError, TxOk extends { readonly digest: string }> {
 	readonly signAndExecute: (
 		tx: Uint8Array,
@@ -60,8 +58,8 @@ export interface SignAndDispatchSigner<SignError, TxOk extends { readonly digest
 }
 
 /** Outer signer-source surface required by `signAndDispatch` — anything
- *  that exposes a `withTransactionSigner` scope. The substrate helper
- *  only reaches `withTransactionSigner`, so plugins composing custom
+ *  that exposes a `withTransactionSigner` scope. This helper only
+ *  reaches `withTransactionSigner`, so plugins composing custom
  *  signing surfaces can satisfy the slice without dragging in any
  *  particular publisher's full contract. */
 export interface TransactionSignerSource<SignError, TxOk extends { readonly digest: string }> {

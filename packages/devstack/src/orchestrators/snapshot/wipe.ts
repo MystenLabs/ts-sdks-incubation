@@ -23,12 +23,7 @@ import { makePhaseFailer } from './phase-error.ts';
 export class WipePhaseError extends Schema.TaggedErrorClass<WipePhaseError>()(
 	'SnapshotWipePhaseError',
 	{
-		phase: Schema.Literals([
-			'sweep-containers',
-			'sweep-networks-volumes',
-			'remove-state',
-			'remove-runtime-tree',
-		]),
+		phase: Schema.Literals(['sweep-containers', 'sweep-networks-volumes', 'remove-runtime-tree']),
 		detail: Schema.String,
 		cause: Schema.optional(Schema.Defect),
 	},
@@ -43,7 +38,6 @@ const failPhase = makePhaseFailer(WipePhaseError);
 export interface WipeInputs {
 	readonly labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>;
 	readonly stackRoot: string;
-	readonly stateFilePath: string;
 	readonly runtime: ContainerRuntime;
 	/** Preserve the snapshot catalog (default behavior). When false,
 	 *  the catalog is removed alongside the runtime tree. */
@@ -99,8 +93,6 @@ export interface WipeTargets {
 	 *  scopes the removal rather than a (daemon-round-trip) name list. */
 	readonly networkLabelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>;
 	readonly volumeLabelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>;
-	/** Absolute path of the per-stack `state.json` that is removed. */
-	readonly stateFile: string;
 	/** Absolute path of the per-stack runtime root. Its non-preserved
 	 *  children (see `onDiskPaths`) are removed; the directory itself is
 	 *  reaped too when nothing survives. */
@@ -157,7 +149,6 @@ export const planWipe = (
 			containers,
 			networkLabelMatch: inputs.labelMatch,
 			volumeLabelMatch: inputs.labelMatch,
-			stateFile: inputs.stateFilePath,
 			stackRoot: inputs.stackRoot,
 			onDiskPaths,
 			preserved,
@@ -175,9 +166,8 @@ export const planWipe = (
  * Order:
  *   1. Force-remove managed containers by `{ app, stack }` labels.
  *   2. Remove managed networks and volumes by the same label filter.
- *   3. Remove state.json.
- *   4. Remove the runtime tree EXCEPT the snapshot catalog by default.
- *   5. Remove the now-empty stack root when nothing survived (no
+ *   3. Remove the runtime tree EXCEPT the snapshot catalog by default.
+ *   4. Remove the now-empty stack root when nothing survived (no
  *      preserved child remains) so wipe doesn't leak an empty
  *      `stacks/<stack>/` directory.
  */
@@ -205,12 +195,7 @@ export const runWipe = (
 			.removeManagedVolumes(inputs.labelMatch)
 			.pipe(Effect.catch(failPhase('sweep-networks-volumes', `volume sweep failed`)));
 
-		// 3. Remove state.json.
-		yield* fs
-			.remove(inputs.stateFilePath, { force: true })
-			.pipe(Effect.catch(failPhase('remove-state', `remove state.json failed`)));
-
-		// 4. Remove the runtime tree — but PRESERVE snapshots by default.
+		// 3. Remove the runtime tree — but PRESERVE snapshots by default.
 		//    Strategy: enumerate the stack root and remove each child the
 		//    preserve predicate does NOT keep (`snapshots/` by default;
 		//    `cache/` only when `keepCache`). Stack-local artifact caches
@@ -230,9 +215,9 @@ export const runWipe = (
 				.pipe(Effect.catch(failPhase('remove-runtime-tree', `remove ${name} failed`)));
 		}
 
-		// 5. Reap the now-empty stack root. When NOTHING was preserved
+		// 4. Reap the now-empty stack root. When NOTHING was preserved
 		//    (no `snapshots/`/`cache/` survivor) every child was removed in
-		//    step 4 — any child whose removal FAILED would have raised a
+		//    step 3 — any child whose removal FAILED would have raised a
 		//    `remove-runtime-tree` error and aborted before here — so the
 		//    directory is empty at this point. Leaving it behind leaks an
 		//    empty `stacks/<stack>/` shell that `prune --list` would show as

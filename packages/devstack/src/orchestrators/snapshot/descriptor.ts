@@ -10,7 +10,6 @@
 // `<stackRoot>/snapshots/<snapshotId>/`):
 //
 //   meta.json              — versioned metadata record, schema-decoded
-//   state.json             — copy of the stack's scalar state-store
 //   host-tree.tar          — tar of subtrees declared by participants
 //   containers/images.tar  — deduplicated Docker save bundle for all
 //                            committed managed-container images
@@ -40,7 +39,6 @@ import { versionedDocSchema } from '../../substrate/versioned-doc-schema.ts';
 /** Canonical file / directory names inside one snapshot artifact. */
 export const SnapshotLayout = {
 	metaFile: 'meta.json',
-	stateFile: 'state.json',
 	hostTreeTar: 'host-tree.tar',
 	containersDir: 'containers',
 	contributionsDir: 'contributions',

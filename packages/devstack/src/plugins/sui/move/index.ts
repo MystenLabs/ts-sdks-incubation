@@ -1,14 +1,8 @@
 // sui-move-build — shared Sui Move build helpers.
 //
-// ARCHITECTURE NOTE — substrate-name-awareness escape hatch:
-//
-// Like `sui-execute/`, this is an L1-adjacent Sui-aware helper. It owns
-// the mechanical "scrub Move.lock → run sui move build → parse bytecode"
-// path so Move-publishing plugins do not import each other's internals.
-// Listed as a documented exception in `ARCHITECTURE.md` §"Substrate
-// name-blindness" alongside `sui-execute/`. Rationale + alternative-
-// rejection are recorded there; new substrate-side Sui-aware exceptions
-// need explicit justification in that section before landing.
+// Lives in `plugins/sui`. Owns the mechanical "scrub Move.lock → run
+// sui move build → parse bytecode" path so Move-publishing plugins do
+// not import each other's internals.
 
 import { createHash } from 'node:crypto';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -23,9 +17,9 @@ import type {
 	ExecResult,
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
-import { contentHash, type ChainId, type ContentHash } from '../../brand.ts';
-import { mintRandomSuffix } from '../random-suffix.ts';
-import { decodeJsonTextSync } from '../runtime-decode.ts';
+import { contentHash, type ChainId, type ContentHash } from '../../../substrate/brand.ts';
+import { mintRandomSuffix } from '../../../substrate/runtime/random-suffix.ts';
+import { decodeJsonTextSync } from '../../../substrate/runtime/runtime-decode.ts';
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
 

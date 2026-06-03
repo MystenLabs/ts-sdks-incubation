@@ -62,11 +62,6 @@ import {
 import { verifyArtifactIntegrity } from './integrity.ts';
 import { makePhaseFailer } from './phase-error.ts';
 import {
-	readSnapshotStateDocument,
-	writeSnapshotStateDocument,
-	type SnapshotStateDocumentError,
-} from './state-document.ts';
-import {
 	mergeContributions,
 	runIdentityGuard,
 	runRuntimeIdentityGuard,
@@ -105,7 +100,6 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'read-meta',
 			'meta-corrupt',
 			'meta-absent',
-			'read-state',
 			'read-contribution',
 			'read-integrity',
 			'verify-integrity',
@@ -114,7 +108,6 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'untar-host-tree',
 			'load-image',
 			'retag-image',
-			'expand-state',
 			'post-restore-hook',
 			'pre-cleanup',
 			'write-restore-pending',
@@ -141,25 +134,6 @@ const failImageBundleTagScan =
 	(phase: RestorePhaseError['phase'], plugin?: string) =>
 	(cause: ImageBundleTagScanError): Effect.Effect<never, RestorePhaseError> =>
 		Effect.fail(new RestorePhaseError({ phase, plugin, detail: cause.detail, cause }));
-
-/** Project a `SnapshotStateDocumentError` onto a `RestorePhaseError`,
- *  branching by `kind` so a phase classifier never inspects message
- *  substrings. */
-const failStateDocument =
-	(
-		readPhase: RestorePhaseError['phase'],
-		writePhase: RestorePhaseError['phase'],
-		plugin?: string,
-	) =>
-	(err: SnapshotStateDocumentError): Effect.Effect<never, RestorePhaseError> =>
-		Effect.fail(
-			new RestorePhaseError({
-				phase: err.kind === 'write' ? writePhase : readPhase,
-				plugin,
-				detail: err.detail,
-				cause: err.cause,
-			}),
-		);
 
 // -----------------------------------------------------------------------------
 // Participants — what restore needs from each plugin
@@ -557,16 +531,6 @@ const preflightArtifact = (
 		for (const pluginKey of meta.participants) {
 			yield* preflightContributionDoc(pluginKey, artifactDir);
 		}
-		const statePath = `${artifactDir}/${SnapshotLayout.stateFile}`;
-		const stateExists = yield* fs.exists(statePath).pipe(Effect.catch(() => Effect.succeed(false)));
-		if (stateExists) {
-			yield* readSnapshotStateDocument(statePath).pipe(
-				Effect.catchTag(
-					'SnapshotStateDocumentError',
-					failStateDocument('read-state', 'expand-state'),
-				),
-			);
-		}
 		if (meta.hostTreeIncluded) {
 			const tarPath = `${artifactDir}/${SnapshotLayout.hostTreeTar}`;
 			yield* requireReadableNonEmptyFile(tarPath, 'untar-host-tree', 'host-tree tar is required');
@@ -838,7 +802,6 @@ export interface RestoreInputs {
  *   3. Pre-restore hooks (per-plugin validation; soft errors).
  *   4. Stage:
  *      - Untar host-tree into staging.
- *      - Copy state.json into staging.
  *      - Re-read contribution docs.
  *      - Load image bundles and stage verified snapshot tags.
  *      - Write a restore-pending marker into the staged root.
@@ -931,32 +894,10 @@ export const runRestore = (
 						if (meta.hostTreeIncluded) {
 							yield* restoreHostTree(inputs.artifactDir, inputs.runtimeStagingPath);
 						}
-						// 4b. Copy state.json into staging.
 						const fs = yield* FileSystem.FileSystem;
-						const srcState = `${inputs.artifactDir}/${SnapshotLayout.stateFile}`;
-						const stateExists = yield* fs
-							.exists(srcState)
-							.pipe(Effect.catch(() => Effect.succeed(false)));
-						if (stateExists) {
-							const stateDoc = yield* readSnapshotStateDocument(srcState).pipe(
-								Effect.catchTag(
-									'SnapshotStateDocumentError',
-									failStateDocument('read-state', 'expand-state'),
-								),
-							);
-							yield* writeSnapshotStateDocument(
-								`${inputs.runtimeStagingPath}/${SnapshotLayout.stateFile}`,
-								stateDoc,
-							).pipe(
-								Effect.catchTag(
-									'SnapshotStateDocumentError',
-									failStateDocument('expand-state', 'expand-state'),
-								),
-							);
-						}
-						// 4c. Read each contribution doc — the participants'
+						// 4b. Read each contribution doc — the participants'
 						//      post-restore hooks may want this; we surface it
-						//      via the participant's own state-store reads after
+						//      via the participant's own reads after the
 						//      the swap lands.
 						for (const pluginKey of meta.participants) {
 							const path = `${inputs.artifactDir}/${contributionPath(pluginKey)}`;
@@ -971,7 +912,7 @@ export const runRestore = (
 								);
 							}
 						}
-						// 4d. Load + tag committed images under restore-staging
+						// 4c. Load + tag committed images under restore-staging
 						//     refs only after all artifact expansion/copy work
 						//     has succeeded. The Docker save manifest must match
 						//     snapshot metadata exactly before docker load mutates

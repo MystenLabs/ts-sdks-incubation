@@ -1,7 +1,7 @@
 // Unified path resolver.
 //
 // Architecture § "What's collapsed" — three path resolvers
-// (state-store, service-paths, snapshot) consolidate to one. This is
+// (service-paths, snapshot) consolidate to one. This is
 // the L0 helper every disk-touching subsystem reaches for; nothing
 // else in the runtime package may compose `<root>/stacks/<stack>/...`
 // by hand.
@@ -58,8 +58,6 @@ export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> 
  *   - `stackRoot` and the cross-process artifacts (lock, roster,
  *     command channel, snapshot reservation) live directly under the stack
  *     directory. Cross-process safety lives here.
- *   - `stateFile` is the per-stack state-store JSON. ONE file per
- *     stack — schema-validated on read.
  *   - `cacheDir` is the parent directory; the cache subsystem
  *     composes `<cacheDir>/<namespace>/<chainId>/<contentHash>.json`
  *     via a helper on this resolver. Subsystems do NOT reach into
@@ -67,8 +65,6 @@ export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> 
  */
 export interface StackPaths {
 	readonly stackRoot: string;
-	readonly stateFile: string;
-	readonly stateLockHint: string;
 	readonly cacheDir: string;
 	readonly snapshotDir: string;
 	readonly stackLockFile: string;
@@ -140,8 +136,6 @@ export const layerStackPaths: Layer.Layer<
 		};
 		return StackPathsService.of({
 			stackRoot,
-			stateFile: path.join(stackRoot, 'state.json'),
-			stateLockHint: path.join(stackRoot, 'state.json.lock'),
 			cacheDir,
 			snapshotDir: path.join(stackRoot, 'snapshots'),
 			stackLockFile: path.join(stackRoot, 'stack.lock'),

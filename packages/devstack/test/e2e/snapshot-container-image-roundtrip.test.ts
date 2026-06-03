@@ -159,7 +159,6 @@ describe('snapshot container image roundtrip', () => {
 							stack,
 							network: 'sui:local',
 							runtimeStackRoot: paths.stackRoot,
-							stateFilePath: paths.stateFile,
 							participants: [participant],
 							runtime,
 						});

@@ -79,8 +79,6 @@ const stackPathsFor = (stackRoot: string, rosterFile: string): StackPaths => {
 	};
 	return {
 		stackRoot,
-		stateFile: join(stackRoot, 'state.json'),
-		stateLockHint: join(stackRoot, 'state.json.lock'),
 		cacheDir,
 		snapshotDir: join(stackRoot, 'snapshots'),
 		// Point both lock and roster files into a path whose dirname is a

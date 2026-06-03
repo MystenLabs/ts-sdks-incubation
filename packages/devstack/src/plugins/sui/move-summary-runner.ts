@@ -36,11 +36,7 @@ import {
 import { CodegenBindingsFailed } from '../../orchestrators/codegen/errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { capture } from '../../substrate/runtime/observability/subprocess-capture.ts';
-import {
-	copyLocalMoveDeps,
-	shellQuote,
-	suiCliImageBuildContext,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+import { copyLocalMoveDeps, shellQuote, suiCliImageBuildContext } from './move/index.ts';
 
 // -----------------------------------------------------------------------------
 // Docker variant — `sui move summary` inside the Sui CLI container image.

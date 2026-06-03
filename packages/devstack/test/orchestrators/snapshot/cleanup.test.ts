@@ -58,22 +58,18 @@ describe('snapshot cleanup orchestration', () => {
 				Effect.gen(function* () {
 					const events: string[] = [];
 					const stackRoot = join(root, 'stack');
-					const stateFilePath = join(stackRoot, 'state.json');
 					const cacheDir = join(stackRoot, 'cache');
 					mkdirSync(join(stackRoot, 'snapshots'), { recursive: true });
 					mkdirSync(cacheDir, { recursive: true });
 					mkdirSync(join(stackRoot, 'work'), { recursive: true });
-					writeFileSync(stateFilePath, '{}');
 
 					yield* runWipe({
 						labelMatch: { app: 'app', stack: 'main' },
 						stackRoot,
-						stateFilePath,
 						runtime: runtimeStub(events),
 					}).pipe(Effect.provide(NodeFileSystem.layer));
 
 					expect(events).toEqual(['containers:app/main', 'networks:app/main', 'volumes:app/main']);
-					expect(existsSync(stateFilePath)).toBe(false);
 					expect(existsSync(join(stackRoot, 'work'))).toBe(false);
 					expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
 					expect(existsSync(cacheDir)).toBe(false);
@@ -86,22 +82,20 @@ describe('snapshot cleanup orchestration', () => {
 			Effect.gen(function* () {
 				const events: string[] = [];
 				const stackRoot = join(root, 'stack');
-				const stateFilePath = join(stackRoot, 'state.json');
 				const cacheDir = join(stackRoot, 'cache');
 				mkdirSync(cacheDir, { recursive: true });
 				writeFileSync(join(cacheDir, 'entry'), 'cache');
-				writeFileSync(stateFilePath, '{}');
+				writeFileSync(join(stackRoot, 'work'), 'removable');
 
 				yield* runWipe({
 					labelMatch: { app: 'app', stack: 'main' },
 					stackRoot,
-					stateFilePath,
 					runtime: runtimeStub(events),
 					keepCache: true,
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(existsSync(join(cacheDir, 'entry'))).toBe(true);
-				expect(existsSync(stateFilePath)).toBe(false);
+				expect(existsSync(join(stackRoot, 'work'))).toBe(false);
 			}),
 		),
 	);

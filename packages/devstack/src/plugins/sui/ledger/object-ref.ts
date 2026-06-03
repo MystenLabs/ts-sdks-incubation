@@ -1,4 +1,4 @@
-// substrate/runtime/sui-ledger — `ledgerService.getObject` workaround.
+// plugins/sui/ledger — `ledgerService.getObject` workaround.
 //
 // `SuiSdkShim.core.getObject` returns the simplified `core`-surface
 // projection (no version/digest) per `@mysten/sui`'s `ClientWithCoreApi`
@@ -9,19 +9,15 @@
 // The cast `sdk.client as unknown as {ledgerService: {…}}` is the
 // sanctioned escape hatch — `ClientWithCoreApi` doesn't structurally
 // overlap with the gRPC `{ledgerService}` shape, so a direct cast fails.
-// Folded into one substrate-side helper so every plugin that needs an
-// up-to-date `{objectId, version, digest}` ObjectRef goes through the
-// same projection (and the same `unknown`-cast escape hatch) rather
-// than re-deriving it.
+// Folded into one helper so every plugin that needs an up-to-date
+// `{objectId, version, digest}` ObjectRef goes through the same
+// projection (and the same `unknown`-cast escape hatch) rather than
+// re-deriving it.
 //
 // NOTE: not exported from the public barrel — this is an internal
-// substrate primitive used by plugins, not a published API.
-//
-// Sibling of `substrate/runtime/sui-execute/` — same opacity discipline
-// (no `@mysten/sui/client` type import; the opaque `SuiSdkShim` carries
-// the client through).
+// primitive used by plugins, not a published API.
 
-import type { SuiSdkShim } from '../../../plugins/sui/index.ts';
+import type { SuiSdkShim } from '../index.ts';
 
 /** Shape of the gRPC ledger-service projection we need. Hand-written
  *  because the public `ClientWithCoreApi` surface doesn't include the

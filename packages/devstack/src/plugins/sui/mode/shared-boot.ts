@@ -49,8 +49,8 @@ import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady }
 export const DEFAULT_CHAIN_ID_TIMEOUT = Duration.seconds(30);
 
 /** Fetch the chain identifier off a constructed grpc client. The
- *  result is the bare string that downstream cache layers fold into
- *  their state-store keys. */
+ *  result is the bare string that the substrate's content-addressed
+ *  cache folds into its keys (`(namespace, chainId, contentHash)`). */
 export const fetchChainId = (
 	sdkClient: SuiGrpcClient,
 	opts?: { readonly timeout?: Duration.Duration; readonly span?: string },

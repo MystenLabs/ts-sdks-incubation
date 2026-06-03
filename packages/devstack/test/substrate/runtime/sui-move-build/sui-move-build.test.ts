@@ -16,7 +16,7 @@ import {
 	runMoveBuild,
 	scrubLocksHost,
 	stripPinnedSections,
-} from '../../../../src/substrate/runtime/sui-move-build/index.ts';
+} from '../../../../src/plugins/sui/move/index.ts';
 
 const unusedRuntimeMethod = () => Effect.die('not used');
 

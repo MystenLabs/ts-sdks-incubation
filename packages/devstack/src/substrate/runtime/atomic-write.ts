@@ -1,7 +1,7 @@
 // Atomic write primitive — ONE canonical implementation.
 //
 // Architecture § "What's collapsed" — three tempfile+rename impls
-// (atomic-write, state-store, global registry) collapse to one. This
+// (atomic-write, cache, global registry) collapse to one. This
 // is that one.
 //
 // Contract:
@@ -18,7 +18,7 @@
 //
 // Two surfaces:
 //   - `atomicWriteFile` / `atomicWriteJson` — Effect/FileSystem-based,
-//     used by every async write site (manifest, state-store, cache).
+//     used by every async write site (manifest, cache).
 //   - `atomicWriteFileSync` / `atomicWriteJsonSync` — node:fs-sync,
 //     used by the cross-process modules (roster, snapshot-reservation,
 //     stack-lock) that hold `stack.lock` and must keep their critical
@@ -31,7 +31,7 @@
 //   - fsync the parent directory. Linux's man fsync(2) suggests it
 //     for full durability after rename(); the Effect platform layer
 //     does not expose dir-fsync. Documented limitation — recoverable
-//     on crash because the state-store rewrites on every change and
+//     on crash because every on-disk artifact rewrites on change and
 //     cache misses re-produce.
 
 import {

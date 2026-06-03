@@ -5,7 +5,7 @@
 // `ArtifactPublisher` + on-disk `Cache` substrate primitives):
 //
 //   - Cold boot: body runs exactly once; receipt is written to the
-//     state-store under `cache/action/<chain>/<hash>.json`.
+//     on-disk cache under `cache/action/<chain>/<hash>.json`.
 //   - Warm boot (same runtime root): cache hit; body does NOT run
 //     again; receipt is surfaced from the cached payload.
 //
@@ -18,7 +18,7 @@
 // Why not boot the full `connect-four` stack? The connect-four stack composes
 // `sui()`, which spawns a docker validator. The action's caching
 // discipline is INDEPENDENT of the chain (the artifact publisher substrate consults
-// `state.json` + the chain-probe; the chain-probe itself is the
+// the on-disk cache + the chain-probe; the chain-probe itself is the
 // load-bearing dependency, NOT the running container). The stub
 // chain-probe here pins the cache discipline without depending on a
 // clean docker environment.

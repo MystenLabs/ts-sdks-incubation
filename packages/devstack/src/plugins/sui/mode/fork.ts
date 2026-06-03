@@ -28,7 +28,7 @@ import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/prob
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import { extractExecuteDigest } from '../../../substrate/runtime/sui-execute/index.ts';
+import { extractExecuteDigest } from '../exec/index.ts';
 import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -39,7 +39,7 @@ import {
 	FORK_IMPERSONATION_GAS_BUDGET,
 	verifyForkImpersonationSender,
 } from '../fork-transaction.ts';
-import { DEFAULT_SUI_CLI_VERSION } from '../../../substrate/runtime/sui-move-build/index.ts';
+import { DEFAULT_SUI_CLI_VERSION } from '../move/index.ts';
 import type { ForkAdminSurface, SuiClient } from './shared.ts';
 import { toDockerHostGatewayUrl } from './shared.ts';
 import {

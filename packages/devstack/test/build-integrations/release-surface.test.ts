@@ -274,7 +274,6 @@ describe('release surface static checks', () => {
 			'./events.ts',
 			'./identity.ts',
 			'./projection.ts',
-			'./state-store.ts',
 		]) {
 			expect(substrate).not.toContain(privateModule);
 		}

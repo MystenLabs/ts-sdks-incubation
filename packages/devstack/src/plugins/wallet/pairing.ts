@@ -65,8 +65,9 @@ export const mintToken = (): Effect.Effect<PairingToken> =>
 // ----------------------------------------------------------------------
 
 /** Resolve the on-disk token path under a state root. The state root
- *  is supplied by the substrate's identity / state-store config; this
- *  helper centralises the layout convention.
+ *  is the substrate path resolver's per-stack `StackPathsService.stackRoot`
+ *  (derived from the runtime root + identity); this helper centralises
+ *  the layout convention.
  *
  *  Convention: `<stateRoot>/wallet/token` — one token per stack, lives
  *  alongside other per-stack runtime artifacts. */

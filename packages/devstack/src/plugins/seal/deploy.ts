@@ -21,19 +21,17 @@ import { contentHash, type ChainId, type ContentHash } from '../../substrate/bra
 import {
 	executeSuiTx,
 	formatExecutedFailure,
-	type ExecutedReceipt,
-} from '../../substrate/runtime/sui-execute/index.ts';
-import {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
 	type BuildOutput,
+	type ExecutedReceipt,
 	type MoveBuildError,
-} from '../../substrate/runtime/sui-move-build/index.ts';
+	type ClientWithCoreApi,
+} from '../sui/index.ts';
 import { fromHex } from '@mysten/sui/utils';
 
 import type { AccountValue } from '../account/index.ts';
-import type { ClientWithCoreApi } from '../sui/index.ts';
 import { sealError, type SealError } from './errors.ts';
 import { SealSpans } from './spans.ts';
 

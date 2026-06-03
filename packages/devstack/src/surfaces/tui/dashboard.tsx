@@ -119,8 +119,6 @@ const snapshotPhaseLabel = (phase: SnapshotCaptureProgressPhase | 'starting'): s
 			return 'saving images';
 		case 'capturing-host-tree':
 			return 'capturing files';
-		case 'saving-state':
-			return 'saving state';
 		case 'saving-contributions':
 			return 'saving metadata';
 		case 'writing-metadata':
@@ -135,7 +133,6 @@ const snapshotPhaseMeansPaused = (phase: SnapshotCaptureProgressPhase | 'startin
 	phase === 'capturing-containers' ||
 	phase === 'saving-images' ||
 	phase === 'capturing-host-tree' ||
-	phase === 'saving-state' ||
 	phase === 'saving-contributions' ||
 	phase === 'writing-metadata' ||
 	phase === 'resuming';
