@@ -38,9 +38,10 @@ export interface ScaffoldOptions {
 	 *  the bundled `template/` next to this module. */
 	templateDir?: string;
 	/** Which plugins to keep. `core` is always implied. Unlisted optional
-	 *  plugins are stripped (files removed, fences dropped, deps deleted).
-	 *  Defaults to ALL plugins (full superset). Kept prompt-free so `scaffold`
-	 *  stays pure/testable — the interactive picker lives in `bin.ts`. */
+	 *  plugins are removed (their files deleted, the generated barrels
+	 *  regenerated from the selected set, their deps dropped). Defaults to ALL
+	 *  plugins. Kept prompt-free so `scaffold` stays pure/testable — the
+	 *  interactive picker lives in `bin.ts`. */
 	plugins?: ReadonlyArray<PluginId>;
 	/** Where to log progress. Defaults to `console.log`. */
 	log?: (msg: string) => void;

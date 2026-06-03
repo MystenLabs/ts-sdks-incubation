@@ -1,4 +1,5 @@
-// Composer for the scaffolder. Replaces the old fence-stripping approach.
+// Composer for the scaffolder — selects plugins by composition, not text
+// parsing.
 //
 // The authored template is a superset whose two GENERATED barrels
 // (`src/app-panels.ts`, `src/devstack/plugins.ts`) list every optional plugin.
