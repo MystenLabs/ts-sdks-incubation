@@ -12,14 +12,23 @@
 
 import { Cause, Context, Effect, Exit, Queue, Scope, SubscriptionRef } from 'effect';
 
+import type { ArtifactPublisher, ArtifactSpec } from '../../../primitives/artifact-publisher.ts';
 import type { CapabilityDecl } from '../../../contracts/capability-decl.ts';
+import type { CodegenableDecl } from '../../../contracts/codegenable.ts';
+import type { ProjectionDecl } from '../../../contracts/projection.ts';
+import type { RoutableDecl } from '../../../contracts/routable.ts';
+import type { SnapshotableDecl } from '../../../contracts/snapshotable.ts';
+import type { StrategyContributorDecl } from '../../../contracts/strategy-contributor.ts';
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
+import type { PluginCtx } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies, type AcquireContext } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
+import { ArtifactPublisherService } from '../artifact-publisher/index.ts';
 import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
+import { StrategyRegistryService } from '../strategy-registry/service.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
 import {
 	annotateOp,
@@ -39,7 +48,72 @@ import {
 } from '../lifecycle/index.ts';
 import { operationalEndpointEventsFromResolvedValue } from '../projection/operational-endpoints.ts';
 import { dispatchContributions, resolveCapabilities } from './dispatch-contributions.ts';
-import { bestEffort, publish } from './wiring.ts';
+import { bestEffort, noopStrategyRegistry, OptionalService, publish } from './wiring.ts';
+
+// -----------------------------------------------------------------------------
+// Per-plugin PluginCtx (Stage B foundation — P0/P0.5/P1)
+// -----------------------------------------------------------------------------
+
+const artifactPublisherAccess = OptionalService(ArtifactPublisherService);
+const strategyRegistryAccess = OptionalService(StrategyRegistryService);
+
+/** Fallback publisher for bare supervisor paths that don't layer an
+ *  ArtifactPublisherService into `pluginContext` (smoke tests). A real
+ *  stack always carries it (see `orchestrators/run.ts`
+ *  `buildPluginContext`); persisting plugins only run there. */
+const noopPublisher: ArtifactPublisher = {
+	publish: <Produced, Verified>(_spec: ArtifactSpec<Produced, Verified>) =>
+		Effect.fail({
+			_tag: 'ArtifactPublishError' as const,
+			reason: 'produce-failed' as const,
+			detail: 'no ArtifactPublisherService in plugin context',
+		}),
+};
+
+/**
+ * Build the per-plugin `PluginCtx` + its replay buffer. The four
+ * declarative verbs (`codegen`/`endpoint`/`snapshotExtra`/`publish`) and
+ * the strategy-bus writer (`provides`) PUSH a typed `CapabilityDecl`
+ * into `buffer`; the supervisor replays that buffer (concatenated with
+ * the legacy `resolveCapabilities` output) through the SAME
+ * `dispatchContributions` path after a successful `start`. Because no
+ * plugin emits ctx verbs yet, `buffer` is empty in production →
+ * combined == legacy → dispatch is byte-identical.
+ *
+ * `persist` is a thin pass-through to the ArtifactPublisher primitive
+ * read from `pluginContext` (forwards the plugin-supplied hex
+ * `spec.chain` verbatim). `requires` reads the scope-local
+ * StrategyRegistry → `StrategyNotFoundError`. `fail` is `Effect.fail`.
+ */
+const makePluginCtx = (
+	pluginContext: Context.Context<never>,
+): { readonly ctx: PluginCtx; readonly buffer: CapabilityDecl[] } => {
+	const buffer: CapabilityDecl[] = [];
+	const publisher = artifactPublisherAccess.read(pluginContext, noopPublisher);
+	const strategyRegistry = strategyRegistryAccess.read(pluginContext, noopStrategyRegistry);
+	const ctx: PluginCtx = {
+		persist: (spec) => publisher.publish(spec),
+		codegen: <E extends string>(decl: CodegenableDecl<E>): void => {
+			buffer.push(decl);
+		},
+		endpoint: (decl: RoutableDecl): void => {
+			buffer.push(decl);
+		},
+		snapshotExtra: (decl: SnapshotableDecl): void => {
+			buffer.push(decl);
+		},
+		publish: (decl: ProjectionDecl): void => {
+			buffer.push(decl);
+		},
+		provides: <K extends string, S>(decl: StrategyContributorDecl<K, S>): void => {
+			buffer.push(decl as CapabilityDecl);
+		},
+		requires: <K extends string>(capabilityKey: K) =>
+			strategyRegistry.get<K, unknown>(capabilityKey),
+		fail: (error) => Effect.fail(error) as Effect.Effect<never>,
+	};
+	return { ctx, buffer };
+};
 
 // -----------------------------------------------------------------------------
 // Boot the registry from a graph
@@ -140,7 +214,13 @@ export const acquireNode = (
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const start = entry.node.member.start as (
 			deps: unknown,
+			ctx?: PluginCtx,
 		) => Effect.Effect<unknown, unknown, any>;
+		// Stage B foundation: build the per-plugin ctx + replay buffer. The
+		// buffer stays EMPTY for every unconverted plugin (their `start`
+		// ignores the 2nd arg), so the combined contribution list below is
+		// byte-identical to the legacy `resolveCapabilities` output.
+		const { ctx: pluginCtx, buffer } = makePluginCtx(pluginContext);
 		const currentPluginContext = pluginContext.pipe(
 			Context.add(CurrentPluginKey, { key }),
 			Context.add(CurrentPluginProgress, {
@@ -153,11 +233,10 @@ export const acquireNode = (
 					}),
 			}),
 		);
-		const providedAcquire = Effect.provide(start(deps), currentPluginContext) as Effect.Effect<
-			unknown,
-			unknown,
-			Scope.Scope
-		>;
+		const providedAcquire = Effect.provide(
+			start(deps, pluginCtx),
+			currentPluginContext,
+		) as Effect.Effect<unknown, unknown, Scope.Scope>;
 		const result = yield* Scope.provide(providedAcquire, entry.scope).pipe(
 			Effect.matchEffect({
 				onFailure: (cause) =>
@@ -210,7 +289,14 @@ export const acquireNode = (
 				});
 				return;
 			}
-			const caps = capsExit.value;
+			// P0.5: combined contribution list = REPLAYED ctx buffer (decls
+			// pushed by the 5 buffered verbs during `start`, in emit order)
+			// CONCATENATED with the legacy `resolveCapabilities` output. The
+			// combined list feeds the SAME `dispatchContributions` path, so
+			// sinks/dispatch are untouched — only the SOURCE changes. The
+			// buffer is empty for every unconverted plugin → combined ==
+			// legacy → byte-identical to today's harvest.
+			const caps: ReadonlyArray<CapabilityDecl> = [...buffer, ...capsExit.value];
 			const errorContributions = entry.node.member.errorContributions ?? [];
 			if (caps.length > 0 || errorContributions.length > 0) {
 				const dispatchExit = yield* Effect.exit(

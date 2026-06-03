@@ -1,0 +1,128 @@
+// PluginCtx — the minimal, closed, typed plugin-authoring surface.
+//
+// Stage B (plugin API inversion) replaces the legacy `capabilities`
+// second-closure with inline typed verbs a plugin calls from `start`.
+// `start(deps, ctx)` receives this `ctx` as an ADDITIVE optional 2nd
+// argument. During Stage B's foundation (P0/P0.5/P1) the legacy
+// `capabilities` closure COEXISTS with `ctx`: the supervisor replays
+// the buffered ctx verbs and CONCATENATES them with the resolved
+// legacy capabilities before dispatch, so an unconverted plugin (which
+// ignores `ctx`) is byte-for-byte unchanged.
+//
+// -----------------------------------------------------------------------------
+// INV-5 — the closed 8-key set
+// -----------------------------------------------------------------------------
+//
+// `PluginCtx` has EXACTLY these 8 readonly keys and no more:
+//
+//   persist · codegen · endpoint · snapshotExtra · publish ·
+//   provides · requires · fail
+//
+// This is a HARD invariant (pinned by `plugin-ctx-keyset.test-d.ts`).
+// Growing the set re-builds the very god-object Stage B deletes. The
+// rule for what may live here:
+//
+//   - `persist` is a thin pass-through to the ArtifactPublisher
+//     primitive (cache → verify → produce → register). It forwards the
+//     plugin-supplied HEX `spec.chain` VERBATIM — the substrate does
+//     NOT fold `identity.chain` in, because the on-disk cache (and
+//     warm-restart id stability) keys on the hex chain id. See B.1.
+//   - `codegen` / `endpoint` / `snapshotExtra` / `publish` are the four
+//     BUFFERED declarative verbs. Their backing services
+//     (CodegenOrchestratorService, RouterService +
+//     ManifestEndpointRegistryService, SnapshotOrchestratorService, the
+//     projection sink) are SUPERVISOR-FRAME-ONLY — they are absent from
+//     plugin scope. A verb call therefore cannot run its backing
+//     service inline; it pushes a typed buffer entry that the supervisor
+//     REPLAYS in its own frame after the plugin's `start` succeeds.
+//   - `provides` / `requires` are the strategy bus (the faucet pattern
+//     generalized): a plugin contributes to / reads a sibling's
+//     capability-keyed registry without a dep-graph edge.
+//   - `fail` is the typed plugin-fail escape hatch.
+//
+// What stays OUT of `ctx`, and WHY: every other substrate service a
+// plugin needs is already in plugin scope and is reached with
+// `yield* Service` directly — `ArtifactPublisherService`,
+// `ContainerRuntimeService`, `IdentityContext`, `CacheService`,
+// `PortBrokerService`, `LeaseBrokerService`, etc. The infra
+// orchestrators that are NOT in plugin scope
+// (Snapshot/Codegen/Router/ManifestEndpoint) are precisely the four
+// buffered verbs above — and infra contributions stay `yield*`-shaped
+// declarations, NEVER imperative `ctx.tx`-style Sui leaks. Adding a
+// service to `ctx` that a plugin could already `yield*` is the drift
+// INV-5 forbids.
+
+import type { Effect } from 'effect';
+
+import type { ArtifactPublisher } from '../primitives/artifact-publisher.ts';
+import type { CodegenableDecl } from '../contracts/codegenable.ts';
+import type { ProjectionDecl } from '../contracts/projection.ts';
+import type { RoutableDecl } from '../contracts/routable.ts';
+import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
+import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
+import type { StrategyNotFoundError } from './runtime/errors.ts';
+
+/**
+ * Type of the strategy a `ctx.requires(key)` read resolves to.
+ *
+ * The strategy registry stores contributions as a scope-local multimap
+ * of `unknown` (see `runtime/strategy-registry/service.ts`): the
+ * registered strategy's type is erased at storage, and the registry's
+ * `get<Key, S>` lets the CALLER name the expected `S`. Mirroring that
+ * erased read surface, `StrategyFor<K>` resolves to `unknown` for every
+ * key — the reader narrows at the call site (a contributor and consumer
+ * agreeing on a key's strategy shape is a plugin-pair convention the
+ * substrate stays blind to). The `K` parameter is retained so the verb
+ * signature reads symmetrically with `provides`/`StrategyContributorDecl`
+ * and so a future typed registry can specialize this alias without
+ * touching the `PluginCtx` shape.
+ */
+export type StrategyFor<K extends string> = Record<K, unknown>[K];
+
+/**
+ * The minimal typed plugin-authoring context. Passed as the additive
+ * optional 2nd argument to `start(deps, ctx)`.
+ *
+ * EXACTLY 8 keys (INV-5 — see file header). Do not add a 9th.
+ */
+export interface PluginCtx {
+	/**
+	 * Thin pass-through to the ArtifactPublisher primitive. Forwards the
+	 * plugin-supplied HEX `spec.chain` verbatim (NO `identity.chain`
+	 * fold) so on-disk cache ids and warm-restart id stability are
+	 * byte-identical to a direct `ArtifactPublisherService.publish`.
+	 */
+	readonly persist: ArtifactPublisher['publish'];
+	/** Buffered: contribute a generated-file emitter to the codegen
+	 *  orchestrator. Replayed in the supervisor frame after a successful
+	 *  `start`. Returns void (the orchestrator owns rendering). */
+	readonly codegen: <E extends string>(decl: CodegenableDecl<E>) => void;
+	/** Buffered: declare a routable endpoint for the router orchestrator.
+	 *  Replayed in the supervisor frame after a successful `start`.
+	 *  Returns VOID — no URL is echoed back to the plugin (the router
+	 *  mints and publishes the endpoint event itself). */
+	readonly endpoint: (decl: RoutableDecl) => void;
+	/** Buffered: declare extra snapshot subtrees / managed containers /
+	 *  identity-guard hooks for the snapshot orchestrator. Replayed in
+	 *  the supervisor frame after a successful `start`. */
+	readonly snapshotExtra: (decl: SnapshotableDecl) => void;
+	/** Buffered: publish a name-blind projection event through the
+	 *  projection sink. Replayed in the supervisor frame after a
+	 *  successful `start`. */
+	readonly publish: (decl: ProjectionDecl) => void;
+	/** Strategy bus (write): contribute a strategy under a capability
+	 *  key for a sibling to read via `requires`. Registers on the
+	 *  scope-local StrategyRegistry, publishes `strategy.registered`, and
+	 *  arms a finalizer publishing `strategy.unregistered`. */
+	readonly provides: <K extends string, S>(decl: StrategyContributorDecl<K, S>) => void;
+	/** Strategy bus (read): resolve the strategy registered under a
+	 *  capability key, or fail with `StrategyNotFoundError`. */
+	readonly requires: <K extends string>(
+		key: K,
+	) => Effect.Effect<StrategyFor<K>, StrategyNotFoundError>;
+	/** Typed plugin-fail escape hatch. Surfaces the tagged error through
+	 *  the supervisor's `markFailed` path. */
+	readonly fail: (
+		error: { readonly _tag: string } & Record<string, unknown>,
+	) => Effect.Effect<never>;
+}

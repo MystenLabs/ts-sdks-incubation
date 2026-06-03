@@ -11,6 +11,7 @@ import type { CapabilityDecl } from '../contracts/capability-decl.ts';
 import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { PluginRole } from './lifecycle.ts';
+import type { PluginCtx } from './plugin-ctx.ts';
 import type { RowSection } from './projection.ts';
 
 const resourceBrand: unique symbol = Symbol.for('devstack.resource') as never;
@@ -85,9 +86,47 @@ export type ResolvedDependencies<Input> = Input extends undefined
 				? ResolvedDependencyObject<Input>
 				: never;
 
+// The erased start shape. `(...args: any[])` absorbs the additive
+// optional `ctx` 2nd argument the supervisor passes (`start(deps, ctx)`)
+// without forcing every authoring-side `PluginStart` to re-infer around
+// it. `StartValue` recovers the Value from the success channel through
+// this same loose match.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyPluginStart = (...args: any[]) => Effect.Effect<unknown, unknown, unknown>;
 
+// Stage B (P0): the ADDITIVE optional `ctx` argument lands on the
+// runtime-facing `Plugin.start` type + `AnyPluginStart` (below), which
+// is what the supervisor calls (`start(deps, ctx)`), and on the public
+// `start` overloads via the loose `AnyPluginStart` bound. It is
+// DELIBERATELY absent from this `PluginStart<Deps>` inference helper.
+//
+// Why: `PluginStart<Deps>` is the contextual type the `const Start`
+// generic is inferred from when a plugin authors `start: (deps) => …`.
+// Adding a 2nd positional/optional/rest param here degrades `deps`
+// inference to `any` for the plugins whose `dependsOn` is a runtime-
+// built (non-literal) array — `account` / `action` / `wallet` /
+// `deepbook` — because `Start` is then inferred from a 1-arg arrow
+// against a 2-arg target and the `deps` contextual type collapses. The
+// helper stays single-arg so baseline inference is byte-identical; a
+// plugin that opts into `ctx` reads it off the additive slot exposed on
+// the materialized `Plugin.start`. P2 widens authoring to a 2-arg body
+// (and P5 makes ctx required) — out of scope for the foundation.
+// The DEFAULT contextual shape `const Start` resolves to when a plugin
+// authors `start: (deps) => …` and lets TypeScript NOT infer `Start`
+// from the arrow. Kept SINGLE-arg so the deps-bearing plugins whose
+// `dependsOn` is a runtime-built (non-literal) array
+// (account/action/wallet/deepbook/seal/walrus) keep contextually typing
+// `deps` via this default — adding the ctx slot here regresses that
+// inference to `any` (the default no longer arity-matches the 1-arg
+// arrow, so `Start` is inferred from the arrow and `Deps` never reaches
+// `deps`). The ADDITIVE optional `ctx` 2nd argument is admitted by
+// loosening the `definePlugin` overloads' `Start` CONSTRAINT to
+// `AnyPluginStart` (a `(...args: any[])` super-shape) while keeping THIS
+// as the default: a 2-arg `(deps, ctx) =>` body satisfies the loose
+// constraint and types `deps`/`ctx` from its own annotations, and a
+// 1-arg body falls back to this default. The runtime-facing
+// `Plugin.start` (below) carries `ctx?` directly — that is what the
+// supervisor calls.
 type PluginStart<Deps> = [Deps] extends [undefined]
 	? () => Effect.Effect<unknown, unknown, unknown>
 	: (deps: Deps) => Effect.Effect<unknown, unknown, unknown>;
@@ -183,6 +222,7 @@ export interface Plugin<
 	readonly watch?: WatchDecl;
 	readonly start: (
 		deps: ResolvedDependencies<DependencyInput | undefined>,
+		ctx?: PluginCtx,
 	) => Effect.Effect<Value, unknown, unknown>;
 	readonly capabilities?: Caps | CapabilitiesFactory<Caps, Value>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
@@ -266,12 +306,19 @@ export const resolvePluginDependencies = (
 export const pluginDependencyRefs = (plugin: AnyPlugin): readonly AnyResourceRef[] =>
 	dependencyList(plugin[dependencyInputBrand]) as readonly AnyResourceRef[];
 
+// Stage B (P0): the `Start` CONSTRAINT is the loose `AnyPluginStart`
+// (`(...args: any[]) => Effect`), while the DEFAULT stays the single-arg
+// `PluginStart<Deps>`. A 1-arg `start: (deps) => …` body falls back to
+// the default (baseline-identical `deps` inference, zero plugin edits);
+// an additive 2-arg `start: (deps, ctx) => …` body satisfies the loose
+// constraint and types `deps`/`ctx` from its own annotations. Tightening
+// the constraint to `PluginStart` (or any 2-arg-capable shape) regresses
+// `deps` to `any` for the plugins whose `dependsOn` is a runtime-built
+// array — see the note on `PluginStart` above.
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends readonly AnyResourceRef[],
-	const Start extends PluginStart<ResolvedDependencyList<DependsOn>> = PluginStart<
-		ResolvedDependencyList<DependsOn>
-	>,
+	const Start extends AnyPluginStart = PluginStart<ResolvedDependencyList<DependsOn>>,
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
 	spec: PluginSpecBase<Id, Start, Caps> & {
@@ -281,9 +328,7 @@ export function definePlugin<
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends Readonly<Record<string, AnyResourceRef>>,
-	const Start extends PluginStart<ResolvedDependencyObject<DependsOn>> = PluginStart<
-		ResolvedDependencyObject<DependsOn>
-	>,
+	const Start extends AnyPluginStart = PluginStart<ResolvedDependencyObject<DependsOn>>,
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
 	spec: PluginSpecBase<Id, Start, Caps> & {
@@ -293,9 +338,7 @@ export function definePlugin<
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends AnyResourceRef,
-	const Start extends PluginStart<ResourceValueOf<DependsOn>> = PluginStart<
-		ResourceValueOf<DependsOn>
-	>,
+	const Start extends AnyPluginStart = PluginStart<ResourceValueOf<DependsOn>>,
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
 	spec: PluginSpecBase<Id, Start, Caps> & {
@@ -304,7 +347,7 @@ export function definePlugin<
 ): Plugin<Id, StartValue<Start>, readonly [DependsOn], Caps>;
 export function definePlugin<
 	const Id extends string,
-	const Start extends PluginStart<undefined> = PluginStart<undefined>,
+	const Start extends AnyPluginStart = PluginStart<undefined>,
 	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
 	spec: PluginSpecBase<Id, Start, Caps> & {
