@@ -605,7 +605,7 @@ const validateUniqueness = (
 				// `generated` vs `generated-extras` trees is two distinct
 				// files, so `accounts.ts` may exist in both without a
 				// false collision.
-				const pathKey = `${declLocation(d)} ${d.outputPath}`;
+				const pathKey = `${declLocation(d)} ${d.outputPath}`;
 				const ps = byPath.get(pathKey) ?? [];
 				ps.push(d.emitterName);
 				byPath.set(pathKey, ps);
