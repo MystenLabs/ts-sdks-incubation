@@ -6,11 +6,11 @@
 // the distilled doc, anticipated by the plain-endpoint shape but not
 // implemented). One factory; no mode-narrowed namespace.
 //
-// Capabilities emitted:
-//   1. Snapshotable — container's writable layer (PGDATA-relocated),
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
+//   1. `ctx.snapshotExtra` — container's writable layer (PGDATA-relocated),
 //      identity guard contributes server name + ordered db list.
-//   2. Codegenable — typed connection bindings for user-app code.
-//   3. Routable (TCP, optional) — gated by `opts.route`. When true,
+//   2. `ctx.codegen` — typed connection bindings for user-app code.
+//   3. `ctx.endpoint` (TCP, optional) — gated by `opts.route`. When true,
 //      the postgres container fronts the `postgres-tcp` Traefik
 //      entrypoint (host port 5432 by default). Disabled by default to
 //      preserve the existing parallel-stack story (TCP has no Host

@@ -323,10 +323,6 @@ export const acquireNode = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
-	// Threaded through `acquireKeys`/`acquireFullGraph` for signature
-	// symmetry; the post-start dispatch no longer reads it (the legacy
-	// `AcquireContext` for the deleted capability factory is gone).
-	_runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
@@ -522,23 +518,12 @@ export const acquireKeys = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
-	runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({ 'devstack.level.size': keys.length });
 		yield* Effect.all(
 			keys.map((key) =>
-				acquireNode(
-					registry,
-					key,
-					ref,
-					hub,
-					pluginContext,
-					dispatcher,
-					logger,
-					identity,
-					runtimeRoot,
-				),
+				acquireNode(registry, key, ref, hub, pluginContext, dispatcher, logger, identity),
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
@@ -553,7 +538,6 @@ export const acquireFullGraph = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
-	runtimeRoot: string,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* annotateOp('acquireFullGraph');
@@ -566,6 +550,5 @@ export const acquireFullGraph = (
 			dispatcher,
 			logger,
 			identity,
-			runtimeRoot,
 		);
 	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireFullGraph'));

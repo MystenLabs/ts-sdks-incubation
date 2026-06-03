@@ -284,7 +284,13 @@ const manifestEndpointEntryFromOperationalEndpoint = (
 
 /** Project a projection decl's `rowKey` (when absent) onto the
  *  contributing plugin so projection consumers can attribute the row.
- *  The payload stays opaque from the substrate's POV. */
+ *  The payload stays opaque from the substrate's POV.
+ *
+ *  RELOCATED orchestrator seam — byte-identical to the old projection
+ *  sink body, not net-new logic; it moved here from the deleted
+ *  CapabilitySinks loop. (`strategyContributorDispatch` below is NOT
+ *  byte-identical — it absorbed the `strategyRegistry.register` priority
+ *  argument when the seam moved.) */
 const projectionDispatch = (
 	decl: ProjectionDecl,
 	ctx: ContributionDispatchContext,

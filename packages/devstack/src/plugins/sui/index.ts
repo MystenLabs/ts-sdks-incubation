@@ -13,19 +13,19 @@
 //                              `{ local: …, live: …, fork: … }`
 //                              narrowed to the network's mode.
 //
-// The plugin emits FOUR capability decls:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
-//   1. `chain-probe:<chainId>` strategy contributor — the
-//      schema-validated read surface (`makeSuiChainProbe`).
-//   2. Snapshotable — mode-aware container + bind-mount capture.
-//   3. Codegenable — `sui-network` bindings (chain id, rpc, etc.).
-//   4. Faucet strategy contributor — local-coin dispensing for the
-//      mode's chain id.
+//   1. `ctx.provides` — `chain-probe:<chainId>` strategy contributor,
+//      the schema-validated read surface (`makeSuiChainProbe`).
+//   2. `ctx.snapshotExtra` — mode-aware container + bind-mount capture.
+//   3. `ctx.codegen` — `sui-network` bindings (chain id, rpc, etc.).
+//   4. `ctx.provides` — faucet strategy contributor, local-coin
+//      dispensing for the mode's chain id.
 //
-// Routable contributions are MODE-DEPENDENT (local + fork yes;
+// `ctx.endpoint` contributions are MODE-DEPENDENT (local + fork yes;
 // local-rpc + live no — the caller fronts their own RPC). They land
-// in the per-mode builder under `mode/*.ts`; this barrel composes
-// them into the plugin capability array.
+// in the per-mode builder under `mode/*.ts`; this barrel emits them
+// alongside the rest during `start`.
 
 import { Effect } from 'effect';
 

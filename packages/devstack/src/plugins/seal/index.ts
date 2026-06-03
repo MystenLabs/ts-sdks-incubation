@@ -22,14 +22,14 @@
 //     a COMPILE-time refusal (architecture Tension 11 + type-prototype
 //     finding #4).
 //
-// Capability decls emitted:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
-//   1. Snapshotable        — local-keygen contributes secret material
+//   1. `ctx.snapshotExtra` — local-keygen contributes secret material
 //                            subtree; known modes contribute the
 //                            empty shape.
-//   2. Codegenable         — `seal-key-server` bindings (server
+//   2. `ctx.codegen`       — `seal-key-server` bindings (server
 //                            configs + URL + objectId).
-//   3. Routable            — `seal-key-server` endpoint, local-keygen
+//   3. `ctx.endpoint`      — `seal-key-server` endpoint, local-keygen
 //                            only (known modes route to a remote URL
 //                            outside Traefik's purview).
 

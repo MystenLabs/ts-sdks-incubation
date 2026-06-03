@@ -383,13 +383,14 @@ export const startSupervisor = (
 			}));
 		}
 
-		// Extract `RuntimeRoot` from the plugin context — needed to
-		// build the `AcquireContext` handed to dynamic capability
-		// factories. Fallback to '' for bare smoke tests that don't
-		// wire RuntimeRoot; emit a logWarning when that path fires so
-		// production-style misconfigurations are visible (plugins
-		// computing `${runtimeRoot}/foo` would otherwise silently
-		// resolve to host-filesystem root).
+		// Extract `RuntimeRoot` from the plugin context — recorded on
+		// `SupervisorState.runtimeRoot` and read by the post-acquire hook
+		// + background tasks (NOT threaded into the acquire path, which is
+		// name-blind). Fallback to '' for bare smoke tests that don't wire
+		// RuntimeRoot; emit a logWarning when that path fires so
+		// production-style misconfigurations are visible (plugins computing
+		// `${runtimeRoot}/foo` would otherwise silently resolve to
+		// host-filesystem root).
 		const runtimeRootResolved = runtimeRootAccess.read(pluginContext, { root: '' });
 		if (runtimeRootResolved.root === '') {
 			yield* Effect.logWarning(
@@ -448,7 +449,6 @@ export const startSupervisor = (
 				dispatcher,
 				logger,
 				identity,
-				runtimeRoot,
 			);
 			if (yield* Ref.get(shutdownLatch)) return;
 			const initialReady = yield* allReadyOrTerminal(graph, registry);

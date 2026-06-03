@@ -18,12 +18,12 @@
 //   The HTTP protocol is the ONE cross-boundary contract. THIS PACKAGE
 //   NEVER IMPORTS `@mysten/dapp-kit*` OR `@mysten/wallet-standard`.
 //
-// Capabilities emitted:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
-//   1. Snapshotable — pairing token under `wallet/token`.
-//   2. Codegenable — `dapp-kit-config` bindings (the dev-wallet
+//   1. `ctx.snapshotExtra` — pairing token under `wallet/token`.
+//   2. `ctx.codegen` — `dapp-kit-config` bindings (the dev-wallet
 //      adapter consumes this). Sensitive flag set — 0o600 + gitignore.
-//   3. Routable — wallet UI URL on the stack-scoped router.
+//   3. `ctx.endpoint` — wallet UI URL on the stack-scoped router.
 
 import { Effect } from 'effect';
 

@@ -15,25 +15,24 @@
 //                                  `.known` — `.local` is a compile
 //                                  error on a fork-mode network.
 //
-// The plugin emits FOUR capability decls (per mode):
+// During `start`, the plugin emits (via the typed `ctx.*` verbs, per mode):
 //
 //   Local mode (full local cluster):
-//     1. `snapshotable`        — runtime/walrus/<name>/deploy/ subtree
+//     1. `ctx.snapshotExtra`   — runtime/walrus/<name>/deploy/ subtree
 //                                 + storage-node managed containers.
-//     2. `codegenable`         — `walrus-network` bindings.
-//     3. `routable` × (N + 2)  — per-node + aggregator + publisher.
-//     4. `strategy-contributor:walrus-state-registry`  — local entry.
-//     5. `strategy-contributor:endpoint-registry`      — N+2 entries.
-//     6. `strategy-contributor:package-registry`       — `walrus.<name>`.
-//     7. `strategy-contributor:coinType:<WAL fullCoinType>`
-//                                                      — WAL faucet
+//     2. `ctx.codegen`         — `walrus-network` bindings.
+//     3. `ctx.endpoint` × (N+2) — per-node + aggregator + publisher.
+//     4. `ctx.provides` walrus-state-registry          — local entry.
+//     5. `ctx.provides` endpoint-registry              — N+2 entries.
+//     6. `ctx.provides` package-registry               — `walrus.<name>`.
+//     7. `ctx.provides` coinType:<WAL fullCoinType>    — WAL faucet
 //                                                        strategy
 //                                                        (when exchange exists).
 //
 //   Known mode (read-only deployment):
-//     1. `snapshotable`        — identity-guard only; no subtrees.
-//     2. `codegenable`         — `walrus-network` bindings (mode='known').
-//     3. `strategy-contributor:walrus-state-registry` — known entry.
+//     1. `ctx.snapshotExtra`   — identity-guard only; no subtrees.
+//     2. `ctx.codegen`         — `walrus-network` bindings (mode='known').
+//     3. `ctx.provides` walrus-state-registry — known entry.
 //
 // Resource id: `'walrus'` (singular). The plugin's substrate-level
 // plugin key is the same string.

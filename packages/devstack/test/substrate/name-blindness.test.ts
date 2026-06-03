@@ -210,3 +210,55 @@ describe('substrate name-blindness', () => {
 		expect(ALLOWED_FILES.length).toBeLessThanOrEqual(15);
 	});
 });
+
+// Substrate Sui-SDK blindness CI invariant.
+//
+// The substrate (`src/substrate/**`) must name no plugin AND import no
+// Sui SDK. The Sui-named SDK-boundary helpers were hoisted to
+// `plugins/sui/{exec,move,ledger}` in the simplification (ARCHITECTURE.md
+// §"Substrate name-blindness"), so substrate code has no remaining reason
+// to reach for `@mysten/sui*` or a `TransactionBuilder`. This guard fails
+// the moment one is re-introduced — the exact regression that would let a
+// Sui leak back into the substrate.
+//
+// There is NO allowlist: a Sui import in substrate is never legitimate.
+// Comments are stripped first so a doc-only mention of the SDK in a
+// header does not trip the alarm.
+const SUI_SDK_PATTERNS: ReadonlyArray<{ readonly label: string; readonly regex: RegExp }> = [
+	{ label: '@mysten/sui', regex: /@mysten\/sui(\b|\/)/ },
+	{ label: 'TransactionBuilder', regex: /\bTransactionBuilder\b/ },
+];
+
+const findSuiImportingFiles = (): Array<{ path: string; matches: Array<string> }> => {
+	const files = collectSubstrateFiles(SUBSTRATE_ROOT, []);
+	const offenders: Array<{ path: string; matches: Array<string> }> = [];
+	for (const file of files) {
+		const repoRel = relative(REPO_ROOT, file).replace(/\\/g, '/');
+		const stripped = stripComments(readFileSync(file, 'utf8'));
+		const matches = SUI_SDK_PATTERNS.filter((p) => p.regex.test(stripped)).map((p) => p.label);
+		if (matches.length > 0) {
+			offenders.push({ path: repoRel, matches });
+		}
+	}
+	return offenders;
+};
+
+describe('substrate Sui-SDK blindness', () => {
+	it('substrate code MUST NOT import @mysten/sui or name a TransactionBuilder', () => {
+		const offenders = findSuiImportingFiles();
+		if (offenders.length > 0) {
+			const report = offenders
+				.map((entry) => `  - ${entry.path} matches: [${entry.matches.join(', ')}]`)
+				.join('\n');
+			throw new Error(
+				`Substrate Sui-SDK leak. The following files reach for the Sui SDK ` +
+					`(@mysten/sui*, TransactionBuilder):\n${report}\n\n` +
+					`The substrate is Sui-blind — there is NO allowlist. Move the ` +
+					`SDK-touching logic into a plugin (canonical home: ` +
+					`plugins/sui/{exec,move,ledger}) and have substrate hold the result ` +
+					`opaquely.`,
+			);
+		}
+		expect(offenders).toEqual([]);
+	});
+});

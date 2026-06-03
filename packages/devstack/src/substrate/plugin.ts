@@ -7,8 +7,7 @@
 
 import type { Effect } from 'effect';
 
-import type { ChainId, PluginKey } from './brand.ts';
-import type { Identity } from './identity.ts';
+import type { PluginKey } from './brand.ts';
 import type { PluginRole } from './lifecycle.ts';
 import type { RowSection } from './projection.ts';
 
@@ -136,12 +135,6 @@ export interface PluginErrorContribution {
 export interface WatchDecl {
 	readonly paths: ReadonlyArray<string>;
 	readonly cascade?: boolean;
-}
-
-export interface AcquireContext {
-	readonly identity: Identity;
-	readonly chain: ChainId;
-	readonly runtimeRoot: string;
 }
 
 interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {

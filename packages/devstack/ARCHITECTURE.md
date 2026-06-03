@@ -34,7 +34,8 @@ entry) and `api/run-stack.ts` (L4 library-embedder surface). L3 importing L2 in 
 permitted because the composition seam is exactly what these files are for; new L2 dependencies in
 adjacent L3 modules need to route through this seam, not bypass it. The plugin-author equivalent —
 when an embedder wants to extend the runtime context without forking the built-in composition — is
-`RunStackOptions.extendContext` paired with a sink registered via `CapabilitySinksService`.
+`RunStackOptions.extendContext`, which layers extra services into the `pluginContext` plugins reach
+during `start`.
 
 ### Substrate name-blindness
 
@@ -91,16 +92,18 @@ Infrastructure contracts (outside the capability-decl union):
   attached. The composer (`api/define-devstack.ts`) detects the symbol, calls the expander with the
   full composed-member tuple, and substitutes the result. Substrate-owned symbol; the composer never
   imports any plugin module to perform the rewrite. Compose-time only — distinct from the runtime
-  `CapabilitySinks` harvest path which fires AFTER plugin acquire.
+  contribution-dispatch path (the supervisor replaying each plugin's buffered `ctx.*` emissions
+  through the `ContributionDispatcher`) which fires AFTER plugin acquire.
 
-### Funding contribution-sink invariant
+### Funding contribution invariant
 
 `AccountFundingStrategy` flows through the substrate's strategy registry via
-`StrategyContributorDecl`. A plugin that wants to FUND an account at acquire-time MUST contribute
-its strategy through this sink before the account plugin asks for it — direct calls to
-`fundingStrategy.request(...)` without a sibling registration silently leave the registry empty and
-the account starves on a `StrategyNotFoundError` (caught as a no-op for optional per-coin funds —
-`plugins/account/funding.ts:510`; the SUI gas-faucet path at `:483` instead fails loudly).
+`StrategyContributorDecl`. A plugin that wants to FUND an account at acquire-time MUST emit its
+strategy with `ctx.provides(decl)` during `start` — the supervisor buffers it and registers it on
+the strategy registry when it replays the buffer through the `ContributionDispatcher`. Direct calls
+to `fundingStrategy.request(...)` without a sibling `ctx.provides` silently leave the registry empty
+and the account starves on a `StrategyNotFoundError` (caught as a no-op for optional per-coin funds
+— `plugins/account/funding.ts:510`; the SUI gas-faucet path at `:483` instead fails loudly).
 
 Who contributes:
 
@@ -109,8 +112,9 @@ Who contributes:
   contribute their WAL/SEAL strategies the same way through the coin barrel.
 - **Faucet plugin** — `plugins/faucet/index.ts:defineFaucetStrategy({ chainId, strategy })` builds a
   contributor keyed `faucet:<chainId>` for SUI funding.
-- **Custom plugins** — same surface; any plugin's `capabilities` factory may return a
-  `StrategyContributorDecl<Key, Strategy>` and the supervisor harvests it into the registry.
+- **Custom plugins** — same surface; any plugin's `start` may build a
+  `StrategyContributorDecl<Key, Strategy>` and emit it with `ctx.provides(decl)`, and the supervisor
+  registers it on replay.
 
 Shape:
 
@@ -124,11 +128,11 @@ Shape:
 ```
 
 Consumers (`plugins/account/funding.ts`) read with `registry.get<typeof key, Strategy>(key)` and
-treat `StrategyNotFoundError` as "optional faucet is a no-op for this coin". The invariant: the sink
-is the **only** way to expose a funding strategy across plugin boundaries — bypassing it (e.g. a
-coin plugin calling `fundingStrategy.request` itself, or stashing the strategy on its resolved value
-for a sibling to import) breaks the dep-graph-free decoupling that makes custom funding plugins
-compose like built-ins.
+treat `StrategyNotFoundError` as "optional faucet is a no-op for this coin". The invariant:
+`ctx.provides()` is the **only** way to expose a funding strategy across plugin boundaries —
+bypassing it (e.g. a coin plugin calling `fundingStrategy.request` itself, or stashing the strategy
+on its resolved value for a sibling to import) breaks the dep-graph-free decoupling that makes
+custom funding plugins compose like built-ins.
 
 ---
 
@@ -137,8 +141,9 @@ compose like built-ins.
 Custom plugin authors must be able to author plugins whose config-site experience is identical to
 built-ins. No privileges built-ins have that customs can't replicate.
 
-- `definePlugin({ id, role, section, dependsOn?, start, capabilities?, watch?, pluginKey?, endpointSection?, errorContributions? })`
-  is the public authoring API. `id`, `role`, `section`, and `start` are required; `role` is
+- `definePlugin({ id, role, section, dependsOn?, start, watch?, pluginKey?, endpointSection?, errorContributions?, keepAliveOnRestore? })`
+  is the public authoring API. Contributions are emitted inside `start` via the `ctx.*` verbs —
+  there is no `capabilities` field. `id`, `role`, `section`, and `start` are required; `role` is
   `'service' | 'task'` (long-lived host process vs. value-producer reaching `done`) and `section` is
   the dashboard bucket (`'service' | 'package' | 'account' | 'action' | 'app' | 'other'`) the
   supervisor stamps onto every row this plugin emits.
@@ -148,11 +153,13 @@ built-ins. No privileges built-ins have that customs can't replicate.
 - The strategy-registry primitive is open — plugin authors call `defineFaucetStrategy()` or similar
   shapes.
 
-Custom plugin authors registering a sink for a brand-new `CapabilityDecl` kind compose a Layer that
-yields `CapabilitySinksService` and calls `registerSink({ kind, accept })`. The composed Layer flows
-into the supervisor through `pluginContext` — the same vehicle every other substrate service uses
-(Logger, RuntimeRoot, ContainerRuntime, etc.). The supervisor checks `pluginContext` for a pre-built
-service and falls back to building its own when context carries none.
+The contribution set is CLOSED: there are exactly five built-in contribution kinds (snapshotable,
+routable, codegenable, projection, strategy-contributor), dispatched by the typed
+`ContributionDispatcher` (`substrate/runtime/supervisor/contribution-dispatcher.ts`). Custom plugins
+do not register new kinds — they emit through the existing `ctx.*` verbs (`ctx.codegen`,
+`ctx.endpoint`, `ctx.snapshotExtra`, `ctx.publish`, and `ctx.provides` for strategy contributions)
+inside `start`, the same verbs the built-ins use. Embedders that need extra backing services in
+scope layer them into `pluginContext` (below) rather than extending the dispatch surface.
 
 For programmatic embedders, `RunStackOptions.extendContext` (`api/run-stack.ts`) is the seam: pass a
 `(ctx) => Effect<Context>` to layer additional services on top of the built-in plugin runtime

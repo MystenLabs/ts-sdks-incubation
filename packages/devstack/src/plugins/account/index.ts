@@ -27,11 +27,12 @@
 // emit a `log.appended` event the first time the promotion fires
 // (see `funding.ts`).
 //
-// The plugin emits THREE capability decls + an error-tag contribution:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs) plus an
+// error-tag contribution:
 //
-//   1. Snapshotable        — secret-material subtree (ephemeral only).
-//   2. Codegenable         — `account-map` bindings (name → address).
-//   3. StrategyContributor — per-stack `account:<name>` registry entry.
+//   1. `ctx.snapshotExtra` — secret-material subtree (ephemeral only).
+//   2. `ctx.codegen`       — `account-map` bindings (name → address).
+//   3. `ctx.provides`      — per-stack `account:<name>` registry entry.
 //
 // Plus `errorContributions: [{ errorTags: ACCOUNT_ERROR_TAGS }]` —
 // harvested by the supervisor into the FormatterRegistry so the

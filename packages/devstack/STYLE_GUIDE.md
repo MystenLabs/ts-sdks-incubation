@@ -115,9 +115,8 @@ design-comment reasons, use a trailing `void <name>;` line.
 
 - Plugin factories: **lowercase** (`sui`, `walrus`, `postgres`, `account`, `localPackage`,
   `knownPackage`, `coin`, `wallet`, `seal`, `deepbook`, `action`, `faucet`).
-- Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`,
-  `ChainProbe`, `StrategyContributor`, `Projection`, `Renderer`,
-  `ContainerRuntime`).
+- Capability contracts: **PascalCase** (`Snapshotable`, `Routable`, `Codegenable`, `ChainProbe`,
+  `StrategyContributor`, `Projection`, `Renderer`, `ContainerRuntime`).
 - Tagged errors: PascalCase. See §2 for `Error` suffix discipline.
 - Effect Services: PascalCase ending `Service` (`StrategyRegistryService`, `PortBrokerService`,
   `ArtifactPublisherService`, `ContainerRuntimeService`).
@@ -159,8 +158,12 @@ design-comment reasons, use a trailing `void <name>;` line.
   add orchestrator-named label keys or sweep helpers (`listDevstackRouterContainers`) to L1. The
   router orchestrator owns the literal `'router'` it stamps; the generic
   `listDevstackContainersByKind(...)` helpers stay plugin-blind.
-- **Substrate must not depend on capability-contract names either.** The supervisor's dispatch loop
-  is kind-blind and routes contributions through `CapabilitySinks.dispatch(item, ctx)`.
+- **Substrate must not depend on capability-contract names either.** Plugins emit their
+  contributions inline during `start` via the typed `ctx.*` verbs (`codegen` / `endpoint` /
+  `snapshotExtra` / `publish` / `provides`); the supervisor buffers them and, after a successful
+  `start`, replays the buffer through the closed `ContributionDispatcher`
+  (`dispatchBufferedContributions` in `acquire-node.ts`). The dispatch switches only on the
+  contribution's `kind` discriminant — it never names a plugin or a capability.
 - **L2 plugins must not import L3 orchestrators.** When an orchestrator helper turns out to be pure
   / substrate-blind and L2 needs it (canonical case: URL composition + routed-hostname minting),
   lift the pure logic into `substrate/runtime/` and have the orchestrator re-export or adapt for its
@@ -204,16 +207,16 @@ design-comment reasons, use a trailing `void <name>;` line.
 responsibility. If it's coherent, leave it. Don't split because a file crossed a number. No lint
 rule enforces a numeric LOC ceiling; review judgement is the gate.
 
-Reference shape for genuine multi-concern decomposition: `substrate/runtime/supervisor/` (each
-file scoped to one concern, currently each fits in a single editor screen).
+Reference shape for genuine multi-concern decomposition: `substrate/runtime/supervisor/` (each file
+scoped to one concern, currently each fits in a single editor screen).
 
 ```
 supervisor/
 ├── index.ts                  — public surface re-exports
 ├── start-supervisor.ts       — orchestrating boot body
 ├── command-loop.ts           — handleCommand + commandLoop
-├── acquire-node.ts           — per-plugin acquire pipeline
-├── dispatch-contributions.ts — capability harvest + sink dispatch
+├── acquire-node.ts           — per-plugin acquire pipeline + buffered-contribution replay
+├── contribution-dispatcher.ts — closed `ContributionDispatcher` seam (kind-discriminated)
 ├── teardown.ts               — slice teardown + selective restart
 ├── background-tasks.ts       — snapshot / restart / post-acquire fork helpers
 ├── shutdown.ts               — shutdown branches
@@ -488,8 +491,8 @@ Reusable patterns. Each entry pairs a substrate primitive with the discipline fo
 
 ### 21.1 `as const` on `HostServiceAfter` / `ReadonlyArray<AnyResourceRef>` tuples
 
-**Plugin-author tuples declared as a `HostServiceAfter`-style list must be `as const`.** Without
-it, TypeScript widens the tuple to `AnyResourceRef[]` and the generic capture loses the per-element
+**Plugin-author tuples declared as a `HostServiceAfter`-style list must be `as const`.** Without it,
+TypeScript widens the tuple to `AnyResourceRef[]` and the generic capture loses the per-element
 narrowing the plugin's `After` parameter relies on.
 
 ```ts
@@ -505,16 +508,16 @@ caller writes `[…] as const`.
 
 ### 21.2 `OptionalService` discipline
 
-`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical
-"probe `pluginContext` for a service; fall back if absent" lookup. The internal cast
-(`ctx as Context.Context<I>`) is structural: `pluginContext` is typed
-`Context.Context<never>` and the probe is intentional. Hand-rolled `Context.getOption`
-plus a cast at the callsite is the anti-pattern.
+`OptionalService(tag)` at `substrate/runtime/supervisor/wiring.ts` is the canonical "probe
+`pluginContext` for a service; fall back if absent" lookup. The internal cast
+(`ctx as Context.Context<I>`) is structural: `pluginContext` is typed `Context.Context<never>` and
+the probe is intentional. Hand-rolled `Context.getOption` plus a cast at the callsite is the
+anti-pattern.
 
 ```ts
 const Logger = OptionalService(LoggerService);
 const logger = Logger.read(pluginContext, noopLogger);
-const sinks = yield* Logger.readEffect(pluginContext, buildDefaultSinks);
+const sinks = yield * Logger.readEffect(pluginContext, buildDefaultSinks);
 ```
 
 **Rule:** probe optional services through `OptionalService(tag).read` / `.readEffect`. Don't
@@ -523,10 +526,9 @@ open-code the lookup.
 ### 21.3 Stage-and-swap primitive
 
 `stageAndSwap` at `src/substrate/runtime/stage-and-swap/index.ts` is the canonical
-"build-then-publish atomically" primitive. The build effect populates `stagingPath`; on success
-the helper backs up the current target, renames staging into place, and drops the backup. On
-failure the previous target is restored verbatim. The build effect's error tag passes through
-unchanged.
+"build-then-publish atomically" primitive. The build effect populates `stagingPath`; on success the
+helper backs up the current target, renames staging into place, and drops the backup. On failure the
+previous target is restored verbatim. The build effect's error tag passes through unchanged.
 
 Two call shapes:
 
@@ -537,17 +539,18 @@ Two call shapes:
   names are load-bearing (Seal's `.backup.`, fixtures pinning literal names).
 
 ```ts
-yield* stageAndSwap({
-	targetPath,
-	idSuffix: crypto.randomUUID().slice(0, 8),
-	build: Effect.gen(function* () {
-		// populate stagingPath
-	}),
-});
+yield *
+	stageAndSwap({
+		targetPath,
+		idSuffix: crypto.randomUUID().slice(0, 8),
+		build: Effect.gen(function* () {
+			// populate stagingPath
+		}),
+	});
 ```
 
-**Rule:** publish-then-swap goes through `stageAndSwap`. No inline `mkdir(tmp) + rename(tmp,
-target)`.
+**Rule:** publish-then-swap goes through `stageAndSwap`. No inline
+`mkdir(tmp) + rename(tmp, target)`.
 
 ### 21.4 `versionedDocSchema` migration procedure
 
@@ -566,15 +569,15 @@ const DocSchema = Schema.Union(
 );
 ```
 
-**Rule:** new versioned cross-process documents use `versionedDocSchema`. v2+ schemas read
-through `Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...), ...)`. Don't
-hand-roll the discriminator field.
+**Rule:** new versioned cross-process documents use `versionedDocSchema`. v2+ schemas read through
+`Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...), ...)`. Don't hand-roll the
+discriminator field.
 
 ### 21.5 `plugins/internal/` directory
 
 Modules under `src/plugins/internal/` are shared plugin helpers that are NOT plugins themselves
-(`acquire-on-chain-artifact.ts`, `codegen-helpers.ts`, `funding-failure-error.ts`). Sibling
-plugins import from `plugins/internal/<helper>.ts` directly — there is no barrel.
+(`acquire-on-chain-artifact.ts`, `codegen-helpers.ts`, `funding-failure-error.ts`). Sibling plugins
+import from `plugins/internal/<helper>.ts` directly — there is no barrel.
 
 ```ts
 // Right
@@ -584,8 +587,7 @@ import { acquireOnChainArtifact } from '../internal/acquire-on-chain-artifact.ts
 import { acquireOnChainArtifact } from '../internal/index.ts';
 ```
 
-**Rule:** shared plugin-side helpers live in `plugins/internal/` with per-file imports. No
-barrel.
+**Rule:** shared plugin-side helpers live in `plugins/internal/` with per-file imports. No barrel.
 
 ### 21.6 `withTempRoot` test helper
 
@@ -598,18 +600,19 @@ it.effect('writes manifest', () =>
 		Effect.gen(function* () {
 			yield* writeManifest(join(root, 'manifest.json'));
 		}),
-	));
+	),
+);
 ```
 
-**Rule:** tests do not call `mkdtempSync` + ad-hoc `try/finally`. Use the helper — it closes
-several historical leak-on-throw bugs in one place.
+**Rule:** tests do not call `mkdtempSync` + ad-hoc `try/finally`. Use the helper — it closes several
+historical leak-on-throw bugs in one place.
 
 ### 21.7 Minimal `definePlugin` skeleton
 
 The shortest compiling plugin declares `id`, `role`, `section`, and `start`. `dependsOn`,
 `capabilities`, `watch`, `errorContributions`, `pluginKey`, and `endpointSection` are all optional.
-The `start` callback receives the resolved `dependsOn` value as its sole argument; tuple
-`dependsOn` projects to a tuple, object to an object, single ref to the bare resolved value.
+The `start` callback receives the resolved `dependsOn` value as its sole argument; tuple `dependsOn`
+projects to a tuple, object to an object, single ref to the bare resolved value.
 
 ```ts
 import { Effect } from 'effect';
@@ -631,37 +634,41 @@ export const foo = () =>
 	});
 ```
 
-**Rule:** new plugins start from this shape. Add `dependsOn` / `capabilities` only when the
-plugin genuinely needs them — don't pre-declare empty arrays.
+**Rule:** new plugins start from this shape. Add `dependsOn` / `capabilities` only when the plugin
+genuinely needs them — don't pre-declare empty arrays.
 
 ### 21.8 `StrategyContributorDecl` registration shape
 
-The substrate's strategy registry decouples sibling plugins that contribute funding /
-chain-probe / fund-ready strategies. The plugin's `capabilities` factory returns one or more
-`StrategyContributorDecl<Key, Strategy>` entries; the supervisor harvests them post-acquire and
-publishes them keyed by `capabilityKey`. Consumers retrieve with
-`StrategyRegistryService.get<Key, Strategy>(key)`.
+The substrate's strategy registry decouples sibling plugins that contribute funding / chain-probe /
+fund-ready strategies. A plugin builds one or more `StrategyContributorDecl<Key, Strategy>` and
+emits each inline during `start` via `ctx.provides(decl)`. The supervisor buffers that emission and,
+after a successful `start`, replays it through the `ContributionDispatcher`, which registers it on
+`StrategyRegistryService` keyed by `capabilityKey` and publishes `strategy.registered`. Consumers
+retrieve with `StrategyRegistryService.get<Key, Strategy>(key)`.
 
-Contributor (real example, `plugins/coin/index.ts:158`):
+Contributor (real example, `plugins/coin/index.ts` — the `coinContributions` decl-builder):
 
 ```ts
-const fundingContribution: StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy> = {
+const fundingContribution = {
 	kind: 'strategy-contributor',
 	capabilityKey: coinFundingCapabilityKey(resolved.fullCoinType),
 	strategy: resolved.fundingStrategy,
 	autoMounted: true, // hides from renderer rows; user-supplied contributors are visible
-};
+} satisfies StrategyContributorDecl<`coinType:${string}`, AccountFundingStrategy>;
+// emitted during `start`: ctx.provides(fundingContribution)
 ```
 
 Consumer (real example, `plugins/account/funding.ts:475`):
 
 ```ts
-const strategy = yield* registry
-	.get<typeof coinKey, AccountFundingStrategy>(coinKey)
-	.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
+const strategy =
+	yield *
+	registry
+		.get<typeof coinKey, AccountFundingStrategy>(coinKey)
+		.pipe(Effect.catchTag('StrategyNotFoundError', () => Effect.succeed(null)));
 ```
 
-**Rule:** sibling-plugin strategy hand-off goes through the strategy registry sink. Do not stash
-a strategy on a plugin's resolved value for another plugin to import — it bypasses the
+**Rule:** sibling-plugin strategy hand-off goes through `ctx.provides()` and the strategy registry.
+Do not stash a strategy on a plugin's resolved value for another plugin to import — it bypasses the
 dep-graph-free decoupling and breaks parity between built-in and custom contributors. See
-`ARCHITECTURE.md`'s "Funding contribution-sink invariant" for the full failure mode.
+`ARCHITECTURE.md`'s "Funding contribution invariant" for the full failure mode.

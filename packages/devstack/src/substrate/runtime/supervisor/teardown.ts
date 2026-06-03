@@ -100,7 +100,6 @@ export const doSelectiveRestart = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
-	runtimeRoot: string,
 	parentScope: Scope.Scope,
 ): Effect.Effect<void, RestartTargetMissing> =>
 	Effect.gen(function* () {
@@ -136,7 +135,6 @@ export const doSelectiveRestart = (
 			dispatcher,
 			logger,
 			identity,
-			runtimeRoot,
 		);
 		for (const root of roots) {
 			yield* publish(ref, hub, {

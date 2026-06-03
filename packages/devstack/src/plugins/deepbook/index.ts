@@ -16,19 +16,19 @@
 //                                     fork networks; wraps an already-
 //                                     deployed canonical instance).
 //
-// Capability decls emitted:
+// During `start`, the plugin emits (via the typed `ctx.*` verbs):
 //
 //   Local mode:
-//     1. snapshotable        — `deepbook/<name>` subtree.
-//     2. codegenable         — `deepbook-network` bindings.
+//     1. `ctx.snapshotExtra` — `deepbook/<name>` subtree.
+//     2. `ctx.codegen`       — `deepbook-network` bindings.
 //
 //   Override mode:
-//     1. snapshotable        — identity guard only.
-//     2. codegenable         — `deepbook-network` bindings.
+//     1. `ctx.snapshotExtra` — identity guard only.
+//     2. `ctx.codegen`       — `deepbook-network` bindings.
 //
 //   Known mode:
-//     1. snapshotable        — identity guard only.
-//     2. codegenable         — `deepbook-network` bindings (mode='known').
+//     1. `ctx.snapshotExtra` — identity guard only.
+//     2. `ctx.codegen`       — `deepbook-network` bindings (mode='known').
 //
 // Resource id: `deepbook/<name>`. Plugin key: `deepbook:<name>`.
 
