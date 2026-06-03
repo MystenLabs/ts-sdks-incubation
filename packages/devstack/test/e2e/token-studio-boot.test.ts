@@ -90,6 +90,9 @@ describe('token-studio boots end-to-end', () => {
 			'account/carol#5',
 			'wallet#6',
 			'host-service/app#7',
+			// example config composes `dashboard()` as the final member
+			// (examples/token-studio/devstack.config.ts) — reaches ready as #8.
+			'dashboard#8',
 		];
 		expect(result.failures).toEqual([]);
 		expect(result.topLevelErrorCount).toBe(0);
