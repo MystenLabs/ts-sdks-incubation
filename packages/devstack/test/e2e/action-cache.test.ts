@@ -44,11 +44,7 @@ import {
 	layerRuntimeRoot,
 	layerStackPaths,
 } from '../../src/substrate/runtime/paths.ts';
-import { layerCache } from '../../src/substrate/runtime/cache/index.ts';
-import {
-	ArtifactPublisherService,
-	layerArtifactPublisher,
-} from '../../src/substrate/runtime/artifact-publisher/index.ts';
+import { CacheService, layerCache } from '../../src/substrate/runtime/cache/index.ts';
 import { layerStrategyRegistry } from '../../src/substrate/runtime/strategy-registry/index.ts';
 import type { ChainProbe } from '../../src/contracts/chain-probe.ts';
 import type { SuiProbeKey } from '../../src/plugins/sui/chain-probe.ts';
@@ -81,8 +77,7 @@ const platformBase = Layer.mergeAll(
 );
 
 const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(platformBase));
-const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-const substrateLayers = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
+const substrateLayers = layerCache.pipe(Layer.provideMerge(withStackPaths));
 
 /** Construct a fake chain-probe that resolves transaction digests to a
  *  `{digest}` shape on hit, `null` on miss. The test seeds a known
@@ -114,7 +109,7 @@ const runOnce = (
 	digest: string,
 ): Effect.Effect<{ bodyRuns: number; digest: string }, unknown, never> =>
 	Effect.gen(function* () {
-		const publisher = yield* ArtifactPublisherService;
+		const publisher = yield* CacheService;
 		const probe = makeFakeChainProbe([digest]);
 
 		const body: Effect.Effect<ActionReceipt, never> = Effect.gen(function* () {

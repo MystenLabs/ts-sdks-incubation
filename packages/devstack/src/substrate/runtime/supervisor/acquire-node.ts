@@ -13,7 +13,8 @@
 
 import { Cause, Context, Effect, Exit, Queue, Scope, SubscriptionRef } from 'effect';
 
-import type { ArtifactPublisher, ArtifactSpec } from '../../../primitives/artifact-publisher.ts';
+import type { ArtifactSpec } from '../../../primitives/artifact-publisher.ts';
+import type { Cache } from '../../../primitives/cache.ts';
 import type { CodegenableDecl } from '../../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../contracts/projection.ts';
 import type { RoutableDecl } from '../../../contracts/routable.ts';
@@ -28,7 +29,7 @@ import { PluginContext } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies } from '../../plugin.ts';
 import type { PluginErrorContribution } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { ArtifactPublisherService } from '../artifact-publisher/index.ts';
+import { CacheService } from '../cache/index.ts';
 import { FormatterRegistryService } from '../observability/formatter-registry.ts';
 import { StrategyRegistryService } from '../strategy-registry/service.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
@@ -68,20 +69,25 @@ type BufferedContribution =
 // Per-plugin PluginCtx (Stage B foundation — P0/P0.5/P1)
 // -----------------------------------------------------------------------------
 
-const artifactPublisherAccess = OptionalService(ArtifactPublisherService);
+const cacheAccess = OptionalService(CacheService);
 const strategyRegistryAccess = OptionalService(StrategyRegistryService);
 const formatterRegistryAccess = OptionalService(FormatterRegistryService);
 
-/** Fallback publisher for bare supervisor paths that don't layer an
- *  ArtifactPublisherService into `pluginContext` (smoke tests). A real
- *  stack always carries it (see `orchestrators/run.ts`
- *  `buildPluginContext`); persisting plugins only run there. */
-const noopPublisher: ArtifactPublisher = {
+/** Fallback cache for bare supervisor paths that don't layer a
+ *  CacheService into `pluginContext` (smoke tests). A real stack always
+ *  carries it (see `orchestrators/run.ts` `buildPluginContext`);
+ *  persisting plugins only run there, so `ctx.persist` (= `cache.publish`)
+ *  on this fallback fails loudly and the read/write/delete ops are inert.
+ *  This is the post-fold replacement for the old `noopPublisher`. */
+const noopCache: Cache = {
+	lookup: () => Effect.succeed(null),
+	write: () => Effect.void,
+	delete: () => Effect.void,
 	publish: <Produced, Verified>(_spec: ArtifactSpec<Produced, Verified>) =>
 		Effect.fail({
 			_tag: 'ArtifactPublishError' as const,
 			reason: 'produce-failed' as const,
-			detail: 'no ArtifactPublisherService in plugin context',
+			detail: 'no CacheService in plugin context',
 		}),
 };
 
@@ -104,19 +110,25 @@ const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
  * buffer is the SOLE source of post-start contributions (the legacy
  * `capabilities` closure + its `resolveCapabilities` harvest are gone).
  *
- * `persist` is a thin pass-through to the ArtifactPublisher primitive
- * read from `pluginContext` (forwards the plugin-supplied hex
- * `spec.chain` verbatim). `requires` reads the scope-local
- * StrategyRegistry → `StrategyNotFoundError`. `fail` is `Effect.fail`.
+ * `persist` is a thin pass-through to the Cache primitive's `publish`
+ * (the folded-in artifact-publisher cycle) read from `pluginContext`
+ * (forwards the plugin-supplied hex `spec.chain` verbatim). `requires`
+ * reads the scope-local StrategyRegistry → `StrategyNotFoundError`.
+ * `fail` is `Effect.fail`.
  */
 const makePluginCtx = (
 	pluginContext: Context.Context<never>,
 ): { readonly ctx: PluginCtx; readonly buffer: BufferedContribution[] } => {
 	const buffer: BufferedContribution[] = [];
-	const publisher = artifactPublisherAccess.read(pluginContext, noopPublisher);
+	// CacheService carries the folded-in artifact-publisher cycle via its
+	// `.publish`. A real stack always layers it (`orchestrators/run.ts`
+	// `buildPluginContext`); bare smoke `supervise()` paths may not, so fall
+	// back to a loud-failing `noopCache` — persisting plugins only run on a
+	// real stack.
+	const cache = cacheAccess.read(pluginContext, noopCache);
 	const strategyRegistry = strategyRegistryAccess.read(pluginContext, noopStrategyRegistry);
 	const ctx: PluginCtx = {
-		persist: (spec) => publisher.publish(spec),
+		persist: (spec) => cache.publish(spec),
 		codegen: <E extends string>(decl: CodegenableDecl<E>): void => {
 			buffer.push(decl);
 		},

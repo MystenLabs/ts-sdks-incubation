@@ -78,6 +78,9 @@ const cacheLayer = Layer.succeed(CacheService)({
 	lookup: () => Effect.succeed(null),
 	write: () => Effect.void,
 	delete: () => Effect.void,
+	// These docker-lifecycle tests never persist artifacts; the cache stub
+	// only needs to satisfy the `Cache` shape.
+	publish: (spec) => spec.produce,
 });
 
 const dockerRuntimeLayer = (bin: string, stackRoot: string): Layer.Layer<ContainerRuntimeService> =>

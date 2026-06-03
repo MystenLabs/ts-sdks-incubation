@@ -40,7 +40,7 @@ import {
 	type CoinRecord,
 	type CoinRegistry,
 } from '../coin/index.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
@@ -285,7 +285,7 @@ const buildLocalPlugin = <
 				// via `PackageRegistryService`, so cross-plugin lookups
 				// stay consistent and warm-restart verify can use the
 				// previous packageId as a hint.
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
 				// The per-stack CoinRegistry — same instance every plugin in
@@ -368,7 +368,7 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;
 				const mode = {

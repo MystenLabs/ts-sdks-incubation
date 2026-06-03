@@ -26,10 +26,6 @@ import type { Identity } from '../substrate/identity.ts';
 import { CacheService, layerCache } from '../substrate/runtime/cache/index.ts';
 import { LeaseBrokerService, layerLeaseBroker } from '../substrate/runtime/lease-broker/index.ts';
 import {
-	ArtifactPublisherService,
-	layerArtifactPublisher,
-} from '../substrate/runtime/artifact-publisher/index.ts';
-import {
 	IdentityContext,
 	RuntimeRoot,
 	StackPathsService,
@@ -96,8 +92,7 @@ export const buildSubstrateLayers = (identity: Identity, runtimeRoot: string) =>
 	);
 	const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(childProcessSpawnerWired));
 	const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-	const withArtifactPublisher = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
-	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withArtifactPublisher));
+	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withCache));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
 	const withSpawnerAdapter = layerDockerSpawnerFromNode.pipe(Layer.provideMerge(withLeaseBroker));
 	const withContainerRuntime = layerContainerRuntimeDocker.pipe(
@@ -121,7 +116,6 @@ const buildPluginContext = (): Effect.Effect<
 	| CacheService
 	| StrategyRegistryService
 	| ContainerRuntimeService
-	| ArtifactPublisherService
 	| PortBrokerService
 	| LeaseBrokerService
 	| PostAcquireTasksService
@@ -134,7 +128,6 @@ const buildPluginContext = (): Effect.Effect<
 		const cache = yield* CacheService;
 		const registry = yield* StrategyRegistryService;
 		const containerRuntime = yield* ContainerRuntimeService;
-		const publisher = yield* ArtifactPublisherService;
 		const portBroker = yield* PortBrokerService;
 		const leaseBroker = yield* LeaseBrokerService;
 		const postAcquireTasks = yield* PostAcquireTasksService;
@@ -147,7 +140,6 @@ const buildPluginContext = (): Effect.Effect<
 			Context.add(CacheService, cache),
 			Context.add(StrategyRegistryService, registry),
 			Context.add(ContainerRuntimeService, containerRuntime),
-			Context.add(ArtifactPublisherService, publisher),
 			Context.add(PortBrokerService, portBroker),
 			Context.add(LeaseBrokerService, leaseBroker),
 			Context.add(PostAcquireTasksService, postAcquireTasks),

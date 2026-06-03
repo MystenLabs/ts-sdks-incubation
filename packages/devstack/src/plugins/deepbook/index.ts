@@ -39,7 +39,7 @@ import { definePlugin, resource, type ResourceValueOf } from '../../api/define-p
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { suiResource } from '../sui/index.ts';
@@ -639,7 +639,7 @@ const buildLocalPlugin = <
 					}
 				}
 				const poolSpecs = yield* resolvePoolSpecs(opts.pools, coinValuesByRefId);
-				const artifactPublisher = yield* ArtifactPublisherService;
+				const artifactPublisher = yield* CacheService;
 				yield* setCurrentPluginPhase(
 					opts.pyth === undefined ? 'creating pools' : 'initializing Pyth feeds',
 				);

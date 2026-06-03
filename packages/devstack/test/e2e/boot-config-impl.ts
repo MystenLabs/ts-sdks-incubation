@@ -37,10 +37,6 @@ import {
 	StrategyRegistryService,
 	layerStrategyRegistry,
 } from '../../src/substrate/runtime/strategy-registry/index.ts';
-import {
-	ArtifactPublisherService,
-	layerArtifactPublisher,
-} from '../../src/substrate/runtime/artifact-publisher/index.ts';
 import { layerEntrypointRegistry } from '../../src/orchestrators/router/entrypoints.ts';
 import { BUILT_IN_ENTRYPOINTS } from '../../src/plugins/router-entrypoints.ts';
 import type { ResolvedRoute } from '../../src/orchestrators/router/file-provider.ts';
@@ -269,8 +265,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	);
 	const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(childProcessSpawnerWired));
 	const withCache = layerCache.pipe(Layer.provideMerge(withStackPaths));
-	const withArtifactPublisher = layerArtifactPublisher.pipe(Layer.provideMerge(withCache));
-	const withCoinRegistry = layerCoinRegistry.pipe(Layer.provideMerge(withArtifactPublisher));
+	const withCoinRegistry = layerCoinRegistry.pipe(Layer.provideMerge(withCache));
 	const withPackageRegistry = layerPackageRegistry.pipe(Layer.provideMerge(withCoinRegistry));
 	const withPortBroker = layerPortBroker.pipe(Layer.provideMerge(withPackageRegistry));
 	const withLeaseBroker = layerLeaseBroker.pipe(Layer.provideMerge(withPortBroker));
@@ -375,7 +370,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const containerRuntime = yield* ContainerRuntimeService;
 		const snapshot = yield* SnapshotOrchestratorService;
 		const fs = yield* FileSystem.FileSystem;
-		const publisher = yield* ArtifactPublisherService;
 		const packageRegistry = yield* PackageRegistryService;
 		const coinRegistry = yield* CoinRegistryService;
 		const portBroker = yield* PortBrokerService;
@@ -391,7 +385,6 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 			Context.add(CacheService, cache),
 			Context.add(StrategyRegistryService, registry),
 			Context.add(ContainerRuntimeService, containerRuntime),
-			Context.add(ArtifactPublisherService, publisher),
 			Context.add(PackageRegistryService, packageRegistry),
 			Context.add(CoinRegistryService, coinRegistry),
 			Context.add(PortBrokerService, portBroker),

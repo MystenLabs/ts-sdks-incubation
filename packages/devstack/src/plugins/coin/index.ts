@@ -36,7 +36,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
 import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts';
@@ -283,7 +283,7 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const artifactPublisher = yield* ArtifactPublisherService;
+				const artifactPublisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = {
 					kind: 'witness',
@@ -337,7 +337,7 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'known', fullCoinType };
 				const value = yield* acquireCoin(form, {
@@ -373,7 +373,7 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'builtin', name };
 				const value = yield* acquireCoin(form, {

@@ -26,8 +26,9 @@
 // Growing the set re-builds the very god-object Stage B deletes. The
 // rule for what may live here:
 //
-//   - `persist` is a thin pass-through to the ArtifactPublisher
-//     primitive (cache → verify → produce → register). It forwards the
+//   - `persist` is a thin pass-through to the Cache primitive's
+//     `publish` (cache → verify → produce → register, the folded-in
+//     artifact-publisher cycle). It forwards the
 //     plugin-supplied HEX `spec.chain` VERBATIM — the substrate does
 //     NOT fold `identity.chain` in, because the on-disk cache (and
 //     warm-restart id stability) keys on the hex chain id. See B.1.
@@ -46,8 +47,9 @@
 //
 // What stays OUT of `ctx`, and WHY: every other substrate service a
 // plugin needs is already in plugin scope and is reached with
-// `yield* Service` directly — `ArtifactPublisherService`,
-// `ContainerRuntimeService`, `IdentityContext`, `CacheService`,
+// `yield* Service` directly — `CacheService` (whose `.publish` is the
+// folded-in artifact-publisher cycle),
+// `ContainerRuntimeService`, `IdentityContext`,
 // `PortBrokerService`, `LeaseBrokerService`, etc. The infra
 // orchestrators that are NOT in plugin scope
 // (Snapshot/Codegen/Router/ManifestEndpoint) are precisely the four
@@ -157,10 +159,11 @@ export const emitContributions = (ctx: PluginCtx, decls: ReadonlyArray<Contribut
  */
 export interface PluginCtx {
 	/**
-	 * Thin pass-through to the ArtifactPublisher primitive. Forwards the
-	 * plugin-supplied HEX `spec.chain` verbatim (NO `identity.chain`
-	 * fold) so on-disk cache ids and warm-restart id stability are
-	 * byte-identical to a direct `ArtifactPublisherService.publish`.
+	 * Thin pass-through to the Cache primitive's `publish` (the folded-in
+	 * artifact-publisher cycle). Forwards the plugin-supplied HEX
+	 * `spec.chain` verbatim (NO `identity.chain` fold) so on-disk cache ids
+	 * and warm-restart id stability are byte-identical to a direct
+	 * `CacheService.publish`.
 	 */
 	readonly persist: ArtifactPublisher['publish'];
 	/** Buffered: contribute a generated-file emitter to the codegen

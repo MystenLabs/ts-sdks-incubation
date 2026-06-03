@@ -41,7 +41,7 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import { suiResource } from '../sui/index.ts';
@@ -225,7 +225,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				//     `<runtime>/...` template).
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const stackPaths = yield* StackPathsService;
 				const fs = yield* FileSystem.FileSystem;
 				const path = yield* Path.Path;
@@ -381,7 +381,7 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
 				const mode: SealMode = { mode: 'live', name, resolved: validated };
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				// Emit inline: snapshot → codegen. `snap` + `bindings` are
 				// resolved at FACTORY time for live mode (validated
@@ -443,7 +443,7 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 					upstream: opts.upstream,
 					resolved: validated,
 				};
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
 				const resolvedValue: SealResolved = {
 					...resolved.keyServer,

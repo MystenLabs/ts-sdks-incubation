@@ -44,7 +44,7 @@ import {
 	type ResolvedDependencies,
 } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
@@ -180,7 +180,7 @@ export const action = <const Name extends string, const DependsOn extends Action
 
 				// Substrate-context primitives. artifact publisher + strategy registry
 				// are both provided by the supervisor's pluginContext.
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
 				// Compose the user's body Effect, closing over the

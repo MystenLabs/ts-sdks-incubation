@@ -7,8 +7,9 @@
 // This is L0 substrate — no service names. Plugins choose their own
 // `namespace`; substrate folds chainId in.
 
-import type { Effect } from 'effect';
+import type { Effect, Scope } from 'effect';
 
+import type { ArtifactPublishError, ArtifactSpec } from './artifact-publisher.ts';
 import type { ChainId, ContentHash } from '../substrate/brand.ts';
 
 /** Cache key components. The substrate computes the on-disk key
@@ -31,6 +32,15 @@ export interface Cache {
 	readonly lookup: (key: CacheKey) => Effect.Effect<CacheEntry | null, CacheError>;
 	readonly write: (key: CacheKey, bytes: Uint8Array) => Effect.Effect<void, CacheError>;
 	readonly delete: (key: CacheKey) => Effect.Effect<void, CacheError>;
+	/** Orchestrate the `cache → verify → produce → register` cycle for an
+	 *  `ArtifactSpec` (architecture §10). Folds the former `ArtifactPublisher`
+	 *  facade in: identical signature to `ArtifactPublisher['publish']`, so the
+	 *  cache structurally satisfies that contract. Forwards the plugin-supplied
+	 *  HEX `spec.chain` VERBATIM into the cache key — never folds
+	 *  `identity.chain` — preserving warm-restart id stability. */
+	readonly publish: <Produced, Verified>(
+		spec: ArtifactSpec<Produced, Verified>,
+	) => Effect.Effect<Produced, ArtifactPublishError, Scope.Scope>;
 }
 
 export interface CacheError {

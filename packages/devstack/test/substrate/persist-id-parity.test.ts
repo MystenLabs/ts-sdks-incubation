@@ -1,7 +1,8 @@
 // B.1 load-bearing guard — ctx.persist id/path parity.
 //
-// `ctx.persist` is a THIN pass-through to the ArtifactPublisher
-// primitive: it forwards the plugin-supplied HEX `spec.chain` VERBATIM
+// `ctx.persist` is a THIN pass-through to the Cache primitive's
+// `publish` (the folded-in artifact-publisher cycle): it forwards the
+// plugin-supplied HEX `spec.chain` VERBATIM
 // (the substrate does NOT fold `identity.chain`). The on-disk cache —
 // and therefore warm-restart id stability + private-content
 // decryptability — keys on `(namespace, chain, contentHash)`. If a
@@ -15,7 +16,7 @@
 //      i.e. it keys on the hex chain id passed in the spec, NOT the
 //      identity's raw chain string.
 //   2. A SECOND publish for the identical spec (here via the direct
-//      `ArtifactPublisherService.publish`, which is byte-for-byte what
+//      `CacheService.publish`, which is byte-for-byte what
 //      `ctx.persist` delegates to) is a WARM HIT: `produce` does NOT run
 //      again, and the same `Produced` is returned.
 //
@@ -32,9 +33,7 @@ import * as NodePath from '@effect/platform-node/NodePath';
 import { afterAll, beforeAll, describe, expect, it } from '@effect/vitest';
 
 import type { ArtifactPublisher, ArtifactSpec } from '../../src/primitives/artifact-publisher.ts';
-import { layerArtifactPublisher } from '../../src/substrate/runtime/artifact-publisher/index.ts';
-import { ArtifactPublisherService } from '../../src/substrate/runtime/artifact-publisher/index.ts';
-import { layerCache } from '../../src/substrate/runtime/cache/index.ts';
+import { CacheService, layerCache } from '../../src/substrate/runtime/cache/index.ts';
 import {
 	layerIdentity,
 	layerRuntimeRoot,
@@ -72,11 +71,8 @@ afterAll(() => {
 	if (root) rmSync(root, { recursive: true, force: true });
 });
 
-const substrateLayer = (
-	runtimeRoot: string,
-): Layer.Layer<ArtifactPublisherService | StackPathsService> =>
-	layerArtifactPublisher.pipe(
-		Layer.provideMerge(layerCache),
+const substrateLayer = (runtimeRoot: string): Layer.Layer<CacheService | StackPathsService> =>
+	layerCache.pipe(
 		Layer.provideMerge(layerStackPaths),
 		Layer.provideMerge(
 			Layer.mergeAll(
@@ -111,7 +107,7 @@ describe('ctx.persist id/path parity (B.1)', () => {
 					register: () => Ref.update(registerRuns, (n) => n + 1),
 				});
 
-				const publisher: ArtifactPublisher = yield* ArtifactPublisherService;
+				const publisher: ArtifactPublisher = yield* CacheService;
 				const paths = yield* StackPathsService;
 
 				// `ctx.persist` is, byte-for-byte, what the supervisor builds in
@@ -141,7 +137,7 @@ describe('ctx.persist id/path parity (B.1)', () => {
 				) as CachedArtifact;
 				expect(decoded).toEqual(produced);
 
-				// 2. Direct ArtifactPublisherService.publish for the IDENTICAL
+				// 2. Direct CacheService.publish for the IDENTICAL
 				//    spec → warm HIT: verify returns non-null, so produce does
 				//    NOT run again; register fires every cycle. The path the
 				//    second call reads is identical to the first.

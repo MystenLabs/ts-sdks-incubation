@@ -48,7 +48,7 @@ import type { StrategyContributorDecl } from '../../contracts/strategy-contribut
 import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
+import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { deriveSubnetPrefix, withSubnetAddressing } from '../../substrate/runtime/subnet-broker.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
@@ -170,7 +170,7 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				const identity = yield* IdentityContext;
 				const stackPaths = yield* StackPathsService;
 				const path = yield* Path.Path;
-				const publisher = yield* ArtifactPublisherService;
+				const publisher = yield* CacheService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 
 				// Resolve the deploy-output bind-mount source from the

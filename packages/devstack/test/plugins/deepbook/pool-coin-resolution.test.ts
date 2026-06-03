@@ -14,9 +14,10 @@
 // `_tag` assertion fails.
 //
 // The resolution miss is reached BEFORE the body yields
-// `ArtifactPublisherService`, so the Effect short-circuits without
-// touching any service — we drive it directly and cast the R channel to
-// `never`, mirroring the `member.start([...])` idiom in `factory.test.ts`.
+// `CacheService` (whose `.publish` is the folded-in artifact-publisher
+// cycle), so the Effect short-circuits without touching any service — we
+// drive it directly and cast the R channel to `never`, mirroring the
+// `member.start([...])` idiom in `factory.test.ts`.
 
 import { describe, expect, it } from '@effect/vitest';
 import { Cause, Effect, Exit, Option } from 'effect';
