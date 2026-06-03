@@ -19,7 +19,8 @@
 import { Data, Effect } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { downstreamClosure, orderByLevel, type DepNode, type ResolvedGraph } from './dep-graph.ts';
+import { plan, type GraphPlan } from '../reconcile/graph.ts';
+import { downstreamClosure, type DepNode, type ResolvedGraph } from './dep-graph.ts';
 
 /** Tagged error: a restart was requested for a key that isn't in the
  *  graph. The supervisor lifts this from `attribute()` callers that
@@ -33,12 +34,17 @@ export class RestartTargetMissing extends Data.TaggedError('RestartTargetMissing
  *  2. Re-acquires `acquireOrder` (forward, level-batched-parallel).
  *
  *  The two arrays cover the same set of keys; the difference is the
- *  iteration direction. */
-export interface RestartPlan {
-	readonly slice: ReadonlySet<PluginKey>;
-	readonly teardownOrder: ReadonlyArray<PluginKey>;
-	readonly acquireOrder: ReadonlyArray<PluginKey>;
-}
+ *  iteration direction. Structurally identical to the reconcile module's
+ *  `GraphPlan` (the dep-ordered shape every graph reconcile produces);
+ *  kept as an alias so the existing supervisor call sites read unchanged.
+ */
+export type RestartPlan = GraphPlan;
+
+/** Order a slice into the teardown/acquire pair via the shared reconcile
+ *  `plan` body (collapses the ordering choreography the three wrappers
+ *  below used to repeat verbatim). Slice COMPUTATION stays per-wrapper. */
+const orderSlice = (graph: ResolvedGraph, slice: ReadonlySet<PluginKey>): RestartPlan =>
+	plan(graph, { kind: 'graph-keys', keys: [...slice] }, 'converge');
 
 /**
  * Build a restart plan from a set of root invalidation targets. Each
@@ -59,9 +65,7 @@ export const planRestart = (
 		for (const root of roots) {
 			for (const key of downstreamClosure(graph, root)) slice.add(key);
 		}
-		const teardownOrder = orderByLevel(graph, slice, 'reverse');
-		const acquireOrder = orderByLevel(graph, slice, 'forward');
-		return { slice, teardownOrder, acquireOrder } satisfies RestartPlan;
+		return orderSlice(graph, slice);
 	}).pipe(Effect.withSpan('lifecycle.selective-restart.plan'));
 
 /**
@@ -73,12 +77,8 @@ export const planRestart = (
  * execution loop; this planner just produces the level batches in
  * reverse.
  */
-export const planFullDrain = (graph: ResolvedGraph): RestartPlan => {
-	const slice = new Set<PluginKey>(graph.nodes.keys());
-	const teardownOrder = orderByLevel(graph, slice, 'reverse');
-	const acquireOrder = orderByLevel(graph, slice, 'forward');
-	return { slice, teardownOrder, acquireOrder };
-};
+export const planFullDrain = (graph: ResolvedGraph): RestartPlan =>
+	orderSlice(graph, new Set<PluginKey>(graph.nodes.keys()));
 
 /** `planFullDrain` minus the nodes matched by `exclude`. The excluded
  *  nodes stay live while every other plugin is drained + re-acquired.
@@ -98,7 +98,5 @@ export const planFullDrainExcluding = (
 	for (const [key, node] of graph.nodes) {
 		if (!exclude(node)) slice.add(key);
 	}
-	const teardownOrder = orderByLevel(graph, slice, 'reverse');
-	const acquireOrder = orderByLevel(graph, slice, 'forward');
-	return { slice, teardownOrder, acquireOrder };
+	return orderSlice(graph, slice);
 };

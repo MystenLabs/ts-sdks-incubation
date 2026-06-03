@@ -20,7 +20,8 @@ import {
 	type ResolvedGraph,
 	type RestartTargetMissing,
 } from '../lifecycle/index.ts';
-import { acquireKeys } from './acquire-node.ts';
+import { reconcileGraph, type ReconcileGraphDeps } from '../reconcile/graph.ts';
+import { graphKeysScope, reconcileSpec, reuseVerifiedPolicy } from '../reconcile/spec.ts';
 import { bestEffort, publish } from './wiring.ts';
 
 // -----------------------------------------------------------------------------
@@ -103,7 +104,27 @@ export const doSelectiveRestart = (
 	parentScope: Scope.Scope,
 ): Effect.Effect<void, RestartTargetMissing> =>
 	Effect.gen(function* () {
-		const plan = yield* planRestart(graph, roots);
+		// `planRestart` computes the downstream-closure slice (and validates
+		// every root is in the graph → `RestartTargetMissing`). The reconcile
+		// of that slice is then a `drain ∘ converge` over the SAME graph-keys
+		// scope, sequenced through `reconcileGraph` (the kept `teardownKeys` /
+		// `acquireKeys` primitives — selective-restart no longer calls them
+		// directly). The `restart.*` settle events + the `resetForRestart`
+		// reset between drain and converge stay HERE — that choreography is
+		// selective-restart-specific, not part of the generic graph reconcile.
+		const restartPlan = yield* planRestart(graph, roots);
+		const scope = graphKeysScope(restartPlan.acquireOrder);
+		const deps: ReconcileGraphDeps = {
+			graph,
+			registry,
+			ref,
+			hub,
+			pluginContext,
+			dispatcher,
+			logger,
+			identity,
+			parentScope,
+		};
 		const at = Date.now();
 		for (const root of roots) {
 			yield* publish(ref, hub, {
@@ -112,7 +133,15 @@ export const doSelectiveRestart = (
 				at,
 			});
 		}
-		yield* teardownKeys(graph, registry, plan.teardownOrder);
+		yield* reconcileGraph(
+			reconcileSpec({
+				target: 'absent',
+				cachePolicy: reuseVerifiedPolicy(),
+				scope,
+				direction: 'drain',
+			}),
+			deps,
+		);
 		// Re-acquire the slice in parallel. Each node waits on its own
 		// upstream ready gate, so a downstream node in the slice can't
 		// acquire until its upstream is back to `ready`; unrelated
@@ -123,18 +152,17 @@ export const doSelectiveRestart = (
 		// still be `acquiring` when its scope close interrupts it), so
 		// the acquire below performs a clean `pending → acquiring`
 		// transition for every slice node.
-		for (const key of plan.acquireOrder) {
+		for (const key of restartPlan.acquireOrder) {
 			yield* registry.resetForRestart(key, parentScope).pipe(Effect.catch(() => Effect.void));
 		}
-		yield* acquireKeys(
-			registry,
-			plan.acquireOrder,
-			ref,
-			hub,
-			pluginContext,
-			dispatcher,
-			logger,
-			identity,
+		yield* reconcileGraph(
+			reconcileSpec({
+				target: 'running',
+				cachePolicy: reuseVerifiedPolicy(),
+				scope,
+				direction: 'converge',
+			}),
+			deps,
 		);
 		for (const root of roots) {
 			yield* publish(ref, hub, {

@@ -18,14 +18,14 @@
 import { Deferred, Effect, Ref } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
-import { planFullDrain } from '../lifecycle/index.ts';
+import { reconcileGraph } from '../reconcile/graph.ts';
+import { graphKeysScope, preserveAllPolicy, reconcileSpec } from '../reconcile/spec.ts';
 import {
 	requestBackgroundSnapshotInterrupt,
 	requestBackgroundStackRestartInterrupt,
 } from './background-tasks.ts';
 import type { SupervisorState } from './state.ts';
 import { publish, setCyclePhase } from './wiring.ts';
-import { teardownKeys } from './teardown.ts';
 
 export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
@@ -51,8 +51,22 @@ export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<vo
 					message: 'shutdown requested',
 				});
 				yield* requestBackgroundStackRestartInterrupt(deps);
-				const plan = planFullDrain(graph);
-				yield* teardownKeys(graph, registry, plan.teardownOrder);
+				// Graceful drain of the WHOLE graph, sequenced through the
+				// reconcile graph-axis (`drain` direction → the kept
+				// `teardownKeys` over reverse-dep order). Identical teardown
+				// order + ready-gate semantics as the former `planFullDrain`
+				// path; this whole block stays `Effect.uninterruptible` so a
+				// second SIGINT can't slip an interrupt between the teardown
+				// and the latch/deferred writes (Bug #13).
+				yield* reconcileGraph(
+					reconcileSpec({
+						target: 'absent',
+						cachePolicy: preserveAllPolicy(),
+						scope: graphKeysScope([...graph.nodes.keys()]),
+						direction: 'drain',
+					}),
+					{ graph, registry, ref, hub: deps.hub, pluginContext: deps.pluginContext, dispatcher: deps.dispatcher, logger: deps.logger, identity: deps.identity },
+				);
 				yield* Effect.yieldNow;
 				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
 			}),
