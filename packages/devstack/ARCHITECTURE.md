@@ -315,6 +315,15 @@ Three L3 orchestrators consume capability decls + L1 adapters; none import L2 in
 | `orchestrators/router/`   | `RoutableDecl[]`     | HTTP/TCP wireProtocol mismatch with entrypoint family; cross-stack TCP port collision; collision on `(entrypoint, hostname)` for HTTP / `entrypoint` for TCP.                                                            |
 | `orchestrators/codegen/`  | `CodegenableDecl[]`  | outputPath collision; emitterName collision (unless `allowEmitterNameRepetition`). Plugin-name-blind: never branches on `emitterName`. Aggregate projection delegated to plugin via `CodegenableDecl.aggregate.project`. |
 
+**Wipe scope (coupled survivors):** `snapshot.wipe` tears down one `(app, stack)`'s containers,
+networks, volumes, and per-stack on-disk state, but PRESERVES the snapshot catalog (`snapshots/`)
+**and** the deploy cache (`cache/`) **together** by default. The two ride one flag (`keepSnapshots`,
+default true) — there is no asymmetric "keep snapshots, drop cache". This coupling is load-bearing:
+an ordinary wipe keeps the live deploy cache so a later restore REUSES it (the deploy ids — package
+id, walrus/seal/deepbook objects — survive the teardown rather than re-running with fresh ids). A
+hard reset (`keepSnapshots: false`) drops both so a fresh boot re-proves every on-chain artifact
+against the next chain.
+
 **Router carve-out:** the router owns its Traefik container lifecycle directly via
 `orchestrators/router/traefik-container.ts` (raw `dockerRun(...)` calls) rather than through
 `ContainerRuntimeService.ensureContainer(spec)`. It stamps `kind`/`subkind`/`specVersion` labels

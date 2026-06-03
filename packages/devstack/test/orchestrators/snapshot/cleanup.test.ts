@@ -52,7 +52,7 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 
 describe('snapshot cleanup orchestration', () => {
 	it.effect(
-		'wipe uses explicit managed-resource cleanup and preserves only snapshots by default',
+		'wipe uses explicit managed-resource cleanup and preserves snapshots AND cache by default',
 		() =>
 			withTempRoot('snapshot-cleanup-test', (root) =>
 				Effect.gen(function* () {
@@ -71,18 +71,22 @@ describe('snapshot cleanup orchestration', () => {
 
 					expect(events).toEqual(['containers:app/main', 'networks:app/main', 'volumes:app/main']);
 					expect(existsSync(join(stackRoot, 'work'))).toBe(false);
+					// Coupled wipe-scope: snapshots AND cache survive together by
+					// default so a later restore can reuse the live deploy cache.
 					expect(existsSync(join(stackRoot, 'snapshots'))).toBe(true);
-					expect(existsSync(cacheDir)).toBe(false);
+					expect(existsSync(cacheDir)).toBe(true);
 				}),
 			),
 	);
 
-	it.effect('wipe can explicitly preserve stack-local cache', () =>
+	it.effect('a hard reset (keepSnapshots:false) drops snapshots AND cache together', () =>
 		withTempRoot('snapshot-cleanup-test', (root) =>
 			Effect.gen(function* () {
 				const events: string[] = [];
 				const stackRoot = join(root, 'stack');
 				const cacheDir = join(stackRoot, 'cache');
+				const snapshotsDir = join(stackRoot, 'snapshots');
+				mkdirSync(snapshotsDir, { recursive: true });
 				mkdirSync(cacheDir, { recursive: true });
 				writeFileSync(join(cacheDir, 'entry'), 'cache');
 				writeFileSync(join(stackRoot, 'work'), 'removable');
@@ -91,10 +95,12 @@ describe('snapshot cleanup orchestration', () => {
 					labelMatch: { app: 'app', stack: 'main' },
 					stackRoot,
 					runtime: runtimeStub(events),
-					keepCache: true,
+					keepSnapshots: false,
 				}).pipe(Effect.provide(NodeFileSystem.layer));
 
-				expect(existsSync(join(cacheDir, 'entry'))).toBe(true);
+				// Hard reset: both wipe-scoped dirs are dropped together.
+				expect(existsSync(cacheDir)).toBe(false);
+				expect(existsSync(snapshotsDir)).toBe(false);
 				expect(existsSync(join(stackRoot, 'work'))).toBe(false);
 			}),
 		),

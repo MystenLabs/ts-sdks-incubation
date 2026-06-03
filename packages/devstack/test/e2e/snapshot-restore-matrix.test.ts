@@ -4,12 +4,14 @@
 // runtime root with an OFFLINE restore between them:
 //
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
-//   wipe the live deploy cache -> offline restore
+//   offline restore (REUSES the live deploy cache — D1 dropped the captured copy)
 //   boot 2: assert S1 survived, assert S2 is gone, create S3 (assert exists)
+//   boot 3: wipe the live deploy cache, re-boot, assert S1 is now ORPHANED
 //
-// The live deploy cache is wiped before the restore, so every deploy id must
-// come back from the cache the snapshot CAPTURED (not the in-place preserve) —
-// the harder `snapshot -> wipe -> restore` lifecycle.
+// Post-D1 the restore reuses the live deploy cache directly, so survival alone
+// no longer proves self-containment. The fail-loud third phase pins the OPPOSITE:
+// wiping the live cache must make the deploy re-run with FRESH ids and orphan S1
+// (a LOUD divergence) — cache loss is never silently masked.
 //
 // S2-gone proves the rollback actually rolled back; S3 proves the stack is
 // writable again after a restore. This closes the gap that
@@ -204,6 +206,12 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 			expect(o.s1Survived, `${o.probe}: S1 should survive the restore`).toBe(true);
 			expect(o.s2RolledBack, `${o.probe}: S2 should be gone after the restore`).toBe(true);
 			expect(o.s3Writable, `${o.probe}: S3 should be creatable after the restore`).toBe(true);
+			// Fail-loud teeth: a wiped live cache must orphan S1 (deploy re-runs
+			// with fresh ids), not silently re-deploy as if nothing changed.
+			expect(
+				o.s1OrphanedAfterCacheWipe,
+				`${o.probe}: S1 should be orphaned (loud divergence) after the live cache is wiped`,
+			).toBe(true);
 		}
 	}, 1_800_000);
 });

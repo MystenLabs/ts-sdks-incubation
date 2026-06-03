@@ -153,22 +153,23 @@ export interface SnapshotOrchestrator {
 		id: string,
 	) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Wipe the live (`app`, `stack`) footprint; preserves the
-	 *  snapshot catalog by default. Stack-local artifact cache is
-	 *  removed unless `keepCache` is explicitly true. */
+	/** Wipe the live (`app`, `stack`) footprint; preserves the snapshot
+	 *  catalog AND the deploy cache together by default (`keepSnapshots`,
+	 *  default true). A hard reset (`keepSnapshots: false`) drops both so
+	 *  on-chain artifacts re-prove against the next chain — there is no
+	 *  asymmetric keep-snapshots-drop-cache degree of freedom. */
 	readonly wipe: (args: {
 		readonly keepSnapshots?: boolean;
-		readonly keepCache?: boolean;
 	}) => Effect.Effect<void, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Enumerate the concrete teardown targets a `wipe` of the same
 	 *  `(app, stack)` would remove WITHOUT removing anything — the
 	 *  read-only preview behind `devstack wipe --dry-run`. Same args as
-	 *  `wipe` so the preview honors the same `keepSnapshots`/`keepCache`
-	 *  preservation policy the real wipe applies. */
+	 *  `wipe` so the preview honors the same coupled `keepSnapshots`
+	 *  preservation policy (snapshots + cache survive together) the real
+	 *  wipe applies. */
 	readonly wipePlan: (args: {
 		readonly keepSnapshots?: boolean;
-		readonly keepCache?: boolean;
 	}) => Effect.Effect<WipeTargets, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
 	/** Prune the snapshot catalog (reaps partial artifacts) and sweeps
@@ -569,7 +570,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 							stackRoot: paths.stackRoot,
 							runtime,
 							keepSnapshots: args.keepSnapshots,
-							keepCache: args.keepCache,
 						});
 					}),
 				);
@@ -586,7 +586,6 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				stackRoot: paths.stackRoot,
 				runtime,
 				keepSnapshots: args.keepSnapshots,
-				keepCache: args.keepCache,
 			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
 
 		const prune: SnapshotOrchestrator['prune'] = () =>

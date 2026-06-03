@@ -30,7 +30,6 @@ import { tarHostTree as streamHostTreeTar } from '../../substrate/runtime/host-t
 import {
 	containerImagesBundlePath,
 	contributionPath,
-	DEPLOY_CACHE_NAMESPACES,
 	SnapshotLayout,
 	type CapturedContainer,
 	type CapturedSubtree,
@@ -43,7 +42,6 @@ import {
 	isSafeSnapshotPathSegment,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 } from './descriptor.ts';
-import { CACHE_DIR_NAME } from './wipe.ts';
 import {
 	ImageBundleTagScanError,
 	readImageBundleTags,
@@ -664,31 +662,21 @@ export const runCapture = (
 				yield* saveCommittedImages(committedContainers, inputs.stagingDir, inputs.runtime);
 
 				// 3. Tar the host-tree subtrees declared by participants.
-				const declaredSubtrees: CapturedSubtree[] = [
-					...inputs.participants.flatMap((p) =>
-						p.decl.subtrees.map((relPath) => ({
-							plugin: p.plugin,
-							relPath,
-							missingTolerance: p.decl.missingTolerance,
-							secretMaterial: p.decl.secretMaterial ?? false,
-						})),
-					),
-					// Capture the deploy/mint artifact caches so the snapshot is
-					// SELF-CONTAINED: the cached on-chain ids ride the tar and are
-					// restored even when the live cache is gone (`snapshot → wipe →
-					// fresh boot → restore`). `fine` tolerance — a stack with no
-					// deploys yet simply has no `cache/<ns>` dir to capture. The
-					// restore side ALSO preserves the live copy (the in-place fast
-					// path) — see LIVE_RESTORE_PRESERVED_PATHS in restore.ts.
-					...DEPLOY_CACHE_NAMESPACES.map(
-						(ns): CapturedSubtree => ({
-							plugin: 'snapshot/deploy-cache',
-							relPath: `${CACHE_DIR_NAME}/${ns}`,
-							missingTolerance: 'fine',
-							secretMaterial: false,
-						}),
-					),
-				];
+				//    Deploy/mint artifact caches (`cache/<ns>`) are NO LONGER
+				//    tarred (D1): they survive via the LIVE cache that a wipe now
+				//    preserves alongside `snapshots/` (D0 coupling), so the
+				//    captured copy is redundant. Only real host-tree data —
+				//    walrus blobs, the seal vault, keystores — rides the tar. See
+				//    LIVE_RESTORE_PRESERVED_PATHS in restore.ts, which now reuses
+				//    the live deploy cache directly.
+				const declaredSubtrees: CapturedSubtree[] = inputs.participants.flatMap((p) =>
+					p.decl.subtrees.map((relPath) => ({
+						plugin: p.plugin,
+						relPath,
+						missingTolerance: p.decl.missingTolerance,
+						secretMaterial: p.decl.secretMaterial ?? false,
+					})),
+				);
 				const subtrees = yield* resolveCapturedSubtrees(declaredSubtrees, inputs.runtimeStackRoot);
 				const hostTreeIncluded = subtrees.length > 0;
 				if (hostTreeIncluded) {

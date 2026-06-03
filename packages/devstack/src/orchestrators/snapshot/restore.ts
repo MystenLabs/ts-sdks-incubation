@@ -752,25 +752,21 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
 	{ relativePath: 'snapshot.reservation', kind: 'file' },
-	// Deploy/mint caches. The snapshot CAPTURES these (DEPLOY_CACHE_NAMESPACES in
-	// descriptor.ts, tarred in capture.ts), and that captured copy — untarred into
-	// staging, consistent with the restored chain — WINS (`overwrite: false`).
-	// This live-side entry is only a FALLBACK: it carries the deploy ids forward
-	// when staging doesn't already have them (e.g. a `snapshot → wipe → restore`
-	// where the captured copy IS present, or a pre-capture snapshot where it is
-	// not). Either way the post-restore boot REUSES the deploy instead of
-	// re-running it with fresh ids (which would orphan every pre-snapshot object).
-	// The generic per-call `cache/entry` is NOT a deploy namespace and stays
-	// dropped (restore.test.ts pins that rollback).
+	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES in descriptor.ts). Post-D1 the
+	// capture NO LONGER tars these, so there is no captured copy in staging — the
+	// LIVE cache is now the SOLE source. A wipe preserves it (D0 coupling), so it
+	// is present at restore time; this entry preserves it across the stage-and-swap
+	// (preserve-ALWAYS — overwrite defaults true) so the post-restore boot REUSES
+	// the deploy instead of re-running it with fresh ids (which would orphan every
+	// pre-snapshot object). Chain rollback reconciles any drift between the rolled-
+	// back chain state and the live deploy ids. The generic per-call `cache/entry`
+	// is NOT a deploy namespace and stays dropped (restore.test.ts pins that
+	// rollback); a lost live cache (e.g. a hard reset) is surfaced LOUD by the
+	// matrix probe's fail-loud assertion rather than silently re-deployed.
 	...DEPLOY_CACHE_NAMESPACES.map(
 		(namespace): StageAndSwapPreservedPath => ({
 			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
 			kind: 'directory',
-			// The snapshot-CAPTURED copy (untarred into staging) wins; only fall
-			// back to the live copy when staging doesn't carry it (e.g. a snapshot
-			// taken before deploy-cache capture existed). Avoids clobbering the
-			// snapshot-consistent id with a possibly-drifted live one.
-			overwrite: false,
 		}),
 	),
 ];
