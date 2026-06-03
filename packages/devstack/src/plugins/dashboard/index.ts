@@ -12,7 +12,7 @@
 
 import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
@@ -82,8 +82,9 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 		// down the very HTTP connection it's answering on (502). It holds no
 		// restorable chain state, so staying live is safe.
 		keepAliveOnRestore: true,
-		start: (_deps: unknown, ctx: PluginCtx) =>
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
 				const identity = yield* IdentityContext;

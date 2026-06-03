@@ -16,7 +16,7 @@ import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/b
 import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import { definePlugin } from '../../../src/substrate/plugin.ts';
-import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import {
 	makeProjectionRef,
 	noopContributionDispatcher,
@@ -66,8 +66,9 @@ describe('supervisor — contribution-dispatch failure routing (backlog #39)', (
 				id: 'test:sink-fail-plugin',
 				role: 'service' as const,
 				section: 'service',
-				start: (_deps: unknown, ctx: PluginCtx) =>
-					Effect.sync(() => {
+				start: () =>
+					Effect.gen(function* () {
+						const ctx = yield* PluginContext;
 						ctx.codegen(codegenDecl);
 						return { v: 'ok' as const };
 					}),

@@ -41,12 +41,7 @@
 import { Effect, Path } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import {
-	definePlugin,
-	resource,
-	type ResourceRef,
-	type ResourceValueOf,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
@@ -55,13 +50,11 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
-import {
-	deriveSubnetPrefix,
-	withSubnetAddressing,
-} from '../../substrate/runtime/subnet-broker.ts';
+import { deriveSubnetPrefix, withSubnetAddressing } from '../../substrate/runtime/subnet-broker.ts';
 import type { AccountFundingCoinValue } from '../account/index.ts';
 import { coinResourceId, type CoinResourceId } from '../coin/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
@@ -159,13 +152,12 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 		role: 'service',
 		section: 'service',
 		pluginKey: walrusKey,
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple (`[sui]`) the default
-		// supplied for this `[suiResource] as const` dependency.
-		start: (deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
+		// `deps` auto-infers the resolved `[sui]` tuple from the
+		// `[suiResource] as const` dependency. `ctx` arrives via the
+		// `PluginContext` service.
+		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui] = deps;
 
 				// Substrate-context primitives:
@@ -319,16 +311,13 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 		// no long-running children.
 		role: 'task',
 		section: 'service',
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple (`[sui]`) the default
-		// supplied for this `[suiResource] as const` dependency. Known mode
-		// is a pure value-producer — `sui` is unused (the value reads
-		// `resolved.chain` from the deployment options) but the dep edge
-		// orders boot.
-		start: (_deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
+		// Known mode is a pure value-producer — `sui` is unused (the value
+		// reads `resolved.chain` from the deployment options) but the
+		// `dependsOn` edge still orders boot, so `start` is zero-arg.
+		// `ctx` arrives via the `PluginContext` service.
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const identity = yield* IdentityContext;
 				const resolvedValue = {
 					mode: 'known',
@@ -379,10 +368,7 @@ const buildLocalCapabilities = (parts: {
 	readonly resolved: WalrusResolved;
 	readonly identity: Identity;
 }): ReadonlyArray<
-	| SnapshotableDecl
-	| CodegenableDecl<'walrus-network'>
-	| StrategyContributorDecl
-	| RoutableDecl
+	SnapshotableDecl | CodegenableDecl<'walrus-network'> | StrategyContributorDecl | RoutableDecl
 > => {
 	const { name, nodeCount, containerApiPort, serviceKey, resolved, identity } = parts;
 	const snap: SnapshotableDecl = makeSnapshotable(
@@ -490,7 +476,9 @@ export const emitLocalCapabilities = (
 const buildKnownCapabilities = (parts: {
 	readonly resolved: WalrusResolved;
 	readonly identity: Identity;
-}): ReadonlyArray<SnapshotableDecl | CodegenableDecl<'walrus-network'> | StrategyContributorDecl> => {
+}): ReadonlyArray<
+	SnapshotableDecl | CodegenableDecl<'walrus-network'> | StrategyContributorDecl
+> => {
 	const { resolved, identity } = parts;
 	const snap: SnapshotableDecl = makeSnapshotable(
 		'known' satisfies WalrusSnapshotMode,

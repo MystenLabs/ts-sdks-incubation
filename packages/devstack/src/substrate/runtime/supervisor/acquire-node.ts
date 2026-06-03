@@ -24,6 +24,7 @@ import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus, PluginRole } from '../../lifecycle.ts';
 import type { PluginCtx } from '../../plugin-ctx.ts';
+import { PluginContext } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies } from '../../plugin.ts';
 import type { PluginErrorContribution } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
@@ -373,14 +374,18 @@ export const acquireNode = (
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const start = entry.node.member.start as (
 			deps: unknown,
-			ctx: PluginCtx,
 		) => Effect.Effect<unknown, unknown, any>;
 		// Stage B: build the per-plugin ctx + replay buffer. Every plugin
 		// emits its contributions inline via the typed `ctx` verbs during
 		// `start`; the buffer is the SOLE source of the post-start dispatch.
+		// The ctx is delivered through the `PluginContext` service tag (a
+		// plugin reaches it with `yield* PluginContext`), provided into the
+		// start Effect's requirement channel below — NOT as a 2nd positional
+		// argument — which keeps `start` single-arg and `deps` auto-inferred.
 		const { ctx: pluginCtx, buffer } = makePluginCtx(pluginContext);
 		const currentPluginContext = pluginContext.pipe(
 			Context.add(CurrentPluginKey, { key }),
+			Context.add(PluginContext, pluginCtx),
 			Context.add(CurrentPluginProgress, {
 				setPhase: (phase) =>
 					publish(ref, hub, {
@@ -391,10 +396,11 @@ export const acquireNode = (
 					}),
 			}),
 		);
-		const providedAcquire = Effect.provide(
-			start(deps, pluginCtx),
-			currentPluginContext,
-		) as Effect.Effect<unknown, unknown, Scope.Scope>;
+		const providedAcquire = Effect.provide(start(deps), currentPluginContext) as Effect.Effect<
+			unknown,
+			unknown,
+			Scope.Scope
+		>;
 		const result = yield* Scope.provide(providedAcquire, entry.scope).pipe(
 			Effect.matchEffect({
 				onFailure: (cause) =>

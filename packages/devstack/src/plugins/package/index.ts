@@ -24,12 +24,7 @@
 import { Effect } from 'effect';
 
 import { projection } from '../../api/define-capabilities.ts';
-import {
-	definePlugin,
-	resource,
-	type ResourceRef,
-	type ResourceValueOf,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -38,6 +33,7 @@ import { pickCreatedByType, type LocalPackagePublishOutput } from './publish-out
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import {
 	CoinRegistryService,
@@ -274,19 +270,11 @@ const buildLocalPlugin = <
 			],
 			cascade: true,
 		},
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the destructured object no longer arity-matches the single-arg
-		// `PluginStart` contextual default, so TS would otherwise infer the
-		// bindings as `any`. The annotation reproduces the resolved
-		// dependency object the default supplied.
-		start: (
-			{
-				sui,
-				publisher: publisherAccount,
-			}: { sui: ResourceValueOf<typeof suiResource>; publisher: AccountValue },
-			ctx: PluginCtx,
-		) =>
+		// `deps` auto-infers the resolved `{ sui, publisher }` dependency
+		// object; `ctx` arrives via the `PluginContext` service.
+		start: ({ sui, publisher: publisherAccount }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Substrate-context primitives: ArtifactPublisher
 				// is provided by the supervisor's pluginContext;
 				// ChainProbe is looked up via the StrategyRegistry
@@ -378,8 +366,9 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'package',
-		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const publisher = yield* ArtifactPublisherService;
 				const probe = yield* chainProbeFor<SuiProbeKey>(sui.chain);
 				const registry = yield* PackageRegistryService;

@@ -51,6 +51,7 @@ export {
 	type ResourceValueOf,
 } from './api/define-plugin.ts';
 export { pluginErrorContributions } from './api/plugin-errors.ts';
+export { PluginContext, type PluginCtx } from './substrate/plugin-ctx.ts';
 export {
 	DEFAULT_DEVSTACK_NETWORK,
 	DEFAULT_STACK_NAME,

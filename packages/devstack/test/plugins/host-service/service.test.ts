@@ -445,11 +445,11 @@ describe('acquireHostService', () => {
 			ready: { kind: 'log', pattern: 'ready', timeoutMs: 5_000 },
 		});
 
-		const { ctx, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx();
 
 		return Effect.scoped(
 			Effect.gen(function* () {
-				const start = member.start(undefined, ctx).pipe(
+				const start = provide(member.start(undefined)).pipe(
 					Effect.provideService(PortBrokerService, broker),
 					Effect.provideService(Logger, fakeLogger),
 					Effect.provideService(CurrentPluginKey, { key: pluginKey('host-service-test#0') }),

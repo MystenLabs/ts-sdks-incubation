@@ -1,14 +1,17 @@
-// Test-only PluginCtx harness — drive a converted plugin's
-// `start(deps, ctx)` with a decl-CAPTURING fake ctx and assert on the
-// captured contributions.
+// Test-only PluginCtx harness — drive a converted plugin's `start(deps)`
+// with a decl-CAPTURING fake ctx and assert on the captured
+// contributions.
 //
 // Stage B converts plugins from a `capabilities: ({value,runtime}) =>
 // CapabilityDecl[]` second-closure to emitting contributions INLINE in
-// `start(deps, ctx)` via the typed `ctx.*` verbs (see
-// `src/substrate/plugin-ctx.ts`). Tests that previously drove the
-// `capabilities` closure as a pure function (and inspected the returned
-// decls) must instead drive `start(deps, ctx)` with THIS harness and
-// assert the `captured.*` arrays.
+// `start(deps)` via the typed `ctx.*` verbs (`const ctx = yield*
+// PluginContext`; see `src/substrate/plugin-ctx.ts`). Tests that
+// previously drove the `capabilities` closure as a pure function (and
+// inspected the returned decls) must instead drive `start(deps)` with
+// THIS harness — PROVIDING the captured ctx as the `PluginContext`
+// service via `harness.provide(...)` (mirroring the supervisor's
+// `Effect.provideService(start(deps), PluginContext, ctx)`) — and assert
+// the `captured.*` arrays.
 //
 // Shape parity: the four buffered verbs + `provides` capture into the
 // matching `captured.*` array in CALL ORDER — exactly the order the
@@ -35,6 +38,7 @@ import type { RoutableDecl } from '../../src/contracts/routable.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../src/contracts/strategy-contributor.ts';
 import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import { StrategyNotFoundError } from '../../src/substrate/runtime/errors.ts';
 
 /** The decls captured per buffered verb (+ `provides`), each in call
@@ -64,11 +68,20 @@ export interface TestPluginCtxOptions {
 	readonly strategies?: Readonly<Record<string, unknown>>;
 }
 
-/** What `makeTestPluginCtx` hands back: the `ctx` to pass as the 2nd
- *  arg of `start(deps, ctx)`, the per-verb `captured` arrays, and the
- *  ordered list of `persisted` specs (for `persist` assertions). */
+/** What `makeTestPluginCtx` hands back: the captured `ctx`, a `provide`
+ *  helper that satisfies a plugin start's `PluginContext` requirement
+ *  with that ctx, the per-verb `captured` arrays, and the ordered list of
+ *  `persisted` specs (for `persist` assertions). */
 export interface TestPluginCtxHarness {
 	readonly ctx: PluginCtx;
+	/** Provide the captured ctx as the `PluginContext` service into a
+	 *  plugin `start` effect's requirement channel — mirrors the
+	 *  supervisor's `Effect.provideService(start(deps), PluginContext,
+	 *  ctx)`. Pass `member.start(deps)` here; the remaining R-channel
+	 *  (infra services the plugin `yield*`s) is the test's to provide. */
+	readonly provide: <A, E, R>(
+		effect: Effect.Effect<A, E, R>,
+	) => Effect.Effect<A, E, Exclude<R, PluginContext>>;
 	readonly captured: CapturedDecls;
 	/** Every `ArtifactSpec` passed to `ctx.persist`, in call order. The
 	 *  generics are erased to `unknown` at capture (the harness is
@@ -93,15 +106,18 @@ const defaultPublisher: ArtifactPublisher = {
 
 /**
  * Build a decl-capturing fake `PluginCtx` for driving a converted
- * plugin's `start(deps, ctx)` under `it.effect`-style tests.
+ * plugin's `start(deps)` under `it.effect`-style tests. The plugin
+ * reaches its ctx with `yield* PluginContext`, so the start effect must
+ * be run with the captured ctx provided — use the harness `provide`
+ * helper (mirrors the supervisor's `Effect.provideService`).
  *
  * Usage:
  *
  * ```ts
  * it.effect('contributes the WAL funding strategy', () =>
  *   Effect.gen(function* () {
- *     const { ctx, captured } = makeTestPluginCtx();
- *     yield* member.start(deps, ctx);
+ *     const { provide, captured } = makeTestPluginCtx();
+ *     yield* provide(member.start(deps));
  *     const wal = captured.provides.find(
  *       (d) => d.capabilityKey === walFaucetStrategyKey('0x…::wal::WAL'),
  *     );
@@ -154,5 +170,10 @@ export const makeTestPluginCtx = (opts: TestPluginCtxOptions = {}): TestPluginCt
 		fail: (error) => Effect.fail(error) as Effect.Effect<never>,
 	};
 
-	return { ctx, captured, persisted };
+	const provide = <A, E, R>(
+		effect: Effect.Effect<A, E, R>,
+	): Effect.Effect<A, E, Exclude<R, PluginContext>> =>
+		Effect.provideService(effect, PluginContext, ctx);
+
+	return { ctx, provide, captured, persisted };
 };

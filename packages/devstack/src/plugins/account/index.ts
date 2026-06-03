@@ -40,14 +40,10 @@
 
 import { Effect } from 'effect';
 
-import {
-	definePlugin,
-	resource,
-	type AnyResourceRef,
-	type ResolvedDependencyList,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiSpans } from '../sui/index.ts';
 
@@ -339,12 +335,11 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple the default supplied.
-		start: (deps: ResolvedDependencyList<AccountDependencyMembers<Funding>>, ctx: PluginCtx) =>
+		// `deps` auto-infers from the resolved `dependsOn`; `ctx` arrives
+		// via the `PluginContext` service.
+		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui, ...resolvedDeps] = deps;
 				const resolvedCoinValues = resolvedDeps.slice(
 					0,

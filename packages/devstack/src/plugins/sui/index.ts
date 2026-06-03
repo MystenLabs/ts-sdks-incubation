@@ -39,6 +39,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { Identity } from '../../substrate/identity.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
@@ -172,15 +173,13 @@ const buildPlugin = (opts: SuiOptions) => {
 		id: suiResource.id,
 		role: 'service',
 		section: 'service',
-		// Sui has no `dependsOn`, so `_deps` is always `undefined`; it is
-		// annotated explicitly because the required `ctx` 2nd param means
-		// the start closure no longer arity-matches the single-arg
-		// `PluginStart` contextual default, so TS would otherwise widen the
-		// params to `any`. `ctx` is the typed plugin-authoring surface the
-		// contribution emission below drives (Stage B inversion — replaced
-		// the legacy `capabilities` second-closure).
-		start: (_deps: undefined, ctx: PluginCtx) =>
+		// Sui has no `dependsOn`, so `start` is zero-arg. `ctx` is the
+		// typed plugin-authoring surface the contribution emission below
+		// drives (Stage B inversion — replaced the legacy `capabilities`
+		// second-closure); it arrives via the `PluginContext` service.
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// The substrate threads `ContainerRuntime` + `IdentityContext`
 				// via the plugin runtime context; the supervisor provides
 				// these before this body runs.

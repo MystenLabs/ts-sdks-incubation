@@ -26,7 +26,7 @@ import { postgres } from '../../../src/plugins/postgres/index.ts';
 import type { Postgres, PostgresServiceOptions } from '../../../src/plugins/postgres/service.ts';
 import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
-import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../../src/substrate/runtime/paths.ts';
 import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
@@ -99,21 +99,24 @@ const stackPaths = StackPathsService.of({
 	cacheNamespaceDir: (namespace) => `${STACK_ROOT}/cache/${namespace}`,
 });
 
-/** Drive the converted plugin's `start(deps, ctx)` against the fake
- *  substrate. Returns the resolved handle (start's success value) and
- *  the codegen decl captured off `ctx.codegen` (Stage B replaces the
- *  legacy `capabilities` closure with this inline emission). */
+/** Drive the converted plugin's `start(deps)` against the fake
+ *  substrate, providing the captured ctx as the `PluginContext` service
+ *  (`harness.provide`). Returns the resolved handle (start's success
+ *  value) and the codegen decl captured off `ctx.codegen` (Stage B
+ *  replaces the legacy `capabilities` closure with this inline emission). */
 const runStart = (
 	opts: PostgresServiceOptions,
 ): Promise<{ handle: Postgres; codegen: CodegenableDecl }> => {
-	const { ctx, captured } = makeTestPluginCtx();
+	const { provide, captured } = makeTestPluginCtx();
 	const plugin = postgres(opts);
 	return Effect.runPromise(
 		Effect.scoped(
 			Effect.gen(function* () {
-				const handle = (yield* (
-					plugin.start as (deps: unknown, ctx?: PluginCtx) => Effect.Effect<Postgres, never>
-				)(undefined, ctx)) as Postgres;
+				const handle = (yield* provide(
+					(plugin.start as (deps: unknown) => Effect.Effect<Postgres, never, PluginContext>)(
+						undefined,
+					),
+				)) as Postgres;
 				const codegen = captured.codegen[0];
 				if (codegen === undefined) throw new Error('codegen decl missing from ctx capture');
 				return { handle, codegen: codegen as CodegenableDecl };

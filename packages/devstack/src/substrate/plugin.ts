@@ -10,7 +10,6 @@ import type { Effect } from 'effect';
 import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { PluginRole } from './lifecycle.ts';
-import type { PluginCtx } from './plugin-ctx.ts';
 import type { RowSection } from './projection.ts';
 
 const resourceBrand: unique symbol = Symbol.for('devstack.resource') as never;
@@ -85,48 +84,42 @@ export type ResolvedDependencies<Input> = Input extends undefined
 				? ResolvedDependencyObject<Input>
 				: never;
 
-// The erased start shape. `(...args: any[])` absorbs the `ctx` 2nd
-// argument the supervisor passes (`start(deps, ctx)`) without forcing
-// every authoring-side `PluginStart` to re-infer around it. `StartValue`
-// recovers the Value from the success channel through this same loose
-// match.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyPluginStart = (...args: any[]) => Effect.Effect<unknown, unknown, unknown>;
+// The erased start shape. A plugin's `start` is single-arg
+// (`(deps) => Effect` or `() => Effect`). The R-channel is `unknown`
+// because the supervisor provides the ambient requirements (`PluginCtx`
+// via the `PluginContext` service tag, plus infra) before running it —
+// those requirements never surface in the public contract. `StartValue`
+// recovers the Value from the success channel.
+type AnyPluginStart = (deps: never) => Effect.Effect<unknown, unknown, unknown>;
 
-// Stage B: the `ctx` argument is REQUIRED on the runtime-facing
-// `Plugin.start` type (below) — that is the shape the supervisor calls
-// (`start(deps, ctx)`), and `makePluginCtx` always builds and passes a
-// ctx. The public `start` overloads admit both 1-arg and 2-arg bodies
-// via the loose `AnyPluginStart` CONSTRAINT.
+// Stage B (ctx-as-service): `ctx` is delivered to plugins through the
+// `PluginContext` service tag (`const ctx = yield* PluginContext`), NOT
+// as a 2nd positional `start` argument. That keeps `start` STRICTLY
+// single-arg, which is what restores automatic contextual typing of
+// `deps`.
 //
-// This `PluginStart<Deps>` helper is the DEFAULT contextual shape
-// `const Start` resolves to when a plugin authors `start: (deps) => …`
-// (or `start: () => …`). It is DELIBERATELY kept SINGLE-arg:
+// `PluginStart<Deps>` is both the CONSTRAINT and the DEFAULT contextual
+// shape `const Start` resolves to when a plugin authors `start: (deps) =>
+// …` (or `start: () => …`). Keeping it single-arg is load-bearing:
 //
-//   - 1-arg bodies (`sui` / `walrus` / `seal` / `action`, not yet
-//     converted to emit via ctx) fall back to this default and keep
-//     contextually typing `deps` exactly as at baseline.
-//   - It must NOT gain a `ctx` slot. Adding one (optional OR required)
-//     regresses `deps` to `any` for every plugin whose `dependsOn` is a
-//     runtime-built (non-literal) array — `account` / `wallet` /
-//     `deepbook` / `action` — because `Start` is then inferred from the
-//     arrow against a 2-arg target and the `deps` contextual type
-//     collapses. (Verified empirically: a `ctx` slot fixes the
-//     literal-`dependsOn` plugins but breaks the runtime-built ones.)
+//   - `deps` contextually types from the resolved `dependsOn` for EVERY
+//     plugin, including those whose `dependsOn` is a runtime-built
+//     (non-literal) array — `account` / `wallet` / `deepbook` — with no
+//     per-plugin `deps:` annotation. (A `ctx` 2nd slot, optional OR
+//     required, regressed `deps` to `any` for exactly those plugins,
+//     which is why ctx now arrives via the requirement channel instead.)
 //
-// Converted plugins author a 2-arg body `(deps, ctx: PluginCtx) =>`.
-// A required `ctx` 2nd param means the body no longer arity-matches this
-// single-arg default, so those bodies annotate `deps` EXPLICITLY at the
-// call site (reproducing the resolved tuple/object the default would have
-// supplied). The loose `AnyPluginStart` constraint admits them; their own
-// annotations type `deps`/`ctx`.
+// The `start` Effect's R-channel may include `PluginContext` (and infra
+// services) — that is an ambient requirement the supervisor satisfies; it
+// is held as `unknown` here and never propagates into
+// `Plugin<Id, Value, Needs>` (`Needs` = `dependsOn` only).
 type PluginStart<Deps> = [Deps] extends [undefined]
 	? () => Effect.Effect<unknown, unknown, unknown>
 	: (deps: Deps) => Effect.Effect<unknown, unknown, unknown>;
 
 type StartValue<Start> = Start extends (
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
-	...args: any[]
+	deps: any,
 ) => Effect.Effect<infer Value, unknown, unknown>
 	? Value
 	: never;
@@ -199,7 +192,6 @@ export interface Plugin<
 	readonly watch?: WatchDecl;
 	readonly start: (
 		deps: ResolvedDependencies<DependencyInput | undefined>,
-		ctx: PluginCtx,
 	) => Effect.Effect<Value, unknown, unknown>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	readonly section: RowSection;
@@ -281,15 +273,15 @@ export const resolvePluginDependencies = (
 export const pluginDependencyRefs = (plugin: AnyPlugin): readonly AnyResourceRef[] =>
 	dependencyList(plugin[dependencyInputBrand]) as readonly AnyResourceRef[];
 
-// Stage B: the `Start` CONSTRAINT is the loose `AnyPluginStart`
-// (`(...args: any[]) => Effect`), while the DEFAULT stays the single-arg
-// `PluginStart<Deps>`. A 1-arg `start: (deps) => …` body falls back to
-// the default (deps inference, zero plugin edits); a 2-arg
-// `start: (deps, ctx) => …` body satisfies the loose constraint and types
-// `deps`/`ctx` from its own annotations. Tightening the constraint to
-// `PluginStart` (or any 2-arg-capable shape) regresses `deps` to `any`
-// for the plugins whose `dependsOn` is a runtime-built array — see the
-// note on `PluginStart` above.
+// Stage B (ctx-as-service): both the `Start` CONSTRAINT and DEFAULT are
+// the single-arg `PluginStart<Deps>`. A `start: (deps) => …` (or
+// `start: () => …`) body falls back to the default and contextually
+// types `deps` from the resolved `dependsOn` — no per-plugin `deps:`
+// annotation, including for plugins whose `dependsOn` is a runtime-built
+// array. Plugins reach `ctx` via `const ctx = yield* PluginContext`
+// inside the body; that requirement rides the start Effect's R-channel
+// (held as `unknown` by `PluginStart`) and never reaches the public
+// `Plugin` contract.
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends readonly AnyResourceRef[],

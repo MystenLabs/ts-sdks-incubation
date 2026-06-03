@@ -31,7 +31,7 @@ import {
 	type SupervisedStack,
 } from '../../src/substrate/runtime/index.ts';
 import { definePlugin, type PluginErrorContribution } from '../../src/substrate/plugin.ts';
-import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../src/contracts/projection.ts';
 import type { RoutableDecl } from '../../src/contracts/routable.ts';
@@ -184,8 +184,9 @@ const ctxPlugin = definePlugin({
 	id: 'frame:ctx',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.snapshotExtra(snapDecl);
 			ctx.codegen(codegenDecl);
 			ctx.endpoint(routeDecl);
@@ -204,8 +205,9 @@ const ctxFailPlugin = definePlugin({
 	id: 'frame:ctx-fail',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
+	start: () =>
 		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			// Buffer an endpoint (and more) ...
 			ctx.endpoint(routeDecl);
 			ctx.snapshotExtra(snapDecl);

@@ -34,7 +34,7 @@ import { Effect } from 'effect';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 
@@ -86,8 +86,9 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 		id: postgresResource.id,
 		role: 'service',
 		section: 'service',
-		start: (_deps: unknown, ctx: PluginCtx) =>
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Substrate-context plumbing supplies real
 				// `ContainerRuntime` + `Identity` instances; the
 				// supervisor's plugin acquisition path provides these

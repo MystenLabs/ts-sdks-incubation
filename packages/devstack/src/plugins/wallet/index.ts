@@ -28,7 +28,6 @@
 import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
-import type { AccountValue } from '../account/index.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -57,7 +56,7 @@ import {
 	type WalletValue,
 } from './service.ts';
 import type { AnyPlugin } from '../../substrate/plugin.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 /** Wallet's expander contributes through the substrate-owned
  *  `PluginExpander` contract (`contracts/plugin-expander.ts`). The
@@ -212,14 +211,12 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 		// itself lives for the stack's lifetime.
 		role: 'service',
 		section: 'service',
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple the default supplied:
-		// the hard Sui ordering edge (discarded) followed by the resolved
-		// account values.
-		start: (deps: readonly [unknown, ...(readonly AccountValue[])], ctx: PluginCtx) =>
+		// `deps` auto-infers from the resolved `dependsOn`: the hard Sui
+		// ordering edge (discarded) followed by the resolved account
+		// values. `ctx` arrives via the `PluginContext` service.
+		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Pull identity, the stack-paths bundle, and the port-
 				// broker from the supervisor-provided substrate context.
 				// `StackPathsService.stackRoot` is the on-disk root for

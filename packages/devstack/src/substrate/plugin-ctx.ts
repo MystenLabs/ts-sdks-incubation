@@ -2,12 +2,16 @@
 //
 // Stage B (plugin API inversion) replaces the legacy `capabilities`
 // second-closure with inline typed verbs a plugin calls from `start`.
-// `start(deps, ctx)` receives this `ctx` as an ADDITIVE optional 2nd
-// argument. During Stage B's foundation (P0/P0.5/P1) the legacy
-// `capabilities` closure COEXISTS with `ctx`: the supervisor replays
-// the buffered ctx verbs and CONCATENATES them with the resolved
-// legacy capabilities before dispatch, so an unconverted plugin (which
-// ignores `ctx`) is byte-for-byte unchanged.
+// The plugin reaches this `ctx` by `yield* PluginContext` (an Effect
+// service tag, declared at the bottom of this file) — exactly like any
+// other substrate service it `yield*`s (`ContainerRuntimeService`,
+// `IdentityContext`, …). The supervisor PROVIDES a freshly-built
+// per-plugin ctx into `start`'s requirement (R) channel via
+// `Effect.provideService(start(deps), PluginContext, ctx)`. Delivering
+// ctx through the requirement channel — rather than as a 2nd positional
+// `start` argument — keeps `start` SINGLE-arg, which restores automatic
+// contextual typing of `deps` (no per-plugin `deps:` annotations), while
+// `ctx` stays always-present (the supervisor never omits it).
 //
 // -----------------------------------------------------------------------------
 // INV-5 — the closed 8-key set
@@ -52,7 +56,7 @@
 // service to `ctx` that a plugin could already `yield*` is the drift
 // INV-5 forbids.
 
-import type { Effect } from 'effect';
+import { Context, type Effect } from 'effect';
 
 import type { ArtifactPublisher } from '../primitives/artifact-publisher.ts';
 import type { CodegenableDecl } from '../contracts/codegenable.ts';
@@ -95,8 +99,10 @@ export type Contribution =
 	| StrategyContributorDecl<string, unknown>;
 
 /**
- * The minimal typed plugin-authoring context. Passed as the additive
- * optional 2nd argument to `start(deps, ctx)`.
+ * The minimal typed plugin-authoring context. A plugin reaches it from
+ * `start` with `const ctx = yield* PluginContext` (the service tag
+ * below); the supervisor provides a per-plugin instance into `start`'s
+ * requirement channel.
  *
  * EXACTLY 8 keys (INV-5 — see file header). Do not add a 9th.
  */
@@ -141,3 +147,23 @@ export interface PluginCtx {
 		error: { readonly _tag: string } & Record<string, unknown>,
 	) => Effect.Effect<never>;
 }
+
+/**
+ * Effect service tag carrying the per-plugin {@link PluginCtx}.
+ *
+ * A plugin's `start` body reaches its ctx with `const ctx = yield*
+ * PluginContext`. The supervisor builds a fresh per-plugin ctx (+ its
+ * replay buffer) in `runtime/supervisor/acquire-node.ts` and PROVIDES it
+ * into `start`'s requirement channel
+ * (`Effect.provideService(start(deps), PluginContext, ctx)`), so the tag
+ * is always satisfied for code the supervisor runs.
+ *
+ * This ambient requirement lives only in `start`'s R-channel; it does NOT
+ * surface in the public `Plugin<Id, Value, Needs>` contract (`Needs` is
+ * `dependsOn` only — see `plugin.ts`). Declaring it as a service rather
+ * than a `start` argument is what keeps `start` single-arg, restoring
+ * automatic `deps` inference.
+ */
+export class PluginContext extends Context.Service<PluginContext, PluginCtx>()(
+	'@devstack/substrate/PluginContext',
+) {}

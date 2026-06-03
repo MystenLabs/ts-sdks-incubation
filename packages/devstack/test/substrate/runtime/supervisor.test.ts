@@ -36,7 +36,7 @@ import {
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
-import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../src/contracts/projection.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
@@ -312,8 +312,9 @@ const pluginSnap = definePlugin({
 	id: 'test:snap',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.snapshotExtra(snapDecl);
 			return { v: 'snap' as const };
 		}),
@@ -323,8 +324,9 @@ const pluginRoute = definePlugin({
 	id: 'test:route',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.endpoint(routeDecl);
 			return { v: 'route' as const };
 		}),
@@ -334,8 +336,9 @@ const pluginCodegen = definePlugin({
 	id: 'test:codegen',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.codegen(codegenDecl);
 			return { v: 'codegen' as const };
 		}),
@@ -345,8 +348,9 @@ const pluginStrat = definePlugin({
 	id: 'test:strat',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.provides(strategyDecl);
 			return { v: 'strat' as const };
 		}),
@@ -356,8 +360,9 @@ const pluginAccountProjection = definePlugin({
 	id: 'account/alice',
 	role: 'task' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.provides(accountStrategyDecl);
 			ctx.publish(accountProjectionDecl);
 			return { v: 'account' as const };
@@ -368,8 +373,9 @@ const pluginPackageProjection = definePlugin({
 	id: 'package:vault',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.provides(packageStrategyDecl);
 			ctx.publish(packageProjectionDecl);
 			return { v: 'package' as const };

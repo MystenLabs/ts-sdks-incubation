@@ -7,7 +7,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
-import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
@@ -89,8 +89,9 @@ const routablePlugin = definePlugin({
 	id: 'test/routable',
 	role: 'service',
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.endpoint(routable);
 			return { ready: true } as const;
 		}),

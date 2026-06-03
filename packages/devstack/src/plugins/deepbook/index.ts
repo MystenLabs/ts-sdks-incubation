@@ -40,6 +40,7 @@ import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
@@ -472,13 +473,12 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple (`[sui]`) the default
-		// supplied for this `[suiResource] as const` dependency.
-		start: (deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
-			Effect.sync(() => {
+		// `deps` auto-infers the resolved `[sui]` tuple from the
+		// `[suiResource] as const` dependency. `ctx` arrives via the
+		// `PluginContext` service.
+		start: (deps) =>
+			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui] = deps;
 				const chain = opts.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {
@@ -613,14 +613,13 @@ const buildLocalPlugin = <
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The runtime-built `dependsOn` array resolves to a heterogeneous
-		// tuple the body re-narrows via the `as unknown as` cast below, so a
-		// `readonly unknown[]` annotation is sufficient here.
-		start: (deps: readonly unknown[], ctx: PluginCtx) =>
+		// `deps` auto-infers from the runtime-built `dependsOn`; it
+		// resolves to a heterogeneous tuple the body re-narrows via the
+		// `as unknown as` cast below. `ctx` arrives via the
+		// `PluginContext` service.
+		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui, publisher, deepbookPackage, ...extraValues] = deps as unknown as readonly [
 					ResourceValueOf<typeof suiResource>,
 					AccountValue,
@@ -852,13 +851,12 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the body no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise infer `deps` as `any`.
-		// The annotation reproduces the resolved tuple (`[sui]`) the default
-		// supplied for this `[suiResource] as const` dependency.
-		start: (deps: readonly [ResourceValueOf<typeof suiResource>], ctx: PluginCtx) =>
-			Effect.sync(() => {
+		// `deps` auto-infers the resolved `[sui]` tuple from the
+		// `[suiResource] as const` dependency. `ctx` arrives via the
+		// `PluginContext` service.
+		start: (deps) =>
+			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const [sui] = deps;
 				const chain = opts.chain ?? known?.chain ?? sui.chain;
 				const resolved: DeepbookResolved = {

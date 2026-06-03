@@ -46,14 +46,16 @@ import {
 \tcodegenable,
 \tdefineDevstack,
 \tdefinePlugin,
+\tPluginContext,
 } from '@mysten-incubation/devstack';
 
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: (_deps, ctx) =>
-\t\tEffect.sync(() => {
+\tstart: () =>
+\t\tEffect.gen(function* () {
+\t\t\tconst ctx = yield* PluginContext;
 \t\t\tconst value = { message: 'from-cli-apply' } as const;
 \t\t\tctx.codegen(
 \t\t\t\tcodegenable({
@@ -661,13 +663,15 @@ import { Effect } from 'effect';
 import { codegenable } from '../src/api/define-capabilities.ts';
 import { defineDevstack } from '../src/api/define-devstack.ts';
 import { definePlugin } from '../src/api/define-plugin.ts';
+import { PluginContext } from '../src/substrate/plugin-ctx.ts';
 
 const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-identity-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: (_deps, ctx) =>
-\t\tEffect.sync(() => {
+\tstart: () =>
+\t\tEffect.gen(function* () {
+\t\t\tconst ctx = yield* PluginContext;
 \t\t\tconst value = { message: 'from-cli-identity' } as const;
 \t\t\tctx.codegen(
 \t\t\t\tcodegenable({

@@ -35,7 +35,7 @@
 
 import { Effect, FileSystem, Path } from 'effect';
 
-import { definePlugin, type ResourceRef, type ResourceValueOf } from '../../api/define-plugin.ts';
+import { definePlugin, type ResourceRef } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
@@ -44,6 +44,7 @@ import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
@@ -300,23 +301,15 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		role: 'service',
 		section: 'service',
 		pluginKey: sealPluginKey(resolved.name),
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means the
-		// destructured object no longer arity-matches the single-arg
-		// `PluginStart` contextual default, so TS would otherwise infer the
-		// bindings as `any`. The annotation reproduces the resolved
-		// `{ sui, signer }` dependency object the default supplied for seal's
-		// `dependsOn: { sui: suiResource, signer: opts.signer }`. `ctx` is the
-		// typed plugin-authoring surface the contribution emission below drives
-		// (Stage B inversion — replaced the legacy `capabilities`
-		// second-closure).
-		start: (
-			deps: {
-				sui: ResourceValueOf<typeof suiResource>;
-				signer: AccountValue;
-			},
-			ctx: PluginCtx,
-		) =>
+		// `deps` auto-infers the resolved `{ sui, signer }` dependency
+		// object from seal's `dependsOn: { sui: suiResource, signer:
+		// opts.signer }`. `ctx` is the typed plugin-authoring surface the
+		// contribution emission below drives (Stage B inversion — replaced
+		// the legacy `capabilities` second-closure); it arrives via the
+		// `PluginContext` service.
+		start: (deps) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const { sui, signer: signerAccount } = deps;
 				// Substrate-context primitives:
 				//   - `ContainerRuntimeService` + `IdentityContext` arrive
@@ -464,14 +457,13 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		id: sealResource.id,
 		role: 'task',
 		section: 'service',
-		// Live mode has no `dependsOn`, so `_deps` is always `undefined`; it is
-		// annotated explicitly because the required `ctx` 2nd param means the
-		// start closure no longer arity-matches the single-arg `PluginStart`
-		// contextual default, so TS would otherwise widen the params to `any`.
-		// `ctx` drives the contribution emission below (Stage B inversion —
-		// replaced the legacy static `capabilities: [snap, codegen]` array).
-		start: (_deps: undefined, ctx: PluginCtx) =>
+		// Live mode has no `dependsOn`, so `start` is zero-arg. `ctx`
+		// drives the contribution emission below (Stage B inversion —
+		// replaced the legacy static `capabilities: [snap, codegen]`
+		// array); it arrives via the `PluginContext` service.
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const mode: SealMode = { mode: 'live', name, resolved: validated };
 				const publisher = yield* ArtifactPublisherService;
 				const resolved = (yield* bootSealService(publisher, mode)) as SealKnownResolved;
@@ -518,14 +510,13 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		id: sealResource.id,
 		role: 'task',
 		section: 'service',
-		// Fork-known mode has no `dependsOn`, so `_deps` is always `undefined`;
-		// it is annotated explicitly because the required `ctx` 2nd param means
-		// the start closure no longer arity-matches the single-arg
-		// `PluginStart` contextual default, so TS would otherwise widen the
-		// params to `any`. `ctx` drives the contribution emission below (Stage B
-		// inversion — replaced the legacy `capabilities` callback-form closure).
-		start: (_deps: undefined, ctx: PluginCtx) =>
+		// Fork-known mode has no `dependsOn`, so `start` is zero-arg.
+		// `ctx` drives the contribution emission below (Stage B inversion
+		// — replaced the legacy `capabilities` callback-form closure); it
+		// arrives via the `PluginContext` service.
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				// Symmetric with the live branch's `{ mode, name, resolved }`
 				// envelope. `upstream` rides through for downstream
 				// span attribution; `resolved` carries the validated

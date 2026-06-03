@@ -47,14 +47,16 @@ import {
 \tcodegenable,
 \tdefineDevstack,
 \tdefinePlugin,
+\tPluginContext,
 } from '@mysten-incubation/devstack';
 
 const moveBindingsProofPlugin = definePlugin({
 \tid: 'test/move-bindings-proof',
 \trole: 'service',
 \tsection: 'service',
-\tstart: (_deps, ctx) =>
-\t\tEffect.sync(() => {
+\tstart: () =>
+\t\tEffect.gen(function* () {
+\t\t\tconst ctx = yield* PluginContext;
 \t\t\tctx.codegen(
 \t\t\t\tcodegenable({
 \t\t\t\t\temitterName: 'package',

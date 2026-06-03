@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { SnapshotableDecl } from '../../src/contracts/snapshotable.ts';
-import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import type {
 	SnapshotCatalogEntry,
 	SnapshotMetadata,
@@ -26,8 +26,9 @@ const snapshotSmokePlugin = definePlugin({
 	id: 'snapshot-smoke',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.snapshotExtra(snapshotDecl);
 			return { ready: true as const };
 		}),
@@ -42,8 +43,9 @@ const hostTreePlugin = definePlugin({
 	id: 'snapshot-host-tree',
 	role: 'service' as const,
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
+	start: () =>
 		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			const paths = yield* StackPathsService;
 			const identity = yield* IdentityContext;
 			const dir = join(paths.stackRoot, 'snapshot-host-tree');

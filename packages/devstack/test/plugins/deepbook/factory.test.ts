@@ -146,9 +146,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { ctx } = makeTestPluginCtx();
+		const { provide } = makeTestPluginCtx();
 		const resolved = Effect.runSync(
-			member.start([{ chain: chainId('sui:local') } as never], ctx) as Effect.Effect<
+			provide(member.start([{ chain: chainId('sui:local') } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -170,9 +170,9 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { ctx, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx();
 		Effect.runSync(
-			member.start([{ chain: chainId('sui:local') } as never], ctx) as Effect.Effect<
+			provide(member.start([{ chain: chainId('sui:local') } as never])) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
@@ -222,11 +222,10 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const { ctx, captured } = makeTestPluginCtx();
+		const { provide, captured } = makeTestPluginCtx();
 		Effect.runSync(
-			member.start(
-				[{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never],
-				ctx,
+			provide(
+				member.start([{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never]),
 			) as Effect.Effect<DeepbookResolved, unknown, never>,
 		);
 		const strategy = captured.provides.find(

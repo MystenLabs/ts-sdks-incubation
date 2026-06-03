@@ -40,7 +40,7 @@ import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import { CodegenRenderError } from '../../src/orchestrators/codegen/errors.ts';
 import type { EngineEvent } from '../../src/substrate/events.ts';
-import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import { SupervisorPostAcquireFailed } from '../../src/substrate/runtime/supervisor/index.ts';
 import { runStack } from '../../src/api/run-stack.ts';
 import {
@@ -64,8 +64,9 @@ const runtimeCodegenPlugin = definePlugin({
 	id: 'test/runtime-codegen',
 	role: 'service',
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			const resolved = { message: 'from-acquire' } as const;
 			ctx.codegen({
 				kind: 'codegenable',
@@ -86,8 +87,9 @@ const failingRuntimeCodegenPlugin = definePlugin({
 	id: 'test/failing-runtime-codegen',
 	role: 'service',
 	section: 'service',
-	start: (_deps: unknown, ctx: PluginCtx) =>
-		Effect.sync(() => {
+	start: () =>
+		Effect.gen(function* () {
+			const ctx = yield* PluginContext;
 			ctx.codegen({
 				kind: 'codegenable',
 				emitterName: 'runtime-failure-proof',

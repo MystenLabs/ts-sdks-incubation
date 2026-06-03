@@ -17,7 +17,7 @@ import { Logger } from '../../substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../substrate/runtime/current-plugin.ts';
 import { IdentityContext, RuntimeRoot } from '../../substrate/runtime/paths.ts';
 import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts';
-import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 import {
 	HOST_SERVICE_ERROR_TAGS,
@@ -75,8 +75,9 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 		// so draining them mid-restore only churns the connection a
 		// dashboard-initiated restore is answering on.
 		keepAliveOnRestore: true,
-		start: (_deps: unknown, ctx: PluginCtx) =>
+		start: () =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const portBroker = yield* PortBrokerService;
 				const logger = yield* Logger;
 				const currentPlugin = yield* CurrentPluginKey;

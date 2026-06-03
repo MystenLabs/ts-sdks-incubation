@@ -29,17 +29,13 @@ import { createHash } from 'node:crypto';
 
 import { Effect } from 'effect';
 
-import {
-	definePlugin,
-	resource,
-	type ResourceRef,
-	type ResourceValueOf,
-} from '../../api/define-plugin.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
+import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { suiResource } from '../sui/index.ts';
 import type { SuiClient } from '../sui/index.ts';
@@ -304,16 +300,11 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 		// `'coin'` section would ripple through every projection / TUI
 		// consumer for marginal display value.
 		section: 'action',
-		// `deps` is annotated explicitly: a required `ctx` 2nd param means
-		// the destructured object no longer arity-matches the single-arg
-		// `PluginStart` contextual default, so TS would otherwise infer the
-		// bindings as `any`. The annotation reproduces the resolved
-		// dependency object the default supplied.
-		start: (
-			{ pkg: resolved, sui }: { pkg: PackageMemberValue; sui: ResourceValueOf<typeof suiResource> },
-			ctx: PluginCtx,
-		) =>
+		// `deps` auto-infers the resolved `{ pkg, sui }` dependency object;
+		// `ctx` arrives via the `PluginContext` service.
+		start: ({ pkg: resolved, sui }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const artifactPublisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = {
@@ -366,8 +357,9 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
-		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'known', fullCoinType };
@@ -402,8 +394,9 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'action',
-		start: ({ sui }: { sui: ResourceValueOf<typeof suiResource> }, ctx: PluginCtx) =>
+		start: ({ sui }) =>
 			Effect.gen(function* () {
+				const ctx = yield* PluginContext;
 				const publisher = yield* ArtifactPublisherService;
 				const registry = yield* CoinRegistryService;
 				const form: CoinAddressForm = { kind: 'builtin', name };
