@@ -58,20 +58,3 @@ export const readEnvelope = (
 			attributes: { 'codegen.manifestPath': path },
 		}),
 	);
-
-/**
- * Project a single plugin's services slice. The orchestrator does
- * not decode by name — this helper exists for downstream consumers
- * (build integrations) that need to look up a specific plugin's
- * blob. The plugin key is BRANDed at the substrate layer.
- */
-export const projectPluginSlice = (envelope: ManifestEnvelope, pluginKey: string): unknown =>
-	envelope.services[pluginKey];
-
-/**
- * Project the flat endpoint lookup. Build integrations consume this
- * for URL → endpoint mapping; the codegen orchestrator may consume
- * it for a future endpoints.ts emitter.
- */
-export const projectEndpoints = (envelope: ManifestEnvelope): ManifestEnvelope['endpoints'] =>
-	envelope.endpoints;

@@ -204,27 +204,10 @@ const collectPublicReachableFiles = (): ReadonlySet<string> => {
 //
 // Format: `${srcRelativePath}#${exportedName}`.
 const KNOWN_UNCLEARED_ORPHANS: ReadonlySet<string> = new Set<string>([
-	'orchestrators/codegen/manifest-bridge.ts#projectPluginSlice',
-	'orchestrators/codegen/manifest-bridge.ts#projectEndpoints',
-	'plugins/sui/mode/fork.ts#FORK_UPSTREAM_TO_KNOWN_NETWORK',
-	'primitives/artifact-publisher.ts#LENIENT_RETRY_PROFILE',
-	'substrate/events.ts#EngineEventTag',
-	'substrate/events.ts#EngineCommandTag',
-	'substrate/runtime/cross-process/snapshot-reservation.ts#peekReservation',
 	'substrate/runtime/lifecycle/state-machine.ts#__LifecycleTableShape',
 	'substrate/runtime/lifecycle/state-machine.ts#isTerminal',
-	'substrate/runtime/lifecycle/watch-attribution.ts#attributeFire',
 	'substrate/runtime/projection/state-ref.ts#__NoDisplayVocab',
-	'substrate/runtime/projection/update.ts#bumpCycle',
-	'substrate/runtime/projection/update.ts#declareRow',
-	'substrate/runtime/projection/update.ts#dropRow',
-	'substrate/runtime/projection/update.ts#declarePackage',
-	'substrate/runtime/projection/update.ts#__capacities',
-	'surfaces/cli/commands/index.ts#VerbRunner',
-	'surfaces/cli/flags.ts#EnvVarName',
-	'surfaces/cli/output.ts#alreadyReported',
 	'surfaces/tui/display-derivation.ts#__TuiDisplayVocabClean',
-	'surfaces/tui/errors.ts#subscriptionLost',
 ]);
 
 interface LocalExport {

@@ -19,6 +19,12 @@ const TRANSFER_MIST = 100_000_000n; // 0.1 SUI
 
 export const suiProbe: Probe<SuiHandle> = {
 	name: 'sui',
+	// Sui identity is genesis-DETERMINISTIC, not deploy-cache-derived: the chain
+	// id and the actor address come from the genesis config / the keypair, not
+	// from the deploy cache. So wiping the live deploy cache and re-booting does
+	// NOT mint fresh ids for sui — S1's recipient is still funded on the same
+	// chain. Cache loss legitimately does NOT orphan sui's S1.
+	orphansOnCacheLoss: false,
 	async createState(env: ProbeEnv): Promise<SuiHandle> {
 		const recipient = Ed25519Keypair.generate().toSuiAddress();
 		await signAndExecuteAs(env.suiClient, env.keypair, (tx) => {

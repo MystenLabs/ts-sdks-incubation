@@ -27,13 +27,7 @@ import {
 	successEnvelope,
 	type SuccessParams,
 } from './envelope.ts';
-import {
-	type CliError,
-	CliAlreadyReportedError,
-	exitCodeFor,
-	hintFor,
-	summaryFor,
-} from './errors.ts';
+import { type CliError, exitCodeFor, hintFor, summaryFor } from './errors.ts';
 import type { OutputMode } from './flags.ts';
 import { type ExitCode } from './sysexits.ts';
 
@@ -228,14 +222,3 @@ const renderFailure = (io: CliIO, mode: OutputMode, p: RenderFailureParams): Eff
 			}
 		}
 	});
-
-// -----------------------------------------------------------------------------
-// Already-reported helper
-// -----------------------------------------------------------------------------
-
-/** A subcommand that pretty-renders its own failure (e.g. an
- *  interactive picker that already drew an error panel) returns this
- *  sentinel so the top-level renderer skips re-rendering but still
- *  propagates the right exit code. */
-export const alreadyReported = (exitCode: ExitCode): CliAlreadyReportedError =>
-	new CliAlreadyReportedError({ exitCode });

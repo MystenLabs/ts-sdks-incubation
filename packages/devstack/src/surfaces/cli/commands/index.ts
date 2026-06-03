@@ -6,9 +6,6 @@
 // (confirm tier, snapshot name resolution) live in this barrel or
 // in dedicated sibling modules.
 
-import type { Effect } from 'effect';
-
-import type { CliError } from '../errors.ts';
 import type { GlobalFlags } from '../flags.ts';
 import type { CliIO } from '../output.ts';
 
@@ -25,14 +22,6 @@ export interface CommandContext {
 export interface CommandResult {
 	readonly exitCode: number;
 }
-
-/** Uniform verb signature. Every `run*` function in this folder
- *  matches `(deps, ctx) => Effect<CommandResult, CliError>`. The
- *  dispatcher binds `deps` via a thin Layer. */
-export type VerbRunner<Deps> = (
-	deps: Deps,
-	ctx: CommandContext,
-) => Effect.Effect<CommandResult, CliError>;
 
 // --- Re-exports ---------------------------------------------------------
 

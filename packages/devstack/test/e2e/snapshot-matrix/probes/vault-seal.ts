@@ -80,6 +80,14 @@ const makeSealClient = (env: ProbeEnv): SealClient =>
 
 export const vaultSealProbe: Probe<VaultSealHandle> = {
 	name: 'vault-seal',
+	// Seal + vault identity IS deploy-cache-derived: S1's decrypt path binds the
+	// vault packageId, the seal key-server object id, AND the walrus blob — all
+	// minted on deploy and cached (the matrix run log shows vaultPkg, sealObjectId
+	// and walCoinType all churn after the cache wipe). With no cache to reuse the
+	// deploy re-runs with FRESH ids, so the pre-snapshot File no longer resolves /
+	// decrypts. vault-seal is the second of the two probes that PROVE the
+	// loud-divergence teeth: cache loss MUST orphan its S1.
+	orphansOnCacheLoss: true,
 
 	async createState(env: ProbeEnv, label: string): Promise<VaultSealHandle> {
 		// Fresh IBE identity + a label-unique plaintext so S1/S2/S3 differ.

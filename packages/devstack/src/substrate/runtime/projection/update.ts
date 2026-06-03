@@ -208,9 +208,7 @@ export const applyEvent = (
 			// shutdown: only un-stick the phase we set ('snapshotting').
 			return withTouched({
 				cycle:
-					state.cycle.phase === 'snapshotting'
-						? { ...state.cycle, phase: 'running' }
-						: state.cycle,
+					state.cycle.phase === 'snapshotting' ? { ...state.cycle, phase: 'running' } : state.cycle,
 			});
 
 		case 'snapshot.restored':
@@ -294,60 +292,12 @@ export const setIdentity = (
 	identity: SubscribableState['identity'],
 ): SubscribableState => ({ ...state, identity });
 
-/**
- * Bump the cycle counter. Called at the start of each engine cycle.
- * Resets only fields the architecture says are per-cycle:
- *   - `cycle.id`, `cycle.startedAt`, `cycle.phase`
- *   - per-row `selectiveRestartHighlight`
- * The error log, endpoints, build log, and `lastEvent.seq` are
- * intentionally preserved across cycles so the renderer sees
- * continuous history.
- */
-export const bumpCycle = (
-	state: SubscribableState,
-	now: number,
-	phase: SubscribableState['cycle']['phase'] = 'booting',
-): SubscribableState => ({
-	...state,
-	cycle: { id: state.cycle.id + 1, startedAt: now, phase },
-	rows: state.rows.map((r) => ({ ...r, selectiveRestartHighlight: false })),
-});
-
-/**
- * Register (or replace) a row in the projection. The supervisor wires
- * the call in.
- */
-export const declareRow = (state: SubscribableState, row: Row): SubscribableState => {
-	const idx = state.rows.findIndex((r) => r.key === row.key);
-	if (idx === -1) return { ...state, rows: [...state.rows, row] };
-	const next = state.rows.slice();
-	next[idx] = row;
-	return { ...state, rows: next };
-};
-
-/**
- * Drop a row. Used during selective-restart when a plugin is being
- * removed (rare; most restarts replay the same row).
- */
-export const dropRow = (state: SubscribableState, key: PluginKey): SubscribableState => ({
-	...state,
-	rows: state.rows.filter((r) => r.key !== key),
-});
-
 export const declareAccount = (
 	state: SubscribableState,
 	account: AccountProjection,
 ): SubscribableState => ({
 	...state,
 	accounts: upsertAccount(state.accounts, account),
-});
-
-export const declarePackage = (
-	state: SubscribableState,
-	pkg: PackageProjection,
-): SubscribableState => ({
-	...state,
-	packages: upsertPackage(state.packages, pkg),
 });
 
 // -----------------------------------------------------------------------------
@@ -549,13 +499,6 @@ const pushBounded = <T>(xs: ReadonlyArray<T>, value: T, max: number): ReadonlyAr
 	const next = [...xs, value];
 	return next.length > max ? next.slice(-max) : next;
 };
-
-// Re-export the bounded-capacity constants for tests / docs.
-export const __capacities = {
-	MAX_ERRORS_KEPT,
-	MAX_BUILD_ENTRIES_KEPT,
-	MAX_ROW_LOG_LINES,
-} as const;
 
 // Re-export referenced sub-types for downstream consumers (tests,
 // renderer-side wrappers) so they don't reach into substrate/

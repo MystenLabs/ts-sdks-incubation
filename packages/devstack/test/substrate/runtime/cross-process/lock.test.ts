@@ -18,29 +18,9 @@ import {
 	layerCrossProcessLockInProcess,
 } from '../../../../src/substrate/runtime/cross-process/lock.ts';
 import { ownHolder } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
-import { StackPathsService } from '../../../../src/substrate/runtime/paths.ts';
-import type { StackPaths } from '../../../../src/substrate/runtime/paths.ts';
+import { stackPathsLayer } from '../../../helpers/mock-stack-paths.ts';
 
 const freshRoot = (): string => mkdtempSync(join(tmpdir(), 'cross-process-lock-test-'));
-
-const stackPathsFor = (stackRoot: string): StackPaths => ({
-	stackRoot,
-	cacheDir: join(stackRoot, 'cache'),
-	snapshotDir: join(stackRoot, 'snapshots'),
-	stackLockFile: join(stackRoot, 'stack.lock'),
-	rosterFile: join(stackRoot, 'roster.json'),
-	containerClaimsFile: join(stackRoot, 'container-claims.json'),
-	snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
-	cacheEntry: (namespace, chain, contentHash) => ({
-		dir: join(stackRoot, 'cache', namespace, chain),
-		file: join(stackRoot, 'cache', namespace, chain, `${contentHash}.json`),
-	}),
-	cacheChainDir: (namespace, chain) => join(stackRoot, 'cache', namespace, chain),
-	cacheNamespaceDir: (namespace) => join(stackRoot, 'cache', namespace),
-});
-
-const stackPathsLayer = (stackRoot: string): Layer.Layer<StackPathsService> =>
-	Layer.succeed(StackPathsService)(stackPathsFor(stackRoot));
 
 describe('layerCrossProcessLockInProcess', () => {
 	it.effect('withLock serializes concurrent fibers (same process)', () =>

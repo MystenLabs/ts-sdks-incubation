@@ -16,10 +16,13 @@
 // `cache/<ns>` tar was deleted), so a plain restore-survival no longer PROVES
 // anything about self-containment — survival could just be the in-place reuse.
 // The test's teeth therefore move to proving the OPPOSITE in a load-bearing
-// THIRD phase: wipe the live deploy cache, re-boot, and assert each probe's S1
-// value NO LONGER resolves — i.e. cache loss makes the deploy re-run with FRESH
-// ids and orphan S1 (a LOUD divergence) rather than being silently masked.
-// Surfaced as `s1OrphanedAfterCacheWipe` and asserted true upstream.
+// THIRD phase: wipe the live deploy cache, re-boot, and check each probe's S1.
+// For a CACHE-DERIVED subsystem (`Probe.orphansOnCacheLoss === true`: walrus +
+// vault-seal) S1 must NO LONGER resolve — cache loss makes the deploy re-run
+// with FRESH ids and orphan S1 (a LOUD divergence) rather than being silently
+// masked. For a non-cache-derived subsystem (sui, deepbook) S1 legitimately
+// survives. Surfaced as `s1OrphanedAfterCacheWipe` and asserted upstream as
+// `s1OrphanedAfterCacheWipe === orphansOnCacheLoss`.
 
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -36,6 +39,21 @@ import { restoreSnapshotOffline } from './offline-restore.ts';
 
 export interface Probe<H = unknown> {
 	readonly name: string;
+	/** Is this subsystem's S1 IDENTITY derived from the live deploy cache?
+	 *
+	 *  This decides what the boot-3 fail-loud phase asserts (see `runMatrix`):
+	 *  the contract is `s1OrphanedAfterCacheWipe === orphansOnCacheLoss`.
+	 *
+	 *  - `true`  — the subsystem's identity (the package/object ids its S1
+	 *    references) is MINTED on deploy and cached. Wiping the live deploy
+	 *    cache makes the deploy re-run with FRESH ids, so the pre-snapshot S1
+	 *    no longer resolves — cache loss MUST orphan S1 (a LOUD divergence,
+	 *    never silently masked). This is the load-bearing teeth of this test;
+	 *    we require at least walrus + vault-seal to exhibit it.
+	 *  - `false` — the subsystem's identity is NOT cache-derived, so losing the
+	 *    cache legitimately does NOT orphan its S1 (asserting orphaning would
+	 *    be wrong / flaky). See each probe def for the per-subsystem reason. */
+	readonly orphansOnCacheLoss: boolean;
 	/** Create a durable, queryable piece of state for this subsystem. The
 	 *  returned handle is stashed across boots and passed back to `exists`. */
 	createState(env: ProbeEnv, label: string): Promise<H>;
@@ -53,11 +71,17 @@ export interface ProbeOutcome {
 	readonly s2RolledBack: boolean;
 	readonly s3Writable: boolean;
 	/** Post-D1 fail-loud teeth (boot 3): after the restore-survival check,
-	 *  the live deploy cache is WIPED and the stack re-booted. With no cache
-	 *  to reuse the deploy re-runs with FRESH ids, so S1 must NO LONGER
-	 *  resolve — i.e. cache loss diverges LOUD instead of being silently
-	 *  masked. True == the orphaning was observed (the desired outcome). */
+	 *  the live deploy cache is WIPED and the stack re-booted. For a
+	 *  CACHE-DERIVED subsystem the deploy re-runs with FRESH ids, so S1 must
+	 *  NO LONGER resolve — i.e. cache loss diverges LOUD instead of being
+	 *  silently masked. True == the orphaning was observed. The expected value
+	 *  is per-probe (`Probe.orphansOnCacheLoss`): cache-derived probes MUST
+	 *  orphan; non-cache-derived probes MUST survive (their identity isn't
+	 *  minted from the cache). Asserted as
+	 *  `s1OrphanedAfterCacheWipe === orphansOnCacheLoss` upstream. */
 	readonly s1OrphanedAfterCacheWipe: boolean;
+	/** Echoed from the probe def so the assertion is self-describing. */
+	readonly orphansOnCacheLoss: boolean;
 }
 
 export const runMatrix = async (params: {
@@ -155,6 +179,7 @@ export const runMatrix = async (params: {
 						s1Survived,
 						s2RolledBack: !s2Present,
 						s3Writable,
+						orphansOnCacheLoss: p.orphansOnCacheLoss,
 						// Filled in by the fail-loud third phase below.
 						s1OrphanedAfterCacheWipe: false,
 					});
@@ -166,9 +191,13 @@ export const runMatrix = async (params: {
 	// proves nothing about self-containment (the live cache was reused), so the
 	// teeth move to proving the OPPOSITE: cache loss must NOT be silently masked.
 	// Wipe the live deploy cache (the dir a hard reset would drop), re-boot, and
-	// assert each probe's S1 no longer resolves — with no cache to reuse the
-	// deploy re-runs with FRESH ids, orphaning the pre-snapshot S1 objects. A
-	// silent re-deploy that left S1 resolving would be a false pass.
+	// check each probe's S1. For a CACHE-DERIVED subsystem (walrus, vault-seal —
+	// `orphansOnCacheLoss: true`) the deploy re-runs with FRESH ids, orphaning
+	// the pre-snapshot S1 objects: a silent re-deploy that left S1 resolving
+	// would be a false pass. A NON-cache-derived subsystem (sui, deepbook —
+	// `orphansOnCacheLoss: false`) legitimately keeps S1 resolving; the upstream
+	// assertion pins each probe to its own expectation
+	// (`s1OrphanedAfterCacheWipe === orphansOnCacheLoss`).
 	const liveCachePath = join(runtimeRoot, 'stacks', params.stack, 'cache');
 	rmSync(liveCachePath, { recursive: true, force: true });
 	console.log('[snapshot-matrix] live deploy cache wiped — re-booting to prove loud divergence');
@@ -186,7 +215,7 @@ export const runMatrix = async (params: {
 					const s1StillResolves = yield* Effect.promise(() => p.exists(env, s1.get(p.name)));
 					const orphaned = !s1StillResolves;
 					console.log(
-						`[snapshot-matrix] ${p.name} after-cache-wipe: s1OrphanedAfterCacheWipe=${orphaned}`,
+						`[snapshot-matrix] ${p.name} after-cache-wipe: s1OrphanedAfterCacheWipe=${orphaned} (cache-derived=${p.orphansOnCacheLoss}, expected orphaned=${p.orphansOnCacheLoss})`,
 					);
 					const prev = outcomes.get(p.name)!;
 					outcomes.set(p.name, { ...prev, s1OrphanedAfterCacheWipe: orphaned });

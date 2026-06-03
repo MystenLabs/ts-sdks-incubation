@@ -168,9 +168,6 @@ export type EngineEvent =
 			readonly at: number;
 	  };
 
-/** Closed event-tag union — used by lint to assert exhaustiveness. */
-export type EngineEventTag = EngineEvent['tag'];
-
 /** Typed command channel. Surfaces publish; the engine consumes.
  *  Same shape regardless of producer (CLI argv / TUI keypress /
  *  programmable API). */
@@ -198,5 +195,3 @@ export type EngineCommand =
 			readonly tag: 'selective-restart.requested';
 			readonly pluginKey: PluginKey;
 	  };
-
-export type EngineCommandTag = EngineCommand['tag'];

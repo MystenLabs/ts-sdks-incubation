@@ -59,8 +59,6 @@ export const ENV_VARS = {
 	NO_COLOR: 'NO_COLOR',
 } as const;
 
-export type EnvVarName = (typeof ENV_VARS)[keyof typeof ENV_VARS];
-
 // -----------------------------------------------------------------------------
 // Subcommand-flag helpers
 // -----------------------------------------------------------------------------

@@ -71,13 +71,6 @@ const prebuiltForkImageRef = (): string | undefined => {
 	return fromEnv !== undefined && fromEnv.length > 0 ? fromEnv : DEFAULT_FORK_IMAGE_REF;
 };
 
-/** Map upstream literal to the canonical "live" chain id known by wallet-standard / MVR. */
-export const FORK_UPSTREAM_TO_KNOWN_NETWORK = {
-	mainnet: 'sui:mainnet',
-	testnet: 'sui:testnet',
-	devnet: 'sui:devnet',
-} as const;
-
 export const DEFAULT_FORK_HOST_RPC_PORT = 51002;
 export const FORK_VALIDATOR_STOP_GRACE_SECONDS = 30;
 

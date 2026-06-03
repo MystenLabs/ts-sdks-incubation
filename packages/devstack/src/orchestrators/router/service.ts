@@ -35,7 +35,7 @@
 //   - All writes go through `atomicWriteFile` (tmp + rename) per
 //     architecture invariant #5.
 
-import { Context, Effect, FileSystem, Layer, Ref, Stream, SubscriptionRef } from 'effect';
+import { Context, Effect, FileSystem, Layer, Ref, SubscriptionRef } from 'effect';
 import { request as httpRequest } from 'node:http';
 import * as path from 'node:path';
 
@@ -968,13 +968,6 @@ export const layerRouterService: Layer.Layer<
 // ---------------------------------------------------------------------------
 // Helpers for tests + composition
 // ---------------------------------------------------------------------------
-
-/** Stream of the resolved-route set. Use from a renderer / inventory
- *  surface to react to route adds + removes. The supervisor's main
- *  loop subscribes through this stream. */
-export const routesStream = (
-	router: RouterServiceShape,
-): Stream.Stream<ReadonlyArray<ResolvedRoute>> => SubscriptionRef.changes(router.applied);
 
 // Re-export for ergonomics — callers reach for the orchestrator
 // without having to spell out the sibling module paths.

@@ -6,12 +6,16 @@
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
 //   offline restore (REUSES the live deploy cache — D1 dropped the captured copy)
 //   boot 2: assert S1 survived, assert S2 is gone, create S3 (assert exists)
-//   boot 3: wipe the live deploy cache, re-boot, assert S1 is now ORPHANED
+//   boot 3: wipe the live deploy cache, re-boot, assert each probe's S1 matches
+//           its `orphansOnCacheLoss` expectation (cache-derived probes ORPHAN)
 //
 // Post-D1 the restore reuses the live deploy cache directly, so survival alone
-// no longer proves self-containment. The fail-loud third phase pins the OPPOSITE:
-// wiping the live cache must make the deploy re-run with FRESH ids and orphan S1
-// (a LOUD divergence) — cache loss is never silently masked.
+// no longer proves self-containment. The fail-loud third phase pins the OPPOSITE
+// for the CACHE-DERIVED subsystems (walrus + vault-seal): wiping the live cache
+// must make the deploy re-run with FRESH ids and orphan S1 (a LOUD divergence) —
+// cache loss is never silently masked. Subsystems whose identity is NOT
+// cache-derived (sui genesis-deterministic; deepbook S1 is a chain object id)
+// are asserted to SURVIVE the wipe instead — see `Probe.orphansOnCacheLoss`.
 //
 // S2-gone proves the rollback actually rolled back; S3 proves the stack is
 // writable again after a restore. This closes the gap that
@@ -25,7 +29,7 @@
 // proves codegen output tracks the restored packageId across a restore.
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -64,35 +68,39 @@ const ensureRealImages = (): void => {
 	delete process.env.SEAL_MOVE_SOURCE_OVERRIDE;
 };
 
-// The package plugin's Codegenable renders `package/<mvr>.ts` with a
-// `packageId: "0x…"` literal (src/plugins/package/codegen.ts). Read it back
-// from the harness codegen output dir (`<runtimeRoot>/codegen`).
+// The package plugin's Codegenable is `aggregateOnly` (since the PR #18 codegen
+// reshape): it no longer emits a standalone `package/<mvr>.ts` file but folds
+// its `packageId: "0x…"` literal into the combined aggregate `config.ts`
+// (bucket `config.ts`, under `config.packages.<name>.packageId`) — see
+// src/plugins/package/codegen.ts (`aggregateOnly: true`, `bucket: 'config.ts'`)
+// and the orchestrator's `if (decl.aggregateOnly === true) continue;` in
+// src/orchestrators/codegen/service.ts. Read the packageId back from that
+// aggregate file in the harness codegen output dir (`<runtimeRoot>/codegen`).
+//
+// This stack publishes exactly one local package (the vault — the codegen test
+// builds the matrix stack with `deepbook: false`), and only `localPackage`
+// contributes a `packages.*.packageId` entry (sui projects network entries,
+// seal/account/walrus route to their own buckets), so `config.ts` carries a
+// single `packageId:` literal == the vault's id.
 const PACKAGE_ID_RE = /packageId:\s*['"](0x[0-9a-fA-F]+)['"]/;
+const CONFIG_FILE = 'config.ts';
 
 const readCodegenPackageId = (outputDir: string): string => {
-	const dir = join(outputDir, 'package');
-	const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
-	for (const f of files) {
-		const m = PACKAGE_ID_RE.exec(readFileSync(join(dir, f), 'utf8'));
-		if (m) return m[1]!;
-	}
-	throw new Error(
-		`no packageId literal in codegen output under ${dir} (files: ${files.join(', ')})`,
-	);
+	const file = join(outputDir, CONFIG_FILE);
+	const m = PACKAGE_ID_RE.exec(readFileSync(file, 'utf8'));
+	if (m) return m[1]!;
+	throw new Error(`no packageId literal in codegen aggregate ${file}`);
 };
 
 // Simulate post-snapshot codegen drift: overwrite the emitted packageId with a
 // sentinel. Codegen output lives OUTSIDE the runtime stack root, so a restore
 // does not roll it back — boot 2's codegen cycle must regenerate it.
 const corruptCodegenPackageId = (outputDir: string): void => {
-	const dir = join(outputDir, 'package');
-	for (const f of readdirSync(dir).filter((x) => x.endsWith('.ts'))) {
-		const p = join(dir, f);
-		writeFileSync(
-			p,
-			readFileSync(p, 'utf8').replace(PACKAGE_ID_RE, 'packageId: "0xdead0000dead0000"'),
-		);
-	}
+	const p = join(outputDir, CONFIG_FILE);
+	writeFileSync(
+		p,
+		readFileSync(p, 'utf8').replace(PACKAGE_ID_RE, 'packageId: "0xdead0000dead0000"'),
+	);
 };
 
 describe('snapshot/restore matrix — real services @e2e', () => {
@@ -206,12 +214,31 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 			expect(o.s1Survived, `${o.probe}: S1 should survive the restore`).toBe(true);
 			expect(o.s2RolledBack, `${o.probe}: S2 should be gone after the restore`).toBe(true);
 			expect(o.s3Writable, `${o.probe}: S3 should be creatable after the restore`).toBe(true);
-			// Fail-loud teeth: a wiped live cache must orphan S1 (deploy re-runs
-			// with fresh ids), not silently re-deploy as if nothing changed.
+			// Fail-loud teeth, scoped per probe. CACHE-DERIVED subsystems (walrus,
+			// vault-seal — `orphansOnCacheLoss: true`) MUST orphan S1 when the live
+			// deploy cache is wiped: the deploy re-runs with FRESH ids, so a silent
+			// re-deploy that left S1 resolving would be a false pass — this is the
+			// load-bearing loud-divergence property. Subsystems whose identity is
+			// NOT cache-derived (sui is genesis-deterministic; deepbook's S1 is an
+			// object id read directly off the chain) MUST instead SURVIVE the wipe
+			// (`orphansOnCacheLoss: false`); asserting orphaning for them would be
+			// wrong. Pinning each probe to `=== orphansOnCacheLoss` proves BOTH
+			// directions and keeps the teeth from being silently weakened.
 			expect(
 				o.s1OrphanedAfterCacheWipe,
-				`${o.probe}: S1 should be orphaned (loud divergence) after the live cache is wiped`,
-			).toBe(true);
+				o.orphansOnCacheLoss
+					? `${o.probe}: cache-derived S1 should be ORPHANED (loud divergence) after the live cache is wiped`
+					: `${o.probe}: non-cache-derived S1 should SURVIVE a live-cache wipe (its identity isn't minted from the cache)`,
+			).toBe(o.orphansOnCacheLoss);
 		}
+		// Guard the property itself: the cache-loss loud-divergence teeth are only
+		// meaningful if at least one probe actually exercises them. Require the two
+		// cache-derived probes (walrus + vault-seal) to BE in the matrix and to have
+		// orphaned — so a future probe-list edit can't silently drop the teeth.
+		const orphaned = outcomes.filter((o) => o.orphansOnCacheLoss && o.s1OrphanedAfterCacheWipe);
+		expect(
+			orphaned.map((o) => o.probe).sort(),
+			'cache-derived probes must prove orphaning on cache loss',
+		).toEqual(['vault-seal', 'walrus']);
 	}, 1_800_000);
 });

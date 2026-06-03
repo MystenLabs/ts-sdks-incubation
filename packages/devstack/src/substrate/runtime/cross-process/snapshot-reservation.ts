@@ -185,19 +185,3 @@ export const acquireReservation = (
 			oneShotSweep: (p) => sweepOrphan(p),
 		});
 	}).pipe(Effect.withSpan('cross-process.snapshot-reservation.acquire'));
-
-/** Inspect (without acquiring) the current reservation. Returns the
- *  parsed body or `null` if absent / malformed. Used by the supervisor
- *  to decide whether to apply the "snapshot-in-progress" tolerance
- *  window to ready probes. Architecture § Concurrent snapshot step 3. */
-export const peekReservation = (
-	path: string,
-): Effect.Effect<SnapshotReservation | null, SnapshotReservationError> =>
-	Effect.gen(function* () {
-		if (!existsSync(path)) return null;
-		const raw = yield* Effect.try({
-			try: () => readFileSync(path, 'utf8'),
-			catch: (cause) => new SnapshotReservationIoError({ path, cause }),
-		});
-		return parseReservation(raw);
-	}).pipe(Effect.withSpan('cross-process.snapshot-reservation.peek'));

@@ -33,7 +33,7 @@ import {
 } from '../../../src/runtime/docker/service.ts';
 import { ensureVolume } from '../../../src/runtime/docker/volume.ts';
 import { CacheService } from '../../../src/substrate/runtime/cache/index.ts';
-import { StackPathsService, type StackPaths } from '../../../src/substrate/runtime/paths.ts';
+import { stackPathsLayer } from '../../helpers/mock-stack-paths.ts';
 
 const ownedLabels: ContainerLabelTuple = {
 	app: 'app',
@@ -136,36 +136,6 @@ const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =
 			),
 		),
 	);
-
-const stackPathsFor = (stackRoot: string): StackPaths => {
-	const cacheDir = join(stackRoot, 'cache');
-	const cacheNamespaceDir = (namespace: string): string => join(cacheDir, namespace);
-	const cacheChainDir = (namespace: string, chain: string): string =>
-		join(cacheNamespaceDir(namespace), chain);
-	const cacheEntry = (
-		namespace: string,
-		chain: string,
-		contentHash: string,
-	): { readonly dir: string; readonly file: string } => {
-		const dir = cacheChainDir(namespace, chain);
-		return { dir, file: join(dir, `${contentHash}.json`) };
-	};
-	return {
-		stackRoot,
-		cacheDir,
-		snapshotDir: join(stackRoot, 'snapshots'),
-		stackLockFile: join(stackRoot, 'stack.lock'),
-		rosterFile: join(stackRoot, 'roster.json'),
-		containerClaimsFile: join(stackRoot, 'container-claims.json'),
-		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
-		cacheEntry,
-		cacheChainDir,
-		cacheNamespaceDir,
-	};
-};
-
-const stackPathsLayer = (stackRoot: string): Layer.Layer<StackPathsService> =>
-	Layer.succeed(StackPathsService)(stackPathsFor(stackRoot));
 
 const cacheLayer = Layer.succeed(CacheService)({
 	lookup: () => Effect.succeed(null),

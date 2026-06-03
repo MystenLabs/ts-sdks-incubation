@@ -42,7 +42,7 @@ import {
 	type DockerHost,
 } from '../../../src/runtime/docker/client.ts';
 import { ensureContainer, type PerNameLockState } from '../../../src/runtime/docker/container.ts';
-import { StackPathsService, type StackPaths } from '../../../src/substrate/runtime/paths.ts';
+import { stackPathsLayer } from '../../helpers/mock-stack-paths.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
@@ -64,42 +64,10 @@ const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =
 		),
 	);
 
-const stackPathsFor = (stackRoot: string, rosterFile: string): StackPaths => {
-	const cacheDir = join(stackRoot, 'cache');
-	const cacheNamespaceDir = (namespace: string): string => join(cacheDir, namespace);
-	const cacheChainDir = (namespace: string, chain: string): string =>
-		join(cacheNamespaceDir(namespace), chain);
-	const cacheEntry = (
-		namespace: string,
-		chain: string,
-		contentHash: string,
-	): { readonly dir: string; readonly file: string } => {
-		const dir = cacheChainDir(namespace, chain);
-		return { dir, file: join(dir, `${contentHash}.json`) };
-	};
-	return {
-		stackRoot,
-		cacheDir,
-		snapshotDir: join(stackRoot, 'snapshots'),
-		// Point both lock and roster files into a path whose dirname is a
-		// regular file — mkdirSync(dirname) inside withStackLock then fails
-		// with ENOTDIR, surfacing as a typed roster/lock error that
-		// ensureContainer maps to a DaemonUnreachable failure.
-		stackLockFile: join(rosterFile, 'stack.lock'),
-		rosterFile: join(rosterFile, 'roster.json'),
-		containerClaimsFile: join(rosterFile, 'container-claims.json'),
-		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
-		cacheEntry,
-		cacheChainDir,
-		cacheNamespaceDir,
-	};
-};
-
-const stackPathsLayer = (
-	stackRoot: string,
-	rosterBlocker: string,
-): Layer.Layer<StackPathsService> =>
-	Layer.succeed(StackPathsService)(stackPathsFor(stackRoot, rosterBlocker));
+// `rosterBlocker` points the lock/roster/claims trio into a path whose
+// dirname is a regular file — mkdirSync(dirname) inside withStackLock
+// then fails with ENOTDIR, surfacing as a typed roster/lock error that
+// ensureContainer maps to a DaemonUnreachable failure.
 
 describe('ensureContainer orphan-container window', () => {
 	it(

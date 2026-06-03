@@ -21,6 +21,14 @@ interface WalrusHandle {
 
 export const walrusProbe: Probe<WalrusHandle> = {
 	name: 'walrus',
+	// Walrus identity IS deploy-cache-derived: the WAL coin type and the storage
+	// committee / system object ids are minted on deploy and cached (observable
+	// in the matrix run log as a fresh walCoinType after the cache wipe). With no
+	// cache to reuse the deploy re-runs with FRESH ids, so the pre-snapshot S1
+	// blob — written against the OLD committee — no longer reads back. Walrus is
+	// thus one of the two probes that PROVE the loud-divergence teeth: cache loss
+	// MUST orphan its S1.
+	orphansOnCacheLoss: true,
 	async createState(env: ProbeEnv, label: string): Promise<WalrusHandle> {
 		const walrusClient = makeWalrusClient(env.suiClient, env.walrus);
 		// Label + actor address make the content (and thus the content-addressed

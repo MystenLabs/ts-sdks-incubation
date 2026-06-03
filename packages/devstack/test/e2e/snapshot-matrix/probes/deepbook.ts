@@ -29,6 +29,18 @@ const balanceManagerType = (pkg: string): string => `${pkg}::balance_manager::Ba
 
 export const deepbookProbe: Probe<DeepbookHandle> = {
 	name: 'deepbook',
+	// The deepbook PACKAGE id IS cache-derived (it churns when the live deploy
+	// cache is wiped — observable in the matrix run log as a fresh deepbookPkg),
+	// but this probe's S1 IDENTITY is the on-chain `BalanceManager` OBJECT id,
+	// captured at creation and read back via `getObject` against the same chain.
+	// That object id does not depend on the (re-deployed) package id, so a cache
+	// wipe leaves S1 resolving — the probe does NOT detect package-id orphaning.
+	// We therefore assert deepbook's S1 SURVIVES the cache wipe; the cache-loss
+	// loud-divergence property is proven by the walrus + vault-seal probes, whose
+	// S1 identity is itself minted from the cache. (Promoting deepbook to a
+	// cache-orphan probe would require checking the package id, not the manager
+	// object — out of scope for this state-survival matrix.)
+	orphansOnCacheLoss: false,
 	async createState(env: ProbeEnv): Promise<DeepbookHandle> {
 		const recipient = Ed25519Keypair.generate().toSuiAddress();
 		const pkg = deepbookOf(env.ctx).packageId;

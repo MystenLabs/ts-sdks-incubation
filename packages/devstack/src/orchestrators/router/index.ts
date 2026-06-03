@@ -76,7 +76,6 @@ export {
 	layerDockerUpstreamResolver,
 	layerRouterConfigLiteral,
 	layerRouterService,
-	routesStream,
 	RouterConfig,
 	RouterService,
 	UpstreamResolverService,

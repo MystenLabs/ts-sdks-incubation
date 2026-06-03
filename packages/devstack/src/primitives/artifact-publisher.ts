@@ -18,17 +18,6 @@ import type { Effect, Scope } from 'effect';
 
 import type { ChainId, ContentHash } from '../substrate/brand.ts';
 
-/** Lenient retry profile constants — shared with ChainProbe.
- *  Architecture: 15 attempts, 90s budget, 500ms initial, 1.5×
- *  backoff, [0.8, 1.2) jitter. */
-export const LENIENT_RETRY_PROFILE = {
-	attempts: 15,
-	totalBudgetMillis: 90_000,
-	initialMillis: 500,
-	backoffMultiplier: 1.5,
-	jitterRange: [0.8, 1.2] as const,
-} as const;
-
 /** Input contract for ArtifactPublisher.publish. */
 export interface ArtifactSpec<Produced, Verified> {
 	/** Cache namespace — plugin-chosen, e.g. `package`. */
