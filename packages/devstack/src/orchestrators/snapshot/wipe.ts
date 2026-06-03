@@ -21,6 +21,14 @@ import { Effect, FileSystem, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import { appName, stackName } from '../../substrate/brand.ts';
+import {
+	cachePolicy,
+	labelScope,
+	reconcileLabel,
+	reconcileSpec,
+	type ReconcileFsOp,
+} from '../../substrate/runtime/reconcile/index.ts';
 import { makePhaseFailer } from './phase-error.ts';
 
 // -----------------------------------------------------------------------------
@@ -164,75 +172,77 @@ export const planWipe = (
  * Tear down a stack's live footprint. The snapshot catalog AND the
  * deploy cache survive together by default (architecture § wipe).
  *
- * Order:
+ * Routed through the unified reconcile (redesign §2): a flat LABEL-scope
+ * spec — `target: 'absent'` (hard container/network/volume rm) +
+ * `fsPlan: [sweep-children(isPreservedChild), reap-empty]` — executed by
+ * `reconcileLabel`. The legacy per-step order is preserved exactly:
+ *
  *   1. Force-remove managed containers by `{ app, stack }` labels.
  *   2. Remove managed networks and volumes by the same label filter.
- *   3. Remove the runtime tree EXCEPT the wipe-scoped survivors
- *      (`snapshots/` AND `cache/`) by default.
- *   4. Remove the now-empty stack root when nothing survived (no
- *      preserved child remains) so wipe doesn't leak an empty
- *      `stacks/<stack>/` directory.
+ *   3. Sweep the runtime tree EXCEPT the wipe-scoped survivors
+ *      (`snapshots/` AND `cache/`) by default — the `sweep-children` op
+ *      consults the SAME `isPreservedChild` predicate `planWipe` uses, so
+ *      the preview can never drift from what the real wipe removes.
+ *   4. Reap the now-empty stack root when nothing survived so wipe doesn't
+ *      leak an empty `stacks/<stack>/` directory (the `reap-empty` op,
+ *      reading the preserved-count threaded from `sweep-children`).
+ *
+ * `WipePhaseError` tags are preserved by passing each step's failer into
+ * the reconcile (containers → `sweep-containers`; networks/volumes →
+ * `sweep-networks-volumes`; child removal → `remove-runtime-tree`). The
+ * reap-empty step is best-effort (no phase) exactly as before.
+ *
+ * cachePolicy stays a `{cache, snapshots}` PAIR (guardrail §3.1). The two
+ * dispositions ride the ONE `keepSnapshots` flag (decision-1: `snapshots/`
+ * and `cache/` are coupled — there is no asymmetric keep-snapshots-drop-
+ * cache degree of freedom on disk). The pair models the future
+ * `--keep-cache` axis; the on-disk preservation is driven by
+ * `isPreservedChild`, not by the policy enum.
  */
 export const runWipe = (
 	inputs: WipeInputs,
 ): Effect.Effect<void, WipePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		yield* Effect.annotateCurrentSpan({
 			'devstack.snapshot.phase': 'wipe',
 			'devstack.app': inputs.labelMatch.app,
 			'devstack.stack': inputs.labelMatch.stack,
 		});
 
-		// 1. Containers.
-		yield* inputs.runtime
-			.removeManagedContainers(inputs.labelMatch)
-			.pipe(Effect.catch(failPhase('sweep-containers', `container sweep failed`)));
-
-		// 2. Networks + volumes.
-		yield* inputs.runtime
-			.removeManagedNetworks(inputs.labelMatch)
-			.pipe(Effect.catch(failPhase('sweep-networks-volumes', `network sweep failed`)));
-		yield* inputs.runtime
-			.removeManagedVolumes(inputs.labelMatch)
-			.pipe(Effect.catch(failPhase('sweep-networks-volumes', `volume sweep failed`)));
-
-		// 3. Remove the runtime tree — but PRESERVE the wipe-scoped state
-		//    by default. Strategy: enumerate the stack root and remove each
-		//    child the preserve predicate does NOT keep. `snapshots/` and
-		//    `cache/` survive together (so a later restore can reuse the
-		//    live deploy cache); a hard reset (`keepSnapshots: false`) drops
-		//    both so on-chain artifacts re-prove against the next chain.
 		const preserve = inputs.keepSnapshots ?? true;
-		const children = yield* fs
-			.readDirectory(inputs.stackRoot)
-			.pipe(Effect.catch(() => Effect.succeed([] as ReadonlyArray<string>)));
-		let preservedCount = 0;
-		for (const name of children) {
-			if (isPreservedChild(name, preserve)) {
-				preservedCount += 1;
-				continue;
-			}
-			yield* fs
-				.remove(`${inputs.stackRoot}/${name}`, { recursive: true, force: true })
-				.pipe(Effect.catch(failPhase('remove-runtime-tree', `remove ${name} failed`)));
-		}
+		const disposition = preserve ? 'preserve' : 'drop';
 
-		// 4. Reap the now-empty stack root. When NOTHING was preserved (a
-		//    hard reset dropped both `snapshots/` and `cache/`) every child
-		//    was removed in step 3 — any child whose removal FAILED would
-		//    have raised a `remove-runtime-tree` error and aborted before
-		//    here — so the directory is empty at this point. Leaving it
-		//    behind leaks an empty `stacks/<stack>/` shell that
-		//    `prune --list` would show as
-		//    a bare group. `recursive` is required to remove a directory at
-		//    all (a plain `remove` raises EISDIR even for an empty dir); it
-		//    is safe here precisely BECAUSE the `preservedCount === 0` guard
-		//    means no preserved subtree exists to be recursively swept.
-		//    Best-effort: a (racing) re-created child just leaves the dir.
-		if (preservedCount === 0 && children.length > 0) {
-			yield* fs.remove(inputs.stackRoot, { recursive: true, force: true }).pipe(Effect.ignore);
-		}
+		const sweepChildren: ReconcileFsOp<WipePhaseError> = {
+			op: 'sweep-children',
+			stackRoot: inputs.stackRoot,
+			preserve: (name) => isPreservedChild(name, preserve),
+			// Mirror the legacy per-child failer (the failing child's name
+			// is no longer available here, so detail names the step).
+			onError: failPhase('remove-runtime-tree', `remove stack-root child failed`),
+		};
+		const reapEmpty: ReconcileFsOp<WipePhaseError> = {
+			op: 'reap-empty',
+			stackRoot: inputs.stackRoot,
+		};
+
+		yield* reconcileLabel(
+			reconcileSpec<WipePhaseError>({
+				target: 'absent',
+				scope: labelScope({
+					app: appName(inputs.labelMatch.app),
+					stack: stackName(inputs.labelMatch.stack),
+				}),
+				direction: 'drain',
+				cachePolicy: cachePolicy(disposition, disposition),
+				fsPlan: { ops: [sweepChildren, reapEmpty] },
+			}),
+			{
+				runtime: inputs.runtime,
+				onContainersError: failPhase('sweep-containers', `container sweep failed`),
+				onNetworksError: failPhase('sweep-networks-volumes', `network sweep failed`),
+				onVolumesError: failPhase('sweep-networks-volumes', `volume sweep failed`),
+			},
+		);
 	}).pipe(Effect.withSpan('orchestrator.snapshot.wipe'));
 
 /** Centralized constant — the canonical snapshot-catalog directory

@@ -117,22 +117,25 @@ export const reconcileGraph = (
 	deps: ReconcileGraphDeps,
 ): Effect.Effect<GraphPlan, never, never> =>
 	Effect.gen(function* () {
-		// TODO(P3): label-scope sweep — out-of-supervisor flat resource
-		// removal (wipe / prune / capture). The TYPES already accept
-		// `scope.kind === 'label'`; the executor lands with the snapshot
-		// routing phases.
+		// Label scope is the FLAT out-of-supervisor sweep — it has no
+		// dep-graph to order, so it lives in the sibling `reconcileLabel`
+		// (`./label.ts`, P3), which the wipe / prune flows call directly.
+		// The graph axis handles ONLY `graph-keys` (dep-ordered,
+		// in-supervisor); a label spec reaching here is a wiring bug.
 		if (spec.scope.kind !== 'graph-keys') {
 			return yield* Effect.die(
-				'reconcileGraph: label-scope execution is a later-phase seam (P3+); ' +
-					'Phase A handles graph-keys scope only',
+				'reconcileGraph: label-scope specs go through reconcileLabel (./label.ts), ' +
+					'not the graph axis — the graph axis handles graph-keys scope only',
 			);
 		}
-		// TODO(P2): fsPlan execution over the unchanged `stageAndSwap`
-		// vocabulary. `spec.fsPlan` is typed-but-inert here.
-		// TODO(P2/P3): cachePolicy execution (cache + snapshots
-		// dispositions). `spec.cachePolicy` is carried but not enforced in
-		// the graph axis yet — up/restart both ride `reuse-verified` today,
-		// which is the existing cache lookup→verify→reuse loop (untouched).
+		// TODO(P4/P5): graph-axis fsPlan execution over the unchanged
+		// `stageAndSwap` vocabulary (up/down/restart carry none today;
+		// codegen's swap-tree lands as a sibling). `spec.fsPlan` is
+		// typed-but-inert in the graph axis.
+		// TODO(P5): cachePolicy execution (cache + snapshots dispositions).
+		// `spec.cachePolicy` is carried but not enforced in the graph axis
+		// yet — up/restart both ride `reuse-verified` today, which is the
+		// existing cache lookup→verify→reuse loop (untouched).
 		// TODO(P4/P6): `spec.precondition` / `spec.locks` / `spec.ownership`
 		// riders.
 

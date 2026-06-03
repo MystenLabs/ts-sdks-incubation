@@ -21,6 +21,14 @@ import { Effect, FileSystem, Schema } from 'effect';
 
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { SNAPSHOT_IMAGE_ROLE } from '../../runtime/docker/container.ts';
+import { appName, stackName } from '../../substrate/brand.ts';
+import {
+	cachePolicy,
+	labelScope,
+	reconcileLabel,
+	reconcileSpec,
+	type ReconcileFsOp,
+} from '../../substrate/runtime/reconcile/index.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { SnapshotMetadataSchema, type SnapshotMetadata } from './descriptor.ts';
 import { makePhaseFailer } from './phase-error.ts';
@@ -109,56 +117,72 @@ const readMetaOpt = (
  * Also removes committed snapshot byproduct images via the runtime
  * adapter's label-filtered image cleanup, scoped to `role:
  * SNAPSHOT_IMAGE_ROLE` so build images are never touched.
+ *
+ * Routed through the unified reconcile (redesign §2): a flat LABEL-scope
+ * spec narrowed to `role: SNAPSHOT_IMAGE_ROLE`, carrying NO container
+ * target (prune mutates no containers — `target: 'running'` is the
+ * label-scope no-op container target) and an `fsPlan` of two ops in the
+ * legacy order — `reap-meta-missing` (catalog GC) then `reap-images`
+ * (byproduct image sweep, the `reap-byproducts` cache disposition's
+ * concrete mechanism). The `reap-byproducts` logic is preserved verbatim
+ * as prune's projection; the `PruneResult` shape is unchanged.
+ *
+ * cachePolicy stays a `{cache, snapshots}` PAIR (guardrail §3.1):
+ * `preserve` cache (prune never touches the live deploy cache) +
+ * `reap-byproducts` snapshots (the image GC).
  */
 export const runPrune = (
 	inputs: PruneInputs,
 ): Effect.Effect<PruneResult, PrunePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		const fs = yield* FileSystem.FileSystem;
 		yield* Effect.annotateCurrentSpan({
 			'devstack.snapshot.phase': 'prune',
 		});
 		const catalogDir = `${inputs.stackRoot}/${SNAPSHOTS_DIR_NAME}`;
-		const catalogExists = yield* fs
-			.exists(catalogDir)
-			.pipe(Effect.catch(() => Effect.succeed(false)));
-		if (!catalogExists) {
-			return { inspected: 0, reaped: [], imagesSwept: 0 } satisfies PruneResult;
-		}
-		const ids = yield* fs
-			.readDirectory(catalogDir)
-			.pipe(Effect.catch(failPhase('enumerate-catalog', `readdir ${catalogDir} failed`)));
 
-		const reaped: Array<{ id: string; classification: 'abandoned' }> = [];
-		for (const id of ids) {
-			const dir = `${catalogDir}/${id}`;
-			const meta = yield* readMetaOpt(dir);
-			// Partial artifacts (no meta) — reap to free the disk slot.
-			// The catalog list already hides them; reaping is just GC.
-			if (meta === null) {
-				yield* fs
-					.remove(dir, { recursive: true, force: true })
-					.pipe(Effect.catch(failPhase('sweep-directories', `remove ${dir} failed`)));
-				reaped.push({ id, classification: 'abandoned' });
-			}
-		}
+		// Catalog GC — reap partial artifacts (no readable meta). The
+		// `isMetaMissing` classifier is prune's projection: the SAME
+		// `readMetaOpt` read+decode the legacy used, lifted to a predicate.
+		const reapMetaMissing: ReconcileFsOp<PrunePhaseError> = {
+			op: 'reap-meta-missing',
+			catalogDir,
+			isMetaMissing: (dir) => readMetaOpt(dir).pipe(Effect.map((meta) => meta === null)),
+			onReaddirError: failPhase('enumerate-catalog', `readdir ${catalogDir} failed`),
+			onRemoveError: failPhase('sweep-directories', `remove catalog entry failed`),
+		};
 
-		// Sweep committed snapshot byproduct images via the runtime
-		// adapter's label-scoped image cleanup. Architecture § Decision §8 —
-		// committed snapshot images accumulate (a hard-killed capture can
-		// leak its temp image before cleanup); the orchestrator GCs them
-		// alongside catalog prune. The `role: SNAPSHOT_IMAGE_ROLE` narrowing
-		// is what distinguishes these byproducts from the live stack's
-		// build images (which share `{app, stack}` but carry a different
-		// role / no role) — without it, prune would untag build images and
-		// force silent rebuilds.
-		const imagesSwept = yield* inputs.runtime
-			.removeManagedImages({ ...inputs.imageLabelFilter, role: SNAPSHOT_IMAGE_ROLE })
-			.pipe(Effect.catch(failPhase('sweep-images', `image sweep failed`)));
+		// Byproduct image sweep — architecture § Decision §8. The
+		// `role: SNAPSHOT_IMAGE_ROLE` narrowing (carried on the label tuple)
+		// distinguishes these byproducts from the live stack's build images
+		// (which share `{app, stack}` but carry a different role / no role) —
+		// without it, prune would untag build images and force silent
+		// rebuilds.
+		const reapImages: ReconcileFsOp<PrunePhaseError> = {
+			op: 'reap-images',
+			onError: failPhase('sweep-images', `image sweep failed`),
+		};
+
+		const result = yield* reconcileLabel(
+			reconcileSpec<PrunePhaseError>({
+				// No container target — prune mutates no containers. Label-scope
+				// only sweeps containers/networks/volumes when `target` is
+				// `absent`; `running` leaves them untouched.
+				target: 'running',
+				scope: labelScope({
+					app: appName(inputs.imageLabelFilter.app),
+					stack: stackName(inputs.imageLabelFilter.stack),
+					role: SNAPSHOT_IMAGE_ROLE,
+				}),
+				direction: 'drain',
+				cachePolicy: cachePolicy('preserve', 'reap-byproducts'),
+				fsPlan: { ops: [reapMetaMissing, reapImages] },
+			}),
+			{ runtime: inputs.runtime },
+		);
 
 		return {
-			inspected: ids.length,
-			reaped,
-			imagesSwept,
+			inspected: result.inspected,
+			reaped: result.reapedIds.map((id) => ({ id, classification: 'abandoned' as const })),
+			imagesSwept: result.imagesSwept,
 		} satisfies PruneResult;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.prune'));
