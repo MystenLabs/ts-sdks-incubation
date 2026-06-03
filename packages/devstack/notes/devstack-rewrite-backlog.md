@@ -52,6 +52,17 @@ _(populated by the A+B shortcut audit — see below; items get checked off as ap
 |---|---|---|---|
 | A | −1,097 | dead state-store; sui de-privileged (substrate name-blind) | beat ~600 estimate |
 | B | +366 → −7 (after P5 emit dedup −373) | CapabilitySinks registry, capability-decl 2nd-closure, dispatch-contributions, `<Caps>` | plan est. ~−5,900 was a large over-count (relocatable closures counted as deletable) |
+| C | ~+27 (C1 −69, C2+C3 +96) | ArtifactPublisher Service+Layer (folded into cache.publish); 2 scoped-map primitives → 1; 3 L3 composition files → 1 boot.ts | consolidation; flat LOC, system-count is the win |
+| D | −1,688 | crash-recovery marker subsystem; integrity.json; 1 of 2 tar parsers; deploy-cache double-store; keepCache flag; CapabilityDeliveryObservers | the real deletion stage (D2 alone −1,286) |
+
+| E | ~+773 (src consolidation + ViewModel/adapters/core + NEW tests; deletes EndpointUrl, 3 endpoint helpers, 2 lock dups) | 2 divergent health derivers → 1 ViewModel; 3-way endpoint derivation → 1 adapter; 3 lock files → 1 acquireExclusive; 2 reapers → 1 combinator; CapabilityDeliveryObservers | hardening + consolidation; net positive (new tests + fail-loud code) |
+
+**FINAL TOTAL A–E (b9ae8a2c→HEAD): net −1,992 (src −1,173, test −819); 21 source modules deleted; ~8–9 systems removed.** The plan's ">10k removed" was the inflated Stage-B estimate; honest result is ~−2k net with the system-count drop (the real goal) intact, type-safety preserved-to-improved, substrate name-blind, *plus* substantial new test coverage.
+
+Newly found (this pass), logged not dropped:
+- `deferred(end-of-rewrite)` — `packages/docs/.../state-and-snapshots.mdx` still lists `state.json` in the artifact layout (removed in A1) — stale doc. [stale-doc · low]
+- `deferred(end-of-rewrite)` — `contracts/snapshotable.ts` comments still phrase the auto-include as `runtime/<plugin-key>/` (pre-path-collapse); inaccurate. [stale-doc · low]
+- `deferred(end-of-rewrite)` — `contracts/plugin-expander.ts:24` comment names the deleted `CapabilitySinks` harvest path. [stale-doc · low]
 
 ## Audit findings (A+B relocate-don't-resolve sweep)
 
