@@ -137,6 +137,37 @@ system-count reduction, skippable if LOC/risk is the priority.
 - P6 — hoist ownership arbitration above reconcile as a seam precondition.
 - P7 — minimality sweep + `git rm` the shipped plan + log residuals to the backlog.
 
+## 6b. Cleanup checklist (from the read-only hunt — verified)
+
+PR comments (clud-bot, PR #21):
+- **PR#1 CRITICAL — FIX**: `restore.ts` has no live-cache existence check → hard cache
+  loss silently re-deploys fresh ids. Add a fail-closed preflight asserting each
+  `DEPLOY_CACHE_NAMESPACES` dir exists before the swap (typed `cache-missing` error).
+- **PR#2 MAJOR — NOT A BUG (reply on PR)**: scoped-registry `setSingle`
+  append-without-prune is the intentional seq-tagged LWW design; per-scope finalizer
+  drops entries on close (bounded by scope, not a leak). Optional p2 compaction only.
+- **PR#3 MINOR — FIX**: `acquire-node.ts` contribution buffer not sealed after
+  `start` → late async `ctx.*` silently dropped. Freeze buffer after start + throw
+  loud on late push.
+
+Safe deletions (~74 LOC, grep-verified):
+- `isTerminal` export — `state-machine.ts:70` (+ allowlist entry).
+- dead `snapshot.capture` case in `makeSnapshotCommandHandler` — `up.ts:105-135`
+  (+ unused `captureSnapshot` import; the primitive itself stays).
+- `quiesce` field — `contracts/snapshotable.ts:106` + plugin decls
+  (`seal/snapshot.ts:54`, `deepbook/snapshot.ts:27`).
+- `runtime.pause`/`unpause` contract + docker impls + wiring (KEEP the internal
+  `pause` helper used by `pauseAndCommit`; sweep ~23 mock objects).
+- dedup `SnapshotCaptureProgressPhase` (events.ts is the wire-shape source of truth;
+  `capture.ts` imports it).
+
+Deferred / not-to-delete (verified load-bearing): the `__*` compile-time guards,
+`pauseAndCommit` pause-branch (cheap defense), snapshot-reservation (used by
+capture+restore gather), `cli/snapshot-reader.ts` (offline CLI, distinct from
+orchestrator.list), the 7 capture phase discriminators, the `ReconcilePrecondition/
+Locks/Ownership` inert seams (D/E2/F-owned). Optional: rename `pausedContainers` →
+`committedContainers` (defer; cosmetic wire-shape churn).
+
 ## 7. Decision pending (owner)
 Tier 1 + Tier 2 both in PR #21; or Tier 1 now + Tier 2 as a follow-up; or Tier 1
 only. (Tier 1 is where the LOC + "trivial feature" payoff is; Tier 2 is a
