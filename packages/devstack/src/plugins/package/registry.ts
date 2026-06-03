@@ -23,7 +23,7 @@ import { Context, Effect, Layer, type Stream } from 'effect';
 import {
 	defineScopedRefMap,
 	type ScopedRefMap,
-} from '../../substrate/runtime/scoped-ref-map/index.ts';
+} from '../../substrate/runtime/scoped-registry/index.ts';
 
 /** Resolved package handle for a local (built + published) package. */
 export interface ResolvedLocalPackage {

@@ -5,7 +5,7 @@
 // Effect-native apps, embedded fixtures) would otherwise have to
 // re-implement `cli/wirings/up.ts:runUpLive`'s substrate Layer composition.
 // `runStack` is the single embedder seam — it consumes the same
-// `orchestrators/runtime-composition.ts` helper the CLI consumes. See
+// `orchestrators/boot.ts` helpers the CLI consumes. See
 // ARCHITECTURE.md §"Layer composition lives at L3, not L0".
 //
 // Shape:
@@ -45,18 +45,17 @@ import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
 import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
-import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-	layerProductionOrchestrators,
-	type ProductionCodegenOptions,
-} from '../orchestrators/runtime-composition.ts';
-import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
-import {
+	buildSubstrateLayers,
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../orchestrators/built-in-plugin-layers.ts';
+	layerProductionOrchestrators,
+	superviseStackEffect,
+	type ProductionCodegenOptions,
+} from '../orchestrators/boot.ts';
+import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import {

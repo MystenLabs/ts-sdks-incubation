@@ -130,7 +130,7 @@ export class RouterConfig extends Context.Service<RouterConfig, RouterConfigShap
 ) {}
 
 /** Default-config layer for tests. Production wires this from
- *  `runtime-composition.ts` at the engine boundary. */
+ *  `orchestrators/boot.ts` at the engine boundary. */
 export const layerRouterConfigLiteral = (cfg: RouterConfigShape): Layer.Layer<RouterConfig> =>
 	Layer.succeed(RouterConfig)(cfg);
 
@@ -355,12 +355,10 @@ const sweepStaleDispatchRoutes = (
 			const status: DispatchLeaseStatus =
 				route.lease === null
 					? 'unknown-owner'
-					: yield* probe
-							.probeHolderLiveness(route.lease.owner)
-							.pipe(
-								Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
-								Effect.catch(() => Effect.succeed('live' as const)),
-							);
+					: yield* probe.probeHolderLiveness(route.lease.owner).pipe(
+							Effect.map((s) => (s === 'dead' ? ('stale' as const) : ('live' as const))),
+							Effect.catch(() => Effect.succeed('live' as const)),
+						);
 			if (status === 'stale') {
 				const filePath = path.join(profile.dispatchDir, dispatchFilename(route.dispatchFileId));
 				yield* fs.remove(filePath).pipe(

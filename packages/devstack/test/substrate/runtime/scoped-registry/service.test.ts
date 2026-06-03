@@ -12,7 +12,7 @@ import { Deferred, Effect, Fiber, Layer, Stream } from 'effect';
 import {
 	defineScopedRefMap,
 	ScopedRefMapKeyMissingError,
-} from '../../../../src/substrate/runtime/scoped-ref-map/index.ts';
+} from '../../../../src/substrate/runtime/scoped-registry/index.ts';
 
 // ---------------------------------------------------------------
 // Test-only branded key + value shapes — substrate sees only K, V.

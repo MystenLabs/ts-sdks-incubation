@@ -23,7 +23,7 @@
 import { Context, Effect, Layer, Scope } from 'effect';
 
 import type { PluginErrorContribution } from '../../plugin.ts';
-import { makeScopedMultimap } from '../scoped-multimap/index.ts';
+import { makeScopedMultimap } from '../scoped-registry/index.ts';
 import {
 	emptyFormatterRegistry,
 	type FormatterRegistry,
@@ -54,7 +54,8 @@ export class FormatterRegistryService extends Context.Service<
 /** Layer constructing the per-stack formatter registry. Stateful;
  *  the substrate provides one per supervisor scope.
  *
- *  Storage is the shared scoped-multimap keyed by tag. The per-entry
+ *  Storage is the shared scoped-registry multimap surface keyed by tag.
+ *  The per-entry
  *  value is the (optional) formatter — the registry may track a tag
  *  with NO formatter (default rendering is enough), so `null` is a
  *  legitimate value and the seq still tracks the registration. */

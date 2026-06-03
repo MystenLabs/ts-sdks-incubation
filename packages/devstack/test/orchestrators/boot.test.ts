@@ -5,9 +5,9 @@ import { join } from 'node:path';
 import { Context, Effect, Layer, Ref, Stream, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { definePlugin } from '../../../src/api/define-plugin.ts';
-import type { RoutableDecl } from '../../../src/contracts/routable.ts';
-import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
+import { definePlugin } from '../../src/api/define-plugin.ts';
+import type { RoutableDecl } from '../../src/contracts/routable.ts';
+import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
@@ -16,7 +16,7 @@ import {
 	manifestEndpointEntryFromRoutable,
 	ManifestEndpointRegistryService,
 	productionRouterProfile,
-} from '../../../src/orchestrators/runtime-composition.ts';
+} from '../../src/orchestrators/boot.ts';
 import {
 	RouterService,
 	resolveDockerContextId,
@@ -24,36 +24,27 @@ import {
 	type EndpointUrl,
 	type ResolvedRoute,
 	type RouterServiceShape,
-} from '../../../src/orchestrators/router/index.ts';
+} from '../../src/orchestrators/router/index.ts';
 import {
 	SnapshotOrchestratorService,
 	type SnapshotOrchestrator,
-} from '../../../src/orchestrators/snapshot/index.ts';
+} from '../../src/orchestrators/snapshot/index.ts';
 import {
 	CodegenOrchestratorService,
 	type CodegenOrchestrator,
-} from '../../../src/orchestrators/codegen/service.ts';
-import { layerCodegenPaths, layerCodegenRoot } from '../../../src/orchestrators/codegen/paths.ts';
+} from '../../src/orchestrators/codegen/service.ts';
+import { layerCodegenPaths, layerCodegenRoot } from '../../src/orchestrators/codegen/paths.ts';
 import {
 	MoveCodegenService,
 	MoveSummaryRunnerService,
-} from '../../../src/orchestrators/codegen/bindings.ts';
-import {
-	appName,
-	chainId,
-	endpointKey,
-	pluginKey,
-	stackName,
-} from '../../../src/substrate/brand.ts';
-import type { EngineEvent } from '../../../src/substrate/events.ts';
-import type { Identity } from '../../../src/substrate/identity.ts';
-import {
-	supervise,
-	type ContributionDispatchContext,
-} from '../../../src/substrate/runtime/index.ts';
-import type { StrategyRegistry } from '../../../src/contracts/strategy-contributor.ts';
-import { buildSubstrateLayers } from '../../../src/orchestrators/run.ts';
-import { makeProjectionRef, updateRef } from '../../../src/substrate/runtime/projection/index.ts';
+} from '../../src/orchestrators/codegen/bindings.ts';
+import { appName, chainId, endpointKey, pluginKey, stackName } from '../../src/substrate/brand.ts';
+import type { EngineEvent } from '../../src/substrate/events.ts';
+import type { Identity } from '../../src/substrate/identity.ts';
+import { supervise, type ContributionDispatchContext } from '../../src/substrate/runtime/index.ts';
+import type { StrategyRegistry } from '../../src/contracts/strategy-contributor.ts';
+import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
+import { makeProjectionRef, updateRef } from '../../src/substrate/runtime/projection/index.ts';
 
 const bootReport: BootReport = {
 	decision: 'opt-out',

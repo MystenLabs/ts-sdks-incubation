@@ -75,7 +75,7 @@ const formatterRegistryAccess = OptionalService(FormatterRegistryService);
 
 /** Fallback cache for bare supervisor paths that don't layer a
  *  CacheService into `pluginContext` (smoke tests). A real stack always
- *  carries it (see `orchestrators/run.ts` `buildPluginContext`);
+ *  carries it (see `orchestrators/boot.ts` `buildPluginContext`);
  *  persisting plugins only run there, so `ctx.persist` (= `cache.publish`)
  *  on this fallback fails loudly and the read/write/delete ops are inert.
  *  This is the post-fold replacement for the old `noopPublisher`. */
@@ -121,7 +121,7 @@ const makePluginCtx = (
 ): { readonly ctx: PluginCtx; readonly buffer: BufferedContribution[] } => {
 	const buffer: BufferedContribution[] = [];
 	// CacheService carries the folded-in artifact-publisher cycle via its
-	// `.publish`. A real stack always layers it (`orchestrators/run.ts`
+	// `.publish`. A real stack always layers it (`orchestrators/boot.ts`
 	// `buildPluginContext`); bare smoke `supervise()` paths may not, so fall
 	// back to a loud-failing `noopCache` — persisting plugins only run on a
 	// real stack.

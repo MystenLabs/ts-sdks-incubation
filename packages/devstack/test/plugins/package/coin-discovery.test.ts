@@ -3,7 +3,7 @@ import { describe, expect, it } from '@effect/vitest';
 
 // Stage B (package plugin conversion, Part 2 — the custom-kind re-home):
 // local publish used to emit a custom `LOCAL_PACKAGE_PUBLISHED` decl that
-// the orchestrator's `publishResultSink` (built-in-plugin-layers.ts)
+// the orchestrator's `publishResultSink` (orchestrators/boot.ts)
 // consumed to auto-discover coins into the per-stack `CoinRegistry`. The
 // conversion lifts that discovery VERBATIM into the local package `start`
 // body via the exported `discoverPublishedCoins` helper, which folds a

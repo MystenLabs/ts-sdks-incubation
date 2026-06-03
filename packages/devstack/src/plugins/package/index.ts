@@ -503,7 +503,7 @@ const makeKnownCapabilities = (
 
 /** Fold a fresh local-package publish output into the per-stack
  *  `CoinRegistry`. Lifted VERBATIM from the orchestrator's former
- *  `publishResultSink` (built-in-plugin-layers.ts): the same
+ *  `publishResultSink` (orchestrators/boot.ts): the same
  *  `discoverCoinsFromPublish` walk + the same `CoinRecord` projection
  *  (including the publisher-owns-cap gate on `treasuryCapId`).
  *

@@ -18,7 +18,7 @@ import { Context, Effect, Layer, Scope } from 'effect';
 import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import { StrategyNotFoundError } from '../errors.ts';
 import { SpanAttr } from '../observability/spans.ts';
-import { makeScopedMultimap } from '../scoped-multimap/index.ts';
+import { makeScopedMultimap } from '../scoped-registry/index.ts';
 
 /** One registered strategy under a capability key. The multimap stamps
  *  the registration `seq`; the payload carries the strategy + its

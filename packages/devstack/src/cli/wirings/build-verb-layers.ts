@@ -11,8 +11,7 @@
 import { Layer } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
-import { buildSubstrateLayers } from '../../orchestrators/run.ts';
-import { layerProductionOrchestrators } from '../../orchestrators/runtime-composition.ts';
+import { buildSubstrateLayers, layerProductionOrchestrators } from '../../orchestrators/boot.ts';
 import { resolveCodegenOutput } from '../../orchestrators/codegen/output-location.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 

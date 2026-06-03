@@ -10,7 +10,7 @@
 //
 // Substrate name-blindness (ARCHITECTURE.md §"Substrate name-blindness"):
 // each method's BODY lives in L3 orchestrator composition
-// (`orchestrators/runtime-composition.ts buildProductionContributionDispatcher`),
+// (`orchestrators/boot.ts buildProductionContributionDispatcher`),
 // where the backing orchestrator services (Snapshot/Codegen/Router/
 // ManifestEndpoint) are in scope. The supervisor only holds this opaque
 // record of effects — it never imports an orchestrator service and never

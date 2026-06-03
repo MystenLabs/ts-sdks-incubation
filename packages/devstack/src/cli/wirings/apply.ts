@@ -25,15 +25,13 @@ import {
 	type SupervisedStack,
 	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
-import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-} from '../../orchestrators/runtime-composition.ts';
-import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../orchestrators/built-in-plugin-layers.ts';
+	superviseStackEffect,
+} from '../../orchestrators/boot.ts';
 import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
 import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';

@@ -89,13 +89,11 @@ import {
 import {
 	bootRouterOrchestrator,
 	buildProductionContributionDispatcher,
-	layerManifestEndpointRegistry,
-	productionRouterProfile,
-} from '../../src/orchestrators/runtime-composition.ts';
-import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../src/orchestrators/built-in-plugin-layers.ts';
+	layerManifestEndpointRegistry,
+	productionRouterProfile,
+} from '../../src/orchestrators/boot.ts';
 import {
 	SnapshotOrchestratorService,
 	layerSnapshotOrchestrator,

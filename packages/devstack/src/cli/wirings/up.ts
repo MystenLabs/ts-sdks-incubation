@@ -37,15 +37,13 @@ import {
 	DEFAULT_LIFECYCLE_PRUNE_RESOURCES,
 	runLifecyclePrune,
 } from '../../orchestrators/lifecycle-prune/index.ts';
-import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-} from '../../orchestrators/runtime-composition.ts';
-import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
-} from '../../orchestrators/built-in-plugin-layers.ts';
+	superviseStackEffect,
+} from '../../orchestrators/boot.ts';
 import {
 	captureSnapshot,
 	SnapshotOrchestratorService,

@@ -25,7 +25,7 @@ import { Context, Effect, Layer } from 'effect';
 import {
 	defineScopedRefMap,
 	type ScopedRefMap,
-} from '../../substrate/runtime/scoped-ref-map/index.ts';
+} from '../../substrate/runtime/scoped-registry/index.ts';
 
 /** Discovered-coin record — the value-shape stored in the registry.
  *  Superset of the published-coin shape with discovery-populated

@@ -5,7 +5,7 @@ import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import type { SupervisedStack } from '../../src/substrate/runtime/supervisor/index.ts';
 import { definePlugin } from '../../src/substrate/plugin.ts';
-import { runStackEffect } from '../../src/orchestrators/run.ts';
+import { runStackEffect } from '../../src/orchestrators/boot.ts';
 import { withTempRoot } from '../helpers/with-temp-root.ts';
 
 const identity: Identity = {

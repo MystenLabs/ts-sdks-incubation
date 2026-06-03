@@ -8,7 +8,7 @@
 // Design discipline:
 //   - The projection (`SubscribableState`) is CLOSED — none of this data
 //     touches it. We read resolved plugin VALUES via `readResolvedSync`,
-//     the same name-blind seam `runtime-composition.ts` uses for the
+//     the same name-blind seam `orchestrators/boot.ts` uses for the
 //     manifest-extras lookup, and hand them out UNINTERPRETED via
 //     `resolvedValues`. The substrate never pattern-matches plugin
 //     names — plugin-name-aware shaping lives in the dashboard plugin
