@@ -5,7 +5,8 @@
 //      renderers see a complete baseline.
 //   2. Resolve the dep graph + boot the registry.
 //   3. Build the substrate-wiring bag: logger overlay, runtime root,
-//      CapabilitySinks service (caller-pre-built or substrate-default).
+//      FormatterRegistry (caller-pre-built or substrate-default), and the
+//      closed contribution dispatcher.
 //   4. Compose the `SupervisorState` record (one bag passed to every
 //      module).
 //   5. Build `runInitialAcquire` — the deferred initial-acquire body.
@@ -33,10 +34,13 @@ import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { AccountProjection, SubscribableState } from '../../projection.ts';
 import {
-	CapabilitySinksService,
-	layerCapabilitySinksDefault,
-	type OrchestratorSinks,
-} from '../capability-sinks/index.ts';
+	FormatterRegistryService,
+	layerFormatterRegistry,
+} from '../observability/formatter-registry.ts';
+import {
+	noopContributionDispatcher,
+	type ContributionDispatcher,
+} from './contribution-dispatcher.ts';
 import {
 	Logger,
 	LogStore,
@@ -91,7 +95,7 @@ import {
 
 const loggerAccess = OptionalService(Logger);
 const runtimeRootAccess = OptionalService(RuntimeRoot);
-const sinksAccess = OptionalService(CapabilitySinksService);
+const formatterRegistryAccess = OptionalService(FormatterRegistryService);
 
 export interface SupervisorHandle {
 	readonly identity: Identity;
@@ -163,17 +167,18 @@ const pendingAccountProjection = (
  * plugin's R-channel narrows to `Scope.Scope` (then to `never` after
  * the per-plugin Scope is provided).
  *
- * `CapabilitySinksService` extension (ARCHITECTURE.md § Plugin-author
- * extension via Layer composition): if the caller layers a
- * `CapabilitySinksService` into `pluginContext`, the supervisor
- * harvests through THAT instance instead of building its own.
+ * Contribution dispatch (Stage B): the supervisor replays each plugin's
+ * buffered ctx contributions through the closed `dispatcher`
+ * (snapshotable/routable/codegenable/projection/strategy-contributor).
+ * Production callers pass `buildProductionContributionDispatcher(...)`;
+ * bare smoke tests omit it and get the no-op dispatcher.
  */
 export const startSupervisor = (
 	stack: SupervisedStack,
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = [],
+	dispatcher: ContributionDispatcher = noopContributionDispatcher,
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 	options: SupervisorStartupOptions = {},
@@ -304,6 +309,22 @@ export const startSupervisor = (
 			spanStore,
 		});
 
+		// Resolve the FormatterRegistry for this stack. The supervisor feeds
+		// each plugin's static `errorContributions` field directly into it
+		// from `acquire-node` (was the substrate's `errorContributionSink`).
+		// Two paths:
+		//   (a) the caller layered a `FormatterRegistryService` into
+		//       `pluginContext` (CLI / e2e do, so the cascade formatter
+		//       downstream reads the same instance) — use THAT.
+		//   (b) bare path — build the substrate default on the SURROUNDING
+		//       (supervisor) scope so it lives for the supervisor's lifetime.
+		const formatterRegistry = yield* formatterRegistryAccess.readEffect(
+			pluginContext,
+			Effect.gen(function* () {
+				return Context.get(yield* Layer.build(layerFormatterRegistry), FormatterRegistryService);
+			}),
+		);
+
 		const pluginRuntimeContext = pluginContext.pipe(
 			Context.add(Logger, Logger.of(logger)),
 			// Observability stores + the recording Tracer. The Tracer is an
@@ -315,6 +336,9 @@ export const startSupervisor = (
 			Context.add(LogStore, LogStore.of(logStore)),
 			Context.add(SpanStore, SpanStore.of(spanStore)),
 			Context.add(Tracer.Tracer, spanStore.tracer),
+			// The formatter registry the supervisor folds plugin
+			// `errorContributions` into during acquire.
+			Context.add(FormatterRegistryService, formatterRegistry),
 			// Expose the control plane (live projection + fire-and-forget
 			// command dispatch + the plugin-domain accessor surface) to
 			// in-process surfaces like the dashboard plugin. Reads the same
@@ -375,31 +399,6 @@ export const startSupervisor = (
 		}
 		const runtimeRoot = runtimeRootResolved.root;
 
-		// Resolve the CapabilitySinks registry for this stack. Two paths:
-		//
-		//   (a) Plugin-author / orchestrator pre-built path: the caller
-		//       layered a `CapabilitySinksService` into `pluginContext`
-		//       (typically by composing `layerCapabilitySinksDefault(...)`
-		//       PLUS one or more custom-sink Layers). The supervisor
-		//       harvests through THAT instance, so custom sinks
-		//       registered by plugin authors actually fire.
-		//
-		//   (b) Bare path: no service in context — the supervisor builds
-		//       the substrate default with the orchestrator sinks passed
-		//       in. `Layer.build` opens the layer's resources on the
-		//       SURROUNDING scope (the supervisor's), so the sinks +
-		//       formatter registry live for the supervisor's lifetime
-		//       and reap on its scope close.
-		const sinksService = yield* sinksAccess.readEffect(
-			pluginRuntimeContext,
-			Effect.gen(function* () {
-				return Context.get(
-					yield* Layer.build(layerCapabilitySinksDefault(sinks)),
-					CapabilitySinksService,
-				);
-			}),
-		);
-
 		const enableCommandLoop = options.commandLoop !== false;
 		if (enableCommandLoop) {
 			yield* Effect.forkScoped(traced(installSignalHandler(commands)));
@@ -428,7 +427,7 @@ export const startSupervisor = (
 			shutdownLatch,
 			shutdownComplete,
 			pluginContext: pluginRuntimeContext,
-			sinks: sinksService,
+			dispatcher,
 			logger,
 			identity,
 			runtimeRoot,
@@ -446,7 +445,7 @@ export const startSupervisor = (
 				state,
 				hub,
 				pluginRuntimeContext,
-				sinksService,
+				dispatcher,
 				logger,
 				identity,
 				runtimeRoot,
@@ -550,7 +549,7 @@ export const supervise = (
 	identity: Identity,
 	state: SubscriptionRef.SubscriptionRef<SubscribableState>,
 	pluginContext: Context.Context<never> = Context.empty(),
-	sinks: OrchestratorSinks = [],
+	dispatcher: ContributionDispatcher = noopContributionDispatcher,
 	commandHandler?: SupervisorCommandHandler,
 	postAcquireHook?: SupervisorPostAcquireHook,
 ): Effect.Effect<SupervisorHandle, SupervisorError, Scope.Scope> =>
@@ -560,7 +559,7 @@ export const supervise = (
 			identity,
 			state,
 			pluginContext,
-			sinks,
+			dispatcher,
 			commandHandler,
 			postAcquireHook,
 			{ commandLoop: true },

@@ -7,7 +7,6 @@
 
 import type { Effect } from 'effect';
 
-import type { CapabilityDecl } from '../contracts/capability-decl.ts';
 import type { ChainId, PluginKey } from './brand.ts';
 import type { Identity } from './identity.ts';
 import type { PluginRole } from './lifecycle.ts';
@@ -152,26 +151,12 @@ export interface AcquireContext {
 	readonly runtimeRoot: string;
 }
 
-export type CapabilitiesFactory<Caps extends ReadonlyArray<CapabilityDecl>, Resolved> = (
-	resolved: Resolved,
-	ctx: AcquireContext,
-) => Caps;
-
-export type CapabilitySource<Value, Caps extends ReadonlyArray<CapabilityDecl>> =
-	| Caps
-	| ((ctx: { readonly value: Value; readonly runtime: AcquireContext }) => Caps);
-
-interface PluginSpecBase<
-	Id extends string,
-	Start extends AnyPluginStart,
-	Caps extends ReadonlyArray<CapabilityDecl>,
-> {
+interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	readonly id: Id;
 	readonly role: PluginRole;
 	readonly pluginKey?: PluginKey | string;
 	readonly watch?: WatchDecl;
 	readonly start: Start;
-	readonly capabilities?: CapabilitySource<StartValue<Start>, Caps>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	/** Dashboard section bucket the plugin's rows belong to. Required so
 	 *  the renderer never has to pattern-match on plugin name substrings
@@ -197,8 +182,7 @@ export type PluginSpec<
 	Id extends string,
 	DependsOn extends DependencyInput | undefined,
 	Start extends AnyPluginStart,
-	Caps extends ReadonlyArray<CapabilityDecl>,
-> = PluginSpecBase<Id, Start, Caps> & {
+> = PluginSpecBase<Id, Start> & {
 	readonly dependsOn?: DependsOn;
 };
 
@@ -206,7 +190,6 @@ export interface Plugin<
 	Id extends string,
 	Value,
 	Needs extends readonly AnyResourceRef[],
-	Caps extends ReadonlyArray<CapabilityDecl>,
 > extends ResourceRef<Id, Value> {
 	readonly [pluginBrand]: true;
 	readonly [dependencyInputBrand]: DependencyInput | undefined;
@@ -218,7 +201,6 @@ export interface Plugin<
 		deps: ResolvedDependencies<DependencyInput | undefined>,
 		ctx: PluginCtx,
 	) => Effect.Effect<Value, unknown, unknown>;
-	readonly capabilities?: Caps | CapabilitiesFactory<Caps, Value>;
 	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
@@ -228,13 +210,12 @@ export interface Plugin<
 export type AnyPlugin = Plugin<
 	string,
 	// Erased runtime plugin values must be `any` rather than `unknown`
-	// so concrete dynamic capability factories remain assignable under
-	// strict function parameter variance. Precise value types stay on
-	// concrete `Plugin<Id, Value, ...>` instances.
+	// so concrete plugin instances remain assignable under strict
+	// function parameter variance. Precise value types stay on concrete
+	// `Plugin<Id, Value, ...>` instances.
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	any,
-	readonly AnyResourceRef[],
-	ReadonlyArray<CapabilityDecl>
+	readonly AnyResourceRef[]
 >;
 
 export const isPlugin = (value: unknown): value is AnyPlugin =>
@@ -313,52 +294,43 @@ export function definePlugin<
 	const Id extends string,
 	const DependsOn extends readonly AnyResourceRef[],
 	const Start extends AnyPluginStart = PluginStart<ResolvedDependencyList<DependsOn>>,
-	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
-	spec: PluginSpecBase<Id, Start, Caps> & {
+	spec: PluginSpecBase<Id, Start> & {
 		readonly dependsOn: DependsOn;
 	},
-): Plugin<Id, StartValue<Start>, DependsOn, Caps>;
+): Plugin<Id, StartValue<Start>, DependsOn>;
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends Readonly<Record<string, AnyResourceRef>>,
 	const Start extends AnyPluginStart = PluginStart<ResolvedDependencyObject<DependsOn>>,
-	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
-	spec: PluginSpecBase<Id, Start, Caps> & {
+	spec: PluginSpecBase<Id, Start> & {
 		readonly dependsOn: DependsOn;
 	},
-): Plugin<Id, StartValue<Start>, DependencyList<DependsOn>, Caps>;
+): Plugin<Id, StartValue<Start>, DependencyList<DependsOn>>;
 export function definePlugin<
 	const Id extends string,
 	const DependsOn extends AnyResourceRef,
 	const Start extends AnyPluginStart = PluginStart<ResourceValueOf<DependsOn>>,
-	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
-	spec: PluginSpecBase<Id, Start, Caps> & {
+	spec: PluginSpecBase<Id, Start> & {
 		readonly dependsOn: DependsOn;
 	},
-): Plugin<Id, StartValue<Start>, readonly [DependsOn], Caps>;
+): Plugin<Id, StartValue<Start>, readonly [DependsOn]>;
 export function definePlugin<
 	const Id extends string,
 	const Start extends AnyPluginStart = PluginStart<undefined>,
-	const Caps extends ReadonlyArray<CapabilityDecl> = ReadonlyArray<CapabilityDecl>,
 >(
-	spec: PluginSpecBase<Id, Start, Caps> & {
+	spec: PluginSpecBase<Id, Start> & {
 		readonly dependsOn?: undefined;
 	},
-): Plugin<Id, StartValue<Start>, readonly [], Caps>;
+): Plugin<Id, StartValue<Start>, readonly []>;
 export function definePlugin(
-	spec: PluginSpecBase<string, AnyPluginStart, ReadonlyArray<CapabilityDecl>> & {
+	spec: PluginSpecBase<string, AnyPluginStart> & {
 		readonly dependsOn?: DependencyInput;
 	},
 ): AnyPlugin {
 	const dependsOn = uniqueResourceRefs(dependencyList(spec.dependsOn));
-	const capabilitiesField = spec.capabilities;
-	const capabilities =
-		typeof capabilitiesField === 'function'
-			? (value: unknown, runtime: AcquireContext) => capabilitiesField({ value, runtime })
-			: capabilitiesField;
 
 	return {
 		[resourceBrand]: true,
@@ -371,7 +343,6 @@ export function definePlugin(
 		start: spec.start as AnyPlugin['start'],
 		...(spec.pluginKey === undefined ? {} : { pluginKey: spec.pluginKey }),
 		...(spec.watch === undefined ? {} : { watch: spec.watch }),
-		...(capabilities === undefined ? {} : { capabilities }),
 		...(spec.errorContributions === undefined
 			? {}
 			: { errorContributions: spec.errorContributions }),

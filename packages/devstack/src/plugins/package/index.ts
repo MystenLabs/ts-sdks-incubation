@@ -31,7 +31,7 @@ import {
 	type ResourceValueOf,
 } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
-import type { CapabilityDecl } from '../../contracts/capability-decl.ts';
+import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
 import { pickCreatedByType, type LocalPackagePublishOutput } from './publish-output.ts';
@@ -430,7 +430,7 @@ const makeLocalCapabilities = (
 	name: string,
 	opts: { readonly excludeFromCodegen?: boolean; readonly networks?: PackageNetworks },
 	resolved: LocalPackageResolved,
-): ReadonlyArray<CapabilityDecl> => {
+): ReadonlyArray<Contribution> => {
 	// Snapshot + codegen lift their typed fields off the resolved
 	// publish (real packageId + captured object ids). The static-form
 	// placeholders are gone.
@@ -480,7 +480,7 @@ const makeKnownCapabilities = (
 	name: string,
 	opts: KnownPackageOptions,
 	resolved: KnownPackageResolved,
-): ReadonlyArray<CapabilityDecl> => {
+): ReadonlyArray<Contribution> => {
 	const snap: SnapshotableDecl = makeSnapshotable(name, `known:${resolved.packageId}`);
 	const codegen: CodegenableDecl<'package'> = makeKnownCodegenable(
 		{
@@ -518,7 +518,7 @@ const makeKnownCapabilities = (
  *  strategy-contributor → `ctx.provides`, projection → `ctx.publish`).
  *  Order + decl shapes are byte-identical to the supervisor's legacy
  *  `capabilities`-closure harvest. */
-const emitCapabilities = (ctx: PluginCtx, decls: ReadonlyArray<CapabilityDecl>): void => {
+const emitCapabilities = (ctx: PluginCtx, decls: ReadonlyArray<Contribution>): void => {
 	for (const decl of decls) {
 		switch (decl.kind) {
 			case 'snapshotable':

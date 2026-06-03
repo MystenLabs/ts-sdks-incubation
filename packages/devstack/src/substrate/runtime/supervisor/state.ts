@@ -24,7 +24,7 @@ import type { EngineCommand, EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
+import { type ContributionDispatcher } from './contribution-dispatcher.ts';
 import { isReadyOrTerminal } from '../lifecycle/index.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import type { PluginRegistry, ResolvedGraph } from '../lifecycle/index.ts';
@@ -117,7 +117,7 @@ export interface SupervisorState {
 	readonly shutdownLatch: Ref.Ref<boolean>;
 	readonly shutdownComplete: Deferred.Deferred<void>;
 	readonly pluginContext: Context.Context<never>;
-	readonly sinks: CapabilitySinksShape;
+	readonly dispatcher: ContributionDispatcher;
 	readonly logger: LoggerShape;
 	readonly identity: Identity;
 	readonly runtimeRoot: string;

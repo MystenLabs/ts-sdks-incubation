@@ -40,7 +40,7 @@ export const handleCommand = (
 	options: { readonly failOnPostAcquireHook?: boolean } = {},
 ): Effect.Effect<void, SupervisorPostAcquireFailed | SupervisorRestoreFailed, Scope.Scope> =>
 	Effect.gen(function* () {
-		const { graph, registry, pluginContext, sinks, logger, identity, runtimeRoot } = deps;
+		const { graph, registry, pluginContext, dispatcher, logger, identity, runtimeRoot } = deps;
 		const parentScope = yield* Effect.scope;
 		switch (cmd.tag) {
 			case 'shutdown.requested':
@@ -61,7 +61,7 @@ export const handleCommand = (
 					deps.hub,
 					new Set(plan.slice),
 					pluginContext,
-					sinks,
+					dispatcher,
 					logger,
 					identity,
 					runtimeRoot,
@@ -83,7 +83,7 @@ export const handleCommand = (
 					deps.hub,
 					new Set([cmd.pluginKey]),
 					pluginContext,
-					sinks,
+					dispatcher,
 					logger,
 					identity,
 					runtimeRoot,
@@ -109,7 +109,7 @@ export const handleCommand = (
 						deps.hub,
 						new Set([cmd.pluginKey]),
 						pluginContext,
-						sinks,
+						dispatcher,
 						logger,
 						identity,
 						runtimeRoot,
@@ -200,7 +200,7 @@ export const handleCommand = (
 					deps.hub,
 					new Set(plan.slice),
 					pluginContext,
-					sinks,
+					dispatcher,
 					logger,
 					identity,
 					runtimeRoot,

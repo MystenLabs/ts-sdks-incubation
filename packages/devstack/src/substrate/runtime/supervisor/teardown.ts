@@ -12,7 +12,7 @@ import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { type CapabilitySinksShape } from '../capability-sinks/index.ts';
+import { type ContributionDispatcher } from './contribution-dispatcher.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import {
 	planRestart,
@@ -97,7 +97,7 @@ export const doSelectiveRestart = (
 	hub: Queue.Enqueue<EngineEvent>,
 	roots: ReadonlySet<PluginKey>,
 	pluginContext: Context.Context<never>,
-	sinks: CapabilitySinksShape,
+	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
 	runtimeRoot: string,
@@ -133,7 +133,7 @@ export const doSelectiveRestart = (
 			ref,
 			hub,
 			pluginContext,
-			sinks,
+			dispatcher,
 			logger,
 			identity,
 			runtimeRoot,

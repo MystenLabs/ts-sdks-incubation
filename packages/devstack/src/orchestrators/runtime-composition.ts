@@ -60,11 +60,9 @@ import {
 import { StackPathsService } from '../substrate/runtime/paths.ts';
 import { PostAcquireTasksService } from '../substrate/runtime/post-acquire-tasks.ts';
 import type {
-	CapabilitySink,
-	ContributionKind,
-	HarvestContext,
-	OrchestratorSinks,
-} from '../substrate/runtime/capability-sinks/index.ts';
+	ContributionDispatcher,
+	ContributionDispatchContext,
+} from '../substrate/runtime/supervisor/contribution-dispatcher.ts';
 import type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
@@ -167,10 +165,7 @@ const productionCodegenOutputDir = (appRoot: string, outputDir: string | undefin
  *  their stack (`run-stack`, the verb wirings) pass the resolved
  *  per-stack value; this default only feeds direct-snapshot verbs that
  *  never run codegen. */
-const productionCodegenExtrasDir = (
-	appRoot: string,
-	extrasDir: string | undefined,
-): string => {
+const productionCodegenExtrasDir = (appRoot: string, extrasDir: string | undefined): string => {
 	const target = extrasDir ?? '.devstack/generated-extras';
 	return isAbsolute(target) ? target : resolve(appRoot, target);
 };
@@ -287,61 +282,67 @@ const manifestEndpointEntryFromOperationalEndpoint = (
 	pluginKey: String(endpoint.pluginKey),
 });
 
-const orchestratorSink = <K extends ContributionKind, TDecl>(
-	sink: CapabilitySink<K, TDecl>,
-): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
+/** Project a projection decl's `rowKey` (when absent) onto the
+ *  contributing plugin so projection consumers can attribute the row.
+ *  The payload stays opaque from the substrate's POV. */
+const projectionDispatch = (
+	decl: ProjectionDecl,
+	ctx: ContributionDispatchContext,
+): Effect.Effect<void, never, never> => {
+	const payload = decl.event.payload;
+	const payloadWithRowKey =
+		payload !== null &&
+		typeof payload === 'object' &&
+		'rowKey' in payload &&
+		(payload as { rowKey: unknown }).rowKey === null
+			? { ...payload, rowKey: ctx.pluginKey }
+			: payload;
+	return ctx.publish({
+		...decl.event,
+		payload: payloadWithRowKey,
+	});
+};
 
-export const makeProjectionCapabilitySink = (): OrchestratorSinks[number] =>
-	orchestratorSink<'projection', ProjectionDecl>({
-		kind: 'projection',
-		accept: (decl, ctx) =>
-			Effect.gen(function* () {
-				// Stamp `rowKey` (when absent) so projection consumers can
-				// attribute the row to the contributing plugin. The payload
-				// stays opaque from the substrate's POV; we project just
-				// enough to set the row-key field if the payload exposes it.
-				const payload = decl.event.payload;
-				const payloadWithRowKey =
-					payload !== null &&
-					typeof payload === 'object' &&
-					'rowKey' in payload &&
-					(payload as { rowKey: unknown }).rowKey === null
-						? { ...payload, rowKey: ctx.pluginKey }
-						: payload;
-				yield* ctx.publish({
-					...decl.event,
-					payload: payloadWithRowKey,
-				});
+/** Register a strategy contribution on the scope-local registry, publish
+ *  `strategy.registered`, and arm a finalizer publishing
+ *  `strategy.unregistered`. (Was `makeStrategyContributorCapabilitySink`.) */
+const strategyContributorDispatch = (
+	decl: StrategyContributorDecl<string, unknown>,
+	ctx: ContributionDispatchContext,
+): Effect.Effect<void, never, Scope.Scope> =>
+	Effect.gen(function* () {
+		yield* ctx.strategyRegistry.register(decl.capabilityKey, decl.strategy, {
+			autoMounted: decl.autoMounted,
+			...(decl.priority === undefined ? {} : { priority: decl.priority }),
+		});
+		yield* ctx.publish({
+			tag: 'strategy.registered',
+			capabilityKey: decl.capabilityKey,
+			autoMounted: decl.autoMounted,
+			at: Date.now(),
+		});
+		yield* Effect.addFinalizer(() =>
+			ctx.publish({
+				tag: 'strategy.unregistered',
+				capabilityKey: decl.capabilityKey,
+				at: Date.now(),
 			}),
+		);
 	});
 
-export const makeStrategyContributorCapabilitySink = (): OrchestratorSinks[number] =>
-	orchestratorSink<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
-		kind: 'strategy-contributor',
-		accept: (decl, ctx) =>
-			Effect.gen(function* () {
-				yield* ctx.registerStrategy(decl);
-				const at = Date.now();
-				yield* ctx.publish({
-					tag: 'strategy.registered',
-					capabilityKey: decl.capabilityKey,
-					autoMounted: decl.autoMounted,
-					at,
-				});
-				yield* Effect.addFinalizer(() =>
-					ctx.publish({
-						tag: 'strategy.unregistered',
-						capabilityKey: decl.capabilityKey,
-						at: Date.now(),
-					}),
-				);
-			}),
-	});
-
-export const buildProductionOrchestratorSinks = (
+/**
+ * Build the production `ContributionDispatcher` — the closed seam the
+ * supervisor replays each plugin's buffered contributions through after
+ * a successful `start`. Each method's body reads its backing orchestrator
+ * service (Snapshot/Router/Codegen/ManifestEndpoint) ONCE here and closes
+ * over it; the substrate supervisor holds the resulting record opaquely
+ * (it never imports an orchestrator service). Replaces the deleted
+ * `buildProductionOrchestratorSinks` array assembly.
+ */
+export const buildProductionContributionDispatcher = (
 	observers: CapabilityDeliveryObservers = {},
 ): Effect.Effect<
-	OrchestratorSinks,
+	ContributionDispatcher,
 	never,
 	| SnapshotOrchestratorService
 	| RouterService
@@ -353,46 +354,39 @@ export const buildProductionOrchestratorSinks = (
 		const router = yield* RouterService;
 		const codegen = yield* CodegenOrchestratorService;
 		const manifestEndpoints = yield* ManifestEndpointRegistryService;
-		return [
-			orchestratorSink<'snapshotable', SnapshotableDecl>({
-				kind: 'snapshotable',
-				accept: (decl, ctx) => snapshot.registerParticipant(ctx.pluginKey, decl),
-			}),
-			orchestratorSink<'routable', RoutableDecl>({
-				kind: 'routable',
-				accept: (decl, ctx: HarvestContext) =>
-					router.boot().pipe(
-						Effect.andThen(router.contributeRoute(decl)),
-						Effect.flatMap((endpoint) => {
-							const event = endpointEventFromRoutable(ctx.pluginKey, endpoint);
-							const manifestEntry = manifestEndpointEntryFromRoutable(ctx.pluginKey, endpoint);
-							return manifestEndpoints
-								.register(manifestEntry)
-								.pipe(
-									Effect.andThen(ctx.publish(event)),
-									Effect.andThen(
-										observers.routable
-											? observers.routable(ctx.pluginKey, endpoint, event)
-											: Effect.void,
-									),
-								);
-						}),
-					),
-			}),
-			orchestratorSink<'codegenable', Codegenable>({
-				kind: 'codegenable',
-				accept: (decl, ctx) =>
-					codegen
-						.registerContribution(ctx.pluginKey, decl)
-						.pipe(
-							Effect.flatMap(() =>
-								observers.codegenable ? observers.codegenable(ctx.pluginKey, decl) : Effect.void,
-							),
+		return {
+			snapshotable: (decl: SnapshotableDecl, ctx) =>
+				snapshot.registerParticipant(ctx.pluginKey, decl),
+			routable: (decl: RoutableDecl, ctx) =>
+				router.boot().pipe(
+					Effect.andThen(router.contributeRoute(decl)),
+					Effect.flatMap((endpoint) => {
+						const event = endpointEventFromRoutable(ctx.pluginKey, endpoint);
+						const manifestEntry = manifestEndpointEntryFromRoutable(ctx.pluginKey, endpoint);
+						return manifestEndpoints
+							.register(manifestEntry)
+							.pipe(
+								Effect.andThen(ctx.publish(event)),
+								Effect.andThen(
+									observers.routable
+										? observers.routable(ctx.pluginKey, endpoint, event)
+										: Effect.void,
+								),
+							);
+					}),
+				),
+			codegenable: (decl: Codegenable, ctx) =>
+				codegen
+					.registerContribution(ctx.pluginKey, decl)
+					.pipe(
+						Effect.flatMap(() =>
+							observers.codegenable ? observers.codegenable(ctx.pluginKey, decl) : Effect.void,
 						),
-			}),
-			makeProjectionCapabilitySink(),
-			makeStrategyContributorCapabilitySink(),
-		];
+					),
+			projection: (decl: ProjectionDecl, ctx) => projectionDispatch(decl, ctx),
+			strategyContributor: (decl: StrategyContributorDecl<string, unknown>, ctx) =>
+				strategyContributorDispatch(decl, ctx),
+		} satisfies ContributionDispatcher;
 	});
 
 const makeManifestExtrasContext = (ctx: SupervisorPostAcquireContext) => {

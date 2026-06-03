@@ -39,7 +39,7 @@ import {
 } from '../../orchestrators/lifecycle-prune/index.ts';
 import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
 } from '../../orchestrators/runtime-composition.ts';
 import {
@@ -519,7 +519,7 @@ export const runUpLive = (
 				fs,
 				runtimeRoot: effectiveIdentity.runtimeRoot,
 			});
-			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const contributionDispatcher = yield* buildProductionContributionDispatcher();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
@@ -528,7 +528,7 @@ export const runUpLive = (
 				identityValue,
 				state,
 				{
-					orchestratorSinks,
+					contributionDispatcher,
 					commandHandler: snapshotCommandHandler,
 					postAcquireHook,
 					extendContext: extendBuiltInPluginContext,
@@ -604,7 +604,7 @@ export const runUpLive = (
 							);
 						}),
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+			).pipe(Effect.provide(layerBuiltInPluginRuntime));
 		});
 
 		// `Effect.matchCauseEffect` projects the inner program's

@@ -49,7 +49,7 @@ export const bestEffort = <A, E, R>(
  * Read an optional service from a `Context.Context<never>` or fall back
  * to a default. The supervisor's `pluginContext` is name-blind: a
  * caller may or may not have layered a `Logger`, `RuntimeRoot`, or
- * `CapabilitySinksService`. The lookup pattern was open-coded in three
+ * `FormatterRegistryService`. The lookup pattern was open-coded in three
  * sites until backlog #40 lifted it here.
  *
  * Two surfaces, mirroring the prior `getOrDefault` / `getOrDefaultEffect`
@@ -58,7 +58,7 @@ export const bestEffort = <A, E, R>(
  * - `read(ctx)` — value fallback (Logger, RuntimeRoot).
  * - `readEffect(ctx)` — Effect fallback so the substrate only pays the
  *   "build the default Layer" cost when nothing is in context
- *   (CapabilitySinksService).
+ *   (FormatterRegistryService).
  *
  * Upstream-watch (Phase 5 reviewer): Effect v4 exposes `Context.getOption`
  * (returns `Option<S>`) and `Context.getUnsafe` (throws on missing), but

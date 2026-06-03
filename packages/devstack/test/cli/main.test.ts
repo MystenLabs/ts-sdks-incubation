@@ -52,19 +52,23 @@ const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-apply-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: () => Effect.succeed({ message: 'from-cli-apply' } as const),
-\tcapabilities: ({ value }) => [
-\t\tcodegenable({
-\t\t\temitterName: 'cli-apply-proof',
-\t\t\toutputPath: 'cli-apply-proof.ts',
-\t\t\tsensitive: false,
-\t\t\temit: (ctx) =>
-\t\t\t\tEffect.sync(() => {
-\t\t\t\t\tctx.exportConst('cliApplyProof', value);
-\t\t\t\t\treturn ctx.done();
+\tstart: (_deps, ctx) =>
+\t\tEffect.sync(() => {
+\t\t\tconst value = { message: 'from-cli-apply' } as const;
+\t\t\tctx.codegen(
+\t\t\t\tcodegenable({
+\t\t\t\t\temitterName: 'cli-apply-proof',
+\t\t\t\t\toutputPath: 'cli-apply-proof.ts',
+\t\t\t\t\tsensitive: false,
+\t\t\t\t\temit: (emit) =>
+\t\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\t\temit.exportConst('cliApplyProof', value);
+\t\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t\t}),
 \t\t\t\t}),
+\t\t\t);
+\t\t\treturn value;
 \t\t}),
-\t],
 });
 
 export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: '${stackName}' });
@@ -662,19 +666,23 @@ const cliApplyCodegenPlugin = definePlugin({
 \tid: 'test/cli-identity-codegen',
 \trole: 'service',
 \tsection: 'service',
-\tstart: () => Effect.succeed({ message: 'from-cli-identity' } as const),
-\tcapabilities: ({ value }) => [
-\t\tcodegenable({
-\t\t\temitterName: 'cli-identity-proof',
-\t\t\toutputPath: 'cli-identity-proof.ts',
-\t\t\tsensitive: false,
-\t\t\temit: (ctx) =>
-\t\t\t\tEffect.sync(() => {
-\t\t\t\t\tctx.exportConst('cliIdentityProof', value);
-\t\t\t\t\treturn ctx.done();
+\tstart: (_deps, ctx) =>
+\t\tEffect.sync(() => {
+\t\t\tconst value = { message: 'from-cli-identity' } as const;
+\t\t\tctx.codegen(
+\t\t\t\tcodegenable({
+\t\t\t\t\temitterName: 'cli-identity-proof',
+\t\t\t\t\toutputPath: 'cli-identity-proof.ts',
+\t\t\t\t\tsensitive: false,
+\t\t\t\t\temit: (emit) =>
+\t\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\t\temit.exportConst('cliIdentityProof', value);
+\t\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t\t}),
 \t\t\t\t}),
+\t\t\t);
+\t\t\treturn value;
 \t\t}),
-\t],
 });
 
 export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'main' });

@@ -211,7 +211,6 @@ const KNOWN_UNCLEARED_ORPHANS: ReadonlySet<string> = new Set<string>([
 	'primitives/artifact-publisher.ts#LENIENT_RETRY_PROFILE',
 	'substrate/events.ts#EngineEventTag',
 	'substrate/events.ts#EngineCommandTag',
-	'substrate/runtime/capability-sinks/layer.ts#CapabilitySinksRequirements',
 	'substrate/runtime/cross-process/snapshot-reservation.ts#peekReservation',
 	'substrate/runtime/lifecycle/state-machine.ts#__LifecycleTableShape',
 	'substrate/runtime/lifecycle/state-machine.ts#isTerminal',

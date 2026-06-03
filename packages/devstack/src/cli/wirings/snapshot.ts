@@ -22,7 +22,7 @@ import {
 } from '../../substrate/runtime/index.ts';
 import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
 } from '../../orchestrators/runtime-composition.ts';
 import {
@@ -35,10 +35,7 @@ import {
 	type RestoreParticipant,
 	type SnapshotMetadata,
 } from '../../orchestrators/snapshot/index.ts';
-import {
-	CliInternalError,
-	CliUnavailableError,
-} from '../../surfaces/cli/index.ts';
+import { CliInternalError, CliUnavailableError } from '../../surfaces/cli/index.ts';
 import { probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts';
 
@@ -158,9 +155,7 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 		);
 	});
 
-const snapshotIdentityParticipants = (
-	meta: SnapshotMetadata,
-): ReadonlyArray<RestoreParticipant> =>
+const snapshotIdentityParticipants = (meta: SnapshotMetadata): ReadonlyArray<RestoreParticipant> =>
 	Object.entries(meta.identity).map(([plugin, value]) => ({
 		plugin,
 		liveIdentity: Effect.succeed({ [plugin]: value }),
@@ -243,7 +238,7 @@ export const runSnapshotCaptureDirectLoaded = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const contributionDispatcher = yield* buildProductionContributionDispatcher();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
@@ -254,7 +249,7 @@ export const runSnapshotCaptureDirectLoaded = (
 				identityValue,
 				state,
 				{
-					orchestratorSinks,
+					contributionDispatcher,
 					postAcquireHook,
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
@@ -275,7 +270,7 @@ export const runSnapshotCaptureDirectLoaded = (
 							Effect.asVoid,
 						),
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+			).pipe(Effect.provide(layerBuiltInPluginRuntime));
 			if (Exit.isFailure(captureExit)) {
 				yield* Effect.failCause(captureExit.cause);
 			}

@@ -80,6 +80,21 @@ import type { StrategyNotFoundError } from './runtime/errors.ts';
 export type StrategyFor<K extends string> = Record<K, unknown>[K];
 
 /**
+ * The CLOSED union of contribution decls a plugin emits via the four
+ * buffered verbs + `provides`. Discriminated by `kind`. Exposed for
+ * plugin-internal helpers that build an ordered list of decls and then
+ * route each to the matching `ctx` verb by its discriminant (e.g. the
+ * package plugin's `emitCapabilities`). The supervisor's static dispatch
+ * switches over exactly these five kinds.
+ */
+export type Contribution =
+	| CodegenableDecl<string>
+	| RoutableDecl
+	| SnapshotableDecl
+	| ProjectionDecl
+	| StrategyContributorDecl<string, unknown>;
+
+/**
  * The minimal typed plugin-authoring context. Passed as the additive
  * optional 2nd argument to `start(deps, ctx)`.
  *

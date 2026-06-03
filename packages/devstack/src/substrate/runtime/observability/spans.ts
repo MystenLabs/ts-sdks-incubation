@@ -51,7 +51,6 @@ export const SpanAttr = {
 	stageAndSwapStagingPath: 'stageAndSwap.stagingPath',
 	stageAndSwapTargetPath: 'stageAndSwap.targetPath',
 	cacheCorruption: 'cache.corruption',
-	capabilitySinksKind: 'capability-sinks.kind',
 	strategyKey: 'strategy.key',
 	strategyAutoMounted: 'strategy.autoMounted',
 	artifactPublisherNamespace: 'artifactPublisher.namespace',

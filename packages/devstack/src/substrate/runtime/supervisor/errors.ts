@@ -5,7 +5,6 @@
 
 import { Cause, Data } from 'effect';
 
-import type { PluginKey } from '../../brand.ts';
 import type { DepGraphError } from '../lifecycle/index.ts';
 import type {
 	PluginAcquireFailed,
@@ -35,17 +34,10 @@ export class SupervisorRestoreFailed extends Data.TaggedError('SupervisorRestore
 	readonly cause: Cause.Cause<unknown>;
 }> {}
 
-export class CapabilityFactoryFailed extends Data.TaggedError('CapabilityFactoryFailed')<{
-	readonly pluginKey: PluginKey;
-	readonly message: string;
-	readonly cause: unknown;
-}> {}
-
 export type SupervisorError =
 	| SupervisorBootError
 	| SupervisorPostAcquireFailed
 	| SupervisorRestoreFailed
-	| CapabilityFactoryFailed
 	| PluginAcquireFailed
 	| RestartTargetMissing
 	| UnknownDependency;

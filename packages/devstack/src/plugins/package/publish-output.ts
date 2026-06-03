@@ -1,11 +1,11 @@
 // Local package publish output.
 //
 // This is package-domain data: the transaction digest plus object-change
-// projection produced by a successful `localPackage(...)` publish.
-
-import type { ChainId } from '../../substrate/brand.ts';
-
-export const LOCAL_PACKAGE_PUBLISHED_KIND = 'package.local-published' as const;
+// projection produced by a successful `localPackage(...)` publish. The
+// package plugin's `start` folds this output's coins into the per-stack
+// CoinRegistry directly (see `discoverPublishedCoins`); there is no
+// longer a custom contribution-decl kind for it (Stage B P4 removed the
+// `package.local-published` decl + its `publishResultSink`).
 
 export interface PackagePublishObjectChange {
 	readonly type: 'created' | 'published' | 'mutated' | 'wrapped' | 'transferred';
@@ -28,27 +28,6 @@ export interface LocalPackagePublishOutput {
 	readonly publisher: string;
 	readonly objectChanges: ReadonlyArray<PackagePublishObjectChange>;
 }
-
-export interface LocalPackagePublishedDecl {
-	readonly kind: typeof LOCAL_PACKAGE_PUBLISHED_KIND;
-	readonly packageName: string;
-	readonly packageId: string;
-	readonly chain: ChainId;
-	readonly output: LocalPackagePublishOutput;
-}
-
-export const makeLocalPackagePublishedDecl = (inputs: {
-	readonly packageName: string;
-	readonly packageId: string;
-	readonly chain: ChainId;
-	readonly output: LocalPackagePublishOutput;
-}): LocalPackagePublishedDecl => ({
-	kind: LOCAL_PACKAGE_PUBLISHED_KIND,
-	packageName: inputs.packageName,
-	packageId: inputs.packageId,
-	chain: inputs.chain,
-	output: inputs.output,
-});
 
 export const pickPublishedChange = (
 	changes: ReadonlyArray<PackagePublishObjectChange>,

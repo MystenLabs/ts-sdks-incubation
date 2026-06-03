@@ -40,7 +40,7 @@ import { definePlugin } from '../../src/api/define-plugin.ts';
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import { CodegenRenderError } from '../../src/orchestrators/codegen/errors.ts';
 import type { EngineEvent } from '../../src/substrate/events.ts';
-import { CapabilitySinksService, type CapabilitySink } from '../../src/substrate/runtime/index.ts';
+import type { PluginCtx } from '../../src/substrate/plugin-ctx.ts';
 import { SupervisorPostAcquireFailed } from '../../src/substrate/runtime/supervisor/index.ts';
 import { runStack } from '../../src/api/run-stack.ts';
 import {
@@ -64,42 +64,43 @@ const runtimeCodegenPlugin = definePlugin({
 	id: 'test/runtime-codegen',
 	role: 'service',
 	section: 'service',
-	start: () => Effect.succeed({ message: 'from-acquire' } as const),
-	capabilities: ({ value: resolved }) =>
-		[
-			{
+	start: (_deps: unknown, ctx: PluginCtx) =>
+		Effect.sync(() => {
+			const resolved = { message: 'from-acquire' } as const;
+			ctx.codegen({
 				kind: 'codegenable',
 				emitterName: 'runtime-proof',
 				outputPath: 'runtime-proof.ts',
 				sensitive: false,
-				emit: (ctx) =>
+				emit: (emit) =>
 					Effect.sync(() => {
-						ctx.exportConst('runtimeProof', resolved);
-						return ctx.done();
+						emit.exportConst('runtimeProof', resolved);
+						return emit.done();
 					}),
-			} satisfies CodegenableDecl<'runtime-proof'>,
-		] as const,
+			} satisfies CodegenableDecl<'runtime-proof'>);
+			return resolved;
+		}),
 });
 
 const failingRuntimeCodegenPlugin = definePlugin({
 	id: 'test/failing-runtime-codegen',
 	role: 'service',
 	section: 'service',
-	start: () => Effect.succeed({ message: 'from-acquire' } as const),
-	capabilities: () =>
-		[
-			{
+	start: (_deps: unknown, ctx: PluginCtx) =>
+		Effect.sync(() => {
+			ctx.codegen({
 				kind: 'codegenable',
 				emitterName: 'runtime-failure-proof',
 				outputPath: 'runtime-failure-proof.ts',
 				sensitive: false,
-				emit: (ctx) =>
+				emit: (emit) =>
 					Effect.sync(() => {
-						ctx.exportConst('runtimeFailureProof', () => 'not serializable');
-						return ctx.done();
+						emit.exportConst('runtimeFailureProof', () => 'not serializable');
+						return emit.done();
 					}),
-			} satisfies CodegenableDecl<'runtime-failure-proof'>,
-		] as const,
+			} satisfies CodegenableDecl<'runtime-failure-proof'>);
+			return { message: 'from-acquire' } as const;
+		}),
 });
 
 class RunStackCustomService extends Context.Service<
@@ -270,46 +271,6 @@ describe('api/run-stack', () => {
 		try {
 			await Effect.runPromise(handle.start);
 			expect(observed).toEqual(['custom']);
-		} finally {
-			await Effect.runPromise(handle.stop);
-			await Effect.runPromise(handle.awaitShutdown);
-		}
-	}, 30_000);
-
-	it('extendContext can register scoped capability sinks before harvest', async () => {
-		const observed: Array<string> = [];
-		const customSink: CapabilitySink<
-			'test-run-stack-capability',
-			{ readonly kind: 'test-run-stack-capability'; readonly value: string }
-		> = {
-			kind: 'test-run-stack-capability',
-			accept: (decl) =>
-				Effect.sync(() => {
-					observed.push(decl.value);
-				}),
-		};
-		const customPlugin = definePlugin({
-			id: 'test/custom-capability',
-			role: 'service',
-			section: 'service',
-			start: () => Effect.succeed({ ok: true } as const),
-			capabilities: [{ kind: 'test-run-stack-capability', value: 'sink-hit' }] as const,
-		});
-		const stack = defineDevstack({ members: [customPlugin], stackName: 'main' });
-		const handle = runStack(stack, {
-			identity: { app: 'run-stack-custom-sink', stack: 'main', network: 'localnet' },
-			runtimeRoot: makeRuntimeRoot(),
-			extendContext: (ctx) =>
-				Effect.gen(function* () {
-					const sinks = yield* CapabilitySinksService;
-					yield* sinks.registerSink(customSink);
-					return ctx;
-				}),
-		});
-
-		try {
-			await Effect.runPromise(handle.start);
-			expect(observed).toEqual(['sink-hit']);
 		} finally {
 			await Effect.runPromise(handle.stop);
 			await Effect.runPromise(handle.awaitShutdown);

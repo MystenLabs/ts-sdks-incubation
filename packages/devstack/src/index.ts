@@ -28,10 +28,7 @@ export {
 // --- Plugin authoring helpers -------------------------------------------
 
 export {
-	capability,
-	capabilitySink,
 	codegenable,
-	defineCapability,
 	projection,
 	routable,
 	snapshotable,
@@ -99,13 +96,6 @@ export {
 
 // --- Contract types plugin authors emit decls of ------------------------
 
-export type {
-	CapabilityDecl,
-	CapabilityKind,
-	CapabilityPayloadFor,
-	DevstackCapabilityRegistry,
-	ExactCapabilityPayload,
-} from './contracts/capability-decl.ts';
 export type {
 	CodegenableDecl,
 	CodegenEmitContext,

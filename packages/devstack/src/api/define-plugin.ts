@@ -17,8 +17,6 @@ export {
 	uniqueResourceRefs,
 	type AnyPlugin,
 	type AnyResourceRef,
-	type CapabilitySource,
-	type CapabilitiesFactory,
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,

@@ -58,7 +58,7 @@ import {
 } from '../substrate/runtime/post-acquire-tasks.ts';
 import {
 	startSupervisor,
-	type OrchestratorSinks,
+	type ContributionDispatcher,
 	type SupervisedStack,
 	type SupervisorCommandHandler,
 	type SupervisorHandle,
@@ -170,7 +170,7 @@ export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never, HookE =
 	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly commandHandler?: SupervisorCommandHandler;
-	readonly orchestratorSinks?: OrchestratorSinks;
+	readonly contributionDispatcher?: ContributionDispatcher;
 	readonly postAcquireHook?: SupervisorPostAcquireHook;
 	/** Caller-supplied extension layered into `pluginContext` after the
 	 *  default substrate context is built. Used by plugin-author Layer
@@ -204,7 +204,7 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 					identity,
 					state,
 					pluginContext,
-					opts.orchestratorSinks ?? [],
+					opts.contributionDispatcher,
 					opts.commandHandler,
 					opts.postAcquireHook,
 					{ commandLoop: opts.lifetime !== 'one-shot' },

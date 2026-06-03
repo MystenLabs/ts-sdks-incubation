@@ -7,8 +7,9 @@ import { describe, expect, it } from '@effect/vitest';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
 import type { RoutableDecl } from '../../../src/contracts/routable.ts';
+import type { PluginCtx } from '../../../src/substrate/plugin-ctx.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
 	endpointEventFromRoutable,
 	layerManifestEndpointRegistry,
@@ -48,11 +49,9 @@ import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	supervise,
-	type CapabilitySink,
-	type ContributionKind,
-	type HarvestContext,
-	type OrchestratorSinks,
+	type ContributionDispatchContext,
 } from '../../../src/substrate/runtime/index.ts';
+import type { StrategyRegistry } from '../../../src/contracts/strategy-contributor.ts';
 import { buildSubstrateLayers } from '../../../src/orchestrators/run.ts';
 import { makeProjectionRef, updateRef } from '../../../src/substrate/runtime/projection/index.ts';
 
@@ -90,9 +89,20 @@ const routablePlugin = definePlugin({
 	id: 'test/routable',
 	role: 'service',
 	section: 'service',
-	start: () => Effect.succeed({ ready: true } as const),
-	capabilities: [routable] as const,
+	start: (_deps: unknown, ctx: PluginCtx) =>
+		Effect.sync(() => {
+			ctx.endpoint(routable);
+			return { ready: true } as const;
+		}),
 });
+
+/** Minimal strategy-registry stub for a `ContributionDispatchContext` —
+ *  the routable dispatch body never touches it. */
+const stubStrategyRegistry: StrategyRegistry = {
+	get: () => Effect.die('unused strategy get'),
+	list: () => Effect.succeed([]),
+	register: () => Effect.void,
+};
 
 const operationalEndpointPlugin = definePlugin({
 	id: 'test/remote-rpc',
@@ -145,17 +155,6 @@ const sinkTestLayer = Layer.mergeAll(
 	routerLayer,
 	layerManifestEndpointRegistry,
 );
-
-const findSink = <K extends ContributionKind, TDecl>(
-	sinks: OrchestratorSinks,
-	kind: K,
-): CapabilitySink<K, TDecl> => {
-	const sink = sinks.find((candidate) => candidate.kind === kind);
-	if (sink === undefined) {
-		throw new Error(`missing sink '${kind}'`);
-	}
-	return sink as unknown as CapabilitySink<K, TDecl>;
-};
 
 describe('productionRouterProfile', () => {
 	it('is profile-wide and does not vary with runtime roots', () => {
@@ -234,7 +233,7 @@ describe('productionRouterProfile', () => {
 	});
 });
 
-describe('buildProductionOrchestratorSinks', () => {
+describe('buildProductionContributionDispatcher', () => {
 	it('maps routable deliveries to endpoint.registered events', () => {
 		expect(endpointEventFromRoutable(pluginKey('wallet#0'), endpoint, 1234)).toEqual({
 			tag: 'endpoint.registered',
@@ -250,59 +249,61 @@ describe('buildProductionOrchestratorSinks', () => {
 		});
 	});
 
-	it.effect('production routable sink publishes endpoint events through the harvest context', () =>
-		Effect.gen(function* () {
-			const state = yield* makeProjectionRef();
-			const observed = yield* Ref.make<ReadonlyArray<EngineEvent>>([]);
-			const manifestEndpoints = yield* ManifestEndpointRegistryService;
-			const sinks = yield* buildProductionOrchestratorSinks();
-			const harvestCtx: HarvestContext = {
-				pluginKey: pluginKey('wallet#0'),
-				identity,
-				publish: (event) =>
-					updateRef(state, event).pipe(
-						Effect.andThen(Ref.update(observed, (events) => [...events, event])),
-					),
-				registerStrategy: () => Effect.void,
-			};
-
-			const routableSink = findSink<'routable', RoutableDecl>(sinks, 'routable');
-			const entries = yield* Effect.scoped(
-				Effect.gen(function* () {
-					yield* routableSink.accept(routable, harvestCtx);
-					return yield* manifestEndpoints.entries;
-				}),
-			);
-
-			const events = yield* Ref.get(observed);
-			expect(events).toHaveLength(1);
-			const event = events[0];
-			expect(event?.tag).toBe('endpoint.registered');
-			if (event?.tag !== 'endpoint.registered') {
-				return yield* Effect.die('expected endpoint.registered event');
-			}
-			expect(event).toMatchObject({
-				tag: 'endpoint.registered',
-				endpoint: {
-					endpointKey: endpointKey('wallet#0:wallet-app'),
+	it.effect(
+		'production routable dispatch publishes endpoint events through the dispatch context',
+		() =>
+			Effect.gen(function* () {
+				const state = yield* makeProjectionRef();
+				const observed = yield* Ref.make<ReadonlyArray<EngineEvent>>([]);
+				const manifestEndpoints = yield* ManifestEndpointRegistryService;
+				const dispatcher = yield* buildProductionContributionDispatcher();
+				const dispatchCtx: ContributionDispatchContext = {
 					pluginKey: pluginKey('wallet#0'),
-					name: 'wallet-app',
-					url: 'http://wallet.demo.localhost:6173',
-					displayUrl: null,
-					wireProtocol: 'http',
-				},
-			});
+					publish: (event) =>
+						updateRef(state, event).pipe(
+							Effect.andThen(Ref.update(observed, (events) => [...events, event])),
+						),
+					strategyRegistry: stubStrategyRegistry,
+				};
 
-			const snapshot = yield* SubscriptionRef.get(state);
-			expect(snapshot.endpoints).toEqual([event.endpoint]);
-			expect(entries).toEqual([manifestEndpointEntryFromRoutable(pluginKey('wallet#0'), endpoint)]);
-		}).pipe(Effect.provide(sinkTestLayer)),
+				const entries = yield* Effect.scoped(
+					Effect.gen(function* () {
+						yield* dispatcher.routable(routable, dispatchCtx);
+						return yield* manifestEndpoints.entries;
+					}),
+				);
+
+				const events = yield* Ref.get(observed);
+				expect(events).toHaveLength(1);
+				const event = events[0];
+				expect(event?.tag).toBe('endpoint.registered');
+				if (event?.tag !== 'endpoint.registered') {
+					return yield* Effect.die('expected endpoint.registered event');
+				}
+				expect(event).toMatchObject({
+					tag: 'endpoint.registered',
+					endpoint: {
+						endpointKey: endpointKey('wallet#0:wallet-app'),
+						pluginKey: pluginKey('wallet#0'),
+						name: 'wallet-app',
+						url: 'http://wallet.demo.localhost:6173',
+						displayUrl: null,
+						wireProtocol: 'http',
+					},
+				});
+
+				const snapshot = yield* SubscriptionRef.get(state);
+				expect(snapshot.endpoints).toEqual([event.endpoint]);
+				expect(entries).toEqual([
+					manifestEndpointEntryFromRoutable(pluginKey('wallet#0'), endpoint),
+				]);
+			}).pipe(Effect.provide(sinkTestLayer)),
 	);
 
 	it.effect('supervisor emits production endpoint events on the ordered event hub', () =>
 		Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const sinks = yield* buildProductionOrchestratorSinks();
+			const dispatcher = yield* buildProductionContributionDispatcher();
 
 			const result = yield* Effect.scoped(
 				Effect.gen(function* () {
@@ -311,7 +312,7 @@ describe('buildProductionOrchestratorSinks', () => {
 						identity,
 						state,
 						Context.empty(),
-						sinks,
+						dispatcher,
 					);
 					const events = yield* Stream.fromQueue(handle.events).pipe(
 						Stream.filter(
@@ -378,14 +379,14 @@ describe('buildProductionOrchestratorSinks', () => {
 				yield* Effect.scoped(
 					Effect.gen(function* () {
 						const state = yield* makeProjectionRef();
-						const sinks = yield* buildProductionOrchestratorSinks();
+						const dispatcher = yield* buildProductionContributionDispatcher();
 						const hook = yield* buildProductionPostAcquireHook();
 						yield* supervise(
 							{ _tag: 'Stack', members: [routablePlugin], options: {} },
 							identity,
 							state,
 							Context.empty(),
-							sinks,
+							dispatcher,
 							undefined,
 							hook,
 						);
@@ -443,14 +444,14 @@ describe('buildProductionOrchestratorSinks', () => {
 					yield* Effect.scoped(
 						Effect.gen(function* () {
 							const state = yield* makeProjectionRef();
-							const sinks = yield* buildProductionOrchestratorSinks();
+							const dispatcher = yield* buildProductionContributionDispatcher();
 							const hook = yield* buildProductionPostAcquireHook();
 							yield* supervise(
 								{ _tag: 'Stack', members: [operationalEndpointPlugin], options: {} },
 								identity,
 								state,
 								Context.empty(),
-								sinks,
+								dispatcher,
 								undefined,
 								hook,
 							);

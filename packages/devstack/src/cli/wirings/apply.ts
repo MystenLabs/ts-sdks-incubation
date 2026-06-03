@@ -27,7 +27,7 @@ import {
 } from '../../substrate/runtime/index.ts';
 import { superviseStackEffect } from '../../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
 } from '../../orchestrators/runtime-composition.ts';
 import {
@@ -140,7 +140,7 @@ export const runApplyLive = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+			const contributionDispatcher = yield* buildProductionContributionDispatcher();
 			const postAcquireHook = yield* buildProductionPostAcquireHook({
 				extras: stack.options.extras,
 			});
@@ -163,12 +163,12 @@ export const runApplyLive = (
 				identityValue,
 				state,
 				{
-					orchestratorSinks,
+					contributionDispatcher,
 					postAcquireHook,
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+			).pipe(Effect.provide(layerBuiltInPluginRuntime));
 			const stackPaths = yield* StackPathsService;
 			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 		});

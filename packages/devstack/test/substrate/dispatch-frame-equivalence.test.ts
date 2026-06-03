@@ -1,25 +1,23 @@
-// P0.5 — capabilities-closure vs ctx-verbs dispatch-frame equivalence.
+// ctx-emission → static-dispatch frame test.
 //
-// A fixture plugin authored BOTH ways must produce a byte-identical
-// dispatched-contribution frame:
+// A plugin emits its five contribution kinds inline from `start` via the
+// typed `ctx` verbs (ctx.snapshotExtra / ctx.codegen / ctx.endpoint /
+// ctx.publish / ctx.provides), plus a static `errorContributions` field.
+// The supervisor replays the ctx buffer through the closed
+// `ContributionDispatcher` after a successful `start`. We assert:
+//   - the ORDERED dispatched-contribution set (kind + payload
+//     discriminator) matches the emit order,
+//   - the routable endpoint "event" fires once,
+//   - the strategy registration fires once,
+//   - the plugin reaches `ready` (the static errorContributions feed +
+//     the whole dispatch path completed cleanly).
 //
-//   (A) legacy: a `capabilities` closure returning
-//       [snapshotable, codegenable, routable, projection,
-//        strategy-contributor] + an `errorContributions` field.
-//   (B) ctx verbs: the SAME five emitted from `start` via
-//       ctx.snapshotExtra / ctx.codegen / ctx.endpoint / ctx.publish /
-//       ctx.provides, with the SAME `errorContributions` field.
+// Plus the start-fails-after-emit case: a plugin that buffers decls via
+// ctx then ERRORS in start must NOT dispatch anything (the post-start
+// replay never runs on a failed start).
 //
-// Both are supervised to ready through capturing `OrchestratorSinks`;
-// we assert:
-//   - identical ORDERED dispatched-contribution set (kind sequence),
-//   - identical endpoint events (the routable endpoint fires once),
-//   - identical strategy registrations,
-//   - identical error-contribution folding.
-//
-// Plus the start-fails-after-endpoint case: a plugin that buffers decls
-// via ctx then ERRORS in start must NOT dispatch anything (matching the
-// legacy post-start harvest, which never runs on a failed start).
+// (Stage B P4 deleted the legacy `capabilities` closure, so the former
+// closure-vs-ctx equivalence assertion collapses to a single ctx path.)
 
 import { Context, Effect, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
@@ -29,9 +27,7 @@ import type { Identity } from '../../src/substrate/identity.ts';
 import {
 	supervise,
 	makeProjectionRef,
-	type CapabilitySink,
-	type ContributionKind,
-	type OrchestratorSinks,
+	type ContributionDispatcher,
 	type SupervisedStack,
 } from '../../src/substrate/runtime/index.ts';
 import { definePlugin, type PluginErrorContribution } from '../../src/substrate/plugin.ts';
@@ -49,8 +45,7 @@ const identity: Identity = {
 };
 
 // -----------------------------------------------------------------------------
-// Shared fixture decls — the SAME objects flow through both authoring
-// styles, so equivalence is about WHERE they enter, not WHAT they are.
+// Shared fixture decls.
 // -----------------------------------------------------------------------------
 
 const snapDecl: SnapshotableDecl = {
@@ -113,28 +108,17 @@ const errorContrib: PluginErrorContribution = {
 	formatter: (value) => `<<frame ${value._tag}>>`,
 };
 
-// The canonical emit order — both authoring styles emit in THIS order.
-const orderedDecls = [snapDecl, codegenDecl, routeDecl, projectionDecl, strategyDecl] as const;
-
 // -----------------------------------------------------------------------------
-// Capture harness — one ordered log across ALL kinds + per-kind detail.
+// Capture harness — one ordered log across ALL kinds + per-kind detail,
+// built as a `ContributionDispatcher` (the closed post-start seam).
 // -----------------------------------------------------------------------------
 
 interface Frame {
-	/** Ordered (kind, payload-discriminator) across every dispatched
-	 *  contribution, normalized to drop the plugin-key ordinal. */
 	readonly order: ReadonlyArray<string>;
 	readonly endpointEvents: ReadonlyArray<string>;
 	readonly strategy: ReadonlyArray<string>;
-	/** Whether the plugin reached `ready` — proves the harvest path
-	 *  (including the identical static errorContributions dispatch)
-	 *  completed cleanly for both authoring styles. */
 	readonly ready: boolean;
 }
-
-const orchestratorSink = <K extends ContributionKind, TDecl>(
-	sink: CapabilitySink<K, TDecl>,
-): OrchestratorSinks[number] => sink as OrchestratorSinks[number];
 
 const makeCapture = () =>
 	Effect.gen(function* () {
@@ -144,57 +128,39 @@ const makeCapture = () =>
 		const append = (ref: Ref.Ref<ReadonlyArray<string>>, v: string) =>
 			Ref.update(ref, (xs) => [...xs, v]);
 
-		const sinks: OrchestratorSinks = [
-			orchestratorSink<'snapshotable', SnapshotableDecl>({
-				kind: 'snapshotable',
-				accept: (decl) => append(order, `snapshotable:${decl.subtrees[0]}`),
-			}),
-			orchestratorSink<'codegenable', CodegenableDecl<string>>({
-				kind: 'codegenable',
-				accept: (decl) => append(order, `codegenable:${decl.emitterName}`),
-			}),
-			orchestratorSink<'routable', RoutableDecl>({
-				kind: 'routable',
-				accept: (decl) =>
-					Effect.gen(function* () {
-						yield* append(order, `routable:${decl.endpointName}`);
-						// Endpoint "event": the routable sink is the production
-						// site that mints + publishes the endpoint registration.
-						// We capture the endpoint name as the event surface so
-						// both authoring styles must produce the SAME event.
-						yield* append(endpointEvents, `endpoint.registered:${decl.endpointName}`);
-					}),
-			}),
-			orchestratorSink<'projection', ProjectionDecl>({
-				kind: 'projection',
-				accept: (decl) => append(order, `projection:${decl.event.kind}`),
-			}),
-			orchestratorSink<'strategy-contributor', StrategyContributorDecl<string, unknown>>({
-				kind: 'strategy-contributor',
-				accept: (decl) =>
-					Effect.gen(function* () {
-						yield* append(order, `strategy-contributor:${decl.capabilityKey}`);
-						yield* append(strategy, decl.capabilityKey);
-					}),
-			}),
-		];
-		return { order, endpointEvents, strategy, sinks };
+		const dispatcher: ContributionDispatcher = {
+			snapshotable: (decl) => append(order, `snapshotable:${decl.subtrees[0]}`),
+			codegenable: (decl) => append(order, `codegenable:${decl.emitterName}`),
+			routable: (decl) =>
+				Effect.gen(function* () {
+					yield* append(order, `routable:${decl.endpointName}`);
+					// The routable dispatch body is the production site that mints
+					// + publishes the endpoint registration. We capture the
+					// endpoint name as the event surface.
+					yield* append(endpointEvents, `endpoint.registered:${decl.endpointName}`);
+				}),
+			projection: (decl) => append(order, `projection:${decl.event.kind}`),
+			strategyContributor: (decl) =>
+				Effect.gen(function* () {
+					yield* append(order, `strategy-contributor:${decl.capabilityKey}`);
+					yield* append(strategy, decl.capabilityKey);
+				}),
+		};
+		return { order, endpointEvents, strategy, dispatcher };
 	});
 
 const runPlugin = (member: SupervisedStack['members'][number], rowKey: string) =>
 	Effect.gen(function* () {
-		const { order, endpointEvents, strategy, sinks } = yield* makeCapture();
+		const { order, endpointEvents, strategy, dispatcher } = yield* makeCapture();
 		const stack: SupervisedStack = { _tag: 'Stack', members: [member], options: {} };
 		const state = yield* makeProjectionRef();
 
 		const ready = yield* Effect.scoped(
 			Effect.gen(function* () {
-				const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+				const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
 				for (const [key] of handle.graph.nodes) {
 					yield* handle.registry.awaitReady(key);
 				}
-				// Read the row status INSIDE the live scope — scope teardown
-				// drains rows on close.
 				const snap = yield* SubscriptionRef.get(state);
 				return snap.rows.find((r) => r.key === rowKey)?.status === 'ready';
 			}),
@@ -210,22 +176,8 @@ const runPlugin = (member: SupervisedStack['members'][number], rowKey: string) =
 	});
 
 // -----------------------------------------------------------------------------
-// (A) legacy capabilities-closure plugin.
-// -----------------------------------------------------------------------------
-
-const closurePlugin = definePlugin({
-	id: 'frame:closure',
-	role: 'service' as const,
-	section: 'service',
-	start: () => Effect.succeed({ v: 'closure' as const }),
-	capabilities: orderedDecls,
-	errorContributions: [errorContrib],
-});
-
-// -----------------------------------------------------------------------------
-// (B) ctx-verbs plugin — emits the SAME five decls in the SAME order from
-//     `start`, no `capabilities` field. `errorContributions` stays a
-//     static field (it is NOT a ctx verb).
+// ctx-verbs plugin — emits the five decls in order from `start`.
+// `errorContributions` stays a static field (it is NOT a ctx verb).
 // -----------------------------------------------------------------------------
 
 const ctxPlugin = definePlugin({
@@ -245,7 +197,7 @@ const ctxPlugin = definePlugin({
 });
 
 // -----------------------------------------------------------------------------
-// (C) ctx plugin that ERRORS after buffering — must NOT dispatch.
+// ctx plugin that ERRORS after buffering — must NOT dispatch.
 // -----------------------------------------------------------------------------
 
 const ctxFailPlugin = definePlugin({
@@ -257,25 +209,18 @@ const ctxFailPlugin = definePlugin({
 			// Buffer an endpoint (and more) ...
 			ctx.endpoint(routeDecl);
 			ctx.snapshotExtra(snapDecl);
-			// ... then fail. The buffer must be DISCARDED (no replay/dispatch),
-			// exactly as today's post-start harvest never runs on a failed
-			// start.
+			// ... then fail. The buffer must be DISCARDED (no replay/dispatch).
 			yield* Effect.fail({ _tag: 'StartBoom' as const });
-			// Unreachable — gives the start a non-`never` success type so the
-			// plugin's resolved Value is well-formed.
 			return { v: 'ctx-fail' as const };
 		}),
 	errorContributions: [errorContrib],
 });
 
-describe('dispatch-frame equivalence (P0.5)', () => {
-	it.effect('capabilities-closure and ctx-verbs produce a byte-identical frame', () =>
+describe('ctx-emission → static dispatch (P3/P4)', () => {
+	it.effect('buffered ctx verbs dispatch in emit order through the closed dispatcher', () =>
 		Effect.gen(function* () {
-			const closureFrame = yield* runPlugin(closurePlugin, 'frame:closure#0');
 			const ctxFrame = yield* runPlugin(ctxPlugin, 'frame:ctx#0');
 
-			// Ordered dispatched-contribution set: same kinds, same order,
-			// same payload discriminators.
 			expect(ctxFrame.order).toEqual([
 				'snapshotable:runtime/frame-subtree',
 				'codegenable:frame-emitter',
@@ -283,23 +228,15 @@ describe('dispatch-frame equivalence (P0.5)', () => {
 				'projection:account',
 				'strategy-contributor:frame-strategy',
 			]);
-			expect(ctxFrame.order).toEqual(closureFrame.order);
-			// Endpoint events.
 			expect(ctxFrame.endpointEvents).toEqual(['endpoint.registered:frame-endpoint']);
-			expect(ctxFrame.endpointEvents).toEqual(closureFrame.endpointEvents);
-			// Strategy registrations.
 			expect(ctxFrame.strategy).toEqual(['frame-strategy']);
-			expect(ctxFrame.strategy).toEqual(closureFrame.strategy);
-			// Both reached ready — the harvest path (incl. the identical
-			// static errorContributions dispatch) completed for both styles.
 			expect(ctxFrame.ready).toBe(true);
-			expect(closureFrame.ready).toBe(true);
 		}),
 	);
 
 	it.effect('start-fails-after-endpoint buffers but does NOT dispatch', () =>
 		Effect.gen(function* () {
-			const { order, endpointEvents, strategy, sinks } = yield* makeCapture();
+			const { order, endpointEvents, strategy, dispatcher } = yield* makeCapture();
 			const stack: SupervisedStack = {
 				_tag: 'Stack',
 				members: [ctxFailPlugin],
@@ -309,23 +246,18 @@ describe('dispatch-frame equivalence (P0.5)', () => {
 
 			yield* Effect.scoped(
 				Effect.gen(function* () {
-					// `supervise` runs the initial acquire to completion before
-					// returning — the failed plugin has already settled by here.
-					// `awaitReady` fails for a failed plugin; we ignore that.
-					const handle = yield* supervise(stack, identity, state, Context.empty(), sinks);
+					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
 					for (const [key] of handle.graph.nodes) {
 						yield* handle.registry.awaitReady(key).pipe(Effect.ignore);
 					}
 				}),
 			);
 
-			// NOTHING dispatched: buffered decls were discarded on the failed
-			// start, matching the legacy harvest which never runs post-failure.
+			// NOTHING dispatched: buffered decls discarded on the failed start.
 			expect(yield* Ref.get(order)).toEqual([]);
 			expect(yield* Ref.get(endpointEvents)).toEqual([]);
 			expect(yield* Ref.get(strategy)).toEqual([]);
 
-			// The plugin settled in a non-ready (failed) state.
 			const snap = yield* SubscriptionRef.get(state);
 			const row = snap.rows.find((r) => r.key === 'frame:ctx-fail#0');
 			expect(row?.status).not.toBe('ready');

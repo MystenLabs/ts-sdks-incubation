@@ -92,7 +92,7 @@ import {
 } from '../../src/substrate/runtime/index.ts';
 import {
 	bootRouterOrchestrator,
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	layerManifestEndpointRegistry,
 	productionRouterProfile,
 } from '../../src/orchestrators/runtime-composition.ts';
@@ -402,7 +402,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const state = yield* makeProjectionRef();
 		const routerEndpointRef = yield* Ref.make<ReadonlyArray<BootRoutableDelivery>>([]);
 		const codegenableRef = yield* Ref.make<ReadonlyArray<BootCodegenableDelivery>>([]);
-		const orchestratorSinks = yield* buildProductionOrchestratorSinks({
+		const contributionDispatcher = yield* buildProductionContributionDispatcher({
 			routable: (pluginKey, endpoint) =>
 				Ref.update(routerEndpointRef, (xs) => [...xs, { pluginKey: String(pluginKey), endpoint }]),
 			codegenable: (pluginKey, decl) =>
@@ -449,7 +449,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 					identity,
 					state,
 					builtInPluginContext,
-					orchestratorSinks,
+					contributionDispatcher,
 				);
 
 				const readyKeys: string[] = [];
@@ -526,7 +526,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 					codegenRun,
 				} satisfies BootResult;
 			}),
-		).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+		).pipe(Effect.provide(layerBuiltInPluginRuntime));
 
 		return result;
 	});

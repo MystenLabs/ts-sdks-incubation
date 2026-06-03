@@ -44,11 +44,10 @@ import { appName, chainId, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
-import { CapabilitySinksService } from '../substrate/runtime/capability-sinks/index.ts';
 import { makeProjectionRefSync } from '../substrate/runtime/index.ts';
 import { buildSubstrateLayers, superviseStackEffect } from '../orchestrators/run.ts';
 import {
-	buildProductionOrchestratorSinks,
+	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
 	layerProductionOrchestrators,
 	type ProductionCodegenOptions,
@@ -101,10 +100,10 @@ export interface RunStackOptions {
 	readonly stateDir?: string;
 	/** Extend the plugin execution context after built-in plugin
 	 *  services are installed. Use this for custom plugin-author
-	 *  services, capability sinks, or logger overrides. */
+	 *  services or logger overrides. */
 	readonly extendContext?: (
 		ctx: Context.Context<never>,
-	) => Effect.Effect<Context.Context<never>, never, Scope.Scope | CapabilitySinksService>;
+	) => Effect.Effect<Context.Context<never>, never, Scope.Scope>;
 }
 
 /** Boot error surfaced by `RunHandle.start`. Wraps the supervisor's
@@ -269,10 +268,10 @@ export const runStack = (
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 
 	const supervised = Effect.gen(function* () {
-		const orchestratorSinks = yield* buildProductionOrchestratorSinks();
+		const contributionDispatcher = yield* buildProductionContributionDispatcher();
 		const postAcquireHook = yield* buildProductionPostAcquireHook({ extras: stack.options.extras });
 		yield* superviseStackEffect(supervisedStack, identity, state, {
-			orchestratorSinks,
+			contributionDispatcher,
 			postAcquireHook,
 			extendContext: (ctx) =>
 				Effect.gen(function* () {
@@ -326,7 +325,7 @@ export const runStack = (
 						}),
 					);
 				}),
-		}).pipe(Effect.provide(layerBuiltInPluginRuntime(orchestratorSinks)));
+		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
 	});
 
 	const loggerLayer = Logger.layer([]);
