@@ -19,6 +19,7 @@ import { chainId } from '../../../src/substrate/brand.ts';
 import * as publicRoot from '../../../src/index.ts';
 import { isPlugin } from '../../../src/substrate/plugin.ts';
 import type { CodegenEmitContext, CodegenEmitDone } from '../../../src/contracts/codegenable.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
 const TESTNET_PYTH = {
 	packageId: null,
@@ -168,22 +169,18 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const resolved = Effect.runSync(
-			member.start([{ chain: chainId('sui:local') } as never]) as Effect.Effect<
+		const { ctx, captured } = makeTestPluginCtx();
+		Effect.runSync(
+			member.start([{ chain: chainId('sui:local') } as never], ctx) as Effect.Effect<
 				DeepbookResolved,
 				unknown,
 				never
 			>,
 		);
-		const caps =
-			typeof member.capabilities === 'function'
-				? member.capabilities(resolved, {} as never)
-				: member.capabilities;
-		expect(caps).toBeDefined();
 		// Name-keyed sibling aggregate: emitter is `deepbook/<name>`
 		// (default name `deepbook`); the export key is the instance name.
-		const codegen = caps?.find(
-			(cap) => cap.kind === 'codegenable' && cap.emitterName === 'deepbook/deepbook',
+		const codegen = captured.codegen.find(
+			(cap) => cap.emitterName === 'deepbook/deepbook',
 		) as
 			| {
 					readonly emit: (ctx: CodegenEmitContext) => Effect.Effect<CodegenEmitDone>;
@@ -226,26 +223,22 @@ describe('deepbook(opts) — primary factory', () => {
 			mode: 'known',
 			network: 'testnet',
 		});
-		const resolved = Effect.runSync(
-			member.start([
-				{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never,
-			]) as Effect.Effect<DeepbookResolved, unknown, never>,
+		const { ctx, captured } = makeTestPluginCtx();
+		Effect.runSync(
+			member.start(
+				[{ chain: chainId('sui:testnet'), sdk: { client: {} } } as never],
+				ctx,
+			) as Effect.Effect<DeepbookResolved, unknown, never>,
 		);
-		const caps =
-			typeof member.capabilities === 'function'
-				? member.capabilities(resolved, {} as never)
-				: member.capabilities;
-		const strategy = caps?.find(
-			(cap) =>
-				cap.kind === 'strategy-contributor' &&
-				cap.capabilityKey === DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
+		const strategy = captured.provides.find(
+			(cap) => cap.capabilityKey === DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 		);
 
 		expect(DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY).toBe(`coinType:${DEEPBOOK_TESTNET_DEEP_COIN_TYPE}`);
 		expect(strategy).toBeDefined();
 		expect(strategy?.kind).toBe('strategy-contributor');
 		if (strategy?.kind === 'strategy-contributor') {
-			expect(strategy.strategy.usesAccountSigner).toBe(true);
+			expect((strategy.strategy as { usesAccountSigner: boolean }).usesAccountSigner).toBe(true);
 		}
 	});
 

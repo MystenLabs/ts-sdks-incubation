@@ -5,8 +5,13 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import { withTempRootAsync } from '../../helpers/with-temp-root.ts';
+import { makeTestPluginCtx } from '../../helpers/test-plugin-ctx.ts';
 
-import { account } from '../../../src/plugins/account/index.ts';
+import {
+	account,
+	emitAccountCapabilities,
+	type AccountRegistryEntry,
+} from '../../../src/plugins/account/index.ts';
 import { coin } from '../../../src/plugins/coin/index.ts';
 import { DEEPBOOK_TESTNET_DEEP_COIN_TYPE, deepbook } from '../../../src/plugins/deepbook/index.ts';
 import { generateEd25519Keypair } from '../../../src/plugins/account/keypair.ts';
@@ -58,23 +63,44 @@ const fakeAcquireContext: AcquireContext = {
 	runtimeRoot: '/tmp/devstack-account-test',
 };
 
+// Stage B (plugin API inversion): account no longer exposes a
+// `capabilities` second-closure. It emits its contributions INLINE from
+// `start` via the typed `ctx` verbs (the snapshot/codegen/registry/projection
+// decls). The exact value-injection point is `emitAccountCapabilities(ctx,
+// resolved, inputs)` — the contribution-emit half of `start`. We drive that
+// seam directly with a decl-capturing fake ctx (the same fixture the supervisor
+// uses) and read the `account:`-keyed strategy-contributor from
+// `captured.provides`, asserting exactly as the old closure-driven test did.
+//
+// `member` is still constructed via `account(...)` at every call site (so
+// name-validation + the factory body still run); its `id` (`account/<name>`)
+// supplies the literal account name for the resolved value. `app`/`stack`
+// come from `fakeAcquireContext.identity` (what the old closure read off
+// `runtime.identity`). The variant kind only scopes the snapshot decl (not
+// the funding projection asserted here), so a representative `'ephemeral'`
+// drives the seam.
 const registryFundingFor = (
 	member: ReturnType<typeof account>,
 	funding: AccountValue['funding'] = fakeResolvedAccount.funding,
 ) => {
-	if (typeof member.capabilities !== 'function') {
-		throw new Error('expected account capabilities factory');
-	}
-	const decls = member.capabilities({ ...fakeResolvedAccount, funding }, fakeAcquireContext);
-	const registry = decls.find(
+	const name = member.id.slice('account/'.length);
+	const { ctx, captured } = makeTestPluginCtx();
+	emitAccountCapabilities(
+		ctx,
+		{ ...fakeResolvedAccount, name, funding } as AccountValue,
+		{
+			name,
+			variant: 'ephemeral',
+			app: fakeAcquireContext.identity.app,
+			stack: fakeAcquireContext.identity.stack,
+		},
+	);
+	const registry = captured.provides.find(
 		(decl) =>
-			decl.kind === 'strategy-contributor' &&
-			decl.capabilityKey.startsWith('account:') &&
-			'funding' in decl.strategy,
+			decl.capabilityKey.startsWith('account:') && 'funding' in (decl.strategy as object),
 	);
 	if (registry === undefined) throw new Error('missing account registry contribution');
-	if (registry.kind !== 'strategy-contributor') throw new Error('missing account strategy');
-	return registry.strategy.funding;
+	return (registry.strategy as AccountRegistryEntry).funding;
 };
 
 describe('account name validation', () => {

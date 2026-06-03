@@ -245,9 +245,6 @@ export const action = <const Name extends string, const DependsOn extends Action
 				);
 				return receipt;
 			}),
-		// No capability decls today. Future surfaces (codegen of
-		// action receipts, manifest extras) land here.
-		capabilities: [] as const,
 		// Plugin-side error vocabulary. The supervisor's harvest loop
 		// folds this into the substrate's FormatterRegistry; the
 		// cascade formatter then renders `ActionError`-tagged failures

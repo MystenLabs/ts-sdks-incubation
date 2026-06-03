@@ -42,13 +42,19 @@ import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiSpans } from '../sui/index.ts';
 
 import { AccountSpans } from './spans.ts';
 
 import { makeAccountCodegen, type AccountBindings } from './codegen.ts';
-import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
+import {
+	ACCOUNT_ERROR_TAGS,
+	accountAcquireError,
+	type AccountAcquireError,
+	type AccountVariantKind,
+} from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
@@ -198,6 +204,94 @@ const fundingAmountToBigInt = (
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
 	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
 
+// ---------------------------------------------------------------------------
+// Capability emission — dynamic (POST-acquire). Receives the resolved
+// `AccountValue` + the identity so snapshot + codegen + registry + projection
+// decls reference the REAL address (and identity app/stack) — the static form
+// would force placeholder values for fields only known at acquire time.
+//
+// Stage B (plugin API inversion): `buildAccountCapabilities` stays a PURE
+// helper that RETURNS the ordered decls; `start` emits them inline via the
+// typed `ctx` verbs (`emitAccountCapabilities`) AFTER resolving the value,
+// instead of the legacy `capabilities` second-closure. The decl shapes + emit
+// ORDER (snapshot → codegen → registry → projection) are byte-identical to the
+// closure path the supervisor used to harvest.
+// ---------------------------------------------------------------------------
+
+/** The inputs the capability emission needs beyond the resolved value:
+ *  the literal account name, the resolved variant kind (snapshot scoping),
+ *  and the identity (`app`/`stack`) for the snapshot pre-restore guard.
+ *  These are the fields the legacy closure read off `runtime.identity` +
+ *  the factory closure scope. */
+interface AccountCapabilityInputs<Name extends string> {
+	readonly name: Name;
+	readonly variant: AccountVariantKind;
+	readonly app: string;
+	readonly stack: string;
+}
+
+/** Build the ordered capability decls for one resolved account. The return
+ *  order — `[snapshot, codegen, registry, projection]` — is load-bearing:
+ *  the supervisor's legacy `capabilities`-closure harvest replayed them in
+ *  exactly this order, so `emitAccountCapabilities` routes each to its verb
+ *  in the same sequence. */
+const buildAccountCapabilities = <Name extends string>(
+	resolved: AccountValue,
+	inputs: AccountCapabilityInputs<Name>,
+) => {
+	const realEntry: AccountRegistryEntry = {
+		name: inputs.name,
+		address: resolved.address,
+		scheme: resolved.scheme,
+		source: resolved.source,
+		funding: fundingProjectionForResult(resolved.funding),
+	};
+	const bindings: AccountBindings = {
+		name: inputs.name,
+		address: resolved.address,
+		scheme: resolved.scheme,
+		source: resolved.source,
+	};
+	const snapshot = makeAccountSnapshotable({
+		accountName: inputs.name,
+		variant: inputs.variant,
+		app: inputs.app,
+		stack: inputs.stack,
+	});
+	const codegen = makeAccountCodegen<Name>({ name: inputs.name, resolved: bindings });
+	const registry = makeAccountRegistryContribution<Name>(
+		realEntry as AccountRegistryEntry & { readonly name: Name },
+	);
+	const projection = makeAccountProjectionContribution<Name>(
+		realEntry as AccountRegistryEntry & { readonly name: Name },
+	);
+	return [snapshot, codegen, registry, projection] as const;
+};
+
+/** Emit the pure decls from `buildAccountCapabilities` inline via the typed
+ *  `ctx` verbs, routing each by its position IN RETURN ORDER (snapshotable →
+ *  `ctx.snapshotExtra`, codegenable → `ctx.codegen`, strategy-contributor →
+ *  `ctx.provides`, projection → `ctx.publish`). Order + decl shapes are
+ *  byte-identical to the supervisor's legacy `capabilities`-closure harvest.
+ *
+ *  Exported as the Stage-B emit seam: this is the exact contribution-emit
+ *  half of account's `start` (`start` = resolve `value` via `acquireAccount`,
+ *  then `emitAccountCapabilities(ctx, value, inputs)`). It is the value-
+ *  injection point the variants test drives — the old test called the now-
+ *  removed `capabilities(value, …)` factory; the equivalent is to feed a
+ *  resolved `AccountValue` here and assert the captured `provides`. */
+export const emitAccountCapabilities = <Name extends string>(
+	ctx: PluginCtx,
+	resolved: AccountValue,
+	inputs: AccountCapabilityInputs<Name>,
+): void => {
+	const [snapshot, codegen, registry, projection] = buildAccountCapabilities(resolved, inputs);
+	ctx.snapshotExtra(snapshot);
+	ctx.codegen(codegen);
+	ctx.provides(registry);
+	ctx.publish(projection);
+};
+
 export const account = <const N extends string, const Funding extends AccountFunding = readonly []>(
 	name: N,
 	opts?: AccountOptions<Funding>,
@@ -240,7 +334,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
-		start: (deps) =>
+		start: (deps, ctx?: PluginCtx) =>
 			Effect.gen(function* () {
 				const [sui, ...resolvedDeps] = deps;
 				const resolvedCoinValues = resolvedDeps.slice(
@@ -306,44 +400,29 @@ export const account = <const N extends string, const Funding extends AccountFun
 						),
 					projectedFunding,
 				};
-				return yield* acquireAccount(opts2, acquireCtx);
+				const resolved = yield* acquireAccount(opts2, acquireCtx);
+
+				// Stage B (plugin API inversion): emit the resolved account's
+				// contributions inline (was the `capabilities: ({ value, runtime
+				// }) => [...]` second-closure). `resolved` is the just-acquired
+				// `AccountValue`; the closure's `runtime.identity.{app,stack}`
+				// are the same `identity` already in scope (both are the
+				// substrate `Identity` — `runtime.identity` for the closure,
+				// `yield* IdentityContext` here), and the variant kind is
+				// `opts2.kind`. The snapshot/codegen/registry/projection decl
+				// shapes + emit ORDER are byte-identical to the old closure.
+				if (ctx !== undefined) {
+					emitAccountCapabilities(ctx, resolved, {
+						name,
+						variant: opts2.kind,
+						app: identity.app,
+						stack: identity.stack,
+					});
+				}
+
+				return resolved;
 			}),
-		// Dynamic capability factory — receives the resolved
-		// `AccountValue` + acquire context AFTER `acquire` succeeds.
-		// Lets snapshot + codegen + registry decls reference the
-		// REAL address (and identity app/stack) — the static form
-		// would force placeholder values for fields only known at
-		// acquire time.
 		errorContributions: accountErrorContributions,
-		capabilities: ({ value: resolved, runtime: acquireCtx2 }) => {
-			const realEntry: AccountRegistryEntry = {
-				name,
-				address: resolved.address,
-				scheme: resolved.scheme,
-				source: resolved.source,
-				funding: fundingProjectionForResult(resolved.funding),
-			};
-			const bindings: AccountBindings = {
-				name,
-				address: resolved.address,
-				scheme: resolved.scheme,
-				source: resolved.source,
-			};
-			const snapshot = makeAccountSnapshotable({
-				accountName: name,
-				variant: opts2.kind,
-				app: acquireCtx2.identity.app,
-				stack: acquireCtx2.identity.stack,
-			});
-			const codegen = makeAccountCodegen<N>({ name, resolved: bindings });
-			const registry = makeAccountRegistryContribution<N>(
-				realEntry as AccountRegistryEntry & { readonly name: N },
-			);
-			const projection = makeAccountProjectionContribution<N>(
-				realEntry as AccountRegistryEntry & { readonly name: N },
-			);
-			return [snapshot, codegen, registry, projection] as const;
-		},
 	});
 };
 

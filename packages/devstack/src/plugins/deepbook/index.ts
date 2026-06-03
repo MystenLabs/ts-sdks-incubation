@@ -39,6 +39,7 @@ import { definePlugin, resource, type ResourceValueOf } from '../../api/define-p
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
+import type { PluginCtx } from '../../substrate/plugin-ctx.ts';
 import { ArtifactPublisherService } from '../../substrate/runtime/artifact-publisher/index.ts';
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
@@ -213,6 +214,32 @@ export type DeepbookOptions<
 
 const DEFAULT_NAME = 'deepbook';
 const deepbookErrorContributions = pluginErrorContributions(DEEPBOOK_ERROR_TAGS);
+
+/** Emit the deepbook contributions inline via the typed `ctx` verbs (Stage B —
+ *  was each mode's `capabilities: ({ value }) => [...]` second-closure). All
+ *  three modes share this emit shape and ORDER, matching the supervisor's
+ *  legacy `capabilities`-closure harvest byte-for-byte:
+ *    1. snapshotable          → `ctx.snapshotExtra`
+ *    2. codegenable           → `ctx.codegen`
+ *    3. strategy-contributor  → `ctx.provides`  (known mode only; the DEEP
+ *                               funding strategy, present only when resolved). */
+const emitDeepbookContributions = (
+	ctx: PluginCtx,
+	contributions: {
+		readonly snap: SnapshotableDecl;
+		readonly bindings: DeepbookBindings;
+		readonly deepFundingStrategy?: DeepbookDeepFundingStrategy | null;
+	},
+): void => {
+	ctx.snapshotExtra(contributions.snap);
+	const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(
+		contributions.bindings,
+	);
+	ctx.codegen(codegen);
+	if (contributions.deepFundingStrategy != null) {
+		ctx.provides(makeDeepbookDeepFundingContribution(contributions.deepFundingStrategy));
+	}
+};
 
 type DeepbookLocalEmptyPoolOptions<
 	Publisher extends AccountMemberAlias,
@@ -445,7 +472,7 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps) =>
+		start: (deps, ctx?: PluginCtx) =>
 			Effect.sync(() => {
 				const [sui] = deps;
 				const chain = opts.chain ?? sui.chain;
@@ -464,25 +491,28 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 					marketMakerRunning: false,
 					deepFundingStrategy: null,
 				};
+				// Stage B: emit contributions inline (was the
+				// `capabilities: ({ value: resolved }) => [snap, codegen]`
+				// closure). `resolved` is the just-computed value; `snap` is
+				// the override-mode identity-guard snapshotable in scope.
+				if (ctx !== undefined) {
+					const bindings: DeepbookBindings = {
+						name,
+						chain: resolved.chain,
+						packageId: resolved.packageId,
+						registryId: resolved.registryId,
+						adminCapId: resolved.adminCapId,
+						deepTreasuryId: resolved.deepTreasuryId,
+						pools: [],
+						pyth: null,
+						margin: null,
+						serverUrl: null,
+						indexerUrl: null,
+					};
+					emitDeepbookContributions(ctx, { snap, bindings });
+				}
 				return resolved;
 			}),
-		capabilities: ({ value: resolved }) => {
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: resolved.adminCapId,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: [],
-				pyth: null,
-				margin: null,
-				serverUrl: null,
-				indexerUrl: null,
-			};
-			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
-			return [snap, codegen] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
@@ -580,7 +610,7 @@ const buildLocalPlugin = <
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps) =>
+		start: (deps, ctx?: PluginCtx) =>
 			Effect.gen(function* () {
 				const [sui, publisher, deepbookPackage, ...extraValues] = deps as unknown as readonly [
 					ResourceValueOf<typeof suiResource>,
@@ -680,6 +710,47 @@ const buildLocalPlugin = <
 					marketMakerRunning: seedResults.length > 0,
 					deepFundingStrategy: null,
 				};
+				// Stage B: emit contributions inline (was the
+				// `capabilities: ({ value: resolved }) => [snap, codegen]`
+				// closure). `resolved` is the just-computed value; the
+				// snapshotable is the local-mode `deepbook/<name>` subtree.
+				if (ctx !== undefined) {
+					const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
+					const bindings: DeepbookBindings = {
+						name,
+						chain: resolved.chain,
+						packageId: resolved.packageId,
+						registryId: resolved.registryId,
+						adminCapId: resolved.adminCapId,
+						deepTreasuryId: resolved.deepTreasuryId,
+						pools: resolved.pools.map((p) => ({
+							name: p.name,
+							poolId: p.poolId,
+							base: p.base,
+							quote: p.quote,
+							baseCoinType: p.baseCoinType,
+							quoteCoinType: p.quoteCoinType,
+						})),
+						pyth: resolved.pyth
+							? {
+									packageId: resolved.pyth.packageId,
+									stateId: resolved.pyth.stateId,
+									wormholeStateId: resolved.pyth.wormholeStateId,
+									feeds: resolved.pyth.feeds.map((feed) => ({
+										symbol: feed.symbol,
+										feedId: feed.feedId,
+										priceInfoObjectId: feed.priceInfoObjectId,
+										price: feed.price.toString(),
+										expo: feed.expo,
+									})),
+								}
+							: null,
+						margin: resolved.margin,
+						serverUrl: resolved.serverUrl,
+						indexerUrl: resolved.indexerUrl,
+					};
+					emitDeepbookContributions(ctx, { snap, bindings });
+				}
 				return resolved;
 			}).pipe(
 				// The body's aggregate E channel includes substrate Effects
@@ -697,44 +768,6 @@ const buildLocalPlugin = <
 					}),
 				),
 			),
-		capabilities: ({ value: resolved }) => {
-			const snap: SnapshotableDecl = makeLocalSnapshotable({ name });
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: resolved.adminCapId,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: resolved.pools.map((p) => ({
-					name: p.name,
-					poolId: p.poolId,
-					base: p.base,
-					quote: p.quote,
-					baseCoinType: p.baseCoinType,
-					quoteCoinType: p.quoteCoinType,
-				})),
-				pyth: resolved.pyth
-					? {
-							packageId: resolved.pyth.packageId,
-							stateId: resolved.pyth.stateId,
-							wormholeStateId: resolved.pyth.wormholeStateId,
-							feeds: resolved.pyth.feeds.map((feed) => ({
-								symbol: feed.symbol,
-								feedId: feed.feedId,
-								priceInfoObjectId: feed.priceInfoObjectId,
-								price: feed.price.toString(),
-								expo: feed.expo,
-							})),
-						}
-					: null,
-				margin: resolved.margin,
-				serverUrl: resolved.serverUrl,
-				indexerUrl: resolved.indexerUrl,
-			};
-			const codegen: CodegenableDecl<`deepbook/${string}`> = makeDeepbookCodegenable(bindings);
-			return [snap, codegen] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
@@ -815,7 +848,7 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		pluginKey: deepbookPluginKey(name),
-		start: (deps) =>
+		start: (deps, ctx?: PluginCtx) =>
 			Effect.sync(() => {
 				const [sui] = deps;
 				const chain = opts.chain ?? known?.chain ?? sui.chain;
@@ -837,41 +870,47 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 							? makeDeepbookDeepFundingStrategy({ suiSdk: sui.sdk })
 							: null,
 				};
+				// Stage B: emit contributions inline (was the
+				// `capabilities: ({ value: resolved }) => [snap, codegen,
+				// ...deepFunding]` closure). `resolved` is the just-computed
+				// value; `snap` is the known-mode identity-guard snapshotable
+				// in scope. The DEEP funding strategy-contributor is emitted
+				// only when `resolved.deepFundingStrategy` is non-null.
+				if (ctx !== undefined) {
+					const bindings: DeepbookBindings = {
+						name,
+						chain: resolved.chain,
+						packageId: resolved.packageId,
+						registryId: resolved.registryId,
+						adminCapId: null,
+						deepTreasuryId: resolved.deepTreasuryId,
+						pools: [],
+						pyth: resolved.pyth
+							? {
+									packageId: resolved.pyth.packageId,
+									stateId: resolved.pyth.stateId,
+									wormholeStateId: resolved.pyth.wormholeStateId,
+									feeds: resolved.pyth.feeds.map((feed) => ({
+										symbol: feed.symbol,
+										feedId: feed.feedId,
+										priceInfoObjectId: feed.priceInfoObjectId,
+										price: feed.price.toString(),
+										expo: feed.expo,
+									})),
+								}
+							: null,
+						margin: null,
+						serverUrl: null,
+						indexerUrl: null,
+					};
+					emitDeepbookContributions(ctx, {
+						snap,
+						bindings,
+						deepFundingStrategy: resolved.deepFundingStrategy,
+					});
+				}
 				return resolved;
 			}),
-		capabilities: ({ value: resolved }) => {
-			const bindings: DeepbookBindings = {
-				name,
-				chain: resolved.chain,
-				packageId: resolved.packageId,
-				registryId: resolved.registryId,
-				adminCapId: null,
-				deepTreasuryId: resolved.deepTreasuryId,
-				pools: [],
-				pyth: resolved.pyth
-					? {
-							packageId: resolved.pyth.packageId,
-							stateId: resolved.pyth.stateId,
-							wormholeStateId: resolved.pyth.wormholeStateId,
-							feeds: resolved.pyth.feeds.map((feed) => ({
-								symbol: feed.symbol,
-								feedId: feed.feedId,
-								priceInfoObjectId: feed.priceInfoObjectId,
-								price: feed.price.toString(),
-								expo: feed.expo,
-							})),
-						}
-					: null,
-				margin: null,
-				serverUrl: null,
-				indexerUrl: null,
-			};
-			const deepFunding =
-				resolved.deepFundingStrategy === null
-					? []
-					: [makeDeepbookDeepFundingContribution(resolved.deepFundingStrategy)];
-			return [snap, makeDeepbookCodegenable(bindings), ...deepFunding] as const;
-		},
 		errorContributions: deepbookErrorContributions,
 	});
 };
