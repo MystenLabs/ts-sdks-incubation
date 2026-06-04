@@ -37,6 +37,7 @@ export interface GlobalFlags {
 	readonly configPath: string | undefined;
 	readonly network: string | undefined;
 	readonly renderer: CliRendererMode | undefined;
+	readonly warm?: boolean;
 	readonly dryRun: boolean;
 	readonly confirm: ConfirmPolicy;
 	/** Verbosity bump; primarily affects logger filter. */

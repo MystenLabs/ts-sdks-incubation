@@ -12,6 +12,7 @@
 // renderer already emits in non-TTY mode. The sibling `apply` verb (no
 // TUI) uses `Logger.consolePretty()` because its consumer is CI.
 
+import { readFileSync } from 'node:fs';
 import { dirname, resolve as resolvePath } from 'node:path';
 
 import { Cause, Effect, Exit, FileSystem, Logger, Queue, Ref, Scope, Stream } from 'effect';
@@ -48,6 +49,15 @@ import {
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
+import {
+	computeWarmFingerprint,
+	WARM_BASELINE_SNAPSHOT_ID,
+} from '../../orchestrators/warm/fingerprint.ts';
+import {
+	clearWarmBaseline,
+	readWarmBaseline,
+	writeWarmBaseline,
+} from '../../orchestrators/warm/baseline.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -472,6 +482,7 @@ export const runUpLive = (
 	options: {
 		readonly renderer: GlobalFlags['renderer'];
 		readonly stdoutIsTty: boolean;
+		readonly warm?: boolean;
 	},
 ): Effect.Effect<CommandResult, CliError> => {
 	const loader = makeConfigLoader();
@@ -495,6 +506,27 @@ export const runUpLive = (
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 
 		const appRoot = dirname(loaded.resolvedConfigPath);
+		const resolvedConfigPath = loaded.resolvedConfigPath;
+		// Warm boot-cache toggle: the CLI `--warm` flag (tri-state from
+		// main.ts) wins over the config's `defineDevstack({ warm })`; default
+		// off. When off, every warm hook below is skipped (zero behavior
+		// change). Evaluated AFTER the config loads so the config option is
+		// visible.
+		const warmEnabled = options.warm ?? stack.options.warm ?? false;
+		// devstack version — a fingerprint signal (an SDK upgrade must
+		// invalidate a stale baseline). Reuses the `surfaces/cli/index.ts`
+		// `readFileSync(new URL('../../../package.json'))` pattern, relative
+		// to THIS file. Defensive: a missing/garbled package.json degrades to
+		// a sentinel rather than wedging boot — only consumed under `--warm`.
+		const devstackVersion = ((): string => {
+			try {
+				const raw = readFileSync(new URL('../../../package.json', import.meta.url), 'utf8');
+				const pkg = JSON.parse(raw) as { readonly version?: unknown };
+				return typeof pkg.version === 'string' ? pkg.version : '0.0.0';
+			} catch {
+				return '0.0.0';
+			}
+		})();
 		const rendererMode = resolveUpRendererMode({
 			cliRenderer: options.renderer,
 			stackRenderer: stack.options.renderer,
@@ -511,6 +543,14 @@ export const runUpLive = (
 			const state = yield* makeProjectionRef();
 			const snapshot = yield* SnapshotOrchestratorService;
 			const fs = yield* FileSystem.FileSystem;
+			// Warm-baseline state shared between the two boot hooks:
+			// `beforeInitialAcquire` (warm-restore) sets `warmRestored` when it
+			// restores the baseline and records the computed `warmFingerprint`;
+			// `withinScope` (baseline-capture) reads both to decide whether to
+			// capture, and reuses the fingerprint for the sidecar write. Both
+			// Refs live in this scope so the two closures observe the same cells.
+			const warmRestored = yield* Ref.make(false);
+			const warmFingerprint = yield* Ref.make<string | null>(null);
 			const snapshotCommandHandler = makeSnapshotCommandHandler({
 				snapshot,
 				fs,
@@ -544,6 +584,79 @@ export const runUpLive = (
 								liveRoot: stackPaths.stackRoot,
 								restoreSnapshot: (id) => snapshot.restore({ id }),
 							});
+							// WARM-RESTORE. Gated on `--warm`. Recompute the input
+							// fingerprint and, on a match against the recorded sidecar
+							// (and a present artifact), restore the baseline IN PLACE of
+							// a cold boot — NO `resume` (the supervisor's initial acquire
+							// is the converge, exactly like `recoverInterruptedRestore`).
+							// On a miss, drop any stale baseline + sidecar and fall
+							// through to a normal cold boot. The whole block is wrapped
+							// so a warm failure NEVER wedges boot — it degrades to cold.
+							if (warmEnabled) {
+								yield* Effect.gen(function* () {
+									const fingerprintExit = yield* Effect.exit(
+										provideFileSystem(
+											fs,
+											computeWarmFingerprint({
+												stack,
+												appRoot,
+												configPath: resolvedConfigPath,
+												devstackVersion,
+											}),
+										),
+									);
+									if (Exit.isFailure(fingerprintExit)) {
+										// Only `WarmFingerprintError` is expected (unreadable
+										// config); any cause degrades to cold boot.
+										yield* Effect.logWarning(
+											`warm: fingerprint failed → cold boot: ${Cause.pretty(fingerprintExit.cause)}`,
+										);
+										return;
+									}
+									const fingerprint = fingerprintExit.value;
+									yield* Ref.set(warmFingerprint, fingerprint);
+									const sidecar = yield* provideFileSystem(
+										fs,
+										readWarmBaseline(stackPaths.stackRoot),
+									);
+									const catalog = yield* provideFileSystem(fs, snapshot.list);
+									const artifactExists = catalog.some(
+										(entry) => entry.id === WARM_BASELINE_SNAPSHOT_ID,
+									);
+									const hit =
+										sidecar !== null &&
+										sidecar.fingerprint === fingerprint &&
+										artifactExists;
+									if (hit) {
+										// Restore without `resume` — the initial acquire below
+										// re-converges the swapped-in tree (mirrors
+										// `recoverInterruptedRestore`).
+										yield* provideFileSystem(
+											fs,
+											snapshot.restore({ id: WARM_BASELINE_SNAPSHOT_ID }),
+										);
+										yield* Ref.set(warmRestored, true);
+										yield* Effect.logInfo('warm: restored baseline (fingerprint match)');
+										return;
+									}
+									// MISS — drop a stale/absent baseline so the post-boot
+									// capture re-captures cleanly, then cold-boot.
+									if (artifactExists) {
+										yield* provideFileSystem(
+											fs,
+											snapshot.delete(WARM_BASELINE_SNAPSHOT_ID),
+										);
+									}
+									yield* provideFileSystem(fs, clearWarmBaseline(stackPaths.stackRoot));
+									yield* Effect.logInfo('warm: no valid baseline → cold boot');
+								}).pipe(
+									Effect.catchCause((cause) =>
+										Effect.logWarning(
+											`warm: restore phase failed → cold boot: ${Cause.pretty(cause)}`,
+										),
+									),
+								);
+							}
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
 								handle,
@@ -580,6 +693,61 @@ export const runUpLive = (
 											yield* Queue.offer(rendererEvents, event);
 											yield* commandChannel.publishEvent(event);
 										}),
+									),
+								),
+							);
+						}),
+					// BASELINE-CAPTURE. `withinScope` fires ONCE, only when the
+					// stack came fully up (boot.ts runs it after the booted race
+					// wins, never on shutdown). Capture the warm baseline UNLESS
+					// this boot was itself a warm restore (no point re-capturing an
+					// identical tree). NO `resume` — the stack is already live, so
+					// `capture`'s post-publish bounce re-converges it in place. Any
+					// failure is swallowed (log + continue): a warm-capture failure
+					// must not fail an otherwise-successful `up`.
+					withinScope: () =>
+						Effect.gen(function* () {
+							if (!warmEnabled) return;
+							if (yield* Ref.get(warmRestored)) return;
+							const stackPaths = yield* StackPathsService;
+							yield* Effect.gen(function* () {
+								yield* provideFileSystem(
+									fs,
+									snapshot.capture({
+										id: WARM_BASELINE_SNAPSHOT_ID,
+										label: 'warm-baseline',
+									}),
+								);
+								// Reuse the fingerprint computed in the restore phase;
+								// recompute it only if that phase never ran / failed to
+								// record one (e.g. a restore-phase fingerprint failure
+								// degraded to cold without storing it).
+								const recorded = yield* Ref.get(warmFingerprint);
+								const fingerprint =
+									recorded ??
+									(yield* provideFileSystem(
+										fs,
+										computeWarmFingerprint({
+											stack,
+											appRoot,
+											configPath: resolvedConfigPath,
+											devstackVersion,
+										}),
+									));
+								yield* provideFileSystem(
+									fs,
+									writeWarmBaseline(stackPaths.stackRoot, {
+										version: 1,
+										fingerprint,
+										snapshotId: WARM_BASELINE_SNAPSHOT_ID,
+										capturedAt: Date.now(),
+									}),
+								);
+								yield* Effect.logInfo('warm: captured baseline');
+							}).pipe(
+								Effect.catchCause((cause) =>
+									Effect.logWarning(
+										`warm: capture failed (continuing): ${Cause.pretty(cause)}`,
 									),
 								),
 							);
