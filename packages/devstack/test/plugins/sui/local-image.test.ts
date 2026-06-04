@@ -12,6 +12,11 @@ const TEST_IDENTITY: Identity = {
 	chain: 'test-chain',
 };
 
+// Per-arch sui-tools pin (the tag is not a multi-arch manifest list).
+const EXPECTED_SUI_TOOLS_IMAGE = `mysten/sui-tools:eced02468444d429a4e9a2b9622b7bd30a1710d4${
+	process.arch === 'arm64' ? '-arm64' : ''
+}`;
+
 const unusedRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntime => ({
 	ensureImage: () => Effect.die('ensureImage not used'),
 	ensureNetwork: () => Effect.die('ensureNetwork not used'),
@@ -74,7 +79,6 @@ describe('Sui local image resolution', () => {
 			resolveImage(runtime, TEST_IDENTITY, {
 				mode: 'local',
 				image: { build: { context: '/tmp/sui', dockerfile: 'Dockerfile.sui' } },
-				version: 'v1',
 			}),
 		);
 
@@ -82,7 +86,7 @@ describe('Sui local image resolution', () => {
 			{
 				contextPath: '/tmp/sui',
 				dockerfile: 'Dockerfile.sui',
-				buildArgs: { SUI_VERSION: 'v1' },
+				buildArgs: { SUI_TOOLS_IMAGE: EXPECTED_SUI_TOOLS_IMAGE },
 				owner: { app: 'test-app', stack: 'test-stack', plugin: 'sui', role: 'validator' },
 			},
 		]);
@@ -99,13 +103,13 @@ describe('Sui local image resolution', () => {
 				}),
 		});
 
-		await Effect.runPromise(resolveImage(runtime, TEST_IDENTITY, { mode: 'local', version: 'v1' }));
+		await Effect.runPromise(resolveImage(runtime, TEST_IDENTITY, { mode: 'local' }));
 
 		expect(calls).toEqual([
 			expect.objectContaining({
 				dockerfile: 'sui/Dockerfile',
-				fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
-				buildArgs: { SUI_VERSION: 'v1' },
+				fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh'],
+				buildArgs: { SUI_TOOLS_IMAGE: EXPECTED_SUI_TOOLS_IMAGE },
 				owner: { app: 'test-app', stack: 'test-stack', plugin: 'sui', role: 'validator' },
 			}),
 		]);

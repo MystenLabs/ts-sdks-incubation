@@ -31,7 +31,7 @@
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
@@ -48,8 +48,16 @@ import { makeSnapshotable } from './snapshot.ts';
 // Resource identity
 // ---------------------------------------------------------------------------
 
-/** The Postgres plugin's resource identity. */
-const postgresResource = resource<'postgres', Postgres>('postgres');
+/** The Postgres plugin's resource identity. Exported so cross-plugin
+ *  refs (e.g. sui's `indexerDb.postgres`) can declare a typed
+ *  `dependsOn` on it. */
+export const postgresResource = resource<'postgres', Postgres>('postgres');
+
+/** A reference to a `postgres(...)` plugin's resolved handle. Cross-plugin
+ *  consumers pass this through `dependsOn` to receive the resolved
+ *  `Postgres` value. */
+export type PostgresRef = ResourceRef<'postgres', Postgres>;
+
 const postgresErrorContributions = pluginErrorContributions(POSTGRES_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------

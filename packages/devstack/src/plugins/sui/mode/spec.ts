@@ -11,6 +11,8 @@
 
 import type { Duration } from 'effect';
 
+import type { PostgresRef } from '../../postgres/index.ts';
+
 /** Internal mode discriminator. Distinct from the substrate's
  *  `NetworkMode` because we surface a degenerate `local-rpc`
  *  sub-mode (caller-supplied RPC URL — no container needed) under
@@ -25,8 +27,9 @@ export interface SuiCommonOptions {
 }
 
 /** Local container mode — in-stack validator + faucet + GraphQL. The
- *  indexer is embedded in the validator process (no separate postgres
- *  container). */
+ *  GraphQL indexer reads from an EXTERNAL postgres (the sui-tools base
+ *  ships no embedded Postgres); supply `indexerDb` to point it at a
+ *  devstack `postgres(...)` plugin. */
 export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly mode: 'local';
 	/** Image override — `{pull}` skips the build; `{build}` uses
@@ -36,6 +39,13 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
 	/** Sui binary version (default in mode/local.ts). */
 	readonly version?: string;
+	/** External Postgres for the embedded GraphQL indexer. REQUIRED in
+	 *  local mode (GraphQL is always on; sui-tools has no embedded
+	 *  Postgres). `postgres` is the resolved `postgres(...)` plugin ref;
+	 *  `database` is the indexer DB name (default `'sui_indexer'`) —
+	 *  declare it in `postgres({ databases: [...] })` or rely on the sui
+	 *  plugin ensuring it at start. */
+	readonly indexerDb?: { readonly postgres: PostgresRef; readonly database?: string };
 	/** Optional direct host port mapping keyed by container port. When
 	 *  supplied, the mapping is exact: Sui does not reassign missing
 	 *  or busy host ports through the PortBroker. Omit this field to

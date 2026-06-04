@@ -35,10 +35,15 @@
 // retrying on body-level `{Failure}` responses during the post-RPC /
 // pre-fund window.
 //
+// External GraphQL indexer:
+//   - The sui-tools base ships no embedded Postgres, so `--with-graphql`
+//     reads from an EXTERNAL DB. The caller threads a resolved
+//     `{ url, network }` (composed from the postgres plugin's
+//     `networkAlias`); this body attaches the validator to that network
+//     and passes the DSN in via `DEVSTACK_SUI_INDEXER_URL` so the
+//     entrypoint appends `--with-indexer=<dsn>`.
+//
 // What this body deliberately defers:
-//   - Postgres indexer sidecar — GraphQL is enabled by `sui start` and
-//     routed as a first-class endpoint, but no separate postgres
-//     lifecycle is supervised here.
 //   - Snapshot capture — the framework exists in the plugin's
 //     snapshot.ts; this body produces the running container that the
 //     orchestrator captures.
@@ -64,7 +69,7 @@ import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import { DEFAULT_SUI_CLI_VERSION, suiCliImageBuildContext } from '../move/index.ts';
+import { suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -132,6 +137,14 @@ export const LOCAL_VALIDATOR_STOP_GRACE_SECONDS = 30;
  *  about which probe wedged. */
 const PROBE_FETCH_TIMEOUT_MS = 3000;
 
+/** Resolved external-indexer wiring for local mode. The URL is the
+ *  PostgreSQL DSN (composed from the postgres plugin's networkAlias);
+ *  `network` is the postgres container network the validator joins. */
+export interface LocalIndexer {
+	readonly url: string;
+	readonly network: string;
+}
+
 /** Resolved local-mode boot artifacts. */
 export interface LocalModeBootResult {
 	readonly resolved: ResolvedSuiNetwork;
@@ -153,6 +166,7 @@ export const bootLocalMode = (
 	identity: Identity,
 	portBroker: PortBroker,
 	opts: SuiLocalOptions,
+	indexer: LocalIndexer | undefined,
 ): Effect.Effect<LocalModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
@@ -175,7 +189,14 @@ export const bootLocalMode = (
 			labels,
 			containerName,
 			opts,
+			indexer,
 		);
+
+		// GraphQL is gated on an external indexer (sui-tools ships no
+		// embedded Postgres). Without `indexer` the entrypoint omits
+		// `--with-graphql`, so we skip its routed URL + probe and resolve
+		// a graphql-less client.
+		const graphqlEnabled = indexer !== undefined;
 
 		// ----- 3. Ready probes ----------------------------------------------
 		const publishedPorts = resolvePublishedPortMapping(ports, handle.ports);
@@ -188,17 +209,22 @@ export const bootLocalMode = (
 			SUI_FAUCET_ENDPOINT_NAME,
 			SUI_FAUCET_ENTRYPOINT_PORT,
 		);
-		const graphqlUrl = yield* routedSuiUrl(
-			identity,
-			SUI_GRAPHQL_ENDPOINT_NAME,
-			SUI_GRAPHQL_ENTRYPOINT_PORT,
-		);
+		const graphqlUrl = graphqlEnabled
+			? yield* routedSuiUrl(identity, SUI_GRAPHQL_ENDPOINT_NAME, SUI_GRAPHQL_ENTRYPOINT_PORT)
+			: undefined;
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_LOCAL_READY_TIMEOUT;
 
-		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
-		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+		yield* setCurrentPluginPhase(
+			graphqlEnabled
+				? 'waiting for Sui RPC, faucet, and GraphQL'
+				: 'waiting for Sui RPC and faucet',
 		);
+		yield* waitForReady(
+			directRpcUrl,
+			directFaucetUrl,
+			graphqlEnabled ? directGraphqlUrl : undefined,
+			readyTimeout,
+		).pipe(Effect.annotateLogs({ [SuiSpans.container]: handle.name }));
 
 		// Caught-up-to-head gate. `waitForReady` only proves the RPC
 		// listener is BOUND. On a warm restart / snapshot restore the
@@ -243,13 +269,13 @@ export const bootLocalMode = (
 			rpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
-			graphqlUrl,
+			...(graphqlUrl !== undefined ? { graphqlUrl } : {}),
 			waitForTransactionsReady,
 			buildImage: image,
 			hostGateway: {
 				rpcUrl: toDockerHostGatewayUrl(directRpcUrl),
 				faucetUrl: toDockerHostGatewayUrl(directFaucetUrl),
-				graphqlUrl: toDockerHostGatewayUrl(directGraphqlUrl),
+				graphqlUrl: graphqlEnabled ? toDockerHostGatewayUrl(directGraphqlUrl) : null,
 			},
 		});
 		const resolved = makeResolvedNetwork({
@@ -257,7 +283,7 @@ export const bootLocalMode = (
 			chain,
 			rpc: rpcUrl,
 			faucet: faucetUrl,
-			graphql: graphqlUrl,
+			...(graphqlUrl !== undefined ? { graphql: graphqlUrl } : {}),
 			source: 'default',
 		});
 		return {
@@ -300,22 +326,22 @@ export const resolveImage = (
 					),
 				);
 		}
-		const version = opts.version ?? DEFAULT_SUI_CLI_VERSION;
 		const owner = {
 			app: identity.app,
 			stack: identity.stack,
 			plugin: 'sui',
 			role: 'validator',
 		} as const;
+		const vendored = suiCliImageBuildContext();
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {
 						contextPath: opts.image.build.context,
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
-						buildArgs: { SUI_VERSION: version },
+						buildArgs: vendored.buildArgs,
 						owner,
 					}
-				: { ...suiCliImageBuildContext(version), owner };
+				: { ...vendored, owner };
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(
@@ -346,6 +372,7 @@ export const ensureLocalValidatorContainer = (
 	labels: ContainerLabelTuple,
 	containerName: string,
 	opts: SuiLocalOptions,
+	indexer: LocalIndexer | undefined,
 ): Effect.Effect<LocalValidatorContainerResult, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const reusablePorts =
@@ -360,6 +387,7 @@ export const ensureLocalValidatorContainer = (
 				labels,
 				containerName,
 				opts,
+				indexer,
 				ports: reusablePorts,
 				attempt: 0,
 				reconciliation: 'adopt-existing',
@@ -372,6 +400,7 @@ export const ensureLocalValidatorContainer = (
 			labels,
 			containerName,
 			opts,
+			indexer,
 			attempt: 0,
 			reconciliation: opts.ports ? 'exact' : 'adopt-existing',
 		});
@@ -384,6 +413,7 @@ interface EnsureLocalValidatorContainerBase {
 	readonly labels: ContainerLabelTuple;
 	readonly containerName: string;
 	readonly opts: SuiLocalOptions;
+	readonly indexer: LocalIndexer | undefined;
 }
 
 const ensureLocalValidatorContainerWithFreshPorts = (
@@ -420,11 +450,20 @@ const ensureLocalValidatorContainerAttempt = (
 			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
 			// `on-failure` routes that stale layer to recreate while still
 			// warm-resuming normal exit 0 / 130 stops. The longer grace
-			// gives the entrypoint's SIGINT forwarding time to drain.
+			// gives the entrypoint time to flush RocksDB on stop.
 			recreate: 'on-failure',
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
+			// External indexer (when supplied): join the postgres network +
+			// hand the entrypoint the DSN so it enables `--with-graphql`
+			// against the external DB. Omitted = RPC + faucet only.
+			...(params.indexer !== undefined
+				? {
+						networkAttach: [params.indexer.network],
+						env: { DEVSTACK_SUI_INDEXER_URL: params.indexer.url },
+					}
+				: {}),
 		},
 		mapError: (cause) => cause,
 	}).pipe(
@@ -610,13 +649,14 @@ const allocatePort = (
 // Ready-probe coordination
 // ---------------------------------------------------------------------------
 
-/** Coordinated readiness gate. Both RPC + faucet must respond within
- *  the outer deadline; each probe has its own per-fetch deadline so a
+/** Coordinated readiness gate. RPC + faucet must respond within the
+ *  outer deadline; GraphQL is probed only when enabled (gated on the
+ *  external indexer). Each probe has its own per-fetch deadline so a
  *  wedged endpoint surfaces by name. */
 const waitForReady = (
 	rpcUrl: string,
 	faucetUrl: string,
-	graphqlUrl: string,
+	graphqlUrl: string | undefined,
 	readyTimeout: Duration.Duration,
 ): Effect.Effect<void, SuiPluginError> =>
 	Effect.gen(function* () {
@@ -676,26 +716,31 @@ const waitForReady = (
 			Effect.withSpan('devstack.plugin.sui.local.probe.faucet'),
 		);
 
-		const graphqlProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
-			endpoint: graphqlUrl,
-			timeoutMs: readyTimeoutMs,
-			intervalMs: 1_000,
-			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
-			validate: (response) => response.status < 500,
-		}).pipe(
-			Effect.mapError(
-				(cause): SuiPluginError =>
-					suiPluginError(
-						'graphql-probe',
-						`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
-						cause,
-					),
-			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
-		);
+		const graphqlProbe: ReadonlyArray<Effect.Effect<void, SuiPluginError>> =
+			graphqlUrl === undefined
+				? []
+				: [
+						waitForHttpEndpoint({
+							endpoint: graphqlUrl,
+							timeoutMs: readyTimeoutMs,
+							intervalMs: 1_000,
+							requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+							validate: (response) => response.status < 500,
+						}).pipe(
+							Effect.mapError(
+								(cause): SuiPluginError =>
+									suiPluginError(
+										'graphql-probe',
+										`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
+											`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
+										cause,
+									),
+							),
+							Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
+						),
+					];
 
-		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], { concurrency: 'unbounded' }).pipe(
+		yield* Effect.all([rpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
 			Effect.asVoid,
 		);
 	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));

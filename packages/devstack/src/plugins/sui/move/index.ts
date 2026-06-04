@@ -23,16 +23,23 @@ import { decodeJsonTextSync } from '../../../substrate/runtime/runtime-decode.ts
 
 export type MoveBuildPhase = 'hash' | 'scrub' | 'build' | 'parse';
 
+// Sui-fork image still builds the CLI from a release tarball at this
+// version (see mode/fork.ts); local mode now bases on sui-tools.
 export const DEFAULT_SUI_CLI_VERSION = 'devnet-v1.71.0';
 
-export const suiCliImageBuildContext = (
-	version = DEFAULT_SUI_CLI_VERSION,
-): ContainerBuildContext => ({
-	contextPath: new URL('../../../../images/', import.meta.url).pathname,
-	dockerfile: 'sui/Dockerfile',
-	fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
-	buildArgs: { SUI_VERSION: version },
-});
+// Per-arch sui-tools pin. The tag is NOT a multi-arch manifest list, so
+// the `-arm64` suffix is chosen host-side from `process.arch`.
+const DEFAULT_SUI_TOOLS_REF = 'eced02468444d429a4e9a2b9622b7bd30a1710d4';
+
+export const suiCliImageBuildContext = (): ContainerBuildContext => {
+	const suffix = process.arch === 'arm64' ? '-arm64' : '';
+	return {
+		contextPath: new URL('../../../../images/', import.meta.url).pathname,
+		dockerfile: 'sui/Dockerfile',
+		fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh'],
+		buildArgs: { SUI_TOOLS_IMAGE: `mysten/sui-tools:${DEFAULT_SUI_TOOLS_REF}${suffix}` },
+	};
+};
 
 export class MoveBuildError extends Schema.TaggedErrorClass<MoveBuildError>()('MoveBuildError', {
 	phase: Schema.Literals(['hash', 'scrub', 'build', 'parse']),
