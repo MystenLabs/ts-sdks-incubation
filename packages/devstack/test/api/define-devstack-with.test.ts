@@ -21,7 +21,7 @@ import { Effect } from 'effect';
 import { defineDevstackWith } from '../../src/api/define-devstack-with.ts';
 import { defineDevstack, readStackEngine } from '../../src/api/define-devstack.ts';
 import { definePlugin } from '../../src/api/define-plugin.ts';
-import type { NetworkConfig } from '../../src/substrate/network.ts';
+import type { NetworkConfig } from '../../src/plugins/sui/network-config.ts';
 
 // --- Fixtures -----------------------------------------------------------
 

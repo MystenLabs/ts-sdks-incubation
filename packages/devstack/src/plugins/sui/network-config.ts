@@ -1,7 +1,10 @@
-// Network mode discriminator. Substrate-level shape consumed by the
-// `IdentityContext` + `DevstackOptions.network` resolution path (no
-// dedicated NetworkResolver contract — identity threads through Context
-// directly).
+// Network mode discriminator + network record. A SUI-PLUGIN DOMAIN
+// concept (mode/chain/rpc/faucet/graphql), NOT a substrate primitive:
+// the substrate is name-blind and knows nothing about chains or network
+// modes. The sui node produces a `NetworkConfig`; sui-dependent nodes
+// (walrus/seal/deepbook/package/account) consume it as a resolved dep
+// value. The authoring surface (`defineDevstackWith` / `suiFor`) narrows
+// the mode at the type level.
 
 /** Network mode registry. Architecture: fork is a network mode, not
  *  an orchestrator. Module augmentation can add modes without widening
@@ -14,8 +17,9 @@ export interface DevstackNetworkModeRegistry {
 
 export type NetworkMode = keyof DevstackNetworkModeRegistry & string;
 
-/** Substrate-level network record. Plugins read this from the
- *  `IdentityContext` projection — one value per acquire. */
+/** Sui-plugin network record. Plugin-author factories that take
+ *  `(network)` read this as the resolved mode-narrow value — one value
+ *  per acquire. */
 export type NetworkConfig<Mode extends NetworkMode = NetworkMode> = Readonly<
 	{
 		readonly mode: Mode;

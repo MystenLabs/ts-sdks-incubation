@@ -28,10 +28,4 @@ export {
 	type ManifestExtrasContext,
 	type ManifestExtrasInput,
 } from './manifest.ts';
-export type {
-	DefaultNetwork,
-	DevstackNetworkModeRegistry,
-	NetworkConfig,
-	NetworkMode,
-} from './network.ts';
 export type { DevstackOptions } from './options.ts';

@@ -6,7 +6,7 @@ import {
 	type SealKeyManager,
 	type SealResolved,
 } from '../../../src/plugins/seal/index.ts';
-import type { NetworkConfig } from '../../../src/substrate/network.ts';
+import type { NetworkConfig } from '../../../src/plugins/sui/network-config.ts';
 import type { ResourceValueOf } from '../../../src/substrate/plugin.ts';
 
 const localNet: NetworkConfig<'local'> = { mode: 'local', chain: 'sui:localnet' };

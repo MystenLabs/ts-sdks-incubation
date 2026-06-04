@@ -5,7 +5,7 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 
-import { type NetworkConfig } from '../../../src/substrate/index.ts';
+import { type NetworkConfig } from '../../../src/plugins/sui/index.ts';
 import { sui, suiFor } from '../../../src/plugins/sui/index.ts';
 import { DEFAULT_EPHEMERAL_FUND_MIST } from '../../../src/plugins/account/index.ts';
 import {

@@ -10,7 +10,7 @@
 
 import { deepbookFor } from '../../../src/plugins/deepbook/index.ts';
 import type * as DB from '../../../src/plugins/deepbook/index.ts';
-import type { NetworkConfig } from '../../../src/substrate/network.ts';
+import type { NetworkConfig } from '../../../src/plugins/sui/network-config.ts';
 
 // --- Negative: unsupported helpers are not public DeepBook API -----------
 type DPV = typeof import('../../../src/plugins/deepbook/index.ts');

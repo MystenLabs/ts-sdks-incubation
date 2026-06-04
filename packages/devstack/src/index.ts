@@ -131,12 +131,17 @@ export type { Renderer, RendererError } from './contracts/renderer.ts';
 export type { LifecycleStatus, PhaseNarration, PluginRole } from './substrate/lifecycle.ts';
 
 // --- Network + options --------------------------------------------------
+//
+// `NetworkConfig`/`NetworkMode`/`DevstackNetworkModeRegistry` are a
+// SUI-PLUGIN domain concept (see plugins/sui/network-config.ts), not a
+// substrate primitive. Re-exported here for the authoring surface
+// (`defineDevstackWith` / `suiFor`).
 
 export type {
 	NetworkConfig,
 	NetworkMode,
 	DevstackNetworkModeRegistry,
-} from './substrate/network.ts';
+} from './plugins/sui/network-config.ts';
 export type { DevstackOptions } from './substrate/options.ts';
 export type {
 	ManifestExtras,

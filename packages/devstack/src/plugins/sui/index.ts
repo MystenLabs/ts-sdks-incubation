@@ -309,6 +309,12 @@ export const suiFor = defineModeNamespace({
 export type { SuiClient, ForkAdminSurface, WaitForTransactionsReady } from './mode/shared.ts';
 export type { ResolvedSuiNetwork } from './network-resolver.ts';
 export type {
+	NetworkConfig,
+	NetworkMode,
+	DevstackNetworkModeRegistry,
+	DefaultNetwork,
+} from './network-config.ts';
+export type {
 	SuiOptions,
 	SuiLocalOptions,
 	SuiLocalRpcOptions,
