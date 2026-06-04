@@ -8,8 +8,9 @@ Status: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deferred/blocked
 - `16816626` — reconcile inert graph-spec wrapper inlined (**−117**)
 - `83dab312` — spans strip: recording Tracer + SpanStore + Traces tab + 235 withSpan + 10 spans.ts (**−2,288**)
 - `9f9610e7` — SpanAttr→LogAttr rename (now annotateLogs keys) (~0)
-- `<pending>` — FormatterRegistry + dead errorContributions plumbing deleted (**−506**)
-- **Session total ~−4,700 src LOC + ~9.6k off the npm tarball. STEP 1 COMPLETE.** (`e1c960f9` between these is the parallel sui/postgres workstream, not part of this effort.)
+- `f341319d` — FormatterRegistry + dead errorContributions plumbing deleted (**−503**) — STEP 1 COMPLETE
+- `360cc2be` — Step 2: cross-host/NFS drop (container-claim ledger, makeReaper, foreign-host branches, dead shared-network constant) (**−848**)
+- **Session total ~−5,300 src LOC + ~9.6k off the npm tarball.** (Parallel sui/postgres workstream has since moved to its own branch.)
 
 ## ⚠️ Coordination (active as of 2026-06-04)
 - The parallel postgres/sui workstream COMMITS TO THIS SAME BRANCH (`e1c960f9` landed between cleanup commits) → **verify `git status` is pure-mine before every `git add -A`.**
@@ -40,8 +41,9 @@ Boot-time restores ran before participant registration → identity guard always
 ### ✅ STEP 1 COMPLETE — all clear-cut strips landed (5 commits, all green).
 - `[ ]` **dashboard `graphql-env.d.ts` regen** — stale (still lists SpanFilter/SpanRecord/spans), but DEAD (no SPA code references them). Run `pnpm --filter devstack-dashboard gql:generate` whenever the dashboard is next built. Harmless.
 
-## Step 2 — cross-host / NFS drop  `[ ]`
-Single-host only (keep parallel-stacks + same-host `up`/`apply`). Drop foreign-host/NFS branches in roster/liveness/stack-lock/command-channel/versioned-doc-sync + the "architecture-mandated" cross-host network + container-claim ledger (+ dead sweepOrphans reader). fork-orchestration NFS holder check → plain same-host PID+start-time. (~1,000–1,400 LOC)
+## Step 2 — cross-host / NFS drop  `[x] DONE` (commit 360cc2be, −848, all green)
+Single-host only. Deleted: container-claim ledger (write-only dead; unwired container.ts writers, teardown still via stopWithGrace), makeReaper indirection (kept LivenessProbeScope), foreign-host liveness branches (roster + fork-orch) + dead `trustForeignHosts` field, dead SHARED_NETWORK_NAME constant, NFS comment de-scoping.
+**Honest scope correction:** audit estimated ~1–1.4k but most of "cross-process" is genuinely SAME-HOST load-bearing → KEPT atomic-write (crash-atomicity on local FS, not NFS-only), reclaim-stale-file (O_EXCL TOCTOU), command-channel handoff, adoptExistingNetwork (parallel-stack race), port-reservation file, roster holder ARRAY (claim-race). Real droppable was the ledger + foreign branches, not a blanket cross-process gut.
 
 ## Step 3 — substrate state-model collapse (the main event)  `[ ]`
 Collapse 8 systems → one state model. Keep supervisor core + contribution pipeline verbatim; keep control-plane (dashboard). Merge the 4 projection read-models; inline strategy-registry + lifecycle-facts; simplify scoped-registry single-mode LWW → plain `SubscriptionRef<Map>` (keep the multimap). e2e suite as safety net. (~1.5–4k LOC + large conceptual win)
