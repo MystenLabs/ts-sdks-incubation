@@ -31,9 +31,11 @@ import {
 	selectReusablePortMapping,
 } from '../../../src/plugins/sui/mode/local.ts';
 
+// Resolved indexer wiring — the sui-owned sidecar shape: DSN dials the
+// in-network alias `sui-indexer-db`, network is the per-stack sui-indexer net.
 const TEST_INDEXER = {
-	url: 'postgres://devstack:pw@postgres-wallet:5432/sui_indexer',
-	network: 'devstack-wallet-wallet-postgres',
+	url: 'postgres://devstack:pw@sui-indexer-db:5432/sui_indexer',
+	network: 'devstack-wallet-wallet-sui-indexer',
 } as const;
 
 const fakeBroker = (allocate: (opts: AllocateOptions) => number): PortBroker => ({

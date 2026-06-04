@@ -37,8 +37,10 @@ STOPSIGNAL SIGINT
 # and GraphQL HTTP (9125). Local-mode boot probes the public surfaces.
 EXPOSE 9000 9123 9124 9125
 
-# GraphQL is gated on an external indexer (sui-tools ships no embedded
-# Postgres): the entrypoint appends `--with-graphql` only when
-# `DEVSTACK_SUI_INDEXER_URL` is set. RPC + faucet are always on.
+# GraphQL is gated at the env-wiring layer (NOT in this static CMD, which
+# must stay graphql-less so the indexer:false path works): the entrypoint
+# appends `--with-graphql` only when `DEVSTACK_SUI_INDEXER_URL` is set. The
+# sui plugin sets that var by DEFAULT (pointing at the postgres sidecar it
+# owns), so the default boot is full RPC + faucet + GraphQL.
 ENTRYPOINT ["/usr/local/bin/devstack-entrypoint.sh"]
 CMD ["start", "--with-faucet=0.0.0.0:9123"]

@@ -412,3 +412,139 @@ export const bootPostgresService = (
  *  busy-DB SIGKILL → recovery-mode on next boot. */
 export const stopGrace = (resolved: ResolvedPostgresOptions): Duration.Duration =>
 	Duration.seconds(resolved.stopGraceSeconds);
+
+/** Sidecar boot — a postgres container OWNED by a sibling plugin (not a
+ *  user-declared `postgres(...)`). Reuses every postgres internal but
+ *  lets the caller pin the container's network, in-network alias, role
+ *  label, and database. Currently the sui plugin's GraphQL-indexer DB.
+ *
+ *  The container is stamped with the CALLER's plugin label (via the
+ *  `labels` form of `ensureManagedContainer`) so the owning plugin's
+ *  snapshotable captures it under the owner's `(plugin, role)` tuple —
+ *  NOT under `plugin:'postgres'`. The vendored image's owner labels stay
+ *  `plugin:'postgres',role:'db'` (cosmetic — image builds are shared by
+ *  digest, not labels). */
+export const bootPostgresSidecar = (
+	runtime: ContainerRuntime,
+	identity: Identity,
+	stackRoot: string,
+	opts: {
+		readonly network: string;
+		readonly alias: string;
+		readonly role: string;
+		readonly database: string;
+		readonly version?: string;
+	},
+): Effect.Effect<
+	{ readonly handle: Postgres; readonly containerHandle: ContainerHandle },
+	PostgresPluginError | PostgresConfigError | PostgresConnectionTimeout | DatabaseCreateFailed,
+	Scope.Scope
+> =>
+	Effect.gen(function* () {
+		const resolved = yield* Effect.try({
+			try: () =>
+				resolveOptions(identity, stackRoot, {
+					name: opts.role,
+					databases: [opts.database],
+					...(opts.version !== undefined ? { version: opts.version } : {}),
+				}),
+			catch: (cause) => cause as PostgresConfigError,
+		});
+
+		// 1. Ensure the caller-pinned network (the sui validator joins it).
+		yield* runtime
+			.ensureNetwork({ name: opts.network, app: identity.app, stack: identity.stack })
+			.pipe(
+				Effect.catch((cause) =>
+					Effect.fail(
+						postgresPluginError(
+							'network-create',
+							`failed to ensure postgres sidecar network '${opts.network}'`,
+							cause,
+						),
+					),
+				),
+			);
+
+		// 2. Ensure the vendored PGDATA-relocated image (shared by digest;
+		//    owner labels stay plugin:'postgres',role:'db', cosmetic).
+		const imageRef = yield* runtime
+			.ensureImage({
+				contextPath: resolveImageContextPath(),
+				dockerfile: 'Dockerfile',
+				buildArgs: { POSTGRES_VERSION: resolved.version },
+				owner: { app: identity.app, stack: identity.stack, plugin: 'postgres', role: 'db' },
+			})
+			.pipe(
+				Effect.catch((cause) =>
+					Effect.fail(
+						postgresPluginError(
+							'image-build',
+							`failed to build postgres sidecar image (${resolved.version})`,
+							cause,
+						),
+					),
+				),
+			);
+
+		// 3. Start the container under the OWNER's label tuple (the
+		//    `labels` form stamps `plugin:opts.role`'s plugin/role exactly,
+		//    NOT plugin:'postgres'), so the owner's snapshotable finds it.
+		const containerName = `${identity.app}-${identity.stack}-${opts.role}`;
+		const containerHandle = yield* ensureManagedContainer({
+			runtime,
+			labels: { app: identity.app, stack: identity.stack, plugin: 'sui', role: opts.role },
+			spec: {
+				name: containerName,
+				image: imageRef,
+				recreate: 'on-config-change',
+				env: {
+					POSTGRES_USER: resolved.user,
+					POSTGRES_PASSWORD: resolved.password,
+					POSTGRES_DB: opts.database,
+				},
+				stopGraceSeconds: resolved.stopGraceSeconds,
+				networkAttach: [{ name: opts.network, aliases: [opts.alias] }],
+			},
+			mapError: (cause) =>
+				postgresPluginError(
+					'container-start',
+					`failed to start postgres sidecar container '${opts.role}'`,
+					cause,
+				),
+		});
+
+		// 4. Probe readiness, then ensure the database idempotently.
+		const exec = containerExec(runtime, containerHandle);
+		yield* awaitReady(exec, resolved.user, opts.database, resolved.readyTimeoutMs);
+		yield* ensureDatabases(exec, resolved.user, resolved.databases);
+
+		// 5. Resolve the handle. Siblings dial the in-network ALIAS (stable
+		//    across parallel stacks), not the per-stack container DNS name.
+		const parts: PostgresConnectionParts = {
+			user: resolved.user,
+			password: resolved.password,
+			host: containerName,
+			port: POSTGRES_PORT,
+		};
+		const endpoint = credentialedUrl(parts);
+		const handle: Postgres = {
+			name: resolved.name,
+			user: resolved.user,
+			password: resolved.password,
+			host: containerName,
+			port: POSTGRES_PORT,
+			databases: resolved.databases,
+			endpoint,
+			plainEndpoint: plainUrl(containerName, POSTGRES_PORT),
+			url: (db) => withDatabase(endpoint, db),
+			containerNetwork: opts.network,
+			networkAlias: opts.alias,
+		};
+
+		return { handle, containerHandle };
+	}).pipe(
+		Effect.withSpan('devstack.plugin.postgres.sidecar.boot', {
+			attributes: { [PostgresSpans.name]: opts.role },
+		}),
+	);

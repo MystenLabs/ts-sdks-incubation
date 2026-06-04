@@ -27,16 +27,11 @@
 // in the per-mode builder under `mode/*.ts`; this barrel emits them
 // alongside the rest during `start`.
 
-import { Effect } from 'effect';
+import { Effect, type Scope } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
-import {
-	credentialedUrl,
-	withDatabase,
-	type Postgres,
-	type PostgresRef,
-} from '../postgres/index.ts';
+import { bootPostgresSidecar, credentialedUrl, withDatabase } from '../postgres/index.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -44,6 +39,8 @@ import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts'
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
+import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import type { Identity } from '../../substrate/identity.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	LeaseBrokerService,
@@ -61,7 +58,7 @@ import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
 import { selectSufficientForkCoin } from './fork-transaction.ts';
 import { FORK_FAUCET_WHALE_MIN_COIN_MIST, resolveForkWhale } from './mode/fork.ts';
-import type { LocalIndexer } from './mode/local.ts';
+import { SUI_INDEXER_DB_ROLE, type LocalIndexer } from './mode/local.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
 	SuiForkOptions,
@@ -173,36 +170,78 @@ const resolveForkFaucetStrategy = (
 /** Default name for sui's GraphQL-indexer database. */
 const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
 
-/** Compose the external-indexer wiring from a resolved postgres handle.
- *  The URL dials the postgres `networkAlias` (NOT `url(db)`, whose host is
- *  the per-stack container DNS name) because the sui container reaches
- *  postgres only after joining its network. The indexer database MUST be
- *  declared on the postgres plugin (`postgres({ databases: [...] })`) — the
- *  handle exposes no runtime ensure-database method. */
-export const resolveLocalIndexer = (
-	postgres: Postgres,
-	database: string,
-): Effect.Effect<LocalIndexer, SuiPluginError> => {
-	if (!postgres.databases.includes(database)) {
-		return Effect.fail(
+/** Alias-safe sanitizer for the indexer network name (identity strings
+ *  are already network-safe; this guards the literal composition). */
+const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
+
+/** In-network DNS alias siblings dial the indexer-db sidecar by. */
+const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
+
+/** Append a database segment to a BYO DSN only when it has no path (so a
+ *  caller-supplied `.../mydb` is respected). */
+const appendDatabaseIfMissing = (url: string, database: string): string => {
+	try {
+		const parsed = new URL(url);
+		return parsed.pathname === '' || parsed.pathname === '/'
+			? withDatabase(url.replace(/\/$/, ''), database)
+			: url;
+	} catch {
+		// Not URL-parseable — append iff there's no path-looking suffix.
+		return /\/[^/]+$/.test(url.replace(/^postgres(ql)?:\/\//, '')) ? url : withDatabase(url, database);
+	}
+};
+
+/** Provision the GraphQL-indexer DB wiring for local mode.
+ *
+ *  Default: sui OWNS a postgres sidecar (labelled under sui) — boot it on
+ *  a per-stack network and compose the DSN from its in-network alias (NOT
+ *  the per-stack container DNS host, which isn't parallel-stack-portable).
+ *
+ *  BYO: when `indexerDb` is set, no sidecar — pass the caller's DSN +
+ *  network straight through (appending the default db iff the DSN has no
+ *  path). */
+export const provisionLocalIndexer = (
+	runtime: ContainerRuntime,
+	identity: Identity,
+	stackRoot: string,
+	opts: SuiLocalOptions,
+): Effect.Effect<LocalIndexer, SuiPluginError, Scope.Scope> => {
+	const database = opts.indexerDb?.database ?? DEFAULT_INDEXER_DATABASE;
+	if (opts.indexerDb !== undefined) {
+		return Effect.succeed({
+			url: appendDatabaseIfMissing(opts.indexerDb.url, database),
+			network: opts.indexerDb.network,
+		});
+	}
+	const network = sanitizeAlias(`devstack-${identity.app}-${identity.stack}-sui-indexer`);
+	return bootPostgresSidecar(runtime, identity, stackRoot, {
+		network,
+		alias: SUI_INDEXER_DB_ALIAS,
+		role: SUI_INDEXER_DB_ROLE,
+		database,
+	}).pipe(
+		Effect.map(({ handle }) => ({
+			url: withDatabase(
+				credentialedUrl({
+					user: handle.user,
+					password: handle.password,
+					host: handle.networkAlias,
+					port: handle.port,
+				}),
+				database,
+			),
+			network: handle.containerNetwork,
+		})),
+		// Postgres-domain failures wrap into the sui error channel — the
+		// sidecar is a sui implementation detail.
+		Effect.mapError((cause) =>
 			suiPluginError(
 				'container-start',
-				`sui local mode: GraphQL indexer database '${database}' is not declared on the ` +
-					`postgres plugin (databases: [${postgres.databases.join(', ')}]). Declare it via ` +
-					`postgres({ databases: ['${database}'] }) (or set indexerDb.database).`,
+				`sui local mode: failed to provision the GraphQL indexer postgres sidecar (${cause._tag})`,
+				cause,
 			),
-		);
-	}
-	const base = credentialedUrl({
-		user: postgres.user,
-		password: postgres.password,
-		host: postgres.networkAlias,
-		port: postgres.port,
-	});
-	return Effect.succeed({
-		url: withDatabase(base, database),
-		network: postgres.containerNetwork,
-	});
+		),
+	);
 };
 
 /** Shared boot + inline contribution emission, parameterised by the
@@ -268,7 +307,10 @@ const bootAndEmit = (opts: SuiOptions, indexer: LocalIndexer | undefined) =>
 					})
 				: [];
 		emitContributions(ctx, [
-			makeSnapshotable(opts.mode, identity.app, identity.stack, realChain),
+			// `hasIndexer` (local only) folds the sui-owned indexer-db
+			// sidecar into the captured containers; `indexer !== undefined`
+			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
+			makeSnapshotable(opts.mode, identity.app, identity.stack, realChain, indexer !== undefined),
 			makeCodegenable({
 				mode: opts.mode,
 				chain: realChain,
@@ -290,71 +332,43 @@ const bootAndEmit = (opts: SuiOptions, indexer: LocalIndexer | undefined) =>
 		return value;
 	});
 
-/** Build the local-with-external-indexer plugin. GraphQL is gated on the
- *  external indexer (sui-tools ships no embedded Postgres), so supplying
- *  `indexerDb` turns it on: this branch declares a typed `dependsOn` on
- *  the postgres ref and composes the indexer DSN from the resolved
- *  handle. Mirrors seal's mode-specific-dependsOn pattern. */
-const buildLocalIndexedPlugin = (
-	opts: SuiLocalOptions,
-	postgres: PostgresRef,
-	database: string,
-) => {
-	return definePlugin({
+/** The single sui plugin builder. No sibling `dependsOn`: in local mode
+ *  with the indexer on (the default), `start` provisions the GraphQL
+ *  indexer DB itself — a sui-owned postgres sidecar — inside the boot
+ *  scope BEFORE the boot-time validator (so the validator can join its
+ *  network), then boots + emits. Resolution order:
+ *    - `indexerDb` present  → BYO DB (no sidecar)
+ *    - `indexer === false`  → opt out (RPC + faucet only, GraphQL off)
+ *    - else (local default) → sui-owned sidecar
+ *  Non-local modes never touch the indexer (GraphQL off). */
+const buildSuiPlugin = (opts: SuiOptions) =>
+	definePlugin({
 		id: suiResource.id,
-		dependsOn: { postgres },
 		role: 'service',
 		section: 'service',
-		// `deps.postgres` is the resolved `Postgres` handle; the substrate
-		// auto-infers it from `dependsOn`. `ctx` arrives via `PluginContext`.
-		start: (deps) =>
+		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
+		// container runtime + identity via the plugin runtime context.
+		start: () =>
 			Effect.gen(function* () {
-				const indexer = yield* resolveLocalIndexer(deps.postgres, database);
+				// Resolution order: BYO `indexerDb` wins; then an explicit
+				// `indexer: false` opt-out; then the sui-owned sidecar default.
+				// Non-local modes never wire the indexer.
+				if (
+					opts.mode !== 'local' ||
+					(opts.indexerDb === undefined && opts.indexer === false)
+				) {
+					return yield* bootAndEmit(opts, undefined);
+				}
+				const runtime = yield* ContainerRuntimeService;
+				const identity = yield* IdentityContext;
+				const paths = yield* StackPathsService;
+				const indexer = yield* provisionLocalIndexer(runtime, identity, paths.stackRoot, opts);
 				return yield* bootAndEmit(opts, indexer);
 			}),
 		errorContributions: suiErrorContributions,
 	});
-};
 
-/** Build the zero-dep plugin: non-local modes, and local mode WITHOUT
- *  `indexerDb` (RPC + faucet only, GraphQL gated off — no postgres dep,
- *  zero-config). */
-const buildZeroDepPlugin = (opts: SuiOptions) => {
-	return definePlugin({
-		id: suiResource.id,
-		role: 'service',
-		section: 'service',
-		// No `dependsOn`, so `start` is zero-arg. `undefined` indexer =
-		// GraphQL gated off.
-		start: () => bootAndEmit(opts, undefined),
-		errorContributions: suiErrorContributions,
-	});
-};
-
-/** Concrete plugin types for the two construction paths. */
-type IndexedSuiPlugin = ReturnType<typeof buildLocalIndexedPlugin>;
-type ZeroDepSuiPlugin = ReturnType<typeof buildZeroDepPlugin>;
-
-/** Resolve the plugin TYPE per options: a defined `indexerDb` (local
- *  mode only) carries the postgres dependency; everything else is
- *  zero-dep. Keeping the public factories conditionally typed (rather
- *  than returning the union) means a plain `sui()` does NOT demand a
- *  postgres provider from the stack. */
-type SuiPluginFor<O extends SuiOptions> = O extends { readonly indexerDb: object }
-	? IndexedSuiPlugin
-	: ZeroDepSuiPlugin;
-
-const buildPlugin = <const O extends SuiOptions>(opts: O): SuiPluginFor<O> => {
-	if (opts.mode === 'local' && opts.indexerDb !== undefined) {
-		// GraphQL gated ON: declare the postgres dep + compose the DSN.
-		return buildLocalIndexedPlugin(
-			opts,
-			opts.indexerDb.postgres,
-			opts.indexerDb.database ?? DEFAULT_INDEXER_DATABASE,
-		) as SuiPluginFor<O>;
-	}
-	return buildZeroDepPlugin(opts) as SuiPluginFor<O>;
-};
+const buildPlugin = <O extends SuiOptions>(opts: O) => buildSuiPlugin(opts);
 
 // ---------------------------------------------------------------------------
 // User-facing factories
@@ -362,10 +376,11 @@ const buildPlugin = <const O extends SuiOptions>(opts: O): SuiPluginFor<O> => {
 
 /** Local Sui shorthand. Network/env selection belongs to the CLI or
  *  `defineDevstackWith(...)`; plain `sui()` always means an in-stack
- *  local validator. */
+ *  local validator (GraphQL/indexer/Postgres on by default via a
+ *  sui-owned sidecar). */
 export const sui = <const O extends SuiOptions = { mode: 'local' }>(
 	opts: O = { mode: 'local' } as O,
-): SuiPluginFor<O> => buildPlugin(opts);
+) => buildPlugin(opts);
 
 /** Mode-narrowed factory namespace.
  *

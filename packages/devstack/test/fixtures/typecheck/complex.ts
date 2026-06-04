@@ -68,6 +68,14 @@ export const flatLocalStack = defineDevstack({
 });
 
 const suiExternal = sui({ mode: 'local-rpc', rpcUrl: 'http://127.0.0.1:9000' });
+
+// Local-mode escape hatches typecheck without a postgres provider in the
+// stack (sui owns its indexer DB; there is no cross-plugin dependency).
+export const _suiIndexerOff = sui({ mode: 'local', indexer: false });
+export const _suiByoIndexer = sui({
+	mode: 'local',
+	indexerDb: { url: 'postgres://u:p@db:5432', network: 'my-net' },
+});
 const resourceRefConsumer = definePlugin({
 	id: 'resource-ref-consumer',
 	dependsOn: { sui: suiExternal },

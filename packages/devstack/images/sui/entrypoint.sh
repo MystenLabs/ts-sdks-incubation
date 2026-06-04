@@ -22,11 +22,12 @@
 # epochs (~48–72h at the localnet's default 24h epoch); override via
 # the `DEVSTACK_SUI_EPOCHS_TO_RETAIN` env var (`MAX` disables pruning).
 #
-# External indexer + GraphQL gate. sui-tools has no embedded Postgres,
-# so GraphQL's indexer reads from an external DB. When
-# `DEVSTACK_SUI_INDEXER_URL` (a PostgreSQL DSN reaching the devstack
-# postgres plugin via its network alias) is set, the entrypoint appends
-# `--with-graphql` + `--with-indexer=<dsn>`. Unset = RPC + faucet only.
+# Indexer + GraphQL gate. sui-tools has no embedded Postgres, so GraphQL's
+# indexer reads from a separate DB. When `DEVSTACK_SUI_INDEXER_URL` (a
+# PostgreSQL DSN reaching the indexer DB via its in-network alias) is set,
+# the entrypoint appends `--with-graphql` + `--with-indexer=<dsn>`. The sui
+# plugin sets that var by DEFAULT (its owned postgres sidecar), so GraphQL
+# is on unless the caller opted out. Unset = RPC + faucet only.
 
 set -eu
 

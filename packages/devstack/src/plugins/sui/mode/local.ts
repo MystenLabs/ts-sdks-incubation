@@ -35,13 +35,15 @@
 // retrying on body-level `{Failure}` responses during the post-RPC /
 // pre-fund window.
 //
-// External GraphQL indexer:
+// GraphQL indexer (on by default):
 //   - The sui-tools base ships no embedded Postgres, so `--with-graphql`
-//     reads from an EXTERNAL DB. The caller threads a resolved
-//     `{ url, network }` (composed from the postgres plugin's
-//     `networkAlias`); this body attaches the validator to that network
-//     and passes the DSN in via `DEVSTACK_SUI_INDEXER_URL` so the
-//     entrypoint appends `--with-indexer=<dsn>`.
+//     reads from a separate DB. By default the sui plugin OWNS that DB as
+//     a postgres SIDECAR (provisioned in the barrel before this body
+//     runs); the caller can instead BYO a Postgres, or opt out entirely.
+//     Either way this body receives a resolved `{ url, network }`
+//     (`undefined` when indexer is off), attaches the validator to that
+//     network, and passes the DSN in via `DEVSTACK_SUI_INDEXER_URL` so
+//     the entrypoint appends `--with-graphql` + `--with-indexer=<dsn>`.
 //
 // What this body deliberately defers:
 //   - Snapshot capture — the framework exists in the plugin's
@@ -137,9 +139,14 @@ export const LOCAL_VALIDATOR_STOP_GRACE_SECONDS = 30;
  *  about which probe wedged. */
 const PROBE_FETCH_TIMEOUT_MS = 3000;
 
-/** Resolved external-indexer wiring for local mode. The URL is the
- *  PostgreSQL DSN (composed from the postgres plugin's networkAlias);
- *  `network` is the postgres container network the validator joins. */
+/** Role label for sui's owned GraphQL-indexer postgres sidecar. Shared
+ *  const so the container label (in `bootPostgresSidecar`'s caller) and
+ *  the snapshotable capture tuple agree exactly. */
+export const SUI_INDEXER_DB_ROLE = 'indexer-db' as const;
+
+/** Resolved indexer wiring for local mode. The URL is the PostgreSQL DSN
+ *  (sui-owned sidecar by default, or the caller's BYO DB); `network` is
+ *  the container network the validator joins to reach it. */
 export interface LocalIndexer {
 	readonly url: string;
 	readonly network: string;
@@ -192,10 +199,10 @@ export const bootLocalMode = (
 			indexer,
 		);
 
-		// GraphQL is gated on an external indexer (sui-tools ships no
-		// embedded Postgres). Without `indexer` the entrypoint omits
-		// `--with-graphql`, so we skip its routed URL + probe and resolve
-		// a graphql-less client.
+		// GraphQL is gated on a resolved indexer DB (on by default via the
+		// sui-owned sidecar; off when `indexer: false`). Without `indexer`
+		// the entrypoint omits `--with-graphql`, so we skip its routed URL +
+		// probe and resolve a graphql-less client.
 		const graphqlEnabled = indexer !== undefined;
 
 		// ----- 3. Ready probes ----------------------------------------------
@@ -455,9 +462,10 @@ const ensureLocalValidatorContainerAttempt = (
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
-			// External indexer (when supplied): join the postgres network +
-			// hand the entrypoint the DSN so it enables `--with-graphql`
-			// against the external DB. Omitted = RPC + faucet only.
+			// Indexer (when on): join the indexer DB's network + hand the
+			// entrypoint the DSN so it enables `--with-graphql` against it
+			// (sui-owned sidecar by default, or a BYO DB). Omitted = RPC +
+			// faucet only.
 			...(params.indexer !== undefined
 				? {
 						networkAttach: [params.indexer.network],

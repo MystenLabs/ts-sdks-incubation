@@ -8,9 +8,11 @@
 //                   volume), so `docker commit` captures it. The
 //                   validator commit captures chain state, the
 //                   embedded-fullnode db, and the GraphQL consistent-
-//                   store on-disk store. The GraphQL indexer's data
-//                   lives in the EXTERNAL postgres container, captured
-//                   by the postgres plugin's own commit.
+//                   store on-disk store. When the GraphQL indexer is on
+//                   (the default), its data lives in sui's OWNED postgres
+//                   sidecar — captured here too under sui's own
+//                   `indexer-db` role (the sidecar's vendored image
+//                   relocates PGDATA into the writable layer).
 //
 //   - external    — no container, no snapshot. The `SnapshotableDecl`
 //                   has `missingTolerance: 'fine'` so restore against
@@ -44,8 +46,13 @@ import { Effect } from 'effect';
 
 import type { ContainerLabelTuple, SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { SuiPluginMode } from './mode/spec.ts';
+import { SUI_INDEXER_DB_ROLE } from './mode/local.ts';
 
 /** Build the Snapshotable contribution for a resolved mode + chain id.
+ *
+ *  `hasIndexer` (local mode only) folds the sui-owned indexer-db sidecar
+ *  into the captured containers when GraphQL is on; off when the caller
+ *  set `indexer: false` (or BYO'd a Postgres the sui plugin doesn't own).
  *
  *  Identity guard data lives in `preRestore`: the substrate compares
  *  the snapshot's stored chain identity against the resolver's
@@ -56,6 +63,7 @@ export const makeSnapshotable = (
 	app: string,
 	stack: string,
 	chain: string,
+	hasIndexer: boolean,
 ): SnapshotableDecl => {
 	const labels = (role: string): ContainerLabelTuple => ({
 		app,
@@ -68,17 +76,20 @@ export const makeSnapshotable = (
 		case 'local': {
 			// The validator's writable layer captures chain state, the
 			// embedded-fullnode db, and the GraphQL consistent-store
-			// on-disk store. The GraphQL indexer's data lives in the
-			// EXTERNAL postgres container (captured by the postgres
-			// plugin's own commit). The runtime adapter pauses the
-			// container before commit; architecture default grace is
-			// "pause container".
+			// on-disk store. When the indexer is on (default), sui ALSO
+			// owns a postgres sidecar whose PGDATA-relocated writable layer
+			// holds the indexer's data — captured here under sui's own
+			// `indexer-db` role. The runtime adapter pauses each container
+			// before commit; architecture default grace is "pause
+			// container".
 			return {
 				kind: 'snapshotable',
 				// Chain state lives in the writable container layer
 				// — declared via `managedContainers`, not subtrees.
 				subtrees: [],
-				managedContainers: [labels('validator')],
+				managedContainers: hasIndexer
+					? [labels('validator'), labels(SUI_INDEXER_DB_ROLE)]
+					: [labels('validator')],
 				missingTolerance: 'fine',
 				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'local' as const, chain }),
 				postRestore: Effect.void,
