@@ -218,9 +218,7 @@ export const writeManifest = (
 					}),
 			),
 		);
-	}).pipe(
-		Effect.withSpan('Manifest.writeManifest', { attributes: { 'devstack.manifest.path': path } }),
-	);
+	});
 
 const serializeEnvelope = (envelope: ManifestEnvelope): string =>
 	// Stable key ordering, deterministic re-emit. `JSON.stringify` with
@@ -267,9 +265,7 @@ export const readManifest = (
 			);
 		}
 		return decoded as ManifestEnvelope;
-	}).pipe(
-		Effect.withSpan('Manifest.readManifest', { attributes: { 'devstack.manifest.path': path } }),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Re-export the envelope + endpoint types so downstream substrate

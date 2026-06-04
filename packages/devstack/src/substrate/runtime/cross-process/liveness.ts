@@ -164,10 +164,6 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
 		if (holder.hostname !== ownHost) {
 			return 'alive' as const;
 		}
-		yield* Effect.annotateCurrentSpan({
-			'devstack.holder.pid': holder.pid,
-			'devstack.holder.host': holder.hostname,
-		});
 		if (!isPidAlive(holder.pid)) return 'dead' as const;
 		const probedStart = processStartTime(holder.pid, cache);
 		// pid alive but no stamp probable → conservative: ALIVE

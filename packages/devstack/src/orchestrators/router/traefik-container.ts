@@ -433,7 +433,7 @@ export const bootstrap = (
 			networkId: network.id,
 			imageMatches: true,
 		};
-	}).pipe(Effect.withSpan('orchestrator.router.bootstrap'));
+	});
 
 // ---------------------------------------------------------------------------
 // Docker-backed layer

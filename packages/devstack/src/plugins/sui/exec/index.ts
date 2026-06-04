@@ -387,14 +387,6 @@ export const executeSuiTx = (params: {
 					Transaction: { digest: txOk.digest, objectChanges },
 				} satisfies SuiExecuteResult;
 			}),
-		)
-		.pipe(
-			Effect.withSpan('devstack.plugin.sui.execute', {
-				attributes: {
-					'sui-execute.signer': params.signer.name,
-					'sui-execute.address': params.signer.address,
-				},
-			}),
 		);
 
 /** Decode a possibly URI-encoded SDK error message. The Sui SDK

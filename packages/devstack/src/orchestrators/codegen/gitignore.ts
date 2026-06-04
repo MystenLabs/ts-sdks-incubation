@@ -99,11 +99,7 @@ export const writeGitignore = (
 					}),
 			),
 		);
-	}).pipe(
-		Effect.withSpan('codegen.writeGitignore', {
-			attributes: { 'codegen.path': input.path },
-		}),
-	);
+	});
 
 const extractUserBlock = (text: string): string | null => {
 	const startIdx = text.indexOf(USER_BLOCK_START);

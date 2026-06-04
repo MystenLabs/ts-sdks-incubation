@@ -33,7 +33,6 @@ import { fromHex } from '@mysten/sui/utils';
 
 import type { AccountValue } from '../account/index.ts';
 import { sealError, type SealError } from './errors.ts';
-import { SealSpans } from './spans.ts';
 
 const KEY_TYPE_BONEH_FRANKLIN_BLS12381 = 0;
 
@@ -214,14 +213,7 @@ export const runSealPublishTransaction = (
 		}
 
 		return yield* projectSealPublishReceipt(inputs.name, result.Transaction);
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.publish.suiTx', {
-			attributes: {
-				[SealSpans.name]: inputs.name,
-				[SealSpans.signer]: inputs.signer.address,
-			},
-		}),
-	);
+	});
 
 export const publishSealPackage = (
 	publisher: ArtifactPublisher,
@@ -249,11 +241,7 @@ export const publishSealPackage = (
 		});
 
 		return { packageId: cached.packageId };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.publish', {
-			attributes: { [SealSpans.name]: inputs.name, [SealSpans.chain]: inputs.chain },
-		}),
-	);
+	});
 
 // ---------------------------------------------------------------------------
 // KeyServer register — `keyServer` artifact
@@ -419,11 +407,7 @@ export const runRegisterKeyServerTransaction = (
 		}
 
 		return yield* projectRegisterKeyServerReceipt(inputs.name, result.Transaction);
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.register.suiTx', {
-			attributes: { [SealSpans.name]: inputs.name, [SealSpans.url]: inputs.keyServerUrl },
-		}),
-	);
+	});
 
 export const registerKeyServer = (
 	publisher: ArtifactPublisher,
@@ -447,8 +431,4 @@ export const registerKeyServer = (
 		});
 
 		return { objectId: cached.objectId };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.register', {
-			attributes: { [SealSpans.name]: inputs.name, [SealSpans.url]: inputs.keyServerUrl },
-		}),
-	);
+	});

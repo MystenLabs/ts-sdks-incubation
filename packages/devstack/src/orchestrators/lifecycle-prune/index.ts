@@ -449,7 +449,7 @@ export const collectLifecyclePruneInventory = (
 		});
 
 		return { groups };
-	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.inventory'));
+	});
 
 const selectedGroups = (
 	inventory: LifecyclePruneInventory,
@@ -652,10 +652,7 @@ export const runLifecyclePrune = (
 						routerStack: group.stack,
 					});
 				}
-			}).pipe(
-				Effect.provide(NodeFileSystem.layer),
-				Effect.withSpan('orchestrator.lifecycle-prune.removeRouterProfileState'),
-			);
+			}).pipe(Effect.provide(NodeFileSystem.layer));
 		}
 
 		return {
@@ -672,4 +669,4 @@ export const runLifecyclePrune = (
 			foreignNetworkHolders,
 			staleNetworkEndpoints,
 		};
-	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.run'));
+	});

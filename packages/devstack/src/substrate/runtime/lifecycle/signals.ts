@@ -123,7 +123,7 @@ export const installSignalHandler = (
 		// Park forever; the listeners themselves run synchronously in
 		// Node's event loop, not in this fiber.
 		return yield* Effect.never;
-	}).pipe(Effect.withSpan('lifecycle.signals.installSignalHandler'));
+	});
 
 /** Re-export the handled-signal list so tests / docs can enumerate. */
 export const handledSignals: ReadonlyArray<HandledSignal> = HANDLED_SIGNALS;

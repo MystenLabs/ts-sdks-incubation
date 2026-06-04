@@ -66,7 +66,6 @@ import {
 	type TransactionSignerScope,
 	type ForkAdminSurface,
 	type SuiSdkShim,
-	SuiSpans,
 } from '../sui/index.ts';
 import {
 	LeaseBrokerService,
@@ -74,7 +73,6 @@ import {
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
 import { withAddressLease } from './lease.ts';
-import { AccountSpans } from './spans.ts';
 
 // -----------------------------------------------------------------------------
 // User-facing options shape
@@ -702,24 +700,10 @@ const buildClosures = (
 				Effect.gen(function* () {
 					return yield* body(transactionSigner);
 				}),
-			).pipe(
-				Effect.withSpan('devstack.plugin.account.transactionSigner', {
-					attributes: {
-						[AccountSpans.name]: accountName,
-						[AccountSpans.address]: resolved.address,
-					},
-				}),
 			);
 		return {
 			signAndExecute: (tx) =>
-				withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
-					Effect.withSpan('devstack.plugin.account.signAndExecute', {
-						attributes: {
-							[AccountSpans.name]: accountName,
-							[AccountSpans.address]: resolved.address,
-						},
-					}),
-				),
+				withTransactionSigner((locked) => locked.signAndExecute(tx)),
 			withTransactionSigner,
 			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
 			signPersonalMessage: refuse<{ readonly bytes: string; readonly signature: string }>,
@@ -786,24 +770,10 @@ const buildClosures = (
 			Effect.gen(function* () {
 				return yield* body(transactionSigner);
 			}),
-		).pipe(
-			Effect.withSpan('devstack.plugin.account.transactionSigner', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
 		);
 
 	const signTransaction: AccountValue['signTransaction'] = (tx) =>
-		withTransactionSigner((locked) => locked.signTransaction(tx)).pipe(
-			Effect.withSpan('devstack.plugin.account.signTransaction', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
-		);
+		withTransactionSigner((locked) => locked.signTransaction(tx));
 
 	const signPersonalMessage: AccountValue['signPersonalMessage'] = (msg) =>
 		withAddressLease(
@@ -811,24 +781,10 @@ const buildClosures = (
 			accountName,
 			resolved.address,
 			signPersonalWith(signer, msg, accountName, resolved.address),
-		).pipe(
-			Effect.withSpan('devstack.plugin.account.signPersonalMessage', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
 		);
 
 	const signAndExecute: AccountValue['signAndExecute'] = (tx) =>
-		withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
-			Effect.withSpan('devstack.plugin.account.signAndExecute', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
-		);
+		withTransactionSigner((locked) => locked.signAndExecute(tx));
 
 	return { signAndExecute, withTransactionSigner, signTransaction, signPersonalMessage };
 };
@@ -846,19 +802,8 @@ export const acquireAccount = (
 	Effect.gen(function* () {
 		yield* validateAccountName(opts.name);
 
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.name]: opts.name,
-			[AccountSpans.variant]: opts.kind,
-			[SuiSpans.mode]: ctx.sui.mode,
-		});
-
 		// --- variant dispatch ----------------------------------------
 		const resolved = yield* resolveVariant(opts, ctx);
-
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.address]: resolved.address,
-			[AccountSpans.scheme]: resolved.scheme,
-		});
 
 		// --- lease broker handle (captured once; both funding and the
 		//     resolved-value closures share this handle so concurrent

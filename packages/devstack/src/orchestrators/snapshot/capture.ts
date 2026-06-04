@@ -242,7 +242,7 @@ const enumerateParticipantContainers = (
 			}
 		}
 		return containers;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.enumerate'));
+	});
 
 /** Commit one STOPPED container's writable layer to a temporary snapshot
  *  image tag. The container has already been gracefully stopped (RocksDB
@@ -285,7 +285,7 @@ const commitStoppedContainer = (
 			},
 			imageRef,
 		};
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.commit'));
+	});
 
 const saveCommittedImages = (
 	committed: ReadonlyArray<CommittedContainerCapture>,
@@ -325,7 +325,7 @@ const saveCommittedImages = (
 			savedTags,
 			committed.map((entry) => entry.captured.snapshotTag),
 		).pipe(Effect.catch(failImageBundleTagScan));
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.save-images'));
+	});
 
 const cleanupCommittedRefs = (
 	runtime: ContainerRuntime,
@@ -414,7 +414,7 @@ const writeHostTreeTar = (
 				),
 			),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.tar-host-tree'));
+	});
 
 // -----------------------------------------------------------------------------
 // Pre-stop gather — runs while plugins are LIVE (the gather-before-drain
@@ -529,7 +529,7 @@ export const gatherCaptureParticipants = (
 			declaredSubtrees,
 			participantKeys,
 		} satisfies GatheredCapture;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.gather'));
+	});
 
 // -----------------------------------------------------------------------------
 // Top-level capture — the bounce.
@@ -590,10 +590,6 @@ export const runCapture = (
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'capture',
-			'devstack.snapshot.id': inputs.snapshotId,
-		});
 		const grace = Duration.seconds(
 			inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS,
 		);
@@ -731,7 +727,7 @@ export const runCapture = (
 				return meta;
 			}),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture'));
+	});
 
 /**
  * The post-publish bounce tail: retag each committed image onto its
@@ -807,4 +803,4 @@ export const resumeAfterCapture = (
 				Effect.catch(failPhase('resume', `stack resume after capture failed`)),
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.resume'));
+	});

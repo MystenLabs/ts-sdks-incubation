@@ -54,8 +54,6 @@ import {
 import { withAddressLease } from './lease.ts';
 import { fundingFailureError } from '../internal/funding-failure-error.ts';
 import type { AccountValue } from './service.ts';
-import { AccountSpans } from './spans.ts';
-import { SuiSpans } from '../sui/index.ts';
 
 // `CoinResourceId` is the literal-typed resource id the coin plugin
 // publishes. Inlined here as `coin:${Sym}` so this file does NOT
@@ -358,23 +356,8 @@ export const fundEphemeralDefault = (
 			amount: parts.amountMist,
 		});
 
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.name]: parts.accountName,
-			[AccountSpans.address]: parts.address,
-			[AccountSpans.fundAmountMist]: parts.amountMist.toString(),
-			[SuiSpans.chain]: parts.chainId,
-			[SuiSpans.mode]: parts.suiMode,
-		});
 		return 'funded' as const;
-	}).pipe(
-		Effect.withSpan('devstack.plugin.account.fundEphemeralDefault', {
-			attributes: {
-				[AccountSpans.name]: parts.accountName,
-				[AccountSpans.address]: parts.address,
-				[SuiSpans.mode]: parts.suiMode,
-			},
-		}),
-	);
+	});
 
 /** Inputs the cross-cutting funding pass needs from the per-acquire ctx.
  *
@@ -537,22 +520,8 @@ export const applyCrossCuttingFunding = (
 			applied.push({ ...entry, outcome: 'funded' });
 		}
 
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.name]: parts.accountName,
-			[AccountSpans.address]: parts.address,
-			[AccountSpans.fundCrossCuttingCount]: parts.funding.length,
-			[SuiSpans.chain]: parts.chainId,
-		});
 		return applied;
-	}).pipe(
-		Effect.withSpan('devstack.plugin.account.applyCrossCuttingFunding', {
-			attributes: {
-				[AccountSpans.name]: parts.accountName,
-				[AccountSpans.address]: parts.address,
-				[AccountSpans.fundCrossCuttingEntries]: parts.funding.length,
-			},
-		}),
-	);
+	});
 
 const readExistingBalance = (
 	balanceReader: FundingBalanceReader,

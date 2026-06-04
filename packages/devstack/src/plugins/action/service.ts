@@ -52,7 +52,6 @@ import {
 	type DynamicDiscriminator,
 	type StaticDiscriminator,
 } from './discriminator.ts';
-import { ActionSpans } from './spans.ts';
 
 /** Action receipt — the cached value. Minimal shape: digest is the
  *  load-bearing identifier (drives verify probe + downstream
@@ -154,11 +153,6 @@ export const bootActionService = (
 	inputs: ActionAcquireInputs,
 ): Effect.Effect<ActionReceipt, ActionError | ArtifactPublishError, Scope.Scope> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			[ActionSpans.name]: inputs.actionName,
-			[ActionSpans.chain]: inputs.chainId,
-		});
-
 		// --- Pull the pre-projected dynamic-discriminator material
 		// (every acquire — hit OR miss). The callback form's
 		// `(ctx) => Effect<string>` is invoked by `index.ts` before
@@ -180,9 +174,6 @@ export const bootActionService = (
 		// `index.ts` then sees the original `phase` rather than a
 		// uniformly-stamped `'sign'`.
 		const typedProduce = Effect.gen(function* () {
-			yield* Effect.annotateCurrentSpan({
-				[ActionSpans.phase]: 'building',
-			});
 			// `inputs.body` is a USER-SUPPLIED Effect. Two failure
 			// surfaces must collapse onto a single `ActionError`:
 			//
@@ -229,10 +220,6 @@ export const bootActionService = (
 					);
 				}),
 			);
-			yield* Effect.annotateCurrentSpan({
-				[ActionSpans.phase]: 'parsing',
-				[ActionSpans.digest]: receipt.digest,
-			});
 			return receipt;
 		});
 
@@ -266,14 +253,4 @@ export const bootActionService = (
 		// The substrate hands back the decoded `ActionReceipt` on every
 		// path (decoded cached payload on hit, fresh produce on miss).
 		return receipt;
-	}).pipe(
-		// Outer span so the per-action `annotateCurrentSpan` annotations
-		// above attach to a real span instead of dropping silently when
-		// `bootActionService` is invoked outside a parent span.
-		Effect.withSpan('devstack.plugin.action.boot', {
-			attributes: {
-				[ActionSpans.name]: inputs.actionName,
-				[ActionSpans.chain]: inputs.chainId,
-			},
-		}),
-	);
+	});

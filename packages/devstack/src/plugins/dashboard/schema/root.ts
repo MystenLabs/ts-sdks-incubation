@@ -22,8 +22,6 @@ import {
 	SealInfo,
 	Service,
 	SnapshotEntry,
-	SpanFilterInput,
-	SpanRecordType,
 	StackState,
 	type ServiceSource,
 } from './types.ts';
@@ -35,7 +33,6 @@ import type { SubscribableState } from '../../../substrate/projection.ts';
 import type {
 	LogFilter,
 	LogLevel,
-	SpanFilter,
 } from '../../../substrate/runtime/observability/index.ts';
 
 const readSnapshot = (
@@ -213,7 +210,7 @@ builder.queryType({
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.pluginDomain.postgresStats),
 		}),
 
-		// --- Observability (Console "Logs" + "Traces" tabs) ---------------
+		// --- Observability (Console "Logs" tab) ---------------------------
 		/** Cross-service queryable log history. Filterable server-side by
 		 *  service / level / substring / time window; returns most-recent
 		 *  first, capped by `filter.limit` (default = ring capacity). */
@@ -226,19 +223,6 @@ builder.queryType({
 		logServices: t.field({
 			type: ['String'],
 			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.logServices),
-		}),
-		/** Completed-span ring. Filterable server-side by service / status /
-		 *  substring / time window; most-recent first. */
-		spans: t.field({
-			type: [SpanRecordType],
-			args: { filter: t.arg({ type: SpanFilterInput, required: false }) },
-			resolve: (_parent, args, ctx) =>
-				Effect.runPromise(ctx.domain.spans(toSpanFilter(args.filter))),
-		}),
-		/** Distinct services currently in the span ring (filter dropdown). */
-		spanServices: t.field({
-			type: ['String'],
-			resolve: (_parent, _args, ctx) => Effect.runPromise(ctx.domain.spanServices),
 		}),
 	}),
 });
@@ -282,32 +266,6 @@ const toLogFilter = (
 	return {
 		...(services ? { services } : {}),
 		...(levels && levels.length > 0 ? { levels } : {}),
-		...(input.search != null ? { search: input.search } : {}),
-		...(input.sinceMillis != null ? { sinceMillis: input.sinceMillis } : {}),
-		...(input.limit != null ? { limit: input.limit } : {}),
-	};
-};
-
-/** Map the nullable GraphQL `SpanFilter` input onto the store's `SpanFilter`. */
-const toSpanFilter = (
-	input:
-		| {
-				services?: readonly (string | null)[] | null;
-				statuses?: readonly (string | null)[] | null;
-				search?: string | null;
-				sinceMillis?: number | null;
-				limit?: number | null;
-		  }
-		| null
-		| undefined,
-): SpanFilter | undefined => {
-	if (input == null) return undefined;
-	const services = nonEmpty(input.services);
-	const statusStrings = nonEmpty(input.statuses);
-	const statuses = statusStrings?.filter((s): s is 'ok' | 'error' => s === 'ok' || s === 'error');
-	return {
-		...(services ? { services } : {}),
-		...(statuses && statuses.length > 0 ? { statuses } : {}),
 		...(input.search != null ? { search: input.search } : {}),
 		...(input.sinceMillis != null ? { sinceMillis: input.sinceMillis } : {}),
 		...(input.limit != null ? { limit: input.limit } : {}),

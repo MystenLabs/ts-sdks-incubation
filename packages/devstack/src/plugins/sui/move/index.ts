@@ -432,7 +432,7 @@ const buildViaContainerExec = (
 			);
 		}
 		return yield* parseBuildOutput(result.stdout, inputs.sourcePath, inputs.packageName);
-	}).pipe(Effect.withSpan('sui-move-build.via-exec'));
+	});
 
 /** `{ local = "../path" }` dependency paths, harvested from a Move.toml. */
 const LOCAL_MOVE_DEP_RE = /\blocal\s*=\s*"([^"]+)"/g;
@@ -572,7 +572,7 @@ const buildViaOneShot = (
 			);
 		}
 		return yield* parseBuildOutput(result.stdout, inputs.sourcePath, inputs.packageName);
-	}).pipe(Effect.withSpan('sui-move-build.via-one-shot'));
+	});
 
 export const runMoveBuild = (
 	inputs: BuildInputs,

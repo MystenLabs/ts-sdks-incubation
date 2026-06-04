@@ -77,7 +77,7 @@ export const layerFormatterRegistry: Layer.Layer<FormatterRegistryService> = Lay
 				// seq + finalizer — parallel plugin registrations stay
 				// isolated and only drop what they added.
 				yield* store.register(contribution.errorTags.map((tag) => ({ key: tag, value: fmt })));
-			}).pipe(Effect.withSpan('substrate.formatterRegistry.register'));
+			});
 
 		const snapshot: Effect.Effect<FormatterRegistry> = Effect.gen(function* () {
 			const current = yield* store.snapshot;

@@ -16,7 +16,6 @@ import { Duration, Effect, type Scope } from 'effect';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
 import { redactText, type RedactionRule } from '../../substrate/runtime/observability/index.ts';
 import { sealError, type SealError } from './errors.ts';
-import { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -203,9 +202,6 @@ export const runSealKeygen = (
 
 		return yield* parseSealKeygenOutput(result.stdout, name);
 	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.keygen.oneShot', {
-			attributes: { [SealSpans.name]: name },
-		}),
 		Effect.timeoutOrElse({
 			duration: Duration.millis(KEYGEN_TIMEOUT_MS + 5_000),
 			orElse: () =>

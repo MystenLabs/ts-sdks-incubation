@@ -63,7 +63,6 @@ import {
 	type FaucetExhausted,
 	type FaucetUnreachable,
 } from './errors.ts';
-import { FaucetSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Default retry profile
@@ -212,7 +211,7 @@ export const requestFundsOnce = (
 				}),
 			);
 		}
-	}).pipe(Effect.withSpan('devstack.plugin.faucet.requestFundsOnce'));
+	});
 
 // ---------------------------------------------------------------------------
 // Retry wrapper
@@ -254,14 +253,6 @@ export const requestFundsWithRetry = (
 		const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 		const maxAttempts = opts.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
 		const initialDelayMs = opts.initialDelayMs ?? DEFAULT_INITIAL_DELAY_MS;
-
-		yield* Effect.annotateCurrentSpan({
-			[FaucetSpans.url]: opts.faucetUrl,
-			[FaucetSpans.address]: opts.address,
-			[FaucetSpans.amount]: opts.amount.toString(),
-			[FaucetSpans.budgetMs]: timeoutMs,
-			[FaucetSpans.maxAttempts]: maxAttempts,
-		});
 
 		const attempts = yield* Ref.make(0);
 		const lastError = yield* Ref.make<FaucetUnreachable | FaucetBodyError | undefined>(undefined);
@@ -307,4 +298,4 @@ export const requestFundsWithRetry = (
 					}),
 			}),
 		);
-	}).pipe(Effect.withSpan('devstack.plugin.faucet.requestFundsWithRetry'));
+	});

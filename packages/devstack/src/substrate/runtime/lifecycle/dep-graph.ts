@@ -140,7 +140,6 @@ export const resolveGraph = (
 	members: ReadonlyArray<AnyPlugin>,
 ): Effect.Effect<ResolvedGraph, DepGraphError> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.dep-graph.memberCount': members.length });
 		const named = expand(members);
 
 		// Provider index: resource-id → key. The compile-time
@@ -238,7 +237,7 @@ export const resolveGraph = (
 			levels,
 			downstream: downstreamFrozen,
 		} satisfies ResolvedGraph;
-	}).pipe(Effect.withSpan('lifecycle.dep-graph.resolve'));
+	});
 
 // -----------------------------------------------------------------------------
 // Selective-restart helpers

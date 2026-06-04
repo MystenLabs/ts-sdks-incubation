@@ -36,10 +36,8 @@ import {
 import { setCurrentPluginPhase } from '../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../substrate/runtime/managed-container.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
-import { WalrusSpans } from './spans.ts';
 
 /** Default per-node grace window. Storage nodes maintain RocksDB-
  *  backed state; need >10s to flush and checkpoint on `docker stop`.
@@ -439,19 +437,11 @@ export const startStorageNodes = (
 					// entrypoint port — Traefik routes by Host: header.
 					rpcUrl: `http://${publicHostname}:${WALRUS_ROUTER_PORT}`,
 				} satisfies WalrusStorageNode;
-			}).pipe(
-				Effect.withSpan(`devstack.plugin.walrus.storage-node-${i}.boot`, {
-					attributes: { [SpanAttr.plugin]: 'walrus', [WalrusSpans.node]: i },
-				}),
-			);
+			});
 
 		const nodes = yield* Effect.all(indices.map(bootOne), {
 			concurrency: 'unbounded',
 		});
 
 		return { nodes };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.walrus.storage-nodes.boot', {
-			attributes: { [SpanAttr.plugin]: 'walrus' },
-		}),
-	);
+	});

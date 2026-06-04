@@ -281,10 +281,6 @@ export const stageAndSwap = <A, E>(
 			args.stagingPath ?? `${targetPath}.staging.${(args as { idSuffix: string }).idSuffix}`;
 		const backupPath =
 			args.backupPath ?? `${targetPath}.bak.${(args as { idSuffix: string }).idSuffix}`;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.stage-and-swap.target': targetPath,
-			'devstack.stage-and-swap.staging': stagingPath,
-		});
 
 		// 0. Pre-clean the staging slot (a previous crash may have left
 		//    a sibling). recursive+force is idempotent.
@@ -416,4 +412,4 @@ export const stageAndSwap = <A, E>(
 		}
 
 		return result;
-	}).pipe(Effect.withSpan('substrate.stage-and-swap'));
+	});

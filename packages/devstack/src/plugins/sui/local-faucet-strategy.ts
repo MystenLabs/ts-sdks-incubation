@@ -25,8 +25,6 @@ import { Effect } from 'effect';
 import { leaseKey, type LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
 import { requestFundsWithRetry, type FaucetStrategy, type RetryOptions } from '../faucet/index.ts';
 
-import { SuiSpans } from './spans.ts';
-
 /** Optional serialization for faucet backends that spend a shared funding coin. */
 export interface SuiLocalFaucetSerialization {
 	/** Stack-local broker; callers choose the resource key shape. */
@@ -61,13 +59,6 @@ const withSerialization = <E>(
 		Effect.gen(function* () {
 			yield* serialization.broker.acquire(leaseKey(serialization.key), serialization.owner);
 			yield* effect;
-		}),
-	).pipe(
-		Effect.withSpan('devstack.plugin.sui.localFaucet.serializedRequest', {
-			attributes: {
-				[SuiSpans.localFaucetLeaseKey]: serialization.key,
-				[SuiSpans.localFaucetLeaseOwner]: serialization.owner,
-			},
 		}),
 	);
 };

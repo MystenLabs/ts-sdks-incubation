@@ -105,7 +105,7 @@ export const atomicWriteFile = (
 			);
 			yield* fs.rename(tmp, path).pipe(Effect.catch(failStage(path, 'rename')));
 		}).pipe(Effect.onError(() => fs.remove(tmp, { force: true }).pipe(Effect.ignore)));
-	}).pipe(Effect.withSpan('substrate.atomicWriteFile', { attributes: { path } }));
+	});
 
 /**
  * Atomically write a JSON value. Encodes via Schema (so the on-disk

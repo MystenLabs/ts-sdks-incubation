@@ -34,7 +34,7 @@ import type {
 	ControlPlaneResolvedValue,
 	ControlPlaneSnapshotEntry,
 } from './service.ts';
-import type { LogStoreShape, SpanStoreShape } from '../observability/index.ts';
+import type { LogStoreShape } from '../observability/index.ts';
 
 // -----------------------------------------------------------------------------
 // Generic resolved-value enumeration
@@ -109,13 +109,10 @@ export interface ControlPlaneDomainDeps {
 	/** Optional cross-service log store. Absent in bare smoke-test paths;
 	 *  the `logs`/`logServices` accessors degrade to empty when null. */
 	readonly logStore: LogStoreShape | null;
-	/** Optional completed-span store. Absent in bare smoke-test paths; the
-	 *  `spans`/`spanServices` accessors degrade to empty when null. */
-	readonly spanStore: SpanStoreShape | null;
 }
 
 export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPlaneDomain => {
-	const { graph, registry, snapshotOrchestrator, fileSystem, logStore, spanStore } = deps;
+	const { graph, registry, snapshotOrchestrator, fileSystem, logStore } = deps;
 
 	const provideFs = <A, E>(eff: Effect.Effect<A, E, FileSystem.FileSystem>): Effect.Effect<A, E> =>
 		fileSystem === null
@@ -156,22 +153,16 @@ export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPl
 		enumerateResolvedValues(graph, registry),
 	);
 
-	// Observability accessors. These read the process-scoped stores the
+	// Observability accessors. These read the process-scoped log store the
 	// supervisor created (fed off the same Logger path as the projection
-	// tail / the recording Tracer). Filtering happens server-side in the
-	// store; the dashboard never pulls the whole ring across the wire.
-	// Each degrades to empty when the corresponding store is absent.
+	// tail). Filtering happens server-side in the store; the dashboard never
+	// pulls the whole ring across the wire. Degrades to empty when the store
+	// is absent.
 	const logs: ControlPlaneDomain['logs'] = (filter) =>
 		logStore === null ? Effect.succeed([]) : logStore.query(filter);
 
 	const logServices: ControlPlaneDomain['logServices'] =
 		logStore === null ? Effect.succeed([]) : logStore.services;
-
-	const spans: ControlPlaneDomain['spans'] = (filter) =>
-		spanStore === null ? Effect.succeed([]) : spanStore.query(filter);
-
-	const spanServices: ControlPlaneDomain['spanServices'] =
-		spanStore === null ? Effect.succeed([]) : spanStore.services;
 
 	return {
 		snapshots,
@@ -180,8 +171,6 @@ export const buildControlPlaneDomain = (deps: ControlPlaneDomainDeps): ControlPl
 		resolvedValues,
 		logs,
 		logServices,
-		spans,
-		spanServices,
 	};
 };
 
@@ -195,8 +184,6 @@ export const emptyControlPlaneDomain: ControlPlaneDomain = {
 	resolvedValues: Effect.succeed([]),
 	logs: () => Effect.succeed([]),
 	logServices: Effect.succeed([]),
-	spans: () => Effect.succeed([]),
-	spanServices: Effect.succeed([]),
 };
 
 /** Read an optional service value out of a `Context.Context<never>`,
@@ -221,9 +208,6 @@ export const controlPlaneDomainFromContext = (args: {
 	 *  created in the supervisor closure, not layered into `pluginContext`).
 	 *  `null` in bare smoke-test paths that don't build one. */
 	readonly logStore?: LogStoreShape | null;
-	/** The supervisor's process-scoped span store, passed directly. `null`
-	 *  in bare smoke-test paths. */
-	readonly spanStore?: SpanStoreShape | null;
 }): ControlPlaneDomain =>
 	buildControlPlaneDomain({
 		graph: args.graph,
@@ -231,5 +215,4 @@ export const controlPlaneDomainFromContext = (args: {
 		snapshotOrchestrator: readOptional(args.pluginContext, SnapshotOrchestratorService),
 		fileSystem: readOptional(args.pluginContext, FileSystem.FileSystem),
 		logStore: args.logStore ?? null,
-		spanStore: args.spanStore ?? null,
 	});

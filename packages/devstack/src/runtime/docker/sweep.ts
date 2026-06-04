@@ -78,7 +78,7 @@ export const removeManagedContainers = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeManagedContainers'));
+	});
 
 const labelsMatchAppStack = (
 	labels: Readonly<Record<string, string>>,
@@ -97,7 +97,7 @@ export const removeDevstackContainers = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainers'));
+	});
 
 /** Remove devstack-managed containers whose generic `kind` label matches
  *  AND whose name matches. The L1 helper is plugin-blind: orchestrators
@@ -115,7 +115,7 @@ export const removeDevstackContainersByKindAndName = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackContainersByKindAndName'));
+	});
 
 const removeManagedImage = (
 	ref: string,
@@ -151,7 +151,7 @@ export const removeManagedImages = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeManagedImages'));
+	});
 
 export const removeDevstackImages = (
 	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
@@ -170,7 +170,7 @@ export const removeDevstackImages = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackImages'));
+	});
 
 const removeManagedNetwork = (
 	name: string,
@@ -198,7 +198,7 @@ export const removeManagedNetworks = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeManagedNetworks'));
+	});
 
 /** Parse `network X has active endpoints (name:"A" id:"B")` stderr —
  *  Docker enumerates each blocking endpoint as a `(name:"…" id:"…")`
@@ -372,7 +372,7 @@ export const removeDevstackNetworks = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworks'));
+	});
 
 export const removeDevstackNetworksBestEffort = (
 	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
@@ -403,7 +403,7 @@ export const removeDevstackNetworksBestEffort = (
 			}
 		}
 		return { removed, skippedInUse, foreignHolders, staleEndpoints };
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackNetworksBestEffort'));
+	});
 
 export const removeManagedVolumes = (
 	labelMatch: Partial<ContainerLabelTuple>,
@@ -426,7 +426,7 @@ export const removeManagedVolumes = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeManagedVolumes'));
+	});
 
 export const removeDevstackVolumes = (
 	labelMatch: Pick<ContainerLabelTuple, 'app' | 'stack'>,
@@ -449,4 +449,4 @@ export const removeDevstackVolumes = (
 			if (didRemove) removed += 1;
 		}
 		return removed;
-	}).pipe(Effect.withSpan('runtime.docker.removeDevstackVolumes'));
+	});

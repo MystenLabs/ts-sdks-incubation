@@ -66,9 +66,7 @@ const ROSTER_DOC_ERRORS = {
  *  roster surfaces a typed error so callers can decide whether to
  *  abandon or rewrite). */
 export const readRoster = (path: string): Effect.Effect<RosterDocument, RosterError> =>
-	readVersionedDocumentSync(path, RosterDocumentSchema, ROSTER_DOC_ERRORS, EMPTY_ROSTER).pipe(
-		Effect.withSpan('cross-process.roster.read'),
-	);
+	readVersionedDocumentSync(path, RosterDocumentSchema, ROSTER_DOC_ERRORS, EMPTY_ROSTER);
 
 /** Atomic write: route through the canonical sync primitive. The
  *  roster's mutations are all under `stack.lock`, so the non-yielding
@@ -237,10 +235,6 @@ export const claim = (
 	withStackLock(
 		paths,
 		Effect.gen(function* () {
-			yield* Effect.annotateCurrentSpan({
-				'devstack.roster.path': paths.rosterFile,
-				'devstack.roster.intent': intent,
-			});
 			const initial = yield* readRoster(paths.rosterFile).pipe(
 				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_ROSTER)),
 			);
@@ -258,7 +252,7 @@ export const claim = (
 				soleHolder: swept.holders.length === 0,
 			};
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.claim'));
+	);
 
 /**
  * Heartbeat protocol — refresh this process's `heartbeatAt`. Under the
@@ -291,7 +285,7 @@ export const heartbeat = (
 			};
 			if (touched) yield* atomicWriteRoster(paths.rosterFile, next);
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.heartbeat'));
+	);
 
 /**
  * Release protocol — architecture § Release protocol.
@@ -321,7 +315,7 @@ export const release = (
 				lastLeaver: remaining.length === 0,
 			};
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.release'));
+	);
 
 /**
  * Set this process's `intent` (`normal` ↔ `snapshot`) under the
@@ -348,7 +342,7 @@ export const setIntent = (
 			};
 			yield* atomicWriteRoster(paths.rosterFile, next);
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.setIntent'));
+	);
 
 /** Background heartbeat fiber. Wakes every `intervalMillis` (default
  *  matches `DEFAULT_SWEEP_POLICY.heartbeatIntervalMillis`) and refreshes
@@ -379,7 +373,7 @@ export const heartbeatFiber = (
 				),
 			);
 		}
-	}).pipe(Effect.withSpan('cross-process.roster.heartbeatFiber'));
+	});
 
 // -----------------------------------------------------------------------------
 // Container-claim ledger
@@ -487,7 +481,7 @@ export const readClaims = (
 			ROSTER_DOC_ERRORS,
 			EMPTY_CLAIMS,
 		),
-	).pipe(Effect.withSpan('cross-process.roster.readClaims'));
+	);
 
 /** Prune stale same-host claims. This is the recovery path for an
  *  interrupted process that could not run its scope finalizer. */
@@ -507,7 +501,7 @@ export const pruneStaleClaims = (
 			}
 			return next;
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.pruneStaleClaims'));
+	);
 
 /** Record that this process now claims `containerKey`. No-op if
  *  already claimed by this process. */
@@ -551,7 +545,7 @@ export const addClaim = (
 			};
 			yield* writeClaims(path, next);
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.addClaim'));
+	);
 
 /** Release this process's claim on `containerKey`. Returns whether
  *  the container has zero remaining claims AFTER this release — the
@@ -590,4 +584,4 @@ export const removeClaim = (
 			yield* writeClaims(path, next);
 			return { lastClaimReleased: !stillClaimedByPeer };
 		}),
-	).pipe(Effect.withSpan('cross-process.roster.removeClaim'));
+	);

@@ -98,7 +98,6 @@ export type { PublishError } from './errors.ts';
 export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
-export { PackageSpans } from './spans.ts';
 
 /** Resolved value carried by the package resource. Local packages also
  *  expose the publish output so manifest emitters and capture-spec

@@ -23,7 +23,6 @@ import {
 } from '../../sui/index.ts';
 import { deepbookPluginError, type DeepbookPluginError } from '../errors.ts';
 import { stableContentHash } from '../hash.ts';
-import { DeepbookSpans } from '../spans.ts';
 import type { PythFeed, PythHandle, PythPriceFeedId } from '../types.ts';
 
 export interface PythDeployment {
@@ -318,14 +317,7 @@ export const initLocalPythFeeds = (
 		);
 
 		return fromCachedHandle(cached);
-	}).pipe(
-		Effect.withSpan('devstack.plugin.deepbook.pyth.initFeeds', {
-			attributes: {
-				[DeepbookSpans.pyth.packageId]: pkg.packageId,
-				[DeepbookSpans.pyth.feedCount]: feeds.length,
-			},
-		}),
-	);
+	});
 
 // Compatibility exports for callers/tests that import the internal module.
 export type { PythFeed, PythHandle, PythOptions } from '../types.ts';

@@ -334,15 +334,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				yield* Effect.addFinalizer(() =>
 					Ref.update(participantsRef, (xs) => xs.filter((e) => e.seq !== seq)),
 				);
-				yield* Effect.annotateCurrentSpan({
-					'snapshot.participant.plugin': pluginKey,
-					'snapshot.participant.subtrees': decl.subtrees.length,
-				});
-			}).pipe(Effect.withSpan('orchestrator.snapshot.registerParticipant')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
+			}) as Effect.Effect<void, never, Scope.Scope>;
 
 		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, resume }) =>
 			Effect.gen(function* () {
@@ -443,7 +435,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					...(resume === undefined ? {} : { resume }),
 				});
 				return meta;
-			}).pipe(Effect.withSpan('orchestrator.snapshot.capture.entry'));
+			});
 
 		const restore: SnapshotOrchestrator['restore'] = ({ id, participants, resume }) =>
 			Effect.gen(function* () {
@@ -506,7 +498,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					);
 				}
 				return meta;
-			}).pipe(Effect.withSpan('orchestrator.snapshot.restore.entry'));
+			});
 
 		const list: SnapshotOrchestrator['list'] = Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
@@ -555,7 +547,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				entries.push({ id: parsedId, directory: dir, metadata: decoded });
 			}
 			return entries;
-		}).pipe(Effect.withSpan('orchestrator.snapshot.list'));
+		});
 
 		const del: SnapshotOrchestrator['delete'] = (id) =>
 			Effect.gen(function* () {
@@ -568,7 +560,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						yield* fs.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore);
 					}),
 				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.delete'));
+			});
 
 		const wipe: SnapshotOrchestrator['wipe'] = (args) =>
 			Effect.gen(function* () {
@@ -583,7 +575,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						});
 					}),
 				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
+			});
 
 		const wipePlan: SnapshotOrchestrator['wipePlan'] = (args) =>
 			// Read-only: no stack-lock. `planWipe` only lists matching
@@ -595,7 +587,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				stackRoot: paths.stackRoot,
 				runtime,
 				keepSnapshots: args.keepSnapshots,
-			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
+			});
 
 		const prune: SnapshotOrchestrator['prune'] = () =>
 			Effect.scoped(
@@ -607,7 +599,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						runtime,
 					});
 				}),
-			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
+			);
 
 		return SnapshotOrchestratorService.of({
 			registerParticipant,

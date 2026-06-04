@@ -181,7 +181,7 @@ export const ensureNetwork = (
 			),
 		);
 		return created.stdout.trim();
-	}).pipe(Effect.withSpan('runtime.docker.network.ensure'));
+	});
 
 /** Concurrent-create-loses recovery: a peer created the network between
  *  our inspect-miss and our `create`. Re-inspect, assert it carries our
@@ -229,7 +229,7 @@ export const connect = (
 		return yield* Effect.fail(
 			new NetworkOperationFailed({ op: 'connect', network, stderr: res.stderr }),
 		);
-	}).pipe(Effect.withSpan('runtime.docker.network.connect'));
+	});
 
 export const disconnect = (
 	containerNameOrId: string,
@@ -247,7 +247,7 @@ export const disconnect = (
 				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.disconnect'));
+	});
 
 /** Force-disconnect — `docker network disconnect -f`. Used by prune
  *  to evict our own endpoints from an in-use network before retrying
@@ -268,7 +268,7 @@ export const forceDisconnect = (
 				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.forceDisconnect'));
+	});
 
 /** List the endpoints currently attached to a network. Returns an
  *  empty list when the network is missing. Used by prune to decide
@@ -294,7 +294,7 @@ export const listAttachedContainers = (
 		});
 		if (decoded === null) return [];
 		return readContainers(decoded.Containers);
-	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
+	});
 
 // -----------------------------------------------------------------------------
 // IP readback
@@ -373,7 +373,6 @@ export const waitForIp = (
 			}
 			return cause;
 		}),
-		Effect.withSpan('runtime.docker.network.waitForIp'),
 	);
 };
 
@@ -400,4 +399,4 @@ export const readIps = (
 		} catch {
 			return [];
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.readIps'));
+	});

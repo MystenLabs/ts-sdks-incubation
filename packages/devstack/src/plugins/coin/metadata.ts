@@ -20,7 +20,6 @@ import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { makeSpacedRetrySchedule } from '../../substrate/runtime/retry-policy.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import { coinError, type CoinError } from './errors.ts';
-import { CoinSpans } from './spans.ts';
 
 /** Per-attempt timeout (5 seconds) — distilled-doc invariant. */
 export const METADATA_FETCH_TIMEOUT_MS = 5_000;
@@ -111,7 +110,7 @@ export const fetchCoinMetadataOnce = (
 			Effect.catch((err): Effect.Effect<unknown> => {
 				return Effect.logWarning('coin metadata fetch failed; soft-degrading to null').pipe(
 					Effect.annotateLogs({
-						[CoinSpans.type]: fullCoinType,
+						'coin.type': fullCoinType,
 						[SpanAttr.errorCause]: formatUnknownError(err.cause),
 					}),
 					Effect.as(null),
@@ -128,18 +127,14 @@ export const fetchCoinMetadataOnce = (
 					'coin metadata response had non-conforming shape; degrading to null',
 				).pipe(
 					Effect.annotateLogs({
-						[CoinSpans.type]: fullCoinType,
+						'coin.type': fullCoinType,
 						[SpanAttr.errorCause]: formatUnknownError(issue.cause ?? issue),
 					}),
 					Effect.as(null as OnchainCoinMetadata | null),
 				),
 			),
 		);
-	}).pipe(
-		Effect.withSpan('devstack.plugin.coin.metadata.fetch', {
-			attributes: { [CoinSpans.metadata.fullCoinType]: fullCoinType },
-		}),
-	);
+	});
 
 /** Batch-fetch with cache. Each fullCoinType is asked at most once
  *  per Layer-invocation. The fetches run concurrently — distilled-doc

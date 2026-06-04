@@ -184,9 +184,6 @@ export const runIdentityGuard = (
 	liveIdentity: IdentitySlice,
 ): Effect.Effect<void, IdentityGuardError> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'identity-guard',
-		});
 		const snapshotKeys = Object.keys(snapshotIdentity);
 		const liveKeys = Object.keys(liveIdentity);
 		yield* requireIdentity(snapshotIdentity, 'snapshot');
@@ -229,16 +226,13 @@ export const runIdentityGuard = (
 				);
 			}
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.identity-guard'));
+	});
 
 export const runRuntimeIdentityGuard = (
 	snapshotIdentity: SnapshotRuntimeIdentity,
 	liveIdentity: SnapshotRuntimeIdentity,
 ): Effect.Effect<void, IdentityMismatchError> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'identity-guard',
-		});
 		const keys: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
 		for (const key of keys) {
 			if (snapshotIdentity[key] !== liveIdentity[key]) {
@@ -252,4 +246,4 @@ export const runRuntimeIdentityGuard = (
 				);
 			}
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.runtime-identity-guard'));
+	});

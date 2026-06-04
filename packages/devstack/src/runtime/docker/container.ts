@@ -432,7 +432,7 @@ export const inspectContainer = (
 			networks,
 			networkAttachments,
 		};
-	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
+	});
 
 // -----------------------------------------------------------------------------
 // Argv construction
@@ -504,15 +504,10 @@ const forceRemove = (
 	name: string,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.rm')),
-		);
-		if (res.exitCode !== 0 && !isNoSuchContainerStderr(res.stderr)) {
-			// best-effort; we surface as a span event but do not fail
-			// the rm step (the next create will collision-recover).
-			yield* Effect.annotateCurrentSpan({ 'docker.rm.warning': res.stderr });
-		}
-	}).pipe(Effect.withSpan('runtime.docker.container.forceRemove'));
+		// best-effort; a non-"no such container" failure does not fail the
+		// rm step (the next create will collision-recover).
+		yield* dockerRunOk('rm', ['-f', name]).pipe(Effect.mapError(wrapGeneric('docker.rm')));
+	});
 
 const ownershipFailure = (
 	name: string,
@@ -575,7 +570,7 @@ export const assertContainerHandleOwned = (
 			);
 		}
 		yield* assertOwnedFacts(handle.name, facts, handle.labels);
-	}).pipe(Effect.withSpan('runtime.docker.container.assertOwned'));
+	});
 
 const forceRemoveOwned = (
 	name: string,
@@ -1191,7 +1186,7 @@ export const ensureContainer = (
 			ports,
 			spec.labels,
 		);
-	}).pipe(Effect.withSpan('runtime.docker.container.ensure'));
+	});
 
 /** Apply the decided action. Recovers from name-collision via
  *  one-shot start-and-adopt; second collision surfaces typed. */
@@ -1275,14 +1270,14 @@ export const pause = (
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		yield* dockerRun('pause', [name]).pipe(Effect.mapError(wrapGeneric('docker.pause')));
-	}).pipe(Effect.withSpan('runtime.docker.container.pause'));
+	});
 
 export const unpause = (
 	name: string,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		yield* dockerRun('unpause', [name]).pipe(Effect.mapError(wrapGeneric('docker.unpause')));
-	}).pipe(Effect.withSpan('runtime.docker.container.unpause'));
+	});
 
 /** Reserved `devstack.role` value stamped on every committed snapshot
  *  byproduct image. Plugin BUILD images carry the source plugin's real
@@ -1355,4 +1350,4 @@ export const commit = (
 			);
 		}
 		return digest;
-	}).pipe(Effect.withSpan('runtime.docker.container.commit'));
+	});

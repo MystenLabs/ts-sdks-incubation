@@ -64,8 +64,6 @@ import {
 	type SealSuiSdk,
 } from '../deploy.ts';
 import { sealError, type SealError } from '../errors.ts';
-import { SealSpans } from '../spans.ts';
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { MASTER_KEY_ENVFILE_BASENAME, runSealKeygen, type PersistedBlsKeypair } from '../keygen.ts';
 import { makeKeyManager } from '../key-manager.ts';
 import { buildKeyServerSpec, startKeyServer, type KeyServerContainerSpec } from '../key-server.ts';
@@ -509,11 +507,4 @@ export const bootLocalKeygen = (
 				}),
 			),
 		),
-		Effect.withSpan('devstack.plugin.seal.localKeygen.boot', {
-			attributes: {
-				[SpanAttr.plugin]: 'seal',
-				[SealSpans.name]: opts.name,
-				[SealSpans.version]: opts.version,
-			},
-		}),
 	);

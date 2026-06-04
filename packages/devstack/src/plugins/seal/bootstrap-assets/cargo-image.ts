@@ -27,7 +27,6 @@ import type {
 } from '../../../contracts/container-runtime.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
-import { SealSpans } from '../spans.ts';
 import { DEFAULT_SEAL_REPO, DEFAULT_SEAL_VERSION } from './source-fetch.ts';
 
 // ---------------------------------------------------------------------------
@@ -112,13 +111,7 @@ export const resolveSealCargoImage = (
 				}),
 			),
 		);
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.cargoImage.resolve', {
-			attributes: {
-				[SealSpans.ref]: inputs.sealRef,
-			},
-		}),
-	);
+	});
 
 /** Convenience: resolve via the default inputs. */
 export const resolveDefaultSealCargoImage = (

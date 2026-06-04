@@ -91,7 +91,7 @@ export const ensureVolume = (
 			Effect.mapError(wrapVolumeError('create', name)),
 		);
 		return name;
-	}).pipe(Effect.withSpan('runtime.docker.volume.ensure'));
+	});
 
 export const removeVolume = (
 	name: string,
@@ -106,4 +106,4 @@ export const removeVolume = (
 				new VolumeOperationFailed({ op: 'remove', volume: name, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.volume.remove'));
+	});

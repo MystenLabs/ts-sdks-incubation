@@ -137,4 +137,4 @@ export const runStatus = (
 			humanLines,
 		});
 		return { exitCode: 0 } as CommandResult;
-	}).pipe(Effect.withSpan('cli.status'));
+	});

@@ -14,14 +14,12 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import {
-	AccountSpans,
 	type AccountFundingRequest,
 	type AccountFundingStrategy,
 } from '../account/index.ts';
 import { formatExecutedFailure, signAndDispatch, type SuiSdkShim } from '../sui/index.ts';
 
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
-import { DeepbookSpans } from './spans.ts';
 
 export const DEEPBOOK_TESTNET_DEEP_COIN_TYPE =
 	'0x36dbef866a1d62bf7328989a10fb2f07d769f4ee587c0de4a0a256e57e0a58a8::deep::DEEP' as const;
@@ -188,16 +186,7 @@ export const makeDeepbookDeepFundingStrategy = (
 					),
 				onSuccess: () => Effect.void,
 			});
-		}).pipe(
-			Effect.withSpan('devstack.plugin.deepbook.fundDeep', {
-				attributes: {
-					[AccountSpans.name]: req.account?.name ?? '(unresolved)',
-					[AccountSpans.address]: req.account?.address ?? req.address,
-					[DeepbookSpans.fundCoin]: DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-					[DeepbookSpans.fundAmount]: req.amount.toString(),
-				},
-			}),
-		),
+		}),
 });
 
 export const makeDeepbookDeepFundingContribution = (

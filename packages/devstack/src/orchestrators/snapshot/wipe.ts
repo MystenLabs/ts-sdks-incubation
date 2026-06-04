@@ -126,11 +126,6 @@ export const planWipe = (
 ): Effect.Effect<WipeTargets, WipePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'wipe-plan',
-			'devstack.app': inputs.labelMatch.app,
-			'devstack.stack': inputs.labelMatch.stack,
-		});
 
 		const handles = yield* inputs.runtime
 			.inspectByLabels(inputs.labelMatch as ContainerLabelTuple)
@@ -161,7 +156,7 @@ export const planWipe = (
 			onDiskPaths,
 			preserved,
 		} satisfies WipeTargets;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan'));
+	});
 
 // -----------------------------------------------------------------------------
 // Wipe
@@ -200,12 +195,6 @@ export const runWipe = (
 	inputs: WipeInputs,
 ): Effect.Effect<void, WipePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'wipe',
-			'devstack.app': inputs.labelMatch.app,
-			'devstack.stack': inputs.labelMatch.stack,
-		});
-
 		const preserve = inputs.keepSnapshots ?? true;
 
 		const sweepChildren: ReconcileFsOp<WipePhaseError> = {
@@ -238,7 +227,7 @@ export const runWipe = (
 				onVolumesError: failPhase('sweep-networks-volumes', `volume sweep failed`),
 			},
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.wipe'));
+	});
 
 /** Centralized constant — the canonical snapshot-catalog directory
  *  name. Used by both `runWipe` (to preserve) and the substrate's

@@ -21,7 +21,7 @@ import type { StrategyContributorDecl } from '../../../contracts/strategy-contri
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
-import type { LifecycleStatus, PluginRole } from '../../lifecycle.ts';
+import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { PluginCtx } from '../../plugin-ctx.ts';
 import { PluginContext } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies } from '../../plugin.ts';
@@ -30,13 +30,7 @@ import type { SubscribableState } from '../../projection.ts';
 import { FormatterRegistryService } from '../observability/formatter-registry.ts';
 import { StrategyRegistryService } from '../strategy-registry/service.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
-import {
-	annotateOp,
-	annotatePhase,
-	prettyErrorStructured,
-	withPluginSpan,
-	type LoggerShape,
-} from '../observability/index.ts';
+import { prettyErrorStructured, type LoggerShape } from '../observability/index.ts';
 import {
 	awaitUpstreams,
 	buildDependencyReaderFor,
@@ -208,8 +202,6 @@ const dispatchBufferedContributions = (
 	pluginKey: PluginKey,
 	buffer: ReadonlyArray<BufferedContribution>,
 	errorContributions: ReadonlyArray<PluginErrorContribution>,
-	pluginRole: PluginRole,
-	identity: Identity,
 	pluginContext: Context.Context<never>,
 	pluginScope: Scope.Scope,
 	dispatcher: ContributionDispatcher,
@@ -275,15 +267,7 @@ const dispatchBufferedContributions = (
 			);
 			yield* Scope.provide(guarded, pluginScope);
 		}
-	}).pipe(
-		withPluginSpan('lifecycle.supervisor.dispatchBufferedContributions', {
-			app: identity.app,
-			stack: identity.stack,
-			network: identity.chain,
-			pluginKey,
-			role: pluginRole,
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Boot the registry from a graph
@@ -335,7 +319,9 @@ export const acquireNode = (
 	pluginContext: Context.Context<never>,
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
-	identity: Identity,
+	// Threaded through the acquire path for parity with acquireKeys/
+	// acquireFullGraph; no longer read here (only the removed span used it).
+	_identity: Identity,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
@@ -358,7 +344,6 @@ export const acquireNode = (
 			});
 			return;
 		}
-		yield* annotatePhase('acquire');
 		yield* logger.log(`supervisor/${key}`, key, {
 			level: 'debug',
 			message: 'plugin acquire start',
@@ -451,8 +436,6 @@ export const acquireNode = (
 						key,
 						buffer,
 						errorContributions,
-						entry.node.member.role,
-						identity,
 						pluginContext,
 						entry.scope,
 						dispatcher,
@@ -512,15 +495,7 @@ export const acquireNode = (
 				message: 'plugin acquire failed',
 			});
 		}
-	}).pipe(
-		withPluginSpan('lifecycle.supervisor.acquireNode', {
-			app: identity.app,
-			stack: identity.stack,
-			network: identity.chain,
-			pluginKey: key,
-			role: registry.entries.get(key)?.node.member.role ?? 'service',
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Acquire a key set in parallel. Each node waits on its own upstreams,
@@ -539,14 +514,13 @@ export const acquireKeys = (
 	identity: Identity,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.level.size': keys.length });
 		yield* Effect.all(
 			keys.map((key) =>
 				acquireNode(registry, key, ref, hub, pluginContext, dispatcher, logger, identity),
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
-	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireKeys'));
+	});
 
 export const acquireFullGraph = (
 	graph: ResolvedGraph,
@@ -559,7 +533,6 @@ export const acquireFullGraph = (
 	identity: Identity,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		yield* annotateOp('acquireFullGraph');
 		yield* acquireKeys(
 			registry,
 			[...graph.nodes.keys()],
@@ -570,4 +543,4 @@ export const acquireFullGraph = (
 			logger,
 			identity,
 		);
-	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireFullGraph'));
+	});

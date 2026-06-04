@@ -305,7 +305,7 @@ export const acquireForkDataDirHolder = (
 			Effect.forkScoped,
 		);
 		return self;
-	}).pipe(Effect.withSpan('devstack.plugin.sui.fork.acquireDataDirHolder'));
+	});
 
 /** Surfaces that the sui-fork binary explicitly panics on. New
  *  upstream additions fail OPEN by default — architecture

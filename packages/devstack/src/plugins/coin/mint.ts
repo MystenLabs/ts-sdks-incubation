@@ -42,7 +42,6 @@ import {
 	type ForkImpersonationGasClient,
 } from '../sui/index.ts';
 import { coinError, type CoinError } from './errors.ts';
-import { CoinSpans } from './spans.ts';
 import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
 
 /** Sign+execute surface narrowed from `AccountValue.signAndExecute`.
@@ -298,12 +297,6 @@ export const performMint = (
 			// re-mints rather than carry a stale digest forward.
 			verify: (cached) => buildVerifyProbe(sdk, cached.mintedCoinId),
 			produce: Effect.gen(function* () {
-				yield* Effect.annotateCurrentSpan({
-					[CoinSpans.mint.recipient]: inputs.recipient,
-					[CoinSpans.mint.fullCoinType]: inputs.fullCoinType,
-					[CoinSpans.mint.amount]: inputs.amount.toString(),
-				});
-
 				// Drive build → sign → execute → dispatch via the shared
 				// `signAndDispatch` helper. On-chain `FailedTransaction`
 				// is a return value (not an error) — surfaced as a
@@ -391,11 +384,6 @@ export const performMint = (
 								);
 							}
 
-							yield* Effect.annotateCurrentSpan({
-								[CoinSpans.mint.digest]: ok.digest,
-								[CoinSpans.mint.mintedCoinId]: mintedCoinId,
-							});
-
 							// 5. Return the cached payload. The artifact publisher caches it under
 							//    the content hash; the next cycle's verify probe (on
 							//    cache hit) will lenient-probe `mintedCoinId`.
@@ -419,15 +407,7 @@ export const performMint = (
 			amount: BigInt(cached.amount),
 			fullCoinType: inputs.fullCoinType,
 		};
-	}).pipe(
-		Effect.withSpan('devstack.plugin.coin.mint', {
-			attributes: {
-				[CoinSpans.mint.recipient]: inputs.recipient,
-				[CoinSpans.mint.fullCoinType]: inputs.fullCoinType,
-				[CoinSpans.mint.amount]: inputs.amount.toString(),
-			},
-		}),
-	);
+	});
 
 /** Project an artifact publisher-wire error back to a CoinError when the consumer
  *  wants a coin-side tagged shape. The artifact publisher boundary is generic; this

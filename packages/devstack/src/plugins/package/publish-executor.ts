@@ -46,7 +46,6 @@ import { runMoveBuild, type BuildOutput } from './build.ts';
 import type { LocalPackagePublishOutput, PackagePublishObjectChange } from './publish-output.ts';
 import { publishError, type PublishError } from './errors.ts';
 import type { PublishExecutor } from './mode-local.ts';
-import { PackageSpans } from './spans.ts';
 
 const shouldHydrateCreatedObject = (change: PackagePublishObjectChange): boolean =>
 	change.type === 'created' &&
@@ -320,11 +319,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			};
 
 			return output;
-		}).pipe(
-			Effect.withSpan('devstack.plugin.package.publish-tx', {
-				attributes: { [PackageSpans.publish.packageName]: packageName },
-			}),
-		),
+		}),
 
 	// Post-publish ready HINT — a best-effort second-layer probe. The publish
 	// account's `signAndExecute` already calls `waitForTransaction(digest)`
@@ -341,8 +336,5 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 					Effect.annotateLogs({ packageId, cause: String(cause) }),
 				),
 			),
-			Effect.withSpan('devstack.plugin.package.post-publish-ready-hint', {
-				attributes: { [PackageSpans.publish.packageId]: packageId },
-			}),
 		),
 });

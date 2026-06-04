@@ -93,4 +93,3 @@ export {
 	faucetCapabilityKey,
 	type FaucetStrategy,
 } from './dispatcher.ts';
-export { FaucetSpans } from './spans.ts';

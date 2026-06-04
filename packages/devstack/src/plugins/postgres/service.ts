@@ -60,7 +60,6 @@ import {
 	type PostgresConnectionTimeout,
 	type PostgresPluginError,
 } from './errors.ts';
-import { PostgresSpans } from './spans.ts';
 
 /** Resolved Postgres handle — the tag's resolved value.
  *
@@ -420,14 +419,7 @@ export const bootPostgresService = (
 		};
 
 		return { resolved, handle, containerHandle };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.postgres.boot', {
-			attributes: {
-				[PostgresSpans.name]: opts.name ?? 'postgres',
-				[PostgresSpans.version]: opts.version ?? DEFAULT_VERSION,
-			},
-		}),
-	);
+	});
 
 /** Stop-grace duration. The substrate's finalizer plumbing reads this
  *  to set the docker-stop SIGTERM→SIGKILL window. 20s default avoids
@@ -582,8 +574,4 @@ export const bootPostgresSidecar = (
 		};
 
 		return { handle, containerHandle };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.postgres.sidecar.boot', {
-			attributes: { [PostgresSpans.name]: opts.role },
-		}),
-	);
+	});

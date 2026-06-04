@@ -17,7 +17,6 @@ import { Context, Effect, Layer, Scope } from 'effect';
 
 import type { StrategyRegistry } from '../../../contracts/strategy-contributor.ts';
 import { StrategyNotFoundError } from '../errors.ts';
-import { SpanAttr } from '../observability/spans.ts';
 import { makeScopedMultimap } from '../scoped-registry/index.ts';
 
 /** One registered strategy under a capability key. The multimap stamps
@@ -63,15 +62,7 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 				// The multimap stamps the seq and wires the drop-by-seq
 				// finalizer — parallel registrations stay isolated.
 				yield* store.register([{ key, value: entry }]);
-				yield* Effect.annotateCurrentSpan({
-					[SpanAttr.strategyKey]: key,
-					[SpanAttr.strategyAutoMounted]: entry.autoMounted,
-				});
-			}).pipe(Effect.withSpan('substrate.strategyRegistry.register')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
+			}) as Effect.Effect<void, never, Scope.Scope>;
 
 		const get: StrategyRegistry['get'] = <Key extends string, S>(key: Key) =>
 			Effect.gen(function* () {
@@ -101,7 +92,7 @@ export const layerStrategyRegistry: Layer.Layer<StrategyRegistryService> = Layer
 					}
 				}
 				return best.value.strategy as S;
-			}).pipe(Effect.withSpan('substrate.strategyRegistry.get', { attributes: { key } }));
+			});
 
 		const list: StrategyRegistry['list'] = () => store.keys;
 

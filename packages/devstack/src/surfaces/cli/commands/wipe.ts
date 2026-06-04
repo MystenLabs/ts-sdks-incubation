@@ -121,4 +121,4 @@ export const runWipe = (
 			humanLines: ['stack state wiped'],
 		});
 		return { exitCode: 0 } as CommandResult;
-	}).pipe(Effect.withSpan('cli.wipe'));
+	});

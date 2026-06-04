@@ -314,7 +314,7 @@ export const handleCommand = (
 			case 'stack.start':
 				return;
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.handleCommand'));
+	});
 
 /**
  * Dispatch one dequeued command. The loop is the SOLE consumer of the
@@ -351,4 +351,4 @@ export const commandLoop = (deps: SupervisorState): Effect.Effect<void, never, S
 			yield* dispatch(deps, yield* Queue.take(deps.queuedCommands));
 			if (yield* Ref.get(deps.shutdownLatch)) return;
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.commandLoop'));
+	});

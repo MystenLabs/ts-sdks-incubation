@@ -99,7 +99,6 @@ export {
 	SEAL_ERROR_TAGS,
 } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
-export { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Options

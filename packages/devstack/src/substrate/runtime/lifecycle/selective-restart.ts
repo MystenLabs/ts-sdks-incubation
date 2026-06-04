@@ -41,7 +41,6 @@ export const planRestart = (
 	roots: ReadonlySet<PluginKey>,
 ): Effect.Effect<GraphPlan, RestartTargetMissing> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.restart.rootCount': roots.size });
 		for (const root of roots) {
 			if (!graph.nodes.has(root)) {
 				return yield* Effect.fail(new RestartTargetMissing({ pluginKey: root }));
@@ -52,7 +51,7 @@ export const planRestart = (
 			for (const key of downstreamClosure(graph, root)) slice.add(key);
 		}
 		return plan(graph, { kind: 'graph-keys', keys: [...slice] });
-	}).pipe(Effect.withSpan('lifecycle.selective-restart.plan'));
+	});
 
 /** Plan a drain + re-acquire of the whole graph MINUS the nodes matched by
  *  `exclude`. The excluded nodes stay live while every other plugin is

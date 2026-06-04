@@ -117,7 +117,7 @@ export const imageExists = (
 		if (res.exitCode !== 0) return null;
 		const id = res.stdout.trim();
 		return id.length > 0 ? id : null;
-	}).pipe(Effect.withSpan('runtime.docker.image.exists'));
+	});
 
 /** Strict variant — surfaces `ImageNotFound` if the inspect misses. */
 export const inspectDigest = (
@@ -131,7 +131,7 @@ export const inspectDigest = (
 			);
 		}
 		return id;
-	}).pipe(Effect.withSpan('runtime.docker.image.inspectDigest'));
+	});
 
 // -----------------------------------------------------------------------------
 // Pull
@@ -148,7 +148,7 @@ export const pull = (
 			Effect.mapError(wrapPullError(ref)),
 		);
 		return yield* inspectDigest(ref);
-	}).pipe(Effect.withSpan('runtime.docker.image.pull'));
+	});
 
 // -----------------------------------------------------------------------------
 // Build (content-addressed)
@@ -210,7 +210,7 @@ export const build = (
 			onStderrLine: opts.onLine,
 		}).pipe(Effect.mapError(wrapBuildError(opts.contextPath, opts.dockerfile)));
 		return yield* inspectDigest(opts.tag);
-	}).pipe(Effect.withSpan('runtime.docker.image.build'));
+	});
 
 // -----------------------------------------------------------------------------
 // Tag
@@ -238,7 +238,7 @@ export const tagImage = (
 		if (opts.removeSourceAfterTag === true && src !== dst) {
 			yield* cleanupSnapshotTempTag(src);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.image.tag'));
+	});
 
 export const removeImage = (
 	ref: string,
@@ -255,7 +255,7 @@ export const removeImage = (
 				exitCode: res.exitCode,
 			}),
 		);
-	}).pipe(Effect.withSpan('runtime.docker.image.remove'));
+	});
 
 // -----------------------------------------------------------------------------
 // Save (image → tar stream)
@@ -485,7 +485,7 @@ export const loadImage = (
 				return { refs };
 			}),
 		);
-	}).pipe(Effect.withSpan('runtime.docker.image.load'));
+	});
 
 // -----------------------------------------------------------------------------
 // Cache integration
@@ -565,7 +565,7 @@ export const ensureImageCached = (
 				Effect.catch(() => Effect.void),
 			);
 		return digest;
-	}).pipe(Effect.withSpan('runtime.docker.image.ensureCached'));
+	});
 
 // -----------------------------------------------------------------------------
 // Contract-shaped ImageRef helpers

@@ -95,4 +95,4 @@ export const runDoctor = (
 			humanLines,
 		});
 		return { exitCode: 0 } as CommandResult;
-	}).pipe(Effect.withSpan('cli.doctor'));
+	});

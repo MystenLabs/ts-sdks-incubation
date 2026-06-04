@@ -591,17 +591,7 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 							`${windowStart + windowSize}) for owner '${owner}'`,
 					}),
 				);
-			}).pipe(
-				Effect.withSpan('substrate.portBroker.allocate', {
-					attributes: {
-						owner: opts.owner ?? DEFAULT_OWNER,
-						preferredPort: opts.preferredPort ?? -1,
-						probeHost: opts.probeHost ?? '127.0.0.1',
-						windowStart: opts.windowHint?.start ?? DEFAULT_PORT_WINDOW.start,
-						windowSize: opts.windowHint?.size ?? DEFAULT_PORT_WINDOW.size,
-					},
-				}),
-			);
+			});
 
 		const finishAllocation = (
 			port: number,
@@ -617,10 +607,6 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					discard: true,
 				});
 				yield* Effect.addFinalizer(() => release.pipe(Effect.uninterruptible));
-				yield* Effect.annotateCurrentSpan({
-					'portBroker.port': port,
-					'portBroker.owner': owner,
-				});
 				yield* Effect.logDebug(`port-broker allocated ${port} (owner=${owner})`);
 				return {
 					port,
@@ -665,10 +651,8 @@ const probePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult
 				const loopback = yield* probeSinglePort(port, '127.0.0.1');
 				if (loopback._tag !== 'ok') return loopback;
 				return yield* probeSinglePort(port, host);
-			}).pipe(Effect.withSpan('substrate.portBroker.probe', { attributes: { host, port } }))
-		: probeSinglePort(port, host).pipe(
-				Effect.withSpan('substrate.portBroker.probe', { attributes: { host, port } }),
-			);
+			})
+		: probeSinglePort(port, host);
 
 const probeSinglePort = (port: number, host: PortProbeHost): Effect.Effect<ProbeResult> =>
 	Effect.callback<ProbeResult>((resume) => {

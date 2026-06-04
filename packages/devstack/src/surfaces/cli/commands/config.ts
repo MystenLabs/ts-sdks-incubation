@@ -47,4 +47,4 @@ export const runConfig = (
 			humanLines,
 		});
 		return { exitCode: 0 } as CommandResult;
-	}).pipe(Effect.withSpan('cli.config'));
+	});

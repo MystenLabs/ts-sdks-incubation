@@ -208,7 +208,7 @@ const readMeta = (
 			);
 		}
 		return meta;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.read-meta'));
+	});
 
 const verifyIntegrity = (
 	artifactDir: string,
@@ -257,7 +257,7 @@ const removeCapturedContainers = (
 					),
 				);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.remove-containers'));
+	});
 
 // -----------------------------------------------------------------------------
 // Post-publish Docker image finalization.
@@ -458,7 +458,7 @@ const preflightArtifact = (
 				Effect.catch(failPhase('untar-host-tree', `host-tree tar entry validation failed`)),
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.preflight'));
+	});
 
 // -----------------------------------------------------------------------------
 // Image load + staged re-tag.
@@ -515,7 +515,7 @@ const loadImageBundle = (
 			refsByTag.set(ref.tag, ref);
 		}
 		return refsByTag;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.load-image-bundle'));
+	});
 
 const expectedSnapshotTagsByBundle = (
 	containers: ReadonlyArray<CapturedContainer>,
@@ -558,7 +558,7 @@ const stageLoadedImage = (
 				),
 			);
 		return stagedImage;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.stage-image'));
+	});
 
 const cleanupRestoreStagingImages = (
 	runtime: ContainerRuntime,
@@ -609,7 +609,7 @@ const promoteStagedImages = (
 					),
 				);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.promote-images'));
+	});
 
 const restoreHostTree = (
 	artifactDir: string,
@@ -641,7 +641,7 @@ const restoreHostTree = (
 		yield* Effect.scoped(untarHostTree(tarStream, { target })).pipe(
 			Effect.catch(failPhase('untar-host-tree', `untar ${tarPath} to ${target} failed`)),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
+	});
 
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: SNAPSHOTS_DIR_NAME },
@@ -791,7 +791,7 @@ const requireSnapshotDeployCache = (
 					`missing namespaces with FRESH ids and orphan their pre-snapshot objects. Refusing.`,
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.cache-preflight'));
+	});
 
 // -----------------------------------------------------------------------------
 // Top-level restore — bracketed-atomic via stage-and-swap.
@@ -872,11 +872,6 @@ export const runRestore = (
 	FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'restore',
-			'devstack.snapshot.artifact': inputs.artifactDir,
-		});
-
 		// Authoritative meta read (PURE — no mutation), then re-verify the
 		// artifact's per-file SHA-256 integrity before any mutation. The
 		// artifact is being RESTORED here, so `integrity.json` is re-hashed
@@ -1140,4 +1135,4 @@ export const runRestore = (
 		// (the next boot is the resume). NEVER `docker start`.
 
 		return meta;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore'));
+	});

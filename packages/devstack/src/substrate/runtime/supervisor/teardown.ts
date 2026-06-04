@@ -56,7 +56,7 @@ export const teardownKeys = (
 				{ concurrency: 'unbounded', discard: true },
 			);
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.teardownKeys'));
+	});
 
 export const teardownNode = (
 	registry: PluginRegistry,
@@ -84,7 +84,7 @@ export const teardownNode = (
 		if (status === 'ready') {
 			yield* bestEffort(registry.transition(key, 'stopped'));
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.teardownNode'));
+	});
 
 // -----------------------------------------------------------------------------
 // Selective restart
@@ -152,4 +152,4 @@ export const doSelectiveRestart = (
 				at: Date.now(),
 			});
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.selectiveRestart'));
+	});

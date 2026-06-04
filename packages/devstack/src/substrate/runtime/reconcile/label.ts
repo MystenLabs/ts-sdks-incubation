@@ -84,11 +84,6 @@ export const reconcileLabel = <E>(
 			);
 		}
 		const tuple = spec.scope.tuple;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.reconcile.scope': 'label',
-			'devstack.app': tuple.app,
-			'devstack.stack': tuple.stack,
-		});
 
 		// 1. Container TARGET — flat label sweep via the kept removeManaged*
 		//    family. No dep ordering for label scope.
@@ -119,4 +114,4 @@ export const reconcileLabel = <E>(
 			runtime: deps.runtime,
 			imageLabelFilter: tuple,
 		});
-	}).pipe(Effect.withSpan('lifecycle.reconcile.label'));
+	});

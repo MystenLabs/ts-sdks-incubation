@@ -28,8 +28,6 @@ import type { SubscribableState } from '../../projection.ts';
 import type {
 	LogFilter,
 	LogRecord,
-	SpanFilter,
-	SpanRecord,
 } from '../observability/index.ts';
 
 // -----------------------------------------------------------------------------
@@ -94,12 +92,6 @@ export interface ControlPlaneDomain {
 	readonly logs: (filter?: LogFilter) => Effect.Effect<ReadonlyArray<LogRecord>>;
 	/** Distinct services currently present in the log ring (filter UI). */
 	readonly logServices: Effect.Effect<ReadonlyArray<string>>;
-	/** Completed-span ring (the dashboard Console "Traces" tab). Filterable
-	 *  by service / status / substring / time window. Degrades to empty when
-	 *  no span store is wired. */
-	readonly spans: (filter?: SpanFilter) => Effect.Effect<ReadonlyArray<SpanRecord>>;
-	/** Distinct services currently present in the span ring (filter UI). */
-	readonly spanServices: Effect.Effect<ReadonlyArray<string>>;
 }
 
 export interface ControlPlane {

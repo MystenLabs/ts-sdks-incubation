@@ -30,10 +30,6 @@ export const awaitUpstreams = (
 	node: DepNode,
 ): Effect.Effect<void, PluginAcquireFailed | UnknownDependency> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.plugin.key': node.key,
-			'devstack.plugin.upstreamCount': node.upstreamKeys.length,
-		});
 		if (node.upstreamKeys.length === 0) return;
 		// Parallelize the awaits — every upstream's ready-gate resolves
 		// once (or fails once); racing them is the right shape.
@@ -41,7 +37,7 @@ export const awaitUpstreams = (
 			node.upstreamKeys.map((key) => registry.awaitReady(key)),
 			{ concurrency: 'unbounded', discard: true },
 		);
-	}).pipe(Effect.withSpan('lifecycle.ready-gate.awaitUpstreams'));
+	});
 
 /**
  * Wait for every plugin in `keys` to reach `ready`. Used by the
@@ -55,4 +51,4 @@ export const awaitAll = (
 	Effect.all(
 		keys.map((key) => registry.awaitReady(key)),
 		{ concurrency: 'unbounded', discard: true },
-	).pipe(Effect.withSpan('lifecycle.ready-gate.awaitAll'));
+	);

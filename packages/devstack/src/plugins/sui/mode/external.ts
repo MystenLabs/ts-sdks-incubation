@@ -39,11 +39,9 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
-import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -95,7 +93,6 @@ export const bootLocalRpcMode = (
 			opts.chain ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_EXTERNAL_CHAIN_ID_TIMEOUT,
-				span: 'devstack.plugin.sui.localRpc.fetchChainId',
 			}));
 
 		// ----- 3. Build waitForTransactionsReady -----------------------------
@@ -125,8 +122,4 @@ export const bootLocalRpcMode = (
 		});
 
 		return { resolved, client };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.localRpc.boot', {
-			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'local-rpc' },
-		}),
-	);
+	});

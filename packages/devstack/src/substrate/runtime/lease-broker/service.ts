@@ -258,14 +258,9 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 					}
 
 					yield* installReleaseFinalizer(key);
-					yield* Effect.annotateCurrentSpan({
-						'leaseBroker.key': key,
-						'leaseBroker.owner': owner,
-						'leaseBroker.contended': !becameHolder,
-					});
 					return { key, owner } satisfies Lease;
 				}),
-			).pipe(Effect.withSpan('substrate.leaseBroker.acquire'));
+			);
 
 		const tryAcquire: LeaseBroker['tryAcquire'] = (key, owner) =>
 			Effect.gen(function* () {
@@ -276,19 +271,9 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 					return [true, next];
 				});
 				if (!claimed) {
-					yield* Effect.annotateCurrentSpan({
-						'leaseBroker.key': key,
-						'leaseBroker.owner': owner,
-						'leaseBroker.claimed': false,
-					});
 					return null;
 				}
 				yield* installReleaseFinalizer(key);
-				yield* Effect.annotateCurrentSpan({
-					'leaseBroker.key': key,
-					'leaseBroker.owner': owner,
-					'leaseBroker.claimed': true,
-				});
 				return { key, owner } satisfies Lease;
 			}).pipe(
 				// Make the claim-and-install-finalizer pair atomic w.r.t.
@@ -298,7 +283,6 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 				// transition, so wrapping the whole pipeline uninterruptibly
 				// is safe.
 				Effect.uninterruptible,
-				Effect.withSpan('substrate.leaseBroker.tryAcquire'),
 			);
 
 		const holders: LeaseBroker['holders'] = () =>

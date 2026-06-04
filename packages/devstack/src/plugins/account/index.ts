@@ -52,8 +52,6 @@ import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiSpans } from '../sui/index.ts';
 
-import { AccountSpans } from './spans.ts';
-
 import { makeAccountCodegen } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
@@ -319,9 +317,9 @@ export const account = <const N extends string, const Funding extends AccountFun
 					emitAutoPromotionEvent: () =>
 						Effect.logWarning('account funding auto-promoted for fork mode').pipe(
 							Effect.annotateLogs({
-								[AccountSpans.name]: name,
-								[AccountSpans.fundingFrom]: 'faucet',
-								[AccountSpans.fundingTo]: 'pay-from-seed-via-impersonate',
+								'account.name': name,
+								'account.funding.from': 'faucet',
+								'account.funding.to': 'pay-from-seed-via-impersonate',
 								[SuiSpans.mode]: 'fork',
 							}),
 						),
@@ -495,4 +493,3 @@ export type {
 export { accountRegistryKey } from './registry.ts';
 export type { SyntheticImpersonationSigner } from './variants/impersonate.ts';
 export type { SignatureScheme, ResolvedKeypair } from './keypair.ts';
-export { AccountSpans } from './spans.ts';

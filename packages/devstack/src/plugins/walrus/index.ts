@@ -519,4 +519,3 @@ export {
 	type WalrusLocalStateEntry,
 	type WalrusKnownStateEntry,
 } from './registry-publish.ts';
-export { WalrusSpans } from './spans.ts';

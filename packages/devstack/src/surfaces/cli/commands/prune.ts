@@ -389,4 +389,4 @@ export const runPrune = (
 			humanLines: completedLines(outcome.summary, ctx.flags.dryRun),
 		});
 		return { exitCode: 0 } as CommandResult;
-	}).pipe(Effect.withSpan('cli.prune'));
+	});

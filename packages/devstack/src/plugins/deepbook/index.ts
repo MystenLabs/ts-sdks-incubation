@@ -48,7 +48,6 @@ import type { CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
-import { DeepbookSpans } from './spans.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
@@ -584,11 +583,6 @@ const buildLocalPlugin = <
 				const pythValues = extraValues.slice(0, pythValueCount);
 				const coinValues = extraValues.slice(pythValueCount) as CoinValue[];
 
-				yield* Effect.annotateCurrentSpan({
-					[DeepbookSpans.name]: name,
-					[DeepbookSpans.chain]: sui.chain,
-					[DeepbookSpans.publisher]: publisher.address,
-				});
 				yield* setCurrentPluginPhase('reading deployment captures');
 
 				const registryId = yield* requireCapturedId(

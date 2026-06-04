@@ -39,7 +39,6 @@ import {
 	type PostgresConnectionTimeout,
 	type PostgresPluginError,
 } from './errors.ts';
-import { PostgresSpans } from './spans.ts';
 import {
 	ProbeTimeoutError,
 	exitCodeProbeResult,
@@ -126,12 +125,6 @@ export const awaitReady = (
 					...(lastError === undefined ? {} : { lastError }),
 				});
 			}),
-			Effect.withSpan('devstack.plugin.postgres.awaitReady', {
-				attributes: {
-					[PostgresSpans.database]: database,
-					[PostgresSpans.timeoutMs]: timeoutMs,
-				},
-			}),
 		);
 	});
 
@@ -206,11 +199,7 @@ export const ensureDatabase = (
 				}),
 			);
 		}
-	}).pipe(
-		Effect.withSpan('devstack.plugin.postgres.ensureDatabase', {
-			attributes: { [PostgresSpans.database]: dbName },
-		}),
-	);
+	});
 
 /** Sequentially ensure every non-bootstrap database exists. The
  *  bootstrap (first entry) is created by `POSTGRES_DB` at image

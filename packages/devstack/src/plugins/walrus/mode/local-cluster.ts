@@ -44,10 +44,8 @@ import type { SuiProbeKey } from '../../sui/index.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
 import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { walrusConfigError, walrusPluginError, type WalrusError } from '../errors.ts';
 import { WALRUS_MAX_NODE_COUNT } from '../routable.ts';
-import { WalrusSpans } from '../spans.ts';
 import type { WalrusStorageNode } from '../storage-nodes.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
@@ -407,13 +405,4 @@ export const bootLocalCluster = (
 			walFaucetStrategy,
 			walCoinType: resolvedWalCoinType,
 		};
-	}).pipe(
-		Effect.withSpan('devstack.plugin.walrus.localCluster.boot', {
-			attributes: {
-				[SpanAttr.plugin]: 'walrus',
-				[WalrusSpans.name]: opts.name,
-				[WalrusSpans.nodeCount]: opts.nodeCount,
-				[WalrusSpans.shards]: opts.shards,
-			},
-		}),
-	);
+	});

@@ -69,7 +69,6 @@ import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
@@ -266,9 +265,7 @@ export const bootLocalMode = (
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
-		const chain = yield* sharedFetchChainId(sdkClient, {
-			span: 'devstack.plugin.sui.local.fetchChainId',
-		});
+		const chain = yield* sharedFetchChainId(sdkClient);
 
 		// ----- 5. waitForTransactionsReady (memoised) -----------------------
 		yield* setCurrentPluginPhase('preparing Sui funds-ready gate');
@@ -307,9 +304,7 @@ export const bootLocalMode = (
 			resolved,
 			client,
 		};
-	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
-	);
+	});
 
 // ---------------------------------------------------------------------------
 // Image resolution — vendored Dockerfile build via `ContainerRuntime`
@@ -370,7 +365,7 @@ export const resolveImage = (
 					),
 				),
 			);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.resolveImage'));
+	});
 
 interface LocalValidatorContainerResult {
 	readonly handle: ContainerHandle;
@@ -715,7 +710,6 @@ const waitForReady = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.rpc'),
 		);
 
 		// Faucet socket-level liveness — `GET /` returns "OK" as soon as
@@ -737,7 +731,6 @@ const waitForReady = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.faucet'),
 		);
 
 		const graphqlProbe: ReadonlyArray<Effect.Effect<void, SuiPluginError>> =
@@ -760,14 +753,13 @@ const waitForReady = (
 										cause,
 									),
 							),
-							Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
 						),
 					];
 
 		yield* Effect.all([rpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
 			Effect.asVoid,
 		);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));
+	});
 
 // ---------------------------------------------------------------------------
 // Caught-up-to-head gate
@@ -944,9 +936,8 @@ const waitForCheckpointCatchUp = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp'),
 		);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp.gen'));
+	});
 
 // Chain-id fetch + waitForTransactionsReady builders live in
 // `shared-boot.ts` — see imports at the top of this file.

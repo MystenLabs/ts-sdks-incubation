@@ -41,7 +41,6 @@ import {
 	type ForkImpersonationGasClient,
 } from './fork-transaction.ts';
 import type { ForkAdminSurface } from './mode/shared.ts';
-import { SuiSpans } from './spans.ts';
 
 /** Serialization for the shared whale funding coin (mirrors
  *  `SuiLocalFaucetSerialization` in `local-faucet-strategy.ts`). */
@@ -94,13 +93,6 @@ const withSerialization = (
 		Effect.gen(function* () {
 			yield* serialization.broker.acquire(leaseKey(serialization.key), serialization.owner);
 			yield* effect;
-		}),
-	).pipe(
-		Effect.withSpan('devstack.plugin.sui.forkFaucet.serializedRequest', {
-			attributes: {
-				[SuiSpans.localFaucetLeaseKey]: serialization.key,
-				[SuiSpans.localFaucetLeaseOwner]: serialization.owner,
-			},
 		}),
 	);
 };
@@ -176,10 +168,6 @@ export const suiForkFaucetStrategy = (opts: SuiForkFaucetStrategyOptions): Fauce
 			});
 		});
 
-		return withSerialization(opts.serialization, transfer).pipe(
-			Effect.withSpan('devstack.plugin.sui.forkFaucet.request', {
-				attributes: { [SuiSpans.forkFaucetWhale]: opts.whale },
-			}),
-		);
+		return withSerialization(opts.serialization, transfer);
 	},
 });

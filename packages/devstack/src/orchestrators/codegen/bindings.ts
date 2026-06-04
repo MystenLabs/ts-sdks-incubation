@@ -260,11 +260,7 @@ export const emitBindings = (
 			packagesSkipped: skipped,
 			filesWritten,
 		};
-	}).pipe(
-		Effect.withSpan('codegen.emitBindings', {
-			attributes: { 'codegen.bindingsDir': input.bindingsDir },
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Stub implementations for tests

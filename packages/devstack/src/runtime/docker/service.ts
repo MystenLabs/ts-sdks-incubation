@@ -329,7 +329,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 					Effect.map((digest) => refOf(digest, tag)),
 					mapToContractError,
 					Effect.provide(baseCtx),
-					Effect.withSpan('runtime.docker.contract.ensureImage'),
 				);
 			});
 
@@ -344,7 +343,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.ensureNetwork'),
 			);
 
 		const pullImageContractImpl = (ref: string): Effect.Effect<ImageRef, ContainerRuntimeError> =>
@@ -352,7 +350,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.map((digest) => refOf(digest, ref)),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pullImage'),
 			);
 
 		const ensureContainerImpl = (
@@ -364,7 +361,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.ensureContainer'),
 			);
 
 		const inspectByLabels = (
@@ -408,7 +404,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.inspectByLabels'),
 			);
 
 		const pauseAndCommitImpl = (
@@ -426,7 +421,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pauseAndCommit'),
 			);
 
 		const stopImpl = (
@@ -440,7 +434,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			}).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.stop'),
 			);
 		};
 
@@ -450,7 +443,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			removeManagedContainers(labelMatch).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedContainers'),
 			);
 
 		const removeManagedImagesImpl = (
@@ -459,7 +451,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			removeManagedImages(labelMatch).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedImages'),
 			);
 
 		const removeManagedNetworksImpl = (
@@ -468,7 +459,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			removeManagedNetworks(labelMatch).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedNetworks'),
 			);
 
 		const removeManagedVolumesImpl = (
@@ -477,7 +467,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			removeManagedVolumes(labelMatch).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedVolumes'),
 			);
 
 		const execImpl = (
@@ -504,7 +493,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.exec'),
 			);
 
 		const saveImagesImpl = (
@@ -524,7 +512,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			loadImageImpl(tar).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.loadImage'),
 			);
 
 		const tagImageContractImpl = (
@@ -536,7 +523,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			return tagImageImpl(resolved, newTag, opts).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.tagImage'),
 			);
 		};
 
@@ -545,7 +531,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			return removeImageImpl(resolved).pipe(
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeImage'),
 			);
 		};
 
@@ -573,7 +558,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.runOneShot'),
 			);
 
 		return ContainerRuntimeService.of({

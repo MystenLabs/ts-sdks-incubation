@@ -38,11 +38,9 @@ import { Duration, Effect, type Scope } from 'effect';
 
 import { SuiGrpcClient } from '@mysten/sui/grpc';
 
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
-import { SuiSpans } from '../spans.ts';
 import type { SuiClient } from './shared.ts';
 import {
 	assembleSuiClient,
@@ -132,14 +130,6 @@ export const bootLiveMode = (
 		// ----- 1. Resolve endpoints ------------------------------------------
 		const endpoints = yield* resolveEndpoints(opts);
 
-		yield* Effect.annotateCurrentSpan({
-			[SuiSpans.liveNetwork]: opts.network,
-			[SuiSpans.liveRpcUrl]: endpoints.rpcUrl,
-			...(endpoints.faucetUrl !== undefined
-				? { [SuiSpans.liveFaucetUrl]: endpoints.faucetUrl }
-				: {}),
-		});
-
 		// ----- 2. Construct the grpc client ----------------------------------
 		const sdkClient = yield* Effect.try({
 			try: () =>
@@ -160,7 +150,6 @@ export const bootLiveMode = (
 			opts.chain ??
 			(yield* fetchChainId(sdkClient, {
 				timeout: opts.readyTimeout ?? DEFAULT_LIVE_CHAIN_ID_TIMEOUT,
-				span: 'devstack.plugin.sui.live.fetchChainId',
 			}));
 
 		// ----- 4. Build waitForTransactionsReady -----------------------------
@@ -198,8 +187,4 @@ export const bootLiveMode = (
 		});
 
 		return { resolved, client };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.live.boot', {
-			attributes: { [SpanAttr.plugin]: 'sui', [SuiSpans.mode]: 'live' },
-		}),
-	);
+	});

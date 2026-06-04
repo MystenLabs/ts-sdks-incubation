@@ -436,5 +436,3 @@ export { performMint, MintedCoinVerifyShape, mintTxError, mintParseError } from 
 
 export type { CoinError, CoinPhase } from './errors.ts';
 export { coinError, COIN_ERROR_TAGS } from './errors.ts';
-
-export { CoinSpans } from './spans.ts';

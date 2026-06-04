@@ -260,4 +260,4 @@ export const executeFsPlan = <E>(
 		}
 
 		return { inspected, reapedIds, imagesSwept } satisfies FsPlanResult;
-	}).pipe(Effect.withSpan('substrate.reconcile.fs-plan'));
+	});

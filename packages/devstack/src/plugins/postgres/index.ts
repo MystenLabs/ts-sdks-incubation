@@ -203,5 +203,3 @@ export type { PostgresIdentityPayload } from './snapshot.ts';
 // code that reads the codegen output and builds a per-database URL
 // at runtime).
 export { credentialedUrl, plainUrl, withDatabase } from './connection.ts';
-
-export { PostgresSpans } from './spans.ts';

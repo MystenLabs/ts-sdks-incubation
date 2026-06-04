@@ -20,7 +20,6 @@ import { Effect, FileSystem } from 'effect';
 import { atomicWriteFile } from '../../substrate/runtime/atomic-write.ts';
 import { sealConfigError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
-import { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Render inputs
@@ -228,8 +227,4 @@ export const stageSealConfig = (
 		);
 
 		return { configPath, masterKeyEnvFile };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.config-render.stage', {
-			attributes: { [SealSpans.name]: name, [SealSpans.servicePath]: servicePath },
-		}),
-	);
+	});

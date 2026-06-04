@@ -396,7 +396,6 @@ export {
 	redactToken,
 } from './pairing.ts';
 export { WALLET_ENDPOINT_NAME, WALLET_ENDPOINT_KEY, makeWalletRoutable } from './routable.ts';
-export { WalletSpans } from './spans.ts';
 export {
 	dispatch,
 	startHttpServer,

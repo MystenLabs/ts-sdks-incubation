@@ -34,7 +34,6 @@ import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-serv
 import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
-import { WalletSpans } from './spans.ts';
 import type { AccountValue } from '../account/index.ts';
 import {
 	walletBootError,
@@ -239,8 +238,8 @@ const makeRequestListener =
 					onFailure: (cause) =>
 						Effect.logError('wallet dispatcher defect').pipe(
 							Effect.annotateLogs({
-								[WalletSpans.requestMethod]: walletReq.method,
-								[WalletSpans.requestUrl]: walletReq.url,
+								'wallet.request.method': walletReq.method,
+								'wallet.request.url': walletReq.url,
 								cause: Cause.pretty(cause),
 							}),
 							Effect.flatMap(() =>
@@ -371,12 +370,6 @@ export const dispatch = (
 ): Effect.Effect<WalletResponse> =>
 	Effect.gen(function* () {
 		const requestId = randomUUID();
-		yield* Effect.annotateCurrentSpan({
-			[WalletSpans.requestId]: requestId,
-			[WalletSpans.requestMethod]: req.method,
-			[WalletSpans.requestUrl]: req.url,
-		});
-
 		// 1. Path-prefix gate. Runs BEFORE the OPTIONS preflight so an
 		//    allowed origin cannot pull a `204 + CORS` response for an
 		//    arbitrary path — preflight success is scoped to the protocol
@@ -414,7 +407,7 @@ export const dispatch = (
 			yield* Effect.logWarning('wallet origin forbidden').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[WalletSpans.origin]: req.headers.origin ?? '(missing)',
+					'wallet.origin': req.headers.origin ?? '(missing)',
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),
@@ -427,12 +420,11 @@ export const dispatch = (
 		//    boolean validity.
 		const bearer = parseBearerHeader(req.headers[WALLET_AUTH_HEADER]);
 		const bearerValid = bearer !== null && safeBearerEquals(bearer, config.token);
-		yield* Effect.annotateCurrentSpan({ [WalletSpans.bearerValid]: bearerValid });
 		if (!bearerValid) {
 			yield* Effect.logWarning('wallet bearer check failed').pipe(
 				Effect.annotateLogs({
 					[SpanAttr.requestId]: requestId,
-					[WalletSpans.bearerValid]: bearerValid,
+					'wallet.auth.bearerValid': bearerValid,
 					[SpanAttr.httpMethod]: req.method,
 					[SpanAttr.httpPath]: path,
 				}),

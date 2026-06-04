@@ -44,7 +44,7 @@ import type {
 // substrate imports — so the web schema can reuse the SAME canonical
 // bucketing + named policies without acquiring any TUI/ink coupling.
 import { deriveHealth, deriveStackViewModel } from '../../../surfaces/tui/display-derivation.ts';
-import type { LogRecord, SpanRecord } from '../../../substrate/runtime/observability/index.ts';
+import type { LogRecord } from '../../../substrate/runtime/observability/index.ts';
 import type {
 	AccountProjection,
 	BuildEntry as BuildEntryShape,
@@ -454,16 +454,16 @@ export const PostgresStats = builder.objectRef<DashboardPostgresStats>('Postgres
 	}),
 });
 
-// --- Observability: LogRecord / SpanRecord -----------------------------
+// --- Observability: LogRecord ------------------------------------------
 //
-// Sources are the substrate observability ring records. `level` (logs) and
-// `status` (spans) are carried as String, not GraphQL enums: the log level
-// vocabulary (trace/debug/info/warn/error/fatal) is wider than the
-// projection's row-tail LogLevel enum, and keeping it String decouples the
-// queryable surface from the row-tail enum (same hyphen/illegal-enum-safe
-// String pattern used by SealMode/CoinSource above). Structured `fields` /
-// `attributes` are serialized to a JSON string — the schema has no JSON
-// scalar and the console renders them as a detail blob.
+// Source is the substrate observability log ring records. `level` is
+// carried as String, not a GraphQL enum: the log level vocabulary
+// (trace/debug/info/warn/error/fatal) is wider than the projection's
+// row-tail LogLevel enum, and keeping it String decouples the queryable
+// surface from the row-tail enum (same hyphen/illegal-enum-safe String
+// pattern used by SealMode/CoinSource above). Structured `fields` are
+// serialized to a JSON string — the schema has no JSON scalar and the
+// console renders them as a detail blob.
 
 const fieldsJson = (fields: Readonly<Record<string, unknown>>): string => {
 	try {
@@ -488,24 +488,6 @@ export const LogRecordType = builder.objectRef<LogRecord>('LogRecord').implement
 	}),
 });
 
-export const SpanRecordType = builder.objectRef<SpanRecord>('SpanRecord').implement({
-	description:
-		'One completed span (queryable Console "Traces" tab). Recorded by the supervisor\'s recording Tracer.',
-	fields: (t) => ({
-		traceId: t.exposeString('traceId'),
-		spanId: t.exposeString('spanId'),
-		parentId: t.exposeString('parentId', { nullable: true }),
-		name: t.exposeString('name'),
-		service: t.exposeString('service', { nullable: true }),
-		startMillis: t.exposeFloat('startMillis'),
-		durationMillis: t.exposeFloat('durationMillis'),
-		// String: 'ok'/'error' kept as the raw wire contract.
-		status: t.field({ type: 'String', resolve: (r) => r.status }),
-		/** Flattened span attributes as a JSON string. */
-		attributesJson: t.field({ type: 'String', resolve: (r) => fieldsJson(r.attributes) }),
-	}),
-});
-
 // --- Observability filter inputs ---------------------------------------
 
 export const LogFilterInput = builder.inputType('LogFilter', {
@@ -514,17 +496,6 @@ export const LogFilterInput = builder.inputType('LogFilter', {
 		/** Levels (trace/debug/info/warn/error/fatal). Strings, not an enum
 		 *  (the level vocabulary is wider than the row-tail LogLevel enum). */
 		levels: t.stringList({ required: false }),
-		search: t.string({ required: false }),
-		sinceMillis: t.float({ required: false }),
-		limit: t.int({ required: false }),
-	}),
-});
-
-export const SpanFilterInput = builder.inputType('SpanFilter', {
-	fields: (t) => ({
-		services: t.stringList({ required: false }),
-		/** Statuses ('ok' / 'error'). Strings, not an enum. */
-		statuses: t.stringList({ required: false }),
 		search: t.string({ required: false }),
 		sinceMillis: t.float({ required: false }),
 		limit: t.int({ required: false }),
