@@ -49,15 +49,8 @@ import {
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
-import {
-	computeWarmFingerprint,
-	WARM_BASELINE_SNAPSHOT_ID,
-} from '../../orchestrators/warm/fingerprint.ts';
-import {
-	clearWarmBaseline,
-	readWarmBaseline,
-	writeWarmBaseline,
-} from '../../orchestrators/warm/baseline.ts';
+import { computeWarmFingerprint } from '../../orchestrators/warm/fingerprint.ts';
+import { runWarmCapture, runWarmRestore } from '../../orchestrators/warm/hooks.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -584,78 +577,28 @@ export const runUpLive = (
 								liveRoot: stackPaths.stackRoot,
 								restoreSnapshot: (id) => snapshot.restore({ id }),
 							});
-							// WARM-RESTORE. Gated on `--warm`. Recompute the input
-							// fingerprint and, on a match against the recorded sidecar
-							// (and a present artifact), restore the baseline IN PLACE of
-							// a cold boot — NO `resume` (the supervisor's initial acquire
-							// is the converge, exactly like `recoverInterruptedRestore`).
-							// On a miss, drop any stale baseline + sidecar and fall
-							// through to a normal cold boot. The whole block is wrapped
-							// so a warm failure NEVER wedges boot — it degrades to cold.
+							// WARM-RESTORE. Gated on `--warm`. The hit/miss/stale
+							// decision (recompute fingerprint → match sidecar + artifact
+							// → restore IN PLACE of a cold boot, NO `resume`; else drop a
+							// stale baseline and fall through to cold) lives in
+							// `runWarmRestore`, dependency-injected so production and the
+							// e2e harness drive the identical path. It never fails (wraps
+							// itself in catch→log→continue), so a warm failure can't wedge
+							// boot — it degrades to cold.
 							if (warmEnabled) {
-								yield* Effect.gen(function* () {
-									const fingerprintExit = yield* Effect.exit(
-										provideFileSystem(
-											fs,
-											computeWarmFingerprint({
-												stack,
-												appRoot,
-												configPath: resolvedConfigPath,
-												devstackVersion,
-											}),
-										),
-									);
-									if (Exit.isFailure(fingerprintExit)) {
-										// Only `WarmFingerprintError` is expected (unreadable
-										// config); any cause degrades to cold boot.
-										yield* Effect.logWarning(
-											`warm: fingerprint failed → cold boot: ${Cause.pretty(fingerprintExit.cause)}`,
-										);
-										return;
-									}
-									const fingerprint = fingerprintExit.value;
-									yield* Ref.set(warmFingerprint, fingerprint);
-									const sidecar = yield* provideFileSystem(
-										fs,
-										readWarmBaseline(stackPaths.stackRoot),
-									);
-									const catalog = yield* provideFileSystem(fs, snapshot.list);
-									const artifactExists = catalog.some(
-										(entry) => entry.id === WARM_BASELINE_SNAPSHOT_ID,
-									);
-									const hit =
-										sidecar !== null &&
-										sidecar.fingerprint === fingerprint &&
-										artifactExists;
-									if (hit) {
-										// Restore without `resume` — the initial acquire below
-										// re-converges the swapped-in tree (mirrors
-										// `recoverInterruptedRestore`).
-										yield* provideFileSystem(
-											fs,
-											snapshot.restore({ id: WARM_BASELINE_SNAPSHOT_ID }),
-										);
-										yield* Ref.set(warmRestored, true);
-										yield* Effect.logInfo('warm: restored baseline (fingerprint match)');
-										return;
-									}
-									// MISS — drop a stale/absent baseline so the post-boot
-									// capture re-captures cleanly, then cold-boot.
-									if (artifactExists) {
-										yield* provideFileSystem(
-											fs,
-											snapshot.delete(WARM_BASELINE_SNAPSHOT_ID),
-										);
-									}
-									yield* provideFileSystem(fs, clearWarmBaseline(stackPaths.stackRoot));
-									yield* Effect.logInfo('warm: no valid baseline → cold boot');
-								}).pipe(
-									Effect.catchCause((cause) =>
-										Effect.logWarning(
-											`warm: restore phase failed → cold boot: ${Cause.pretty(cause)}`,
-										),
-									),
-								);
+								yield* runWarmRestore({
+									snapshot,
+									fs,
+									stackRoot: stackPaths.stackRoot,
+									computeFingerprint: computeWarmFingerprint({
+										stack,
+										appRoot,
+										configPath: resolvedConfigPath,
+										devstackVersion,
+									}),
+									warmRestoredRef: warmRestored,
+									warmFingerprintRef: warmFingerprint,
+								});
 							}
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
@@ -708,49 +651,25 @@ export const runUpLive = (
 					withinScope: () =>
 						Effect.gen(function* () {
 							if (!warmEnabled) return;
-							if (yield* Ref.get(warmRestored)) return;
 							const stackPaths = yield* StackPathsService;
-							yield* Effect.gen(function* () {
-								yield* provideFileSystem(
-									fs,
-									snapshot.capture({
-										id: WARM_BASELINE_SNAPSHOT_ID,
-										label: 'warm-baseline',
-									}),
-								);
-								// Reuse the fingerprint computed in the restore phase;
-								// recompute it only if that phase never ran / failed to
-								// record one (e.g. a restore-phase fingerprint failure
-								// degraded to cold without storing it).
-								const recorded = yield* Ref.get(warmFingerprint);
-								const fingerprint =
-									recorded ??
-									(yield* provideFileSystem(
-										fs,
-										computeWarmFingerprint({
-											stack,
-											appRoot,
-											configPath: resolvedConfigPath,
-											devstackVersion,
-										}),
-									));
-								yield* provideFileSystem(
-									fs,
-									writeWarmBaseline(stackPaths.stackRoot, {
-										version: 1,
-										fingerprint,
-										snapshotId: WARM_BASELINE_SNAPSHOT_ID,
-										capturedAt: Date.now(),
-									}),
-								);
-								yield* Effect.logInfo('warm: captured baseline');
-							}).pipe(
-								Effect.catchCause((cause) =>
-									Effect.logWarning(
-										`warm: capture failed (continuing): ${Cause.pretty(cause)}`,
-									),
-								),
-							);
+							// Capture the baseline + write the sidecar UNLESS this boot
+							// was itself a warm restore. The gate + capture + sidecar
+							// write live in `runWarmCapture` (the same effect the e2e
+							// harness runs); it swallows its own failure so a warm
+							// capture failure never fails an otherwise-successful `up`.
+							yield* runWarmCapture({
+								snapshot,
+								fs,
+								stackRoot: stackPaths.stackRoot,
+								computeFingerprint: computeWarmFingerprint({
+									stack,
+									appRoot,
+									configPath: resolvedConfigPath,
+									devstackVersion,
+								}),
+								warmRestoredRef: warmRestored,
+								warmFingerprintRef: warmFingerprint,
+							});
 						}),
 				},
 			).pipe(Effect.provide(layerBuiltInPluginRuntime));

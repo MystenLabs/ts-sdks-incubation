@@ -182,6 +182,52 @@ describe('warm fingerprint', () => {
 		),
 	);
 
+	it.effect('CHANGES when a .move file under a GLOB watch path changes', () =>
+		withTempRoot('warm-fingerprint', (root) =>
+			Effect.gen(function* () {
+				// Mirrors `localPackage`'s real watch.paths shape: a `**​/*.move`
+				// glob plus a literal `Move.toml`. The glob entry must collapse
+				// to its base dir and walk it — `readDirectory` on the raw glob
+				// string finds nothing, so this case fails before the fix.
+				const stack = fakeStack([
+					{ id: 'pkg', watch: ['contracts/**/*.move', 'contracts/Move.toml'] },
+				]);
+				const seed = seedApp(root, 'export default {}', {
+					'contracts/Move.toml': '[package]\nname = "demo"',
+					'contracts/sources/demo.move': 'module demo::a { }',
+				});
+				const fa = yield* fingerprint({ stack, appRoot: seed.appRoot, configPath: seed.configPath });
+				// Edit ONLY the .move source contents (path/mtime unchanged).
+				writeFileSync(
+					join(seed.appRoot, 'contracts/sources/demo.move'),
+					'module demo::a { public fun f() {} }',
+				);
+				const fb = yield* fingerprint({ stack, appRoot: seed.appRoot, configPath: seed.configPath });
+				expect(fa).not.toBe(fb);
+			}),
+		),
+	);
+
+	it.effect('hashes a literal Move.toml watch path (changes invalidate)', () =>
+		withTempRoot('warm-fingerprint', (root) =>
+			Effect.gen(function* () {
+				// A literal-file watch entry (no glob chars) must be hashed
+				// directly — `readDirectory` on a file finds nothing.
+				const stack = fakeStack([{ id: 'pkg', watch: ['contracts/Move.toml'] }]);
+				const seed = seedApp(root, 'export default {}', {
+					'contracts/Move.toml': '[package]\nname = "demo"',
+				});
+				const fa = yield* fingerprint({ stack, appRoot: seed.appRoot, configPath: seed.configPath });
+				writeFileSync(
+					join(seed.appRoot, 'contracts/Move.toml'),
+					'[package]\nname = "demo"\nedition = "2024"',
+				);
+				const fb = yield* fingerprint({ stack, appRoot: seed.appRoot, configPath: seed.configPath });
+				expect(fa).not.toBe(fb);
+			}),
+		),
+	);
+
 	it.effect('ignores non-Move files and missing watch roots under a watch path', () =>
 		withTempRoot('warm-fingerprint', (root) =>
 			Effect.gen(function* () {

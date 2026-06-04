@@ -17,8 +17,11 @@
 //   - `options` — the (display-stripped) `DevstackOptions`, canonically
 //     stringified so key ordering never churns the key.
 //   - `moveSources` — content hashes of `*.move` / `Move.toml` /
-//     `Move.lock` under each member's declared `watch.paths`. Captures
-//     Move-package source edits that a config byte-diff cannot see.
+//     `Move.lock` reached from each member's declared `watch.paths`.
+//     Those paths may be GLOBS (e.g. `${sourcePath}/**​/*.move`,
+//     `${sourcePath}/Move.toml`) — see `resolveWatchInputs` for how globs
+//     collapse to a base directory and literal files are hashed directly.
+//     Captures Move-package source edits that a config byte-diff cannot see.
 //   - `envImageOverrides` — set image-override env vars, so pointing the
 //     stack at a different container image invalidates the baseline.
 //
@@ -26,7 +29,7 @@
 // supervisor, no snapshot service.
 
 import { createHash } from 'node:crypto';
-import { isAbsolute, join, relative } from 'node:path';
+import { basename, isAbsolute, join, relative } from 'node:path';
 
 import { Effect, FileSystem, Schema } from 'effect';
 
@@ -111,6 +114,31 @@ const isSkippedDir = (name: string): boolean =>
 const resolveWatchPath = (appRoot: string, watchPath: string): string =>
 	isAbsolute(watchPath) ? watchPath : join(appRoot, watchPath);
 
+/** Glob metacharacters. A watch path containing any of these is a glob
+ *  pattern (e.g. `${sourcePath}/**​/*.move`), NOT a literal filesystem
+ *  path — `readDirectory`-ing the raw string would find nothing. */
+const hasGlobChars = (segment: string): boolean => /[*?[\]{}]/.test(segment);
+
+/** Derive the longest leading NON-glob directory prefix of a (resolved)
+ *  watch path. Splits on `/`, keeps segments up to (but excluding) the
+ *  first one containing a glob char, and rejoins. `${root}/**​/*.move`
+ *  and `${root}/Move.toml` both collapse to `${root}`, so overlapping
+ *  globs under one package walk the same base once. A path with no glob
+ *  chars returns itself unchanged. */
+const globBaseDir = (resolved: string): string => {
+	const segments = resolved.split('/');
+	const base: string[] = [];
+	for (const segment of segments) {
+		if (hasGlobChars(segment)) break;
+		base.push(segment);
+	}
+	// `split('/')` on an absolute path yields a leading '' segment, so
+	// `join('/')` round-trips the leading slash; a relative path keeps its
+	// shape. An empty base (first segment globbed) falls back to '.'.
+	const joined = base.join('/');
+	return joined === '' ? '.' : joined;
+};
+
 /** Walk one resolved watch root, collecting absolute paths of every Move
  *  source file under it. A missing root yields `[]` (not an error) — a
  *  plugin may declare a watch root that does not exist yet. */
@@ -139,9 +167,68 @@ const collectMoveSourcePaths = (
 		return found;
 	});
 
+/** Resolve every member's watch paths into the concrete set of
+ *  filesystem inputs to hash, classifying each entry:
+ *
+ *   - GLOB (`*`/`?`/`[`/`{`): strip the glob tail to its longest leading
+ *     non-glob directory prefix and walk THAT base (so
+ *     `${root}/**​/*.move` collects all Move sources under `${root}`).
+ *   - literal FILE (e.g. a `Move.toml`/`Move.lock` with no glob chars):
+ *     hash it directly — `readDirectory` on a file finds nothing, so a
+ *     literal-file watch entry must be handled as a file, not a root.
+ *   - literal DIRECTORY: walk it as a Move-source root.
+ *
+ *  Returns de-duped `{ baseDirs, files }` so overlapping globs under one
+ *  package (the `**​/*.move` + `Move.toml` + `Move.lock` triple
+ *  `localPackage` emits) resolve to a SINGLE base dir, and a literal file
+ *  that also lives under a walked base dir is not read twice (the walk
+ *  owns it). Non-existent paths are silently skipped. */
+const resolveWatchInputs = (
+	stack: SupervisedStack,
+	appRoot: string,
+): Effect.Effect<
+	{ readonly baseDirs: ReadonlyArray<string>; readonly files: ReadonlyArray<string> },
+	never,
+	FileSystem.FileSystem
+> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		const baseDirs = new Set<string>();
+		const files = new Set<string>();
+		for (const member of stack.members) {
+			for (const watchPath of member.watch?.paths ?? []) {
+				const resolved = resolveWatchPath(appRoot, watchPath);
+				if (hasGlobChars(resolved)) {
+					// Glob — walk the longest non-glob directory prefix.
+					baseDirs.add(globBaseDir(resolved));
+					continue;
+				}
+				// Literal path: classify by stat. Missing → silently skip.
+				const stat = yield* fs.stat(resolved).pipe(Effect.option);
+				if (stat._tag === 'None') continue;
+				if (stat.value.type === 'Directory') {
+					baseDirs.add(resolved);
+				} else if (stat.value.type === 'File' && isMoveSourceFile(basename(resolved))) {
+					// Only literal Move sources/manifests feed the key — mirrors
+					// the `isMoveSourceFile` filter the directory walk applies.
+					files.add(resolved);
+				}
+			}
+		}
+		// A literal file that also falls under a walked base dir is collected
+		// by the walk; drop it from `files` so it is not hashed twice.
+		const baseDirList = [...baseDirs];
+		const standaloneFiles = [...files].filter(
+			(file) => !baseDirList.some((dir) => file.startsWith(`${dir}/`)),
+		);
+		return { baseDirs: baseDirList, files: standaloneFiles };
+	});
+
 /** Read + content-hash every Move source under every member's watch
  *  paths, keyed by path RELATIVE to `appRoot` so the key is portable
- *  across machines. Unreadable files are skipped (best-effort), matching
+ *  across machines. Glob watch entries (`${root}/**​/*.move`) walk their
+ *  derived base directory; literal-file entries (`${root}/Move.toml`) are
+ *  hashed directly. Unreadable files are skipped (best-effort), matching
  *  the missing-root tolerance. Sorted by key for stable ordering. */
 const computeMoveSources = (
 	stack: SupervisedStack,
@@ -149,22 +236,20 @@ const computeMoveSources = (
 ): Effect.Effect<Record<string, string>, never, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		// De-dup watch roots across members so a shared watch path is
-		// walked once.
-		const roots = new Set<string>();
-		for (const member of stack.members) {
-			for (const watchPath of member.watch?.paths ?? []) {
-				roots.add(resolveWatchPath(appRoot, watchPath));
-			}
+		const { baseDirs, files } = yield* resolveWatchInputs(stack, appRoot);
+		// De-dup the concrete absolute paths to hash: every Move source under
+		// each base dir, plus each standalone literal file.
+		const absSet = new Set<string>();
+		for (const dir of baseDirs) {
+			for (const abs of yield* collectMoveSourcePaths(dir)) absSet.add(abs);
 		}
+		for (const file of files) absSet.add(file);
 		const hashes: Record<string, string> = {};
-		for (const root of roots) {
-			for (const abs of yield* collectMoveSourcePaths(root)) {
-				const bytes = yield* fs.readFile(abs).pipe(Effect.option);
-				if (bytes._tag === 'None') continue;
-				const relKey = relative(appRoot, abs);
-				hashes[relKey] = sha256Hex(bytes.value);
-			}
+		for (const abs of absSet) {
+			const bytes = yield* fs.readFile(abs).pipe(Effect.option);
+			if (bytes._tag === 'None') continue;
+			const relKey = relative(appRoot, abs);
+			hashes[relKey] = sha256Hex(bytes.value);
 		}
 		const sorted: Record<string, string> = {};
 		for (const key of Object.keys(hashes).sort((a, b) => a.localeCompare(b))) {
