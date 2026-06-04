@@ -5,8 +5,7 @@
 // Linux, `ps -o lstart` on macOS, or equivalent) matches the recorded
 // `startTime`."
 //
-// Foreign-host entries are treated as alive (NFS-safe conservative
-// default). On the same host, two checks combine: `kill(pid, 0)`
+// Devstack is single-host: two checks combine. `kill(pid, 0)`
 // determines pid-in-use; `ps -o lstart` confirms it's the SAME process
 // (defending against pid reuse on long-uptime machines).
 //
@@ -151,19 +150,13 @@ const hashStartTimeStamp = (stamp: string): number => {
 /** Liveness probe for a roster holder. Used by the claim-protocol
  *  sweep AND the stack-lock one-shot orphan check.
  *
- *  Discipline:
- *   - Foreign-host (`hostname` differs from our own) → ALWAYS alive
- *     (NFS-safe default; cross-host pid comparisons are meaningless).
- *   - Same-host: pid must be live AND start-time must match.
+ *  Discipline (devstack is single-host): pid must be live AND start-time
+ *  must match the recorded stamp.
  *
  *  Returns `'alive' | 'dead'`. Never throws. Effect-wrapped so callers
  *  compose under spans. */
 export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolderLiveness')(
-	function* (holder: RosterHolder, ownHost: string = nodeHostname(), cache?: LivenessCache) {
-		// Foreign-host: NFS-safe — we can't verify, assume alive.
-		if (holder.hostname !== ownHost) {
-			return 'alive' as const;
-		}
+	function* (holder: RosterHolder, cache?: LivenessCache) {
 		if (!isPidAlive(holder.pid)) return 'dead' as const;
 		const probedStart = processStartTime(holder.pid, cache);
 		// pid alive but no stamp probable → conservative: ALIVE
@@ -207,11 +200,10 @@ export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolde
 // -----------------------------------------------------------------------------
 //
 // The bare `LivenessCache = Map<pid, stamp | null>` was threaded through
-// `roster.sweepStaleHolders` and `liveContainerClaims` as an explicit
-// parameter, which is fine for two sites but doesn't scale to the three
-// other sweep loops (dispatch routes, doctor probes, lifecycle-prune)
-// that haven't migrated yet. Promoting the cache into a service lets a
-// sweep loop `yield* LivenessProbeScope` once and call the probe
+// `roster.sweepStaleHolders` as an explicit parameter, which is fine for
+// one site but doesn't scale to the other sweep loops (dispatch routes,
+// doctor probes, lifecycle-prune). Promoting the cache into a service
+// lets a sweep loop `yield* LivenessProbeScope` once and call the probe
 // methods without re-passing the Map. The optional-Map params on
 // `processStartTime` / `checkHolderLiveness` stay so unmigrated callers
 // can keep working from outside an Effect.
@@ -220,10 +212,7 @@ export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolde
  *  so the same `pid` forks `ps`/`tasklist` at most once per scope. */
 export interface LivenessProbeScopeShape {
 	readonly probeStartTime: (pid: number) => number | null;
-	readonly probeHolderLiveness: (
-		holder: RosterHolder,
-		ownHost?: string,
-	) => Effect.Effect<'alive' | 'dead'>;
+	readonly probeHolderLiveness: (holder: RosterHolder) => Effect.Effect<'alive' | 'dead'>;
 }
 
 /** A per-sweep liveness scope. Callers `yield* LivenessProbeScope`
@@ -243,65 +232,7 @@ export const layerLivenessProbeScope: Layer.Layer<LivenessProbeScope> = Layer.ef
 		const cache: LivenessCache = new Map();
 		return LivenessProbeScope.of({
 			probeStartTime: (pid) => processStartTime(pid, cache),
-			probeHolderLiveness: (holder, ownHost = nodeHostname()) =>
-				checkHolderLiveness(holder, ownHost, cache),
+			probeHolderLiveness: (holder) => checkHolderLiveness(holder, cache),
 		});
 	}),
 );
-
-// -----------------------------------------------------------------------------
-// Reaper combinator — the single home for the per-sweep liveness wiring.
-// -----------------------------------------------------------------------------
-//
-// Both the docker boot-time orphan sweep (`runtime/docker/sweep.ts`) and
-// the cross-stack lifecycle-prune orchestrator (`orchestrators/
-// lifecycle-prune/index.ts`) run a "reaper" pass: a single sweep over
-// some inventory that decides what is reclaimable. Each pass needs a
-// FRESH `LivenessProbeScope` so a recycled-PID corner case forks the OS
-// liveness probe AT MOST once per pass — and the `Effect.provide(
-// layerLivenessProbeScope)` + `checkHolderLiveness` wiring was being
-// repeated at each call site. `makeReaper` (and the `withLivenessSweepScope`
-// combinator it returns) collapses that wiring into ONE place.
-//
-// This is ABSTRACTION ONLY — it does not change WHEN either reaper runs,
-// what it sweeps, or the order of its removals. Each caller keeps its own
-// orchestration (docker/sweep stays boot-phase under stack.lock with the
-// lock held only over the claim read; lifecycle-prune stays the L4 user
-// command with its `(app, stack)` grouping). The combinator provides only
-// the per-sweep liveness scope + the shared holder-liveness probe.
-
-/** A reaper handle: a `scopeName` for the sweep plus the shared
- *  per-sweep liveness-scope combinator every sweep pass reuses. */
-export interface Reaper {
-	/** The reaper's name — used to derive the sweep span so each pass is
-	 *  attributable. */
-	readonly scopeName: string;
-	/** Run `body` under a FRESH per-sweep `LivenessProbeScope` (a private
-	 *  cache scoped to THIS pass) so the same pid is probed at most once
-	 *  across the sweep. The wiring (`Effect.provide(layerLivenessProbeScope)`)
-	 *  lives HERE, not at the call site — so the `LivenessProbeScope` +
-	 *  `checkHolderLiveness` plumbing both reapers depend on has a single
-	 *  home. Adds no span of its own: each caller keeps its existing trace
-	 *  structure (no nesting change). */
-	readonly withLivenessSweepScope: <A, E, R>(
-		body: Effect.Effect<A, E, R | LivenessProbeScope>,
-	) => Effect.Effect<A, E, Exclude<R, LivenessProbeScope>>;
-}
-
-/** Build a reaper handle for a named sweep. The single place the
- *  per-sweep `LivenessProbeScope` provisioning is assembled — both
- *  `docker/sweep.ts` and `lifecycle-prune` instantiate one rather than
- *  re-threading `layerLivenessProbeScope` themselves.
- *
- *  ABSTRACTION ONLY: `makeReaper` neither schedules nor reorders a
- *  sweep. It provides the fresh per-pass liveness cache; the caller
- *  keeps full ownership of WHAT it sweeps, WHEN, and in WHAT ORDER (and
- *  any lock discipline around the decision). */
-export const makeReaper = (scopeName: string): Reaper => {
-	const withLivenessSweepScope = <A, E, R>(
-		body: Effect.Effect<A, E, R | LivenessProbeScope>,
-	): Effect.Effect<A, E, Exclude<R, LivenessProbeScope>> =>
-		body.pipe(Effect.provide(layerLivenessProbeScope));
-
-	return { scopeName, withLivenessSweepScope };
-};

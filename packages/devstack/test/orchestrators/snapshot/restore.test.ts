@@ -707,7 +707,6 @@ describe('snapshot restore safety', () => {
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'command-log\n');
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_EVENTS_FILE_NAME), 'event-log\n');
 				writeFileSync(join(stackRoot, 'roster.json'), '{"version":1,"holders":[]}\n');
-				writeFileSync(join(stackRoot, 'container-claims.json'), '{"version":1,"claims":[]}\n');
 				mkdirSync(join(stackRoot, 'wallet'), { recursive: true });
 				writeFileSync(walletTokenPath, '0123456789abcdef0123456789abcdef');
 				writeFileSync(join(stackRoot, 'wallet', 'session'), 'drop');
@@ -746,9 +745,6 @@ describe('snapshot restore safety', () => {
 				);
 				expect(readFileSync(join(stackRoot, 'roster.json'), 'utf8')).toBe(
 					'{"version":1,"holders":[]}\n',
-				);
-				expect(readFileSync(join(stackRoot, 'container-claims.json'), 'utf8')).toBe(
-					'{"version":1,"claims":[]}\n',
 				);
 				// The LIVE deploy cache is NOT preserved from live — the snapshot is
 				// the sole source, and this snapshot carries none, so it is dropped.

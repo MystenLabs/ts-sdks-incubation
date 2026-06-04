@@ -219,10 +219,7 @@ export const acquireStackLock = (
 				// Dead-PID reclaim: gated on a liveness probe, so the
 				// holder cannot have written a fresh body — a plain
 				// unlink is safe here (no TOCTOU). An alive holder falls
-				// through to the backoff below. `checkHolderLiveness`
-				// carries the foreign-host short-circuit (a holder on a
-				// remote host is treated as alive), so a cross-host body
-				// is never reclaimed here.
+				// through to the backoff below.
 				const status = yield* checkHolderLiveness(lastHolder).pipe(
 					Effect.catch(() => Effect.succeed('alive' as const)),
 				);

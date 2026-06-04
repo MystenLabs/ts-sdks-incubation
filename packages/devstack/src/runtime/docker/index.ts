@@ -100,7 +100,6 @@ export {
 	listAttachedContainers,
 	type NetworkAttachedEndpoint,
 	readIps,
-	SHARED_NETWORK_NAME,
 	waitForIp,
 	type WaitForIpOptions,
 } from './network.ts';

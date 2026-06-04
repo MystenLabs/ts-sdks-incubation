@@ -10,7 +10,7 @@
 
 import { hostname as nodeHostname } from 'node:os';
 
-import { Data, Effect, Schema } from 'effect';
+import { Data, Effect } from 'effect';
 
 import {
 	DEFAULT_SWEEP_POLICY,
@@ -20,12 +20,10 @@ import {
 	type RosterSweepPolicy,
 } from '../../cross-process.ts';
 import { LogAttr } from '../observability/log-attrs.ts';
-import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 import { readVersionedDocumentSync, writeVersionedDocumentSync } from '../../versioned-doc-sync.ts';
 import { selfPid } from './self-pid.ts';
 import { acquireStackLock } from './stack-lock.ts';
 import {
-	isPidAlive,
 	layerLivenessProbeScope,
 	LivenessProbeScope,
 	ownHolder,
@@ -100,7 +98,6 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 	const probe = yield* LivenessProbeScope;
 	const survivors: RosterHolder[] = [];
 	const evicted: RosterHolder[] = [];
-	const ownHost = nodeHostname();
 	for (const holder of doc.holders) {
 		const heartbeatStale = now - holder.heartbeatAt > policy.staleAfterMillis;
 		if (!heartbeatStale) {
@@ -108,7 +105,7 @@ export const sweepStaleHolders = Effect.fn('cross-process.roster.sweep')(functio
 			continue;
 		}
 		const liveness = yield* probe
-			.probeHolderLiveness(holder, ownHost)
+			.probeHolderLiveness(holder)
 			.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 		if (liveness === 'dead') {
 			evicted.push(holder);
@@ -146,39 +143,12 @@ export interface ReleaseResult {
 interface RosterPaths {
 	readonly stackLockFile: string;
 	readonly rosterFile: string;
-	/** Sibling-file path for the container-claim ledger. Optional
-	 *  because the roster's holder mutations (`claim` / `release` /
-	 *  `heartbeat` / `setIntent`) never touch the ledger; only the
-	 *  `addClaim` / `removeClaim` / `readClaims` / `pruneStaleClaims`
-	 *  entry points require it, and they assert presence at the call
-	 *  site. Sourced from `StackPathsService.containerClaimsFile` —
-	 *  see `substrate/runtime/paths.ts` for the policy rationale
-	 *  (closed L0 path resolver). */
-	readonly containerClaimsFile?: string;
 }
-
-/** Materialize the ledger path from `RosterPaths`. Callers that
- *  invoke any of the claim-ledger APIs (`readClaims`,
- *  `pruneStaleClaims`, `addClaim`, `removeClaim`) MUST construct
- *  `RosterPaths` with `containerClaimsFile` populated from
- *  `StackPathsService.containerClaimsFile`. The previous behavior of
- *  reconstructing `dirname(rosterFile) + '/container-claims.json'`
- *  internally has been removed so nothing in the runtime tree builds
- *  cross-process paths outside the substrate path resolver. */
-const requireClaimsPath = (paths: RosterPaths): string => {
-	if (paths.containerClaimsFile === undefined) {
-		throw new Error(
-			'cross-process.roster: container-claim API called without `containerClaimsFile` ' +
-				'on the RosterPaths bundle. Source this from StackPathsService.containerClaimsFile.',
-		);
-	}
-	return paths.containerClaimsFile;
-};
 
 /** Match a roster holder against THIS process's identity.
  *
- *  Liveness elsewhere (`checkHolderLiveness`, `isContainerClaimLive`)
- *  uses `(pid, hostname, startTime)` — PID alone is insufficient on
+ *  Liveness elsewhere (`checkHolderLiveness`) uses
+ *  `(pid, hostname, startTime)` — PID alone is insufficient on
  *  long-uptime hosts where the kernel can recycle PIDs. The roster
  *  mutators (`heartbeat`, `release`, `setIntent`) must apply the same
  *  triple match so a recycled-PID peer's entry is never silently
@@ -186,8 +156,8 @@ const requireClaimsPath = (paths: RosterPaths): string => {
  *
  *  `startTime` is the FNV-1a hash of `ps -o lstart` (see
  *  `liveness.processStartTime`). A `null` probe (process gone, or
- *  exotic platform) skips the start-time check — same conservative
- *  policy as `isContainerClaimLive`. */
+ *  exotic platform) skips the start-time check — the same conservative
+ *  policy `checkHolderLiveness` applies. */
 const isOwnEntry = (
 	h: RosterHolder,
 	ownPid: number,
@@ -374,214 +344,3 @@ export const heartbeatFiber = (
 			);
 		}
 	});
-
-// -----------------------------------------------------------------------------
-// Container-claim ledger
-// -----------------------------------------------------------------------------
-//
-// Architecture § Cross-process safety protocol: roster "Records claimed
-// containers per process. Last-leaver semantics: when a process
-// releases its last claim and confirms no other process holds the
-// container, it may tear down."
-//
-// The roster document carries holders only — the per-container claim
-// ledger lives in an EXTENSION file at `<stackRoot>/container-claims.json`
-// so the architecture-mandated `RosterDocument` shape doesn't widen.
-// Same atomicity discipline: mutate under `stack.lock`.
-
-export interface ContainerClaim {
-	readonly containerKey: string;
-	readonly pid: number;
-	readonly startTime?: number;
-	readonly hostname: string;
-	readonly claimedAt: number;
-}
-
-export interface ContainerClaimDocument {
-	readonly version: 1;
-	readonly claims: ReadonlyArray<ContainerClaim>;
-}
-
-const ContainerClaimSchema = Schema.Struct({
-	containerKey: Schema.String,
-	pid: Schema.Number,
-	startTime: Schema.optional(Schema.Number),
-	hostname: Schema.String,
-	claimedAt: Schema.Number,
-});
-
-const ContainerClaimDocumentSchema = versionedDocSchema(1, {
-	claims: Schema.Array(ContainerClaimSchema),
-});
-
-const EMPTY_CLAIMS: ContainerClaimDocument = { version: 1, claims: [] };
-
-/** Match a container claim against THIS process's identity using the
- *  same `(pid, hostname, startTime)` triple that `isOwnEntry` /
- *  `isContainerClaimLive` apply to roster holders — PID alone is
- *  insufficient on long-uptime hosts where the kernel recycles PIDs.
- *  A null/undefined start-time on either side falls back to
- *  `(pid, hostname)`, matching the conservative policy elsewhere
- *  (avoids orphaning our own entry when the probe failed). */
-const isOwnContainerClaim = (
-	c: ContainerClaim,
-	containerKey: string,
-	ownPid: number,
-	ownHost: string,
-	ownStartTime: number | undefined,
-): boolean => {
-	if (c.containerKey !== containerKey || c.pid !== ownPid || c.hostname !== ownHost) return false;
-	if (ownStartTime === undefined || c.startTime === undefined) return true;
-	return c.startTime === ownStartTime;
-};
-
-const isContainerClaimLive = (
-	claim: ContainerClaim,
-	probeStartTime: (pid: number) => number | null,
-	ownHost: string = nodeHostname(),
-): boolean => {
-	if (claim.hostname !== ownHost) return true;
-	if (!isPidAlive(claim.pid)) return false;
-	if (claim.startTime === undefined) return true;
-	const probedStart = probeStartTime(claim.pid);
-	if (probedStart === null) return true;
-	return probedStart === claim.startTime;
-};
-
-/** Effect-flavored filter that yields a fresh `LivenessProbeScope` so
- *  the same pid is probed at most once across this pass — even when
- *  multiple claims by the same pid sit in the ledger. The scope's
- *  cache is private to this call (provided via `Effect.provide`). */
-const liveContainerClaims = (doc: ContainerClaimDocument): Effect.Effect<ContainerClaimDocument> =>
-	Effect.gen(function* () {
-		const probe = yield* LivenessProbeScope;
-		const ownHost = nodeHostname();
-		const filtered: ContainerClaimDocument = {
-			version: 1,
-			claims: doc.claims.filter((claim) =>
-				isContainerClaimLive(claim, probe.probeStartTime, ownHost),
-			),
-		};
-		return filtered;
-	}).pipe(Effect.provide(layerLivenessProbeScope));
-
-const writeClaims = (
-	path: string,
-	doc: ContainerClaimDocument,
-): Effect.Effect<void, RosterIoError> => writeVersionedDocumentSync(path, doc, ROSTER_DOC_ERRORS);
-
-/** Read the container-claim ledger. */
-export const readClaims = (
-	paths: RosterPaths,
-): Effect.Effect<ContainerClaimDocument, RosterError> =>
-	Effect.suspend(() =>
-		readVersionedDocumentSync(
-			requireClaimsPath(paths),
-			ContainerClaimDocumentSchema,
-			ROSTER_DOC_ERRORS,
-			EMPTY_CLAIMS,
-		),
-	);
-
-/** Prune stale same-host claims. This is the recovery path for an
- *  interrupted process that could not run its scope finalizer. */
-export const pruneStaleClaims = (
-	paths: RosterPaths,
-): Effect.Effect<ContainerClaimDocument, RosterError | import('./stack-lock.ts').StackLockError> =>
-	withStackLock(
-		paths,
-		Effect.gen(function* () {
-			const path = requireClaimsPath(paths);
-			const current = yield* readClaims(paths).pipe(
-				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
-			);
-			const next = yield* liveContainerClaims(current);
-			if (next.claims.length !== current.claims.length) {
-				yield* writeClaims(path, next);
-			}
-			return next;
-		}),
-	);
-
-/** Record that this process now claims `containerKey`. No-op if
- *  already claimed by this process. */
-export const addClaim = (
-	paths: RosterPaths,
-	containerKey: string,
-): Effect.Effect<void, RosterError | import('./stack-lock.ts').StackLockError> =>
-	withStackLock(
-		paths,
-		Effect.gen(function* () {
-			const path = requireClaimsPath(paths);
-			const current = yield* readClaims(paths).pipe(
-				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
-			);
-			// `liveContainerClaims` pre-filter must run BEFORE the own-claim
-			// scan below: it drops dead peers so a recycled-PID peer can't
-			// shadow our own (pid, hostname, startTime) identity. Ordering
-			// here is load-bearing.
-			const live = yield* liveContainerClaims(current);
-			const ownPid = selfPid();
-			const ownStartTime = processStartTime(ownPid) ?? undefined;
-			const ownHost = nodeHostname();
-			if (
-				live.claims.some((c) => isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime))
-			) {
-				if (live.claims.length !== current.claims.length) yield* writeClaims(path, live);
-				return;
-			}
-			const next: ContainerClaimDocument = {
-				version: 1,
-				claims: [
-					...live.claims,
-					{
-						containerKey,
-						pid: ownPid,
-						...(ownStartTime === undefined ? {} : { startTime: ownStartTime }),
-						hostname: ownHost,
-						claimedAt: Date.now(),
-					},
-				],
-			};
-			yield* writeClaims(path, next);
-		}),
-	);
-
-/** Release this process's claim on `containerKey`. Returns whether
- *  the container has zero remaining claims AFTER this release — the
- *  "last-leaver" signal that authorizes a teardown.
- *
- *  Architecture § Cross-process safety protocol: "when a process
- *  releases its last claim and confirms no other process holds the
- *  container, it may tear down." */
-export const removeClaim = (
-	paths: RosterPaths,
-	containerKey: string,
-): Effect.Effect<
-	{ readonly lastClaimReleased: boolean },
-	RosterError | import('./stack-lock.ts').StackLockError
-> =>
-	withStackLock(
-		paths,
-		Effect.gen(function* () {
-			const path = requireClaimsPath(paths);
-			const current = yield* readClaims(paths).pipe(
-				Effect.catchTag('RosterCorruptError', () => Effect.succeed(EMPTY_CLAIMS)),
-			);
-			// `liveContainerClaims` pre-filter must run BEFORE the own-claim
-			// scan below: it drops dead peers so a recycled-PID peer can't
-			// shadow our own (pid, hostname, startTime) identity. Ordering
-			// here is load-bearing.
-			const live = yield* liveContainerClaims(current);
-			const ownPid = selfPid();
-			const ownStartTime = processStartTime(ownPid) ?? undefined;
-			const ownHost = nodeHostname();
-			const remaining = live.claims.filter(
-				(c) => !isOwnContainerClaim(c, containerKey, ownPid, ownHost, ownStartTime),
-			);
-			const stillClaimedByPeer = remaining.some((c) => c.containerKey === containerKey);
-			const next: ContainerClaimDocument = { version: 1, claims: remaining };
-			yield* writeClaims(path, next);
-			return { lastClaimReleased: !stillClaimedByPeer };
-		}),
-	);

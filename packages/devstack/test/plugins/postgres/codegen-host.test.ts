@@ -84,7 +84,6 @@ const stackPaths = StackPathsService.of({
 	snapshotDir: `${STACK_ROOT}/snapshots`,
 	stackLockFile: `${STACK_ROOT}/stack.lock`,
 	rosterFile: `${STACK_ROOT}/roster.json`,
-	containerClaimsFile: `${STACK_ROOT}/container-claims.json`,
 	cacheEntry: (namespace, chain, contentHash) => ({
 		dir: `${STACK_ROOT}/cache/${namespace}/${chain}`,
 		file: `${STACK_ROOT}/cache/${namespace}/${chain}/${contentHash}`,

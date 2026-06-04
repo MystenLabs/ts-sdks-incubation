@@ -1,9 +1,8 @@
 // Docker network lifecycle.
 //
 // Architecture § Docker backend § Networking:
-//   - ONE shared `devstack` network per host (cross-stack). Other
-//     per-stack secondary networks are allowed by callers, but the
-//     default surface assumes the shared bridge.
+//   - Per-stack networks: each stack ensures its own bridge, named
+//     `<app>-<stack>-…`. Callers may attach secondary networks too.
 //   - `network connect` is idempotent — "already exists in network"
 //     stderr is success (see `wrap.ts` classifier).
 //   - `network connect` settle is ASYNCHRONOUS in docker — the
@@ -43,11 +42,6 @@ import {
 	isNetworkAlreadyExistsStderr,
 	wrapNetworkError,
 } from './wrap.ts';
-
-/** The cross-host shared network name. Architecture-mandated single
- *  bridge per host. Callers can target other networks (per-stack) but
- *  this is the constant for the shared one. */
-export const SHARED_NETWORK_NAME = 'devstack';
 
 export interface EnsureNetworkOptions {
 	readonly app: string;

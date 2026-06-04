@@ -648,7 +648,6 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME },
 	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME },
 	{ relativePath: 'roster.json' },
-	{ relativePath: 'container-claims.json' },
 	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES) are DELIBERATELY ABSENT from
 	// this preserve list. The snapshot's host-tree tar now CARRIES `cache/<ns>`
 	// (see `deployCacheSubtreeRelPaths` in descriptor.ts + capture's gather), so

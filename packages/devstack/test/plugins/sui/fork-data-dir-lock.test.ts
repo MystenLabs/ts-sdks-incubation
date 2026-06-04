@@ -217,43 +217,6 @@ describe('sui fork data-dir holder protocol', () => {
 		}),
 	);
 
-	it.effect('a foreign-host holder is treated as alive and never reclaimed', () =>
-		Effect.gen(function* () {
-			const layout = makeForkTempLayout();
-			yield* Effect.addFinalizer(() => Effect.sync(layout.cleanup));
-
-			// Seed a holder on a DIFFERENT host with a `startedAt` far in the
-			// past (well beyond any former staleness window). The conservative
-			// NFS-safe policy treats foreign-host holders as ALWAYS ALIVE —
-			// cross-host clock comparison is skew-unsafe, so a fresh acquire
-			// MUST fail rather than risk reclaiming a live foreign writer.
-			const foreign: ForkLockHolder = {
-				pid: 4242,
-				host: `${nodeHostname()}-some-other-box`,
-				instanceId: 'foreign-host-holder',
-				startedAt: Date.now() - 600_000,
-				startTime: 999,
-			};
-			writeRawHolder(layout.dataDir, foreign);
-
-			const exit = yield* Effect.scoped(
-				acquireForkDataDirHolder(layout.stackLockFile, layout.dataDir),
-			).pipe(Effect.exit);
-
-			expect(Exit.isFailure(exit)).toBe(true);
-			const err = Exit.findErrorOption(exit);
-			expect(Option.isSome(err)).toBe(true);
-			if (Option.isSome(err)) {
-				expect(err.value._tag).toBe('SuiPluginError');
-				expect(err.value.phase).toBe('fork-lock');
-				expect(err.value.message).toContain(foreign.host);
-			}
-
-			// The foreign claim on disk is untouched — we did not clobber it.
-			expect(readRawHolder(layout.dataDir).instanceId).toBe(foreign.instanceId);
-		}),
-	);
-
 	it.effect('two concurrent acquires against the same dir: exactly one wins', () =>
 		Effect.gen(function* () {
 			const layout = makeForkTempLayout();

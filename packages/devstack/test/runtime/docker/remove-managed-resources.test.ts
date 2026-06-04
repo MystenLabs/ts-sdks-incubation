@@ -26,7 +26,6 @@ import {
 	removeManagedNetworks,
 	removeManagedVolumes,
 } from '../../../src/runtime/docker/sweep.ts';
-import { addClaim, readClaims } from '../../../src/substrate/runtime/cross-process/roster.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
@@ -50,16 +49,13 @@ const fakeDockerLayer = (bin: string): Layer.Layer<DockerHost | DockerSpawner> =
 
 describe('removeManagedContainers', () => {
 	it.effect(
-		'removes matching managed containers even when the claim ledger contains the name',
+		'removes matching managed containers from label-filtered inventory',
 		() =>
 			Effect.gen(function* () {
 				const root = mkdtempSync(join(tmpdir(), 'docker-replace-managed-test-'));
 				try {
 					const bin = join(root, 'docker');
 					const log = join(root, 'docker.log');
-					const stackLockFile = join(root, 'stack.lock');
-					const rosterFile = join(root, 'roster.json');
-					const containerClaimsFile = join(root, 'container-claims.json');
 					const containerName = 'devstack-claimed-postgres';
 					const labels: ContainerLabelTuple = {
 						app: 'app',
@@ -94,18 +90,12 @@ describe('removeManagedContainers', () => {
 					);
 					chmodSync(bin, 0o755);
 
-					yield* addClaim(
-						{ stackLockFile, rosterFile, containerClaimsFile },
-						containerName,
-					);
 					const removed = yield* removeManagedContainers(labels).pipe(
 						Effect.provide(fakeDockerLayer(bin)),
 					);
-					const claims = yield* readClaims({ stackLockFile, rosterFile, containerClaimsFile });
 					const lines = readFileSync(log, 'utf8').trim().split('\n');
 
 					expect(removed).toBe(1);
-					expect(claims.claims.map((claim) => claim.containerKey)).toContain(containerName);
 					expect(lines).toContain(`rm -f ${containerName}`);
 				} finally {
 					rmSync(root, { recursive: true, force: true });

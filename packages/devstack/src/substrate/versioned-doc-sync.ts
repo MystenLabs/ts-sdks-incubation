@@ -7,9 +7,9 @@
 // parameterised by a typed-error pair. This file centralizes both
 // envelopes around the versioned-doc schemas constructed via
 // `versionedDocSchema` (the sibling file). The caller supplies the error
-// constructors so its typed error channel is preserved end-to-end; NFS-
-// safe atomicity, fsync ordering, and version-stamp handling all live in
-// the underlying primitives.
+// constructors so its typed error channel is preserved end-to-end;
+// crash-atomicity, fsync ordering, and version-stamp handling all live
+// in the underlying primitives.
 //
 // Lives at substrate L0+ — depends on `effect`, `node:fs`, the
 // runtime-decode helpers, and the canonical atomic-write primitive.
@@ -119,8 +119,8 @@ export const parseVersionedDocumentBodyOrNull = <S extends Schema.Decoder<unknow
  * Write a versioned cross-process document atomically.
  *
  * Routes through the canonical `atomicWriteJsonSync` primitive — the
- * NFS-safe mkdir-parent → O_EXCL temp → write → fsync → rename dance
- * with one owner of the tempfile cleanup. The version stamp lives in
+ * crash-atomic mkdir-parent → O_EXCL temp → write → fsync → rename
+ * dance with one owner of the tempfile cleanup. The version stamp lives in
  * the caller-supplied `value` (every versioned-doc schema carries a
  * literal `version` field via `versionedDocSchema`); this helper does
  * NOT inject a version — it just ensures the typed write envelope
@@ -130,7 +130,7 @@ export const parseVersionedDocumentBodyOrNull = <S extends Schema.Decoder<unknow
  * cross-process docs are `Schema.Struct` of primitives that round-trip
  * cleanly through plain `JSON.stringify`. The `value` is typed as a
  * generic `D` so the caller's document interface (`RosterDocument`,
- * `ContainerClaimDocument`, ...) is what gets serialized.
+ * ...) is what gets serialized.
  *
  * This is the SYNC surface — used by callers that hold `stack.lock`
  * and must keep their critical section non-yielding.

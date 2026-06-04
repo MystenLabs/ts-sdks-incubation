@@ -14,7 +14,6 @@ import {
 } from '../../src/orchestrators/snapshot/index.ts';
 import { ContainerRuntimeService } from '../../src/runtime/docker/index.ts';
 import { appName, stackName } from '../../src/substrate/brand.ts';
-import { readClaims } from '../../src/substrate/runtime/cross-process/roster.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
 
@@ -136,14 +135,6 @@ describe('snapshot container image roundtrip', () => {
 				const marker = yield* Effect.scoped(
 					Effect.gen(function* () {
 						const handle = yield* runtime.ensureContainer(spec);
-						const claimsBeforeRestore = yield* readClaims({
-							stackLockFile: paths.stackLockFile,
-							rosterFile: paths.rosterFile,
-							containerClaimsFile: paths.containerClaimsFile,
-						});
-						expect(claimsBeforeRestore.claims.map((claim) => claim.containerKey)).toContain(
-							containerName,
-						);
 						const writeMarker = yield* runtime.exec(handle, [
 							'sh',
 							'-c',

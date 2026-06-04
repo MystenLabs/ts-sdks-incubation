@@ -66,16 +66,13 @@ export const RosterDocumentSchema = versionedDocSchema(1, {
 
 /** Sweep policy — peers older than `staleAfterMillis` AND failing
  *  the PID liveness check are evicted on the next claim under the
- *  exclusive lock. Foreign-host entries are treated as alive
- *  (NFS-safe conservative default). */
+ *  exclusive lock. */
 export interface RosterSweepPolicy {
 	readonly heartbeatIntervalMillis: number;
 	readonly staleAfterMillis: number;
-	readonly trustForeignHosts: boolean;
 }
 
 export const DEFAULT_SWEEP_POLICY: RosterSweepPolicy = {
 	heartbeatIntervalMillis: 10_000,
 	staleAfterMillis: 30_000,
-	trustForeignHosts: true,
 };
