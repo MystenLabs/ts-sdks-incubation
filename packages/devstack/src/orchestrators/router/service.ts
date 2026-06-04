@@ -196,7 +196,7 @@ export interface RouterServiceShape {
 	/** Contribute a `RoutableDecl`. The orchestrator resolves the
 	 *  upstream URL, renders the file-provider YAML, and writes it
 	 *  atomically. The returned `ResolvedRoute` is the post-mint route —
-	 *  the single source of truth the boot adapter (`endpointSinksFromRoutable`)
+	 *  the single source of truth the boot adapter (`endpointSinksFromRoute`)
 	 *  derives both the manifest entry and the projection event from.
 	 *
 	 *  Scope-bound: when the caller's scope closes, the dispatch file

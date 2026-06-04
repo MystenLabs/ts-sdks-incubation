@@ -77,6 +77,7 @@ import {
 } from './codegen/bindings.ts';
 import { layerSuiMoveSummaryRunnerDocker } from '../plugins/sui/move-summary-runner.ts';
 import { CodegenPathsService, layerCodegenPaths, layerCodegenRoot } from './codegen/paths.ts';
+import { resolveCodegenOutput } from './codegen/output-location.ts';
 import {
 	CodegenOrchestratorService,
 	layerCodegenOrchestrator,
@@ -319,6 +320,46 @@ export interface ProductionCodegenOptions {
 	readonly extrasDir?: string;
 }
 
+/** The per-stack codegen inputs the single seam needs: the app root, the
+ *  resolved effective stack (already through the explicit-`--stack` >
+ *  `config.stackName` > inferred ladder), the config's declared primary
+ *  `stackName`, and the app's optional explicit `codegen` pins. */
+export interface ProductionCodegenSeamInput {
+	readonly appRoot: string;
+	readonly effectiveStack: string;
+	readonly primaryStack: string | undefined;
+	readonly codegen?: { readonly outputDir?: string; readonly stackSubdir?: string | null } | undefined;
+}
+
+/**
+ * The ONE boot seam that maps a stack's codegen config to the production
+ * codegen orchestrator options. Both composition entry points
+ * (`api/run-stack.ts` and `cli/wirings/build-verb-layers.ts`) call this so
+ * the primary-vs-secondary output-dir branch (via `resolveCodegenOutput`)
+ * is wired exactly once: primary run → `<appRoot>/src/generated`; a
+ * secondary `--stack` run → `<appRoot>/.devstack/stacks/<stack>/generated`,
+ * so the two never clobber. The resolved literal `outputDir`/`stackSubdir`/
+ * `extrasDir` flow into `layerProductionOrchestrators({ codegen })`
+ * unchanged — `paths.ts` keeps consuming literals (minimal blast radius).
+ */
+export const resolveProductionCodegenOptions = (
+	input: ProductionCodegenSeamInput,
+): ProductionCodegenOptions => {
+	const resolved = resolveCodegenOutput({
+		appRoot: input.appRoot,
+		effectiveStack: input.effectiveStack,
+		primaryStack: input.primaryStack,
+		explicitOutputDir: input.codegen?.outputDir,
+		explicitStackSubdir: input.codegen?.stackSubdir ?? null,
+	});
+	return {
+		appRoot: input.appRoot,
+		outputDir: resolved.outputDir,
+		stackSubdir: resolved.stackSubdir,
+		extrasDir: resolved.extrasDir,
+	};
+};
+
 export interface ProductionRouterOptions {
 	readonly codegen?: ProductionCodegenOptions;
 	readonly disabled?: boolean;
@@ -436,10 +477,25 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 	);
 };
 
-/** The single pure adapter for routable endpoints: `ResolvedRoute` (the
- *  router's post-mint source of truth) → BOTH the projection event
- *  (`endpoint.registered`) AND the manifest entry (`EndpointEntry`),
- *  derived from one shared field-set so the two sinks can never diverge.
+/** All three sink-feeds for one routable endpoint, derived together. */
+export interface EndpointSinks {
+	/** Router sink: the post-mint `ResolvedRoute` the router wrote its
+	 *  dispatch file from and publishes onto its `applied` ref. Carried
+	 *  through verbatim so all three sinks derive from this ONE object. */
+	readonly route: ResolvedRoute;
+	/** Manifest sink: the on-disk manifest's `EndpointEntry`. */
+	readonly manifestEntry: EndpointEntry;
+	/** Projection sink: the `endpoint.registered` engine event. */
+	readonly event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>;
+}
+
+/** The single adapter for routable endpoints: ONE `ResolvedRoute` (the
+ *  router's post-mint source of truth) → ALL THREE sink-feeds at once —
+ *  the router's own `route`, the manifest `EndpointEntry`, and the
+ *  projection `endpoint.registered` event — derived from one shared
+ *  field-set so the three sinks can never diverge. The `routable`
+ *  dispatch body feeds each sink from the object this returns; there is
+ *  no second, third derivation off the route anywhere.
  *
  *  It owns the url-derivation that previously lived in the router's
  *  `endpointFromResolvedRoute`: `tcp` routes carry `tcp://127.0.0.1:port`,
@@ -450,29 +506,33 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
  *  `ResolvedRoute` only carries `entrypointName`, so the endpoint name is
  *  recovered from the original `decl.endpointName`; `pluginKey` is supplied
  *  by the dispatcher (it is not in `ResolvedRoute`). Router-only fields
- *  (`dispatchFileId`/`cors`/`upstreamUrl`) are discarded — the manifest and
- *  projection schemas do not consume them. */
-export const endpointSinksFromRoutable = (
+ *  (`dispatchFileId`/`cors`/`upstreamUrl`) are kept ON `route` for the
+ *  router sink but discarded from the manifest/projection field-set — those
+ *  schemas do not consume them. */
+export const endpointSinksFromRoute = (
 	decl: RoutableDecl,
-	resolved: ResolvedRoute,
+	route: ResolvedRoute,
 	pluginKey: PluginKey,
 	registeredAt = Date.now(),
-): {
-	readonly event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>;
-	readonly manifestEntry: EndpointEntry;
-} => {
+): EndpointSinks => {
 	const url =
-		resolved.wireProtocol === 'tcp'
-			? `tcp://127.0.0.1:${resolved.entrypointPort}`
-			: `http://${resolved.hostname}:${resolved.entrypointPort}`;
+		route.wireProtocol === 'tcp'
+			? `tcp://127.0.0.1:${route.entrypointPort}`
+			: `http://${route.hostname}:${route.entrypointPort}`;
 	const common = {
 		name: decl.endpointName,
 		url,
 		displayUrl: null,
-		wireProtocol: resolved.wireProtocol,
+		wireProtocol: route.wireProtocol,
 	} as const;
 	const endpointKeyString = `${pluginKey}:${decl.endpointName}`;
 	return {
+		route,
+		manifestEntry: {
+			...common,
+			endpointKey: endpointKeyString,
+			pluginKey: String(pluginKey),
+		},
 		event: {
 			tag: 'endpoint.registered',
 			endpoint: {
@@ -481,11 +541,6 @@ export const endpointSinksFromRoutable = (
 				pluginKey,
 				registeredAt,
 			},
-		},
-		manifestEntry: {
-			...common,
-			endpointKey: endpointKeyString,
-			pluginKey: String(pluginKey),
 		},
 	};
 };
@@ -575,16 +630,18 @@ export const buildProductionContributionDispatcher = (): Effect.Effect<
 				snapshot.registerParticipant(ctx.pluginKey, decl),
 			routable: (decl: RoutableDecl, ctx) =>
 				router.boot().pipe(
+					// Router sink: `contributeRoute` writes the dispatch file +
+					// publishes the route onto `applied`, returning the post-mint
+					// `ResolvedRoute` — the ONE source of truth.
 					Effect.andThen(router.contributeRoute(decl)),
-					Effect.flatMap((resolved) => {
-						const { event, manifestEntry } = endpointSinksFromRoutable(
-							decl,
-							resolved,
-							ctx.pluginKey,
-						);
+					Effect.flatMap((route) => {
+						// One adapter off that ResolvedRoute yields BOTH remaining
+						// sink-feeds; feed manifest then projection. No second
+						// derivation off the route lives anywhere.
+						const sinks = endpointSinksFromRoute(decl, route, ctx.pluginKey);
 						return manifestEndpoints
-							.register(manifestEntry)
-							.pipe(Effect.andThen(ctx.publish(event)));
+							.register(sinks.manifestEntry)
+							.pipe(Effect.andThen(ctx.publish(sinks.event)));
 					}),
 				),
 			codegenable: (decl: Codegenable, ctx) => codegen.registerContribution(ctx.pluginKey, decl),

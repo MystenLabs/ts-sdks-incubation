@@ -52,10 +52,10 @@ import {
 	extendBuiltInPluginContext,
 	layerBuiltInPluginRuntime,
 	layerProductionOrchestrators,
+	resolveProductionCodegenOptions,
 	superviseStackEffect,
 	type ProductionCodegenOptions,
 } from '../orchestrators/boot.ts';
-import { resolveCodegenOutput } from '../orchestrators/codegen/output-location.ts';
 import { readStackEngine, type Stack } from './define-devstack.ts';
 import type { AnyPlugin } from '../substrate/plugin.ts';
 import {
@@ -242,28 +242,22 @@ export const runStack = (
 	// signal. `awaitShutdown` re-raises whatever this ref captured.
 	const midRunCauseRef = Effect.runSync(Ref.make<Cause.Cause<unknown> | null>(null));
 
-	// Resolve the per-stack codegen output location: primary run (effective
-	// stack === config `stackName`) → `src/generated/`; a secondary
-	// embedding → `.devstack/stacks/<stack>/generated/`. An explicit
-	// `opts.codegen.outputDir` (or the stack's own
-	// `codegen.outputDir`) is honored verbatim by the resolver. Both the
-	// primary stack (`engineStack.options.stackName`) and the effective
-	// stack (the resolved `identity.stack`) are in scope here, mirroring
-	// the CLI's `buildVerbLayers` seam.
-	const codegenOutput = resolveCodegenOutput({
-		appRoot,
-		effectiveStack: String(identity.stack),
-		primaryStack: engineStack.options.stackName,
-		explicitOutputDir: codegen?.outputDir,
-		explicitStackSubdir: codegen?.stackSubdir ?? null,
-	});
+	// Resolve the per-stack codegen output location through the ONE shared
+	// boot seam: primary run (effective stack === config `stackName`) →
+	// `src/generated/`; a secondary embedding →
+	// `.devstack/stacks/<stack>/generated/`. An explicit `opts.codegen`
+	// (or the stack's own `codegen`) is honored verbatim by the resolver.
+	// Both the primary stack (`engineStack.options.stackName`) and the
+	// effective stack (the resolved `identity.stack`) are in scope here,
+	// exactly as in the CLI's `buildVerbLayers` seam — both now route
+	// through `resolveProductionCodegenOptions`.
 	const substrate = layerProductionOrchestrators({
-		codegen: {
+		codegen: resolveProductionCodegenOptions({
 			appRoot,
-			outputDir: codegenOutput.outputDir,
-			stackSubdir: codegenOutput.stackSubdir,
-			extrasDir: codegenOutput.extrasDir,
-		},
+			effectiveStack: String(identity.stack),
+			primaryStack: engineStack.options.stackName,
+			codegen,
+		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(identity, runtimeRoot)));
 
 	const supervised = Effect.gen(function* () {

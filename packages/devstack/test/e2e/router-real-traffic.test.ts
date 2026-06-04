@@ -158,7 +158,7 @@ const cleanupDocker = (args: {
 
 // The router now surfaces a `ResolvedRoute`; its public http endpoint URL
 // is `http://<hostname>:<entrypointPort>` (the same derivation the boot
-// adapter `endpointSinksFromRoutable` uses for non-tcp routes).
+// adapter `endpointSinksFromRoute` uses for non-tcp routes).
 const publicEndpointUrl = (route: ResolvedRoute): string =>
 	`http://${route.hostname}:${route.entrypointPort}`;
 

@@ -17,6 +17,35 @@ import { Context, Effect, Layer, Path } from 'effect';
 
 import type { Identity } from '../identity.ts';
 
+/** The single per-stack directory segment. Every per-stack subtree lives
+ *  under `<root>/stacks/<stack>/...`; this is the one place that literal
+ *  is authored. */
+const STACKS_SEGMENT = 'stacks';
+
+/**
+ * The ONE pure composer for the `<root>/stacks/<stack>/...` path shape.
+ *
+ * NO base is baked in — the caller supplies BOTH the `join` strategy and
+ * the `root`, so the same shape is authored once and reused with different
+ * bases:
+ *
+ *   - the substrate roots at `RuntimeRoot` (`~/.devstack` by default):
+ *     `stackSubpath(Path.join, runtimeRoot, identity.stack, 'cache')`.
+ *   - codegen roots at the app source tree:
+ *     `stackSubpath(node.join, join(appRoot, '.devstack'), stack, 'generated')`.
+ *
+ * Threading `join` (rather than importing one) keeps this purely string
+ * algebra: the substrate passes Effect's `Path` service `join` (Windows-
+ * correct separators, defense-in-depth) and codegen passes `node:path`'s
+ * `join` — neither implementation is baked in here.
+ */
+export const stackSubpath = (
+	join: (...segments: ReadonlyArray<string>) => string,
+	root: string,
+	stack: string,
+	...rest: ReadonlyArray<string>
+): string => join(root, STACKS_SEGMENT, stack, ...rest);
+
 /**
  * Runtime root — the on-disk base under which every stack's state
  * lives. Defaults to `.devstack`, but is injectable so tests pin to
@@ -120,7 +149,7 @@ export const layerStackPaths: Layer.Layer<
 		const { root } = yield* RuntimeRoot;
 		const identity = yield* IdentityContext;
 		const path = yield* Path.Path;
-		const stackRoot = path.join(root, 'stacks', identity.stack);
+		const stackRoot = stackSubpath(path.join, root, identity.stack);
 		const cacheDir = path.join(stackRoot, 'cache');
 		const cacheNamespaceDir = (namespace: string): string => path.join(cacheDir, namespace);
 		const cacheChainDir = (namespace: string, chain: string): string =>

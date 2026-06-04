@@ -11,8 +11,11 @@
 import { Layer } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
-import { buildSubstrateLayers, layerProductionOrchestrators } from '../../orchestrators/boot.ts';
-import { resolveCodegenOutput } from '../../orchestrators/codegen/output-location.ts';
+import {
+	buildSubstrateLayers,
+	layerProductionOrchestrators,
+	resolveProductionCodegenOptions,
+} from '../../orchestrators/boot.ts';
 import type { SupervisedStack } from '../../substrate/runtime/index.ts';
 
 /** Compose substrate + orchestrator Layers for a verb that knows its
@@ -36,23 +39,15 @@ export const buildVerbLayers = (params: {
 	readonly stack: SupervisedStack;
 	readonly appRoot: string;
 	readonly runtimeRoot: string;
-}) => {
-	const codegenOutput = resolveCodegenOutput({
-		appRoot: params.appRoot,
-		effectiveStack: String(params.identity.stack),
-		primaryStack: params.stack.options.stackName,
-		explicitOutputDir: params.stack.options.codegen?.outputDir,
-		explicitStackSubdir: params.stack.options.codegen?.stackSubdir ?? null,
-	});
-	return layerProductionOrchestrators({
-		codegen: {
+}) =>
+	layerProductionOrchestrators({
+		codegen: resolveProductionCodegenOptions({
 			appRoot: params.appRoot,
-			outputDir: codegenOutput.outputDir,
-			stackSubdir: codegenOutput.stackSubdir,
-			extrasDir: codegenOutput.extrasDir,
-		},
+			effectiveStack: String(params.identity.stack),
+			primaryStack: params.stack.options.stackName,
+			codegen: params.stack.options.codegen,
+		}),
 	}).pipe(Layer.provideMerge(buildSubstrateLayers(params.identity, params.runtimeRoot)));
-};
 
 /** Substrate + (default-codegen) orchestrator Layers for verbs that
  *  don't load a config. */

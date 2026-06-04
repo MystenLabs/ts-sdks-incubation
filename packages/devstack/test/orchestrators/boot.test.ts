@@ -11,7 +11,7 @@ import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import {
 	buildProductionContributionDispatcher,
 	buildProductionPostAcquireHook,
-	endpointSinksFromRoutable,
+	endpointSinksFromRoute,
 	layerManifestEndpointRegistry,
 	ManifestEndpointRegistryService,
 	productionRouterProfile,
@@ -52,9 +52,10 @@ const bootReport: BootReport = {
 };
 
 // The router-resolved route the (stubbed) `contributeRoute` returns. The
-// boot adapter (`endpointSinksFromRoutable`) recovers `endpointName` from
+// boot adapter (`endpointSinksFromRoute`) recovers `endpointName` from
 // the decl and discards the router-only fields (dispatchFileId/cors/
-// upstreamUrl/entrypointName).
+// upstreamUrl/entrypointName) from the manifest/projection field-set
+// while carrying the full `route` through verbatim for the router sink.
 const resolvedRoute: ResolvedRoute = {
 	dispatchFileId: 'wallet-api-abc123',
 	hostname: 'wallet.demo.localhost',
@@ -249,21 +250,25 @@ describe('productionRouterProfile', () => {
 	});
 });
 
-describe('endpointSinksFromRoutable', () => {
-	// Pins the unified adapter: ONE `ResolvedRoute` → identical manifest
-	// entry (EndpointEntry) AND projection event (endpoint.registered),
-	// for both an http route (`http://hostname:port`) and a tcp route
+describe('endpointSinksFromRoute', () => {
+	// Pins the unified adapter: ONE `ResolvedRoute` → ALL THREE sink-feeds
+	// at once — the router's own `route` (carried verbatim), the manifest
+	// entry (EndpointEntry), AND the projection event (endpoint.registered)
+	// — for both an http route (`http://hostname:port`) and a tcp route
 	// (`tcp://127.0.0.1:port`). The byte-exact url-derivation now lives
 	// here (it moved out of the router's deleted `endpointFromResolvedRoute`);
-	// if the two forms ever drift, both sinks drift together — this guards
+	// if the forms ever drift, all three sinks drift together — this guards
 	// against that.
-	it('derives the http endpoint event + manifest entry from one ResolvedRoute', () => {
-		const { event, manifestEntry } = endpointSinksFromRoutable(
+	it('derives the http route + manifest entry + endpoint event from one ResolvedRoute', () => {
+		const { route, event, manifestEntry } = endpointSinksFromRoute(
 			routable,
 			resolvedRoute,
 			pluginKey('wallet#0'),
 			1234,
 		);
+		// Router sink: the source-of-truth ResolvedRoute is carried through
+		// verbatim (it is what the router wrote + published onto `applied`).
+		expect(route).toBe(resolvedRoute);
 		expect(event).toEqual({
 			tag: 'endpoint.registered',
 			endpoint: {
@@ -284,19 +289,21 @@ describe('endpointSinksFromRoutable', () => {
 			displayUrl: null,
 			wireProtocol: 'http',
 		});
-		// Both sinks share the same url + name + wireProtocol — they cannot diverge.
+		// All three sinks share the same url + name + wireProtocol — they cannot diverge.
 		expect(event.endpoint.url).toBe(manifestEntry.url);
 		expect(event.endpoint.name).toBe(manifestEntry.name);
 		expect(event.endpoint.wireProtocol).toBe(manifestEntry.wireProtocol);
+		expect(`http://${route.hostname}:${route.entrypointPort}`).toBe(manifestEntry.url);
 	});
 
-	it('derives the tcp endpoint event + manifest entry from one ResolvedRoute', () => {
-		const { event, manifestEntry } = endpointSinksFromRoutable(
+	it('derives the tcp route + manifest entry + endpoint event from one ResolvedRoute', () => {
+		const { route, event, manifestEntry } = endpointSinksFromRoute(
 			tcpRoutable,
 			tcpResolvedRoute,
 			pluginKey('pg#0'),
 			5678,
 		);
+		expect(route).toBe(tcpResolvedRoute);
 		expect(event).toEqual({
 			tag: 'endpoint.registered',
 			endpoint: {
@@ -320,6 +327,8 @@ describe('endpointSinksFromRoutable', () => {
 			wireProtocol: 'tcp',
 		});
 		expect(event.endpoint.url).toBe(manifestEntry.url);
+		// tcp route carries the loopback form, NOT route.hostname.
+		expect(`tcp://127.0.0.1:${route.entrypointPort}`).toBe(manifestEntry.url);
 	});
 });
 
@@ -372,7 +381,7 @@ describe('buildProductionContributionDispatcher', () => {
 				// The dispatcher must register the SAME manifest entry the adapter
 				// derives from the resolved route the router stub returned.
 				expect(entries).toEqual([
-					endpointSinksFromRoutable(routable, resolvedRoute, pluginKey('wallet#0')).manifestEntry,
+					endpointSinksFromRoute(routable, resolvedRoute, pluginKey('wallet#0')).manifestEntry,
 				]);
 			}).pipe(Effect.provide(sinkTestLayer)),
 	);

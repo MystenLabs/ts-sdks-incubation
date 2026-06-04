@@ -72,7 +72,7 @@ const makeTmpDir = (): string => {
 
 // `contributeRoute` now returns the `ResolvedRoute` (the single source of
 // truth); the public endpoint URL is derived from it the same way the boot
-// adapter (`endpointSinksFromRoutable`) does — `tcp://127.0.0.1:port` for
+// adapter (`endpointSinksFromRoute`) does — `tcp://127.0.0.1:port` for
 // tcp routes, `http://hostname:port` otherwise.
 const publicRouteUrl = (resolved: ResolvedRoute): string =>
 	resolved.wireProtocol === 'tcp'
