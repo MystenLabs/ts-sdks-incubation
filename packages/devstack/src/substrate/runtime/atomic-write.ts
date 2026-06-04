@@ -20,8 +20,8 @@
 //   - `atomicWriteFile` / `atomicWriteJson` — Effect/FileSystem-based,
 //     used by every async write site (manifest, cache).
 //   - `atomicWriteFileSync` / `atomicWriteJsonSync` — node:fs-sync,
-//     used by the cross-process modules (roster, snapshot-reservation,
-//     stack-lock) that hold `stack.lock` and must keep their critical
+//     used by the cross-process modules (roster, stack-lock) that hold
+//     `stack.lock` and must keep their critical
 //     section non-yielding. Substrate-fix-plan #11 tracks unifying
 //     these onto Effect FS once we lift the cross-process modules off
 //     `node:fs`; until then both surfaces share THIS file (and only
@@ -204,7 +204,7 @@ const unlinkBestEffort = (path: string): void => {
  *
  * Used inside `Effect.try` by the cross-process modules; the caller
  * maps the thrown error to a typed plugin/runtime error
- * (`RosterIoError` / `SnapshotReservationIoError` / etc.).
+ * (`RosterIoError` / `StackLockIoError` / etc.).
  */
 export const atomicWriteFileSync = (
 	path: string,

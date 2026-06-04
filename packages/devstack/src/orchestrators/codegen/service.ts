@@ -176,7 +176,7 @@ export const runEmitCycle = (
 	// Dedicated `codegenLockFile` (NOT the substrate `stack.lock`):
 	// codegen cycles can run for many seconds when Move bindings
 	// compile, and the substrate's `stack.lock` is reserved for short
-	// critical sections (roster mutations, snapshot reservation). A
+	// critical sections (roster mutations, the snapshot bounce). A
 	// dedicated lock isolates codegen contention from those subsystems.
 	Effect.scoped(
 		Effect.gen(function* () {

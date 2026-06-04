@@ -2,7 +2,7 @@
 //
 // Centralizes the `{ version: Literal<N>, ...payload }` discriminator
 // shape that every cross-process document the substrate persists shares
-// (roster, container claim, snapshot reservation, port reservation).
+// (roster, container claim, port reservation).
 //
 // Future v2 migration becomes mechanical: replace the call with
 // `Schema.Union(versionedDocSchema(1, ...), versionedDocSchema(2, ...))`

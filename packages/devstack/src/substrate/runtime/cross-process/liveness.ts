@@ -149,7 +149,7 @@ const hashStartTimeStamp = (stamp: string): number => {
 };
 
 /** Liveness probe for a roster holder. Used by the claim-protocol
- *  sweep AND the snapshot-reservation orphan check.
+ *  sweep AND the stack-lock one-shot orphan check.
  *
  *  Discipline:
  *   - Foreign-host (`hostname` differs from our own) → ALWAYS alive
@@ -184,8 +184,8 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
 );
 
 /** Build a holder snapshot for THIS process. The intent defaults to
- *  `'normal'`; the snapshot-reservation flow flips it to `'snapshot'`
- *  under the stack lock and back when the reservation releases.
+ *  `'normal'`; the snapshot bounce flips it to `'snapshot'`
+ *  under the stack lock and back when the bounce completes.
  *
  *  A `null` `startTime` propagates verbatim — readers (`isOwnEntry`
  *  in `roster.ts`, `checkHolderLiveness` above) honor the null-

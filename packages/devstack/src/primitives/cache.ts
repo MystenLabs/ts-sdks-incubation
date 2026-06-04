@@ -1,11 +1,11 @@
 // Universal content-addressed cache primitive.
 //
-// Architecture § Cache data model: `(namespace, chainId, content-hash)`
+// Architecture § Cache data model: `(namespace, chain, content-hash)`
 // keys; lookup / write / GC. Cache entries can be dropped at will;
 // state-store entries are durable.
 //
 // This is L0 substrate — no service names. Plugins choose their own
-// `namespace`; substrate folds chainId in.
+// `namespace`; `chain` is a plain string key forwarded verbatim.
 
 import type { Effect, Scope } from 'effect';
 

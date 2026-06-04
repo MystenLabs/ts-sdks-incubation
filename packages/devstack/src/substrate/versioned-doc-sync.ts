@@ -1,7 +1,7 @@
 // Versioned cross-process document — read / write envelope helpers.
 //
-// Three cross-process modules (`runtime/cross-process/{roster,
-// snapshot-reservation, stack-lock}.ts`) historically re-implemented the
+// The cross-process modules (`runtime/cross-process/{roster,
+// stack-lock}.ts`) historically re-implemented the
 // same `Effect.try(readFileSync) → decodeJsonText → mkIoError|
 // mkCorruptError` envelope and the same `Effect.try(atomicWriteJsonSync)
 // → mkIoError` envelope, each with a different typed-error pair. This
@@ -91,7 +91,7 @@ export const readVersionedDocumentSync = <
  * Sync parse-or-null variant of `readVersionedDocumentSync`. Decodes a
  * raw JSON body against `schema`; returns `null` on parse or decode
  * failure. Use this when a malformed body should be treated the same as
- * a missing body (e.g. half-written reservation by a crashed creator,
+ * a missing body (e.g. a half-written roster entry by a crashed creator,
  * stack-lock body interrupted mid-write) — the call site swaps a
  * try/catch around `decodeJsonTextSync` for one helper call.
  *

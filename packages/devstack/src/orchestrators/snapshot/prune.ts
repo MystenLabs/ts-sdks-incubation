@@ -13,7 +13,7 @@
 // BUILD images share `{managed, app, stack}` but carry the source
 // plugin's real role (or none) — never `SNAPSHOT_IMAGE_ROLE` — so the
 // sweep can NEVER untag a live stack's build images and force a silent
-// rebuild. Prune holds only `snapshot.reservation` (not stack liveness)
+// rebuild. Prune holds `stack.lock` only briefly (not stack liveness)
 // and is CLI-exposed, so this scoping is what keeps it safe against a
 // running stack.
 
@@ -111,8 +111,7 @@ const readMetaOpt = (
 /**
  * Walk the snapshot catalog and reap partial artifacts (entries whose
  * `meta.json` is missing or unparseable). Concurrent sweeps over the
- * same catalog are not supported (caller holds `snapshot.reservation`
- * or `stack.lock`).
+ * same catalog are not supported (caller holds `stack.lock`).
  *
  * Also removes committed snapshot byproduct images via the runtime
  * adapter's label-filtered image cleanup, scoped to `role:

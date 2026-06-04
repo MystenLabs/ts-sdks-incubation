@@ -24,8 +24,9 @@ export interface SuiCommonOptions {
 	readonly readyTimeout?: Duration.Duration;
 }
 
-/** Local container mode — in-stack validator + faucet + GraphQL +
- *  postgres indexer. */
+/** Local container mode — in-stack validator + faucet + GraphQL. The
+ *  indexer is embedded in the validator process (no separate postgres
+ *  container). */
 export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly mode: 'local';
 	/** Image override — `{pull}` skips the build; `{build}` uses

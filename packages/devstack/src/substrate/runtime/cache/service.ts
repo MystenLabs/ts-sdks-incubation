@@ -1,8 +1,9 @@
 // Cache implementation.
 //
 // Universal artifact cache, content-addressed by
-// `(namespace, chainId, contentHash)`. Per-plugin namespace; the
-// substrate folds chainId in.
+// `(namespace, chain, contentHash)`. Per-plugin namespace; `chain` is a
+// plain string key the substrate forwards verbatim (it does NOT fold its
+// own `identity.chain` in — that keeps warm-restart ids stable).
 //
 // Semantics:
 //

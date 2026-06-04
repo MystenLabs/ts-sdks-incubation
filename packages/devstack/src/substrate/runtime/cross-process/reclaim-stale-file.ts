@@ -1,11 +1,11 @@
 // Shared reclaim guard for unparseable/orphaned coordination files.
 //
-// Both `stack.lock` (stack-lock.ts) and `snapshot.reservation`
-// (snapshot-reservation.ts) reclaim a file whose on-disk body fails to
-// parse (a peer that crashed mid-write) once it ages past the roster
+// `stack.lock` (stack-lock.ts) reclaims a file whose on-disk body fails
+// to parse (a peer that crashed mid-write) once it ages past the roster
 // sweep's staleness window. The PID liveness check has nothing to
 // consult when the body won't parse, so mtime + the shared staleness
-// budget is the only abandonment signal.
+// budget is the only abandonment signal. The guard is generic over the
+// body schema so any future coordination file can reuse it.
 //
 // The naive shape — `statSync` for the mtime, then `unlinkSync` — has a
 // TOCTOU window: between reading the mtime and unlinking, a competing
@@ -103,8 +103,8 @@ const readOrNull = (path: string): string | null => {
  *
  *  `parse` is the caller's body decoder; it returns a non-null value for
  *  a well-formed body and `null` for an unparseable one. We never look
- *  at the decoded value — only at whether it parsed — so the lock and
- *  the reservation can share one guard despite carrying different
+ *  at the decoded value — only at whether it parsed — so different
+ *  coordination files can share one guard despite carrying different
  *  schemas.
  *
  *  The staleness threshold is `DEFAULT_SWEEP_POLICY.staleAfterMillis`

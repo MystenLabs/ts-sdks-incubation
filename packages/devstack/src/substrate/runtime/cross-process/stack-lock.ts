@@ -2,7 +2,7 @@
 //
 // Architecture § Cross-process safety protocol § "What is locked":
 //   - `stack.lock` — OS-advisory exclusive lock file. Used only for
-//     short critical sections (roster mutations, snapshot reservation).
+//     short critical sections (roster mutations, the snapshot bounce).
 //     Acquired via `flock(LOCK_EX)` on Unix and `LockFileEx` on Windows;
 //     never held across a long operation.
 //
@@ -15,7 +15,7 @@
 //
 // Discipline:
 //   - The lock is held BRIEFLY — within a single Effect.scoped block
-//     that mutates the roster or the snapshot reservation.
+//     that mutates the roster or spans the snapshot bounce.
 //   - Stale locks (owner crashed under the lock) are reclaimed via the
 //     PID + start-time liveness check before the acquire reattempts.
 //   - Acquire retries with exponential backoff up to 5 seconds total
@@ -96,8 +96,8 @@ const MAX_BACKOFF_MILLIS = 200;
 /**
  * Sync attempt at O_EXCL-create with the caller-supplied JSON body.
  * Returns whether we own the file now; on EEXIST it probes the
- * existing body through the caller's `parse` callback so each lock type
- * keeps its OWN on-disk schema (stack.lock ⇆ snapshot.reservation).
+ * existing body through the caller's `parse` callback so each caller
+ * keeps its OWN on-disk schema (generic over the body shape).
  *
  * Effect-platform's FileSystem doesn't expose a sync `open` shape, but
  * the critical-section discipline says we need a non-blocking attempt
@@ -142,10 +142,10 @@ const tryAcquireSync = <Body>(
 };
 
 /**
- * The merged O_EXCL coordination core. ONE primitive backing BOTH the
- * `stack.lock` retry-acquire AND the one-shot `snapshot.reservation`.
+ * The merged O_EXCL coordination core. ONE primitive supporting BOTH a
+ * retry-acquire shape (used by `stack.lock`) AND a one-shot shape.
  *
- * Generic over the on-disk `Body` so each lock type keeps its OWN
+ * Generic over the on-disk `Body` so each caller keeps its OWN
  * schema (the on-disk body stays schema-specific — a unified body would
  * break parsing of existing stale files):
  *
@@ -177,7 +177,7 @@ const tryAcquireSync = <Body>(
  *     by peer" error at once.
  *
  * IMPORTANT: the unlink finalizer is registered INSIDE this scope, so
- * every caller (roster claim/release/heartbeat, snapshot reservation,
+ * every caller (roster claim/release/heartbeat, the snapshot bounce,
  * command-channel append) releases on scope close — never bypassed.
  */
 const acquireExclusive = <Body, E>(params: {
@@ -204,9 +204,9 @@ const acquireExclusive = <Body, E>(params: {
 		);
 
 		// One-shot path: single sweep + single O_EXCL attempt, EEXIST →
-		// immediate `mapHeld` (NOT a loop-to-timeout). Snapshot reservation
-		// is a one-shot intent; the caller surfaces the structured error
-		// to the user right away.
+		// immediate `mapHeld` (NOT a loop-to-timeout). A one-shot caller
+		// wants the structured "held by peer" error surfaced right away
+		// rather than waiting out a retry budget.
 		if (timeoutMillis === 0) {
 			if (params.oneShotSweep !== undefined) {
 				yield* params.oneShotSweep(path);
