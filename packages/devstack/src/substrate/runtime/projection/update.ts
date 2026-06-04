@@ -179,7 +179,6 @@ export const applyEvent = (
 		case 'strategy.unregistered':
 		case 'manifest.flushed':
 		case 'codegen.emitted':
-		case 'snapshot.captureProgress':
 			// Engine-internal events that don't carry a projection slice
 			// — surfaced on the live event stream for renderers that care,
 			// but contribute no field to the subscribable state. (Adding
@@ -187,25 +186,14 @@ export const applyEvent = (
 			// revision per G2.)
 			return withTouched({});
 
-		case 'snapshot.captureStarted':
-			// Capture PAUSES containers (it does not remove + re-acquire
-			// them), so the acquiring→ready row transitions that cover a
-			// restore never fire for a capture. Surface the in-flight cycle
-			// phase explicitly so the dashboard's status banner stops reading
-			// "running" while a snapshot is being taken. Returns to 'running'
-			// on the terminal capture event below.
-			return withTouched({
-				cycle: { ...state.cycle, phase: 'snapshotting' },
-			});
-
 		case 'snapshot.captureSkipped':
 		case 'snapshot.captureFailed':
 		case 'snapshot.captured':
 			// Terminal capture outcomes — the containers are resumed and the
-			// stack is live again. Clear the transient 'snapshotting' phase
-			// back to 'running'. Guarded so a stray terminal event (no active
-			// capture) can't yank the phase out of an in-flight restart/
-			// shutdown: only un-stick the phase we set ('snapshotting').
+			// stack is live again. Guarded clear of the transient
+			// 'snapshotting' phase back to 'running': only un-stick the
+			// snapshotting phase, so a stray terminal event can't yank the
+			// phase out of an in-flight restart/shutdown.
 			return withTouched({
 				cycle:
 					state.cycle.phase === 'snapshotting' ? { ...state.cycle, phase: 'running' } : state.cycle,

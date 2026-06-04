@@ -1,27 +1,27 @@
-// B.1 load-bearing guard — ctx.persist id/path parity.
+// B.1 load-bearing guard — CacheService.publish id/path parity.
 //
-// `ctx.persist` is a THIN pass-through to the Cache primitive's
-// `publish` (the folded-in artifact-publisher cycle): it forwards the
-// plugin-supplied HEX `spec.chain` VERBATIM
-// (the substrate does NOT fold `identity.chain`). The on-disk cache —
-// and therefore warm-restart id stability + private-content
-// decryptability — keys on `(namespace, chain, contentHash)`. If a
-// well-meaning refactor ever folded `identity.chain` into `ctx.persist`,
-// every on-disk artifact would be orphaned and warm restarts would
-// re-deploy with fresh ids.
+// Plugins persist artifacts by `yield* CacheService` and calling
+// `cache.publish(spec)` (the folded-in artifact-publisher cycle): it
+// forwards the plugin-supplied HEX `spec.chain` VERBATIM (the substrate
+// does NOT fold `identity.chain`). The on-disk cache — and therefore
+// warm-restart id stability + private-content decryptability — keys on
+// `(namespace, chain, contentHash)`. If a well-meaning refactor ever
+// folded `identity.chain` into `CacheService.publish`, every on-disk
+// artifact would be orphaned and warm restarts would re-deploy with
+// fresh ids.
 //
 // This test proves, against the REAL cache + path resolver:
-//   1. `ctx.persist(spec)` writes the cache entry at exactly the path
+//   1. `cache.publish(spec)` writes the cache entry at exactly the path
 //      `paths.cacheEntry(namespace, hexChain, contentHash)` predicts —
 //      i.e. it keys on the hex chain id passed in the spec, NOT the
 //      identity's raw chain string.
-//   2. A SECOND publish for the identical spec (here via the direct
-//      `CacheService.publish`, which is byte-for-byte what
-//      `ctx.persist` delegates to) is a WARM HIT: `produce` does NOT run
-//      again, and the same `Produced` is returned.
+//   2. A SECOND publish for the identical spec is a WARM HIT: `produce`
+//      does NOT run again, and the same `Produced` is returned.
 //
-// `ctx.persist` is constructed exactly as the supervisor builds it
-// (`acquire-node.ts` `makePluginCtx`): `(spec) => publisher.publish(spec)`.
+// `CacheService.publish` is exactly the primitive `makePluginCtx`'s old
+// `ctx.persist` verb delegated to (`(spec) => cache.publish(spec)`);
+// exercising it directly keeps this guard pinned to the real warm-restart
+// path now that the thin pass-through verb is gone.
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -84,8 +84,8 @@ const substrateLayer = (runtimeRoot: string): Layer.Layer<CacheService | StackPa
 		),
 	);
 
-describe('ctx.persist id/path parity (B.1)', () => {
-	it.effect('persist keys on hex spec.chain; warm second publish is a hit (no re-produce)', () =>
+describe('CacheService.publish id/path parity (B.1)', () => {
+	it.effect('publish keys on hex spec.chain; warm second publish is a hit (no re-produce)', () =>
 		Effect.scoped(
 			Effect.gen(function* () {
 				const produceRuns = yield* Ref.make(0);
@@ -110,13 +110,12 @@ describe('ctx.persist id/path parity (B.1)', () => {
 				const publisher: ArtifactPublisher = yield* CacheService;
 				const paths = yield* StackPathsService;
 
-				// `ctx.persist` is, byte-for-byte, what the supervisor builds in
-				// acquire-node.ts makePluginCtx: a thin delegate to the
-				// ArtifactPublisher primitive that forwards spec.chain verbatim.
-				const ctxPersist: ArtifactPublisher['publish'] = (spec) => publisher.publish(spec);
+				// `CacheService.publish` is the primitive a plugin reaches with
+				// `yield* CacheService`; it forwards `spec.chain` verbatim. (This
+				// is exactly what the old `ctx.persist` verb delegated to.)
 
-				// 1. Cold publish via ctx.persist → miss → produce → write.
-				const first = yield* ctxPersist(makeSpec());
+				// 1. Cold publish via CacheService.publish → miss → produce → write.
+				const first = yield* publisher.publish(makeSpec());
 				expect(first).toEqual(produced);
 				expect(yield* Ref.get(produceRuns)).toBe(1);
 				expect(yield* Ref.get(registerRuns)).toBe(1);
@@ -137,7 +136,7 @@ describe('ctx.persist id/path parity (B.1)', () => {
 				) as CachedArtifact;
 				expect(decoded).toEqual(produced);
 
-				// 2. Direct CacheService.publish for the IDENTICAL
+				// 2. A SECOND CacheService.publish for the IDENTICAL
 				//    spec → warm HIT: verify returns non-null, so produce does
 				//    NOT run again; register fires every cycle. The path the
 				//    second call reads is identical to the first.
@@ -146,7 +145,7 @@ describe('ctx.persist id/path parity (B.1)', () => {
 				expect(yield* Ref.get(produceRuns)).toBe(1); // still 1 — no re-produce
 				expect(yield* Ref.get(registerRuns)).toBe(2); // fired again on hit
 
-				// Path the direct publish keyed on === path ctx.persist wrote.
+				// Path the second publish keyed on === path the first wrote.
 				const hexPathAgain = paths.cacheEntry('parity-ns', HEX_SPEC_CHAIN, 'abc123content');
 				expect(hexPathAgain.file).toBe(hexPath.file);
 			}),

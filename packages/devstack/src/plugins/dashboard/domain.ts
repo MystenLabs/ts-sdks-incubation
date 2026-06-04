@@ -143,14 +143,13 @@ export interface DashboardFundInput {
 }
 
 /** Outcome of a dashboard fund ACTION. The in-process funding strategies
- *  return `void` (not a digest), so `digest` is always `null` here — kept
- *  for shape-parity with `DashboardMintResult`. `ok:true` means the
- *  strategy's `request(...)` completed (the faucet POST landed / the swap
- *  executed on-chain); `detail` carries the reason on failure. */
+ *  return `void` (not a digest), so the result carries only `ok`/`detail`.
+ *  `ok:true` means the strategy's `request(...)` completed (the faucet POST
+ *  landed / the swap executed on-chain); `detail` carries the reason on
+ *  failure. */
 export interface DashboardFundResult {
 	readonly ok: boolean;
 	readonly detail: string;
-	readonly digest: string | null;
 }
 
 /** One coin the dashboard faucet can actually fund, with whether the
@@ -895,14 +894,12 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				return {
 					ok: false,
 					detail: `invalid recipient '${input.recipient}': expected a 0x-prefixed Sui address`,
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 			if (strategyRegistry === null) {
 				return {
 					ok: false,
 					detail: 'funding unavailable: no strategy registry wired',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -918,7 +915,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					return {
 						ok: false,
 						detail: 'cannot fund SUI: no resolved sui plugin / chain id in this stack',
-						digest: null,
 					} satisfies DashboardFundResult;
 				}
 				const key = faucetCapabilityKeyFor(chain);
@@ -929,7 +925,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					return {
 						ok: false,
 						detail: `no SUI faucet strategy registered for chain '${chain}'`,
-						digest: null,
 					} satisfies DashboardFundResult;
 				}
 				// `amount` is nominal — the standard faucet grant is fixed and
@@ -941,21 +936,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 						(): DashboardFundResult => ({
 							ok: true,
 							detail: `requested SUI for ${recipient} (fixed-amount faucet grant)`,
-							digest: null,
 						}),
 					),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `SUI faucet request failed: ${faucetCauseDetail(cause)}`,
-							digest: null,
 						}),
 					),
 					Effect.catchCause((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `SUI faucet request crashed: ${String(cause)}`,
-							digest: null,
 						}),
 					),
 				);
@@ -967,7 +959,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				return {
 					ok: false,
 					detail: `invalid amountBaseUnits '${input.amountBaseUnits ?? ''}': expected a positive integer string`,
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -981,7 +972,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					detail:
 						`no funding strategy registered for coin '${coinType}' — ` +
 						'WAL needs the walrus plugin (with an exchange) and DEEP needs the deepbook plugin',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -1002,7 +992,6 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 					detail:
 						`coin '${coinType}' is funded by an account-signed swap, but '${recipient}' ` +
 						'is not a resolved account in this stack — fund a configured account (the swap spends its SUI)',
-					digest: null,
 				} satisfies DashboardFundResult;
 			}
 
@@ -1017,21 +1006,18 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 						(): DashboardFundResult => ({
 							ok: true,
 							detail: `funded ${amount} base units of ${coinType} to ${recipient}`,
-							digest: null,
 						}),
 					),
 					Effect.catch((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `${coinSymbolFromType(coinType)} funding failed: ${fundingCauseDetail(cause)}`,
-							digest: null,
 						}),
 					),
 					Effect.catchCause((cause) =>
 						Effect.succeed<DashboardFundResult>({
 							ok: false,
 							detail: `${coinSymbolFromType(coinType)} funding crashed: ${String(cause)}`,
-							digest: null,
 						}),
 					),
 				);
@@ -1114,5 +1100,5 @@ export const emptyDashboardDomain: DashboardDomain = {
 	postgresStats: Effect.succeed([]),
 	mintCoin: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
 	fundableCoins: Effect.succeed([]),
-	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
+	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable' }),
 };

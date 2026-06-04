@@ -10,11 +10,21 @@
 // Health path: devstack's own readiness probe (see
 // `packages/devstack/src/plugins/seal/key-server.ts`) hits `GET /health`, which
 // returns `{name, version, status: "up"}` once the daemon has parsed its config
-// and bound its listener. We probe the same `/health` route. The `/v1/*` routes
-// (e.g. `/v1/service`) are the key-fetch API and reject a bare GET with HTTP 400
-// — a 400 there means the server IS up and listening, not unhealthy. We treat
-// any HTTP response (including 4xx) as "the socket is up and serving" and only
-// warn on a genuine connection/CORS failure.
+// and bound its listener. We probe the same `/health` route.
+//
+// Three distinct probe outcomes drive the dot + banner:
+//   - `up`          — `/health` answered 2xx. Green, no banner.
+//   - `down`        — `/health` answered with a *readable* non-2xx status
+//                     (e.g. 502/503 from a proxy in front of a dead daemon, or a
+//                     404 from a wrong URL). A response WAS received and the
+//                     browser could read it, so this is a genuine outage, not an
+//                     ambiguity. Red, "encryption will fail" banner.
+//   - `unreachable` — no readable response at all: the cross-origin `fetch`
+//                     threw (network/CORS) and even a `no-cors` ping couldn't
+//                     prove the socket alive, OR the socket answered but only as
+//                     an opaque (CORS-hidden) response we can't read a status
+//                     from. This is genuinely ambiguous — the in-process key
+//                     server may still serve Seal — so it stays a soft yellow.
 
 import { type ReactNode, useCallback, useEffect, useState } from 'react';
 import { restartPlugin, type SealInfo } from '../../lib/api.ts';
@@ -36,10 +46,14 @@ import {
 } from '../../ui/index.ts';
 import { PluginScaffold, type PluginViewProps } from '../PluginPage.tsx';
 
-/** Health states for the browser-direct key-server probe. A 2xx on `/health`
- *  (or an opaque ping that resolves when CORS blocks the read) is `healthy`; a
- *  non-2xx or a connection/CORS failure degrades to `unreachable`. */
-type ProbeState = 'probing' | 'healthy' | 'unreachable';
+/** Health states for the browser-direct key-server probe.
+ *  - `up`          — `/health` answered 2xx (green).
+ *  - `down`        — `/health` answered a *readable* non-2xx status; the daemon
+ *                    is genuinely down / misrouted (red).
+ *  - `unreachable` — no readable response (fetch threw, or an opaque CORS-hidden
+ *                    response): genuinely ambiguous, may still work in-process
+ *                    (yellow). */
+type ProbeState = 'probing' | 'up' | 'down' | 'unreachable';
 
 interface ProbeResult {
 	readonly state: ProbeState;
@@ -50,34 +64,48 @@ interface ProbeResult {
 /**
  * Probe the key-server directly from the browser. We hit the same `/health`
  * route devstack's own readiness probe uses (returns `{name, version,
- * status: "up"}` with a 2xx on a healthy daemon).
+ * status: "up"}` with a 2xx on a healthy daemon). Three outcomes:
  *
- * Healthy = a 2xx on `/health`. A non-2xx (404/502/503) is NOT healthy: a real
- * daemon answers `/health` with 2xx, so a non-2xx means a wrong URL or an
- * intermediary sitting in front of a down daemon — painting that green would
- * hide an outage. We only fall back to the opaque-reachability nuance when the
- * fetch itself *throws* (CORS-opaque or network): a no-cors ping that resolves
- * proves the socket is alive even though the browser can't read the status —
- * the in-process key server may still serve Seal in that case. A network/CORS
- * rejection on both means we genuinely couldn't reach it.
+ *   - `up`          — a *readable* 2xx on `/health`.
+ *   - `down`        — a *readable* non-2xx on `/health` (404/502/503…). A real
+ *                     daemon answers `/health` with 2xx, so a readable non-2xx
+ *                     means a wrong URL or — more often — a proxy/load-balancer
+ *                     in front of a dead daemon. A response WAS received and the
+ *                     browser could read its status, so this is a genuine outage
+ *                     we must surface in red, not soften.
+ *   - `unreachable` — no readable status at all. Either the cross-origin `fetch`
+ *                     *threw* (network down / CORS preflight rejected) and even a
+ *                     `no-cors` ping couldn't confirm the socket, OR the socket
+ *                     answered but only as an *opaque* (CORS-hidden) response we
+ *                     can't read a status from. Both are genuinely ambiguous —
+ *                     the in-process key server may still serve Seal — so they
+ *                     stay a soft yellow with the "may be CORS/network" copy.
  */
 const probeKeyServer = async (baseUrl: string): Promise<ProbeResult> => {
 	const root = baseUrl.replace(/\/+$/, '');
 	const url = `${root}/health`;
 	try {
 		const res = await fetch(url, { method: 'GET', mode: 'cors' });
-		if (res.ok) {
-			return { state: 'healthy', detail: `HTTP ${res.status} · ${url}` };
+		// `type: 'opaque'` means a no-cors response slipped through with a hidden
+		// status (res.ok is forced false, res.status forced 0) — we can't read it,
+		// so treat it as the ambiguous reachable-but-unreadable case, not `down`.
+		if (res.type === 'opaque') {
+			return { state: 'unreachable', detail: `reachable (opaque) · ${url}` };
 		}
-		// Non-2xx on /health — a healthy daemon returns 2xx here, so this is a
-		// wrong URL or a proxy in front of a down daemon. Don't paint it green.
-		return { state: 'unreachable', detail: `HTTP ${res.status} on ${url} (expected 2xx)` };
+		if (res.ok) {
+			return { state: 'up', detail: `HTTP ${res.status} · ${url}` };
+		}
+		// Readable non-2xx on /health — a response came back and we can read its
+		// status. A healthy daemon returns 2xx, so this is a down/misrouted daemon.
+		return { state: 'down', detail: `HTTP ${res.status} on ${url} (expected 2xx)` };
 	} catch (err) {
-		// CORS-opaque or network failure. A no-cors ping that resolves proves the
-		// socket is alive even though we can't read the status/body.
+		// The CORS-mode fetch threw (network/CORS). A `no-cors` ping that *resolves*
+		// proves a socket is alive but yields an opaque, unreadable response — we
+		// still can't distinguish a healthy daemon from a down one behind a proxy,
+		// so it remains the ambiguous `unreachable` case, not green.
 		try {
 			await fetch(url, { method: 'GET', mode: 'no-cors' });
-			return { state: 'healthy', detail: `reachable (opaque) · ${url}` };
+			return { state: 'unreachable', detail: `reachable (opaque) · ${url}` };
 		} catch {
 			const detail = err instanceof Error ? err.message : String(err);
 			return { state: 'unreachable', detail };
@@ -87,13 +115,15 @@ const probeKeyServer = async (baseUrl: string): Promise<ProbeResult> => {
 
 const PROBE_TOKEN: Record<ProbeState, 'green' | 'yellow' | 'red'> = {
 	probing: 'yellow',
-	healthy: 'green',
+	up: 'green',
+	down: 'red',
 	unreachable: 'yellow',
 };
 
 const PROBE_LABEL: Record<ProbeState, string> = {
 	probing: 'probing',
-	healthy: 'healthy',
+	up: 'up',
+	down: 'down',
 	unreachable: 'unreachable',
 };
 
@@ -145,8 +175,11 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 	}, [busy, endpoint, row, pluginKey, success, error, refresh]);
 
 	const probeToken = PROBE_TOKEN[probe.state];
-	// Only the genuine connection failure is worth a banner; a reachable server
-	// (any HTTP response) is healthy, and `probing` is a transient state.
+	// Two distinct banner-worthy states. `down` = a readable non-2xx /health: a
+	// genuine outage, surfaced in red. `unreachable` = no readable response: the
+	// ambiguous CORS/network case, surfaced in soft yellow. `up`/`probing` get no
+	// banner.
+	const down = probe.state === 'down';
 	const unreachable = probe.state === 'unreachable';
 
 	return (
@@ -187,9 +220,29 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 				</Panel>
 			) : (
 				<>
-					{/* Banner + re-probe only when the key-server is genuinely
-					    unreachable (connection/CORS failure). A reachable server —
-					    even one that answers a bare GET with 4xx — is healthy. */}
+					{/* `down` = the daemon answered /health with a readable non-2xx
+					    status — a genuine outage, surfaced in red: encryption will
+					    fail. */}
+					{down && (
+						<Banner
+							tone="danger"
+							title="Key-server is down"
+							action={
+								<button className="btn btn-sm" onClick={() => void runProbe()}>
+									<Icon name="refresh" size={13} /> Probe
+								</button>
+							}
+						>
+							The key-server's /health route returned a non-2xx status — the daemon is down (or a
+							proxy is in front of a dead daemon). Encryption requests will fail until it
+							recovers.
+							{probe.detail ? ` (${probe.detail})` : ''}
+						</Banner>
+					)}
+
+					{/* `unreachable` = no readable response (fetch threw, or an opaque
+					    CORS-hidden response). Genuinely ambiguous — may still work
+					    in-process — so this stays a soft yellow, NOT red. */}
 					{unreachable && (
 						<Banner
 							tone="warn"
@@ -200,9 +253,9 @@ export const SealView = ({ row, pluginKey, endpoint, refresh, chain }: PluginVie
 								</button>
 							}
 						>
-							Couldn't reach the key-server's /health route. This may be a CORS or network issue
-							from the browser rather than the server being down — encryption requests may still
-							work in-process.
+							Couldn't read a response from the key-server's /health route. This may be a CORS or
+							network issue from the browser rather than the server being down — encryption
+							requests may still work in-process.
 							{probe.detail ? ` (${probe.detail})` : ''}
 						</Banner>
 					)}

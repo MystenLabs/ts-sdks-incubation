@@ -27,7 +27,7 @@ export {
 
 // --- Plugin authoring helpers -------------------------------------------
 
-export { codegenable, projection } from './api/define-capabilities.ts';
+export { projection } from './api/define-capabilities.ts';
 export {
 	defineId,
 	definePlugin,

@@ -89,17 +89,6 @@ export const eventLogLineFromEvent = (
 				scopeColor: 'white',
 				message: `shutdown hard-kill escalated by ${event.signal} (exit ${event.exitCode})`,
 			});
-		case 'snapshot.captureStarted':
-			return line({
-				id,
-				level: 'info',
-				at,
-				scope: 'Snapshot',
-				scopeColor: 'blueBright',
-				message: event.name === undefined ? 'capture started' : `capture started for ${event.name}`,
-			});
-		case 'snapshot.captureProgress':
-			return null;
 		case 'snapshot.captureSkipped':
 			return line({
 				id,

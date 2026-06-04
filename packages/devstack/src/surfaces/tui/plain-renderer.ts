@@ -247,17 +247,6 @@ const payloadFor = (event: EngineEvent): string => {
 				signal: event.signal,
 				exitCode: event.exitCode,
 			});
-		case 'snapshot.captureStarted':
-			return kv({ snapshotId: event.snapshotId, name: event.name });
-		case 'snapshot.captureProgress':
-			return kv({
-				snapshotId: event.snapshotId,
-				name: event.name,
-				phase: event.phase,
-				detail: event.detail,
-				committed: event.committedContainers,
-				total: event.totalContainers,
-			});
 		case 'snapshot.captureSkipped':
 			return kv({ reason: event.reason });
 		case 'snapshot.captureFailed':

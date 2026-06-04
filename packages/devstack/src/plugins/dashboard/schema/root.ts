@@ -114,13 +114,12 @@ const MintResult = builder.objectRef<MintResultShape>('MintResult').implement({
 // reusing devstack's IN-PROCESS funding strategies (the same registry the
 // boot-time account funding pass uses): SUI via the chain faucet strategy
 // (fixed-amount), WAL/DEEP via the coin-specific account-signed swap. The
-// strategies return `void` (no digest), so `digest` is always null here —
-// kept for shape-parity with `MintResult`. `ok` reflects whether the
-// strategy's `request(...)` actually completed.
+// strategies return `void` (no digest), so the result carries only
+// `ok`/`detail`. `ok` reflects whether the strategy's `request(...)`
+// actually completed.
 interface FundResultShape {
 	readonly ok: boolean;
 	readonly detail: string;
-	readonly digest: string | null;
 }
 
 const FundResult = builder.objectRef<FundResultShape>('FundResult').implement({
@@ -130,7 +129,6 @@ const FundResult = builder.objectRef<FundResultShape>('FundResult').implement({
 	fields: (t) => ({
 		ok: t.exposeBoolean('ok'),
 		detail: t.exposeString('detail'),
-		digest: t.string({ nullable: true, resolve: (r) => r.digest }),
 	}),
 });
 

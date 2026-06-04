@@ -44,7 +44,6 @@ const writeMoveBindingsConfig = (appRoot: string, movePackagePath: string): stri
 		`
 import { Effect } from 'effect';
 import {
-\tcodegenable,
 \tdefineDevstack,
 \tdefinePlugin,
 \tPluginContext,
@@ -57,24 +56,23 @@ const moveBindingsProofPlugin = definePlugin({
 \tstart: () =>
 \t\tEffect.gen(function* () {
 \t\t\tconst ctx = yield* PluginContext;
-\t\t\tctx.codegen(
-\t\t\t\tcodegenable({
-\t\t\t\t\temitterName: 'package',
-\t\t\t\t\toutputPath: 'package/@local/hello.ts',
-\t\t\t\t\tsensitive: false,
-\t\t\t\t\temit: (emit) =>
-\t\t\t\t\t\tEffect.sync(() => {
-\t\t\t\t\t\t\temit.exportConst('packageBindings', {
-\t\t\t\t\t\t\t\tname: 'hello',
-\t\t\t\t\t\t\t\tpackageId: '0x123',
-\t\t\t\t\t\t\t\tmvrPlaceholder: '@local/hello',
-\t\t\t\t\t\t\t\tsourcePath: ${JSON.stringify(movePackagePath)},
-\t\t\t\t\t\t\t\texcluded: false,
-\t\t\t\t\t\t\t});
-\t\t\t\t\t\t\treturn emit.done();
-\t\t\t\t\t\t}),
-\t\t\t\t}),
-\t\t\t);
+\t\t\tctx.codegen({
+\t\t\t\tkind: 'codegenable',
+\t\t\t\temitterName: 'package',
+\t\t\t\toutputPath: 'package/@local/hello.ts',
+\t\t\t\tsensitive: false,
+\t\t\t\temit: (emit) =>
+\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\temit.exportConst('packageBindings', {
+\t\t\t\t\t\t\tname: 'hello',
+\t\t\t\t\t\t\tpackageId: '0x123',
+\t\t\t\t\t\t\tmvrPlaceholder: '@local/hello',
+\t\t\t\t\t\t\tsourcePath: ${JSON.stringify(movePackagePath)},
+\t\t\t\t\t\t\texcluded: false,
+\t\t\t\t\t\t});
+\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t}),
+\t\t\t});
 \t\t\treturn { packageName: 'hello' } as const;
 \t\t}),
 });

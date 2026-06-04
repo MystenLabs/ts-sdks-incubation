@@ -372,12 +372,12 @@ export interface MintArgs {
 }
 
 /** Outcome of a faucet fund (`FundResult`). The in-process funding
- *  strategies return no digest, so `digest` is always null — `ok` reflects
- *  whether the strategy's request completed; `detail` carries the reason. */
+ *  strategies return no digest, so the result carries only `ok`/`detail` —
+ *  `ok` reflects whether the strategy's request completed; `detail` carries
+ *  the reason. */
 export interface FundResult {
 	readonly ok: boolean;
 	readonly detail: string;
-	readonly digest: string | null;
 }
 
 /** Variables for a fund request. `coinType` absent / SUI routes through the
@@ -455,7 +455,6 @@ const FundDoc = graphql(`
 		fund(input: { recipient: $recipient, coinType: $coinType, amountBaseUnits: $amountBaseUnits }) {
 			ok
 			detail
-			digest
 		}
 	}
 `);

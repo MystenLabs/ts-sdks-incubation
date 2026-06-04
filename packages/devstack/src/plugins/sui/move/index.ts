@@ -148,9 +148,12 @@ export const containerInnerScript = (pkgName: string): string => {
 	//      `{ local = "../token" }`. A scoped copy of only the package subtree
 	//      drops those, failing the build with "Invalid directory at ../…".
 	// Copying the whole tree both materialises the nested path AND carries the
-	// sibling `../` deps. The mount itself is never rewritten (mirrors
-	// `containerInnerScriptOneShot`, whose host-side staging tree is the disposable
-	// copy there; here the in-container copy is the disposable one).
+	// sibling `../` deps. The mount itself is never rewritten — the in-container
+	// copy is always the disposable one. Both consumers share this script: the
+	// exec path (`chain-build-container.ts`) bind-mounts the developer's real app
+	// dir, and the one-shot path (`buildViaOneShot`) mounts a disposable host-side
+	// staging copy whose transitive local deps were pre-staged (see
+	// `stageLocalMoveDeps`); in both cases `/workspace` is copied, not rewritten.
 	//
 	// `$$` (the shell PID) scopes the scratch dir per exec so concurrent
 	// builds of the same package don't share a tree.
@@ -162,47 +165,6 @@ export const containerInnerScript = (pkgName: string): string => {
 	// (`/root/.move/git`) is process-shared mutable state we legitimately want
 	// scrubbed so a stale pin can't leak into the build; the scratch tree is the
 	// disposable copy, so scrubbing all of it (package + staged siblings) is safe.
-	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
-	const build =
-		`sui move build --path ${scratchPkg} ` +
-		`-e testnet --no-tree-shaking --dump-bytecode-as-base64 ` +
-		`--with-unpublished-dependencies`;
-	const cleanup = `rm -rf ${scratchRoot}`;
-	return [
-		'set -e',
-		stage,
-		scrub,
-		'set +e',
-		build,
-		'status=$?',
-		'set -e',
-		scrub,
-		cleanup,
-		'exit "$status"',
-	].join('; ');
-};
-
-/** One-shot-path inner script. Mirrors {@link containerInnerScript} — both copy
- *  the WHOLE `/workspace` tree into an in-container scratch dir and scrub + build
- *  THERE, never the mount in place. The difference is only WHAT is mounted at
- *  `/workspace`: the exec path bind-mounts the developer's real app dir (so the
- *  whole-tree copy naturally carries nested packages + sibling `../` deps),
- *  whereas the one-shot path mounts a disposable host-side staging copy whose
- *  transitive local deps were pre-staged (see `stageLocalMoveDeps`). Copying only
- *  `/workspace/<pkg>` would drop sibling local dependencies
- *  (`{ local = "../token" }`), failing the build with "Invalid directory at ../…". */
-const containerInnerScriptOneShot = (pkgName: string): string => {
-	const quotedPkg = shellQuote(pkgName);
-	const scratchRoot = '/tmp/move-build-$$';
-	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
-	// Copy the WHOLE staging mount (package + its staged local `../` deps) into
-	// an in-container scratch tree and scrub + build THERE — never the mounted
-	// host staging dir. Building in the mount leaves root-owned `build/` +
-	// scrubbed Move.lock files behind that the (non-root) host can't remove,
-	// failing scope cleanup with EACCES. Copying ALL of /workspace (like
-	// containerInnerScript) keeps sibling local deps like `{ local = "../token" }`
-	// present in the scratch tree.
-	const stage = `rm -rf ${scratchRoot} && mkdir -p ${scratchRoot} && cp -a /workspace/. ${scratchRoot}/`;
 	const scrub = containerScrubShellScript(scratchRoot, '/root/.move');
 	const build =
 		`sui move build --path ${scratchPkg} ` +
@@ -535,7 +497,7 @@ const buildViaOneShot = (
 ): Effect.Effect<BuildOutput, MoveBuildError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const pkgName = basename(inputs.sourcePath);
-		const inner = containerInnerScriptOneShot(pkgName);
+		const inner = containerInnerScript(pkgName);
 		const moveHome = join(homedir(), '.move');
 		yield* ensureMoveHomeMountSource(moveHome, inputs.sourcePath, inputs.packageName);
 

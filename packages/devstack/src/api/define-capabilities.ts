@@ -2,19 +2,14 @@
 //
 // Plugin authors emit contributions inline from `start` via the typed
 // `ctx` verbs (`ctx.codegen`/`ctx.endpoint`/`ctx.snapshotExtra`/
-// `ctx.publish`/`ctx.provides`). These helpers build the payload-shaped
-// decls those verbs accept, stamping the `kind` discriminant while
-// preserving narrow payload types. `codegenable` and `projection` are the
-// two helpers with live plugin-author call sites; the remaining
-// contribution kinds (routable / snapshotable / strategy-contributor) are
+// `ctx.publish`/`ctx.provides`). This helper builds the payload-shaped
+// decl `ctx.publish` accepts, stamping the `kind` discriminant while
+// preserving narrow payload types. `projection` is the one helper with
+// live plugin-author call sites; the remaining contribution kinds
+// (codegenable / routable / snapshotable / strategy-contributor) are
 // built inline by the built-in plugins as object literals.
 
-import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import type { ProjectionDecl, ProjectionEvent } from '../contracts/projection.ts';
-
-export const codegenable = <const Emitter extends string>(
-	decl: Omit<CodegenableDecl<Emitter>, 'kind'>,
-): CodegenableDecl<Emitter> => ({ ...decl, kind: 'codegenable' });
 
 /** Build a `ProjectionDecl` envelope from a `{kind, key, payload}`
  *  shorthand. Stamps `tag: 'projection.updated'` and (when `at` is

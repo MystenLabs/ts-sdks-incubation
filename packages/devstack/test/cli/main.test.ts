@@ -43,7 +43,6 @@ const writeCodegenConfig = (appRoot: string, stackName = 'main'): string => {
 		`
 import { Effect } from 'effect';
 import {
-\tcodegenable,
 \tdefineDevstack,
 \tdefinePlugin,
 \tPluginContext,
@@ -57,18 +56,17 @@ const cliApplyCodegenPlugin = definePlugin({
 \t\tEffect.gen(function* () {
 \t\t\tconst ctx = yield* PluginContext;
 \t\t\tconst value = { message: 'from-cli-apply' } as const;
-\t\t\tctx.codegen(
-\t\t\t\tcodegenable({
-\t\t\t\t\temitterName: 'cli-apply-proof',
-\t\t\t\t\toutputPath: 'cli-apply-proof.ts',
-\t\t\t\t\tsensitive: false,
-\t\t\t\t\temit: (emit) =>
-\t\t\t\t\t\tEffect.sync(() => {
-\t\t\t\t\t\t\temit.exportConst('cliApplyProof', value);
-\t\t\t\t\t\t\treturn emit.done();
-\t\t\t\t\t\t}),
-\t\t\t\t}),
-\t\t\t);
+\t\t\tctx.codegen({
+\t\t\t\tkind: 'codegenable',
+\t\t\t\temitterName: 'cli-apply-proof',
+\t\t\t\toutputPath: 'cli-apply-proof.ts',
+\t\t\t\tsensitive: false,
+\t\t\t\temit: (emit) =>
+\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\temit.exportConst('cliApplyProof', value);
+\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t}),
+\t\t\t});
 \t\t\treturn value;
 \t\t}),
 });
@@ -670,7 +668,6 @@ describe('cli/main', () => {
 			configPath,
 			`
 import { Effect } from 'effect';
-import { codegenable } from '../src/api/define-capabilities.ts';
 import { defineDevstack } from '../src/api/define-devstack.ts';
 import { definePlugin } from '../src/api/define-plugin.ts';
 import { PluginContext } from '../src/substrate/plugin-ctx.ts';
@@ -683,18 +680,17 @@ const cliApplyCodegenPlugin = definePlugin({
 \t\tEffect.gen(function* () {
 \t\t\tconst ctx = yield* PluginContext;
 \t\t\tconst value = { message: 'from-cli-identity' } as const;
-\t\t\tctx.codegen(
-\t\t\t\tcodegenable({
-\t\t\t\t\temitterName: 'cli-identity-proof',
-\t\t\t\t\toutputPath: 'cli-identity-proof.ts',
-\t\t\t\t\tsensitive: false,
-\t\t\t\t\temit: (emit) =>
-\t\t\t\t\t\tEffect.sync(() => {
-\t\t\t\t\t\t\temit.exportConst('cliIdentityProof', value);
-\t\t\t\t\t\t\treturn emit.done();
-\t\t\t\t\t\t}),
-\t\t\t\t}),
-\t\t\t);
+\t\t\tctx.codegen({
+\t\t\t\tkind: 'codegenable',
+\t\t\t\temitterName: 'cli-identity-proof',
+\t\t\t\toutputPath: 'cli-identity-proof.ts',
+\t\t\t\tsensitive: false,
+\t\t\t\temit: (emit) =>
+\t\t\t\t\tEffect.sync(() => {
+\t\t\t\t\t\temit.exportConst('cliIdentityProof', value);
+\t\t\t\t\t\treturn emit.done();
+\t\t\t\t\t}),
+\t\t\t});
 \t\t\treturn value;
 \t\t}),
 });

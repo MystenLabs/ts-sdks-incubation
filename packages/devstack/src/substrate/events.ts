@@ -11,17 +11,6 @@ import type { BuildEntry, Endpoint, StructuredError } from './projection.ts';
 
 export type ShutdownSignal = 'SIGINT' | 'SIGTERM';
 
-export type SnapshotCaptureProgressPhase =
-	| 'quiescing'
-	| 'pausing'
-	| 'paused'
-	| 'capturing-containers'
-	| 'saving-images'
-	| 'capturing-host-tree'
-	| 'saving-contributions'
-	| 'writing-metadata'
-	| 'resuming';
-
 /** Typed lifecycle event stream. Architecture-enumerated categories. */
 export type EngineEvent =
 	| {
@@ -109,22 +98,6 @@ export type EngineEvent =
 			readonly tag: 'shutdown.escalated';
 			readonly signal: ShutdownSignal;
 			readonly exitCode: number;
-			readonly at: number;
-	  }
-	| {
-			readonly tag: 'snapshot.captureStarted';
-			readonly snapshotId?: string;
-			readonly name?: string;
-			readonly at: number;
-	  }
-	| {
-			readonly tag: 'snapshot.captureProgress';
-			readonly snapshotId?: string;
-			readonly name?: string;
-			readonly phase: SnapshotCaptureProgressPhase;
-			readonly detail?: string;
-			readonly committedContainers?: number;
-			readonly totalContainers?: number;
 			readonly at: number;
 	  }
 	| {

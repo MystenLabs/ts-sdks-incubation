@@ -300,33 +300,4 @@ describe('Dashboard', () => {
 
 		unmount();
 	});
-
-	it('renders bottom snapshot progress with paused state', () => {
-		const { lastFrame, unmount } = render(
-			<Dashboard
-				state={state()}
-				eventLog={[]}
-				snapshotPromptValue={null}
-				snapshotStatus={{
-					tag: 'running',
-					phase: 'capturing-host-tree',
-					name: 'before-change',
-					committedContainers: 2,
-					totalContainers: 2,
-					detail: 'archiving 1 host subtree',
-					at: AT,
-				}}
-			/>,
-		);
-
-		const frame = lastFrame() ?? '';
-		expect(frame).toContain('Snapshot:');
-		expect(frame).toContain('before-change');
-		expect(frame).toContain('capturing files');
-		expect(frame).toContain('stack paused');
-		expect(frame).toContain('2/2');
-		expect(frame).toContain('archiving 1 host subtree');
-
-		unmount();
-	});
 });

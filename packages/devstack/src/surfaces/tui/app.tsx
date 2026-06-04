@@ -107,39 +107,6 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 					pendingLines.push(line);
 					scheduleFlush();
 					switch (event.tag) {
-						case 'snapshot.captureStarted':
-							setSnapshotStatus({
-								tag: 'running',
-								phase: 'starting',
-								...(event.snapshotId === undefined ? {} : { snapshotId: event.snapshotId }),
-								...(event.name === undefined ? {} : { name: event.name }),
-								at: event.at,
-							});
-							break;
-						case 'snapshot.captureProgress':
-							setSnapshotStatus((prev) => ({
-								tag: 'running',
-								phase: event.phase,
-								...(event.snapshotId === undefined
-									? prev?.tag === 'running' && prev.snapshotId !== undefined
-										? { snapshotId: prev.snapshotId }
-										: {}
-									: { snapshotId: event.snapshotId }),
-								...(event.name === undefined
-									? prev?.tag === 'running' && prev.name !== undefined
-										? { name: prev.name }
-										: {}
-									: { name: event.name }),
-								...(event.detail === undefined ? {} : { detail: event.detail }),
-								...(event.committedContainers === undefined
-									? {}
-									: { committedContainers: event.committedContainers }),
-								...(event.totalContainers === undefined
-									? {}
-									: { totalContainers: event.totalContainers }),
-								at: event.at,
-							}));
-							break;
 						case 'snapshot.captureSkipped':
 							setSnapshotStatus({
 								tag: 'skipped',

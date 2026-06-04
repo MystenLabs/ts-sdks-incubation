@@ -224,10 +224,10 @@ describe('display-derivation', () => {
 		it('includes the nested cause detail when the headline is generic', () => {
 			expect(
 				errorSummaryFor({
-					...fakeErr("capability sink 'routable' failed"),
+					...fakeErr("routing/contribution sink 'routable' failed"),
 					tag: 'ContributionSinkFailed',
 					chain: [
-						"ContributionSinkFailed: capability sink 'routable' failed",
+						"ContributionSinkFailed: routing/contribution sink 'routable' failed",
 						'RouterBootFailed: failed to create router: port is already allocated',
 					],
 				}),

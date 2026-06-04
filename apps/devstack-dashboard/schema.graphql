@@ -43,6 +43,7 @@ type BuildEntry {
 type CoinCap {
   decimals: Int!
   fullCoinType: String!
+  narrowingFault: String
   packageId: String
   pluginKey: String!
   source: String!
@@ -73,6 +74,7 @@ type DeepbookInfo {
   marketMakerRunning: Boolean!
   mode: DeepbookMode!
   name: String!
+  narrowingFault: String
   packageId: String!
   pluginKey: String!
   pools: [DeepbookPool!]!
@@ -117,7 +119,6 @@ The outcome of a faucet fund request (real result — ok reflects whether the in
 """
 type FundResult {
   detail: String!
-  digest: String
   ok: Boolean!
 }
 
@@ -403,6 +404,7 @@ type SealInfo {
   keyServerUrl: String!
   keyServers: [SealKeyServer!]!
   mode: String!
+  narrowingFault: String
   objectId: String!
   pluginKey: String!
   threshold: Int!

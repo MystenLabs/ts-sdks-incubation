@@ -389,7 +389,7 @@ export const executeSuiTx = (params: {
 			}),
 		)
 		.pipe(
-			Effect.withSpan('substrate.sui-execute', {
+			Effect.withSpan('devstack.plugin.sui.execute', {
 				attributes: {
 					'sui-execute.signer': params.signer.name,
 					'sui-execute.address': params.signer.address,

@@ -69,14 +69,14 @@ export interface MultimapEntry<V> {
  *  several pairs (formatter-registry contributes one tag-entry per
  *  declared error tag); all pairs in one `register` call share one
  *  `seq` and one finalizer. */
-export interface MultimapItem<K extends string, V> {
+interface MultimapItem<K extends string, V> {
 	readonly key: K;
 	readonly value: V;
 }
 
 /** Operations on a scoped seq-tagged multimap. Generic over `K`
  *  (string-shaped, used as a Map key) and the opaque per-entry `V`. */
-export interface ScopedMultimap<K extends string, V> {
+interface ScopedMultimap<K extends string, V> {
 	/** Append one or more `(key, value)` pairs under a single fresh
 	 *  `seq`, and register a scope finalizer that drops exactly those
 	 *  entries (by `seq`) on scope close. Returns the assigned `seq` so

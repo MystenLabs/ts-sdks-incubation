@@ -18,8 +18,9 @@
 //
 //   - SWAP-TREE op (`swap-tree`) — publishes a new tree via the UNCHANGED
 //     `stageAndSwap` primitive (NOT modified, NOT reimplemented). The
-//     executor only ASSEMBLES stageAndSwap's args from the op. Restore
-//     uses the `untar-artifact` build body; capture uses `tar-subtrees`.
+//     executor only ASSEMBLES stageAndSwap's args from the op. Both restore
+//     and capture route through this one op; each caller supplies its own
+//     staging-tree build body as the op's generic `buildEffect`.
 //
 // `stageAndSwap` is untouched; the preserve-list builders are
 // per-direction constants supplied by the CALLER, never derived inside
@@ -151,7 +152,7 @@ const runReapImages = <E>(
 	});
 
 // -----------------------------------------------------------------------------
-// Per-op runner (SWAP-TREE op — restore via `untar-artifact`)
+// Per-op runner (SWAP-TREE op — publish the op's `buildEffect` tree)
 // -----------------------------------------------------------------------------
 
 /** Publish a new `targetPath` tree via the UNCHANGED `stageAndSwap`
@@ -245,13 +246,13 @@ export const executeFsPlan = <E>(
 					break;
 				}
 				case 'swap-tree': {
-					// restore via `untar-artifact`: build the staging tree
-					// via the op's `buildEffect` and publish it through the
-					// UNCHANGED `stageAndSwap`. The preserve riders
-					// (`preserveFromTarget` / `preserveOnPreseed`) map 1:1 onto
-					// `stageAndSwap`'s args as PER-DIRECTION constants — NOT a
-					// cache-policy projection. The capture build body
-					// (`tar-subtrees`) reuses this same runner.
+					// Build the staging tree via the op's `buildEffect` and
+					// publish it through the UNCHANGED `stageAndSwap`. The
+					// preserve riders (`preserveFromTarget` /
+					// `preserveOnPreseed`) map 1:1 onto `stageAndSwap`'s args as
+					// PER-DIRECTION constants — NOT a cache-policy projection.
+					// Both restore and capture route their build bodies through
+					// this same runner.
 					yield* runSwapTree(op);
 					break;
 				}

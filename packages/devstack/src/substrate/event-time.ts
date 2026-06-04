@@ -43,8 +43,6 @@ export const eventAtOrNull = (event: EngineEvent): number | null => {
 		case 'restart.requested':
 		case 'restart.completed':
 		case 'shutdown.escalated':
-		case 'snapshot.captureStarted':
-		case 'snapshot.captureProgress':
 		case 'snapshot.captureSkipped':
 		case 'snapshot.captureFailed':
 		case 'snapshot.captured':

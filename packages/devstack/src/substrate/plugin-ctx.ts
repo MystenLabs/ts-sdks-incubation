@@ -13,24 +13,17 @@
 // `ctx` stays always-present (the supervisor never omits it).
 //
 // -----------------------------------------------------------------------------
-// INV-5 — the closed 8-key set
+// INV-5 — the closed 5-key set
 // -----------------------------------------------------------------------------
 //
-// `PluginCtx` has EXACTLY these 8 readonly keys and no more:
+// `PluginCtx` has EXACTLY these 5 readonly keys and no more:
 //
-//   persist · codegen · endpoint · snapshotExtra · publish ·
-//   provides · requires · fail
+//   codegen · endpoint · snapshotExtra · publish · provides
 //
 // This is a HARD invariant (pinned by `plugin-ctx-keyset.test-d.ts`).
 // Growing the set re-builds a god-object surface. The rule for what may
 // live here:
 //
-//   - `persist` is a thin pass-through to the Cache primitive's
-//     `publish` (cache → verify → produce → register, the folded-in
-//     artifact-publisher cycle). It forwards the
-//     plugin-supplied HEX `spec.chain` VERBATIM — the substrate does
-//     NOT fold `identity.chain` in, because the on-disk cache (and
-//     warm-restart id stability) keys on the hex chain id. See B.1.
 //   - `codegen` / `endpoint` / `snapshotExtra` / `publish` are the four
 //     BUFFERED declarative verbs. Their backing services
 //     (CodegenOrchestratorService, RouterService +
@@ -39,10 +32,10 @@
 //     plugin scope. A verb call therefore cannot run its backing
 //     service inline; it pushes a typed buffer entry that the supervisor
 //     REPLAYS in its own frame after the plugin's `start` succeeds.
-//   - `provides` / `requires` are the strategy bus (the faucet pattern
-//     generalized): a plugin contributes to / reads a sibling's
-//     capability-keyed registry without a dep-graph edge.
-//   - `fail` is the typed plugin-fail escape hatch.
+//   - `provides` is the strategy bus writer (the faucet pattern
+//     generalized): a plugin contributes to a sibling's
+//     capability-keyed registry without a dep-graph edge. Siblings READ
+//     it with `yield* StrategyRegistryService` directly (no ctx verb).
 //
 // What stays OUT of `ctx`, and WHY: every other substrate service a
 // plugin needs is already in plugin scope and is reached with
@@ -57,32 +50,13 @@
 // service to `ctx` that a plugin could already `yield*` is the drift
 // INV-5 forbids.
 
-import { Context, type Effect } from 'effect';
+import { Context } from 'effect';
 
-import type { ArtifactPublisher } from '../primitives/artifact-publisher.ts';
 import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../contracts/projection.ts';
 import type { RoutableDecl } from '../contracts/routable.ts';
 import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
-import type { StrategyNotFoundError } from './runtime/errors.ts';
-
-/**
- * Type of the strategy a `ctx.requires(key)` read resolves to.
- *
- * The strategy registry stores contributions as a scope-local multimap
- * of `unknown` (see `runtime/strategy-registry/service.ts`): the
- * registered strategy's type is erased at storage, and the registry's
- * `get<Key, S>` lets the CALLER name the expected `S`. Mirroring that
- * erased read surface, `StrategyFor<K>` resolves to `unknown` for every
- * key — the reader narrows at the call site (a contributor and consumer
- * agreeing on a key's strategy shape is a plugin-pair convention the
- * substrate stays blind to). The `K` parameter is retained so the verb
- * signature reads symmetrically with `provides`/`StrategyContributorDecl`
- * and so a future typed registry can specialize this alias without
- * touching the `PluginCtx` shape.
- */
-export type StrategyFor<K extends string> = Record<K, unknown>[K];
 
 /**
  * The CLOSED union of contribution decls a plugin emits via the four
@@ -154,17 +128,9 @@ export const emitContributions = (ctx: PluginCtx, decls: ReadonlyArray<Contribut
  * below); the supervisor provides a per-plugin instance into `start`'s
  * requirement channel.
  *
- * EXACTLY 8 keys (INV-5 — see file header). Do not add a 9th.
+ * EXACTLY 5 keys (INV-5 — see file header). Do not add a 6th.
  */
 export interface PluginCtx {
-	/**
-	 * Thin pass-through to the Cache primitive's `publish` (the folded-in
-	 * artifact-publisher cycle). Forwards the plugin-supplied HEX
-	 * `spec.chain` verbatim (NO `identity.chain` fold) so on-disk cache ids
-	 * and warm-restart id stability are byte-identical to a direct
-	 * `CacheService.publish`.
-	 */
-	readonly persist: ArtifactPublisher['publish'];
 	/** Buffered: contribute a generated-file emitter to the codegen
 	 *  orchestrator. Replayed in the supervisor frame after a successful
 	 *  `start`. Returns void (the orchestrator owns rendering). */
@@ -183,20 +149,10 @@ export interface PluginCtx {
 	 *  successful `start`. */
 	readonly publish: (decl: ProjectionDecl) => void;
 	/** Strategy bus (write): contribute a strategy under a capability
-	 *  key for a sibling to read via `requires`. Registers on the
-	 *  scope-local StrategyRegistry, publishes `strategy.registered`, and
-	 *  arms a finalizer publishing `strategy.unregistered`. */
+	 *  key for a sibling to read via `StrategyRegistryService`. Registers
+	 *  on the scope-local StrategyRegistry, publishes `strategy.registered`,
+	 *  and arms a finalizer publishing `strategy.unregistered`. */
 	readonly provides: <K extends string, S>(decl: StrategyContributorDecl<K, S>) => void;
-	/** Strategy bus (read): resolve the strategy registered under a
-	 *  capability key, or fail with `StrategyNotFoundError`. */
-	readonly requires: <K extends string>(
-		key: K,
-	) => Effect.Effect<StrategyFor<K>, StrategyNotFoundError>;
-	/** Typed plugin-fail escape hatch. Surfaces the tagged error through
-	 *  the supervisor's `markFailed` path. */
-	readonly fail: (
-		error: { readonly _tag: string } & Record<string, unknown>,
-	) => Effect.Effect<never>;
 }
 
 /**

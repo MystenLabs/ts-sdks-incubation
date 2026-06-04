@@ -59,11 +59,10 @@ export type ReconcileScope =
 //     `reap-meta-missing`, `reap-images`. These are the ops wipe + prune
 //     need; they mutate the runtime tree / docker image store directly
 //     (no tree swap).
-//   - SWAP-TREE ops — `swap-tree`, `untar-artifact`, `tar-subtrees`.
-//     These run through the unchanged `stageAndSwap` primitive; their
-//     preserve riders (`preserveFromTarget` / `preserveOnPreseed`) stay
-//     PER-DIRECTION named constants, never collapsed into one cache-policy
-//     projection.
+//   - SWAP-TREE ops — `swap-tree`. These run through the unchanged
+//     `stageAndSwap` primitive; the build body is carried as a generic
+//     `buildEffect`, and the preserve riders (`preserveFromTarget` /
+//     `preserveOnPreseed`) stay PER-DIRECTION named constants.
 //
 // Each op carries the live callbacks / failers it needs (this is an
 // in-process plan, not a serialized one — like `ReconcileGraphDeps` it

@@ -1,23 +1,25 @@
 // GUARD-B — the strategy bus must not become a god-bus.
 //
-// `ctx.provides` / `ctx.requires` let a plugin contribute to / read a
-// sibling's capability-keyed registry WITHOUT a `dependsOn` dep-graph
-// edge. That is the faucet pattern — intentional for cross-cutting
-// strategies. The failure mode this gate forbids: a plugin reaching a
-// SIBLING PLUGIN's value through the strategy bus (e.g.
-// `ctx.requires('sui')` to grab the Sui client) instead of declaring a
-// `dependsOn` edge. That type-checks with no other CI signal and
-// silently rebuilds the deleted CapabilitySinks god-bus.
+// `ctx.provides` lets a plugin contribute to a sibling's
+// capability-keyed registry WITHOUT a `dependsOn` dep-graph edge (siblings
+// READ it with `yield* StrategyRegistryService` directly). That is the
+// faucet pattern — intentional for cross-cutting strategies. The failure
+// mode this gate forbids: a plugin contributing under a SIBLING PLUGIN's
+// id as the capability key (e.g. `ctx.provides({ capabilityKey: 'sui' })`)
+// instead of a `<domain>:<disc>` key, which lets a reader grab the
+// sibling's value off the bus instead of declaring a `dependsOn` edge.
+// That type-checks with no other CI signal and silently rebuilds the
+// deleted CapabilitySinks god-bus.
 //
-// The gate: scan every `ctx.requires(...)` / `ctx.provides({
-// capabilityKey: ... })` STRING-LITERAL key under `src/plugins/**` and
-// assert none equals a plugin id. Capability keys are `<domain>:<disc>`
-// shaped (`coinType:WAL`, `chain-probe:sui:mainnet`) — never a bare
-// plugin id. Plugins DO author through `ctx` today, but they compute
-// their capability keys via helpers rather than bare string literals, so
-// the literal scan finds nothing to reject and the gate passes; it is the
-// PERMANENT guard that fails the moment a conversion wires a string-literal
-// plugin-id key.
+// The gate: scan every `ctx.provides({ capabilityKey: ... })` and every
+// strategy-registry read key (`StrategyRegistryService.get('<key>')`)
+// STRING-LITERAL key under `src/plugins/**` and assert none equals a
+// plugin id. Capability keys are `<domain>:<disc>` shaped
+// (`coinType:WAL`, `chain-probe:sui:mainnet`) — never a bare plugin id.
+// Plugins DO author through `ctx` today, but they compute their capability
+// keys via helpers rather than bare string literals, so the literal scan
+// finds nothing to reject and the gate passes; it is the PERMANENT guard
+// that fails the moment a conversion wires a string-literal plugin-id key.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
@@ -56,27 +58,25 @@ const pluginIds = new Set(
 		.map((dir) => dir),
 );
 
-/** Extract string-literal keys passed to `ctx.requires('<key>')` /
- *  `requires('<key>')` and `capabilityKey: '<key>'` inside a
- *  `ctx.provides({...})` / `provides({...})` decl. Quote-agnostic. */
+/** Extract string-literal `capabilityKey: '<key>'` keys inside a
+ *  `ctx.provides({...})` / `provides({...})` decl. Quote-agnostic. The
+ *  write side carries the canonical key under this field
+ *  (StrategyContributorDecl.capabilityKey); readers resolve against the
+ *  same key via helpers, so pinning the write side pins the whole bus. */
 const extractStrategyKeys = (source: string): ReadonlyArray<string> => {
 	const keys: string[] = [];
-	// `requires('foo')` / `ctx.requires("foo")`
-	const requiresRe = /\brequires\s*\(\s*(['"`])([^'"`]+)\1/g;
 	// `capabilityKey: 'foo'` — the literal `provides` decls carry the key
 	// under this field (StrategyContributorDecl.capabilityKey).
 	const capabilityKeyRe = /\bcapabilityKey\s*:\s*(['"`])([^'"`]+)\1/g;
-	for (const re of [requiresRe, capabilityKeyRe]) {
-		let m: RegExpExecArray | null;
-		while ((m = re.exec(source)) !== null) {
-			keys.push(m[2]!);
-		}
+	let m: RegExpExecArray | null;
+	while ((m = capabilityKeyRe.exec(source)) !== null) {
+		keys.push(m[2]!);
 	}
 	return keys;
 };
 
 describe('GUARD-B: strategy bus is not a plugin-id god-bus', () => {
-	it('no ctx.requires / ctx.provides key equals a plugin id', () => {
+	it('no ctx.provides capabilityKey equals a plugin id', () => {
 		const offenders: Array<{ file: string; key: string }> = [];
 		for (const file of collectTsFiles(pluginsDir)) {
 			const source = readFileSync(file, 'utf8');

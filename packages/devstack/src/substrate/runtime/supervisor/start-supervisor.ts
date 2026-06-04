@@ -326,7 +326,7 @@ export const startSupervisor = (
 
 		// Resolve the FormatterRegistry for this stack. The supervisor feeds
 		// each plugin's static `errorContributions` field directly into it
-		// from `acquire-node` (was the substrate's `errorContributionSink`).
+		// from `acquire-node`.
 		// Two paths:
 		//   (a) the caller layered a `FormatterRegistryService` into
 		//       `pluginContext` (CLI / e2e do, so the cascade formatter
