@@ -126,8 +126,12 @@ describe('codegen Move summary runner', () => {
 					{
 						contextPath: new URL('../../../images/', import.meta.url).pathname,
 						dockerfile: 'sui/Dockerfile',
-						fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh', '_shared/signal-forward.sh'],
-						buildArgs: { SUI_VERSION: 'devnet-v1.71.0' },
+						fingerprintPaths: ['sui/Dockerfile', 'sui/entrypoint.sh'],
+						buildArgs: {
+							SUI_TOOLS_IMAGE: `mysten/sui-tools:eced02468444d429a4e9a2b9622b7bd30a1710d4${
+								process.arch === 'arm64' ? '-arm64' : ''
+							}`,
+						},
 					},
 				]);
 			} finally {

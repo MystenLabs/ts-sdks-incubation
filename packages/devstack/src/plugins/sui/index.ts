@@ -27,10 +27,11 @@
 // in the per-mode builder under `mode/*.ts`; this barrel emits them
 // alongside the rest during `start`.
 
-import { Effect } from 'effect';
+import { Effect, type Scope } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
+import { bootPostgresSidecar, credentialedUrl, withDatabase } from '../postgres/index.ts';
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -38,6 +39,8 @@ import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts'
 
 import { chainProbeCapabilityKey } from '../../contracts/chain-probe.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
+import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
+import type { Identity } from '../../substrate/identity.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	LeaseBrokerService,
@@ -48,13 +51,14 @@ import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
-import { SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
+import { suiPluginError, SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
 import { suiForkFaucetStrategy } from './fork-faucet-strategy.ts';
 import { selectSufficientForkCoin } from './fork-transaction.ts';
 import { FORK_FAUCET_WHALE_MIN_COIN_MIST, resolveForkWhale } from './mode/fork.ts';
+import { SUI_INDEXER_DB_ROLE, type LocalIndexer } from './mode/local.ts';
 import type { SuiClient } from './mode/shared.ts';
 import type {
 	SuiForkOptions,
@@ -163,97 +167,208 @@ const resolveForkFaucetStrategy = (
 		);
 	});
 
-const buildPlugin = (opts: SuiOptions) => {
-	return definePlugin({
+/** Default name for sui's GraphQL-indexer database. */
+const DEFAULT_INDEXER_DATABASE = 'sui_indexer';
+
+/** Alias-safe sanitizer for the indexer network name (identity strings
+ *  are already network-safe; this guards the literal composition). */
+const sanitizeAlias = (s: string): string => s.replace(/[^a-zA-Z0-9-]/g, '-');
+
+/** In-network DNS alias siblings dial the indexer-db sidecar by. */
+const SUI_INDEXER_DB_ALIAS = 'sui-indexer-db';
+
+/** Append a database segment to a BYO DSN only when it has no path (so a
+ *  caller-supplied `.../mydb` is respected). */
+const appendDatabaseIfMissing = (url: string, database: string): string => {
+	try {
+		const parsed = new URL(url);
+		return parsed.pathname === '' || parsed.pathname === '/'
+			? withDatabase(url.replace(/\/$/, ''), database)
+			: url;
+	} catch {
+		// Not URL-parseable — append iff there's no path-looking suffix.
+		return /\/[^/]+$/.test(url.replace(/^postgres(ql)?:\/\//, '')) ? url : withDatabase(url, database);
+	}
+};
+
+/** Provision the GraphQL-indexer DB wiring for local mode.
+ *
+ *  Default: sui OWNS a postgres sidecar (labelled under sui) — boot it on
+ *  a per-stack network and compose the DSN from its in-network alias (NOT
+ *  the per-stack container DNS host, which isn't parallel-stack-portable).
+ *
+ *  BYO: when `indexerDb` is set, no sidecar — pass the caller's DSN +
+ *  network straight through (appending the default db iff the DSN has no
+ *  path). */
+export const provisionLocalIndexer = (
+	runtime: ContainerRuntime,
+	identity: Identity,
+	stackRoot: string,
+	opts: SuiLocalOptions,
+): Effect.Effect<LocalIndexer, SuiPluginError, Scope.Scope> => {
+	const database = opts.indexerDb?.database ?? DEFAULT_INDEXER_DATABASE;
+	if (opts.indexerDb !== undefined) {
+		return Effect.succeed({
+			url: appendDatabaseIfMissing(opts.indexerDb.url, database),
+			network: opts.indexerDb.network,
+		});
+	}
+	const network = sanitizeAlias(`devstack-${identity.app}-${identity.stack}-sui-indexer`);
+	return bootPostgresSidecar(runtime, identity, stackRoot, {
+		network,
+		alias: SUI_INDEXER_DB_ALIAS,
+		role: SUI_INDEXER_DB_ROLE,
+		database,
+	}).pipe(
+		Effect.map(({ handle }) => ({
+			url: withDatabase(
+				credentialedUrl({
+					user: handle.user,
+					password: handle.password,
+					host: handle.networkAlias,
+					port: handle.port,
+				}),
+				database,
+			),
+			network: handle.containerNetwork,
+		})),
+		// Postgres-domain failures wrap into the sui error channel — the
+		// sidecar is a sui implementation detail.
+		Effect.mapError((cause) =>
+			suiPluginError(
+				'container-start',
+				`sui local mode: failed to provision the GraphQL indexer postgres sidecar (${cause._tag})`,
+				cause,
+			),
+		),
+	);
+};
+
+/** Shared boot + inline contribution emission, parameterised by the
+ *  resolved external-indexer wiring (`undefined` = no GraphQL, the
+ *  zero-config / non-local case). */
+const bootAndEmit = (opts: SuiOptions, indexer: LocalIndexer | undefined) =>
+	Effect.gen(function* () {
+		const ctx = yield* PluginContext;
+		// The substrate threads `ContainerRuntime` + `IdentityContext`
+		// via the plugin runtime context; the supervisor provides
+		// these before this body runs.
+		const runtime = yield* ContainerRuntimeService;
+		const identity = yield* IdentityContext;
+		const paths = yield* StackPathsService;
+		const portBroker = yield* PortBrokerService;
+		const fundingFaucetLeaseBroker = yield* LeaseBrokerService;
+		const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts, indexer);
+
+		const fundingFaucetStrategy = yield* resolveFundingFaucetStrategy(
+			opts,
+			client,
+			fundingFaucetLeaseBroker,
+		);
+		const value = {
+			...client,
+			mode: opts.mode,
+			fundingFaucetStrategy,
+		} satisfies SuiResolvedRuntime;
+		// Emit the resolved contributions inline, top-to-bottom: the
+		// decls stamp REAL chain ids / rpc URLs / container names
+		// (`value` is the just-resolved runtime; `identity` from
+		// `IdentityContext`, NOT re-fetched). The shared
+		// `emitContributions` routes each by `kind`. Faucet (conditional
+		// on a resolved strategy) and routables (mode-dependent) are the
+		// only optional members; order is load-bearing.
+		const realChain = value.chain;
+		const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
+			value.fundingFaucetStrategy === null
+				? []
+				: [
+						{
+							kind: 'strategy-contributor',
+							capabilityKey: faucetCapabilityKey(realChain),
+							strategy: value.fundingFaucetStrategy,
+							autoMounted: true,
+						} satisfies StrategyContributorDecl<
+							`faucet:request:${string}`,
+							ReturnType<typeof suiLocalStrategy>
+						>,
+					];
+		const localRoutables =
+			opts.mode === 'local'
+				? makeSuiLocalRoutables({
+						containerName: `devstack-${identity.app}-${identity.stack}-sui-validator`,
+						// GraphQL routes only when the external indexer is wired.
+						includeGraphql: indexer !== undefined,
+					})
+				: [];
+		const forkRoutables =
+			opts.mode === 'fork'
+				? makeSuiForkRoutables({
+						containerName: `devstack-${identity.app}-${identity.stack}-sui-fork`,
+					})
+				: [];
+		emitContributions(ctx, [
+			// `hasIndexer` (local only) folds the sui-owned indexer-db
+			// sidecar into the captured containers; `indexer !== undefined`
+			// is the same gate `bootAndEmit`'s caller resolved GraphQL on.
+			makeSnapshotable(opts.mode, identity.app, identity.stack, realChain, indexer !== undefined),
+			makeCodegenable({
+				mode: opts.mode,
+				chain: realChain,
+				rpc: value.rpcUrl,
+				source: 'default',
+				...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
+				...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
+			}),
+			{
+				kind: 'strategy-contributor',
+				capabilityKey: chainProbeCapabilityKey(realChain),
+				strategy: value.chainProbe,
+				autoMounted: true,
+			} satisfies StrategyContributorDecl<`chain-probe:${string}`, ChainProbe<SuiProbeKey>>,
+			...faucetContribution,
+			...localRoutables,
+			...forkRoutables,
+		]);
+		return value;
+	});
+
+/** The single sui plugin builder. No sibling `dependsOn`: in local mode
+ *  with the indexer on (the default), `start` provisions the GraphQL
+ *  indexer DB itself — a sui-owned postgres sidecar — inside the boot
+ *  scope BEFORE the boot-time validator (so the validator can join its
+ *  network), then boots + emits. Resolution order:
+ *    - `indexerDb` present  → BYO DB (no sidecar)
+ *    - `indexer === false`  → opt out (RPC + faucet only, GraphQL off)
+ *    - else (local default) → sui-owned sidecar
+ *  Non-local modes never touch the indexer (GraphQL off). */
+const buildSuiPlugin = (opts: SuiOptions) =>
+	definePlugin({
 		id: suiResource.id,
 		role: 'service',
 		section: 'service',
-		// Sui has no `dependsOn`, so `start` is zero-arg. `ctx` is the
-		// typed plugin-authoring surface the contribution emission below
-		// drives; it arrives via the `PluginContext` service.
+		// Zero-arg `start` (no `dependsOn`); the substrate supplies the
+		// container runtime + identity via the plugin runtime context.
 		start: () =>
 			Effect.gen(function* () {
-				const ctx = yield* PluginContext;
-				// The substrate threads `ContainerRuntime` + `IdentityContext`
-				// via the plugin runtime context; the supervisor provides
-				// these before this body runs.
+				// Resolution order: BYO `indexerDb` wins; then an explicit
+				// `indexer: false` opt-out; then the sui-owned sidecar default.
+				// Non-local modes never wire the indexer.
+				if (
+					opts.mode !== 'local' ||
+					(opts.indexerDb === undefined && opts.indexer === false)
+				) {
+					return yield* bootAndEmit(opts, undefined);
+				}
 				const runtime = yield* ContainerRuntimeService;
 				const identity = yield* IdentityContext;
 				const paths = yield* StackPathsService;
-				const portBroker = yield* PortBrokerService;
-				const fundingFaucetLeaseBroker = yield* LeaseBrokerService;
-				const { client } = yield* bootSuiService(runtime, identity, portBroker, paths, opts);
-
-				const fundingFaucetStrategy = yield* resolveFundingFaucetStrategy(
-					opts,
-					client,
-					fundingFaucetLeaseBroker,
-				);
-				const value = {
-					...client,
-					mode: opts.mode,
-					fundingFaucetStrategy,
-				} satisfies SuiResolvedRuntime;
-				// Emit the resolved contributions inline, top-to-bottom: the
-				// decls stamp REAL chain ids / rpc URLs / container names
-				// (`value` is the just-resolved runtime; `identity` from
-				// `IdentityContext`, NOT re-fetched). The shared
-				// `emitContributions` routes each by `kind`. Faucet (conditional
-				// on a resolved strategy) and routables (mode-dependent) are the
-				// only optional members; order is load-bearing.
-				const realChain = value.chain;
-				const faucetContribution: ReadonlyArray<StrategyContributorDecl> =
-					value.fundingFaucetStrategy === null
-						? []
-						: [
-								{
-									kind: 'strategy-contributor',
-									capabilityKey: faucetCapabilityKey(realChain),
-									strategy: value.fundingFaucetStrategy,
-									autoMounted: true,
-								} satisfies StrategyContributorDecl<
-									`faucet:request:${string}`,
-									ReturnType<typeof suiLocalStrategy>
-								>,
-							];
-				const localRoutables =
-					opts.mode === 'local'
-						? makeSuiLocalRoutables({
-								containerName: `devstack-${identity.app}-${identity.stack}-sui-validator`,
-								includeGraphql: true,
-							})
-						: [];
-				const forkRoutables =
-					opts.mode === 'fork'
-						? makeSuiForkRoutables({
-								containerName: `devstack-${identity.app}-${identity.stack}-sui-fork`,
-							})
-						: [];
-				emitContributions(ctx, [
-					makeSnapshotable(opts.mode, identity.app, identity.stack, realChain),
-					makeCodegenable({
-						mode: opts.mode,
-						chain: realChain,
-						rpc: value.rpcUrl,
-						source: 'default',
-						...(value.faucetUrl !== null ? { faucet: value.faucetUrl } : {}),
-						...(value.graphqlUrl !== null ? { graphql: value.graphqlUrl } : {}),
-					}),
-					{
-						kind: 'strategy-contributor',
-						capabilityKey: chainProbeCapabilityKey(realChain),
-						strategy: value.chainProbe,
-						autoMounted: true,
-					} satisfies StrategyContributorDecl<`chain-probe:${string}`, ChainProbe<SuiProbeKey>>,
-					...faucetContribution,
-					...localRoutables,
-					...forkRoutables,
-				]);
-				return value;
+				const indexer = yield* provisionLocalIndexer(runtime, identity, paths.stackRoot, opts);
+				return yield* bootAndEmit(opts, indexer);
 			}),
 		errorContributions: suiErrorContributions,
 	});
-};
+
+const buildPlugin = <O extends SuiOptions>(opts: O) => buildSuiPlugin(opts);
 
 // ---------------------------------------------------------------------------
 // User-facing factories
@@ -261,8 +376,11 @@ const buildPlugin = (opts: SuiOptions) => {
 
 /** Local Sui shorthand. Network/env selection belongs to the CLI or
  *  `defineDevstackWith(...)`; plain `sui()` always means an in-stack
- *  local validator. */
-export const sui = (opts: SuiOptions = { mode: 'local' }) => buildPlugin(opts);
+ *  local validator (GraphQL/indexer/Postgres on by default via a
+ *  sui-owned sidecar). */
+export const sui = <const O extends SuiOptions = { mode: 'local' }>(
+	opts: O = { mode: 'local' } as O,
+) => buildPlugin(opts);
 
 /** Mode-narrowed factory namespace.
  *
@@ -276,7 +394,8 @@ export const sui = (opts: SuiOptions = { mode: 'local' }) => buildPlugin(opts);
  *  `live`, `fork`. */
 export const suiFor = defineModeNamespace({
 	local: {
-		local: (opts: Omit<SuiLocalOptions, 'mode'> = {}) => buildPlugin({ mode: 'local', ...opts }),
+		local: <const O extends Omit<SuiLocalOptions, 'mode'>>(opts: O = {} as O) =>
+			buildPlugin({ mode: 'local', ...opts }),
 		localRpc: (opts: Omit<SuiLocalRpcOptions, 'mode'>) =>
 			buildPlugin({ mode: 'local-rpc', ...opts }),
 	},

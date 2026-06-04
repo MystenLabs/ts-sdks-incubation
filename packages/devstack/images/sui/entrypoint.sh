@@ -4,24 +4,13 @@
 # `sui start --force-regenesis` is ephemeral (in-memory genesis). To
 # preserve chain state across `docker stop` + `docker start`, we
 # bootstrap once with `sui genesis -f --with-faucet` (writes a
-# persistent config dir under /home/devstack-sui/.sui/sui_config) and then run
+# persistent config dir under $SUI_HOME/.sui/sui_config) and then run
 # `sui start` (no --force-regenesis), which resumes from the on-disk
 # state. Chain state lives in the container's writable layer — `docker
-# stop`/`start` preserves it; `docker rm` destroys it.
-#
-# Resume is NOT instant-to-head — but NOT because the validator replays.
-# The validator resumes from its persisted RocksDB instantly (its committee
-# key is stable across boots). The cost is the EMBEDDED FULLNODE: `sui
-# start` mints it a fresh keypair + db-path on every invocation (it never
-# reuses the saved fullnode.yaml — see sui-swarm-config
-# node_config_builder.rs), so the fullnode boots with an empty db and
-# re-syncs the whole chain from genesis (~50x realtime; a multi-thousand-
-# checkpoint chain takes 60-120s). That fullnode serves the JSON-RPC, so a
-# ready signal that only proves the RPC port is bound races the re-sync.
-# The caught-up-to-head gate lives on the orchestrator side (devstack's sui
-# plugin `waitForCheckpointCatchUp`), not in this entrypoint. (An upstream
-# fix to make `sui start` resume a stable fullnode is proposed; until it
-# lands this re-sync is intrinsic to a localnet restart.)
+# stop`/`start` preserves it; `docker rm` destroys it. The pinned
+# sui-tools base carries the embedded-fullnode resume fix (#26884) and
+# the `--with-faucet` ctrl-c fix, so sui runs as PID 1 with native
+# signal handling — no signal-forwarding shim or fullnode-db prune.
 #
 # Slow checkpoint pruning. Localnet's stock fullnode.yaml ships with
 # `num-epochs-to-retain: 0`, which prunes checkpoints aggressively
@@ -33,66 +22,20 @@
 # epochs (~48–72h at the localnet's default 24h epoch); override via
 # the `DEVSTACK_SUI_EPOCHS_TO_RETAIN` env var (`MAX` disables pruning).
 #
-# Signal forwarding (clean shutdown). `sui start --with-faucet` has an
-# upstream signal-handling bug: `sui_commands.rs:1278`'s
-# `start_faucet(app_state).await?` blocks on `axum::serve(...).await`
-# BEFORE the post-setup health-check loop installs
-# `tokio::signal::ctrl_c()`. So when sui runs with `--with-faucet`, no
-# SIGINT handler is ever registered (verified via `/proc/1/status`
-# SigCgt = 0x100000440 vs 0x100000442 without `--with-faucet`) and
-# `docker stop` falls back to SIGKILL → exit 137 → RocksDB checkpoint
-# drain never runs → next `up` resumes from an inconsistent checkpoint
-# (observable as walrus storage-node "checkpoint X is below
-# lowest-available" errors after restart cycles).
-#
-# Workaround until the upstream fix lands: strip only `--with-faucet`
-# from sui's args and run the standalone `sui-faucet` binary as a
-# sibling. Other `sui start` flags, including `--with-graphql`, stay on
-# the validator process. Sui without `--with-faucet` reaches its
-# ctrl_c-aware loop and exits cleanly on SIGINT. The shell becomes PID
-# 1 instead of `exec sui` so it can trap docker's SIGTERM and forward
-# SIGINT to sui. The sibling sui-faucet is stateless; it is also nudged
-# via the shared trap and is force-killed after sui exits if still alive.
-#
-# GraphQL's embedded PostgreSQL indexer refuses to initialize as root,
-# so the entrypoint performs setup as PID 1/root and then starts Sui
-# plus sui-faucet as the unprivileged `devstack-sui` user. Build helper
-# containers override this entrypoint and still run as root.
-#
-# That embedded PostgreSQL can also leave `postmaster.pid` behind after
-# an ungraceful container exit or stale writable-layer reuse. PostgreSQL
-# treats that as an active server and aborts before GraphQL binds, so we
-# clear only provably-stale pid files before starting Sui.
-#
-# The trap + wait-loop lives in `/usr/local/lib/devstack/signal-forward.sh`,
-# vendored from `images/_shared/signal-forward.sh` at build time —
-# the seal key-server entrypoint sources the same file.
+# Indexer + GraphQL gate. sui-tools has no embedded Postgres, so GraphQL's
+# indexer reads from a separate DB. When `DEVSTACK_SUI_INDEXER_URL` (a
+# PostgreSQL DSN reaching the indexer DB via its in-network alias) is set,
+# the entrypoint appends `--with-graphql` + `--with-indexer=<dsn>`. The sui
+# plugin sets that var by DEFAULT (its owned postgres sidecar), so GraphQL
+# is on unless the caller opted out. Unset = RPC + faucet only.
 
 set -eu
 
-# shellcheck disable=SC1091
-. /usr/local/lib/devstack/signal-forward.sh
-
-SUI_USER="${DEVSTACK_SUI_USER:-devstack-sui}"
-SUI_HOME="${DEVSTACK_SUI_HOME:-/home/devstack-sui}"
-SUI_UID="$(id -u "$SUI_USER")"
-SUI_GID="$(id -g "$SUI_USER")"
-
+SUI_HOME="${DEVSTACK_SUI_HOME:-/root}"
 mkdir -p "$SUI_HOME/.sui"
-chown -R "$SUI_UID:$SUI_GID" "$SUI_HOME"
-
-run_as_sui() {
-	setpriv --reuid "$SUI_UID" --regid "$SUI_GID" --init-groups env HOME="$SUI_HOME" "$@"
-}
-
-STARTED_PID=""
-start_as_sui() {
-	setpriv --reuid "$SUI_UID" --regid "$SUI_GID" --init-groups env HOME="$SUI_HOME" "$@" &
-	STARTED_PID=$!
-}
 
 if [ ! -d "$SUI_HOME/.sui/sui_config" ]; then
-	run_as_sui sui genesis -f --with-faucet
+	sui genesis -f --with-faucet
 fi
 
 RETAIN_RAW="${DEVSTACK_SUI_EPOCHS_TO_RETAIN:-2}"
@@ -131,140 +74,9 @@ for config_file in "$SUI_HOME"/.sui/sui_config/*.yaml; do
 	patch_pruning_config "$config_file"
 done
 
-clear_stale_postgres_pid() {
-	indexer_dir="$SUI_HOME/.sui/sui_config/indexer"
-	pid_file="$indexer_dir/postmaster.pid"
-	[ -f "$pid_file" ] || return 0
-
-	pid="$(sed -n '1p' "$pid_file" 2>/dev/null || true)"
-	case "$pid" in
-		'' | *[!0-9]*)
-			rm -f "$pid_file"
-			return 0
-			;;
-	esac
-
-	if kill -0 "$pid" 2>/dev/null; then
-		return 0
-	fi
-
-	rm -f "$pid_file"
-}
-
-clear_stale_postgres_pid
-
-# Reclaim orphaned fullnode databases. Because `sui start` mints a fresh
-# fullnode keypair every boot (see header), the embedded fullnode lands on
-# a NEW full_node_db/<key>/ dir each time and re-syncs from genesis — it
-# never reuses a prior db. Left alone these accumulate one full (growing)
-# copy of the chain per boot (observed ~1.4GB over 16 restarts). The
-# validator/consensus dbs are keyed by the stable committee key and ARE
-# reused, so they are untouched. Removing the fullnode db tree before `sui
-# start` recreates it loses nothing (the fresh fullnode rebuilds it from
-# the validator regardless) and bounds disk to a single copy. Disk hygiene
-# only — it does NOT speed up the re-sync.
-rm -rf "$SUI_HOME/.sui/sui_config/full_node_db" 2>/dev/null || true
-
-# Strip `--with-faucet[=<addr>]` from sui's args and remember the bind
-# address. POSIX-sh argument shuffling: rebuild "$@" by collecting
-# everything that isn't the faucet flag, capturing the addr if any.
-FAUCET_BIND=""
-SUI_ARGV=""
-SUI_ARGV_COUNT=0
-SAVED_IFS=$IFS
-NL='
-'
-for arg in "$@"; do
-	case "$arg" in
-		--with-faucet=*)
-			FAUCET_BIND="${arg#--with-faucet=}"
-			;;
-		--with-faucet)
-			# Bare flag — use sui's documented localnet faucet default
-			# (0.0.0.0:9123). Devstack always passes the `=<addr>` form
-			# so this branch is belt-and-suspenders.
-			FAUCET_BIND="0.0.0.0:9123"
-			;;
-		*)
-			# Pack into SUI_ARGV using newline as separator (POSIX-sh has
-			# no real arrays). Restored via IFS=$NL below.
-			if [ "$SUI_ARGV_COUNT" -eq 0 ]; then
-				SUI_ARGV="$arg"
-			else
-				SUI_ARGV="$SUI_ARGV$NL$arg"
-			fi
-			SUI_ARGV_COUNT=$((SUI_ARGV_COUNT + 1))
-			;;
-	esac
-done
-
-# Re-expand SUI_ARGV into "$@" via IFS so sui sees args without
-# `--with-faucet`. Single-element case avoids an empty trailing arg.
-IFS=$NL
-# shellcheck disable=SC2086
-set -- $SUI_ARGV
-IFS=$SAVED_IFS
-
-# Start sui in the background. The shell stays PID 1 so it can trap
-# docker's SIGTERM and forward; sui becomes a direct child whose
-# SIGINT handler the kernel actually delivers (PID 1 ignores
-# undelivered signals; non-PID-1 children get them by default).
-start_as_sui sui "$@"
-SUI_PID=$STARTED_PID
-register_signal_forward "$SUI_PID"
-
-# Start sui-faucet as a sibling, scoped to the requested bind addr.
-# The faucet reads ~/.sui via `sui_config_dir()` and shares the wallet
-# config sui just generated above. Re-derives all in-memory state on
-# each start, so signal-induced termination is safe.
-FAUCET_PID=""
-if [ -n "$FAUCET_BIND" ]; then
-	FAUCET_HOST="${FAUCET_BIND%:*}"
-	FAUCET_PORT="${FAUCET_BIND##*:}"
-	# Wait for sui's gRPC to accept connections on 127.0.0.1:9000
-	# before starting the faucet — `LocalFaucet::new` does a wallet
-	# `get_reference_gas_price` against the RPC at construction time,
-	# and panics with `tcp connect error` if the port isn't accepting
-	# yet (`crates/sui-faucet/src/main.rs:25` is `.unwrap()`, no retry
-	# loop). curl exits 7 on connection refused; anything else
-	# (including gRPC's HTTP/2 garble) means the port is open.
-	for _ in $(seq 1 60); do
-		# Wrap curl in an `if` branch so its non-zero exit (7 = TCP
-		# refused, 28 = timeout — both common while sui is still
-		# binding) doesn't trip `set -e` and abort the entrypoint
-		# before sui even reaches its RPC bind. Anything OTHER than
-		# 7/28 means the TCP port accepted us → sui's gRPC is live
-		# enough for `LocalFaucet::new` to succeed.
-		if curl -s --max-time 2 --connect-timeout 1 -o /dev/null \
-			http://127.0.0.1:9000 2>/dev/null; then
-			break
-		else
-			RC=$?
-			if [ "$RC" != "7" ] && [ "$RC" != "28" ]; then
-				break
-			fi
-		fi
-		sleep 1
-	done
-	start_as_sui sui-faucet --host-ip "$FAUCET_HOST" --port "$FAUCET_PORT"
-	FAUCET_PID=$STARTED_PID
-	register_signal_forward "$FAUCET_PID"
+# Gate GraphQL + wire the external indexer DSN, if supplied.
+if [ -n "${DEVSTACK_SUI_INDEXER_URL:-}" ]; then
+	set -- "$@" --with-graphql=0.0.0.0:9125 --with-indexer="$DEVSTACK_SUI_INDEXER_URL"
 fi
 
-# Wait on sui — it's the primary. The shared helper handles dash's
-# "wait returns 128+signum on trapped signal even if child still
-# alive" quirk so we report sui's real exit code (and the container
-# actually waits for sui's checkpoint flush + RocksDB drain before
-# docker reaps it).
-SUI_EXIT=0
-wait_for_child "$SUI_PID" || SUI_EXIT=$?
-
-# Tear down the faucet if it's still alive (e.g. sui exited on its
-# own without the trap firing). SIGKILL because faucet ignores SIGINT
-# and we're already in the exit path.
-if [ -n "$FAUCET_PID" ]; then
-	kill -KILL "$FAUCET_PID" 2>/dev/null || true
-	wait "$FAUCET_PID" 2>/dev/null || true
-fi
-
-exit "$SUI_EXIT"
+exec sui "$@"

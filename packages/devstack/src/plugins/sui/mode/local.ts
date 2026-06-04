@@ -35,10 +35,17 @@
 // retrying on body-level `{Failure}` responses during the post-RPC /
 // pre-fund window.
 //
+// GraphQL indexer (on by default):
+//   - The sui-tools base ships no embedded Postgres, so `--with-graphql`
+//     reads from a separate DB. By default the sui plugin OWNS that DB as
+//     a postgres SIDECAR (provisioned in the barrel before this body
+//     runs); the caller can instead BYO a Postgres, or opt out entirely.
+//     Either way this body receives a resolved `{ url, network }`
+//     (`undefined` when indexer is off), attaches the validator to that
+//     network, and passes the DSN in via `DEVSTACK_SUI_INDEXER_URL` so
+//     the entrypoint appends `--with-graphql` + `--with-indexer=<dsn>`.
+//
 // What this body deliberately defers:
-//   - Postgres indexer sidecar — GraphQL is enabled by `sui start` and
-//     routed as a first-class endpoint, but no separate postgres
-//     lifecycle is supervised here.
 //   - Snapshot capture — the framework exists in the plugin's
 //     snapshot.ts; this body produces the running container that the
 //     orchestrator captures.
@@ -64,7 +71,7 @@ import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
-import { DEFAULT_SUI_CLI_VERSION, suiCliImageBuildContext } from '../move/index.ts';
+import { suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
@@ -89,26 +96,24 @@ import type { SuiLocalOptions } from './spec.ts';
 
 /** Default ready-probe timeout for localnet.
  *
- *  This budget covers TWO bands, because the ready-gate proves
- *  caught-up-to-head, not just RPC-bound:
+ *  The pinned sui-tools image carries the embedded-fullnode resume fix
+ *  (sui #26884), so BOTH the validator AND the embedded fullnode resume
+ *  from their persisted dbs on every `sui start` — there is no per-boot
+ *  genesis re-sync. (Pre-#26884, each `sui start` minted the fullnode a
+ *  fresh key + empty db and it re-synced the whole chain from seq=0 at
+ *  ~50x realtime; that band no longer exists.) So both bands satisfy the
+ *  catch-up gate almost immediately:
  *
- *    - cold boot — genesis + faucet bootstrap; nothing to re-sync, so the
- *      catch-up gate is satisfied almost immediately.
- *    - warm restart / snapshot restore — the VALIDATOR resumes from its
- *      persisted db instantly (stable committee key), but `sui start`
- *      mints the embedded FULLNODE a fresh keypair + db-path on every
- *      invocation (it never reuses the saved fullnode.yaml), so the
- *      fullnode — which serves this RPC — boots with an empty db and
- *      re-syncs the whole chain from genesis (~50x realtime; a multi-
- *      thousand-checkpoint chain takes 60-120s). The catch-up gate waits
- *      for that fullnode re-sync, not a validator replay. (Upstream fix
- *      proposed to make `sui start` resume a stable fullnode — see
- *      sui-swarm-config node_config_builder.rs; until then the re-sync is
- *      intrinsic to a localnet restart.)
+ *    - cold boot — genesis + faucet bootstrap; empty store, live cadence
+ *      from the first sample.
+ *    - warm restart / snapshot restore — both nodes resume from disk;
+ *      the head is already at the persisted tip, so it stabilizes at
+ *      once.
  *
- *  60s was a genesis-sized ceiling; it gives up mid-resync on a restore.
- *  180s covers the re-sync band with margin while still bounding a wedged
- *  boot (timeout → typed `rpc-probe` error). */
+ *  180s is therefore generous headroom, not a re-sync budget: the gate
+ *  satisfies in a couple of polls on a healthy boot, and the timeout only
+ *  bounds a genuinely wedged boot (RPC bound but head never stabilizing
+ *  → typed `rpc-probe` error). */
 export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
 // In-container ports the sui binary binds on. These match the router
@@ -132,6 +137,19 @@ export const LOCAL_VALIDATOR_STOP_GRACE_SECONDS = 30;
  *  about which probe wedged. */
 const PROBE_FETCH_TIMEOUT_MS = 3000;
 
+/** Role label for sui's owned GraphQL-indexer postgres sidecar. Shared
+ *  const so the container label (in `bootPostgresSidecar`'s caller) and
+ *  the snapshotable capture tuple agree exactly. */
+export const SUI_INDEXER_DB_ROLE = 'indexer-db' as const;
+
+/** Resolved indexer wiring for local mode. The URL is the PostgreSQL DSN
+ *  (sui-owned sidecar by default, or the caller's BYO DB); `network` is
+ *  the container network the validator joins to reach it. */
+export interface LocalIndexer {
+	readonly url: string;
+	readonly network: string;
+}
+
 /** Resolved local-mode boot artifacts. */
 export interface LocalModeBootResult {
 	readonly resolved: ResolvedSuiNetwork;
@@ -153,6 +171,7 @@ export const bootLocalMode = (
 	identity: Identity,
 	portBroker: PortBroker,
 	opts: SuiLocalOptions,
+	indexer: LocalIndexer | undefined,
 ): Effect.Effect<LocalModeBootResult, SuiPluginError | SuiConfigError, Scope.Scope> =>
 	Effect.gen(function* () {
 		// ----- 1. Resolve image ---------------------------------------------
@@ -175,7 +194,14 @@ export const bootLocalMode = (
 			labels,
 			containerName,
 			opts,
+			indexer,
 		);
+
+		// GraphQL is gated on a resolved indexer DB (on by default via the
+		// sui-owned sidecar; off when `indexer: false`). Without `indexer`
+		// the entrypoint omits `--with-graphql`, so we skip its routed URL +
+		// probe and resolve a graphql-less client.
+		const graphqlEnabled = indexer !== undefined;
 
 		// ----- 3. Ready probes ----------------------------------------------
 		const publishedPorts = resolvePublishedPortMapping(ports, handle.ports);
@@ -188,33 +214,36 @@ export const bootLocalMode = (
 			SUI_FAUCET_ENDPOINT_NAME,
 			SUI_FAUCET_ENTRYPOINT_PORT,
 		);
-		const graphqlUrl = yield* routedSuiUrl(
-			identity,
-			SUI_GRAPHQL_ENDPOINT_NAME,
-			SUI_GRAPHQL_ENTRYPOINT_PORT,
-		);
+		const graphqlUrl = graphqlEnabled
+			? yield* routedSuiUrl(identity, SUI_GRAPHQL_ENDPOINT_NAME, SUI_GRAPHQL_ENTRYPOINT_PORT)
+			: undefined;
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_LOCAL_READY_TIMEOUT;
 
-		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
-		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+		yield* setCurrentPluginPhase(
+			graphqlEnabled
+				? 'waiting for Sui RPC, faucet, and GraphQL'
+				: 'waiting for Sui RPC and faucet',
 		);
+		yield* waitForReady(
+			directRpcUrl,
+			directFaucetUrl,
+			graphqlEnabled ? directGraphqlUrl : undefined,
+			readyTimeout,
+		).pipe(Effect.annotateLogs({ [SuiSpans.container]: handle.name }));
 
-		// Caught-up-to-head gate. `waitForReady` only proves the RPC
-		// listener is BOUND. On a warm restart / snapshot restore the
-		// validator resumes from its persisted db instantly, but the
-		// embedded fullnode that serves this RPC gets a fresh key + empty
-		// db each `sui start` (see DEFAULT_LOCAL_READY_TIMEOUT) and
-		// re-syncs the chain from seq=0 (~50x realtime); during that
-		// re-sync it serves stale / not-yet-existent objects, so downstream
-		// deploy-verify probes that run before catch-up read their
-		// committed ids as not-found and spuriously re-deploy with fresh
-		// ids. Wait once here, per boot, until the checkpoint head
-		// stabilizes to live cadence — so every downstream verify runs
-		// against a fullnode that already serves the committed state. On a
-		// cold/genesis boot there is nothing to re-sync and this satisfies
-		// almost immediately.
-		yield* setCurrentPluginPhase('waiting for Sui checkpoint replay to catch up to head');
+		// Head-stabilization gate. `waitForReady` only proves the RPC
+		// listener is BOUND, not that it serves the committed head. With the
+		// #26884 resume fix both the validator and the embedded fullnode
+		// resume from their persisted dbs (see DEFAULT_LOCAL_READY_TIMEOUT),
+		// so there is no genesis re-sync — this gate is now a FAST safety
+		// check, not a long wait: it polls the checkpoint head until it
+		// stabilizes to live cadence, satisfying in a couple of polls on both
+		// warm-restart and cold boot. Kept because it is cheap and closes a
+		// real correctness window: it guarantees the RPC serves the persisted
+		// head BEFORE downstream deploy-verify probes read object ids —
+		// without it a probe firing into a still-settling head could read a
+		// committed id as not-found and spuriously re-deploy with fresh ids.
+		yield* setCurrentPluginPhase('waiting for Sui checkpoint head to stabilize');
 		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
@@ -243,13 +272,13 @@ export const bootLocalMode = (
 			rpcUrl,
 			faucetUrl,
 			fundingFaucetUrl: directFaucetUrl,
-			graphqlUrl,
+			...(graphqlUrl !== undefined ? { graphqlUrl } : {}),
 			waitForTransactionsReady,
 			buildImage: image,
 			hostGateway: {
 				rpcUrl: toDockerHostGatewayUrl(directRpcUrl),
 				faucetUrl: toDockerHostGatewayUrl(directFaucetUrl),
-				graphqlUrl: toDockerHostGatewayUrl(directGraphqlUrl),
+				graphqlUrl: graphqlEnabled ? toDockerHostGatewayUrl(directGraphqlUrl) : null,
 			},
 		});
 		const resolved = makeResolvedNetwork({
@@ -257,7 +286,7 @@ export const bootLocalMode = (
 			chain,
 			rpc: rpcUrl,
 			faucet: faucetUrl,
-			graphql: graphqlUrl,
+			...(graphqlUrl !== undefined ? { graphql: graphqlUrl } : {}),
 			source: 'default',
 		});
 		return {
@@ -300,22 +329,22 @@ export const resolveImage = (
 					),
 				);
 		}
-		const version = opts.version ?? DEFAULT_SUI_CLI_VERSION;
 		const owner = {
 			app: identity.app,
 			stack: identity.stack,
 			plugin: 'sui',
 			role: 'validator',
 		} as const;
+		const vendored = suiCliImageBuildContext();
 		const buildCtx =
 			opts.image && 'build' in opts.image
 				? {
 						contextPath: opts.image.build.context,
 						dockerfile: opts.image.build.dockerfile ?? 'Dockerfile',
-						buildArgs: { SUI_VERSION: version },
+						buildArgs: vendored.buildArgs,
 						owner,
 					}
-				: { ...suiCliImageBuildContext(version), owner };
+				: { ...vendored, owner };
 		return yield* runtime
 			.ensureImage(buildCtx)
 			.pipe(
@@ -346,6 +375,7 @@ export const ensureLocalValidatorContainer = (
 	labels: ContainerLabelTuple,
 	containerName: string,
 	opts: SuiLocalOptions,
+	indexer: LocalIndexer | undefined,
 ): Effect.Effect<LocalValidatorContainerResult, SuiPluginError, Scope.Scope> =>
 	Effect.gen(function* () {
 		const reusablePorts =
@@ -360,6 +390,7 @@ export const ensureLocalValidatorContainer = (
 				labels,
 				containerName,
 				opts,
+				indexer,
 				ports: reusablePorts,
 				attempt: 0,
 				reconciliation: 'adopt-existing',
@@ -372,6 +403,7 @@ export const ensureLocalValidatorContainer = (
 			labels,
 			containerName,
 			opts,
+			indexer,
 			attempt: 0,
 			reconciliation: opts.ports ? 'exact' : 'adopt-existing',
 		});
@@ -384,6 +416,7 @@ interface EnsureLocalValidatorContainerBase {
 	readonly labels: ContainerLabelTuple;
 	readonly containerName: string;
 	readonly opts: SuiLocalOptions;
+	readonly indexer: LocalIndexer | undefined;
 }
 
 const ensureLocalValidatorContainerWithFreshPorts = (
@@ -420,11 +453,27 @@ const ensureLocalValidatorContainerAttempt = (
 			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
 			// `on-failure` routes that stale layer to recreate while still
 			// warm-resuming normal exit 0 / 130 stops. The longer grace
-			// gives the entrypoint's SIGINT forwarding time to drain.
+			// gives the entrypoint time to flush RocksDB on stop.
 			recreate: 'on-failure',
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
+			// Indexer (when on): join the indexer DB's network + hand the
+			// entrypoint the DSN so it enables `--with-graphql` against it
+			// (sui-owned sidecar by default, or a BYO DB). Omitted = RPC +
+			// faucet only.
+			//
+			// The DSN is a credentialed env var, so it (and the sidecar's
+			// POSTGRES_PASSWORD) bakes into the `docker commit` snapshot
+			// image. Deliberate and accepted: the password is a deterministic
+			// localnet credential (derived per app/stack/stackRoot) with no
+			// production exposure.
+			...(params.indexer !== undefined
+				? {
+						networkAttach: [params.indexer.network],
+						env: { DEVSTACK_SUI_INDEXER_URL: params.indexer.url },
+					}
+				: {}),
 		},
 		mapError: (cause) => cause,
 	}).pipe(
@@ -610,13 +659,14 @@ const allocatePort = (
 // Ready-probe coordination
 // ---------------------------------------------------------------------------
 
-/** Coordinated readiness gate. Both RPC + faucet must respond within
- *  the outer deadline; each probe has its own per-fetch deadline so a
+/** Coordinated readiness gate. RPC + faucet must respond within the
+ *  outer deadline; GraphQL is probed only when enabled (gated on the
+ *  external indexer). Each probe has its own per-fetch deadline so a
  *  wedged endpoint surfaces by name. */
 const waitForReady = (
 	rpcUrl: string,
 	faucetUrl: string,
-	graphqlUrl: string,
+	graphqlUrl: string | undefined,
 	readyTimeout: Duration.Duration,
 ): Effect.Effect<void, SuiPluginError> =>
 	Effect.gen(function* () {
@@ -676,26 +726,31 @@ const waitForReady = (
 			Effect.withSpan('devstack.plugin.sui.local.probe.faucet'),
 		);
 
-		const graphqlProbe: Effect.Effect<void, SuiPluginError> = waitForHttpEndpoint({
-			endpoint: graphqlUrl,
-			timeoutMs: readyTimeoutMs,
-			intervalMs: 1_000,
-			requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
-			validate: (response) => response.status < 500,
-		}).pipe(
-			Effect.mapError(
-				(cause): SuiPluginError =>
-					suiPluginError(
-						'graphql-probe',
-						`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
-							`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
-						cause,
-					),
-			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
-		);
+		const graphqlProbe: ReadonlyArray<Effect.Effect<void, SuiPluginError>> =
+			graphqlUrl === undefined
+				? []
+				: [
+						waitForHttpEndpoint({
+							endpoint: graphqlUrl,
+							timeoutMs: readyTimeoutMs,
+							intervalMs: 1_000,
+							requestTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+							validate: (response) => response.status < 500,
+						}).pipe(
+							Effect.mapError(
+								(cause): SuiPluginError =>
+									suiPluginError(
+										'graphql-probe',
+										`sui local mode: GraphQL endpoint ${graphqlUrl} did not become ready within ` +
+											`${readyTimeoutMs}ms: ${formatUnknownError(cause)}`,
+										cause,
+									),
+							),
+							Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
+						),
+					];
 
-		yield* Effect.all([rpcProbe, faucetProbe, graphqlProbe], { concurrency: 'unbounded' }).pipe(
+		yield* Effect.all([rpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
 			Effect.asVoid,
 		);
 	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));
@@ -704,10 +759,10 @@ const waitForReady = (
 // Caught-up-to-head gate
 // ---------------------------------------------------------------------------
 
-/** Poll interval for the checkpoint catch-up gate. Replay runs ~50x
- *  realtime (hundreds of checkpoints per second); a 1s interval samples
- *  a large enough window to tell replay cadence (hundreds/poll) apart
- *  from live cadence (a handful/poll). */
+/** Poll interval for the head-stabilization gate. With the #26884 resume
+ *  fix there is no routine re-sync, but a 1s interval still samples a wide
+ *  enough window to tell any transient fast burst (hundreds/poll) apart
+ *  from live cadence (a handful/poll) before declaring the head stable. */
 const CATCH_UP_POLL_INTERVAL_MS = 1_000;
 
 /** Per-poll delta at or below which the head is considered to be moving
@@ -830,15 +885,17 @@ export const makeCatchUpEvaluator = (opts?: {
 	};
 };
 
-/** Caught-up-to-head gate.
+/** Head-stabilization gate.
  *
- *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the
- *  validator as caught up once the per-poll delta drops from the fast
- *  replay rate (hundreds/poll) to live cadence (`<= CATCH_UP_LIVE_
+ *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the head as
+ *  stable once the per-poll delta is at live cadence (`<= CATCH_UP_LIVE_
  *  CADENCE_DELTA`/poll) and HOLDS there for `CATCH_UP_STABLE_POLLS_
- *  REQUIRED` consecutive polls. Cold/genesis boots satisfy this almost
- *  immediately (the store is empty, so deltas are live-cadence from the
- *  first sample); warm/restore boots wait out the whole replay.
+ *  REQUIRED` consecutive polls. With the #26884 resume fix both nodes
+ *  resume from disk, so there is no genesis re-sync to wait out: cold and
+ *  warm/restore boots alike are at live cadence from the first samples
+ *  and satisfy in a couple of polls. The fast-replay reset branch in the
+ *  evaluator is retained as a cheap guard for any transient burst rather
+ *  than a routine restart band.
  *
  *  A wedged boot (RPC bound but head never stabilizing) lapses the outer
  *  deadline → typed `rpc-probe` error rather than hanging forever. */
@@ -867,10 +924,11 @@ const waitForCheckpointCatchUp = (
 				(cause): SuiPluginError =>
 					suiPluginError(
 						'rpc-probe',
-						`sui local mode: validator did not catch up to checkpoint head within ` +
-							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). The checkpoint replay ` +
-							`(warm restart / snapshot restore re-executes the committed store from seq=0) ` +
-							`never stabilized to live cadence: ${formatUnknownError(cause)}`,
+						`sui local mode: checkpoint head did not stabilize within ` +
+							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). With the #26884 ` +
+							`resume fix both nodes resume from disk, so the head should reach live cadence ` +
+							`almost immediately; a stall here points to a wedged boot, not a re-sync: ` +
+							`${formatUnknownError(cause)}`,
 						cause,
 					),
 			),

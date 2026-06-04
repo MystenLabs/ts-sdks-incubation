@@ -48,8 +48,11 @@ import { makeSnapshotable } from './snapshot.ts';
 // Resource identity
 // ---------------------------------------------------------------------------
 
-/** The Postgres plugin's resource identity. */
+/** The Postgres plugin's resource identity. Used internally by the
+ *  factory below; postgres is a topological leaf with no cross-plugin
+ *  dependents (sui owns its indexer DB as a sidecar, not a `dependsOn`). */
 const postgresResource = resource<'postgres', Postgres>('postgres');
+
 const postgresErrorContributions = pluginErrorContributions(POSTGRES_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
@@ -176,6 +179,10 @@ export { POSTGRES_TCP_ENDPOINT_NAME } from './routable.ts';
 // ---------------------------------------------------------------------------
 
 export type { Postgres, PostgresServiceOptions } from './service.ts';
+// Sidecar boot seam — consumed by the sui plugin, which OWNS its
+// GraphQL-indexer postgres container as a sidecar rather than depending
+// on a user-declared `postgres(...)`.
+export { bootPostgresSidecar } from './service.ts';
 export type { PostgresConnectionBindings, PostgresConnectionParts } from './connection.ts';
 export type {
 	PostgresError,
