@@ -7,7 +7,7 @@
 // now exist purely as a shared logging vocabulary.)
 
 /** Canonical log-attribute keys. Engine-dimensional + http/process generic. */
-export const SpanAttr = {
+export const LogAttr = {
 	app: 'devstack.app',
 	stack: 'devstack.stack',
 	network: 'devstack.network',

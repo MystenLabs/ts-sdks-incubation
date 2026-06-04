@@ -12,7 +12,7 @@ import {
 import {
 	observeProcessLines,
 	readableToByteStream,
-	SpanAttr,
+	LogAttr,
 	type LoggerShape,
 } from '../../substrate/runtime/observability/index.ts';
 import { waitForHttpEndpoint } from '../../substrate/runtime/http-probe.ts';
@@ -385,7 +385,7 @@ const terminateChild = (
 			logger.log(tag, pluginKey, {
 				level: 'warn',
 				message: 'host service did not exit after SIGTERM; sending SIGKILL',
-				fields: { [SpanAttr.event]: 'process.shutdown.escalated' },
+				fields: { [LogAttr.event]: 'process.shutdown.escalated' },
 			}),
 	});
 
@@ -576,8 +576,8 @@ const startHostProcess = (
 				message:
 					'host service readiness pattern has a nested-quantifier shape that may exhibit catastrophic backtracking on adversarial output; prefer anchored, non-nested patterns',
 				fields: {
-					[SpanAttr.serviceName]: options.serviceName,
-					[SpanAttr.event]: 'host-service.ready-pattern.redos-warning',
+					[LogAttr.serviceName]: options.serviceName,
+					[LogAttr.event]: 'host-service.ready-pattern.redos-warning',
 					// Namespaced diagnostic field (the offending pattern source),
 					// consistent with the `event` name above. A bare `pattern`
 					// key collides with the generic attribute vocabulary.
@@ -678,7 +678,7 @@ const startHostProcess = (
 						logger: ctx.logger,
 						pluginKey: ctx.pluginKey,
 						tag,
-						fields: { [SpanAttr.serviceName]: options.serviceName },
+						fields: { [LogAttr.serviceName]: options.serviceName },
 						onLine: ({ line, stream }) =>
 							Effect.sync(() => {
 								observeReadinessLine(line, stream);
@@ -774,11 +774,11 @@ const startHostProcess = (
 								level: 'error',
 								message: 'host service exited after readiness',
 								fields: {
-									[SpanAttr.event]: 'process.exited',
-									[SpanAttr.serviceName]: options.serviceName,
-									[SpanAttr.exitCode]: status.code,
-									[SpanAttr.exitSignal]: status.signal,
-									[SpanAttr.exitStatus]: describeProcessExitStatus(status),
+									[LogAttr.event]: 'process.exited',
+									[LogAttr.serviceName]: options.serviceName,
+									[LogAttr.exitCode]: status.code,
+									[LogAttr.exitSignal]: status.signal,
+									[LogAttr.exitStatus]: describeProcessExitStatus(status),
 								},
 							}),
 				),
@@ -793,9 +793,9 @@ const startHostProcess = (
 								level: 'error',
 								message: 'host service process emitted an error after readiness',
 								fields: {
-									[SpanAttr.event]: 'process.error',
-									[SpanAttr.serviceName]: options.serviceName,
-									[SpanAttr.errorCause]: cause,
+									[LogAttr.event]: 'process.error',
+									[LogAttr.serviceName]: options.serviceName,
+									[LogAttr.errorCause]: cause,
 								},
 							}),
 				),

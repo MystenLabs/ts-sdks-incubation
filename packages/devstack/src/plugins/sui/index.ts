@@ -634,7 +634,7 @@ export {
 	type ForkLockHolder,
 } from './fork-orchestration.ts';
 export type { SuiProbeKey, SuiSdkShim } from './chain-probe.ts';
-export { SuiSpans } from './spans.ts';
+export { SuiLogAttr } from './log-attrs.ts';
 
 /** The shape `Transaction.build({ client })` and every `sdk.core.*` call
  *  accepts. Re-exported from `@mysten/sui/client` so callers cast

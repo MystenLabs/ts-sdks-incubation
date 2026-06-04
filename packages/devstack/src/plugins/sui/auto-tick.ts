@@ -14,10 +14,10 @@
 
 import { Effect, Schedule, type Scope } from 'effect';
 
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 import { suiConfigError } from './errors.ts';
 import type { SuiConfigError, SuiPluginError } from './errors.ts';
-import { SuiSpans } from './spans.ts';
+import { SuiLogAttr } from './log-attrs.ts';
 
 /** Public knob shape mirroring the user-facing API. */
 export type AutoTickOption = boolean | { readonly intervalMs: number };
@@ -72,9 +72,9 @@ export const runAutoTickClock = (
 			Effect.catch((err) =>
 				Effect.logWarning('sui auto-tick advance failed; next tick will retry').pipe(
 					Effect.annotateLogs({
-						[SuiSpans.autoTickIntervalMs]: intervalMs,
-						[SpanAttr.phase]: err.phase,
-						[SpanAttr.errorMessage]: err.message,
+						[SuiLogAttr.autoTickIntervalMs]: intervalMs,
+						[LogAttr.phase]: err.phase,
+						[LogAttr.errorMessage]: err.message,
 					}),
 				),
 			),

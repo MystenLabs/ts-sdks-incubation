@@ -74,7 +74,7 @@ import { suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
-import { SuiSpans } from '../spans.ts';
+import { SuiLogAttr } from '../log-attrs.ts';
 import {
 	SUI_FAUCET_ENTRYPOINT_PORT,
 	SUI_FAUCET_ENDPOINT_NAME,
@@ -242,7 +242,7 @@ export const bootLocalMode = (
 			directFaucetUrl,
 			graphqlEnabled ? directGraphqlUrl : undefined,
 			readyTimeout,
-		).pipe(Effect.annotateLogs({ [SuiSpans.container]: handle.name }));
+		).pipe(Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }));
 
 		// Head-stabilization gate. `waitForReady` only proves the RPC
 		// listener is BOUND, not that it serves the committed head. With the
@@ -258,7 +258,7 @@ export const bootLocalMode = (
 		// committed id as not-found and spuriously re-deploy with fresh ids.
 		yield* setCurrentPluginPhase('waiting for Sui checkpoint head to stabilize');
 		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
 
 		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });

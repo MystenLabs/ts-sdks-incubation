@@ -20,7 +20,7 @@ import {
 } from '../../substrate/runtime/cross-process/index.ts';
 import { selfPid } from '../../substrate/runtime/cross-process/self-pid.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../substrate/versioned-doc-sync.ts';
 import {
 	forkUnsupportedError,
@@ -294,8 +294,8 @@ export const acquireForkDataDirHolder = (
 			Effect.catch((err) =>
 				Effect.logWarning('sui fork data-dir holder heartbeat failed; next tick will retry').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.phase]: err.phase,
-						[SpanAttr.errorMessage]: err.message,
+						[LogAttr.phase]: err.phase,
+						[LogAttr.errorMessage]: err.message,
 					}),
 				),
 			),

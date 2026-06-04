@@ -31,7 +31,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import type { AccountValue } from '../account/index.ts';
@@ -148,8 +148,8 @@ export const startHttpServer = (
 
 		yield* Effect.logInfo('wallet HTTP server listening').pipe(
 			Effect.annotateLogs({
-				[SpanAttr.host]: config.bindAddress,
-				[SpanAttr.port]: config.port,
+				[LogAttr.host]: config.bindAddress,
+				[LogAttr.port]: config.port,
 			}),
 		);
 
@@ -396,9 +396,9 @@ export const dispatch = (
 			// Log the BEARER-VALIDITY only, never the token itself.
 			yield* Effect.logWarning('wallet origin missing').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.requestId]: requestId,
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return text(403, 'Origin header required');
@@ -406,10 +406,10 @@ export const dispatch = (
 		if (originResult === 'forbidden') {
 			yield* Effect.logWarning('wallet origin forbidden').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
+					[LogAttr.requestId]: requestId,
 					'wallet.origin': req.headers.origin ?? '(missing)',
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return text(403, 'forbidden origin');
@@ -423,10 +423,10 @@ export const dispatch = (
 		if (!bearerValid) {
 			yield* Effect.logWarning('wallet bearer check failed').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
+					[LogAttr.requestId]: requestId,
 					'wallet.auth.bearerValid': bearerValid,
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return errorEnvelope(

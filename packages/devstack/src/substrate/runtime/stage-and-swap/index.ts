@@ -29,7 +29,7 @@ import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import { Effect, FileSystem, Schema } from 'effect';
 
 import { acquireStackLock } from '../cross-process/stack-lock.ts';
-import { SpanAttr } from '../observability/spans.ts';
+import { LogAttr } from '../observability/log-attrs.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -144,9 +144,9 @@ const restoreBackupRename = (args: {
 			Effect.catch((cause) =>
 				Effect.logWarning('stage-and-swap rollback-backup restore did not complete').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.stageAndSwapTargetPath]: args.targetPath,
-						[SpanAttr.stageAndSwapStagingPath]: args.stagingPath,
-						[SpanAttr.errorCode]: errnoCode(cause) ?? 'unknown',
+						[LogAttr.stageAndSwapTargetPath]: args.targetPath,
+						[LogAttr.stageAndSwapStagingPath]: args.stagingPath,
+						[LogAttr.errorCode]: errnoCode(cause) ?? 'unknown',
 					}),
 				),
 			),
@@ -365,9 +365,9 @@ export const stageAndSwap = <A, E>(
 							return Effect.gen(function* () {
 								yield* Effect.logWarning('stage-and-swap cross-filesystem fallback').pipe(
 									Effect.annotateLogs({
-										[SpanAttr.stageAndSwapTargetPath]: targetPath,
-										[SpanAttr.stageAndSwapStagingPath]: stagingPath,
-										[SpanAttr.errorCode]: 'EXDEV',
+										[LogAttr.stageAndSwapTargetPath]: targetPath,
+										[LogAttr.stageAndSwapStagingPath]: stagingPath,
+										[LogAttr.errorCode]: 'EXDEV',
 									}),
 								);
 								yield* fs.copy(stagingPath, targetPath, { overwrite: false }).pipe(

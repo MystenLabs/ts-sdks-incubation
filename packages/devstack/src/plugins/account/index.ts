@@ -50,7 +50,7 @@ import { definePlugin, resource, type AnyResourceRef } from '../../api/define-pl
 import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { suiResource, SuiSpans } from '../sui/index.ts';
+import { suiResource, SuiLogAttr } from '../sui/index.ts';
 
 import { makeAccountCodegen } from './codegen.ts';
 import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
@@ -320,7 +320,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 								'account.name': name,
 								'account.funding.from': 'faucet',
 								'account.funding.to': 'pay-from-seed-via-impersonate',
-								[SuiSpans.mode]: 'fork',
+								[SuiLogAttr.mode]: 'fork',
 							}),
 						),
 					projectedFunding,

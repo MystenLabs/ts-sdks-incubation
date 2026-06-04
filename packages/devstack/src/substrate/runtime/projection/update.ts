@@ -34,7 +34,7 @@ import type {
 	SubscribableState,
 } from '../../projection.ts';
 import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
-import { SpanAttr } from '../observability/spans.ts';
+import { LogAttr } from '../observability/log-attrs.ts';
 import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
 
 // -----------------------------------------------------------------------------
@@ -327,7 +327,7 @@ export const updateRef = (
 						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
 					).pipe(
 						Effect.annotateLogs({
-							[SpanAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
+							[LogAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
 						}),
 					);
 				}

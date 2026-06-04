@@ -92,7 +92,7 @@ const ALLOWED_FILES: ReadonlyArray<{
 	{
 		// `host: 'server.address'` is the OTEL semantic convention
 		// constant, not the host-service plugin name.
-		path: 'src/substrate/runtime/observability/spans.ts',
+		path: 'src/substrate/runtime/observability/log-attrs.ts',
 		reason: 'OTEL "server.address" key alias (network-host), not host-service plugin.',
 	},
 	{

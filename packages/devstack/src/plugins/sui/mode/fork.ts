@@ -32,7 +32,7 @@ import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
-import { SuiSpans } from '../spans.ts';
+import { SuiLogAttr } from '../log-attrs.ts';
 import { acquireForkDataDirHolder, wrapWithForkGuard } from '../fork-orchestration.ts';
 import {
 	FORK_IMPERSONATION_GAS_BUDGET,
@@ -203,7 +203,7 @@ export const bootForkMode = (
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_FORK_READY_TIMEOUT;
 
 		const status = yield* waitForForkReady(sdkClient, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
 		const chain = yield* sharedFetchChainId(sdkClient);
 

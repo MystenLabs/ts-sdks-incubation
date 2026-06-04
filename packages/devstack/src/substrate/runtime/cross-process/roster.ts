@@ -19,7 +19,7 @@ import {
 	type RosterHolder,
 	type RosterSweepPolicy,
 } from '../../cross-process.ts';
-import { SpanAttr } from '../observability/spans.ts';
+import { LogAttr } from '../observability/log-attrs.ts';
 import { versionedDocSchema } from '../../versioned-doc-schema.ts';
 import { readVersionedDocumentSync, writeVersionedDocumentSync } from '../../versioned-doc-sync.ts';
 import { selfPid } from './self-pid.ts';
@@ -366,8 +366,8 @@ export const heartbeatFiber = (
 				Effect.catch((err) =>
 					Effect.logWarning('roster heartbeat failed').pipe(
 						Effect.annotateLogs({
-							[SpanAttr.rosterHeartbeatIntervalMs]: intervalMillis,
-							[SpanAttr.errorCause]: String(err),
+							[LogAttr.rosterHeartbeatIntervalMs]: intervalMillis,
+							[LogAttr.errorCause]: String(err),
 						}),
 					),
 				),
