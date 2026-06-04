@@ -34,7 +34,7 @@ import { Effect } from 'effect';
 import { readStackEngine } from '../../../src/api/define-devstack.ts';
 import type { Stack } from '../../../src/index.ts';
 import { runBoot } from '../boot-config-impl.ts';
-import { makeEnv, type ProbeEnv } from './clients.ts';
+import { makeEnv, suiClientOf, type ProbeEnv } from './clients.ts';
 import { restoreSnapshotOffline } from './offline-restore.ts';
 
 export interface Probe<H = unknown> {
@@ -124,10 +124,23 @@ export const runMatrix = async (params: {
 				yield* Effect.sleep('3 seconds');
 				yield* Effect.orDie(ctx.snapshot.capture(params.snapshotId));
 				console.log(`[snapshot-matrix] captured snapshot ${params.snapshotId}`);
+				// The capture bounce hard-rms + recreates every container (the
+				// graceful-stop flush — NOT a survivable `docker pause`), recreating
+				// the sui validator as a NEW process. Swap in the FRESH sui client
+				// (`ctx.snapshot.capture` refreshed `ctx.resolvedValues` from the
+				// post-resume registry) so a host-port change across the recreate
+				// can't leave the probe calling a dead endpoint. The OTHER resolved
+				// values are deliberately KEPT from the pre-capture `env`: the
+				// actor was funded BEFORE the snapshot, and that funding (incl. its
+				// WAL coin of the PRE-capture `walCoinType`) lives in the committed
+				// chain state the resume boots on — re-reading walrus's post-resume
+				// resolved value would pick up a re-minted WAL coin type the actor
+				// holds zero of, breaking the storage-payment the blob write needs.
+				const envAfter: ProbeEnv = { ...env, suiClient: suiClientOf(ctx) };
 				for (const p of params.probes) {
-					const h2 = yield* Effect.promise(() => p.createState(env, 'S2'));
+					const h2 = yield* Effect.promise(() => p.createState(envAfter, 'S2'));
 					s2.set(p.name, h2);
-					const e2 = yield* Effect.promise(() => p.exists(env, h2));
+					const e2 = yield* Effect.promise(() => p.exists(envAfter, h2));
 					console.log(`[snapshot-matrix] ${p.name} S2 created, exists=${e2}`);
 					const prev = created.get(p.name)!;
 					created.set(p.name, { s1: prev.s1, s2: e2 });

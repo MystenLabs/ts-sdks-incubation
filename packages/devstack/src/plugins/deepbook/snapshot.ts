@@ -24,7 +24,6 @@ export const makeLocalSnapshotable = (inputs: { readonly name: string }): Snapsh
 	kind: 'snapshotable',
 	subtrees: [`deepbook/${inputs.name}`],
 	managedContainers: [],
-	quiesce: Effect.void,
 	preRestore: Effect.succeed({ kind: 'deepbook' as const, name: inputs.name }),
 	postRestore: Effect.void,
 	missingTolerance: 'fine',

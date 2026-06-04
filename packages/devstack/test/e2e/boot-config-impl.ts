@@ -85,6 +85,7 @@ import {
 	supervise,
 	type SupervisedStack,
 } from '../../src/substrate/runtime/index.ts';
+import { readResolvedSync } from '../../src/substrate/runtime/lifecycle/index.ts';
 import {
 	buildProductionContributionDispatcher,
 	extendBuiltInPluginContext,
@@ -379,18 +380,52 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 		const provideFileSystem = <A, E>(
 			effect: Effect.Effect<A, E, FileSystem.FileSystem>,
 		): Effect.Effect<A, E, never> => effect.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+		// Live-supervisor RESUME for the snapshot bounce. Capture/restore run
+		// the bounce (gather → stop → commit/load → retag → hard-rm); the resume
+		// (recreate + wait-write-ready) is a stack restart whose converge re-runs
+		// each plugin's acquire — including walrus's write-ready ready-gate. The
+		// handle is set after `supervise()` below; the facade reads it lazily so
+		// the captured stack comes back write-ready before the probe writes S2.
+		let resumeStack: Effect.Effect<void, unknown, never> = Effect.void;
+		// Refresh the resolved-value map handed to `withinScope` AFTER a
+		// capture/restore resume. The STEP-2 bounce hard-rms + recreates every
+		// managed container (graceful-stop flush — NEVER `docker pause`, which
+		// walrus storage nodes can't survive), so the recreate yields a NEW
+		// resolved value per plugin (e.g. a fresh `SuiGrpcClient` whose channel
+		// targets the recreated validator). A consumer that kept the PRE-bounce
+		// resolved value would call a dead gRPC channel and see `fetch failed`
+		// on its first post-resume RPC. The resume re-acquire repopulates the
+		// registry's live resolved map, so re-reading it here and mutating the
+		// shared `withinScope` map IN PLACE lets probes rebuild against the
+		// fresh, write-ready stack. Assigned once `supervise()` + the map exist.
+		let refreshResolvedValues: Effect.Effect<void> = Effect.void;
 		const snapshotFacade: BootSnapshotFacade = {
 			capture: (id) =>
 				Effect.gen(function* () {
 					yield* fs.makeDirectory(stackPaths.stackRoot, { recursive: true });
-					return yield* provideFileSystem(snapshot.capture({ id }));
+					const meta = yield* provideFileSystem(
+						snapshot.capture({ id, resume: Effect.orDie(resumeStack) }),
+					);
+					yield* refreshResolvedValues;
+					return meta;
 				}),
 			captureMetadata: (id) =>
 				Effect.gen(function* () {
 					yield* fs.makeDirectory(stackPaths.stackRoot, { recursive: true });
-					return yield* provideFileSystem(snapshot.capture({ id }));
+					const meta = yield* provideFileSystem(
+						snapshot.capture({ id, resume: Effect.orDie(resumeStack) }),
+					);
+					yield* refreshResolvedValues;
+					return meta;
 				}),
-			restore: (id) => provideFileSystem(snapshot.restore({ id })),
+			restore: (id) =>
+				Effect.gen(function* () {
+					const meta = yield* provideFileSystem(
+						snapshot.restore({ id, resume: Effect.orDie(resumeStack) }),
+					);
+					yield* refreshResolvedValues;
+					return meta;
+				}),
 			list: provideFileSystem(snapshot.list),
 		};
 
@@ -412,6 +447,12 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 					builtInPluginContext,
 					contributionDispatcher,
 				);
+				// Wire the snapshot-bounce resume to a stack restart (drain ∘
+				// converge): after the bounce hard-rms the captured/restored
+				// containers, the converge recreates them from the retagged images
+				// and blocks on each plugin's ready-gate (walrus = write-ready), so
+				// the post-capture probe writes against a write-ready committee.
+				resumeStack = handle.runCommand({ tag: 'stack.restart' });
 
 				const readyKeys: string[] = [];
 				const failures: Array<{ key: string; cause: string }> = [];
@@ -425,6 +466,19 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 						readyValues.set(key as string, exit.value);
 					}
 				}
+				// After a capture/restore resume the bounce recreated every
+				// container, so each plugin's live resolved value (held in the
+				// registry's resolved map, refreshed on the re-acquire's markReady)
+				// is NEW. Re-read it into the shared `readyValues` map IN PLACE so
+				// `withinScope` consumers that rebuild their env (the matrix probes
+				// rebuild `makeEnv` post-capture) pick up the fresh, write-ready
+				// clients instead of the dead pre-bounce ones.
+				refreshResolvedValues = Effect.gen(function* () {
+					for (const [key] of handle.graph.nodes) {
+						const fresh = readResolvedSync(handle.registry, key);
+						if (fresh !== undefined) readyValues.set(key as string, fresh);
+					}
+				});
 
 				let digest: string | null = null;
 				let createdObjectCount: number | null = null;

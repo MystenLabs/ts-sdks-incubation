@@ -44,10 +44,7 @@ import {
 	layerBuiltInPluginRuntime,
 	superviseStackEffect,
 } from '../../orchestrators/boot.ts';
-import {
-	captureSnapshot,
-	SnapshotOrchestratorService,
-} from '../../orchestrators/snapshot/index.ts';
+import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -98,30 +95,17 @@ const makeSnapshotCommandHandler = (params: {
 	readonly fs: FileSystem.FileSystem;
 	readonly runtimeRoot: string;
 }): SupervisorCommandHandler => {
-	return (cmd, handlerCtx) => {
+	return (cmd) => {
 		switch (cmd.tag) {
 			case 'snapshot.capture':
-				return captureSnapshot({
-					snapshotId: cmd.snapshotId,
-					name: cmd.name,
-					onProgress: (progress) =>
-						handlerCtx.publish({
-							tag: 'snapshot.captureProgress',
-							...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
-							...(cmd.name === undefined ? {} : { name: cmd.name }),
-							phase: progress.phase,
-							...(progress.detail === undefined ? {} : { detail: progress.detail }),
-							...(progress.pausedContainers === undefined
-								? {}
-								: { pausedContainers: progress.pausedContainers }),
-							...(progress.totalContainers === undefined
-								? {}
-								: { totalContainers: progress.totalContainers }),
-							at: Date.now(),
-						}),
-				}).pipe(
-					Effect.provideService(SnapshotOrchestratorService, params.snapshot),
-					Effect.provideService(FileSystem.FileSystem, params.fs),
+				// The L3 capture is the bounce's gather → stop → commit → retag
+				// → hard-rm half; the RESUME (recreate + wait-write-ready) is the
+				// command-loop's converge after this handler succeeds (it owns the
+				// graph), mirroring restore. So no `resume` is injected here.
+				return provideFileSystem(
+					params.fs,
+					params.snapshot.capture({ id: cmd.snapshotId, ...(cmd.name === undefined ? {} : { label: cmd.name }) }),
+				).pipe(
 					Effect.map((meta) => [
 						{
 							tag: 'snapshot.captured',

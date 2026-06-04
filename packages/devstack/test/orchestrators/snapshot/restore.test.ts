@@ -13,6 +13,8 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import {
+	CACHE_DIR_NAME,
+	DEPLOY_CACHE_NAMESPACES,
 	IdentityEmptyError,
 	IdentityMismatchError,
 	RestorePhaseError,
@@ -187,6 +189,14 @@ const runtimeStub = (
 	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
 });
 
+/** Seed a live deploy-cache namespace under a runtime-stack root so the
+ *  PR#1 cache-existence preflight (fail-closed when the sole source of the
+ *  on-chain ids is gone) is satisfied. The dedicated `cache-missing` test
+ *  below deliberately does NOT call this. */
+const seedDeployCacheAt = (stackRoot: string): void => {
+	mkdirSync(join(stackRoot, CACHE_DIR_NAME, DEPLOY_CACHE_NAMESPACES[0]!), { recursive: true });
+};
+
 const runRestoreExit = (
 	root: string,
 	meta: SnapshotMetadata,
@@ -195,6 +205,7 @@ const runRestoreExit = (
 	runtime: ContainerRuntime = runtimeStub(sweepCalls),
 ) =>
 	Effect.gen(function* () {
+		seedDeployCacheAt(join(root, 'runtime-stack'));
 		const artifactDir = writeArtifact(root, meta);
 		return yield* Effect.exit(
 			runRestore({
@@ -532,12 +543,17 @@ describe('snapshot restore safety', () => {
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_EVENTS_FILE_NAME), 'event-log\n');
 				writeFileSync(join(stackRoot, 'roster.json'), '{"version":1,"holders":[]}\n');
 				writeFileSync(join(stackRoot, 'container-claims.json'), '{"version":1,"claims":[]}\n');
-				writeFileSync(join(stackRoot, 'snapshot.reservation'), '{"creatorPid":1}\n');
 				mkdirSync(join(stackRoot, 'wallet'), { recursive: true });
 				writeFileSync(walletTokenPath, '0123456789abcdef0123456789abcdef');
 				writeFileSync(join(stackRoot, 'wallet', 'session'), 'drop');
-				mkdirSync(join(stackRoot, 'cache'), { recursive: true });
-				writeFileSync(join(stackRoot, 'cache', 'entry'), 'cache');
+				// The live deploy cache is the SOLE source of the on-chain ids
+				// restore reuses: a per-namespace dir is PRESERVED across the swap
+				// (and satisfies the PR#1 preflight); the generic per-call
+				// `cache/entry` is NOT a deploy namespace and is DROPPED.
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				mkdirSync(join(stackRoot, CACHE_DIR_NAME, deployNs), { recursive: true });
+				writeFileSync(join(stackRoot, CACHE_DIR_NAME, deployNs, 'ids.json'), 'deploy-ids');
+				writeFileSync(join(stackRoot, CACHE_DIR_NAME, 'entry'), 'cache');
 				writeFileSync(join(stackRoot, 'unrelated-runtime-state'), 'drop');
 
 				const exit = yield* Effect.exit(
@@ -566,16 +582,61 @@ describe('snapshot restore safety', () => {
 				expect(readFileSync(join(stackRoot, 'container-claims.json'), 'utf8')).toBe(
 					'{"version":1,"claims":[]}\n',
 				);
-				expect(readFileSync(join(stackRoot, 'snapshot.reservation'), 'utf8')).toBe(
-					'{"creatorPid":1}\n',
+				// The per-namespace deploy cache is PRESERVED across the swap so
+				// the post-restore boot reuses the deploy ids (no fresh-id orphan).
+				expect(readFileSync(join(stackRoot, CACHE_DIR_NAME, deployNs, 'ids.json'), 'utf8')).toBe(
+					'deploy-ids',
 				);
 				expect(existsSync(walletTokenPath)).toBe(false);
 				expect(existsSync(join(stackRoot, 'wallet', 'session'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'snapshots', meta.id, SnapshotLayout.metaFile))).toBe(
 					true,
 				);
-				expect(existsSync(join(stackRoot, 'cache', 'entry'))).toBe(false);
+				// The generic per-call cache entry is NOT a deploy namespace → dropped.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, 'entry'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'unrelated-runtime-state'))).toBe(false);
+			}),
+		),
+	);
+
+	// PR#1 — the live deploy cache is the SOLE source of the on-chain ids post-D1.
+	// If NONE of the deploy-cache namespaces exists, restore must REFUSE with a
+	// typed `cache-missing` error BEFORE any mutation (fail-closed, matching the
+	// identity-guard posture) rather than let the next boot silently re-deploy
+	// with fresh ids and orphan every pre-snapshot object.
+	it.effect('refuses with cache-missing when the live deploy cache is absent (PR#1)', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const meta = metadata({ containers: [capturedContainer()] });
+				const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
+				writeImageBundle(artifactDir);
+				// NOTE: deliberately do NOT seed the deploy cache.
+
+				const exit = yield* Effect.exit(
+					runRestore({
+						snapshotId: snapshotIdFromString(meta.id),
+						artifactDir,
+						runtimeStackRoot: join(root, 'runtime-stack'),
+						runtimeStagingPath: join(root, 'runtime-stack.staging'),
+						runtimeBackupPath: join(root, 'runtime-stack.bak'),
+						participants: restoreIdentityParticipants(),
+						runtime: runtimeStub(sweepCalls),
+						runtimeIdentity,
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value._tag === 'SnapshotRestorePhaseError') {
+						expect(error.value.phase).toBe('cache-missing');
+					}
+				}
+				// Fail-closed BEFORE any mutation — no container sweep ran.
+				expect(sweepCalls).toEqual([]);
 			}),
 		),
 	);
@@ -589,6 +650,7 @@ describe('snapshot restore safety', () => {
 					const stackRoot = join(root, 'runtime-stack');
 					const meta = metadata();
 					const artifactDir = writeArtifact(stackRoot, meta);
+					seedDeployCacheAt(stackRoot);
 					const paths = commandChannelPaths(stackRoot);
 					const preRestorePublisher = yield* makeCommandChannelPublisher(paths);
 					const preRestoreSubscriber = yield* makeCommandChannelSubscriber(paths);
@@ -1051,6 +1113,7 @@ describe('snapshot restore safety', () => {
 				const artifactDir = writeArtifact(root, meta);
 				writeImageBundle(artifactDir);
 				mkdirSync(stackRoot, { recursive: true });
+				seedDeployCacheAt(stackRoot);
 				writeFileSync(join(stackRoot, 'live-state'), 'old');
 				mkdirSync(backupPath, { recursive: true });
 				writeFileSync(join(backupPath, 'blocks-backup-rename'), 'occupied');

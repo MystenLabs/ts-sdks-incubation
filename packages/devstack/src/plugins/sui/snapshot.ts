@@ -5,9 +5,11 @@
 //
 //   - local mode  — chain state (localnet validator) MUST live in
 //                   the writable container layer (NOT a named
-//                   volume), so `docker commit` captures it. Same
-//                   for the postgres indexer (PGDATA relocated off
-//                   the inherited VOLUME path).
+//                   volume), so `docker commit` captures it. There is
+//                   no separate indexer container: GraphQL's indexer is
+//                   embedded in the validator process and rides the same
+//                   writable layer, so the single validator commit
+//                   captures it too.
 //
 //   - external    — no container, no snapshot. The `SnapshotableDecl`
 //                   has `missingTolerance: 'fine'` so restore against
@@ -63,15 +65,18 @@ export const makeSnapshotable = (
 
 	switch (mode) {
 		case 'local': {
-			// Validator's writable layer + postgres indexer's writable
-			// layer. The runtime adapter pauses both before commit;
-			// architecture default grace is "pause container".
+			// The validator's writable layer. GraphQL's indexer is
+			// embedded in the validator process (no separate postgres
+			// container), so the single validator commit captures both
+			// chain state and the indexer's on-disk data. The runtime
+			// adapter pauses the container before commit; architecture
+			// default grace is "pause container".
 			return {
 				kind: 'snapshotable',
 				// Chain state lives in the writable container layer
 				// — declared via `managedContainers`, not subtrees.
 				subtrees: [],
-				managedContainers: [labels('validator'), labels('postgres')],
+				managedContainers: [labels('validator')],
 				missingTolerance: 'fine',
 				preRestore: Effect.succeed({ kind: 'sui-chain' as const, mode: 'local' as const, chain }),
 				postRestore: Effect.void,

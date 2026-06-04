@@ -28,7 +28,6 @@ import {
 	superviseStackEffect,
 } from '../../orchestrators/boot.ts';
 import {
-	captureSnapshot,
 	SnapshotOrchestratorService,
 	type RestoreParticipant,
 	type SnapshotMetadata,
@@ -251,8 +250,22 @@ export const runSnapshotCaptureDirectLoaded = (
 					postAcquireHook,
 					lifetime: 'one-shot',
 					extendContext: extendBuiltInPluginContext,
+					// Offline one-shot capture: the bounce gather → stop → commit →
+					// retag → hard-rm runs here; NO `resume` is injected because
+					// this supervise scope is `one-shot` (it closes right after) —
+					// the NEXT boot is the resume. Direct call to the orchestrator
+					// (the former `captureSnapshot` command-primitive is gone).
 					withinScope: () =>
-						captureSnapshot({ snapshotId: args.snapshotId, name: args.name }).pipe(
+						Effect.gen(function* () {
+							const snapshot = yield* SnapshotOrchestratorService;
+							const fs = yield* FileSystem.FileSystem;
+							return yield* snapshot
+								.capture({
+									...(args.snapshotId === undefined ? {} : { id: args.snapshotId }),
+									...(args.name === undefined ? {} : { label: args.name }),
+								})
+								.pipe(Effect.provideService(FileSystem.FileSystem, fs));
+						}).pipe(
 							Effect.tap((meta) =>
 								Effect.sync(() => {
 									capturedMeta.current = meta;

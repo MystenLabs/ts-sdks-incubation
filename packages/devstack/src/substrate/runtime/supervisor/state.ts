@@ -113,9 +113,10 @@ export interface SupervisorState {
 	 *  `Effect.forkIn` so they ride the supervisor's lifetime rather than
 	 *  the command-loop fiber — a forked capture must not wedge shutdown. */
 	readonly supervisorScope: Scope.Scope;
-	/** Live snapshot-capture fiber (or `null` when idle). See {@link BackgroundTaskSlot}. */
-	readonly snapshotCaptureTask: BackgroundTaskSlot;
-	/** Live stack-restart fiber (or `null` when idle). See {@link BackgroundTaskSlot}. */
+	/** Live stack-restart fiber (or `null` when idle). See {@link BackgroundTaskSlot}.
+	 *  Snapshot capture/restore now run INLINE in the command loop (the bounce:
+	 *  the handler stops+commits/loads + the loop converges), so there is no
+	 *  forked capture fiber — only the stack-restart background task. */
 	readonly stackRestartTask: BackgroundTaskSlot;
 	readonly shutdownLatch: Ref.Ref<boolean>;
 	readonly shutdownComplete: Deferred.Deferred<void>;

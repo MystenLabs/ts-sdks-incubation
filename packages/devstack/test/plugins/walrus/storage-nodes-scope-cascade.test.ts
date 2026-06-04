@@ -61,7 +61,9 @@ const buildRecorderRuntime = (recorder: StopRecorder, probeFails: boolean): Cont
 	exec: () =>
 		Effect.succeed({
 			exitCode: probeFails ? 1 : 0,
-			stdout: '',
+			// Write-ready (`Active`) health body on the happy path so the boot
+			// ready-gate's `/v1/health` stage passes; empty on the failure path.
+			stdout: probeFails ? '' : '{"nodeStatus":"Active"}',
 			stderr: probeFails ? 'connection refused' : '',
 		}),
 	runOneShot: () => Effect.die('runOneShot not used'),

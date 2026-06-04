@@ -184,41 +184,6 @@ const interruptSlot = (slot: BackgroundTaskSlot): Effect.Effect<void, never, nev
 		}
 	});
 
-export const startBackgroundSnapshotCapture = (
-	deps: SupervisorState,
-	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,
-): Effect.Effect<void, never, never> =>
-	Effect.gen(function* () {
-		const outcome = yield* forkIntoSlot(
-			deps.supervisorScope,
-			deps.snapshotCaptureTask,
-			runInjectedCommandHandler(deps, cmd),
-		);
-		if (outcome === 'skipped') {
-			yield* publish(deps.ref, deps.hub, {
-				tag: 'snapshot.captureSkipped',
-				reason: 'already-running',
-				snapshotId: effectiveSnapshotId(cmd),
-				...(cmd.name === undefined ? {} : { name: cmd.name }),
-				at: Date.now(),
-			});
-			return;
-		}
-		yield* publish(deps.ref, deps.hub, {
-			tag: 'snapshot.captureStarted',
-			...(cmd.snapshotId === undefined ? {} : { snapshotId: cmd.snapshotId }),
-			...(cmd.name === undefined ? {} : { name: cmd.name }),
-			at: Date.now(),
-		});
-	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundSnapshotCapture'));
-
-export const requestBackgroundSnapshotInterrupt = (
-	deps: Pick<SupervisorState, 'snapshotCaptureTask'>,
-): Effect.Effect<void, never, never> =>
-	interruptSlot(deps.snapshotCaptureTask).pipe(
-		Effect.withSpan('lifecycle.supervisor.interruptSnapshotCapture'),
-	);
-
 export const startBackgroundStackRestart = (
 	deps: SupervisorState,
 	handleCommand: HandleCommandRunner,

@@ -16,7 +16,6 @@ import {
 	runInjectedCommandHandler,
 	runInjectedCommandHandlerExit,
 	runPostAcquireHook,
-	startBackgroundSnapshotCapture,
 	startBackgroundStackRestart,
 } from './background-tasks.ts';
 import { SupervisorRestoreFailed, SupervisorPostAcquireFailed } from './errors.ts';
@@ -134,9 +133,83 @@ export const handleCommand = (
 			// Snapshot/wipe/prune are owned by injected L3 handlers. The
 			// supervisor keeps one consumer of the command queue and only
 			// publishes the handler's typed events / errors.
-			case 'snapshot.capture':
-				yield* startBackgroundSnapshotCapture(deps, cmd);
+			case 'snapshot.capture': {
+				// Capture is the lifecycle bounce, structurally IDENTICAL to
+				// restore: the handler (`runCapture`) gathers (live) → graceful-
+				// stops (flushes RocksDB) → commits + tars + writes meta → retags
+				// each committed image onto its container's ORIGINAL name + HARD-rms
+				// the stopped containers. This loop then runs the RESUME (CONVERGE
+				// recreate-from-image + wait-write-ready): R1 removed the live
+				// containers, so the re-acquire sees facts:null and recreates fresh
+				// from the retagged committed images (whose names now resolve to the
+				// flushed layers), inheriting walrus's write-ready ready-gate — so
+				// the just-captured stack comes back write-ready (NEVER `docker
+				// start`, which walrus nodes exit on). Mirrors `snapshot.restore`.
+				const captureOutcome = yield* runInjectedCommandHandlerExit(deps, cmd);
+				if (!captureOutcome.ok) {
+					// The handler already surfaced the failure on the event stream
+					// (`snapshot.captureFailed` + `error.reported`). A failed capture
+					// left the containers only STOPPED (recoverable) — converge them
+					// back so the stack returns to running, then propagate.
+					const recoverPlan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+					if (recoverPlan.slice.size > 0) {
+						yield* doSelectiveRestart(
+							graph,
+							registry,
+							deps.ref,
+							deps.hub,
+							new Set(recoverPlan.slice),
+							pluginContext,
+							dispatcher,
+							logger,
+							identity,
+							parentScope,
+						).pipe(Effect.catch(() => Effect.void));
+					}
+					return yield* Effect.fail(
+						new SupervisorRestoreFailed({ reason: 'handler', cause: captureOutcome.cause }),
+					);
+				}
+				const plan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+				if (plan.slice.size === 0) {
+					if (yield* allReadyOrTerminal(graph, registry)) {
+						yield* maybeRunPostAcquire(deps, options);
+					}
+					return;
+				}
+				const recovered = yield* doSelectiveRestart(
+					graph,
+					registry,
+					deps.ref,
+					deps.hub,
+					new Set(plan.slice),
+					pluginContext,
+					dispatcher,
+					logger,
+					identity,
+					parentScope,
+				).pipe(
+					Effect.as(true),
+					Effect.catch(() => Effect.succeed(false)),
+				);
+				const allReady = recovered && (yield* allReadyOrTerminal(graph, registry));
+				if (!allReady) {
+					return yield* Effect.fail(
+						new SupervisorRestoreFailed({
+							reason: 'reacquire',
+							cause: Cause.fail(
+								new Error(
+									recovered
+										? 'snapshot capture resume left one or more services not ready'
+										: 'snapshot capture resume failed',
+								),
+							),
+						}),
+					);
+				}
+				yield* maybeRunPostAcquire(deps, options);
 				return;
+			}
 			case 'snapshot.restore': {
 				// Restore is the unified reconcile's ORDERED 4-step body
 				// (redesign §2, P4) split across this loop and the injected

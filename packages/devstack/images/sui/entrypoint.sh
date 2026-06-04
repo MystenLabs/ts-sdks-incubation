@@ -9,6 +9,16 @@
 # state. Chain state lives in the container's writable layer — `docker
 # stop`/`start` preserves it; `docker rm` destroys it.
 #
+# Resume is NOT instant-to-head. `sui start` re-executes the persisted
+# checkpoint store from seq=0 on EVERY boot (the swarm boot model) — a
+# warm restart and a snapshot restore both replay the committed store
+# back up to its head (~50x realtime; a multi-thousand-checkpoint store
+# replays for 60-120s). During that replay the validator serves stale /
+# not-yet-existent objects, so a ready signal that only proves the RPC
+# port is bound races the replay. The caught-up-to-head gate lives on
+# the orchestrator side (devstack's sui plugin `waitForCheckpointCatchUp`),
+# not in this entrypoint.
+#
 # Slow checkpoint pruning. Localnet's stock fullnode.yaml ships with
 # `num-epochs-to-retain: 0`, which prunes checkpoints aggressively
 # (~10 minutes of retention on a fresh chain). Downstream consumers

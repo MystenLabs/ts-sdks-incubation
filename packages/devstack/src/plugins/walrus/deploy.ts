@@ -82,12 +82,26 @@ const SuiObjectExistsShape = Schema.Struct({
 	objectId: Schema.String,
 });
 
-/** A freshly RESTORED validator can take a few seconds to start serving the
- *  committed deploy objects (sui/system/staking); retry the deploy-verify
- *  probes across this window so a readiness race doesn't read them as
- *  not-found and trigger a spurious redeploy — which would churn the walrus
- *  deploy ids and orphan every pre-snapshot blob. A warm restart finds them on
- *  the first probe; a genuinely-wiped chain still redeploys once retries lapse. */
+/** Short readiness tolerance for a transient not-found on the cached
+ *  deploy objects (sui/system/staking).
+ *
+ *  The big post-restore catch-up window — `sui start` re-executes its
+ *  committed checkpoint store from seq=0, and `getObject(systemObject)`
+ *  reads not-found until the replay reaches the object's checkpoint — is
+ *  now absorbed by the sui plugin's caught-up-to-head ready-gate
+ *  (`waitForCheckpointCatchUp` in plugins/sui/mode/local.ts): the
+ *  validator does not report ready until its head has stabilized to live
+ *  cadence, so by the time this verify runs the committed deploy objects
+ *  are already served. This budget only needs to cover the small RPC
+ *  index-visibility lag, NOT the whole replay.
+ *
+ *  If it gives up too soon it reads the objects as not-found and triggers
+ *  a SPURIOUS redeploy, which mints FRESH walrus ids and orphans every
+ *  pre-snapshot blob (the snapshot-survival-matrix walrus-S2 failure:
+ *  "Too many failures while writing blob to nodes"). A genuinely-wiped
+ *  chain still redeploys once the budget lapses.
+ *
+ *  Budget: 5 probes × 3s = 15s. */
 const WALRUS_DEPLOY_VERIFY_READINESS_RETRIES = 5;
 const WALRUS_DEPLOY_VERIFY_READINESS_DELAY = '3 seconds';
 
@@ -467,9 +481,11 @@ export const deployWalrusContracts = (
 					// probes — fan them out via `probeManyLenient` so the
 					// substrate owns the iteration shape. Any null means
 					// "re-deploy"; both non-null gives us the composite
-					// verified payload. Retry across the post-restore
-					// validator-readiness window (see the retry constants above)
-					// so a transient not-found doesn't force a spurious redeploy.
+					// verified payload. The short retry (see the constants
+					// above) only covers RPC index-visibility lag — the
+					// validator's post-restore catch-up is already gated by
+					// the sui plugin's caught-up-to-head ready-gate — so a
+					// transient not-found doesn't force a spurious redeploy.
 					const probeBoth = probeManyLenient([
 						probe.get(
 							{ kind: 'object', objectId: cached.systemObject },

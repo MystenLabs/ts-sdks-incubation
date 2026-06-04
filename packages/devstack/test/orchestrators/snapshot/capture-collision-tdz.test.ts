@@ -2,7 +2,7 @@
 //
 // Code-review speculation (review fix phase 22f):
 //   "capture calls `yield* list` for label uniqueness AFTER
-//   acquireReservation. `list` is defined later in the same
+//   acquiring the stack lock. `list` is defined later in the same
 //   `Effect.gen`. JS hoisting via `const` makes this TDZ throw at
 //   runtime IF the path is reached. (speculative — looks like `list`
 //   may be hoisted by the closure.)"

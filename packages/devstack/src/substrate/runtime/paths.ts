@@ -56,8 +56,8 @@ export const layerIdentity = (identity: Identity): Layer.Layer<IdentityContext> 
  * Closed bundle the resolver returns. Three groups of paths:
  *
  *   - `stackRoot` and the cross-process artifacts (lock, roster,
- *     command channel, snapshot reservation) live directly under the stack
- *     directory. Cross-process safety lives here.
+ *     command channel) live directly under the stack directory.
+ *     Cross-process safety lives here.
  *   - `cacheDir` is the parent directory; the cache subsystem
  *     composes `<cacheDir>/<namespace>/<chainId>/<contentHash>.json`
  *     via a helper on this resolver. Subsystems do NOT reach into
@@ -76,7 +76,6 @@ export interface StackPaths {
 	 *  reads this field rather than reconstructing
 	 *  `dirname(rosterFile) + 'container-claims.json'` itself. */
 	readonly containerClaimsFile: string;
-	readonly snapshotReservationFile: string;
 	/**
 	 * Helper that composes the cache entry path from cache-key
 	 * components. The substrate folds the components together here so
@@ -141,7 +140,6 @@ export const layerStackPaths: Layer.Layer<
 			stackLockFile: path.join(stackRoot, 'stack.lock'),
 			rosterFile: path.join(stackRoot, 'roster.json'),
 			containerClaimsFile: path.join(stackRoot, 'container-claims.json'),
-			snapshotReservationFile: path.join(stackRoot, 'snapshot.reservation'),
 			cacheEntry,
 			cacheChainDir,
 			cacheNamespaceDir,

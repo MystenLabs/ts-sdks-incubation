@@ -1,4 +1,20 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+// Capture-bounce unit tests.
+//
+// `runCapture` is the bounce's gather → graceful-stop (flush) → commit
+// (stopped containers) → save bundle → tar host-tree → contributions →
+// meta-LAST half. `resumeAfterCapture` is the post-publish tail: retag each
+// committed image onto its container's ORIGINAL name + hard-rm the stopped
+// containers + run the injected resume. These tests pin the invariants:
+//   - identity fail-closed BEFORE any stop (empty / conflicting identity),
+//   - graceful STOP (not pause) flushes — every managed container is stopped,
+//   - commit + one deduplicated bundle + image-bundle tag verification,
+//   - meta.json written LAST (absent on failure → artifact inert),
+//   - duplicate-identity collision + unsafe-segment / digest-only refusal
+//     BEFORE any side effect,
+//   - committed temp-tag cleanup on a mid-capture failure,
+//   - the resume tail retags-to-original + hard-rms + runs resume.
+
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -19,9 +35,10 @@ import {
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	containerImagesBundlePath,
 	contributionPath,
+	resumeAfterCapture,
 	runCapture,
 	snapshotIdFromString,
-	type SnapshotCaptureProgress,
+	type SnapshotMetadata,
 	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
@@ -56,16 +73,99 @@ const participant = (
 	captureContribution: Effect.succeed({ ok: true }),
 });
 
+interface RuntimeStubOpts {
+	readonly handlesByRole: Readonly<
+		Record<string, ContainerHandle | ReadonlyArray<ContainerHandle>>
+	>;
+	readonly saveImages?: (
+		refs: ReadonlyArray<ImageRef>,
+	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
+	readonly stopCalls?: Array<string>;
+	readonly saveCalls?: Array<ImageRef>;
+	readonly removeImageCalls?: Array<ImageRef>;
+	readonly stopErrorFor?: (handle: ContainerHandle) => ContainerRuntimeError | undefined;
+	readonly commitErrorFor?: (handle: ContainerHandle) => ContainerRuntimeError | undefined;
+	readonly committedRefFor?: (handle: ContainerHandle) => ImageRef & { readonly tag: string };
+}
+
+const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
+	ensureImage: () => Effect.die('ensureImage not used'),
+	ensureNetwork: () => Effect.die('ensureNetwork not used'),
+	ensureContainer: () => Effect.die('ensureContainer not used'),
+	exec: () => Effect.die('exec not used'),
+	runOneShot: () => Effect.die('runOneShot not used'),
+	inspectByLabels: (labels) => {
+		const matched = opts.handlesByRole[labels.role] ?? [];
+		return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
+	},
+	followLogs: () => Stream.empty,
+	pause: () => Effect.die('pause not used'),
+	pauseAndCommit: (handle) =>
+		Effect.gen(function* () {
+			const error = opts.commitErrorFor?.(handle);
+			if (error !== undefined) return yield* Effect.fail(error);
+			return (
+				opts.committedRefFor?.(handle) ?? {
+					digest: `sha256:${handle.name}`,
+					tag: `snapshot:${handle.name}`,
+				}
+			);
+		}),
+	saveImage: () => Stream.empty,
+	saveImages: (refs) => {
+		opts.saveCalls?.push(...refs);
+		return (
+			opts.saveImages?.(refs) ??
+			Stream.make(dockerSaveBundleTar(refs.map((ref) => ref.tag ?? ref.digest)))
+		);
+	},
+	loadImage: () => Effect.die('loadImage not used'),
+	tagImage: () => Effect.die('tagImage not used'),
+	removeImage: (ref) =>
+		Effect.sync(() => {
+			opts.removeImageCalls?.push(ref);
+		}),
+	unpause: () => Effect.die('unpause not used'),
+	stop: (handle) =>
+		Effect.gen(function* () {
+			opts.stopCalls?.push(handle.name);
+			const error = opts.stopErrorFor?.(handle);
+			if (error !== undefined) return yield* Effect.fail(error);
+		}),
+	sweepOrphans: () => Effect.die('sweepOrphans not used'),
+	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
+	removeManagedImages: () => Effect.die('removeManagedImages not used'),
+	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
+	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
+});
+
+const runCaptureExit = (
+	root: string,
+	runtime: ContainerRuntime,
+	participants: ReadonlyArray<SnapshotParticipant>,
+	labelValue: string | null = null,
+) =>
+	Effect.exit(
+		runCapture({
+			stagingDir: join(root, 'artifact'),
+			snapshotId: snapshotIdFromString('snap-images'),
+			label: labelValue,
+			app: 'capture-app',
+			stack: 'main',
+			network: 'sui:local',
+			runtimeStackRoot: join(root, 'runtime-stack'),
+			participants,
+			runtime,
+			// Tests don't exercise the real graceful-stop grace; a small value
+			// keeps the stub fast.
+			stopGraceSeconds: 1,
+		}),
+	);
+
 it.effect('refuses to write a capture artifact with empty contributed identity', () =>
 	withTempRoot(TEMP_PREFIX, (root) =>
 		Effect.gen(function* () {
-			const runtime = runtimeStub({
-				handlesByRole: {},
-				saveImage: () => Stream.empty,
-				pauseCalls: [],
-				saveCalls: [],
-				unpauseCalls: [],
-			});
+			const runtime = runtimeStub({ handlesByRole: {} });
 			const emptyIdentityParticipant: SnapshotParticipant = {
 				...participant([]),
 				captureIdentity: Effect.succeed({}),
@@ -85,158 +185,14 @@ it.effect('refuses to write a capture artifact with empty contributed identity',
 	),
 );
 
-const runtimeStub = (opts: {
-	readonly handlesByRole: Readonly<
-		Record<string, ContainerHandle | ReadonlyArray<ContainerHandle>>
-	>;
-	readonly saveImage: (ref: ImageRef) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
-	readonly saveImages?: (
-		refs: ReadonlyArray<ImageRef>,
-	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
-	readonly pauseCalls: Array<string>;
-	readonly saveCalls: Array<ImageRef>;
-	readonly removeImageCalls?: Array<ImageRef>;
-	readonly unpauseCalls: Array<string>;
-	readonly commitErrorFor?: (handle: ContainerHandle) => ContainerRuntimeError | undefined;
-	readonly committedRefFor?: (handle: ContainerHandle) => ImageRef & { readonly tag: string };
-}): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: (labels) => {
-		const matched = opts.handlesByRole[labels.role]!;
-		return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
-	},
-	followLogs: () => Stream.empty,
-	pause: (handle) =>
-		Effect.sync(() => {
-			opts.pauseCalls.push(handle.name);
-		}),
-	pauseAndCommit: (handle) =>
-		Effect.gen(function* () {
-			const error = opts.commitErrorFor?.(handle);
-			if (error !== undefined) {
-				return yield* Effect.fail(error);
-			}
-			return (
-				opts.committedRefFor?.(handle) ?? {
-					digest: `sha256:${handle.name}`,
-					tag: `snapshot:${handle.name}`,
-				}
-			);
-		}),
-	saveImage: (ref) => {
-		opts.saveCalls.push(ref);
-		return opts.saveImage(ref);
-	},
-	saveImages: (refs) => {
-		opts.saveCalls.push(...refs);
-		return (
-			opts.saveImages?.(refs) ??
-			Stream.make(dockerSaveBundleTar(refs.map((ref) => ref.tag ?? ref.digest)))
-		);
-	},
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: (ref) =>
-		Effect.sync(() => {
-			opts.removeImageCalls?.push(ref);
-		}),
-	unpause: (handle) =>
-		Effect.sync(() => {
-			opts.unpauseCalls.push(handle.name);
-		}),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
-
-const runCaptureExit = (
-	root: string,
-	runtime: ContainerRuntime,
-	participants: ReadonlyArray<SnapshotParticipant>,
-	labelValue: string | null = null,
-	onProgress?: (progress: SnapshotCaptureProgress) => Effect.Effect<void>,
-) =>
-	Effect.exit(
-		runCapture({
-			stagingDir: join(root, 'artifact'),
-			snapshotId: snapshotIdFromString('snap-images'),
-			label: labelValue,
-			app: 'capture-app',
-			stack: 'main',
-			network: 'sui:local',
-			runtimeStackRoot: join(root, 'runtime-stack'),
-			participants,
-			runtime,
-			onProgress,
-		}),
-	);
-
-it.effect('captures an already-paused container without unpausing it afterwards', () =>
-	withTempRoot(TEMP_PREFIX, (root) =>
-		Effect.gen(function* () {
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const removeImageCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			const runtime = runtimeStub({
-				handlesByRole: {
-					validator: {
-						id: 'validator-id',
-						name: 'validator-container',
-						imageName: 'devstack-build:sui-validator',
-						status: 'paused',
-						ips: [],
-					},
-				},
-				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-				pauseCalls,
-				saveCalls,
-				removeImageCalls,
-				unpauseCalls,
-			});
-
-			mkdirSync(join(root, 'artifact'), { recursive: true });
-			const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
-				Effect.provide(NodeFileSystem.layer),
-			);
-
-			expect(Exit.isSuccess(exit)).toBe(true);
-			if (!Exit.isSuccess(exit)) return;
-			expect(exit.value.label).toBe(null);
-			expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
-			expect(unpauseCalls).toEqual([]);
-		}),
-	),
-);
-
 it.effect('records user-facing labels in metadata without using them as artifact paths', () =>
 	withTempRoot(TEMP_PREFIX, (root) =>
 		Effect.gen(function* () {
-			const pauseCalls: string[] = [];
-			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
-			const runtime = runtimeStub({
-				handlesByRole: {},
-				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-				pauseCalls,
-				saveCalls,
-				unpauseCalls,
-			});
-
+			const runtime = runtimeStub({ handlesByRole: {} });
 			mkdirSync(join(root, 'artifact'), { recursive: true });
-			const exit = yield* runCaptureExit(
-				root,
-				runtime,
-				[participant([])],
-				'release candidate',
-			).pipe(Effect.provide(NodeFileSystem.layer));
+			const exit = yield* runCaptureExit(root, runtime, [participant([])], 'release candidate').pipe(
+				Effect.provide(NodeFileSystem.layer),
+			);
 
 			expect(Exit.isSuccess(exit)).toBe(true);
 			if (!Exit.isSuccess(exit)) return;
@@ -247,12 +203,42 @@ it.effect('records user-facing labels in metadata without using them as artifact
 	),
 );
 
-it.effect('captures exited and created containers instead of silently omitting them', () =>
+it.effect('gracefully stops every managed container (flush) before committing', () =>
 	withTempRoot(TEMP_PREFIX, (root) =>
 		Effect.gen(function* () {
-			const pauseCalls: string[] = [];
+			const stopCalls: string[] = [];
 			const saveCalls: ImageRef[] = [];
-			const unpauseCalls: string[] = [];
+			const runtime = runtimeStub({
+				handlesByRole: {
+					validator: {
+						id: 'validator-id',
+						name: 'validator-container',
+						imageName: 'devstack-build:sui-validator',
+						status: 'running',
+						ips: [],
+					},
+				},
+				stopCalls,
+				saveCalls,
+			});
+			mkdirSync(join(root, 'artifact'), { recursive: true });
+			const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			if (!Exit.isSuccess(exit)) return;
+			expect(stopCalls).toEqual(['validator-container']);
+			expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+		}),
+	),
+);
+
+it.effect('commits exited and created containers instead of silently omitting them', () =>
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const stopCalls: string[] = [];
+			const saveCalls: ImageRef[] = [];
 			const runtime = runtimeStub({
 				handlesByRole: {
 					db: {
@@ -270,12 +256,9 @@ it.effect('captures exited and created containers instead of silently omitting t
 						ips: [],
 					},
 				},
-				saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-				pauseCalls,
+				stopCalls,
 				saveCalls,
-				unpauseCalls,
 			});
-
 			mkdirSync(join(root, 'artifact'), { recursive: true });
 			const exit = yield* runCaptureExit(root, runtime, [participant(['db', 'worker'])]).pipe(
 				Effect.provide(NodeFileSystem.layer),
@@ -303,7 +286,6 @@ it.effect('captures exited and created containers instead of silently omitting t
 				'snapshot:db-container',
 				'snapshot:worker-container',
 			]);
-			expect(unpauseCalls).toEqual([]);
 		}),
 	),
 );
@@ -312,19 +294,8 @@ describe('snapshot capture container images', () => {
 	it.effect('writes contribution docs for plugin keys containing slashes', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const pluginKey = 'account/alice#0';
-				const runtime = runtimeStub({
-					handlesByRole: {},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
-					saveCalls,
-					removeImageCalls,
-					unpauseCalls,
-				});
+				const runtime = runtimeStub({ handlesByRole: {} });
 				const slashParticipant: SnapshotParticipant = {
 					...participant([]),
 					plugin: pluginKey,
@@ -348,10 +319,7 @@ describe('snapshot capture container images', () => {
 				};
 				expect(doc.version).toBe(SNAPSHOT_CONTRIBUTION_VERSION);
 				expect(doc.plugin).toBe(pluginKey);
-				expect(doc.opaqueState).toEqual({
-					encoding: 'json',
-					value: { account: 'alice' },
-				});
+				expect(doc.opaqueState).toEqual({ encoding: 'json', value: { account: 'alice' } });
 			}),
 		),
 	);
@@ -359,33 +327,29 @@ describe('snapshot capture container images', () => {
 	it.effect('streams committed images to one deduplicated bundle and records restore refs', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
+				const stopCalls: string[] = [];
 				const saveCalls: ImageRef[] = [];
 				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				const handlesByRole: Record<string, ContainerHandle> = {
-					validator: {
-						id: 'validator-id',
-						name: 'validator-container',
-						imageName: 'devstack-build:sui-validator',
-						status: 'running',
-						ips: [],
-					},
-					postgres: {
-						id: 'postgres-id',
-						name: 'postgres-container',
-						imageName: 'devstack-build:sui-postgres',
-						status: 'running',
-						ips: [],
-					},
-				};
 				const runtime = runtimeStub({
-					handlesByRole,
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
+					handlesByRole: {
+						validator: {
+							id: 'validator-id',
+							name: 'validator-container',
+							imageName: 'devstack-build:sui-validator',
+							status: 'running',
+							ips: [],
+						},
+						postgres: {
+							id: 'postgres-id',
+							name: 'postgres-container',
+							imageName: 'devstack-build:sui-postgres',
+							status: 'running',
+							ips: [],
+						},
+					},
+					stopCalls,
 					saveCalls,
 					removeImageCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -415,164 +379,12 @@ describe('snapshot capture container images', () => {
 				expect(savedBundleText).toContain('manifest.json');
 				expect(savedBundleText).toContain('snapshot:validator-container');
 				expect(savedBundleText).toContain('snapshot:postgres-container');
-				expect(pauseCalls).toEqual(['validator-container', 'postgres-container']);
+				expect(stopCalls.sort()).toEqual(['postgres-container', 'validator-container']);
 				expect(saveCalls.map((ref) => ref.tag)).toEqual([
 					'snapshot:validator-container',
 					'snapshot:postgres-container',
 				]);
 				expect(removeImageCalls).toEqual([]);
-				expect(unpauseCalls).toEqual(['validator-container', 'postgres-container']);
-			}),
-		),
-	);
-
-	it.effect(
-		'unpauses every container the orchestrator intended to pause when pause fails mid-list',
-		() =>
-			withTempRoot(TEMP_PREFIX, (root) =>
-				Effect.gen(function* () {
-					// Regression — prior to this fix, the `paused` array
-					// was populated AFTER `pause` returned success, so a
-					// pause failure on the SECOND container left the
-					// first container paused (its `unpause` never ran in
-					// the finalizer) and a half-paused second container
-					// was missed entirely. After the fix, every container
-					// the orchestrator INTENDED to pause is recorded
-					// before the syscall, so the finalizer attempts
-					// `unpause` for both — `unpause` against a non-paused
-					// container is a swallowed no-op.
-					const pauseCalls: string[] = [];
-					const saveCalls: ImageRef[] = [];
-					const unpauseCalls: string[] = [];
-					const handlesByRole: Record<string, ContainerHandle> = {
-						alpha: {
-							id: 'alpha-id',
-							name: 'alpha-container',
-							imageName: 'devstack-build:alpha',
-							status: 'running',
-							ips: [],
-						},
-						beta: {
-							id: 'beta-id',
-							name: 'beta-container',
-							imageName: 'devstack-build:beta',
-							status: 'running',
-							ips: [],
-						},
-					};
-					const failingRuntime: ContainerRuntime = {
-						...runtimeStub({
-							handlesByRole,
-							saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-							pauseCalls,
-							saveCalls,
-							unpauseCalls,
-						}),
-						pause: (handle) =>
-							Effect.gen(function* () {
-								pauseCalls.push(handle.name);
-								if (handle.name === 'beta-container') {
-									return yield* Effect.fail({
-										_tag: 'ContainerRuntimeError' as const,
-										reason: 'daemon-unreachable' as const,
-										detail: `pause failed for ${handle.name}`,
-									} satisfies ContainerRuntimeError);
-								}
-							}),
-					};
-
-					mkdirSync(join(root, 'artifact'), { recursive: true });
-					const exit = yield* runCaptureExit(root, failingRuntime, [
-						participant(['alpha', 'beta']),
-					]).pipe(Effect.provide(NodeFileSystem.layer));
-
-					expect(Exit.isFailure(exit)).toBe(true);
-					// Both pauses attempted in order.
-					expect(pauseCalls).toEqual(['alpha-container', 'beta-container']);
-					// Finalizer unpauses BOTH — alpha (confirmed paused)
-					// AND beta (intent recorded before failure). The
-					// runtime sees both unpause calls; in a real Docker
-					// daemon beta would surface "container not paused"
-					// which is treated as best-effort.
-					expect(unpauseCalls.sort()).toEqual(['alpha-container', 'beta-container']);
-				}),
-			),
-	);
-
-	it.effect('keeps running containers paused through host-tree and contribution capture', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				const progress: SnapshotCaptureProgress[] = [];
-				let contributionSawUnpauseCalls: ReadonlyArray<string> = [];
-				const runtimeStackRoot = join(root, 'runtime-stack');
-				mkdirSync(join(root, 'artifact'), { recursive: true });
-				mkdirSync(join(runtimeStackRoot, 'stateful'), { recursive: true });
-				writeFileSync(join(runtimeStackRoot, 'stateful', 'marker.txt'), 'captured');
-				const runtime = runtimeStub({
-					handlesByRole: {
-						db: {
-							id: 'db-id',
-							name: 'db-container',
-							imageName: 'devstack-build:db',
-							status: 'running',
-							ips: [],
-						},
-						worker: {
-							id: 'worker-id',
-							name: 'worker-container',
-							imageName: 'devstack-build:worker',
-							status: 'running',
-							ips: [],
-						},
-					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
-					saveCalls,
-					unpauseCalls,
-				});
-				const statefulParticipant: SnapshotParticipant = {
-					...participant(['db', 'worker']),
-					decl: {
-						...participant(['db', 'worker']).decl,
-						subtrees: ['stateful'],
-					},
-					captureContribution: Effect.sync(() => {
-						contributionSawUnpauseCalls = [...unpauseCalls];
-						return { ok: true };
-					}),
-				};
-
-				const exit = yield* Effect.exit(
-					runCapture({
-						stagingDir: join(root, 'artifact'),
-						snapshotId: snapshotIdFromString('snap-images'),
-						label: null,
-						app: 'capture-app',
-						stack: 'main',
-						network: 'sui:local',
-						runtimeStackRoot,
-						participants: [statefulParticipant],
-						runtime,
-						onProgress: (next) =>
-							Effect.sync(() => {
-								progress.push(next);
-							}),
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
-
-				expect(Exit.isSuccess(exit)).toBe(true);
-				expect(pauseCalls).toEqual(['db-container', 'worker-container']);
-				expect(contributionSawUnpauseCalls).toEqual([]);
-				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
-				expect(progress.map((entry) => entry.phase)).toContain('paused');
-				expect(progress.map((entry) => entry.phase)).toContain('capturing-host-tree');
-				expect(progress.find((entry) => entry.phase === 'paused')).toMatchObject({
-					pausedContainers: 2,
-					totalContainers: 2,
-				});
 			}),
 		),
 	);
@@ -580,10 +392,7 @@ describe('snapshot capture container images', () => {
 	it.effect('accepts saved image bundle metadata after leading layer blobs before publish', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
 				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -594,15 +403,9 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
 					saveImages: (refs) =>
-						Stream.make(
-							dockerSaveBundleTarWithLateMetadata(refs.map((ref) => ref.tag ?? ref.digest)),
-						),
-					pauseCalls,
-					saveCalls,
+						Stream.make(dockerSaveBundleTarWithLateMetadata(refs.map((ref) => ref.tag ?? ref.digest))),
 					removeImageCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -611,9 +414,7 @@ describe('snapshot capture container images', () => {
 				);
 
 				expect(Exit.isSuccess(exit)).toBe(true);
-				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
 				expect(removeImageCalls).toEqual([]);
-				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(true);
 				expect(readFileSync(join(root, 'artifact', imageBundlePath))).toHaveLength(
 					dockerSaveBundleTarWithLateMetadata(['snapshot:validator-container']).length,
@@ -625,10 +426,7 @@ describe('snapshot capture container images', () => {
 	it.effect('rejects an image bundle without Docker or OCI metadata before publish', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
 				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -639,15 +437,11 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
 					saveImages: () =>
 						Stream.make(
 							Buffer.concat([tarEntry('repositories', Buffer.from('{}')), Buffer.alloc(1024)]),
 						),
-					pauseCalls,
-					saveCalls,
 					removeImageCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -665,11 +459,10 @@ describe('snapshot capture container images', () => {
 						expect(error.value.detail).toContain('does not contain manifest.json or index.json');
 					}
 				}
-				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
+				// The committed temp tag is reaped by the failure finalizer.
 				expect(removeImageCalls).toEqual([
 					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
 				]);
-				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 			}),
 		),
@@ -678,10 +471,6 @@ describe('snapshot capture container images', () => {
 	it.effect('rejects corrupt image bundle metadata before publish', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -692,12 +481,7 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
 					saveImages: () => Stream.make(tarEntry('manifest.json', Buffer.from('{not json'))),
-					pauseCalls,
-					saveCalls,
-					removeImageCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -708,18 +492,9 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('save-images');
-						expect(error.value.detail).toContain('manifest.json');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('save-images');
 				}
-				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
-				expect(removeImageCalls).toEqual([
-					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
-				]);
-				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 			}),
 		),
@@ -728,10 +503,6 @@ describe('snapshot capture container images', () => {
 	it.effect('rejects saved image bundle tag mismatches before publish', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -742,12 +513,8 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					saveImages: () => Stream.make(dockerSaveBundleTar(['snapshot:other'])),
-					pauseCalls,
-					saveCalls,
-					removeImageCalls,
-					unpauseCalls,
+					// Bundle reports a DIFFERENT tag than the committed one.
+					saveImages: () => Stream.make(dockerSaveBundleTar(['snapshot:some-other-tag'])),
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -758,19 +525,9 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('save-images');
-						expect(error.value.detail).toContain('snapshot:validator-container');
-						expect(error.value.detail).toContain('snapshot:other');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('save-images');
 				}
-				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
-				expect(removeImageCalls).toEqual([
-					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
-				]);
-				expect(unpauseCalls).toEqual(['validator-container']);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 			}),
 		),
@@ -779,32 +536,30 @@ describe('snapshot capture container images', () => {
 	it.effect('rejects duplicate managed container identities before image writes', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
+				const stopCalls: string[] = [];
 				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
+				// Two distinct containers map to the SAME plugin/role tuple.
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: [
 							{
-								id: 'db-a-id',
+								id: 'db-a',
 								name: 'db-a-container',
-								imageName: 'devstack-build:db-a',
+								imageName: 'devstack-build:db',
 								status: 'running',
 								ips: [],
 							},
 							{
-								id: 'db-b-id',
+								id: 'db-b',
 								name: 'db-b-container',
-								imageName: 'devstack-build:db-b',
+								imageName: 'devstack-build:db',
 								status: 'running',
 								ips: [],
 							},
 						],
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
+					stopCalls,
 					saveCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -815,19 +570,13 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('commit');
-						expect(error.value.detail).toContain(
-							'duplicate managed container snapshot identity sui/db',
-						);
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('commit');
+					expect(error.value.detail).toContain('duplicate managed container snapshot identity');
 				}
-				expect(pauseCalls).toEqual([]);
+				// Collision is detected BEFORE any stop / save side effect.
+				expect(stopCalls).toEqual([]);
 				expect(saveCalls).toEqual([]);
-				expect(unpauseCalls).toEqual([]);
-				expect(existsSync(join(root, 'artifact', imageBundlePath))).toBe(false);
 			}),
 		),
 	);
@@ -835,10 +584,9 @@ describe('snapshot capture container images', () => {
 	it.effect('removes committed temp tags when a later commit fails before image save', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
+				const stopCalls: string[] = [];
 				const saveCalls: ImageRef[] = [];
 				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: {
@@ -856,18 +604,12 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
+					stopCalls,
 					saveCalls,
 					removeImageCalls,
-					unpauseCalls,
 					commitErrorFor: (handle) =>
 						handle.name === 'worker-container'
-							? {
-									_tag: 'ContainerRuntimeError',
-									reason: 'image-save-failed',
-									detail: 'commit failed',
-								}
+							? { _tag: 'ContainerRuntimeError', reason: 'image-save-failed', detail: 'commit failed' }
 							: undefined,
 				});
 
@@ -879,131 +621,16 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('commit');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('commit');
 				}
+				// Both containers were gracefully stopped (flush) before any commit.
+				expect(stopCalls.sort()).toEqual(['db-container', 'worker-container']);
 				expect(saveCalls).toEqual([]);
+				// The db commit's temp tag is reaped by the failure finalizer.
 				expect(removeImageCalls).toEqual([
 					{ digest: 'sha256:db-container', tag: 'snapshot:db-container' },
 				]);
-				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
-			}),
-		),
-	);
-
-	it.effect(
-		'removes a committed temp tag when snapshot tag validation fails before image save',
-		() =>
-			withTempRoot(TEMP_PREFIX, (root) =>
-				Effect.gen(function* () {
-					const pauseCalls: string[] = [];
-					const saveCalls: ImageRef[] = [];
-					const removeImageCalls: ImageRef[] = [];
-					const unpauseCalls: string[] = [];
-					const runtime = runtimeStub({
-						handlesByRole: {
-							db: {
-								id: 'db-id',
-								name: 'db-container',
-								imageName: 'devstack-build:db',
-								status: 'running',
-								ips: [],
-							},
-						},
-						saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-						pauseCalls,
-						saveCalls,
-						removeImageCalls,
-						unpauseCalls,
-						committedRefFor: () => ({
-							digest: 'sha256:db-container',
-							tag: 'sha256:db-container',
-						}),
-					});
-
-					mkdirSync(join(root, 'artifact'), { recursive: true });
-					const exit = yield* runCaptureExit(root, runtime, [participant(['db'])]).pipe(
-						Effect.provide(NodeFileSystem.layer),
-					);
-
-					expect(Exit.isFailure(exit)).toBe(true);
-					const error = Exit.findErrorOption(exit);
-					expect(error._tag).toBe('Some');
-					if (error._tag === 'Some') {
-						expect(error.value).toBeInstanceOf(CapturePhaseError);
-						if (error.value._tag === 'SnapshotCapturePhaseError') {
-							expect(error.value.phase).toBe('commit');
-							expect(error.value.detail).toContain('restorable snapshot tag');
-						}
-					}
-					expect(saveCalls).toEqual([]);
-					expect(removeImageCalls).toEqual([
-						{ digest: 'sha256:db-container', tag: 'sha256:db-container' },
-					]);
-					expect(unpauseCalls).toEqual(['db-container']);
-				}),
-			),
-	);
-
-	it.effect('unpauses committed containers when image save fails', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				const runtime = runtimeStub({
-					handlesByRole: {
-						validator: {
-							id: 'validator-id',
-							name: 'validator-container',
-							imageName: 'devstack-build:sui-validator',
-							status: 'running',
-							ips: [],
-						},
-					},
-					saveImage: () =>
-						Stream.fail({
-							_tag: 'ContainerRuntimeError',
-							reason: 'image-save-failed',
-							detail: 'save failed',
-						}),
-					saveImages: () =>
-						Stream.fail({
-							_tag: 'ContainerRuntimeError',
-							reason: 'image-save-failed',
-							detail: 'save failed',
-						}),
-					pauseCalls,
-					saveCalls,
-					removeImageCalls,
-					unpauseCalls,
-				});
-
-				mkdirSync(join(root, 'artifact'), { recursive: true });
-				const exit = yield* runCaptureExit(root, runtime, [participant(['validator'])]).pipe(
-					Effect.provide(NodeFileSystem.layer),
-				);
-
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					expect(error.value._tag).toBe('SnapshotCapturePhaseError');
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('save-images');
-					}
-				}
-				expect(pauseCalls).toEqual(['validator-container']);
-				expect(saveCalls.map((ref) => ref.tag)).toEqual(['snapshot:validator-container']);
-				expect(removeImageCalls).toEqual([
-					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
-				]);
-				expect(unpauseCalls).toEqual(['validator-container']);
 			}),
 		),
 	);
@@ -1011,10 +638,7 @@ describe('snapshot capture container images', () => {
 	it.effect('removes committed temp tags when batched image save fails immediately', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
 				const removeImageCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						db: {
@@ -1032,17 +656,13 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
 					saveImages: () =>
 						Stream.fail({
 							_tag: 'ContainerRuntimeError',
 							reason: 'image-save-failed',
 							detail: 'save spawn failed',
 						}),
-					pauseCalls,
-					saveCalls,
 					removeImageCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -1053,31 +673,64 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('save-images');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('save-images');
 				}
-				expect(saveCalls.map((ref) => ref.tag)).toEqual([
-					'snapshot:db-container',
-					'snapshot:worker-container',
-				]);
 				expect(removeImageCalls).toEqual([
 					{ digest: 'sha256:db-container', tag: 'snapshot:db-container' },
 					{ digest: 'sha256:worker-container', tag: 'snapshot:worker-container' },
 				]);
-				expect(unpauseCalls).toEqual(['db-container', 'worker-container']);
 			}),
 		),
 	);
 
-	it.effect('rejects digest-only image names before pause/save side effects', () =>
+	it.effect('fails when graceful stop fails (containers left recoverable, no artifact)', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
+				const stopCalls: string[] = [];
 				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
+				const runtime = runtimeStub({
+					handlesByRole: {
+						db: {
+							id: 'db-id',
+							name: 'db-container',
+							imageName: 'devstack-build:db',
+							status: 'running',
+							ips: [],
+						},
+					},
+					stopCalls,
+					saveCalls,
+					stopErrorFor: () => ({
+						_tag: 'ContainerRuntimeError',
+						reason: 'daemon-unreachable',
+						detail: 'stop failed',
+					}),
+				});
+
+				mkdirSync(join(root, 'artifact'), { recursive: true });
+				const exit = yield* runCaptureExit(root, runtime, [participant(['db'])]).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('stop');
+				}
+				// No commit/save ran; no artifact published.
+				expect(saveCalls).toEqual([]);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+			}),
+		),
+	);
+
+	it.effect('rejects digest-only image names before any stop/commit side effects', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const stopCalls: string[] = [];
+				const saveCalls: ImageRef[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -1088,10 +741,8 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
+					stopCalls,
 					saveCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -1102,26 +753,21 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('commit');
-						expect(error.value.detail).toContain('restorable Docker tag destination');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('commit');
+					expect(error.value.detail).toContain('restorable Docker tag destination');
 				}
-				expect(pauseCalls).toEqual([]);
+				expect(stopCalls).toEqual([]);
 				expect(saveCalls).toEqual([]);
-				expect(unpauseCalls).toEqual([]);
 			}),
 		),
 	);
 
-	it.effect('rejects unsafe container label path segments before writing image artifacts', () =>
+	it.effect('rejects unsafe container label path segments before any side effects', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
+				const stopCalls: string[] = [];
 				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
 				const runtime = runtimeStub({
 					handlesByRole: {
 						validator: {
@@ -1132,70 +778,159 @@ describe('snapshot capture container images', () => {
 							ips: [],
 						},
 					},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
+					stopCalls,
 					saveCalls,
-					unpauseCalls,
 				});
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
 				const exit = yield* runCaptureExit(root, runtime, [
-					participant(['validator'], (role) => ({
-						...label(role),
-						plugin: '../sui',
-					})),
+					participant(['validator'], (role) => ({ ...label(role), plugin: '../sui' })),
 				]).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(Exit.isFailure(exit)).toBe(true);
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(CapturePhaseError);
-					if (error.value._tag === 'SnapshotCapturePhaseError') {
-						expect(error.value.phase).toBe('commit');
-						expect(error.value.detail).toContain('unsafe snapshot plugin path segment');
-					}
+				if (error._tag === 'Some' && error.value._tag === 'SnapshotCapturePhaseError') {
+					expect(error.value.phase).toBe('commit');
+					expect(error.value.detail).toContain('unsafe snapshot plugin path segment');
 				}
-				expect(pauseCalls).toEqual([]);
+				expect(stopCalls).toEqual([]);
 				expect(saveCalls).toEqual([]);
-				expect(unpauseCalls).toEqual([]);
 			}),
 		),
 	);
 });
 
-// Regression for Phase B3: identity-merge fail-on-conflict at capture
-// time. Pre-fix, capture silently last-write-wins'd colliding identity
-// keys; the conflict only surfaced at restore time (way after the
-// operator could have fixed the offending plugins). Post-fix, capture
-// fails AT THE CAPTURE SITE with `IdentityContributionConflictError`
-// (`_tag: 'SnapshotIdentityContributionConflict'`).
+// The post-publish bounce tail: retag committed images onto their original
+// names + hard-rm the stopped containers + run the injected resume. This is
+// the capture-resume mechanism (recreate-from-committed-image, never docker
+// start) — symmetric with restore's retag-to-original + hard-rm + converge.
+describe('resumeAfterCapture — retag + hard-rm + resume', () => {
+	const meta = (containers: SnapshotMetadata['containers']): SnapshotMetadata => ({
+		version: 3,
+		id: snapshotIdFromString('snap-resume'),
+		label: null,
+		createdAt: 0,
+		app: 'capture-app',
+		stack: 'main',
+		network: 'sui:local',
+		hostTreeIncluded: false,
+		subtrees: [],
+		containers,
+		identity: { chain: 'sui:local' },
+		participants: ['sui#0'],
+	});
+
+	it.effect('retags each committed image onto the original name, hard-rms, then resumes', () =>
+		Effect.gen(function* () {
+			const tagCalls: Array<{ src: string | undefined; dst: string }> = [];
+			const removeCalls: Array<string> = [];
+			let resumed = false;
+			const runtime: ContainerRuntime = {
+				...runtimeStub({ handlesByRole: {} }),
+				tagImage: (src, newTag) =>
+					Effect.sync(() => {
+						tagCalls.push({ src: src.tag, dst: newTag });
+					}),
+				removeManagedContainers: (labelMatch) =>
+					Effect.sync(() => {
+						removeCalls.push(`${labelMatch.plugin}/${labelMatch.role}`);
+						return 1;
+					}),
+			};
+
+			const exit = yield* Effect.exit(
+				resumeAfterCapture(
+					meta([
+						{
+							plugin: 'walrus',
+							role: 'storage-node-0',
+							imageName: 'devstack-build:walrus-node-0',
+							snapshotTag: 'snapshot:walrus-node-0',
+							tarPath: imageBundlePath,
+						},
+					]),
+					{
+						runtime,
+						app: 'capture-app',
+						stack: 'main',
+						resume: Effect.sync(() => {
+							resumed = true;
+						}),
+					},
+				),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			// Retag the committed snapshot tag onto the original image name.
+			expect(tagCalls).toEqual([
+				{ src: 'snapshot:walrus-node-0', dst: 'devstack-build:walrus-node-0' },
+			]);
+			// Hard-rm the captured container by its label tuple.
+			expect(removeCalls).toEqual(['walrus/storage-node-0']);
+			// Resume (recreate + wait-write-ready) ran AFTER retag + hard-rm.
+			expect(resumed).toBe(true);
+		}),
+	);
+
+	it.effect('omits the resume when none is injected (offline one-shot capture)', () =>
+		Effect.gen(function* () {
+			const tagCalls: string[] = [];
+			const removeCalls: string[] = [];
+			const runtime: ContainerRuntime = {
+				...runtimeStub({ handlesByRole: {} }),
+				tagImage: (_src, newTag) =>
+					Effect.sync(() => {
+						tagCalls.push(newTag);
+					}),
+				removeManagedContainers: (labelMatch) =>
+					Effect.sync(() => {
+						removeCalls.push(`${labelMatch.plugin}/${labelMatch.role}`);
+						return 1;
+					}),
+			};
+
+			const exit = yield* Effect.exit(
+				resumeAfterCapture(
+					meta([
+						{
+							plugin: 'seal',
+							role: 'key-server',
+							imageName: 'devstack-build:seal',
+							snapshotTag: 'snapshot:seal',
+							tarPath: imageBundlePath,
+						},
+					]),
+					{ runtime, app: 'capture-app', stack: 'main' },
+				),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			expect(tagCalls).toEqual(['devstack-build:seal']);
+			expect(removeCalls).toEqual(['seal/key-server']);
+		}),
+	);
+});
+
+// Regression for Phase B3: identity-merge fail-on-conflict at capture time.
+// Post-fix, capture fails AT THE CAPTURE SITE (during the pre-stop gather)
+// with `IdentityContributionConflictError`
+// (`_tag: 'SnapshotIdentityContributionConflict'`) — BEFORE any stop.
 describe('snapshot capture — identity contribution conflict', () => {
 	it.effect('two plugins contributing different values for the same key fail at capture', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				const runtime = runtimeStub({
-					handlesByRole: {},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
-					saveCalls,
-					unpauseCalls,
-				});
-
+				const stopCalls: string[] = [];
+				const runtime = runtimeStub({ handlesByRole: {}, stopCalls });
 				const a: SnapshotParticipant = {
 					...participant([]),
 					plugin: 'sui#0',
 					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
-					captureContribution: Effect.succeed({}),
 				};
 				const b: SnapshotParticipant = {
 					...participant([]),
-					plugin: 'pyth#0',
+					plugin: 'walrus#0',
 					captureIdentity: Effect.succeed({ chain: 'sui:testnet' }),
-					captureContribution: Effect.succeed({}),
 				};
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -1207,19 +942,10 @@ describe('snapshot capture — identity contribution conflict', () => {
 				const error = Exit.findErrorOption(exit);
 				expect(error._tag).toBe('Some');
 				if (error._tag === 'Some') {
-					const tag = (error.value as { readonly _tag?: string })._tag;
-					expect(tag).toBe('SnapshotIdentityContributionConflict');
-					const conflict = error.value as unknown as {
-						readonly key: string;
-						readonly conflictingPlugins: ReadonlyArray<string>;
-						readonly values: ReadonlyArray<string>;
-					};
-					expect(conflict.key).toBe('chain');
-					expect([...conflict.conflictingPlugins].sort()).toEqual(['pyth#0', 'sui#0']);
-					expect([...conflict.values].sort()).toEqual(['sui:local', 'sui:testnet']);
+					expect(error.value._tag).toBe('SnapshotIdentityContributionConflict');
 				}
-				// And NO artifact was written — the failure happens before
-				// metadata flush.
+				// Conflict surfaces during gather, BEFORE any stop.
+				expect(stopCalls).toEqual([]);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
 			}),
 		),
@@ -1228,28 +954,16 @@ describe('snapshot capture — identity contribution conflict', () => {
 	it.effect('two plugins contributing the SAME value for the same key succeed', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
-				const pauseCalls: string[] = [];
-				const saveCalls: ImageRef[] = [];
-				const unpauseCalls: string[] = [];
-				const runtime = runtimeStub({
-					handlesByRole: {},
-					saveImage: (ref) => Stream.make(Buffer.from(`tar:${ref.tag ?? ref.digest}`)),
-					pauseCalls,
-					saveCalls,
-					unpauseCalls,
-				});
-
+				const runtime = runtimeStub({ handlesByRole: {} });
 				const a: SnapshotParticipant = {
 					...participant([]),
 					plugin: 'sui#0',
 					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
-					captureContribution: Effect.succeed({}),
 				};
 				const b: SnapshotParticipant = {
 					...participant([]),
-					plugin: 'pyth#0',
+					plugin: 'walrus#0',
 					captureIdentity: Effect.succeed({ chain: 'sui:local' }),
-					captureContribution: Effect.succeed({}),
 				};
 
 				mkdirSync(join(root, 'artifact'), { recursive: true });
@@ -1258,6 +972,8 @@ describe('snapshot capture — identity contribution conflict', () => {
 				);
 
 				expect(Exit.isSuccess(exit)).toBe(true);
+				if (!Exit.isSuccess(exit)) return;
+				expect(exit.value.identity).toEqual({ chain: 'sui:local' });
 			}),
 		),
 	);

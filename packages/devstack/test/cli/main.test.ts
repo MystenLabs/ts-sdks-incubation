@@ -8,7 +8,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
 import {
+	CACHE_DIR_NAME,
 	contributionPath,
+	DEPLOY_CACHE_NAMESPACES,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SnapshotLayout,
 	SNAPSHOT_META_VERSION,
@@ -136,6 +138,10 @@ const writeRestorableSnapshotArtifact = async (
 ): Promise<void> => {
 	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
 	mkdirSync(join(snapshotDir, SnapshotLayout.contributionsDir), { recursive: true });
+	// Seed a live deploy-cache namespace so restore's PR#1 cache-existence
+	// preflight (fail-closed when the sole source of the on-chain ids is gone)
+	// is satisfied — post-D1 the live cache is the source restore reuses.
+	mkdirSync(join(stackRoot, CACHE_DIR_NAME, DEPLOY_CACHE_NAMESPACES[0]!), { recursive: true });
 	const participants = Object.entries(identity);
 	writeFileSync(
 		join(snapshotDir, SnapshotLayout.metaFile),

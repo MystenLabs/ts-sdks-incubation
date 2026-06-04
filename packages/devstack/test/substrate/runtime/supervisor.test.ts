@@ -654,61 +654,16 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('snapshot capture does not block shutdown commands', () =>
-		Effect.gen(function* () {
-			const captureStarted = yield* Deferred.make<void>();
-			const releaseCapture = yield* Deferred.make<void>();
-			const calls = yield* Ref.make(0);
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const startup = yield* startSupervisor(
-						stack,
-						identity,
-						state,
-						Context.empty(),
-						noopContributionDispatcher,
-						(cmd) => {
-							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
-							return Effect.gen(function* () {
-								yield* Ref.update(calls, (n) => n + 1);
-								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
-								yield* Deferred.await(releaseCapture);
-								return [
-									{
-										tag: 'snapshot.captured' as const,
-										snapshotId: 'held',
-										...(cmd.name === undefined ? {} : { name: cmd.name }),
-										at: 1,
-									},
-								];
-							});
-						},
-					);
-					yield* startup.runInitialAcquire;
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'before-change',
-					});
-					yield* Deferred.await(captureStarted);
-					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
-					for (let i = 0; i < 10; i++) {
-						const snapshot = yield* SubscriptionRef.get(state);
-						if (snapshot.cycle.phase === 'shutting-down') break;
-						yield* Effect.yieldNow;
-					}
-
-					const snap = yield* SubscriptionRef.get(state);
-					expect(snap.cycle.phase).toBe('shutting-down');
-					expect(yield* Ref.get(calls)).toBe(1);
-					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
-					yield* startup.handle.awaitShutdown;
-				}),
-			);
-		}),
-	);
+	// NOTE: the former "snapshot capture does not block shutdown commands" and
+	// "second snapshot keypress is skipped while capture is running" tests are
+	// removed. Capture is no longer a forked background task with skip-dedup; it
+	// is the lifecycle bounce that runs INLINE in the command loop (gather →
+	// graceful-stop → commit → retag → hard-rm + the loop's converge), exactly
+	// like `snapshot.restore`. The command loop serializes commands, so a
+	// long capture is followed by — not overlapped with — a queued command;
+	// double-SIGINT hard-kill remains the escape hatch (covered by the shutdown
+	// tests). The stack-restart background task (forked, skip-deduped) is
+	// unchanged — see "manual stack restart does not block shutdown commands".
 
 	it.effect('manual stack restart does not block shutdown commands', () =>
 		Effect.gen(function* () {
@@ -764,74 +719,6 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-	it.effect('second snapshot keypress is skipped while capture is running', () =>
-		Effect.gen(function* () {
-			const captureStarted = yield* Deferred.make<void>();
-			const releaseCapture = yield* Deferred.make<void>();
-			const calls = yield* Ref.make(0);
-			const eventTags = yield* Ref.make<ReadonlyArray<string>>([]);
-			const state = yield* makeProjectionRef();
-			const stack: SupervisedStack = { _tag: 'Stack', members: [], options: {} };
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const startup = yield* startSupervisor(
-						stack,
-						identity,
-						state,
-						Context.empty(),
-						noopContributionDispatcher,
-						(cmd) => {
-							if (cmd.tag !== 'snapshot.capture') return Effect.succeed([]);
-							return Effect.gen(function* () {
-								yield* Ref.update(calls, (n) => n + 1);
-								yield* Deferred.succeed(captureStarted, void 0).pipe(Effect.ignore);
-								yield* Deferred.await(releaseCapture);
-								return [
-									{
-										tag: 'snapshot.captured' as const,
-										snapshotId: 'held',
-										...(cmd.name === undefined ? {} : { name: cmd.name }),
-										at: 1,
-									},
-								];
-							});
-						},
-					);
-					yield* Effect.forkScoped(
-						Effect.gen(function* () {
-							while (true) {
-								const event = yield* Queue.take(startup.handle.events);
-								yield* Ref.update(eventTags, (tags) => [...tags, event.tag]);
-							}
-						}),
-					);
-
-					yield* startup.runInitialAcquire;
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'first',
-					});
-					yield* Deferred.await(captureStarted);
-					yield* Queue.offer(startup.handle.commands, {
-						tag: 'snapshot.capture',
-						name: 'second',
-					});
-					for (let i = 0; i < 10; i++) {
-						const tags = yield* Ref.get(eventTags);
-						if (tags.includes('snapshot.captureSkipped')) break;
-						yield* Effect.yieldNow;
-					}
-
-					expect(yield* Ref.get(calls)).toBe(1);
-					expect(yield* Ref.get(eventTags)).toContain('snapshot.captureSkipped');
-					yield* Deferred.succeed(releaseCapture, void 0).pipe(Effect.ignore);
-					yield* Queue.offer(startup.handle.commands, { tag: 'shutdown.requested' });
-					yield* startup.handle.awaitShutdown;
-				}),
-			);
-		}),
-	);
 
 	it.effect('hot restart reacquires with a fresh scope and ready gate', () =>
 		Effect.gen(function* () {

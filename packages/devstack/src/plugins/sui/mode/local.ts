@@ -59,6 +59,7 @@ import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
+import { waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
@@ -86,10 +87,23 @@ import {
 } from './shared-boot.ts';
 import type { SuiLocalOptions } from './spec.ts';
 
-/** Default ready-probe timeout for localnet. The validator's cold
- *  start runs genesis + faucet bootstrap; 60 s is the documented
- *  ceiling. */
-export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(60);
+/** Default ready-probe timeout for localnet.
+ *
+ *  This budget now covers TWO bands, because the ready-gate proves
+ *  caught-up-to-head, not just RPC-bound:
+ *
+ *    - cold boot — genesis + faucet bootstrap; the checkpoint store is
+ *      empty so the catch-up gate is satisfied almost immediately.
+ *    - warm restart / snapshot restore — `sui start` ALWAYS re-executes
+ *      its on-disk checkpoint store from seq=0 (the swarm boot model); a
+ *      restored or warm-resumed validator replays its committed store
+ *      back up to head before it serves committed objects. A multi-
+ *      thousand-checkpoint store replays for 60-120s (~50x realtime).
+ *
+ *  60s was a genesis-sized ceiling; it gives up mid-replay on a restore.
+ *  180s covers the replay band with margin while still bounding a wedged
+ *  boot (timeout → typed `rpc-probe` error). */
+export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
 /** Default sui validator binary version pinned by the vendored
  *  `images/sui/` Dockerfile. The build arg `SUI_VERSION` is threaded
@@ -183,6 +197,22 @@ export const bootLocalMode = (
 
 		yield* setCurrentPluginPhase('waiting for Sui RPC, faucet, and GraphQL');
 		yield* waitForReady(directRpcUrl, directFaucetUrl, directGraphqlUrl, readyTimeout).pipe(
+			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+		);
+
+		// Caught-up-to-head gate. `waitForReady` only proves the RPC
+		// listener is BOUND. On a warm restart / snapshot restore the
+		// validator then re-executes its committed checkpoint store from
+		// seq=0 (~50x realtime); during that replay it serves stale /
+		// not-yet-existent objects, so downstream deploy-verify probes that
+		// run before catch-up read their committed ids as not-found and
+		// spuriously re-deploy with fresh ids. Wait once here, per boot,
+		// until the checkpoint head stabilizes to live cadence — so every
+		// downstream verify runs against a validator that already serves
+		// its committed state. On a cold/genesis boot the store is empty
+		// and this satisfies almost immediately.
+		yield* setCurrentPluginPhase('waiting for Sui checkpoint replay to catch up to head');
+		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
 
@@ -666,6 +696,168 @@ const waitForReady = (
 			Effect.asVoid,
 		);
 	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));
+
+// ---------------------------------------------------------------------------
+// Caught-up-to-head gate
+// ---------------------------------------------------------------------------
+
+/** Poll interval for the checkpoint catch-up gate. Replay runs ~50x
+ *  realtime (hundreds of checkpoints per second); a 1s interval samples
+ *  a large enough window to tell replay cadence (hundreds/poll) apart
+ *  from live cadence (a handful/poll). */
+const CATCH_UP_POLL_INTERVAL_MS = 1_000;
+
+/** Per-poll delta at or below which the head is considered to be moving
+ *  at LIVE cadence rather than fast-replay cadence. Localnet's narwhal/
+ *  bullshark consensus produces only a few checkpoints per second when
+ *  idle; replay produces hundreds per `CATCH_UP_POLL_INTERVAL_MS`. A
+ *  threshold of 25 sits well above live idle cadence and far below the
+ *  replay rate, so it cannot mistake live ticking for replay. */
+const CATCH_UP_LIVE_CADENCE_DELTA = 25;
+
+/** Number of CONSECUTIVE live-cadence polls required before declaring
+ *  caught-up. Two consecutive small deltas rules out the moment replay
+ *  briefly stalls (e.g. a GC pause) from being read as caught-up: a
+ *  paused replay shows one small delta then resumes with a large one,
+ *  so it never strings two together. A genuinely caught-up validator
+ *  holds small deltas indefinitely. */
+const CATCH_UP_STABLE_POLLS_REQUIRED = 2;
+
+/** Fetch the latest checkpoint sequence number via raw JSON-RPC.
+ *  Returns the number, or `undefined` when the listener answered but the
+ *  result shape was unexpected (treated as "not yet sampleable"). */
+const fetchLatestCheckpoint = (
+	rpcUrl: string,
+): Effect.Effect<number | undefined, unknown> =>
+	Effect.tryPromise({
+		try: (signal) =>
+			globalThis.fetch(rpcUrl, {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'sui_getLatestCheckpointSequenceNumber',
+					params: [],
+				}),
+				signal,
+			}),
+		catch: (cause) => cause,
+	}).pipe(
+		Effect.flatMap((response) =>
+			Effect.tryPromise({
+				try: () => response.json() as Promise<{ readonly result?: unknown }>,
+				catch: (cause) => cause,
+			}),
+		),
+		Effect.map((body) => {
+			const raw = body.result;
+			if (typeof raw === 'number') return raw;
+			if (typeof raw === 'string') {
+				const n = Number(raw);
+				return Number.isFinite(n) ? n : undefined;
+			}
+			return undefined;
+		}),
+	);
+
+/** One poll's verdict from the catch-up cadence evaluator. */
+export type CatchUpVerdict =
+	| { readonly caughtUp: true }
+	| { readonly caughtUp: false; readonly detail: unknown };
+
+/** Build the stateful cadence evaluator the catch-up gate feeds samples
+ *  into. Pure + injectable so the cadence logic is unit-testable without
+ *  a live validator. Each `step(sample)` consumes one
+ *  `getLatestCheckpointSequenceNumber` reading:
+ *
+ *    - `undefined` (listener answered, result unparseable) resets the
+ *      stability streak.
+ *    - the FIRST numeric sample only establishes a baseline (its delta is
+ *      `+Infinity`), so the gate always takes at least two samples before
+ *      it can declare caught-up — cheap on cold boot, correct on restore.
+ *    - a delta `<= CATCH_UP_LIVE_CADENCE_DELTA` counts toward the live-
+ *      cadence streak; a larger delta (fast replay) resets it.
+ *    - `CATCH_UP_STABLE_POLLS_REQUIRED` consecutive live-cadence deltas →
+ *      caught-up. */
+export const makeCatchUpEvaluator = (opts?: {
+	readonly liveCadenceDelta?: number;
+	readonly stablePollsRequired?: number;
+}): {
+	readonly step: (sample: number | undefined) => CatchUpVerdict;
+	readonly last: () => number | undefined;
+} => {
+	const liveCadenceDelta = opts?.liveCadenceDelta ?? CATCH_UP_LIVE_CADENCE_DELTA;
+	const stablePollsRequired = opts?.stablePollsRequired ?? CATCH_UP_STABLE_POLLS_REQUIRED;
+	let previous: number | undefined;
+	let stablePolls = 0;
+	return {
+		step: (sample) => {
+			if (sample === undefined) {
+				stablePolls = 0;
+				return { caughtUp: false, detail: { reason: 'unparseable-checkpoint' } };
+			}
+			const delta = previous === undefined ? Number.POSITIVE_INFINITY : sample - previous;
+			previous = sample;
+			if (delta <= liveCadenceDelta) {
+				stablePolls += 1;
+			} else {
+				stablePolls = 0;
+			}
+			if (stablePolls >= stablePollsRequired) return { caughtUp: true };
+			return { caughtUp: false, detail: { current: sample, delta, stablePolls } };
+		},
+		last: () => previous,
+	};
+};
+
+/** Caught-up-to-head gate.
+ *
+ *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the
+ *  validator as caught up once the per-poll delta drops from the fast
+ *  replay rate (hundreds/poll) to live cadence (`<= CATCH_UP_LIVE_
+ *  CADENCE_DELTA`/poll) and HOLDS there for `CATCH_UP_STABLE_POLLS_
+ *  REQUIRED` consecutive polls. Cold/genesis boots satisfy this almost
+ *  immediately (the store is empty, so deltas are live-cadence from the
+ *  first sample); warm/restore boots wait out the whole replay.
+ *
+ *  A wedged boot (RPC bound but head never stabilizing) lapses the outer
+ *  deadline → typed `rpc-probe` error rather than hanging forever. */
+const waitForCheckpointCatchUp = (
+	rpcUrl: string,
+	readyTimeout: Duration.Duration,
+): Effect.Effect<void, SuiPluginError> =>
+	Effect.gen(function* () {
+		const readyTimeoutMs = Duration.toMillis(readyTimeout);
+		const evaluator = makeCatchUpEvaluator();
+
+		return yield* waitForProbe({
+			label: `${rpcUrl} (checkpoint catch-up)`,
+			timeoutMs: readyTimeoutMs,
+			intervalMs: CATCH_UP_POLL_INTERVAL_MS,
+			attemptTimeoutMs: PROBE_FETCH_TIMEOUT_MS,
+			probe: () =>
+				fetchLatestCheckpoint(rpcUrl).pipe(
+					Effect.map((current) => {
+						const verdict = evaluator.step(current);
+						return verdict.caughtUp ? true : { ready: false, detail: verdict.detail };
+					}),
+				),
+		}).pipe(
+			Effect.mapError(
+				(cause): SuiPluginError =>
+					suiPluginError(
+						'rpc-probe',
+						`sui local mode: validator did not catch up to checkpoint head within ` +
+							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). The checkpoint replay ` +
+							`(warm restart / snapshot restore re-executes the committed store from seq=0) ` +
+							`never stabilized to live cadence: ${formatUnknownError(cause)}`,
+						cause,
+					),
+			),
+			Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp'),
+		);
+	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp.gen'));
 
 // Chain-id fetch + waitForTransactionsReady builders live in
 // `shared-boot.ts` — see imports at the top of this file.

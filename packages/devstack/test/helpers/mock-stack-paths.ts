@@ -40,7 +40,6 @@ export const stackPathsFor = (stackRoot: string, rosterBase: string = stackRoot)
 		stackLockFile: join(rosterBase, 'stack.lock'),
 		rosterFile: join(rosterBase, 'roster.json'),
 		containerClaimsFile: join(rosterBase, 'container-claims.json'),
-		snapshotReservationFile: join(stackRoot, 'snapshot.reservation'),
 		cacheEntry,
 		cacheChainDir,
 		cacheNamespaceDir,

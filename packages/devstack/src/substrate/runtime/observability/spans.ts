@@ -59,7 +59,6 @@ export const SpanAttr = {
 	artifactPublisherPath: 'artifactPublisher.path',
 	stackLockPath: 'devstack.stack-lock.path',
 	stackLockTimeoutMillis: 'devstack.stack-lock.timeoutMillis',
-	snapshotReservationPath: 'devstack.snapshot-reservation.path',
 } as const;
 
 export interface StackSpanContext {

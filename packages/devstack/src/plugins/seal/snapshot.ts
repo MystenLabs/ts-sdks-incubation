@@ -50,8 +50,8 @@ export const makeLocalKeygenSnapshotable = (inputs: {
 		// orchestrator's POV (just a path segment).
 		subtrees: [`seal`],
 		managedContainers: [labelTuple],
-		// The key-server's Docker stop grace is owned by key-server.ts.
-		quiesce: Effect.void,
+		// The key-server's Docker stop grace is owned by key-server.ts; the
+		// capture bounce's graceful stop flushes its state before commit.
 		preRestore: Effect.succeed({
 			kind: 'seal' as const,
 			name: inputs.name,

@@ -155,6 +155,22 @@ export interface LocalModeOutputs {
  * 4: "Signer MUST be an explicit upstream").
  */
 const LOCAL_PACKAGE_CACHE_SCHEMA_VERSION = 'v3';
+// Short verify budget covering RPC index-visibility lag only. The big
+// post-restore catch-up window — `sui start` re-executes its committed
+// checkpoint store from seq=0, and `getObject(packageId)` reads not-found
+// until the replay reaches the publish checkpoint — is now absorbed by the
+// sui plugin's caught-up-to-head ready-gate (`waitForCheckpointCatchUp` in
+// plugins/sui/mode/local.ts): the validator does not report ready until its
+// head stabilizes to live cadence, so by the time this verify runs the
+// committed package object is already served. This budget only needs to ride
+// out the small fullnode/index lag between publish-tx commit and `getObject`
+// visibility — NOT the whole replay. If it gives up too soon it returns null →
+// the substrate re-PRODUCES (re-publishes) the package, minting a FRESH
+// packageId (codegen `config.ts` loses the stable id; downstream
+// `deepbookOf(...).packageId` churns). A truly-wiped chain genuinely has no
+// package and re-publishes once the budget lapses. Mirrors
+// WALRUS_DEPLOY_VERIFY_READINESS_* in plugins/walrus/deploy.ts — the on-chain
+// artifact-publisher consumers share the same short RPC-lag tolerance.
 const PACKAGE_CACHE_VERIFY_MAX_ATTEMPTS = 20;
 const PACKAGE_CACHE_VERIFY_DELAY_MS = 250;
 
@@ -190,10 +206,12 @@ export const buildVerifyProbe = (
 		const delayMs = opts?.delayMs ?? PACKAGE_CACHE_VERIFY_DELAY_MS;
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			// Lenient mode in the underlying probe already coerces
-			// not-found AND transient → null. We retry nulls briefly
-			// because local Sui restart can report ready before package
-			// objects are immediately queryable, and a false cache miss
-			// turns a warm restart into an unnecessary publish.
+			// not-found AND transient → null. We retry nulls briefly to
+			// ride out the small fullnode/index lag between publish-tx
+			// commit and `getObject` visibility; the validator's larger
+			// post-restore replay is already gated upstream by the sui
+			// plugin's caught-up-to-head ready-gate, so a false cache miss
+			// no longer turns a warm restart into an unnecessary publish.
 			const result: typeof PackageVerifyShape.Type | null = yield* probe
 				.get({ kind: 'object', objectId: cachedPackageIdHint }, PackageVerifyShape, 'lenient')
 				.pipe(

@@ -9,8 +9,10 @@
 //     mutated only under the lock.
 //   - `commands.ndjson` / `events.ndjson` — filesystem command
 //     channel between peer CLI commands and the live supervisor.
-//   - `snapshot.reservation` — present-or-absent file (O_EXCL create
-//     = acquire; unlink = release).
+//
+// The snapshot bounce holds `stack.lock` for the (bounded, whole-stack-
+// stopped) snapshot window — there is no separate snapshot-reservation file
+// (the lock subsumes the concurrency guard).
 
 import { Schema } from 'effect';
 
@@ -77,35 +79,3 @@ export const DEFAULT_SWEEP_POLICY: RosterSweepPolicy = {
 	staleAfterMillis: 30_000,
 	trustForeignHosts: true,
 };
-
-/** Snapshot reservation file — presence-or-absence semaphore. The
- *  reservation's creator pid is encoded in the JSON body for the
- *  orphan sweep.
- *
- *  `hostname` is carried so the orphan sweep can skip foreign-host
- *  reservations on shared filesystems (NFS): a peer on host B writing
- *  the reservation would be falsely declared "dead" by host A's kernel
- *  probe (`kill(pid, 0)` only meaningful on the local host). The sweep
- *  treats foreign-host reservations as alive (conservative — matches
- *  the roster's `trustForeignHosts` policy). */
-export interface SnapshotReservation {
-	readonly version: 1;
-	readonly creatorPid: number;
-	readonly creatorStartTime: number | null;
-	readonly createdAt: number;
-	readonly hostname: string;
-}
-
-/** Versioned schema — routed through `versionedDocSchema` so a v2
- *  migration can add a literal-tagged `Schema.Union` at one call site
- *  rather than hand-rolling a discriminator. `creatorStartTime` mirrors
- *  `RosterHolderSchema.startTime` (`NullOr(Number)`): when the creator
- *  couldn't probe its own startTime, write null and the sweep's
- *  liveness check short-circuits to "alive" rather than evicting on a
- *  literal `0` mismatch. */
-export const SnapshotReservationSchema = versionedDocSchema(1, {
-	creatorPid: Schema.Number,
-	creatorStartTime: Schema.NullOr(Schema.Number),
-	createdAt: Schema.Number,
-	hostname: Schema.String,
-});

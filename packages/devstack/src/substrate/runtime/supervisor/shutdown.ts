@@ -20,10 +20,7 @@ import { Deferred, Effect, Ref } from 'effect';
 import type { EngineCommand } from '../../events.ts';
 import { reconcileGraph } from '../reconcile/graph.ts';
 import { graphKeysScope, preserveAllPolicy, reconcileSpec } from '../reconcile/spec.ts';
-import {
-	requestBackgroundSnapshotInterrupt,
-	requestBackgroundStackRestartInterrupt,
-} from './background-tasks.ts';
+import { requestBackgroundStackRestartInterrupt } from './background-tasks.ts';
 import type { SupervisorState } from './state.ts';
 import { publish, setCyclePhase } from './wiring.ts';
 
@@ -43,7 +40,6 @@ export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<vo
 		// the operator asking for abort.
 		yield* Effect.uninterruptible(
 			Effect.gen(function* () {
-				yield* requestBackgroundSnapshotInterrupt(deps);
 				yield* setCyclePhase(ref, 'shutting-down');
 				yield* Ref.set(shutdownLatch, true);
 				yield* logger.log('supervisor', null, {
@@ -79,7 +75,6 @@ export const handleHardKillRequested = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const { ref, hub, shutdownLatch, logger } = deps;
-		yield* requestBackgroundSnapshotInterrupt(deps);
 		yield* publish(ref, hub, {
 			tag: 'shutdown.escalated',
 			signal: cmd.signal,

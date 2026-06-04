@@ -91,12 +91,14 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'meta-absent',
 			'read-contribution',
 			'preflight',
+			'cache-missing',
 			'pre-restore-hook',
 			'untar-host-tree',
 			'load-image',
 			'retag-image',
 			'post-restore-hook',
 			'pre-cleanup',
+			'resume',
 			'missing-subtree-fatal',
 		]),
 		plugin: Schema.optional(Schema.String),
@@ -608,7 +610,6 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME, kind: 'file' },
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
-	{ relativePath: 'snapshot.reservation', kind: 'file' },
 	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES in descriptor.ts). Post-D1 the
 	// capture NO LONGER tars these, so there is no captured copy in staging — the
 	// LIVE cache is now the SOLE source. A wipe preserves it (D0 coupling), so it
@@ -629,6 +630,46 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 ];
 
 // -----------------------------------------------------------------------------
+// Cache-existence preflight — fail-closed BEFORE any mutation (PR#1).
+// -----------------------------------------------------------------------------
+
+/**
+ * Post-D1 the live `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source of
+ * the on-chain deploy/mint ids (capture no longer tars `cache/<ns>`; a wipe
+ * preserves the live cache alongside `snapshots/`). Restore PRESERVES that
+ * live cache across the stage-and-swap so the post-restore boot REUSES the
+ * deploy instead of re-running it with fresh ids.
+ *
+ * If NONE of the deploy-cache namespaces exists on disk, that sole source is
+ * gone — a restore would let the next boot silently re-deploy with FRESH ids,
+ * orphaning every pre-snapshot object. Refuse here (fail-closed, BEFORE any
+ * mutation, matching the identity-guard posture) with a typed `cache-missing`
+ * error rather than silently orphaning. A genuine first-ever restore with no
+ * deploy yet is not a real scenario for the cache-derived subsystems the
+ * teeth protect (walrus/seal); the matrix's hard-reset phase asserts this
+ * loudly instead of a silent re-deploy.
+ */
+const requireDeployCachePresent = (
+	stackRoot: string,
+): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const fs = yield* FileSystem.FileSystem;
+		for (const namespace of DEPLOY_CACHE_NAMESPACES) {
+			const present = yield* fs
+				.exists(`${stackRoot}/${CACHE_DIR_NAME}/${namespace}`)
+				.pipe(Effect.catch(() => Effect.succeed(false)));
+			if (present) return;
+		}
+		return yield* failRestore(
+			'cache-missing',
+			`live deploy cache is absent under ${stackRoot}/${CACHE_DIR_NAME}/ ` +
+				`(none of ${DEPLOY_CACHE_NAMESPACES.join(', ')} present). Post-D1 the live cache is the ` +
+				`SOLE source of the on-chain deploy/mint ids restore reuses; restoring without it would ` +
+				`let the next boot re-deploy with FRESH ids and orphan every pre-snapshot object. Refusing.`,
+		);
+	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.cache-preflight'));
+
+// -----------------------------------------------------------------------------
 // Top-level restore — bracketed-atomic via stage-and-swap.
 // -----------------------------------------------------------------------------
 
@@ -641,6 +682,14 @@ export interface RestoreInputs {
 	readonly participants: ReadonlyArray<RestoreParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly runtimeIdentity: SnapshotRuntimeIdentity;
+	// RESUME is intentionally NOT a field here. `runRestore` performs the
+	// destructive swap+load+hard-rm UNDER `stack.lock` (held by the caller).
+	// The resume re-converges the stack, and each plugin's re-acquire takes
+	// `stack.lock` for its container claim — a non-reentrant O_EXCL lock — so
+	// running the resume inside this function (under the lock) self-deadlocks.
+	// The orchestrator (`service.ts`) therefore runs the injected resume AFTER
+	// the lock scope closes; `runRestore` owns only the locked half of the
+	// bounce. NEVER `docker start` — the resume is recreate-from-restored-image.
 }
 
 /**
@@ -678,8 +727,8 @@ export interface RestoreInputs {
  *            recreate-from-fresh, NOT adopt.
  *
  * Bracketed-atomic at the runtime-root level — external watchers never
- * observe a half-restored tree. The caller is responsible for
- * `acquireReservation`; restore supplies the runtime-control publish lock
+ * observe a half-restored tree. The caller holds `stack.lock` for the
+ * bounded snapshot window; restore supplies the runtime-control publish lock
  * to the swap-tree op.
  */
 export const runRestore = (
@@ -718,6 +767,12 @@ export const runRestore = (
 		}
 		const live = yield* mergeContributions(liveContributions);
 		yield* runIdentityGuard(meta.identity, live);
+
+		// step0b — PR#1 cache-existence preflight, ALSO fail-closed before any
+		//    mutation. Post-D1 the live deploy cache is the SOLE source of the
+		//    on-chain ids restore reuses; if it is gone, refuse (`cache-missing`)
+		//    rather than let the next boot silently re-deploy with fresh ids.
+		yield* requireDeployCachePresent(inputs.runtimeStackRoot);
 
 		// Plugin-level preRestore hooks (run AFTER identity-guard so a
 		// mismatch refuses without ever calling them). Pre-restore validation
@@ -879,6 +934,16 @@ export const runRestore = (
 				);
 			}
 		}
+
+		// RESUME = recreate-from-restored-image + wait-write-ready. The R1
+		// hard-rm above made the containers facts:null → the resume's converge
+		// sees them missing and recreates fresh from the restored images (whose
+		// names were re-tagged to the captured TARGET names), inheriting walrus's
+		// write-ready ready-gate. The resume is NOT run here: it must execute with
+		// `stack.lock` RELEASED (its per-plugin container claims re-take the lock),
+		// so the orchestrator (`service.ts`) runs the injected resume AFTER this
+		// function's lock scope closes. OMITTED entirely on the offline restore
+		// (the next boot is the resume). NEVER `docker start`.
 
 		return meta;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore'));

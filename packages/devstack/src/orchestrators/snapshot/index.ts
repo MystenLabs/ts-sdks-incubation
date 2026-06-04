@@ -17,17 +17,13 @@ export {
 // Capture
 export {
 	CapturePhaseError,
+	gatherCaptureParticipants,
+	resumeAfterCapture,
 	runCapture,
 	type CaptureInputs,
-	type SnapshotCaptureProgress,
-	type SnapshotCaptureProgressPhase,
+	type GatheredCapture,
 	type SnapshotParticipant,
-	type SnapshotProgressReporter,
 } from './capture.ts';
-
-// Command-level primitive shared by every `snapshot.capture` publisher
-// (supervisor command handler, offline CLI path, future web dashboard).
-export { captureSnapshot, type CaptureSnapshotArgs } from './capture-command.ts';
 
 // Restore
 export {
@@ -72,6 +68,7 @@ export {
 	containerImagePath,
 	containerImagesBundlePath,
 	contributionPath,
+	DEPLOY_CACHE_NAMESPACES,
 	IdentitySliceSchema,
 	OpaqueContributionStateSchema,
 	SnapshotDescriptorError,

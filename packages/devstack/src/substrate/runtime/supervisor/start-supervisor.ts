@@ -233,14 +233,11 @@ export const startSupervisor = (
 		const hub = yield* Queue.unbounded<EngineEvent>();
 		const commands = yield* Queue.unbounded<EngineCommand>();
 		const queuedCommands = yield* Queue.unbounded<QueuedCommand>();
-		// Background-task fiber slots: the live snapshot-capture / stack-restart
-		// fiber (or `null` when idle). The fiber IS the running state — see
-		// `BackgroundTaskSlot`. Forked into `supervisorScope` (below) via
-		// `Effect.forkIn`, interrupted via `Fiber.interrupt`.
-		const snapshotCaptureTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
-			void,
-			never
-		> | null>(null);
+		// Background-task fiber slot: the live stack-restart fiber (or `null`
+		// when idle). The fiber IS the running state — see `BackgroundTaskSlot`.
+		// Forked into `supervisorScope` (below) via `Effect.forkIn`, interrupted
+		// via `Fiber.interrupt`. (Snapshot capture/restore run inline in the
+		// command loop now — the bounce — so they have no forked slot.)
 		const stackRestartTask: BackgroundTaskSlot = yield* Ref.make<Fiber.Fiber<
 			void,
 			never
@@ -440,7 +437,6 @@ export const startSupervisor = (
 			hub,
 			queuedCommands,
 			supervisorScope,
-			snapshotCaptureTask,
 			stackRestartTask,
 			shutdownLatch,
 			shutdownComplete,
