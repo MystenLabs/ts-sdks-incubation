@@ -14,10 +14,10 @@
 // re-tightening on warm-start is the runtime's job (snapshot only
 // captures + restores).
 //
-// Variants that do NOT persist secret material (`keystore`, `env`,
-// `inline`, `signer`, `impersonate`) emit an EMPTY snapshot decl
-// with `missingTolerance: 'fine'` so cross-variant restores are
-// clean no-ops.
+// Variants that do NOT persist secret material (`signer`,
+// `impersonate`) emit an EMPTY snapshot decl with
+// `missingTolerance: 'fine'` so cross-variant restores are clean
+// no-ops.
 
 import { Effect } from 'effect';
 

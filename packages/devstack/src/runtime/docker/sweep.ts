@@ -1,26 +1,14 @@
-// Orphan sweep.
+// Managed-resource teardown.
 //
-// Architecture § Container runtime § Sweep timing:
-//   The supervisor invokes `sweepOrphans` AT BOOT, BEFORE any plugin
-//   acquire fires. Sweep finds containers stamped with the engine's
-//   label tuple but with no live process holder, and reclaims them
-//   (force-remove) under `stack.lock`.
-//
-// Orphan = labelled with `(app, stack)` AND NOT in the active
-// container-claim ledger AND NOT held by any live peer.
-//
-// "Live peer" = roster holder whose PID+startTime liveness check
-// succeeds. The cross-process roster + claim-ledger is the authority;
-// we never use docker labels alone (a peer's container counts as
-// claimed even if our claim ledger is empty for it).
+// Explicit, label-scoped removal of devstack-managed containers, images,
+// networks, and volumes. These are the intentional destructive paths
+// (wipe / restore / cross-stack prune) — they match on the engine's
+// label tuple and force-remove, without consulting the cross-process
+// claim ledger.
 
 import { Effect } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
-import { makeReaper } from '../../substrate/runtime/cross-process/liveness.ts';
-import { readClaims, type ContainerClaim } from '../../substrate/runtime/cross-process/roster.ts';
-import { acquireStackLock } from '../../substrate/runtime/cross-process/stack-lock.ts';
-import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
 	makeSpacedRetrySchedule,
 	NETWORK_REMOVE_RETRY_PROFILE,
@@ -28,7 +16,6 @@ import {
 import { DockerHost, DockerSpawner, dockerRunOk } from './client.ts';
 import {
 	ContainerRemoveFailed,
-	DaemonUnreachable,
 	ImageRemoveFailed,
 	NetworkOperationFailed,
 	type DockerRuntimeError,
@@ -59,15 +46,6 @@ import {
 	wrapGeneric,
 } from './wrap.ts';
 
-// The docker boot-time orphan sweep and the cross-stack lifecycle-prune
-// sweep are the two "reapers" that decide what is reclaimable. They share
-// the per-sweep `LivenessProbeScope` wiring through the `makeReaper`
-// combinator (`liveness.ts`) so that plumbing has ONE home. The
-// orchestration here is unchanged: the sweep stays a boot-phase pass that
-// holds `stack.lock` ONLY over the claim-ledger read, with the `docker
-// rm` loop OUTSIDE the lock.
-const reaper = makeReaper('runtime.docker.sweep');
-
 const removeManagedContainer = (
 	name: string,
 ): Effect.Effect<boolean, DockerRuntimeError, DockerHost | DockerSpawner> =>
@@ -86,85 +64,9 @@ const removeManagedContainer = (
 		);
 	});
 
-/** Sweep orphan containers matching the partial label tuple. Returns
- *  the number of containers removed.
- *
- *  The sweep:
- *
- *    1. Lists all containers with the canonical `devstack.managed=true`
- *       + caller-supplied partial tuple (typically `{app, stack}`).
- *    2. Reads the container-claim ledger (the file held alongside
- *       roster.json; mutated only under stack.lock).
- *    3. Under stack.lock, removes any container whose name is NOT in
- *       the ledger.
- *
- *  Concurrent sweepers are serialized by stack.lock. The architecture
- *  says briefly here — we hold the lock only across the read + the
- *  remove decision; we DON'T hold it across the individual `docker
- *  rm` calls (which can be slow). The cost: a peer that registered a
- *  claim between our decision and our rm gets its container rm'd
- *  anyway. The mitigation: this only fires on the BOOT path before
- *  any plugin acquires, so the steady-state "peer just claimed" race
- *  is not in the picture. */
-export const sweepOrphans = (
-	labelMatch: Partial<ContainerLabelTuple>,
-): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner | StackPathsService> =>
-	// Run the sweep under a FRESH per-sweep `LivenessProbeScope` via the
-	// shared reaper combinator. Orchestration is identical to before: the
-	// claim-ledger read happens under `stack.lock`; the `docker rm` loop
-	// runs OUTSIDE the lock.
-	reaper.withLivenessSweepScope(
-		Effect.gen(function* () {
-			const paths = yield* StackPathsService;
-			const containers = yield* listContainers(labelMatch);
-			if (containers.length === 0) return 0;
-
-			// Under stack.lock, snapshot the claim ledger. The decision
-			// (which to remove) happens here; the rm calls happen outside
-			// the lock.
-			const mapSubstrateError = (cause: unknown): DockerRuntimeError =>
-				new DaemonUnreachable({
-					op: 'cross-process.sweep',
-					detail: `sweep substrate read failed: ${String(cause)}`,
-					cause,
-				});
-			const claimNames = yield* Effect.scoped(
-				Effect.gen(function* () {
-					yield* acquireStackLock(paths.stackLockFile).pipe(Effect.mapError(mapSubstrateError));
-					const doc = yield* readClaims({
-						stackLockFile: paths.stackLockFile,
-						rosterFile: paths.rosterFile,
-						containerClaimsFile: paths.containerClaimsFile,
-					}).pipe(Effect.mapError(mapSubstrateError));
-					return new Set(doc.claims.map((c: ContainerClaim) => c.containerKey));
-				}),
-			);
-
-			// Sweep — best-effort per container. Individual rm failures
-			// don't poison the whole sweep, but they DO need operator
-			// visibility: a broken docker socket would otherwise silently
-			// swallow every entry. Surface the cause via `logWarning` so the
-			// supervisor's cascade and structured-log consumers can investigate.
-			// We reuse `removeManagedContainer` so the idempotent "no such
-			// container" path (a container reaped between list+rm) doesn't
-			// trip the warning logger.
-			let removed = 0;
-			for (const c of containers) {
-				if (claimNames.has(c.name)) continue;
-				const didRemove = yield* removeManagedContainer(c.name).pipe(
-					Effect.tapCause((cause) =>
-						Effect.logWarning('sweep: docker rm -f failed', { name: c.name, cause }),
-					),
-					Effect.catch(() => Effect.succeed(false)),
-				);
-				if (didRemove) removed += 1;
-			}
-			return removed;
-		}).pipe(Effect.withSpan('runtime.docker.sweep')),
-	);
-
-/** Explicit teardown. Unlike `sweepOrphans`, this does not consult the
- *  claim ledger; wipe/restore are intentional destructive operations. */
+/** Explicit teardown — force-removes managed containers matching the
+ *  partial label tuple, regardless of claim-ledger entries. Wipe/restore
+ *  are intentional destructive operations. */
 export const removeManagedContainers = (
 	labelMatch: Partial<ContainerLabelTuple>,
 ): Effect.Effect<number, DockerRuntimeError, DockerHost | DockerSpawner> =>

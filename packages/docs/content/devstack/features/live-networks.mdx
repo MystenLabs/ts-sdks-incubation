@@ -16,12 +16,13 @@ import {
 	knownPackage,
 	wallet,
 } from '@mysten-incubation/devstack';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 const DEV_PORT = 5173;
 
 const alice = account('alice', {
-	kind: 'env',
-	key: 'ALICE_PRIVATE_KEY',
+	kind: 'signer',
+	signer: Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!),
 });
 
 const registry = knownPackage('registry', {
@@ -181,6 +182,7 @@ const dex = deepbookFor(live).known({
 });
 ```
 
-Live accounts should use `env`, `keystore`, `inline`, or `signer` as appropriate. Fork replay
-accounts can use `impersonate`. The default ephemeral form is designed for local development, not
-custody of real assets.
+Live accounts should use the `signer` variant — pass a `Keypair` built from an env-var secret, an
+inline `suiprivkey1...` literal, a keystore entry, or a hardware/KMS `Signer`. Fork replay accounts
+can use `impersonate`. The default ephemeral form is designed for local development, not custody of
+real assets.

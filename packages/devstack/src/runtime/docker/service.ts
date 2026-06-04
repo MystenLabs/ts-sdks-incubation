@@ -43,7 +43,6 @@ import {
 	pause,
 	type PerNameLockState,
 	stop as stopContainer,
-	unpause,
 } from './container.ts';
 import { toContractError } from './errors.ts';
 import { dockerExec, dockerRunOneShot } from './exec.ts';
@@ -53,20 +52,17 @@ import {
 	pull as pullImageImpl,
 	refOf,
 	removeImage as removeImageImpl,
-	saveImage as saveImageStream,
 	saveImages as saveImagesStream,
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
 import { expectedImageOwnershipLabels } from './labels.ts';
-import { followLogs as followLogsStream } from './logs.ts';
 import { ensureNetwork as ensureNetworkImpl } from './network.ts';
 import {
 	removeManagedContainers,
 	removeManagedImages,
 	removeManagedNetworks,
 	removeManagedVolumes,
-	sweepOrphans,
 } from './sweep.ts';
 
 // -----------------------------------------------------------------------------
@@ -415,20 +411,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.withSpan('runtime.docker.contract.inspectByLabels'),
 			);
 
-		const followLogsImpl = (
-			handle: ContainerHandle,
-		): Stream.Stream<string, ContainerRuntimeError> =>
-			followLogsStream(handle.name).pipe(
-				Stream.mapError(toContractError),
-				// R-channel: the underlying stream needs DockerHost +
-				// DockerSpawner from the spawn step. Provide the
-				// snapshotted base context so the contract surface is
-				// `R = never`. `Stream.mapError` does NOT drop R; the
-				// `as`-cast in the previous shape was a release-blocker
-				// per runtime-docker review issue #3.
-				Stream.provideContext(baseCtx),
-			);
-
 		const pauseAndCommitImpl = (
 			handle: ContainerHandle,
 		): Effect.Effect<TaggedImageRef, ContainerRuntimeError> =>
@@ -447,26 +429,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.withSpan('runtime.docker.contract.pauseAndCommit'),
 			);
 
-		const pauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
-			Effect.gen(function* () {
-				yield* assertContainerHandleOwned(handle);
-				yield* pause(handle.name);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pause'),
-			);
-
-		const unpauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
-			Effect.gen(function* () {
-				yield* assertContainerHandleOwned(handle);
-				yield* unpause(handle.name);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.unpause'),
-			);
-
 		const stopImpl = (
 			handle: ContainerHandle,
 			grace: Duration.Duration,
@@ -481,15 +443,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.withSpan('runtime.docker.contract.stop'),
 			);
 		};
-
-		const sweepOrphansImpl = (
-			labelMatch: Partial<ContainerLabelTuple>,
-		): Effect.Effect<number, ContainerRuntimeError> =>
-			sweepOrphans(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.sweepOrphans'),
-			);
 
 		const removeManagedContainersImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
@@ -554,16 +507,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				Effect.withSpan('runtime.docker.contract.exec'),
 			);
 
-		const saveImageImpl = (
-			ref: ImageRef,
-			opts?: SaveImageOptions,
-		): Stream.Stream<Uint8Array, ContainerRuntimeError> => {
-			const resolved = ref.tag ?? ref.digest;
-			return saveImageStream(resolved, opts).pipe(
-				Stream.mapError(toContractError),
-				Stream.provideContext(baseCtx),
-			);
-		};
 		const saveImagesImpl = (
 			refs: ReadonlyArray<ImageRef>,
 			opts?: SaveImageOptions,
@@ -641,17 +584,12 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			exec: execImpl,
 			runOneShot: runOneShotImpl,
 			inspectByLabels,
-			followLogs: followLogsImpl,
-			pause: pauseImpl,
 			pauseAndCommit: pauseAndCommitImpl,
-			saveImage: saveImageImpl,
 			saveImages: saveImagesImpl,
 			loadImage: loadImageContractImpl,
 			tagImage: tagImageContractImpl,
 			removeImage: removeImageContractImpl,
-			unpause: unpauseImpl,
 			stop: stopImpl,
-			sweepOrphans: sweepOrphansImpl,
 			removeManagedContainers: removeManagedContainersImpl,
 			removeManagedImages: removeManagedImagesImpl,
 			removeManagedNetworks: removeManagedNetworksImpl,

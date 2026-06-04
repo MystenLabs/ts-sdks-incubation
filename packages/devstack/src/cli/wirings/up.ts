@@ -573,6 +573,15 @@ export const runUpLive = (
 							// L2 lookup observes the runtime root. No-op when the sentinel
 							// is absent (the clean-boot case); idempotent re-run of restore
 							// when present.
+							//
+							// `restore({ id })` passes NO participants on purpose: this
+							// hook fires BEFORE the initial acquire registers any snapshot
+							// participant, so there is no live stack to contribute identity.
+							// `runRestore` reads the empty participant set as "no live
+							// stack" and skips ONLY the cross-plugin contribution guard
+							// (the runtime + snapshot-emptiness guards still fire). With a
+							// participants-required guard this recovery could never clear
+							// the sentinel — it failed `IdentityMissingLive` every boot.
 							yield* recoverInterruptedRestore({
 								liveRoot: stackPaths.stackRoot,
 								restoreSnapshot: (id) => snapshot.restore({ id }),

@@ -15,7 +15,7 @@
 
 import { Effect } from 'effect';
 
-import { decodeSuiPrivateKey, encodeSuiPrivateKey } from '@mysten/sui/cryptography';
+import { decodeSuiPrivateKey } from '@mysten/sui/cryptography';
 import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 import {
@@ -41,14 +41,15 @@ export interface ResolvedKeypair {
 	readonly address: string;
 	readonly scheme: SignatureScheme;
 	readonly publicKey: Uint8Array;
-	/** Opaque signer handle — typed loosely here because the four
-	 *  real variants (ed25519/secp256k1/secp256r1 + bring-your-own
-	 *  Signer) share no narrow TS type beyond `Signer`. The wallet /
-	 *  sign-and-execute capability narrows downstream. */
+	/** Opaque signer handle — typed loosely here because the real
+	 *  variants (a generated/recovered Ed25519 keypair + a
+	 *  bring-your-own `Signer`) share no narrow TS type beyond
+	 *  `Signer`. The wallet / sign-and-execute capability narrows
+	 *  downstream. */
 	readonly signer: unknown;
-	/** Bech32-encoded secret. Only present for ephemeral / inline /
-	 *  env / keystore variants — `null` for `signer` (we never ask
-	 *  for it) and `impersonate` (no secret exists). */
+	/** Bech32-encoded secret. Only present for the `ephemeral` variant
+	 *  (the persisted generated key) — `null` for `signer` (we never
+	 *  ask for it) and `impersonate` (no secret exists). */
 	readonly bech32Secret: string | null;
 }
 
@@ -81,8 +82,9 @@ export const normalizeScheme = (
  *  `ephemeral` variant.
  *
  *  Architecture-distilled invariant: schemes other than Ed25519
- *  must be loaded via keystore/env/inline; we never generate
- *  Secp256* keys from scratch. */
+ *  must be brought in via the `signer` variant (pass a Secp256* or
+ *  custom `Keypair`/`Signer`); we never generate Secp256* keys from
+ *  scratch. */
 export const generateEd25519Keypair = (
 	accountName: string,
 ): Effect.Effect<ResolvedKeypair, AccountAcquireError> =>
@@ -102,7 +104,7 @@ export const generateEd25519Keypair = (
 	});
 
 /** Decode a bech32 `suiprivkey1...` string into a resolved keypair.
- *  Used by the inline / env / keystore variants. */
+ *  Used by the `ephemeral` variant to recover a persisted key. */
 export const decodeBech32Secret = (
 	bech32: string,
 	accountName: string,
@@ -156,37 +158,6 @@ export const decodeBech32Secret = (
 				}),
 		});
 	});
-
-/** Build a `ResolvedKeypair` view from a raw Ed25519 secret-key
- *  byte array. Used by the inline-bytes path (`variants/inline.ts`
- *  Uint8Array branch). */
-export const resolvedKeypairFromEd25519Bytes = (
-	secretKey: Uint8Array,
-	accountName: string,
-	variant: AccountVariantKind,
-): Effect.Effect<ResolvedKeypair, AccountAcquireError> =>
-	Effect.try({
-		try: () => {
-			const kp = Ed25519Keypair.fromSecretKey(secretKey);
-			return resolvedKeypairFromEd25519(kp);
-		},
-		// Secret-leak guard: `fromSecretKey` can echo the raw secret-key
-		// bytes in its error — DROP the raw `cause`. (Mirrors the
-		// bech32 path in `decodeBech32Secret`.)
-		catch: (): AccountAcquireError =>
-			accountAcquireError({
-				phase: 'decode-inline',
-				accountName,
-				variant,
-				message: `Account '${accountName}': Ed25519Keypair.fromSecretKey() rejected the supplied raw bytes.`,
-			}),
-	});
-
-/** Encode a 32-byte secret key as a bech32 `suiprivkey1...` string
- *  for the canonical wire form. Re-exported because the
- *  `variants/inline.ts` Uint8Array branch needs it. */
-export const encodeEd25519Bech32 = (bytes: Uint8Array): string =>
-	encodeSuiPrivateKey(bytes, 'ED25519');
 
 const resolvedKeypairFromEd25519 = (kp: Ed25519Keypair): ResolvedKeypair => ({
 	address: kp.toSuiAddress(),

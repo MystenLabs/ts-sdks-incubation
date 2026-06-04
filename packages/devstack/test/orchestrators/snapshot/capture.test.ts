@@ -100,8 +100,6 @@ const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
 		const matched = opts.handlesByRole[labels.role] ?? [];
 		return Effect.succeed(Array.isArray(matched) ? matched : [matched]);
 	},
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
 	pauseAndCommit: (handle) =>
 		Effect.gen(function* () {
 			const error = opts.commitErrorFor?.(handle);
@@ -113,7 +111,6 @@ const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
 				}
 			);
 		}),
-	saveImage: () => Stream.empty,
 	saveImages: (refs) => {
 		opts.saveCalls?.push(...refs);
 		return (
@@ -127,14 +124,12 @@ const runtimeStub = (opts: RuntimeStubOpts): ContainerRuntime => ({
 		Effect.sync(() => {
 			opts.removeImageCalls?.push(ref);
 		}),
-	unpause: () => Effect.die('unpause not used'),
 	stop: (handle) =>
 		Effect.gen(function* () {
 			opts.stopCalls?.push(handle.name);
 			const error = opts.stopErrorFor?.(handle);
 			if (error !== undefined) return yield* Effect.fail(error);
 		}),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
 	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
 	removeManagedImages: () => Effect.die('removeManagedImages not used'),
 	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),

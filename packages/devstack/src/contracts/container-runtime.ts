@@ -264,27 +264,12 @@ export interface ContainerRuntime {
 		labels: ContainerLabelTuple,
 	) => Effect.Effect<ReadonlyArray<ContainerHandle>, ContainerRuntimeError>;
 
-	readonly followLogs: (handle: ContainerHandle) => Stream.Stream<string, ContainerRuntimeError>;
-
-	/** Pause a running container. Snapshot capture uses this to establish
-	 *  one stack-wide quiescence window before any artifact is written. */
-	readonly pause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
-
 	/** Commit a container's writable layer to a snapshot image. Running
 	 *  containers are paused first; paused, exited, and created
 	 *  containers are already quiescent and are committed as-is. */
 	readonly pauseAndCommit: (
 		handle: ContainerHandle,
 	) => Effect.Effect<TaggedImageRef, ContainerRuntimeError>;
-
-	/** Stream an image's bytes as if produced by `docker save <ref>`.
-	 *  Used by the snapshot orchestrator to persist committed images to
-	 *  tar files; consumers compose with a file-write sink so large
-	 *  images don't materialise in memory. */
-	readonly saveImage: (
-		ref: ImageRef,
-		opts?: SaveImageOptions,
-	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
 
 	/** Stream a deduplicated `docker save <ref...>` bundle. Snapshot
 	 *  capture uses this for multi-container stacks so shared base layers
@@ -317,18 +302,10 @@ export interface ContainerRuntime {
 	 *  treated as already-cleaned. */
 	readonly removeImage: (ref: ImageRef) => Effect.Effect<void, ContainerRuntimeError>;
 
-	readonly unpause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
-
 	readonly stop: (
 		handle: ContainerHandle,
 		grace: Duration.Duration,
 	) => Effect.Effect<void, ContainerRuntimeError>;
-
-	/** Boot-time orphan cleanup. This is container-only and skips names
-	 *  still present in the cross-process claim ledger. */
-	readonly sweepOrphans: (
-		labelMatch: Partial<ContainerLabelTuple>,
-	) => Effect.Effect<number, ContainerRuntimeError>;
 
 	/** Force-remove managed containers matching the partial label tuple,
 	 *  regardless of claim-ledger entries. Wipe uses this for explicit

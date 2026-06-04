@@ -57,6 +57,7 @@ import {
 import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
+	requireIdentity,
 	runIdentityGuard,
 	runRuntimeIdentityGuard,
 	type IdentityContribution,
@@ -802,6 +803,16 @@ export interface RestoreInputs {
 	readonly runtimeStackRoot: string;
 	readonly runtimeStagingPath: string;
 	readonly runtimeBackupPath: string;
+	/** Live-stack participants whose `liveIdentity` probes feed the
+	 *  cross-plugin CONTRIBUTION guard (`runIdentityGuard`). An EMPTY list
+	 *  means "no live stack to compare against" — the boot-time / offline
+	 *  restore case (warm boot, interrupted-restore recovery, the offline
+	 *  CLI verb, the live supervisor's own first acquire). In that case the
+	 *  contribution guard is satisfied tautologically (there is nothing live
+	 *  to disagree with the snapshot's recorded identity) and is SKIPPED;
+	 *  the snapshot-side emptiness refusal (`requireIdentity`) and the
+	 *  runtime guard (`runRuntimeIdentityGuard`, app/stack/network) STILL
+	 *  fire. See the step0 body for the rationale. */
 	readonly participants: ReadonlyArray<RestoreParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly runtimeIdentity: SnapshotRuntimeIdentity;
@@ -881,17 +892,41 @@ export const runRestore = (
 		//    plugin-contributed identity; on disagreement restore refuses
 		//    HERE, before the swap-tree build's docker load/tag runs (guardrail
 		//    §3.2; restore.test sweep/load/tag === [] on mismatch).
+		//
+		//    The RUNTIME guard (app/stack/network) ALWAYS fires — its `live`
+		//    side is `inputs.runtimeIdentity`, sourced from the live process's
+		//    `IdentityContext`, never from the snapshot — so a boot against a
+		//    foreign app/stack/network still refuses.
 		yield* runRuntimeIdentityGuard(
 			{ app: meta.app, stack: meta.stack, network: meta.network },
 			inputs.runtimeIdentity,
 		);
-		const liveContributions: IdentityContribution[] = [];
-		for (const participant of inputs.participants) {
-			const slice = yield* participant.liveIdentity;
-			liveContributions.push({ plugin: participant.plugin, slice });
+		// The cross-plugin CONTRIBUTION guard is conditional on there being a
+		// LIVE stack to compare against. A boot-time / offline restore (warm
+		// boot, interrupted-restore recovery, the offline CLI verb, the live
+		// supervisor's own initial acquire) runs with `participants === []`:
+		// the supervisor has not yet registered any snapshot participant, so
+		// there is no live identity to contribute. Running `runIdentityGuard`
+		// against an empty live slice would ALWAYS fail `IdentityMissingLive`
+		// (the snapshot recorded a key live did not contribute) — which is the
+		// bug that silently degraded `--warm` to cold and wedged the
+		// interrupted-restore recovery forever. With no live stack the
+		// comparison is vacuously satisfied (synthesizing the live slice FROM
+		// the snapshot's own recorded identity — what the offline CLI used to
+		// do explicitly — compares meta.identity against itself), so SKIP it.
+		// The snapshot-side emptiness refusal still fires: a snapshot that
+		// recorded NO identity is untrusted regardless of a live stack.
+		if (inputs.participants.length === 0) {
+			yield* requireIdentity(meta.identity, 'snapshot');
+		} else {
+			const liveContributions: IdentityContribution[] = [];
+			for (const participant of inputs.participants) {
+				const slice = yield* participant.liveIdentity;
+				liveContributions.push({ plugin: participant.plugin, slice });
+			}
+			const live = yield* mergeContributions(liveContributions);
+			yield* runIdentityGuard(meta.identity, live);
 		}
-		const live = yield* mergeContributions(liveContributions);
-		yield* runIdentityGuard(meta.identity, live);
 
 		// step0b — cache-existence preflight, ALSO fail-closed before any
 		//    mutation. The SNAPSHOT's host-tree cache is the SOLE source of the

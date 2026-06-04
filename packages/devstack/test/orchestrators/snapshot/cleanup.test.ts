@@ -17,17 +17,12 @@ const runtimeStub = (events: string[]): ContainerRuntime => ({
 	exec: () => Effect.die('exec not used'),
 	runOneShot: () => Effect.die('runOneShot not used'),
 	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
 	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,
 	loadImage: () => Effect.die('loadImage not used'),
 	tagImage: () => Effect.die('tagImage not used'),
 	removeImage: () => Effect.die('removeImage not used'),
-	unpause: () => Effect.die('unpause not used'),
 	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
 	removeManagedContainers: (match: Partial<ContainerLabelTuple>) =>
 		Effect.sync(() => {
 			events.push(`containers:${match.app}/${match.stack}`);

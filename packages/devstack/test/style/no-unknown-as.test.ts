@@ -104,14 +104,14 @@ const SANCTIONED: ReadonlyArray<{
 	},
 	{
 		path: 'src/plugins/deepbook/index.ts',
-		count: 7,
+		count: 5,
 		reason:
 			'Factory option-narrowing path (pools / pyth / deps tuple) — generic-tuple element ' +
 			'projection past optional members. TS cannot keep the per-element types through ' +
-			'`flatMap` / conditional inclusion. The three synthesized-DeepBook casts re-narrow the ' +
-			'runtime `dependsOn` (which carries the bundled members) back to the caller-narrow ' +
-			'STATIC closure, and project the synthesized builder onto the public member type, so a ' +
-			'no-arg `deepbook()` declares a `[sui]` closure while attaching its bundled members at runtime.',
+			'`flatMap` / conditional inclusion (`poolCoinRefs`, `pythRefs`, `localDependsOn`). The ' +
+			'runtime `dependsOn` cast re-narrows the heterogeneous member tuple back to the ' +
+			'caller-narrow `LocalDependsOn` STATIC closure, and the `start` body re-narrows the ' +
+			'auto-inferred `deps` tuple to the publisher / package / coin / pyth value shape it destructures.',
 	},
 	{
 		path: 'src/plugins/host-service/index.ts',

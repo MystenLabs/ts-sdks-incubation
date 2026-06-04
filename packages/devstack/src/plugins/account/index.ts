@@ -5,15 +5,20 @@
 // it (default + cross-cutting), registers `{name, address}`, and
 // publishes a per-account resolved value via a unique resource id.
 //
-// User-facing factory shape:
+// User-facing factory shape — THREE variants:
 //
 //   account('alice')                                  // default ephemeral
 //   account('alice', { kind: 'ephemeral', funding: [{ coin: 'sui', amount: 5_000_000_000n }] })
-//   account('alice', { kind: 'keystore', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
-//   account('alice', { kind: 'env',      key: 'ALICE_PRIVATE_KEY' })
-//   account('alice', { kind: 'inline',   privateKey: 'suiprivkey1...' })
 //   account('alice', { kind: 'signer',   signer: hardwareWallet })
-//   account('alice', { kind: 'impersonate', address: '0xabc...' })
+//   account('alice', { kind: 'impersonate', address: '0xabc...' })  // fork-mode only
+//
+// The `signer` variant is the single bring-your-own door. Pass any
+// `@mysten/sui/cryptography` `Signer` or `Keypair`. Loading a secret
+// from an env var or an inline literal is expressed by constructing
+// the keypair yourself and passing it as the signer:
+//
+//   account('ci',   { kind: 'signer', signer: Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!) })
+//   account('demo', { kind: 'signer', signer: Ed25519Keypair.fromSecretKey('suiprivkey1...') })
 //
 // **Bare-form default**: `account('alice')` is shorthand for
 //
@@ -447,6 +452,7 @@ export const fundingProjectionForResult = (
 
 export type {
 	AccountOptions,
+	AccountSignerInput,
 	ResolvedAccountOptions,
 	AccountValue,
 	SignAndExecuteResult,

@@ -156,10 +156,7 @@ const runtimeStub = (
 	exec: () => Effect.die('exec not used'),
 	runOneShot: () => Effect.die('runOneShot not used'),
 	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
 	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,
 	loadImage: (tar) =>
 		Stream.runCollect(tar).pipe(
@@ -205,9 +202,7 @@ const runtimeStub = (
 			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
 			opts.removeImageCalls?.push(ref);
 		}),
-	unpause: () => Effect.die('unpause not used'),
 	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
 	removeManagedContainers: (labelMatch) =>
 		Effect.sync(() => {
 			opts.events?.push(`remove:${labelMatch.plugin}/${labelMatch.role}`);
@@ -233,6 +228,7 @@ const runRestoreExit = (
 	identity: SnapshotRuntimeIdentity,
 	sweepCalls: Array<Partial<ContainerLabelTuple>>,
 	runtime: ContainerRuntime = runtimeStub(sweepCalls),
+	participants: ReadonlyArray<RestoreParticipant> = restoreIdentityParticipants(),
 ) =>
 	Effect.gen(function* () {
 		seedDeployCacheAt(join(root, 'runtime-stack'));
@@ -245,7 +241,7 @@ const runRestoreExit = (
 				runtimeStackRoot: join(root, 'runtime-stack'),
 				runtimeStagingPath: join(root, 'runtime-stack.staging'),
 				runtimeBackupPath: join(root, 'runtime-stack.bak'),
-				participants: restoreIdentityParticipants(),
+				participants,
 				runtime,
 				runtimeIdentity: identity,
 			}),
@@ -320,6 +316,144 @@ describe('snapshot restore safety', () => {
 					emptyIdentityMeta,
 					runtimeIdentity,
 					sweepCalls,
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(IdentityEmptyError);
+					if (error.value instanceof IdentityEmptyError) {
+						expect(error.value.source).toBe('snapshot');
+					}
+				}
+				expect(sweepCalls).toEqual([]);
+			}),
+		),
+	);
+
+	// -------------------------------------------------------------------------
+	// Boot-time / offline restore — NO live participants.
+	//
+	// The warm-boot hook, the interrupted-restore recovery, and the offline CLI
+	// verb all run restore BEFORE the supervisor registers any snapshot
+	// participant, so `participants === []`. The bug these pin: a
+	// participants-required contribution guard compared `meta.identity` against
+	// an empty live slice and ALWAYS failed `IdentityMissingLive`, which
+	// silently degraded `--warm` to cold and wedged the interrupted-restore
+	// recovery forever. The contract: with no live stack the cross-plugin
+	// contribution guard is SKIPPED (vacuously satisfied), but the runtime
+	// guard (app/stack/network) and the snapshot-side emptiness refusal STILL
+	// fire.
+	// -------------------------------------------------------------------------
+
+	it.effect('boot-time restore (no live participants) clears the contribution guard', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							plugin: 'postgres#0',
+							imageName: 'postgres:test',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// NO participants — the boot-time path. Previously this failed
+				// `IdentityMissingLive`; now the contribution guard is skipped and
+				// the restore proceeds to the swap + container replacement.
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					[],
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres#0',
+						role: 'db',
+					},
+				]);
+			}),
+		),
+	);
+
+	it.effect('boot-time restore still refuses a foreign runtime identity', () =>
+		Effect.gen(function* () {
+			const fields: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
+			for (const field of fields) {
+				yield* withTempRoot(TEMP_PREFIX, (root) =>
+					Effect.gen(function* () {
+						const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+						const foreignMeta = metadata({
+							[field]: `${runtimeIdentity[field]}-foreign`,
+							containers: [
+								capturedContainer({
+									plugin: 'postgres#0',
+									imageName: 'postgres:test',
+								}),
+							],
+						});
+						// NO participants → contribution guard skipped, but the runtime
+						// guard's live side is `runtimeIdentity` (NOT the snapshot), so a
+						// foreign app/stack/network is still refused before any mutation.
+						const exit = yield* runRestoreExit(
+							root,
+							foreignMeta,
+							runtimeIdentity,
+							sweepCalls,
+							runtimeStub(sweepCalls),
+							[],
+						).pipe(Effect.provide(NodeFileSystem.layer));
+
+						expect(Exit.isFailure(exit)).toBe(true);
+						const error = Exit.findErrorOption(exit);
+						expect(error._tag).toBe('Some');
+						if (error._tag === 'Some') {
+							expect(error.value).toBeInstanceOf(IdentityMismatchError);
+							if (error.value._tag === 'SnapshotIdentityMismatch') {
+								expect(error.value.key).toBe(field);
+							}
+						}
+						// Refused before any mutation.
+						expect(sweepCalls).toEqual([]);
+					}),
+				);
+			}
+		}),
+	);
+
+	it.effect('boot-time restore still refuses a snapshot with no recorded identity', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const emptyIdentityMeta = metadata({
+					identity: {},
+					containers: [
+						capturedContainer({
+							plugin: 'postgres#0',
+							imageName: 'postgres:test',
+						}),
+					],
+				});
+				// NO participants, but an empty `meta.identity` is untrusted
+				// regardless of a live stack — the snapshot-side emptiness refusal
+				// (`requireIdentity`) still fires before any mutation.
+				const exit = yield* runRestoreExit(
+					root,
+					emptyIdentityMeta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					[],
 				).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(Exit.isFailure(exit)).toBe(true);

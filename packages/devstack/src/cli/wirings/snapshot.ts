@@ -29,7 +29,6 @@ import {
 } from '../../orchestrators/boot.ts';
 import {
 	SnapshotOrchestratorService,
-	type RestoreParticipant,
 	type SnapshotMetadata,
 } from '../../orchestrators/snapshot/index.ts';
 import { CliInternalError, CliUnavailableError } from '../../surfaces/cli/index.ts';
@@ -152,12 +151,6 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 		);
 	});
 
-const snapshotIdentityParticipants = (meta: SnapshotMetadata): ReadonlyArray<RestoreParticipant> =>
-	Object.entries(meta.identity).map(([plugin, value]) => ({
-		plugin,
-		liveIdentity: Effect.succeed({ [plugin]: value }),
-	}));
-
 export const runSnapshotRestoreDirect = (
 	identity: ResolvedIdentity,
 	snapshotId: string,
@@ -165,10 +158,18 @@ export const runSnapshotRestoreDirect = (
 	const program = Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;
 		const fs = yield* FileSystem.FileSystem;
-		const entries = yield* provideFileSystem(fs, snapshot.list);
-		const meta = entries.find((entry) => entry.id === snapshotId)?.metadata ?? null;
-		const participants = meta === null ? [] : snapshotIdentityParticipants(meta);
-		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId, participants }));
+		// Offline restore: there is NO live supervisor (ensured below), so no
+		// plugin contributes a live identity slice. Call `restore` with no
+		// `participants` — `runRestore` reads this as "no live stack" and
+		// skips ONLY the cross-plugin contribution guard (the snapshot's own
+		// recorded identity has nothing live to disagree with). The runtime
+		// guard (app/stack/network) and the snapshot-side emptiness refusal
+		// still fire. This is the SAME path warm boot + interrupted-restore
+		// recovery take, so all three boot-time restores agree. (Previously
+		// this synthesized participants from `meta.identity` to make the
+		// contribution guard a tautology; that synthesis is now intrinsic to
+		// the empty-participants contract.)
+		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId }));
 	});
 	const restored = program.pipe(
 		Effect.provide(

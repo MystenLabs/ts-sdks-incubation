@@ -358,12 +358,6 @@ export const saveImages = (
 	);
 };
 
-export const saveImage = (
-	ref: string,
-	opts: SaveImageOptions = {},
-): Stream.Stream<Uint8Array, DockerRuntimeError, DockerHost | DockerSpawner> =>
-	saveImages([ref], opts);
-
 // -----------------------------------------------------------------------------
 // Load (tar stream → image)
 // -----------------------------------------------------------------------------
@@ -393,7 +387,7 @@ export const parseLoadedRefs = (
 };
 
 /** `docker load < <tar-stream>`. Returns every freshly-loaded ref
- *  Docker reported on stdout. Symmetric with `saveImage`/`saveImages`.
+ *  Docker reported on stdout. Symmetric with `saveImages`.
  *  Upstream stream errors (e.g. file-read failures from a snapshot
  *  tar) are projected to `ImageLoadFailed` so callers see one shape.
  *

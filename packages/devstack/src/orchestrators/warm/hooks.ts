@@ -119,7 +119,16 @@ export const runWarmRestore = (deps: WarmHookDeps): Effect.Effect<void, never> =
 		const hit = sidecar !== null && sidecar.fingerprint === fingerprint && artifactExists;
 		if (hit) {
 			// Restore without `resume` — the initial acquire re-converges the
-			// swapped-in tree (mirrors `recoverInterruptedRestore`).
+			// swapped-in tree (mirrors `recoverInterruptedRestore`). No
+			// `participants` either: this runs BEFORE the supervisor's initial
+			// acquire registers any snapshot participant, so there is no live
+			// stack to contribute identity. `runRestore` reads the empty
+			// participant set as "no live stack" and skips ONLY the cross-plugin
+			// contribution guard (the runtime app/stack/network guard + the
+			// snapshot-side emptiness refusal still fire). Passing participants
+			// here would re-introduce the bug where the contribution guard
+			// always failed `IdentityMissingLive` and silently degraded `--warm`
+			// to cold on every boot.
 			yield* withFs(deps.fs, deps.snapshot.restore({ id: WARM_BASELINE_SNAPSHOT_ID }));
 			yield* Ref.set(deps.warmRestoredRef, true);
 			yield* Effect.logInfo('warm: restored baseline (fingerprint match)');

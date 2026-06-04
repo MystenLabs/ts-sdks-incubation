@@ -449,6 +449,15 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 			Effect.gen(function* () {
 				const snapshotId = yield* validateSnapshotId('restore', id);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
+				// The effective participant set is the live registered set (or an
+				// explicit override). At BOOT TIME — the warm-restore hook, the
+				// interrupted-restore recovery, and the offline CLI verb — no plugin
+				// has registered yet, so this is EMPTY. `runRestore` reads an empty
+				// participant set as "no live stack to compare against" and skips
+				// ONLY the cross-plugin contribution guard (the runtime app/stack/
+				// network guard + the snapshot-side emptiness refusal still fire).
+				// A LIVE-supervisor restore (operator-triggered while the stack is up)
+				// has a populated registered set, so the real contribution guard runs.
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.restore);
 				// Hold `stack.lock` ONLY across the destructive swap+load+hard-rm
