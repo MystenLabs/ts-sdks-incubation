@@ -1,11 +1,10 @@
 // Subnet-prefix derivation + EnsureNetworkSpec stamping — ONE canonical
 // implementation.
 //
-// Architecture § "What's collapsed" — multiple plugins (walrus, seal)
-// need a deterministic Docker `/24` subnet keyed off their stack
-// identity so parallel local stacks don't all collide on Docker's
-// default IPAM pool. Each plugin previously inlined the same FNV-1a
-// hash → IPv4 third-octet derivation; the only thing that varied was
+// Multiple plugins (walrus, seal) need a deterministic Docker `/24`
+// subnet keyed off their stack identity so parallel local stacks don't
+// all collide on Docker's default IPAM pool. They share one FNV-1a
+// hash → IPv4 third-octet derivation; the only thing that varies is
 // the second-octet base offset (walrus uses `64`, seal uses `128`)
 // so they live in disjoint 64-wide bands inside `10.0.0.0/8`.
 //

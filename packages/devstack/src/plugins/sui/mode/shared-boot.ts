@@ -94,8 +94,7 @@ export const fetchChainId = (
 
 /** Per-attempt and total budget for the `waitForTransactionsReady`
  *  retry loop. The 2 s spacing matches the upstream sui-faucet's
- *  internal cadence; the 90 s ceiling matches the v3 service's
- *  documented wall-clock. */
+ *  internal cadence; the 90 s ceiling is the wall-clock budget. */
 const FUNDS_READY_RETRY_SPACING = Duration.seconds(2);
 const FUNDS_READY_TIMEOUT = Duration.seconds(90);
 

@@ -117,8 +117,8 @@ export interface StorageNodesAcquired {
  *  var and the per-node `--ip` pin compute from one source. */
 export const WALRUS_NODE_IP_BASE = 10;
 
-/** Compute the public hostname for one storage node. Mirrors
- *  v3's `routerHostname(identity, 'walrus-node-' + i)` shape
+/** Compute the public hostname for one storage node — the
+ *  `routerHostname(identity, 'walrus-node-' + i)` shape
  *  (06-walrus.md §"Routes registered"). Main stack omits the stack
  *  segment; non-main inserts it after the service label. */
 export const computePublicHostname = (app: string, stack: string, nodeIndex: number): string => {

@@ -121,7 +121,7 @@ import { CoinRegistryService, layerCoinRegistry } from '../plugins/coin/registry
 import { PackageRegistryService, layerPackageRegistry } from '../plugins/package/registry.ts';
 
 // ───────────────────────────────────────────────────────────────────────────
-// Substrate lifecycle (formerly run.ts)
+// Substrate lifecycle
 // ───────────────────────────────────────────────────────────────────────────
 
 /** Substrate Layer stack for a single supervised run. Composes every L0
@@ -301,7 +301,7 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
  *  snapshot, etc.) supply `opts.withinScope` and read off the
  *  supervisor handle directly. */
 // ───────────────────────────────────────────────────────────────────────────
-// Production orchestrator assembly (formerly runtime-composition.ts)
+// Production orchestrator assembly
 // ───────────────────────────────────────────────────────────────────────────
 
 export interface ProductionCodegenOptions {
@@ -497,8 +497,7 @@ export interface EndpointSinks {
  *  dispatch body feeds each sink from the object this returns; there is
  *  no second, third derivation off the route anywhere.
  *
- *  It owns the url-derivation that previously lived in the router's
- *  `endpointFromResolvedRoute`: `tcp` routes carry `tcp://127.0.0.1:port`,
+ *  It owns the url-derivation: `tcp` routes carry `tcp://127.0.0.1:port`,
  *  everything else `http://hostname:port`. Consumers (codegen, manifest)
  *  translate `tcp://` to their protocol-specific scheme (`postgres://`,
  *  `redis://`, …).
@@ -788,7 +787,7 @@ export const buildProductionPostAcquireHook = (
 	});
 
 // ───────────────────────────────────────────────────────────────────────────
-// Built-in plugin runtime composition (formerly built-in-plugin-layers.ts)
+// Built-in plugin runtime composition
 //
 // Depends on L2 plugin internals (coin/package registries), so it can't live
 // at L1 runtime — hence its home in this L3 boot module.

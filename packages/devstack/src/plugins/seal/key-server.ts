@@ -62,7 +62,7 @@ import { SealSpans } from './spans.ts';
 export { DEFAULT_KEY_SERVER_PORT } from './routable.ts';
 
 // ---------------------------------------------------------------------------
-// Constants — mirror v3 `seal/internal.ts:102-103`
+// Constants
 // ---------------------------------------------------------------------------
 
 /** Default `/health` probe timeout. */

@@ -24,8 +24,8 @@ import { defineConfigError, type ConfigIssue } from '../../substrate/runtime/con
 // SealError — the plugin's primary tagged error
 // ---------------------------------------------------------------------------
 
-/** Phases for `SealError`. Closed sum — matches the v3 catalog
- *  (07-seal.md §"Adjacent Seal references" → `engine/phases.ts:79-91`).
+/** Phases for `SealError`. Closed sum (07-seal.md §"Adjacent Seal
+ *  references").
  *
  *  Phase semantics:
  *   - `port-alloc`     — router `seal` entrypoint not registered.
@@ -52,9 +52,8 @@ export type SealPhase =
 	| 'ready'
 	| 'seal';
 
-/** Generic Seal plugin error. The structured shape mirrors the v3
- *  `SealError` from `engine/errors.ts:325-341` minus the dead
- *  `keyServer` field (07-seal.md §Opportunities #6).
+/** Generic Seal plugin error. A structured tagged error
+ *  (07-seal.md §Opportunities #6).
  *
  *  Distilled-doc invariant #16: `stdout` / `stderr` MUST be redacted
  *  via `redactMasterKey` at every raise site that touches `seal-cli`

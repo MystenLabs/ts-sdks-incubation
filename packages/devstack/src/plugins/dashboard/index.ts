@@ -178,10 +178,9 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 
 				const resolved = { url: server.url, localPort: allocated.port } satisfies DashboardValue;
 
-				// Inline contribution (Stage B): emit the Routable via the ctx
-				// verb before returning. Maps the legacy `capabilities` closure
-				// 1:1 — closure `value.localPort` is this resolved `localPort`,
-				// closure `runtime.identity.app`/`.stack` is the `identity` this
+				// Emit the Routable via the ctx verb before returning.
+				// `value.localPort` is this resolved `localPort`;
+				// `runtime.identity.app`/`.stack` is the `identity` this
 				// `start` already holds from `IdentityContext`.
 				ctx.endpoint(
 					makeDashboardRoutable({

@@ -313,18 +313,14 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 
 				const resolved = yield* acquireWallet(resolvedOpts, acquireCtx);
 
-				// Stage B (P2): emit the wallet's contributions inline (was
-				// the `capabilities: ({ value: resolved, runtime: acquireCtx })
-				// => [snapshot, codegen, routable]` second-closure). `resolved`
-				// is the just-acquired `WalletValue`; the closure's
-				// `runtime.identity.{app,stack}` map to the `identity` already
-				// held here (`yield* IdentityContext`). Emit each decl via its
-				// matching buffered verb IN THE SAME ORDER the closure returned
-				// (snapshotable → `ctx.snapshotExtra`, codegenable →
-				// `ctx.codegen`, routable → `ctx.endpoint`); decl shapes are
-				// byte-identical to the closure path the supervisor harvested.
-				// The verbs are void and buffer for the supervisor's post-start
-				// replay.
+				// Emit the wallet's contributions inline. `resolved` is the
+				// just-acquired `WalletValue`; `runtime.identity.{app,stack}`
+				// map to the `identity` already held here
+				// (`yield* IdentityContext`). Emit each decl via its matching
+				// buffered verb IN ORDER (snapshotable → `ctx.snapshotExtra`,
+				// codegenable → `ctx.codegen`, routable → `ctx.endpoint`); decl
+				// shapes are load-bearing. The verbs are void and buffer for the
+				// supervisor's post-start replay.
 				ctx.snapshotExtra(makeWalletSnapshotable());
 				ctx.codegen(makeWalletCodegen(resolved.bindings));
 				ctx.endpoint(

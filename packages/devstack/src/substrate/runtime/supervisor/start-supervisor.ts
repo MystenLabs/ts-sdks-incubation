@@ -60,7 +60,6 @@ import {
 	buildWatchIndex,
 	exactPrefixMatch,
 	installSignalHandler,
-	planFullDrain,
 	resolveGraph,
 	type PluginRegistry,
 	type ResolvedGraph,
@@ -85,6 +84,7 @@ import {
 } from './state.ts';
 import type { SupervisedStack } from './types.ts';
 import { teardownKeys } from './teardown.ts';
+import { plan } from '../reconcile/graph.ts';
 import {
 	buildTransitionEmitter,
 	noopLogger,
@@ -167,7 +167,7 @@ const pendingAccountProjection = (
  * plugin's R-channel narrows to `Scope.Scope` (then to `never` after
  * the per-plugin Scope is provided).
  *
- * Contribution dispatch (Stage B): the supervisor replays each plugin's
+ * Contribution dispatch: the supervisor replays each plugin's
  * buffered ctx contributions through the closed `dispatcher`
  * (snapshotable/routable/codegenable/projection/strategy-contributor).
  * Production callers pass `buildProductionContributionDispatcher(...)`;
@@ -513,8 +513,12 @@ export const startSupervisor = (
 		yield* Effect.addFinalizer(() =>
 			traced(
 				Effect.gen(function* () {
-					const plan = planFullDrain(graph);
-					yield* teardownKeys(graph, registry, plan.teardownOrder).pipe(
+					const fullDrain = plan(
+						graph,
+						{ kind: 'graph-keys', keys: [...graph.nodes.keys()] },
+						'drain',
+					);
+					yield* teardownKeys(graph, registry, fullDrain.teardownOrder).pipe(
 						Effect.catch(() => Effect.void),
 					);
 				}),

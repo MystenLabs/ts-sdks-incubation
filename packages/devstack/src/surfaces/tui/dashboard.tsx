@@ -48,7 +48,7 @@ export type SnapshotStatus =
 			readonly snapshotId?: string;
 			readonly name?: string;
 			readonly detail?: string;
-			readonly pausedContainers?: number;
+			readonly committedContainers?: number;
 			readonly totalContainers?: number;
 			readonly at: number;
 	  }
@@ -142,8 +142,8 @@ const SnapshotStatusLine = ({ status }: { readonly status: SnapshotStatus }): Re
 		case 'running': {
 			const paused = snapshotPhaseMeansPaused(status.phase);
 			const count =
-				status.pausedContainers !== undefined && status.totalContainers !== undefined
-					? `${status.pausedContainers}/${status.totalContainers}`
+				status.committedContainers !== undefined && status.totalContainers !== undefined
+					? `${status.committedContainers}/${status.totalContainers}`
 					: null;
 			return (
 				<Box flexDirection="row" gap={1} marginTop={1}>

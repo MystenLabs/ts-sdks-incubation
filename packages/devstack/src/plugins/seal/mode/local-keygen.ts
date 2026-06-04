@@ -79,8 +79,8 @@ import { versionedDocSchema } from '../../../substrate/versioned-doc-schema.ts';
 // Options (factory-time)
 // ---------------------------------------------------------------------------
 
-/** Options the local-keygen mode accepts. Mirrors v3
- *  `SealLocalKeygenOptions` (07-seal.md §"Configuration"). The
+/** Options the local-keygen mode accepts (07-seal.md
+ *  §"Configuration"). The
  *  barrel (`index.ts`) folds the typed `SealLocalKeygenOptions`
  *  surface into this internal shape after default resolution. */
 export interface LocalKeygenOptions {

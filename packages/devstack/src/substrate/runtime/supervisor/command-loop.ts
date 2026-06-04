@@ -23,7 +23,7 @@ import { handleHardKillRequested, handleShutdownRequested } from './shutdown.ts'
 import { allReadyOrTerminal, type QueuedCommand, type SupervisorState } from './state.ts';
 import { doSelectiveRestart } from './teardown.ts';
 import { publish } from './wiring.ts';
-import { planFullDrain, planFullDrainExcluding } from '../lifecycle/index.ts';
+import { planExcluding } from '../lifecycle/index.ts';
 
 const maybeRunPostAcquire = (
 	deps: SupervisorState,
@@ -52,13 +52,12 @@ export const handleCommand = (
 				return;
 			}
 			case 'stack.restart': {
-				const plan = planFullDrain(graph);
 				const restarted = yield* doSelectiveRestart(
 					graph,
 					registry,
 					deps.ref,
 					deps.hub,
-					new Set(plan.slice),
+					new Set(graph.nodes.keys()),
 					pluginContext,
 					dispatcher,
 					logger,
@@ -151,7 +150,7 @@ export const handleCommand = (
 					// (`snapshot.captureFailed` + `error.reported`). A failed capture
 					// left the containers only STOPPED (recoverable) — converge them
 					// back so the stack returns to running, then propagate.
-					const recoverPlan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+					const recoverPlan = planExcluding(graph, (node) => node.keepAliveOnRestore);
 					if (recoverPlan.slice.size > 0) {
 						yield* doSelectiveRestart(
 							graph,
@@ -170,7 +169,7 @@ export const handleCommand = (
 						new SupervisorRestoreFailed({ reason: 'handler', cause: captureOutcome.cause }),
 					);
 				}
-				const plan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+				const plan = planExcluding(graph, (node) => node.keepAliveOnRestore);
 				if (plan.slice.size === 0) {
 					if (yield* allReadyOrTerminal(graph, registry)) {
 						yield* maybeRunPostAcquire(deps, options);
@@ -212,8 +211,8 @@ export const handleCommand = (
 			}
 			case 'snapshot.restore': {
 				// Restore is the unified reconcile's ORDERED 4-step body
-				// (redesign §2, P4) split across this loop and the injected
-				// handler: the handler (`runRestore`) runs step0 (identity-guard
+				// split across this loop and the injected handler: the handler
+				// (`runRestore`) runs step0 (identity-guard
 				// precondition, fail-closed) → step1 (fsPlan swap-tree(untar))
 				// → step2 R1 (HARD container rm). This loop runs step2 R2
 				// (CONVERGE recreate-from-fresh): since R1 already removed the
@@ -248,7 +247,7 @@ export const handleCommand = (
 						new SupervisorRestoreFailed({ reason: 'handler', cause: restoreOutcome.cause }),
 					);
 				}
-				const plan = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+				const plan = planExcluding(graph, (node) => node.keepAliveOnRestore);
 				if (plan.slice.size === 0) {
 					// Empty re-acquire slice (the stack's only members are
 					// dashboard()/host-service(...), which carry `keepAliveOnRestore`):

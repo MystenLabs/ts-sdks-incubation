@@ -1,10 +1,8 @@
 // Subprocess output capture — one variant, one error.
 //
-// Architecture § Collapsed: the legacy package shipped per-service
-// per-line docker log sinks and four spawn-and-capture helpers
-// (`captureCommand`, `captureCommandOrFail`, `captureCommandStreaming`,
-// `captureCommandStreamingOrFail`); this module collapses them to one
-// shape parameterised by options.
+// One spawn-and-capture surface parameterised by options, covering both
+// the fail-on-nonzero and streaming-observer cases that would otherwise
+// be separate helpers.
 //
 // Surface:
 //
@@ -80,8 +78,8 @@ export interface CaptureOptions {
 	/**
 	 * Maximum stderr bytes preserved on a captured-error path. Past the
 	 * limit, the surplus is dropped and `…[truncated]` is appended.
-	 * Default 500 (tightest of the historical policies; common case is
-	 * a TUI row that must fit one line).
+	 * Default 500 (a tight bound; common case is a TUI row that must fit
+	 * one line).
 	 */
 	readonly stderrTruncate?: number;
 	/**
@@ -163,8 +161,8 @@ const drainObserved = <E>(
  * non-zero).
  *
  * One function. One error class. Stream observers are opt-in via
- * `opts.onStdoutLine` / `opts.onStderrLine` — the streaming and
- * non-streaming variants are no longer separate functions.
+ * `opts.onStdoutLine` / `opts.onStderrLine`; the streaming and
+ * non-streaming paths share this single function.
  */
 export const capture = (
 	spawner: SpawnerService,

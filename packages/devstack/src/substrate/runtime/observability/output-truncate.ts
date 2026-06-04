@@ -8,9 +8,8 @@
 //     the last N chars of the raw stream, passed as the `stdout:` /
 //     `stderr:` field of a typed error.
 //
-// Both are stdout/stderr bound-the-blast-radius helpers. Both used to
-// inline ad-hoc constants. Folded into one module so the
-// boundedness-policy lives in ONE place and the per-call-site shape
+// Both are stdout/stderr bound-the-blast-radius helpers. One module so
+// the boundedness-policy lives in ONE place and the per-call-site shape
 // (label-wrapped vs raw tail) is just an output decision.
 
 /** Return the trailing `maxChars` characters of `value`, or `value`

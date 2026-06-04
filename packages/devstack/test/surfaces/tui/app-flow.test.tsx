@@ -130,7 +130,7 @@ describe('App snapshot flow', () => {
 					name: 'before-change',
 					phase: 'capturing-host-tree',
 					detail: 'archiving 1 host subtree',
-					pausedContainers: 2,
+					committedContainers: 2,
 					totalContainers: 2,
 					at: AT + 2,
 				}),

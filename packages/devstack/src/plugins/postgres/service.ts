@@ -88,8 +88,7 @@ export interface Postgres {
 }
 
 /** Service options. Defaults track distilled-doc recommendations:
- *  postgres 17-alpine is the latest LTS-stable at the time of writing
- *  (one major up from the v3 service's 16-alpine pin). */
+ *  postgres 17-alpine is the latest LTS-stable at the time of writing. */
 export interface PostgresServiceOptions {
 	readonly name?: string;
 	readonly version?: string;
@@ -99,9 +98,8 @@ export interface PostgresServiceOptions {
 	readonly hostPort?: number;
 	readonly extraNetworks?: ReadonlyArray<string>;
 	readonly readyTimeoutMs?: number;
-	/** WAL-flush budget on `docker stop`. Default 20s (matches the
-	 *  sui-indexer-db sidecar in v3). 10s (docker default) risks
-	 *  SIGKILL on busy DBs → recovery mode on next boot. */
+	/** WAL-flush budget on `docker stop`. Default 20s. 10s (docker
+	 *  default) risks SIGKILL on busy DBs → recovery mode on next boot. */
 	readonly stopGraceSeconds?: number;
 }
 

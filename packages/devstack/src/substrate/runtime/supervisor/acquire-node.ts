@@ -90,7 +90,7 @@ export class ContributionBufferSealedError extends Error {
 }
 
 // -----------------------------------------------------------------------------
-// Per-plugin PluginCtx (Stage B foundation — P0/P0.5/P1)
+// Per-plugin PluginCtx
 // -----------------------------------------------------------------------------
 
 const cacheAccess = OptionalService(CacheService);
@@ -131,8 +131,7 @@ const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
  * the strategy-bus writer (`provides`) PUSH a typed `BufferedContribution`
  * into `buffer` IN EMIT ORDER; the supervisor replays that buffer through
  * the closed `ContributionDispatcher` after a successful `start`. The
- * buffer is the SOLE source of post-start contributions (the legacy
- * `capabilities` closure + its `resolveCapabilities` harvest are gone).
+ * buffer is the SOLE source of post-start contributions.
  *
  * `persist` is a thin pass-through to the Cache primitive's `publish`
  * (the folded-in artifact-publisher cycle) read from `pluginContext`
@@ -195,7 +194,7 @@ const makePluginCtx = (
 };
 
 // -----------------------------------------------------------------------------
-// Static post-start dispatch (P4 — replaces the CapabilitySinks loop)
+// Static post-start dispatch
 // -----------------------------------------------------------------------------
 
 /**
@@ -236,8 +235,8 @@ const causeTagOf = (cause: unknown): string | undefined => {
  * `ContributionDispatcher` after a successful `start`, plus feed its
  * static `errorContributions` directly into the FormatterRegistry.
  *
- * Failure semantics (preserved from the legacy dual-catch): a dispatch
- * BODY failure is an orchestrator-fault — the supervisor publishes
+ * Failure semantics: a dispatch BODY failure is an orchestrator-fault —
+ * the supervisor publishes
  * `engine.orchestrator.dispatchFailed` + logs a warning, and the plugin
  * stays `ready` (NOT `markFailed`). The contribution kinds are a CLOSED
  * union, so the dispatch is an exhaustive switch on the decl
@@ -426,9 +425,9 @@ export const acquireNode = (
 		const start = entry.node.member.start as (
 			deps: unknown,
 		) => Effect.Effect<unknown, unknown, any>;
-		// Stage B: build the per-plugin ctx + replay buffer. Every plugin
-		// emits its contributions inline via the typed `ctx` verbs during
-		// `start`; the buffer is the SOLE source of the post-start dispatch.
+		// Build the per-plugin ctx + replay buffer. Every plugin emits its
+		// contributions inline via the typed `ctx` verbs during `start`; the
+		// buffer is the SOLE source of the post-start dispatch.
 		// The ctx is delivered through the `PluginContext` service tag (a
 		// plugin reaches it with `yield* PluginContext`), provided into the
 		// start Effect's requirement channel below — NOT as a 2nd positional
@@ -478,7 +477,7 @@ export const acquireNode = (
 		// being silently dropped.
 		sealBuffer();
 		if (result.ok) {
-			// P4: the ctx buffer (decls the 5 verbs pushed during `start`, in
+			// The ctx buffer (decls the 5 verbs pushed during `start`, in
 			// emit order) is the SOLE source of post-start contributions.
 			// `errorContributions` stays a static `PluginSpec` field, read
 			// here and fed directly into the FormatterRegistry. The dispatch

@@ -309,8 +309,8 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// Owner identity flows through as `--label` flags on
 				// `docker build`, making the resulting image visible to
 				// label-driven prune. Labels are metadata, NOT part of
-				// the cache key — a previously-unlabelled cached image
-				// stays a cache hit (the legacy cleanup script reaps it).
+				// the cache key — an unlabelled cached image stays a cache
+				// hit, and label-driven prune reaps it.
 				const ownerLabels =
 					effectiveCtx.owner !== undefined
 						? expectedImageOwnershipLabels(effectiveCtx.owner)

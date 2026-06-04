@@ -52,8 +52,7 @@ import { selfPid } from './cross-process/self-pid.ts';
 import { AtomicWriteFailed } from './errors.ts';
 
 /** 8-hex tempfile suffix. `crypto.randomUUID()` is collision-safe under
- *  parallel callers within the same pid — replaces the
- *  `Math.random()`-based suffix flagged in STYLE_GUIDE §17. */
+ *  parallel callers within the same pid. */
 const tempSuffix = (): string => randomUUID().replace(/-/g, '').slice(0, 8);
 
 const failStage =

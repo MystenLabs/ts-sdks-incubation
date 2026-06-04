@@ -401,18 +401,11 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 // Capability builders — pure helpers returning the ordered decl list.
 //
 // The package `start` bodies feed these into the shared `emitContributions`
-// router after resolving the value, instead of the legacy `capabilities`
-// second-closure. Decl shapes + emit ORDER are byte-identical to the
-// closure path the supervisor used to harvest.
+// router after resolving the value. Decl shapes + emit ORDER are load-bearing.
 //
-// NOTE (Part 2 of the Stage-B package conversion): the LOCAL builder no
-// longer appends the custom `makeLocalPackagePublishedDecl`
-// (`LOCAL_PACKAGE_PUBLISHED_KIND`) — that decl drove the orchestrator's
-// `publishResultSink`, which auto-discovered coins from the publish
-// output. Coin discovery now runs DIRECTLY in the local `start` body
-// (see `discoverPublishedCoins`), so the custom decl + its sink are dead
-// (removed in a later phase). Re-adding the decl here would
-// double-discover.
+// NOTE: the LOCAL builder does NOT append a custom published-coin decl.
+// Coin discovery runs DIRECTLY in the local `start` body (see
+// `discoverPublishedCoins`); appending a decl here would double-discover.
 // ---------------------------------------------------------------------------
 
 const makeLocalCapabilities = (

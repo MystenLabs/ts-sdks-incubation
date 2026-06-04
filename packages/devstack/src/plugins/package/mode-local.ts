@@ -211,7 +211,7 @@ export const buildVerifyProbe = (
 			// commit and `getObject` visibility; the validator's larger
 			// post-restore replay is already gated upstream by the sui
 			// plugin's caught-up-to-head ready-gate, so a false cache miss
-			// no longer turns a warm restart into an unnecessary publish.
+			// does not turn a warm restart into an unnecessary publish.
 			const result: typeof PackageVerifyShape.Type | null = yield* probe
 				.get({ kind: 'object', objectId: cachedPackageIdHint }, PackageVerifyShape, 'lenient')
 				.pipe(
@@ -487,9 +487,9 @@ export const acquireLocal = (
 		// `capture` callback is user code; a throw is a user bug (typo /
 		// renamed key against a stale cached output) and MUST surface as
 		// `PublishError('parse')` so the user sees the mistake instead of
-		// silently carrying forward `artifact.captured` (the historical
-		// `try { ... } catch { return artifact.captured }` hid renamed
-		// keys behind stale data — A5 of the remediation plan).
+		// silently carrying forward `artifact.captured` — swallowing the
+		// throw with `catch { return artifact.captured }` would hide
+		// renamed keys behind stale data.
 		//
 		// Cache miss: `producedOutput` was set inside `produce`, the
 		// produce-time capture already ran (Effect.try → PublishError),

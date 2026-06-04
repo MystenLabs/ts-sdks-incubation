@@ -166,14 +166,12 @@ const DEFAULT_NAME = 'seal';
 
 // ---------------------------------------------------------------------------
 // The three seal `start` bodies emit their contributions inline via the typed
-// `ctx` verbs after resolving the value, instead of the legacy `capabilities`
-// second-closure. The decl shapes + emit ORDER are byte-identical to the
-// closure/array path the supervisor used to harvest.
+// `ctx` verbs after resolving the value. The decl shapes + emit ORDER are
+// load-bearing.
 //
 // ⚠ ID-STABILITY: the snapshotable decl captures the seal vault / master-key
 // secret material subtree; its shape (subtree paths, container label tuple,
-// secretMaterial / missingTolerance flags) MUST stay byte-identical. Only the
-// EMISSION moves from the `capabilities` field into `start`.
+// secretMaterial / missingTolerance flags) MUST stay byte-identical.
 // ---------------------------------------------------------------------------
 
 /** Build the local-keygen-mode plugin. The service contributes
@@ -201,8 +199,7 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 		// `deps` auto-infers the resolved `{ sui, signer }` dependency
 		// object from seal's `dependsOn: { sui: suiResource, signer:
 		// opts.signer }`. `ctx` is the typed plugin-authoring surface the
-		// contribution emission below drives (Stage B inversion — replaced
-		// the legacy `capabilities` second-closure); it arrives via the
+		// contribution emission below drives; it arrives via the
 		// `PluginContext` service.
 		start: (deps) =>
 			Effect.gen(function* () {
@@ -374,9 +371,8 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 		role: 'task',
 		section: 'service',
 		// Live mode has no `dependsOn`, so `start` is zero-arg. `ctx`
-		// drives the contribution emission below (Stage B inversion —
-		// replaced the legacy static `capabilities: [snap, codegen]`
-		// array); it arrives via the `PluginContext` service.
+		// drives the contribution emission below; it arrives via the
+		// `PluginContext` service.
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
@@ -427,9 +423,8 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 		role: 'task',
 		section: 'service',
 		// Fork-known mode has no `dependsOn`, so `start` is zero-arg.
-		// `ctx` drives the contribution emission below (Stage B inversion
-		// — replaced the legacy `capabilities` callback-form closure); it
-		// arrives via the `PluginContext` service.
+		// `ctx` drives the contribution emission below; it arrives via the
+		// `PluginContext` service.
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;

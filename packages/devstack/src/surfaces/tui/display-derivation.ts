@@ -136,11 +136,9 @@ export type HealthState = 'ready' | 'active' | 'blocked' | 'empty';
  * `StackState.summary`, CLI `status`) derives from — no surface gets to
  * re-count rows on its own.
  *
- * The historical TUI/web divergence over the `stopped` status is
- * RECONCILED here by surfacing `stoppedRows` as its OWN discrete count
- * rather than folding it into either `ready` (web's old behavior) or
- * `waiting` (the TUI's old behavior). Neither surface loses information:
- * `deriveHealth(counts, policy)` re-applies each surface's documented
+ * The `stopped` status is surfaced here as its OWN discrete count rather
+ * than folded into either `ready` or `waiting`. No surface loses
+ * information: `deriveHealth(counts, policy)` re-applies each surface's documented
  * rule, and the web adapter folds `stopped` into its GraphQL `ready`
  * contract INSIDE the web adapter — never in this shared shape.
  *
@@ -545,11 +543,10 @@ export const groupRows = (
 
 /**
  * TUI dashboard summary. Delegates to the canonical `deriveStackViewModel`
- * + `deriveHealth(counts, 'tui')` so the TUI render path stays
- * byte-identical in behavior. The legacy `waitingRows` field folds the
- * discrete `stoppedRows` back in (the TUI historically counted stopped
- * rows as "waiting") so `dashboardSummaryLine` and existing tests/consumers
- * see the same shape they always did.
+ * + `deriveHealth(counts, 'tui')`. The `waitingRows` field folds the
+ * discrete `stoppedRows` back in (the TUI counts stopped rows as
+ * "waiting") so `dashboardSummaryLine` and its consumers get the TUI's
+ * expected shape.
  */
 export const deriveDashboardSummary = (
 	state: Pick<SubscribableState, 'rows' | 'endpoints' | 'accounts' | 'packages' | 'errors'>,
@@ -560,7 +557,7 @@ export const deriveDashboardSummary = (
 		readyRows: vm.readyRows,
 		activeRows: vm.activeRows,
 		failedRows: vm.failedRows,
-		// TUI's `waitingRows` historically counted pending + stopped together.
+		// TUI's `waitingRows` counts pending + stopped together.
 		waitingRows: vm.waitingRows + vm.stoppedRows,
 		endpointCount: vm.endpointCount,
 		accountCount: vm.accountCount,

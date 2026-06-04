@@ -35,8 +35,8 @@ type HandleCommandRunner = (
  *  correlate the outcome with it (the CLI's pending-capture map keys on
  *  it). When the command omitted an id there is nothing to correlate
  *  against — the CLI's bridge does NOT register a pending-capture entry
- *  for an id-less capture (`cli/wirings/up.ts` falls through to a
- *  legacy auto-ack and never keys this synthetic id) — so the minted
+ *  for an id-less capture (`cli/wirings/up.ts` falls through to a plain
+ *  auto-ack and never keys this synthetic id) — so the minted
  *  `snap-<ts>` here only satisfies the event's required field. */
 const effectiveSnapshotId = (
 	cmd: Extract<EngineCommand, { readonly tag: 'snapshot.capture' }>,

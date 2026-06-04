@@ -22,8 +22,7 @@
 //   6. Cross-filesystem fallback (`EXDEV` from rename) logs and falls
 //      back to copy-then-rm — the architecture's documented exception.
 //
-// Discipline carried verbatim from the legacy `engine/snapshot/stage-
-// and-swap.ts` (distilled §17).
+// Atomic stage-and-swap discipline (distilled §17).
 
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 

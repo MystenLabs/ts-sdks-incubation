@@ -91,11 +91,10 @@ export type ResolvedDependencies<Input> = Input extends undefined
 // recovers the Value from the success channel.
 type AnyPluginStart = (deps: never) => Effect.Effect<unknown, unknown, unknown>;
 
-// Stage B (ctx-as-service): `ctx` is delivered to plugins through the
-// `PluginContext` service tag (`const ctx = yield* PluginContext`), NOT
-// as a 2nd positional `start` argument. That keeps `start` STRICTLY
-// single-arg, which is what restores automatic contextual typing of
-// `deps`.
+// `ctx` is delivered to plugins through the `PluginContext` service tag
+// (`const ctx = yield* PluginContext`), NOT as a 2nd positional `start`
+// argument. That keeps `start` STRICTLY single-arg, which is what
+// gives `deps` automatic contextual typing.
 //
 // `PluginStart<Deps>` is both the CONSTRAINT and the DEFAULT contextual
 // shape `const Start` resolves to when a plugin authors `start: (deps) =>
@@ -266,8 +265,8 @@ export const resolvePluginDependencies = (
 export const pluginDependencyRefs = (plugin: AnyPlugin): readonly AnyResourceRef[] =>
 	dependencyList(plugin[dependencyInputBrand]) as readonly AnyResourceRef[];
 
-// Stage B (ctx-as-service): both the `Start` CONSTRAINT and DEFAULT are
-// the single-arg `PluginStart<Deps>`. A `start: (deps) => …` (or
+// Both the `Start` CONSTRAINT and DEFAULT are the single-arg
+// `PluginStart<Deps>`. A `start: (deps) => …` (or
 // `start: () => …`) body falls back to the default and contextually
 // types `deps` from the resolved `dependsOn` — no per-plugin `deps:`
 // annotation, including for plugins whose `dependsOn` is a runtime-built

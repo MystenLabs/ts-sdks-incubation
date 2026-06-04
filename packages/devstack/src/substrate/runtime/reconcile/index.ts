@@ -1,12 +1,12 @@
 // Reconcile subsystem barrel.
 //
-// The unified lifecycle-reconcile seam (redesign §2). Phase A: the seam
-// contract types (`./spec.ts`, P0) + the graph-axis reconcile body
-// (`./graph.ts`, P1). Phase B (P2/P3): the fs-plan executor
-// (`./fs-plan.ts`) + the flat label-scope reconcile body (`./label.ts`),
-// through which wipe + prune now route. Later phases fill the swap-tree
-// fsPlan family / cachePolicy / precondition / locks / ownership slots and
-// route the remaining flows (up / down / restore / capture) through here.
+// The unified lifecycle-reconcile seam:
+//   - `./spec.ts`     — the seam contract types + constructors.
+//   - `./graph.ts`    — the graph-axis reconcile body (dep-ordered,
+//                       in-supervisor).
+//   - `./fs-plan.ts`  — the fs-plan executor.
+//   - `./label.ts`    — the flat label-scope reconcile body, through which
+//                       wipe + prune route.
 
 export * from './spec.ts';
 export * from './graph.ts';

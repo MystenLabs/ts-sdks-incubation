@@ -8,10 +8,9 @@
 // to keep two stacks coexisting.
 //
 // `DEVSTACK_RUNTIME_ROOT` is the optional override for the on-disk
-// state root that contains `stacks/<stack>/manifest.json`. It maps to
-// the legacy `DEVSTACK_STATE_DIR` env var; both names are accepted on
-// read so the rewrite can roll out without coordinated env-var
-// renames across every example app.
+// state root that contains `stacks/<stack>/manifest.json`. The older
+// `DEVSTACK_STATE_DIR` env var is also accepted on read, so example apps
+// can use either name.
 //
 // `DEVSTACK_MANIFEST_PATH` is the top-of-the-precedence-ladder escape
 // hatch the engine writes; build integrations also honor it. Listed

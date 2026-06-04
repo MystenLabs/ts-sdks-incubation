@@ -491,8 +491,9 @@ export const layerPortBroker: Layer.Layer<PortBrokerService, never, RuntimeRoot>
 					// (the `kept` outcome, which cleared `reservationCell`).
 					// Interrupts, typed failures, and non-`kept` success
 					// outcomes all flow through here, closing both the Map
-					// leak and the port-locks/*.json leak (the latter
-					// previously persisted until the supervisor exited).
+					// leak and the port-locks/*.json leak (the on-disk
+					// reservation is unlinked here rather than persisting
+					// until the supervisor exits).
 					if (!reserved) return Effect.void;
 					const kept = exit._tag === 'Success' && exit.value?._tag === 'kept';
 					if (kept) return Effect.void;

@@ -98,12 +98,10 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 				const paths = yield* StackPathsService;
 				const { handle } = yield* bootPostgresService(runtime, identity, paths.stackRoot, opts);
 
-				// Stage B (plugin API inversion): emit the contributions
-				// INLINE via the typed `ctx` verbs, in the SAME order the
-				// legacy `capabilities` closure returned them
-				// (`[snap, codegen]` or `[snap, codegen, routable]`). The
-				// resolved `handle` is the closure's `value`; `identity` (the
-				// `IdentityContext` start already yields) is the closure's
+				// Emit the contributions INLINE via the typed `ctx` verbs,
+				// in order (`[snap, codegen]` or `[snap, codegen, routable]`).
+				// The resolved `handle` is the contribution `value`; `identity`
+				// (which `start` already yields from `IdentityContext`) is the
 				// `runtime.identity`.
 				//
 				// Codegen `host` is `handle.networkAlias` — the per-stack

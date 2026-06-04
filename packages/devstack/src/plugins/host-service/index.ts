@@ -138,12 +138,11 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 					label: `host-service:${normalized.serviceName}.start`,
 					run: prepared.start,
 				});
-				// Emit the routable endpoint inline (Stage B P2): the legacy
-				// `capabilities` closure read `value.{endpointName,name,port}`
-				// off the resolved `HostServiceValue` — that value is
-				// `prepared.value` here, so emit the same decl from the same
-				// fields BEFORE returning it. `ctx.endpoint` returns void and
-				// buffers the decl for the supervisor's post-start replay.
+				// Emit the routable endpoint inline. The decl reads
+				// `value.{endpointName,name,port}` off the resolved
+				// `HostServiceValue` (`prepared.value` here), emitted BEFORE
+				// returning it. `ctx.endpoint` returns void and buffers the
+				// decl for the supervisor's post-start replay.
 				ctx.endpoint(
 					makeHostServiceRoutable({
 						endpointName: prepared.value.endpointName,

@@ -953,7 +953,7 @@ export const ensureContainer = (
 		// `DaemonUnreachable` envelope (substrate→docker channel needs
 		// ONE bridging shape per the DockerRuntimeError union) but the
 		// `op` / `detail` fields keep the original tag visible. A truly
-		// unknown cause falls through to the legacy generic mapping.
+		// unknown cause falls through to the generic fallback mapping.
 		const mapSubstrateClaimError = <A, R>(
 			eff: Effect.Effect<A, RosterError | StackLockError, R>,
 		): Effect.Effect<A, DockerRuntimeError, R> =>

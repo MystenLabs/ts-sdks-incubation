@@ -4,10 +4,8 @@
 // `ctx` verbs (`ctx.codegen`/`ctx.endpoint`/`ctx.snapshotExtra`/
 // `ctx.publish`/`ctx.provides`). These helpers build the payload-shaped
 // decls those verbs accept, stamping the `kind` discriminant while
-// preserving narrow payload types. (The legacy open `capability` /
-// `defineCapability` / `capabilitySink` registry-dispatch helpers were
-// removed with the CapabilitySinks machinery in Stage B P4 — the five
-// contribution kinds are now a closed union.)
+// preserving narrow payload types. The five contribution kinds are a
+// closed union.
 
 import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import type { ProjectionDecl, ProjectionEvent } from '../contracts/projection.ts';

@@ -1,30 +1,29 @@
-// fs-plan executor — P2.
+// fs-plan executor.
 //
 // Runs a typed `ReconcileFsPlan` (an ordered list of `ReconcileFsOp`s,
 // see `./spec.ts`) over the file-tree + docker image store. This is the
 // single executor every label-scope flow's fsPlan compiles down to;
-// `reconcileLabel` (`./graph.ts`) calls it after the container target
+// `reconcileLabel` (`./label.ts`) calls it after the container target
 // converges.
 //
-// Two op families (redesign §2):
+// Two op families:
 //
-//   - DIRECT ops (IMPLEMENTED here, P2) — `sweep-children`, `reap-empty`,
-//     `reap-meta-missing`, `reap-images`. These are exactly the ops wipe +
-//     prune need NOW; each carries the caller's per-direction predicate /
-//     classifier + a phase failer so routing a flow through the executor
-//     PRESERVES that flow's existing error tags. The executor never picks
-//     its own error tag and never collapses the per-direction preserve
-//     predicate into a cache-policy projection (guardrail §3.1).
+//   - DIRECT ops — `sweep-children`, `reap-empty`, `reap-meta-missing`,
+//     `reap-images`. These are exactly the ops wipe + prune need; each
+//     carries the caller's per-direction predicate / classifier + a phase
+//     failer so routing a flow through the executor PRESERVES that flow's
+//     existing error tags. The executor never picks its own error tag and
+//     never collapses the per-direction preserve predicate into a
+//     cache-policy projection.
 //
 //   - SWAP-TREE op (`swap-tree`) — publishes a new tree via the UNCHANGED
 //     `stageAndSwap` primitive (NOT modified, NOT reimplemented). The
-//     executor only ASSEMBLES stageAndSwap's args from the op. P4
-//     implements the restore build body (`untar-artifact`); the capture
-//     build body (`tar-subtrees`) reuses the same runner in E.
+//     executor only ASSEMBLES stageAndSwap's args from the op. Restore
+//     uses the `untar-artifact` build body; capture uses `tar-subtrees`.
 //
-// Guardrails (redesign §3): `stageAndSwap` is untouched; the preserve-list
-// builders are per-direction constants supplied by the CALLER, never
-// derived inside the executor.
+// `stageAndSwap` is untouched; the preserve-list builders are
+// per-direction constants supplied by the CALLER, never derived inside
+// the executor.
 
 import { Effect, FileSystem } from 'effect';
 
@@ -65,7 +64,7 @@ export interface FsPlanResult {
 /** Remove every direct child of `stackRoot` the preserve predicate does
  *  NOT keep. Returns `{ preservedCount, sawChildren }` so a following
  *  `reap-empty` can decide whether the root is now empty using the SAME
- *  directory listing semantics as the legacy `runWipe`. */
+ *  directory listing. */
 const runSweepChildren = <E>(
 	op: Extract<ReconcileFsOp<E>, { op: 'sweep-children' }>,
 ): Effect.Effect<{ preservedCount: number; sawChildren: boolean }, E, FileSystem.FileSystem> =>
@@ -107,8 +106,8 @@ const runReapEmpty = (
  *  unreadable (partial artifacts). Returns `{ reaped, inspected }` so
  *  prune keeps its `PruneResult.reaped` + `inspected`. Reads the catalog
  *  read-only first, then classifies each entry via the caller's
- *  `isMetaMissing`. An absent catalog yields zero inspected (matches the
- *  legacy early-return). */
+ *  `isMetaMissing`. An absent catalog yields zero inspected (early
+ *  return). */
 const runReapMetaMissing = <E>(
 	op: Extract<ReconcileFsOp<E>, { op: 'reap-meta-missing' }>,
 ): Effect.Effect<{ reaped: ReadonlyArray<string>; inspected: number }, E, FileSystem.FileSystem> =>
@@ -152,7 +151,7 @@ const runReapImages = <E>(
 	});
 
 // -----------------------------------------------------------------------------
-// Per-op runner (SWAP-TREE op — P4, restore via `untar-artifact`)
+// Per-op runner (SWAP-TREE op — restore via `untar-artifact`)
 // -----------------------------------------------------------------------------
 
 /** Publish a new `targetPath` tree via the UNCHANGED `stageAndSwap`
@@ -211,7 +210,7 @@ const runSwapTree = <E>(
  * `reap-empty` reads the preserved-child count produced by the IMMEDIATELY
  * PRECEDING `sweep-children` op (wipe's plan is always
  * `[sweep-children, reap-empty]`) — the count threads through the fold so
- * the reap decision matches the legacy `runWipe` exactly.
+ * the root is reaped only when no preserved child survived.
  */
 export const executeFsPlan = <E>(
 	plan: ReconcileFsPlan<E>,
@@ -222,7 +221,7 @@ export const executeFsPlan = <E>(
 		let inspected = 0;
 		let imagesSwept = 0;
 		// Threaded from the last `sweep-children` so a following `reap-empty`
-		// sees the same preserved-count the legacy wipe computed.
+		// sees the preserved-count computed by that sweep.
 		let lastSweep = { preservedCount: 0, sawChildren: false };
 
 		for (const op of plan.ops) {
@@ -246,13 +245,13 @@ export const executeFsPlan = <E>(
 					break;
 				}
 				case 'swap-tree': {
-					// P4 (restore via `untar-artifact`): build the staging tree
+					// restore via `untar-artifact`: build the staging tree
 					// via the op's `buildEffect` and publish it through the
 					// UNCHANGED `stageAndSwap`. The preserve riders
 					// (`preserveFromTarget` / `preserveOnPreseed`) map 1:1 onto
 					// `stageAndSwap`'s args as PER-DIRECTION constants — NOT a
-					// cache-policy projection (guardrail §3.1). The capture build
-					// body (`tar-subtrees`) reuses this same runner in E.
+					// cache-policy projection. The capture build body
+					// (`tar-subtrees`) reuses this same runner.
 					yield* runSwapTree(op);
 					break;
 				}

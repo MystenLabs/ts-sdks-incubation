@@ -2,11 +2,10 @@
 //
 // Two devstack surfaces parse TAR byte streams: the host-tree snapshot
 // validator (`substrate/runtime/host-tree-tar`) and the Docker image
-// bundle tag scanner (`orchestrators/snapshot/image-bundle-tags`). They
-// used to carry byte-identical copies of the block iterator, header
+// bundle tag scanner (`orchestrators/snapshot/image-bundle-tags`). This
+// module is the single source of truth for the block iterator, header
 // parse, pax/gnu extended-header handling, and the `isSafeArchivePath`
-// path-escape guard. This module is the single source of truth for that
-// machinery so a pax/gnu fix lands on both surfaces at once.
+// path-escape guard, so a pax/gnu fix lands on both surfaces at once.
 //
 // Shape:
 //   - `processTarChunk` is a stateful, streaming block iterator. The

@@ -183,9 +183,9 @@ export type CapturedSubtree = Schema.Schema.Type<typeof CapturedSubtreeSchema>;
  *  objects, seal key-server object, deepbook pool ids, coin treasury. These
  *  must come back after a restore so the post-restore boot REUSES the deploy
  *  instead of re-running it with fresh ids (which orphans every pre-snapshot
- *  object). Post-D1 the contract has a SINGLE source: capture no longer tars
- *  `cache/<ns>`; the LIVE cache (preserved across a wipe by the D0 coupling)
- *  is the sole copy, and restore PRESERVES it across the stage-and-swap (see
+ *  object). The contract has a SINGLE source: capture does not tar
+ *  `cache/<ns>`; the LIVE cache (preserved across a wipe) is the sole copy,
+ *  and restore PRESERVES it across the stage-and-swap (see
  *  LIVE_RESTORE_PRESERVED_PATHS in restore.ts). A slash-prefixed plugin
  *  namespace (`seal/package`, `deepbook/pools`) nests under its root, so the
  *  root entry covers all of that plugin's namespaces. The generic per-call

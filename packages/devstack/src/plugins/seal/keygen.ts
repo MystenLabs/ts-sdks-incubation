@@ -19,7 +19,7 @@ import { sealError, type SealError } from './errors.ts';
 import { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
-// Constants — mirror v3 (`seal/internal.ts:115-149`)
+// Constants
 // ---------------------------------------------------------------------------
 
 /** Entrypoint binary inside the seal image. */
@@ -58,7 +58,7 @@ export interface PersistedBlsKeypair {
 // ---------------------------------------------------------------------------
 
 /** Case-insensitive line-level pattern matching any `master[_-]?key`
- *  mention. Mirrors v3's `MASTER_KEY_LINE_RE` (`seal/internal.ts:1343`). */
+ *  mention. */
 const MASTER_KEY_LINE_RE = /^.*master[_\- ]?key.*$/gim;
 
 /** Defense-in-depth: any contiguous hex run of 64+ chars is treated as

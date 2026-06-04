@@ -49,9 +49,8 @@ export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<vo
 				yield* requestBackgroundStackRestartInterrupt(deps);
 				// Graceful drain of the WHOLE graph, sequenced through the
 				// reconcile graph-axis (`drain` direction → the kept
-				// `teardownKeys` over reverse-dep order). Identical teardown
-				// order + ready-gate semantics as the former `planFullDrain`
-				// path; this whole block stays `Effect.uninterruptible` so a
+				// `teardownKeys` over reverse-dep order, over the full key
+				// set). This whole block stays `Effect.uninterruptible` so a
 				// second SIGINT can't slip an interrupt between the teardown
 				// and the latch/deferred writes (Bug #13).
 				yield* reconcileGraph(

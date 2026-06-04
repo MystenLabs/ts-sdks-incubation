@@ -38,8 +38,7 @@ import type { PluginRegistry, ResolvedGraph } from '../lifecycle/index.ts';
  * (skip-dedup); a shutdown/conflicting command reads-and-clears the
  * slot and `Fiber.interrupt`s it.
  *
- * This replaces the hand-rolled idle/starting/running token Ref machine:
- * the fiber IS the running state, `Effect.forkIn(supervisorScope)` gives
+ * The fiber IS the running state, `Effect.forkIn(supervisorScope)` gives
  * it the supervisor's lifetime (so it outlives the command-loop fiber
  * and does NOT wedge shutdown), and `Fiber.interrupt` is the
  * conflict-resolution primitive.

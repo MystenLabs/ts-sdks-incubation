@@ -117,16 +117,16 @@ const readMetaOpt = (
  * adapter's label-filtered image cleanup, scoped to `role:
  * SNAPSHOT_IMAGE_ROLE` so build images are never touched.
  *
- * Routed through the unified reconcile (redesign §2): a flat LABEL-scope
- * spec narrowed to `role: SNAPSHOT_IMAGE_ROLE`, carrying NO container
- * target (prune mutates no containers — `target: 'running'` is the
- * label-scope no-op container target) and an `fsPlan` of two ops in the
- * legacy order — `reap-meta-missing` (catalog GC) then `reap-images`
- * (byproduct image sweep, the `reap-byproducts` cache disposition's
- * concrete mechanism). The `reap-byproducts` logic is preserved verbatim
- * as prune's projection; the `PruneResult` shape is unchanged.
+ * Routed through the unified reconcile: a flat LABEL-scope spec narrowed
+ * to `role: SNAPSHOT_IMAGE_ROLE`, carrying NO container target (prune
+ * mutates no containers — `target: 'running'` is the label-scope no-op
+ * container target) and an `fsPlan` of two ops — `reap-meta-missing`
+ * (catalog GC) then `reap-images` (byproduct image sweep, the
+ * `reap-byproducts` cache disposition's concrete mechanism). The
+ * `reap-byproducts` logic is prune's projection; the `PruneResult` shape
+ * carries `reaped` + `imagesSwept`.
  *
- * cachePolicy stays a `{cache, snapshots}` PAIR (guardrail §3.1):
+ * cachePolicy stays a `{cache, snapshots}` PAIR:
  * `preserve` cache (prune never touches the live deploy cache) +
  * `reap-byproducts` snapshots (the image GC).
  */
@@ -140,8 +140,8 @@ export const runPrune = (
 		const catalogDir = `${inputs.stackRoot}/${SNAPSHOTS_DIR_NAME}`;
 
 		// Catalog GC — reap partial artifacts (no readable meta). The
-		// `isMetaMissing` classifier is prune's projection: the SAME
-		// `readMetaOpt` read+decode the legacy used, lifted to a predicate.
+		// `isMetaMissing` classifier is prune's projection: a
+		// `readMetaOpt` read+decode lifted to a predicate.
 		const reapMetaMissing: ReconcileFsOp<PrunePhaseError> = {
 			op: 'reap-meta-missing',
 			catalogDir,

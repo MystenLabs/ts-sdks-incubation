@@ -126,7 +126,7 @@ export interface SnapshotOrchestrator {
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
 
-	/** Restore from a previously-captured artifact id — the destructive,
+	/** Restore from a captured artifact id — the destructive,
 	 *  ordered half of the bounce: identity-guard fail-closed + cache-missing
 	 *  preflight BEFORE any mutation → swap host-tree in + load images → hard-
 	 *  rm → resume = recreate (the next boot / the injected converge). */

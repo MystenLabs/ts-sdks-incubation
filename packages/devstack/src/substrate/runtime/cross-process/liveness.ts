@@ -189,10 +189,10 @@ export const checkHolderLiveness = Effect.fn('cross-process.liveness.checkHolder
  *
  *  A `null` `startTime` propagates verbatim — readers (`isOwnEntry`
  *  in `roster.ts`, `checkHolderLiveness` above) honor the null-
- *  conservative branch. Writing `0` for "unprobable" was the prior
- *  shape and caused a false-dead harvest: a subsequent probe yielding
- *  a real stamp would mismatch the recorded `0` and the process could
- *  no longer recognize its own entry. */
+ *  conservative branch. Writing `0` for "unprobable" would cause a
+ *  false-dead harvest: a subsequent probe yielding a real stamp would
+ *  mismatch the recorded `0` and the process would fail to recognize
+ *  its own entry. */
 export const ownHolder = (intent: 'normal' | 'snapshot' = 'normal'): RosterHolder => {
 	const pid = selfPid();
 	const startTime = processStartTime(pid);

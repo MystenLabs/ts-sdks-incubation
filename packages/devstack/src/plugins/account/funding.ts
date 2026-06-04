@@ -193,9 +193,9 @@ interface NullBalanceReader extends FundingBalanceReader {
  *  the live SDK via `makeFundingBalanceReader`; the funding pass
  *  REQUIRES a reader so the post-faucet finality wait is load-bearing
  *  on real wire calls. Tests that don't model the read/poll loop pass
- *  this sentinel to explicitly opt OUT of the wait — the absence of
- *  this opt-out previously hid as a silent `Effect.void` short-circuit
- *  on any production caller that forgot to wire the reader. */
+ *  this sentinel to explicitly opt OUT of the wait. Requiring an
+ *  explicit reader means a production caller that forgets to wire one
+ *  fails loudly rather than silently short-circuiting the wait. */
 export const NULL_BALANCE_READER: FundingBalanceReader = {
 	readBalance: () => Effect.succeed(null),
 	skipFinalityWait: true,

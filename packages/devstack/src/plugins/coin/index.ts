@@ -144,8 +144,7 @@ const projectCoinSdk = (sui: SuiClient): MetadataSdkShim & MintSdkShim => ({
 // three coin `start` bodies feed its return into the shared
 // `emitContributions(ctx, …)`, which routes each decl by `kind`. Shared by
 // all three forms so the rich funding-strategy projection below lives once.
-// Decl shapes + ORDER are byte-identical to the legacy `capabilities`
-// closure the supervisor used to harvest.
+// Decl shapes + ORDER are load-bearing.
 //
 // Exported for the funding-strategy decl-shape test: it feeds a hand-built
 // resolved `CoinValue` here and asserts the projected `strategy-contributor`

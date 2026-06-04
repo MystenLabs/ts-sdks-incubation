@@ -170,8 +170,7 @@ const buildPlugin = (opts: SuiOptions) => {
 		section: 'service',
 		// Sui has no `dependsOn`, so `start` is zero-arg. `ctx` is the
 		// typed plugin-authoring surface the contribution emission below
-		// drives (Stage B inversion — replaced the legacy `capabilities`
-		// second-closure); it arrives via the `PluginContext` service.
+		// drives; it arrives via the `PluginContext` service.
 		start: () =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
@@ -355,9 +354,8 @@ export { SuiSpans } from './spans.ts';
 export type { ClientWithCoreApi } from '@mysten/sui/client';
 // Cross-plugin seams: fork impersonation + chain-build container.
 // Consumed by `action` (Move-call execution against fork) and
-// `package` (publish-to-fork + Move-build orchestration). Wave 2
-// switches consumer plugins from internal-module imports to these
-// barrel entries.
+// `package` (publish-to-fork + Move-build orchestration). Consumer
+// plugins import these barrel entries rather than internal modules.
 export {
 	buildForkImpersonationTransactionBytes,
 	prepareForkImpersonationTransaction,
@@ -383,11 +381,10 @@ export {
 } from './chain-build-container.ts';
 
 // Cross-plugin seams: hoisted exec / move / ledger helpers.
-// Consumed by Account/Action/Coin/Deepbook/Package/Seal/Walrus, which
-// previously reached into the deep `sui/exec`, `sui/move`, and
-// `sui/ledger` internal modules. These barrel entries route those
-// consumers through the sibling plugin's barrel per the
-// `plugin-boundary` invariant.
+// Consumed by Account/Action/Coin/Deepbook/Package/Seal/Walrus. These
+// barrel entries route those consumers through the sibling plugin's
+// barrel per the `plugin-boundary` invariant, rather than reaching into
+// the deep `sui/exec`, `sui/move`, and `sui/ledger` internal modules.
 export {
 	extractExecuteDigest,
 	formatExecutedFailure,

@@ -18,8 +18,7 @@
 //   - produce        = user's `body(ctx)` Effect. Wraps any non-tagged
 //                      throw in `ActionError({phase:'sign'})`.
 //   - register       = no-op (Action declares no in-process registry —
-//                      mirrors v3 `services/action.ts:189-191` "Action
-//                      does NOT populate any in-process registries").
+//                      it does NOT populate any in-process registries).
 //
 // Constraints honored:
 //
@@ -28,9 +27,9 @@
 //   - Dynamic discriminator re-runs on EVERY acquire — invariant #6.
 //   - Lenient verify probe — invariant #4.
 //   - signAndExecute failure routes via ActionError(phase: 'sign') —
-//     invariant #8 (mirroring v3's `PublishError({phase:'publish-tx'})`,
-//     but tagged separately so action consumers `catchTag('ActionError')`
-//     without clashing with package's tagged error).
+//     invariant #8 (tagged separately so action consumers
+//     `catchTag('ActionError')` without clashing with package's tagged
+//     error).
 
 import { createHash } from 'node:crypto';
 
@@ -62,14 +61,12 @@ import { ActionSpans } from './spans.ts';
  *  shape produced by the `ctx.signAndExecute` helper is
  *  `ActionObjectChange` (`{ kind: 'created' | 'mutated', objectId,
  *  objectType?, outputState?, idOperation? }`). Consumers can cast or
- *  use `findCreatedByType`-style helpers — mirrors v3's
- *  `pickCreatedByType(r.objectChanges, ...)` pattern from
- *  `examples/connect-four/devstack.config.ts`.
+ *  use `findCreatedByType`-style helpers, e.g.
+ *  `pickCreatedByType(r.objectChanges, ...)` (see
+ *  `examples/connect-four/devstack.config.ts`).
  *
- *  Distilled doc §"Capabilities PRODUCED" — the v3 Action's `TxResult`
- *  carries `digest`, `effects`, `objectChanges`, `balanceChanges`. We
- *  narrow to the columns that fit the cache + are actually used by
- *  downstream consumers. */
+ *  The receipt narrows to the columns that fit the cache + are actually
+ *  used by downstream consumers. */
 export interface ActionReceipt {
 	readonly digest: string;
 	readonly objectChanges?: ReadonlyArray<unknown>;
@@ -79,8 +76,8 @@ export interface ActionReceipt {
 /** Schema for the cached `ActionReceipt`. `objectChanges` /
  *  `balanceChanges` are `Unknown`-typed arrays — we don't enforce the
  *  SDK's wide change-shape here because callers project these
- *  manually (mirrors v3's `pickCreatedByType(r.objectChanges, ...)`
- *  pattern from `examples/connect-four/devstack.config.ts`). */
+ *  manually (e.g. `pickCreatedByType(r.objectChanges, ...)`; see
+ *  `examples/connect-four/devstack.config.ts`). */
 export const ActionReceiptSchema = Schema.Struct({
 	digest: Schema.String,
 	objectChanges: Schema.optional(Schema.Array(Schema.Unknown)),

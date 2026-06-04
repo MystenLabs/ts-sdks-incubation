@@ -1,32 +1,30 @@
-// Reconcile seam contract — P0 (pure types + constructors, zero behavior).
+// Reconcile seam contract — pure types + constructors, zero behavior.
 //
-// One `reconcile(spec)` model unifies the seven hand-written lifecycle
-// flows (up / down / restart / restore / wipe / prune / capture) over a
-// small set of orthogonal axes. This module defines ONLY the seam
-// contract — the structured spec every flow eventually compiles down to.
-// No flow is rewired here; see `lifecycle-redesign.md` §2 (unified model)
-// and §3 (guardrails).
+// One `reconcile(spec)` model unifies the lifecycle flows (up / down /
+// restart / restore / wipe / prune / capture) over a small set of
+// orthogonal axes. This module defines ONLY the seam contract — the
+// structured spec every flow compiles down to.
 //
-// The axes (redesign §2):
+// The axes:
 //   - target     — `running | absent` (intent only; `decideRunAction`
-//                  still picks the concrete docker action, engine
-//                  unchanged — guardrail §3.6).
-//   - fsPlan     — staged file-tree mutation vocabulary (P2 seam).
+//                  picks the concrete docker action, engine untouched).
+//   - fsPlan     — staged file-tree mutation vocabulary.
 //   - cachePolicy— a STRUCTURED PAIR over the content-addressed cache +
-//                  its snapshot byproducts (guardrail §3.1: the two
-//                  dispositions move together today but must be modelable
-//                  independently — never a coarse enum).
+//                  its snapshot byproducts (the two dispositions move
+//                  together today but must be modelable independently —
+//                  never a coarse enum).
 //   - scope      — `graph-keys(subset)` (in-supervisor, dep-ordered) |
 //                  `label(tuple)` (out-of-supervisor, flat sweep).
 //   - direction  — `converge` (forward dep order) | `drain` (reverse).
-//   - locks      — declared lock riders (P4/P6 seam).
-//   - ownership  — cross-process arbitration rider (P6 seam; stays ABOVE
-//                  reconcile per guardrail §3.4 — modelled, not executed).
+//   - locks      — declared lock riders.
+//   - ownership  — cross-process arbitration rider (arbitration stays
+//                  ABOVE reconcile — modelled, not executed here).
 //
-// Phase A wires ONLY `scope.kind === 'graph-keys'` + `converge|drain`
-// through `reconcileGraph` (see `./graph.ts`). The other axes are
-// typed-but-inert placeholder slots so later phases (P2/P4/P6) can fill
-// them without re-shaping the contract.
+// The graph axis (`reconcileGraph`, `./graph.ts`) handles
+// `scope.kind === 'graph-keys'` + `converge|drain`; the label axis
+// (`reconcileLabel`, `./label.ts`) handles `scope.kind === 'label'`
+// sweeps + their fsPlan. Slots not yet executed in a given axis are
+// typed-but-inert there.
 
 import type { AppName, PluginKey, StackName } from '../../brand.ts';
 
@@ -52,14 +50,13 @@ export interface ReconcileLabelTuple {
 }
 
 /** Where a reconcile applies. `graph-keys` is the in-supervisor,
- *  dep-ordered subset (Phase A); `label` is the flat out-of-supervisor
- *  sweep (later phases). */
+ *  dep-ordered subset; `label` is the flat out-of-supervisor sweep. */
 export type ReconcileScope =
 	| { readonly kind: 'graph-keys'; readonly keys: ReadonlyArray<PluginKey> }
 	| { readonly kind: 'label'; readonly tuple: ReconcileLabelTuple };
 
 // -----------------------------------------------------------------------------
-// Cache policy — a STRUCTURED PAIR, never a coarse enum (guardrail §3.1)
+// Cache policy — a STRUCTURED PAIR, never a coarse enum
 // -----------------------------------------------------------------------------
 
 /** How the live content-addressed cache (`cache/<ns>/<chain>/<hash>`) is
@@ -84,32 +81,27 @@ export interface CachePolicy {
 }
 
 // -----------------------------------------------------------------------------
-// Later-phase placeholder slots (typed-but-inert in Phase A)
-// -----------------------------------------------------------------------------
-
-// -----------------------------------------------------------------------------
-// fsPlan — the staged file-tree mutation vocabulary (redesign §2, P2)
+// fsPlan — the staged file-tree mutation vocabulary
 // -----------------------------------------------------------------------------
 //
 // A `ReconcileFsPlan` is an ORDERED list of `ReconcileFsOp`s the executor
 // (`./fs-plan.ts`) runs in sequence. Two op families:
 //
-//   - DIRECT fs/runtime ops (implemented in P2) — `sweep-children`,
-//     `reap-empty`, `reap-meta-missing`, `reap-images`. These are the
-//     ops wipe + prune need NOW; they mutate the runtime tree / docker
-//     image store directly (no tree swap).
-//   - SWAP-TREE ops (typed seams, NOT implemented — P4/P5/E own them) —
-//     `swap-tree`, `untar-artifact`, `tar-subtrees`. These run through the
-//     unchanged `stageAndSwap` primitive; their preserve riders
-//     (`preserveFromTarget` / `preserveOnPreseed`) stay PER-DIRECTION
-//     named constants, never collapsed into one cache-policy projection
-//     (guardrail §3.1).
+//   - DIRECT fs/runtime ops — `sweep-children`, `reap-empty`,
+//     `reap-meta-missing`, `reap-images`. These are the ops wipe + prune
+//     need; they mutate the runtime tree / docker image store directly
+//     (no tree swap).
+//   - SWAP-TREE ops — `swap-tree`, `untar-artifact`, `tar-subtrees`.
+//     These run through the unchanged `stageAndSwap` primitive; their
+//     preserve riders (`preserveFromTarget` / `preserveOnPreseed`) stay
+//     PER-DIRECTION named constants, never collapsed into one cache-policy
+//     projection.
 //
 // Each op carries the live callbacks / failers it needs (this is an
 // in-process plan, not a serialized one — like `ReconcileGraphDeps` it
 // holds live objects). The preserve-list BUILDERS are per-direction: wipe
 // supplies its wholesale `isPreservedChild` predicate here; restore's
-// per-namespace + control-file preserve list is a SEPARATE P4 constant.
+// per-namespace + control-file preserve list is a SEPARATE constant.
 
 import type { Effect as EffectT, FileSystem } from 'effect';
 
@@ -126,8 +118,8 @@ export type ReconcileFsFailer<E> = (cause: unknown) => EffectT.Effect<never, E>;
 
 /** DIRECT op — remove every direct child of `stackRoot` for which
  *  `preserve(name)` is FALSE. The wipe preserve predicate
- *  (`isPreservedChild`) is supplied here as a per-direction constant
- *  (guardrail §3.1: no wholesale-preserve collapse into cache policy). */
+ *  (`isPreservedChild`) is supplied here as a per-direction constant (no
+ *  wholesale-preserve collapse into cache policy). */
 export interface SweepChildrenOp<E> {
 	readonly op: 'sweep-children';
 	readonly stackRoot: string;
@@ -170,21 +162,21 @@ export interface ReapImagesOp<E> {
 	readonly onError: ReconcileFsFailer<E>;
 }
 
-/** SWAP-TREE op (IMPLEMENTED — P4 restore via `untar-artifact`; the
- *  `tar-subtrees` capture build lands in E). Publish a new `targetPath`
- *  tree by running `build` (which populates the staging dir) then the
- *  UNCHANGED `stageAndSwap` rename — `stageAndSwap` is NOT modified and
- *  NOT reimplemented; the executor only assembles its args from this op
- *  (guardrail: stageAndSwap untouched). The build's result is observed by
+/** SWAP-TREE op — restore publishes via `untar-artifact`; capture builds
+ *  via `tar-subtrees`. Publish a new `targetPath` tree by running `build`
+ *  (which populates the staging dir) then the UNCHANGED `stageAndSwap`
+ *  rename — `stageAndSwap` is NOT modified and NOT reimplemented; the
+ *  executor only assembles its args from this op. The build's result is
+ *  observed by
  *  the caller through its OWN closure (e.g. restore pushes staged image
  *  refs into a caller-held array), so the executor discards it and returns
  *  the default `FsPlanResult` — the build value never threads back through
  *  the op vocabulary.
  *
  *  The preserve riders map 1:1 onto `stageAndSwap`'s args as PER-DIRECTION
- *  named constants, NOT a cache-policy projection (guardrail §3.1):
- *  `preserveFromTarget` is restore's per-namespace cache + control-file
- *  list; `preserveOnPreseed` is codegen's whole-tree pre-build clone. */
+ *  named constants, NOT a cache-policy projection: `preserveFromTarget` is
+ *  restore's per-namespace cache + control-file list; `preserveOnPreseed`
+ *  is codegen's whole-tree pre-build clone. */
 export interface SwapTreeOp<E> {
 	readonly op: 'swap-tree';
 	/** The build body's identity — `untar-artifact` (restore) /
@@ -199,9 +191,9 @@ export interface SwapTreeOp<E> {
 	 *  caller's error tag `E`; its success value is observed via the
 	 *  caller's own closure (see above) and discarded by the executor. */
 	readonly buildEffect: EffectT.Effect<unknown, E, FileSystem.FileSystem>;
-	/** Per-direction preserve rider — NOT a cache-policy projection
-	 *  (guardrail §3.1). Restore supplies its per-namespace cache +
-	 *  control-file list here as a restore-direction constant. */
+	/** Per-direction preserve rider — NOT a cache-policy projection.
+	 *  Restore supplies its per-namespace cache + control-file list here as
+	 *  a restore-direction constant. */
 	readonly preserveFromTarget?: ReadonlyArray<StageAndSwapPreservedPath>;
 	/** Per-direction preserve rider — codegen's whole-tree pre-build clone
 	 *  (mtime-stable). */
@@ -229,31 +221,29 @@ export type ReconcileFsOp<E> =
 	| ReapImagesOp<E>
 	| SwapTreeOp<E>;
 
-/** The staged file-tree mutation plan (redesign §2): an ordered list of
- *  ops the executor runs in sequence. */
+/** The staged file-tree mutation plan: an ordered list of ops the
+ *  executor runs in sequence. */
 export interface ReconcileFsPlan<E = never> {
 	readonly ops: ReadonlyArray<ReconcileFsOp<E>>;
 }
 
-/** P4 seam — an ordered precondition that runs as step 0, BEFORE the first
- *  mutation (e.g. restore's identity-guard, fail-closed). Typed as an
- *  opaque tagged slot now; the runner lands in P4. Phase A never reads
- *  this. Guard: `restore.test.ts` (sweep/load/tag === [] on mismatch). */
+/** An ordered precondition that runs as step 0, BEFORE the first mutation
+ *  (e.g. restore's identity-guard, fail-closed). An opaque tagged slot in
+ *  the contract; axes that don't run preconditions ignore it. Guard:
+ *  `restore.test.ts` (sweep/load/tag === [] on mismatch). */
 export interface ReconcilePrecondition {
 	readonly tag: string;
 }
 
-/** P4/P6 seam — declared lock riders the reconcile must hold for its
- *  duration (e.g. `stack.lock`; codegen uses its own `codegenLockFile`).
- *  Typed-but-inert in Phase A. */
+/** Declared lock riders the reconcile must hold for its duration (e.g.
+ *  `stack.lock`; codegen uses its own `codegenLockFile`). */
 export interface ReconcileLocks {
 	readonly files: ReadonlyArray<string>;
 }
 
-/** P6 seam — cross-process ownership arbitration rider. Arbitration STAYS
- *  ABOVE reconcile in `cli/wirings` (guardrail §3.4); this slot only
- *  declares the required rider so the contract is closed. Phase A never
- *  reads this. */
+/** Cross-process ownership arbitration rider. Arbitration STAYS ABOVE
+ *  reconcile in `cli/wirings`; this slot only declares the required rider
+ *  so the contract is closed. */
 export interface ReconcileOwnership {
 	readonly requireSoleHolder: boolean;
 }
@@ -262,9 +252,9 @@ export interface ReconcileOwnership {
 // The unified spec
 // -----------------------------------------------------------------------------
 
-/** The container intent. `decideRunAction` still picks the concrete docker
+/** The container intent. `decideRunAction` picks the concrete docker
  *  action (`fresh|adopt|unpause-adopt|resume|recreate|refuse|stop`); the
- *  caller only declares the desired end-state (guardrail §3.6). */
+ *  caller only declares the desired end-state. */
 export type ReconcileTarget = 'running' | 'absent';
 
 /** Traversal direction over the dep-graph: `converge` is forward (acquire)
@@ -274,10 +264,10 @@ export type ReconcileDirection = 'converge' | 'drain';
 /** The one structured spec every lifecycle flow compiles down to. The
  *  `E` parameter is the caller's fs-plan error tag (e.g. `WipePhaseError`
  *  / `PrunePhaseError`), defaulting to `never` for the graph flows that
- *  carry no fsPlan. In Phase A only `target`, `cachePolicy`, `scope`
- *  (graph-keys) and `direction` were consumed by `reconcileGraph`; P2/P3
- *  add `fsPlan` execution + the label scope. The remaining slots stay
- *  typed-but-optional for P4/P6. */
+ *  carry no fsPlan. The graph axis (`reconcileGraph`) consumes `target`,
+ *  `cachePolicy`, `scope` (graph-keys) and `direction`; the label axis
+ *  (`reconcileLabel`) additionally executes `fsPlan` over a label scope.
+ *  The remaining slots stay typed-but-optional. */
 export interface ReconcileSpec<E = never> {
 	readonly precondition?: ReconcilePrecondition;
 	readonly target: ReconcileTarget;
@@ -300,8 +290,8 @@ export const graphKeysScope = (keys: ReadonlyArray<PluginKey>): ReconcileScope =
 });
 
 /** A flat label scope over an out-of-supervisor surface (docker resources
- *  by `{app, stack[, plugin, role]}`). Re-added in P3, now that label
- *  flows (wipe / prune) are wired through `reconcileLabel`. */
+ *  by `{app, stack[, plugin, role]}`). The label flows (wipe / prune)
+ *  are wired through `reconcileLabel`. */
 export const labelScope = (tuple: ReconcileLabelTuple): ReconcileScope => ({
 	kind: 'label',
 	tuple,
@@ -314,7 +304,7 @@ export const cachePolicy = (
 ): CachePolicy => ({ cacheDisposition, snapshotsDisposition });
 
 /** `reuse-verified` cache + `preserve` snapshots — the warm-restart
- *  default carried by up / restart (redesign §2 table). */
+ *  default carried by up / restart. */
 export const reuseVerifiedPolicy = (): CachePolicy =>
 	cachePolicy('reuse-verified', 'preserve');
 

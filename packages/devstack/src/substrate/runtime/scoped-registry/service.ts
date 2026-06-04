@@ -3,11 +3,10 @@
 // ONE storage + finalizer + snapshot core, TWO surfaces:
 //
 //   - `makeScopedMultimap<K, V>()` — the raw seq-tagged multimap.
-//     Three substrate registries — `StrategyRegistry`,
-//     `FormatterRegistry`, and (historically) `CapabilitySinks` —
-//     independently grew the same shape: a store of a per-key LIST of
-//     seq-tagged entries plus a per-registration scope finalizer that
-//     drops the entries it added when the surrounding scope closes.
+//     The substrate registries (`StrategyRegistry`, `FormatterRegistry`)
+//     share the same shape: a store of a per-key LIST of seq-tagged
+//     entries plus a per-registration scope finalizer that drops the
+//     entries it added when the surrounding scope closes.
 //     The winner policy differs per registry (priority+seq, non-null
 //     formatter+seq, plain last-seq), so each call site folds the
 //     surviving entries with its own rule over the snapshot this
@@ -32,13 +31,13 @@
 //     registration: scope A installs `X`, sibling B overwrites `X`
 //     (capturing A's value as its `prior`), then A closes first and its
 //     finalizer — holding `prior = nothing` — DELETES `X`, dropping B's
-//     live overlay. capability-sinks had exactly this bug.
+//     live overlay.
 //
 //   - The seq-tagged list makes every finalizer remove ONLY the entry
 //     (or entries) it added — it never touches a newer registration for
 //     the same key. "Who wins right now" is a pure function of the
 //     surviving entries (highest seq = last-write-wins), so close order
-//     no longer matters.
+//     does not matter.
 //
 // The single-mode projection is LWW over exactly this store: each
 // `set` is a fresh-seq `register([{key, value}])`, `find`/`get` fold
@@ -307,9 +306,8 @@ const makeSingleSurface = <K extends string, V>(
 // -----------------------------------------------------------------------------
 
 /**
- * Single-mode factory — a last-write-wins `ScopedRefMap<K, V>` service.
- * This IS the historical `defineScopedRefMap` body verbatim (now folded
- * onto the shared seq-tagged core): `set`/`get`/`find`/`has`/`entries`/
+ * Single-mode factory — a last-write-wins `ScopedRefMap<K, V>` service
+ * over the shared seq-tagged core: `set`/`get`/`find`/`has`/`entries`/
  * `changes`, insertion order, `get` fails with
  * `ScopedRefMapKeyMissingError`.
  *
@@ -394,8 +392,8 @@ export function defineScopedRegistry<K extends string, V>(
 }
 
 /**
- * Thin alias preserving the historical `defineScopedRefMap(name)`
- * single-mode factory for a zero-diff path on coin/package. Identical
- * to `defineScopedRegistry(name)` (single mode).
+ * Thin `defineScopedRefMap(name)` alias for the single-mode factory,
+ * used by coin/package. Identical to `defineScopedRegistry(name)`
+ * (single mode).
  */
 export const defineScopedRefMap = <K extends string, V>(name: string) => defineSingle<K, V>(name);

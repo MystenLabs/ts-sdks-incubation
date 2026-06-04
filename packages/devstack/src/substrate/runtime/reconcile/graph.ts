@@ -1,26 +1,27 @@
-// Reconcile over the dep-graph — P1.
+// Reconcile over the dep-graph.
 //
 // Two pieces:
 //
-//   1. `plan(graph, scope, direction)` — the single dep-ordering body
-//      that subsumes the three former plan wrappers (`planFullDrain`,
-//      `planFullDrainExcluding`, `planRestart`). Given a slice (carried on
-//      a `graph-keys` scope) it produces the teardown (reverse-dep) and
-//      acquire (forward-dep) orderings via the kept `orderByLevel`
-//      level-ordering helper. The slice-COMPUTATION (full / exclude /
-//      downstream-closure) stays with each former caller; only the
-//      identical ordering choreography is collapsed here.
+//   1. `plan(graph, scope, direction)` — the single dep-ordering body.
+//      Given a slice (carried on a `graph-keys` scope) it produces the
+//      teardown (reverse-dep) and acquire (forward-dep) orderings via the
+//      kept `orderByLevel` level-ordering helper. Full-graph drains call
+//      it directly with every key; the exclude-predicate slice
+//      (`planExcluding`) and the downstream-closure slice + validation
+//      (`planRestart`) live in `lifecycle/selective-restart.ts` and
+//      delegate the ordering here. Only the ordering choreography lives in
+//      `plan`; each caller owns its own slice computation.
 //
 //   2. `reconcileGraph(spec, deps)` — sequences `plan` then the EXISTING
 //      `acquireKeys` / `teardownKeys` execution primitives by the spec's
-//      direction. It does NOT re-implement acquire/teardown. Phase A
-//      handles ONLY `scope.kind === 'graph-keys'` + `converge | drain`;
-//      label-scope, fsPlan and cachePolicy execution are later-phase
-//      seams (clearly marked TODO below — the TYPES already accept them).
+//      direction. It does NOT re-implement acquire/teardown. The graph
+//      axis handles ONLY `scope.kind === 'graph-keys'` + `converge | drain`;
+//      fsPlan and cachePolicy execution in the graph axis are unwired
+//      seams (marked TODO below — the TYPES already accept them).
 //
-// Guardrails (redesign §3): `decideRunAction` / `ensureContainer` are
-// untouched — reconcileGraph only chooses target/direction and never
-// re-implements per-container action execution.
+// `decideRunAction` / `ensureContainer` are untouched — reconcileGraph
+// only chooses target/direction and never re-implements per-container
+// action execution.
 
 import { Context, Effect, Queue, Scope, SubscriptionRef } from 'effect';
 
@@ -45,8 +46,7 @@ import type { ReconcileSpec } from './spec.ts';
 
 /** A dep-ordered reconcile plan over a slice of the graph. Both arrays
  *  cover exactly `slice`; they differ only in iteration direction
- *  (`teardownOrder` reverse-dep, `acquireOrder` forward-dep). This is the
- *  shape the three former plan wrappers returned. */
+ *  (`teardownOrder` reverse-dep, `acquireOrder` forward-dep). */
 export interface GraphPlan {
 	readonly slice: ReadonlySet<PluginKey>;
 	readonly teardownOrder: ReadonlyArray<PluginKey>;
@@ -101,16 +101,16 @@ export interface ReconcileGraphDeps {
  *   - `converge`  → re-acquire the slice via `acquireKeys` over the
  *                   forward-dep order.
  *
- * Phase A scope: this is the EXECUTION seam for the graph axis only. It
- * does NOT own the selective-restart event choreography (`restart.*`
- * settle events, `resetForRestart`) — that stays in `doSelectiveRestart`,
- * which now calls `reconcileGraph(drain)` then `reconcileGraph(converge)`
- * around its own reset + event publishing. `reconcileGraph` is purely the
- * "plan then sequence the two primitives" body.
+ * This is the EXECUTION seam for the graph axis only. It does NOT own the
+ * selective-restart event choreography (`restart.*` settle events,
+ * `resetForRestart`) — that stays in `doSelectiveRestart`, which calls
+ * `reconcileGraph(drain)` then `reconcileGraph(converge)` around its own
+ * reset + event publishing. `reconcileGraph` is purely the "plan then
+ * sequence the two primitives" body.
  *
- * Guardrails: `acquireKeys` / `teardownKeys` are unchanged; the per-
- * container orphan-safety window stays inside `ensureContainer`. This
- * function never picks a docker action.
+ * `acquireKeys` / `teardownKeys` are unchanged; the per-container
+ * orphan-safety window stays inside `ensureContainer`. This function
+ * never picks a docker action.
  */
 export const reconcileGraph = (
 	spec: ReconcileSpec,
@@ -119,7 +119,7 @@ export const reconcileGraph = (
 	Effect.gen(function* () {
 		// Label scope is the FLAT out-of-supervisor sweep — it has no
 		// dep-graph to order, so it lives in the sibling `reconcileLabel`
-		// (`./label.ts`, P3), which the wipe / prune flows call directly.
+		// (`./label.ts`), which the wipe / prune flows call directly.
 		// The graph axis handles ONLY `graph-keys` (dep-ordered,
 		// in-supervisor); a label spec reaching here is a wiring bug.
 		if (spec.scope.kind !== 'graph-keys') {
@@ -128,15 +128,15 @@ export const reconcileGraph = (
 					'not the graph axis — the graph axis handles graph-keys scope only',
 			);
 		}
-		// TODO(P4/P5): graph-axis fsPlan execution over the unchanged
+		// TODO: graph-axis fsPlan execution over the unchanged
 		// `stageAndSwap` vocabulary (up/down/restart carry none today;
 		// codegen's swap-tree lands as a sibling). `spec.fsPlan` is
 		// typed-but-inert in the graph axis.
-		// TODO(P5): cachePolicy execution (cache + snapshots dispositions).
+		// TODO: cachePolicy execution (cache + snapshots dispositions).
 		// `spec.cachePolicy` is carried but not enforced in the graph axis
 		// yet — up/restart both ride `reuse-verified` today, which is the
 		// existing cache lookup→verify→reuse loop (untouched).
-		// TODO(P4/P6): `spec.precondition` / `spec.locks` / `spec.ownership`
+		// TODO: `spec.precondition` / `spec.locks` / `spec.ownership`
 		// riders.
 
 		const built = plan(deps.graph, spec.scope, spec.direction);

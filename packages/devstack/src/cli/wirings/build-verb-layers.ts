@@ -5,8 +5,8 @@
 //   - `layerProductionOrchestrators({ codegen })` on top of
 //   - `buildSubstrateLayers(identity, runtimeRoot)`.
 //
-// Extracted here so each wiring file references one helper instead of
-// rebuilding the composition inline (formerly ~5 sites in `main.ts`).
+// One helper each wiring file references, instead of rebuilding the
+// composition inline at every call site.
 
 import { Layer } from 'effect';
 

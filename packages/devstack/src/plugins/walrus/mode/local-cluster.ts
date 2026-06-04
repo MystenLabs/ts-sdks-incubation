@@ -15,10 +15,7 @@
 //                          `deploy` file AND on-chain object
 //                          existence; produce runs the deploy
 //                          one-shot.
-//   3. Register committee — currently a typed no-op (distilled-doc
-//                            opportunity #3: drop the cargo-culted
-//                            placeholder). We omit it entirely in
-//                            v3 rewrite.
+//   3. Register committee — omitted entirely (no placeholder).
 //   4. Storage nodes — parallel boot of N storage-node containers.
 //   5. Exchange resolution — on-chain getObject + parse type.
 //                             Degrades to undefined on
@@ -73,8 +70,8 @@ import {
 } from '../faucet-strategy.ts';
 import { resolveWalExchange, type WalExchangeHandle, type WalSwapSdk } from '../wal-swap.ts';
 
-/** Options for the local-cluster mode. Mirrors v3
- *  `WalrusLocalClusterOptions<Name>` (06-walrus.md §"Configuration"). */
+/** Options for the local-cluster mode (06-walrus.md
+ *  §"Configuration"). */
 export interface WalrusLocalClusterOptions {
 	/** Engine row name + on-disk dir suffix + registry key.
 	 *  Default `'walrus'`. */
@@ -134,8 +131,7 @@ export interface ResolvedLocalClusterOptions {
 	readonly readyTimeoutMs: number;
 }
 
-/** Synchronous factory-time validation. Mirrors v3's
- *  `local-cluster.ts:101-121` guards. Throws (NOT Effect-fail) so
+/** Synchronous factory-time validation. Throws (NOT Effect-fail) so
  *  misconfiguration trips at the `defineDevstack` call site rather
  *  than at deferred Layer.build time. Distilled-doc invariant 11. */
 export const resolveLocalClusterOptions = (

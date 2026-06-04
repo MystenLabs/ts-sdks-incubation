@@ -29,31 +29,17 @@ export class RestartTargetMissing extends Data.TaggedError('RestartTargetMissing
 	readonly pluginKey: PluginKey;
 }> {}
 
-/** A planned slice of work for selective restart. The supervisor:
- *  1. Tears down `teardownOrder` (reverse-dep, parallel-within-level).
- *  2. Re-acquires `acquireOrder` (forward, level-batched-parallel).
- *
- *  The two arrays cover the same set of keys; the difference is the
- *  iteration direction. Structurally identical to the reconcile module's
- *  `GraphPlan` (the dep-ordered shape every graph reconcile produces);
- *  kept as an alias so the existing supervisor call sites read unchanged.
- */
-export type RestartPlan = GraphPlan;
-
-/** Order a slice into the teardown/acquire pair via the shared reconcile
- *  `plan` body (collapses the ordering choreography the three wrappers
- *  below used to repeat verbatim). Slice COMPUTATION stays per-wrapper. */
-const orderSlice = (graph: ResolvedGraph, slice: ReadonlySet<PluginKey>): RestartPlan =>
-	plan(graph, { kind: 'graph-keys', keys: [...slice] }, 'converge');
-
 /**
  * Build a restart plan from a set of root invalidation targets. Each
- * root contributes its full downstream closure to the slice.
+ * root contributes its full downstream closure to the slice. The
+ * downstream-closure slice computation + the root-membership validation
+ * are this planner's unique work; the dep-ordering itself delegates to
+ * the shared reconcile `plan` body, which returns a `GraphPlan`.
  */
 export const planRestart = (
 	graph: ResolvedGraph,
 	roots: ReadonlySet<PluginKey>,
-): Effect.Effect<RestartPlan, RestartTargetMissing> =>
+): Effect.Effect<GraphPlan, RestartTargetMissing> =>
 	Effect.gen(function* () {
 		yield* Effect.annotateCurrentSpan({ 'devstack.restart.rootCount': roots.size });
 		for (const root of roots) {
@@ -65,38 +51,27 @@ export const planRestart = (
 		for (const root of roots) {
 			for (const key of downstreamClosure(graph, root)) slice.add(key);
 		}
-		return orderSlice(graph, slice);
+		return plan(graph, { kind: 'graph-keys', keys: [...slice] }, 'converge');
 	}).pipe(Effect.withSpan('lifecycle.selective-restart.plan'));
 
-/**
- * Drain plan — for `stack.stop` and graceful shutdown. All keys in
- * dep-graph order, reverse. Architecture § Stack lifecycle:
- *   "shutdown.requested → parallel teardown (max grace, not sum grace)"
- *
- * The "parallel within a level" semantics live in the supervisor's
- * execution loop; this planner just produces the level batches in
- * reverse.
- */
-export const planFullDrain = (graph: ResolvedGraph): RestartPlan =>
-	orderSlice(graph, new Set<PluginKey>(graph.nodes.keys()));
-
-/** `planFullDrain` minus the nodes matched by `exclude`. The excluded
- *  nodes stay live while every other plugin is drained + re-acquired.
+/** Plan a drain + re-acquire of the whole graph MINUS the nodes matched by
+ *  `exclude`. The excluded nodes stay live while every other plugin is
+ *  drained + re-acquired.
  *
  *  The live `snapshot.restore` re-acquire passes a predicate over the
  *  plugin-declared keep-alive flag so a plugin whose transport is
  *  answering the restore isn't torn down mid-flight (which would surface
  *  to its caller as a 502 even though the restore succeeded). This module
  *  filters purely on the node flag — it has no knowledge of which plugins
- *  set it. `stack.restart` / CLI full-restart still drains everything via
- *  `planFullDrain`. */
-export const planFullDrainExcluding = (
+ *  set it. `stack.restart` / CLI full-restart drains everything by passing
+ *  the full key set straight to `plan`. */
+export const planExcluding = (
 	graph: ResolvedGraph,
 	exclude: (node: DepNode) => boolean,
-): RestartPlan => {
+): GraphPlan => {
 	const slice = new Set<PluginKey>();
 	for (const [key, node] of graph.nodes) {
 		if (!exclude(node)) slice.add(key);
 	}
-	return orderSlice(graph, slice);
+	return plan(graph, { kind: 'graph-keys', keys: [...slice] }, 'converge');
 };

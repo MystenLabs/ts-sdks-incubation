@@ -1,16 +1,15 @@
 // Versioned cross-process document — read / write envelope helpers.
 //
 // The cross-process modules (`runtime/cross-process/{roster,
-// stack-lock}.ts`) historically re-implemented the
-// same `Effect.try(readFileSync) → decodeJsonText → mkIoError|
-// mkCorruptError` envelope and the same `Effect.try(atomicWriteJsonSync)
-// → mkIoError` envelope, each with a different typed-error pair. This
-// file centralizes both envelopes around the versioned-doc schemas
-// constructed via `versionedDocSchema` (the sibling file). The caller
-// supplies the error constructors so its typed error channel is
-// preserved end-to-end; nothing about NFS-safe atomicity, fsync
-// ordering, or version-stamp handling moves out of the underlying
-// primitives.
+// stack-lock}.ts`) share one `Effect.try(readFileSync) → decodeJsonText →
+// mkIoError|mkCorruptError` read envelope and one
+// `Effect.try(atomicWriteJsonSync) → mkIoError` write envelope, each
+// parameterised by a typed-error pair. This file centralizes both
+// envelopes around the versioned-doc schemas constructed via
+// `versionedDocSchema` (the sibling file). The caller supplies the error
+// constructors so its typed error channel is preserved end-to-end; NFS-
+// safe atomicity, fsync ordering, and version-stamp handling all live in
+// the underlying primitives.
 //
 // Lives at substrate L0+ — depends on `effect`, `node:fs`, the
 // runtime-decode helpers, and the canonical atomic-write primitive.

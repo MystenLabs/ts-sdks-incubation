@@ -55,9 +55,8 @@ import { walrusDeployMountPaths } from './deploy-paths.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { WalrusSpans } from './spans.ts';
 
-/** Cache-stored payload — what verify re-confirms on every cycle.
- *  Mirrors the v3 `CachedDeployState` shape (06-walrus.md §"State-
- *  store entries"). */
+/** Cache-stored payload — what verify re-confirms on every cycle
+ *  (06-walrus.md §"State-store entries"). */
 export interface CachedDeployState {
 	readonly walrusPackageId: string;
 	readonly systemObject: string;
@@ -220,8 +219,8 @@ const isBindSourceMissing = (result: {
 
 /** Parse the walrus deploy output into a `CachedDeployState`.
  *
- *  Expected output format (best-effort match against the v3 reference's
- *  deploy stdout — the walrus binary's exact format may drift between
+ *  Expected output format (best-effort match against the walrus
+ *  binary's deploy stdout — its exact format may drift between
  *  versions):
  *
  *    walrus_package_id: 0x<hex>

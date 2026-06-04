@@ -1,8 +1,7 @@
 // Subprocess-capture → typed docker-error translation.
 //
-// Architecture inverts the legacy "stderr-pattern wording" coupling:
-// instead of every plugin staring at stderr substrings, we classify
-// in ONE place and surface typed errors. Plugins consume typed errors
+// Instead of every plugin staring at stderr substrings, classification
+// happens in ONE place and surfaces typed errors. Plugins consume typed errors
 // (`ImageNotFound`, `BuildFailed`, …) and never see raw stderr text
 // outside the error envelope's `detail` field.
 //

@@ -1,12 +1,10 @@
 // ContributionDispatcher — the closed, typed post-start contribution seam.
 //
-// Stage B (plugin API inversion, P4) replaced the open kind→sink
-// registry (`CapabilitySinks`) with a CLOSED set of five typed
-// dispatch methods, one per built-in contribution kind. The supervisor
-// reads the buffered ctx contributions after a successful `start` and
-// calls the matching method directly (an exhaustive switch on the decl
-// discriminant — no string-kind matching, no UnknownContributionKind
-// arm).
+// A CLOSED set of five typed dispatch methods, one per built-in
+// contribution kind. The supervisor reads the buffered ctx contributions
+// after a successful `start` and calls the matching method directly (an
+// exhaustive switch on the decl discriminant — no string-kind matching,
+// no UnknownContributionKind arm).
 //
 // Substrate name-blindness (ARCHITECTURE.md §"Substrate name-blindness"):
 // each method's BODY lives in L3 orchestrator composition
@@ -54,7 +52,7 @@ export interface ContributionDispatchContext {
  * orchestrator-fault path (a broken sink, e.g. a router-route
  * collision), surfaced by the supervisor as
  * `engine.orchestrator.dispatchFailed` WITHOUT marking the plugin
- * failed — matching the legacy dual-catch semantics.
+ * failed.
  *
  * The bodies live in L3 (`buildProductionContributionDispatcher`); the
  * supervisor holds this record opaquely.

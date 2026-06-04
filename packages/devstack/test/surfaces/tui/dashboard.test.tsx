@@ -311,7 +311,7 @@ describe('Dashboard', () => {
 					tag: 'running',
 					phase: 'capturing-host-tree',
 					name: 'before-change',
-					pausedContainers: 2,
+					committedContainers: 2,
 					totalContainers: 2,
 					detail: 'archiving 1 host subtree',
 					at: AT,

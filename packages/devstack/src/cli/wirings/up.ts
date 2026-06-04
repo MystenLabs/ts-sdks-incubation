@@ -59,7 +59,6 @@ import type { LoadedConfig } from '../../surfaces/cli/commands/config-loader.ts'
 import { cliErrorFromConfigExit } from '../bail.ts';
 import { makeQueueCommandPublisher, resolveUpRendererMode } from '../up-lifecycle.ts';
 import { makeConfigLoader } from './config-loader.ts';
-import { clearStaleRestoreMarker } from './restore-marker-tolerance.ts';
 import { isEngineCommand } from './engine-command.ts';
 import {
 	findCliSupervisorLiveError,
@@ -197,8 +196,8 @@ interface PendingSnapshotCapture {
 /** Detect snapshot-capture completion events on the published stream
  *  so we can ack/fail the originating `snapshot.capture` command with
  *  a structured payload (snapshot metadata on success; failure summary
- *  on failure). Drops the legacy tail-fiber on the CLI side — the
- *  `summary` is now surfaced through `awaitCompletion`'s reply.payload. */
+ *  on failure). The `summary` is surfaced through `awaitCompletion`'s
+ *  reply.payload. */
 const snapshotCaptureAckFromEvent = (
 	event: unknown,
 ): { readonly snapshotId: string; readonly payload: SnapshotCaptureAckPayload } | null => {
@@ -309,7 +308,7 @@ const installCommandChannelBridge = (params: {
 							if (cmd.snapshotId === undefined) {
 								// Without a snapshotId we cannot correlate the completion
 								// event back to this command record. Fall through to the
-								// legacy auto-ack path — the CLI side mints an id today, so
+								// plain auto-ack path — the CLI side mints an id, so
 								// this branch is defensive.
 								yield* params.handle.runCommand(cmd).pipe(
 									Effect.andThen(subscriber.publishReply(record.id, { kind: 'ack' })),
@@ -530,15 +529,6 @@ export const runUpLive = (
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const stackPaths = yield* StackPathsService;
-							// Tolerate a stale restore-pending marker left by a
-							// pre-D2 binary that crashed mid image-promotion. The
-							// crash-recovery scanner is gone: restore now leaves
-							// promoted images at their TARGET names, so the next
-							// boot's image-match adoption re-runs the deploy from
-							// the local image with no marker. We do NOT parse the
-							// stale file — just unlink it best-effort before any
-							// plugin acquire so nothing trips over it.
-							yield* clearStaleRestoreMarker(fs, stackPaths.stackRoot);
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
 								handle,

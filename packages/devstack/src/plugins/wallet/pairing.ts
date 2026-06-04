@@ -239,8 +239,7 @@ const TOKEN_REDACTION_RULE: RedactionRule = {
  * see the unredacted pair URL anyway, but this exists for callers that
  * accidentally pass `pairUrl` straight into a log line.
  *
- * Distilled-doc opportunity (15-wallet.md): the legacy redactor only
- * covered `#token=`. This regex covers BOTH the fragment form and a
+ * This regex covers BOTH the fragment form (`#token=`) and a
  * hypothetical query form so a future config change doesn't silently
  * leak.
  */

@@ -123,7 +123,7 @@ export type EngineEvent =
 			readonly name?: string;
 			readonly phase: SnapshotCaptureProgressPhase;
 			readonly detail?: string;
-			readonly pausedContainers?: number;
+			readonly committedContainers?: number;
 			readonly totalContainers?: number;
 			readonly at: number;
 	  }

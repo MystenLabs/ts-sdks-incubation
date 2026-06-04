@@ -7,10 +7,9 @@
 // `{systemObjectId, stakingPoolId, exchangeIds}` — plus the proxy /
 // aggregator / publisher URLs for HTTP consumers.
 //
-// Distilled-doc opportunity #8: the v3 `localnetWalrusOptions` couples
-// to a free-form cast. We surface the bindings here as a typed
-// `WalrusBindings` shape so downstream code can `import { walrus }`
-// from the codegen-staged file and get a fully-typed handle.
+// The bindings are surfaced here as a typed `WalrusBindings` shape so
+// downstream code can `import { walrus }` from the codegen-staged file
+// and get a fully-typed handle.
 //
 // Mode-asymmetric emission:
 //   - Local: emits `{packageConfig, proxyUrl, aggregatorUrl,
@@ -18,8 +17,8 @@
 //   - Known: emits the same shape; each of `proxyUrl /
 //     aggregatorUrl / publisherUrl` is `string | null` and surfaces
 //     INDEPENDENTLY — a field is null only when THAT specific URL is
-//     unresolved (distilled-doc invariant 15). A missing publisher
-//     URL no longer suppresses an available proxy/aggregator URL.
+//     unresolved. A missing publisher URL does not suppress an
+//     available proxy/aggregator URL.
 
 import { Effect } from 'effect';
 

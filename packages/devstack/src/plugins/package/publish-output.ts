@@ -4,8 +4,7 @@
 // projection produced by a successful `localPackage(...)` publish. The
 // package plugin's `start` folds this output's coins into the per-stack
 // CoinRegistry directly (see `discoverPublishedCoins`); there is no
-// longer a custom contribution-decl kind for it (Stage B P4 removed the
-// `package.local-published` decl + its `publishResultSink`).
+// custom contribution-decl kind for it.
 
 export interface PackagePublishObjectChange {
 	readonly type: 'created' | 'published' | 'mutated' | 'wrapped' | 'transferred';

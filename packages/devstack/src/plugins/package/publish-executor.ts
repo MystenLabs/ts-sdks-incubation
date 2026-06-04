@@ -224,9 +224,8 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 			// UpgradeCap` — `key + store`, NO `drop`). The Move VM refuses
 			// transactions that leave such values unused
 			// (`UnusedValueWithoutDrop`); we MUST transfer the cap to a
-			// concrete owner. Convention (matches v3 + dev-wallet's
-			// MintNFT demo): transfer to the publisher account so the
-			// stack-owner retains upgrade authority.
+			// concrete owner. Convention: transfer to the publisher account
+			// so the stack-owner retains upgrade authority.
 			const tx = new Transaction();
 			tx.setSender(inputs.account.address);
 			const upgradeCapArg = tx.publish({

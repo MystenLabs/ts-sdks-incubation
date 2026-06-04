@@ -610,9 +610,9 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME, kind: 'file' },
 	{ relativePath: 'roster.json', kind: 'file' },
 	{ relativePath: 'container-claims.json', kind: 'file' },
-	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES in descriptor.ts). Post-D1 the
-	// capture NO LONGER tars these, so there is no captured copy in staging — the
-	// LIVE cache is now the SOLE source. A wipe preserves it (D0 coupling), so it
+	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES in descriptor.ts). The
+	// capture does NOT tar these, so there is no captured copy in staging — the
+	// LIVE cache is the SOLE source. A wipe preserves it, so it
 	// is present at restore time; this entry preserves it across the stage-and-swap
 	// (preserve-ALWAYS — overwrite defaults true) so the post-restore boot REUSES
 	// the deploy instead of re-running it with fresh ids (which would orphan every
@@ -630,12 +630,12 @@ const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 ];
 
 // -----------------------------------------------------------------------------
-// Cache-existence preflight — fail-closed BEFORE any mutation (PR#1).
+// Cache-existence preflight — fail-closed BEFORE any mutation.
 // -----------------------------------------------------------------------------
 
 /**
- * Post-D1 the live `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source of
- * the on-chain deploy/mint ids (capture no longer tars `cache/<ns>`; a wipe
+ * The live `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source of
+ * the on-chain deploy/mint ids (capture does not tar `cache/<ns>`; a wipe
  * preserves the live cache alongside `snapshots/`). Restore PRESERVES that
  * live cache across the stage-and-swap so the post-restore boot REUSES the
  * deploy instead of re-running it with fresh ids.
@@ -693,17 +693,16 @@ export interface RestoreInputs {
 }
 
 /**
- * Run the full restore. Routed through the unified reconcile (redesign §2,
- * P4) as an ORDERED 4-step body — restore is NOT a single converge target
+ * Run the full restore. Routed through the unified reconcile as an
+ * ORDERED 4-step body — restore is NOT a single converge target
  * but a destructive ordered pair around an fs swap:
  *
  *   step0  — PRECONDITION: identity-guard, FAIL-CLOSED BEFORE ANY MUTATION.
  *            The runtime-identity guard + merged plugin-contribution guard
  *            complete BEFORE the first mutation (the docker load/tag inside
  *            the swap-tree build). On mismatch the sweep / load / tag spies
- *            stay EMPTY — zero mutations (guardrail §3.2; restore.test
- *            `:214/:263`). Keep the pure meta read → guard → only then
- *            mutate ordering.
+ *            stay EMPTY — zero mutations (restore.test `:214/:263`). Keep
+ *            the pure meta read → guard → only then mutate ordering.
  *   step1  — fsPlan `swap-tree(untar)`: a single-op `ReconcileFsPlan` run
  *            through `executeFsPlan`, which publishes the new tree via the
  *            UNCHANGED `stageAndSwap`. The build untars the host-tree +
@@ -711,7 +710,7 @@ export interface RestoreInputs {
  *            atomic swap preserves the RESTORE preserve list
  *            (`LIVE_RESTORE_PRESERVED_PATHS` — per-namespace live cache +
  *            control files, a restore-direction constant, NOT wipe's
- *            wholesale predicate — guardrail §3.1/§3.3). Promote staged
+ *            wholesale predicate). Promote staged
  *            images to their captured TARGET names is the swap step's
  *            docker tail.
  *   step2 R1 — HARD container removal (target = absent, label scope,
@@ -768,8 +767,8 @@ export const runRestore = (
 		const live = yield* mergeContributions(liveContributions);
 		yield* runIdentityGuard(meta.identity, live);
 
-		// step0b — PR#1 cache-existence preflight, ALSO fail-closed before any
-		//    mutation. Post-D1 the live deploy cache is the SOLE source of the
+		// step0b — cache-existence preflight, ALSO fail-closed before any
+		//    mutation. The live deploy cache is the SOLE source of the
 		//    on-chain ids restore reuses; if it is gone, refuse (`cache-missing`)
 		//    rather than let the next boot silently re-deploy with fresh ids.
 		yield* requireDeployCachePresent(inputs.runtimeStackRoot);
@@ -886,8 +885,7 @@ export const runRestore = (
 					backupPath: inputs.runtimeBackupPath,
 					buildEffect: swapBuild,
 					// RESTORE-DIRECTION preserve constant — per-namespace live
-					// cache + control files, NOT wipe's wholesale predicate
-					// (guardrail §3.1/§3.3).
+					// cache + control files, NOT wipe's wholesale predicate.
 					preserveFromTarget: LIVE_RESTORE_PRESERVED_PATHS,
 					publishLockPath: runtimeControlLockPathForStackRoot(inputs.runtimeStackRoot),
 					// Identity pass-through — restore keeps `StageAndSwapError`
@@ -910,7 +908,7 @@ export const runRestore = (
 				//   — no recovery marker, no scanner. R1 is STRICTLY before R2
 				//   (R2 runs in the caller's converge after `runRestore`
 				//   returns), and is NEVER expressed as
-				//   flip-image-and-let-decideRunAction-recreate (guardrail §3.6).
+				//   flip-image-and-let-decideRunAction-recreate.
 				if (stagedImages.length > 0) {
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {

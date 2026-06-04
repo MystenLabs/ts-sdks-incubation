@@ -1,4 +1,4 @@
-// Reconcile over a flat label scope — P3.
+// Reconcile over a flat label scope.
 //
 // The out-of-supervisor sibling of `reconcileGraph` (`./graph.ts`). Where
 // the graph axis is dep-ordered (in-supervisor), the LABEL axis is a FLAT
@@ -22,8 +22,8 @@
 //      docker mutation is the `reap-images` op inside the fsPlan); wipe
 //      carries both.
 //
-// Guardrails (redesign §3): `decideRunAction` / `ensureContainer` are
-// untouched — label scope never picks a per-container docker action (the
+// `decideRunAction` / `ensureContainer` are untouched — label scope
+// never picks a per-container docker action (the
 // `removeManaged*` family is a flat label sweep, not the per-node
 // converger). `stageAndSwap` is untouched.
 
@@ -65,9 +65,9 @@ export interface ReconcileLabelDeps<E> {
  * surface; flows that mutate nothing on disk just get the empty result.
  *
  * Order is `target → fsPlan`: for `wipe` the containers/networks/volumes
- * are gone BEFORE the runtime tree is swept (matches the legacy
- * `runWipe`); for `prune` there is no container target, so it is purely
- * the fsPlan (catalog reap + image reap).
+ * are gone BEFORE the runtime tree is swept; for `prune` there is no
+ * container target, so it is purely the fsPlan (catalog reap + image
+ * reap).
  */
 export const reconcileLabel = <E>(
 	spec: ReconcileSpec<E>,

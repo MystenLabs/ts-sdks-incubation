@@ -30,7 +30,7 @@
 // substrate's `LeaseBrokerService` is the L0 primitive: each
 // transaction scope opens a fresh lease keyed by `account:<address>`.
 // The public sign helpers are implemented in terms of that scope so
-// they keep the historical per-address behavior.
+// they keep the per-address serialization behavior.
 
 import { Effect } from 'effect';
 

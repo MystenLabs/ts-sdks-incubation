@@ -80,11 +80,11 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 	useEffect(() => {
 		const sectionLookup = (pluginKey: string) =>
 			rowsRef.current.find((row) => row.key === pluginKey)?.section;
-		// Microtask batching: a burst of N events used to trigger N
-		// `setEventLog` calls, each forcing a React render. We instead
-		// accumulate derived lines in `pendingLines` and flush them
-		// inside a single `queueMicrotask` callback — one `setEventLog`
-		// per tick regardless of burst size. The sidecar `setSnapshotStatus`
+		// Microtask batching: rather than one `setEventLog` per event (each
+		// forcing a React render), accumulate derived lines in `pendingLines`
+		// and flush them inside a single `queueMicrotask` callback — one
+		// `setEventLog` per tick regardless of burst size. The sidecar
+		// `setSnapshotStatus`
 		// updates stay per-event (they're idempotent and don't drive the
 		// hot path).
 		let pendingLines: Array<EventLogLine | null> = [];
@@ -131,9 +131,9 @@ export const App = ({ stateRef, events, publish }: AppProps): React.JSX.Element 
 										: {}
 									: { name: event.name }),
 								...(event.detail === undefined ? {} : { detail: event.detail }),
-								...(event.pausedContainers === undefined
+								...(event.committedContainers === undefined
 									? {}
-									: { pausedContainers: event.pausedContainers }),
+									: { committedContainers: event.committedContainers }),
 								...(event.totalContainers === undefined
 									? {}
 									: { totalContainers: event.totalContainers }),

@@ -208,8 +208,7 @@ const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: s
 //
 // The account `start` emits its four contributions inline — snapshot →
 // codegen → registry → projection — directly via the typed `ctx` verbs,
-// AFTER resolving the value. The decl shapes + emit ORDER are byte-identical
-// to the legacy `capabilities` second-closure the supervisor used to harvest.
+// AFTER resolving the value. The decl shapes + emit ORDER are load-bearing.
 // ---------------------------------------------------------------------------
 
 export const account = <const N extends string, const Funding extends AccountFunding = readonly []>(

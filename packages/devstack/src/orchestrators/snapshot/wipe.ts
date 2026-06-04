@@ -172,10 +172,10 @@ export const planWipe = (
  * Tear down a stack's live footprint. The snapshot catalog AND the
  * deploy cache survive together by default (architecture § wipe).
  *
- * Routed through the unified reconcile (redesign §2): a flat LABEL-scope
- * spec — `target: 'absent'` (hard container/network/volume rm) +
+ * Routed through the unified reconcile: a flat LABEL-scope spec —
+ * `target: 'absent'` (hard container/network/volume rm) +
  * `fsPlan: [sweep-children(isPreservedChild), reap-empty]` — executed by
- * `reconcileLabel`. The legacy per-step order is preserved exactly:
+ * `reconcileLabel`. The per-step order is:
  *
  *   1. Force-remove managed containers by `{ app, stack }` labels.
  *   2. Remove managed networks and volumes by the same label filter.
@@ -190,9 +190,9 @@ export const planWipe = (
  * `WipePhaseError` tags are preserved by passing each step's failer into
  * the reconcile (containers → `sweep-containers`; networks/volumes →
  * `sweep-networks-volumes`; child removal → `remove-runtime-tree`). The
- * reap-empty step is best-effort (no phase) exactly as before.
+ * reap-empty step is best-effort (no phase).
  *
- * cachePolicy stays a `{cache, snapshots}` PAIR (guardrail §3.1). The two
+ * cachePolicy stays a `{cache, snapshots}` PAIR. The two
  * dispositions ride the ONE `keepSnapshots` flag (decision-1: `snapshots/`
  * and `cache/` are coupled — there is no asymmetric keep-snapshots-drop-
  * cache degree of freedom on disk). The pair models the future
@@ -216,8 +216,8 @@ export const runWipe = (
 			op: 'sweep-children',
 			stackRoot: inputs.stackRoot,
 			preserve: (name) => isPreservedChild(name, preserve),
-			// Mirror the legacy per-child failer (the failing child's name
-			// is no longer available here, so detail names the step).
+			// The failing child's name is not available here, so the detail
+			// names the step rather than the child.
 			onError: failPhase('remove-runtime-tree', `remove stack-root child failed`),
 		};
 		const reapEmpty: ReconcileFsOp<WipePhaseError> = {

@@ -255,7 +255,7 @@ const payloadFor = (event: EngineEvent): string => {
 				name: event.name,
 				phase: event.phase,
 				detail: event.detail,
-				paused: event.pausedContainers,
+				committed: event.committedContainers,
 				total: event.totalContainers,
 			});
 		case 'snapshot.captureSkipped':

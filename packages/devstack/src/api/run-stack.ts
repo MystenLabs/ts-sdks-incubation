@@ -358,8 +358,8 @@ export const runStack = (
 				started ? [false, true] : [true, true],
 			);
 			if (shouldStart) {
-				// `forkDetach` (v4 spelling of v3's `forkDaemon`) decouples the
-				// supervisor fiber from the `start` fiber's scope. `forkChild`
+				// `forkDetach` decouples the supervisor fiber from the `start`
+				// fiber's scope. `forkChild`
 				// would tie the supervisor to whatever fiber runs `start`, and
 				// once `start` resolves (after `bootDeferred` succeeds) the
 				// runtime would interrupt the supervisor — transitioning every

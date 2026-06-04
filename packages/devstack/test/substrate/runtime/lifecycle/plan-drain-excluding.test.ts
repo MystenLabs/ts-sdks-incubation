@@ -1,4 +1,4 @@
-// `planFullDrainExcluding` — the live `snapshot.restore` re-acquire must
+// `planExcluding` — the live `snapshot.restore` re-acquire must
 // drain every chain-stateful plugin but LEAVE plugins that declared
 // `keepAliveOnRestore` running, so a restore-initiating transport doesn't
 // tear down the connection it is answering on (which surfaced to the UI as
@@ -10,10 +10,8 @@ import { describe, expect, it } from 'vitest';
 
 import { definePlugin } from '../../../../src/substrate/plugin.ts';
 import { resolveGraph } from '../../../../src/substrate/runtime/lifecycle/dep-graph.ts';
-import {
-	planFullDrain,
-	planFullDrainExcluding,
-} from '../../../../src/substrate/runtime/lifecycle/selective-restart.ts';
+import { planExcluding } from '../../../../src/substrate/runtime/lifecycle/selective-restart.ts';
+import { plan } from '../../../../src/substrate/runtime/reconcile/graph.ts';
 
 const svc = (id: string) =>
 	definePlugin({
@@ -46,7 +44,7 @@ describe('resolveGraph keepAliveOnRestore', () => {
 	});
 });
 
-describe('planFullDrainExcluding', () => {
+describe('planExcluding', () => {
 	it('drains every plugin but leaves keep-alive transports live', async () => {
 		const graph = await Effect.runPromise(
 			resolveGraph([
@@ -57,8 +55,8 @@ describe('planFullDrainExcluding', () => {
 			]),
 		);
 
-		const full = planFullDrain(graph);
-		const partial = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+		const full = plan(graph, { kind: 'graph-keys', keys: [...graph.nodes.keys()] }, 'drain');
+		const partial = planExcluding(graph, (node) => node.keepAliveOnRestore);
 
 		expect(full.slice.size).toBe(graph.nodes.size);
 		const keptIds = [...partial.slice].map((k) => String(k).split('#', 1)[0]).sort();
@@ -70,7 +68,7 @@ describe('planFullDrainExcluding', () => {
 
 	it('drains everything when no plugin opts out', async () => {
 		const graph = await Effect.runPromise(resolveGraph([svc('sui'), svc('package')]));
-		const partial = planFullDrainExcluding(graph, (node) => node.keepAliveOnRestore);
+		const partial = planExcluding(graph, (node) => node.keepAliveOnRestore);
 		expect(partial.slice.size).toBe(graph.nodes.size);
 	});
 });

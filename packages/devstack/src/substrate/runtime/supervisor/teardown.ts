@@ -107,9 +107,10 @@ export const doSelectiveRestart = (
 		// `planRestart` computes the downstream-closure slice (and validates
 		// every root is in the graph → `RestartTargetMissing`). The reconcile
 		// of that slice is then a `drain ∘ converge` over the SAME graph-keys
-		// scope, sequenced through `reconcileGraph` (the kept `teardownKeys` /
-		// `acquireKeys` primitives — selective-restart no longer calls them
-		// directly). The `restart.*` settle events + the `resetForRestart`
+		// scope, sequenced through `reconcileGraph` (which wraps the
+		// `teardownKeys` / `acquireKeys` primitives; selective-restart does
+		// not call them directly). The `restart.*` settle events + the
+		// `resetForRestart`
 		// reset between drain and converge stay HERE — that choreography is
 		// selective-restart-specific, not part of the generic graph reconcile.
 		const restartPlan = yield* planRestart(graph, roots);

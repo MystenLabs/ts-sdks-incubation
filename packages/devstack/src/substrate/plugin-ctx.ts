@@ -1,8 +1,7 @@
 // PluginCtx — the minimal, closed, typed plugin-authoring surface.
 //
-// Stage B (plugin API inversion) replaces the legacy `capabilities`
-// second-closure with inline typed verbs a plugin calls from `start`.
-// The plugin reaches this `ctx` by `yield* PluginContext` (an Effect
+// A plugin contributes to the stack through inline typed verbs it calls
+// from `start`. The plugin reaches this `ctx` by `yield* PluginContext` (an Effect
 // service tag, declared at the bottom of this file) — exactly like any
 // other substrate service it `yield*`s (`ContainerRuntimeService`,
 // `IdentityContext`, …). The supervisor PROVIDES a freshly-built
@@ -23,8 +22,8 @@
 //   provides · requires · fail
 //
 // This is a HARD invariant (pinned by `plugin-ctx-keyset.test-d.ts`).
-// Growing the set re-builds the very god-object Stage B deletes. The
-// rule for what may live here:
+// Growing the set re-builds a god-object surface. The rule for what may
+// live here:
 //
 //   - `persist` is a thin pass-through to the Cache primitive's
 //     `publish` (cache → verify → produce → register, the folded-in

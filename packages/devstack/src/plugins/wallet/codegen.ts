@@ -12,8 +12,7 @@
 //   - The emitted file lives at `dapp-kit/config.ts` under the staging
 //     dir. The generated module owns the exported config value's type.
 //
-// SENSITIVE FLAG (task requirement #5 — manifest-vs-token threat
-// surface):
+// SENSITIVE FLAG (manifest-vs-token threat surface):
 //
 //   - The emitted file carries the unredacted pair URL (incl. the
 //     `#token=<32-hex>` fragment) so the dev-wallet adapter can wire
@@ -21,20 +20,11 @@
 //   - Therefore `sensitive: true`. The codegen orchestrator tightens
 //     the file mode to `0o600` on emit AND injects the file path into
 //     `.gitignore`.
-//
-// Distilled-doc tension absorbed (15-wallet.md "Manifest carries
-// unredacted pair URL while token file is 0o600 — pick one"):
-//
-//   We pick "tighten the emit perms". The token still lives in a
-//   `0o600` side-channel file (see `pairing.ts:tokenPath`), AND the
-//   codegen emit is also `0o600` via the sensitive flag. The legacy
-//   `.devstack/manifest.json` write that left the pair URL world-
-//   readable is GONE — the rewrite no longer emits an unredacted pair
-//   URL into the manifest. Only the codegen file carries it, and that
-//   file is tightened.
-//
-//   See the report's §"Architecture-doc revisions" for the
-//   architecture-doc note that needs to land alongside this.
+//   - The token lives in a `0o600` side-channel file (see
+//     `pairing.ts:tokenPath`) AND the codegen emit is `0o600` via the
+//     sensitive flag. The unredacted pair URL is never written to a
+//     world-readable manifest — only the tightened codegen file carries
+//     it.
 
 import { Effect } from 'effect';
 
@@ -110,7 +100,7 @@ export const makeWalletCodegen = (
 		// SENSITIVE: drives 0o600. The architecture has this hook
 		// (`SnapshotableDecl` mirrors it for the snapshot subtree).
 		// `generated-extras` is already gitignored at the `.devstack`
-		// level, so the codegen `.gitignore` no longer lists it.
+		// level, so the codegen `.gitignore` does not list it.
 		sensitive: true,
 		// Span annotation logs ONLY the redacted form — defense-in-
 		// depth so any debug-mode span dump doesn't leak the token.
