@@ -44,7 +44,10 @@ import {
 	layerBuiltInPluginRuntime,
 	superviseStackEffect,
 } from '../../orchestrators/boot.ts';
-import { SnapshotOrchestratorService } from '../../orchestrators/snapshot/index.ts';
+import {
+	recoverInterruptedRestore,
+	SnapshotOrchestratorService,
+} from '../../orchestrators/snapshot/index.ts';
 import {
 	type CliError,
 	CliInternalError,
@@ -529,6 +532,18 @@ export const runUpLive = (
 					beforeInitialAcquire: (handle) =>
 						Effect.gen(function* () {
 							const stackPaths = yield* StackPathsService;
+							// Resume any restore interrupted by a hard kill / power-loss
+							// between the atomic swap and the end of the image-promotion
+							// handoff (the interrupted-restore sentinel rode the swap into
+							// the live root and was never cleared). Runs BEFORE any plugin
+							// acquire so a half-promoted image set is reconciled before any
+							// L2 lookup observes the runtime root. No-op when the sentinel
+							// is absent (the clean-boot case); idempotent re-run of restore
+							// when present.
+							yield* recoverInterruptedRestore({
+								liveRoot: stackPaths.stackRoot,
+								restoreSnapshot: (id) => snapshot.restore({ id }),
+							});
 							const commandChannel = yield* installCommandChannelBridge({
 								stackRoot: stackPaths.stackRoot,
 								handle,

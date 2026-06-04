@@ -83,6 +83,7 @@ import {
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
 import { verifyArtifactIntegrity } from './integrity.ts';
+import { clearRestoreSentinel, writeRestoreSentinel } from './interrupted-restore.ts';
 import { CACHE_DIR_NAME, SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
@@ -263,12 +264,23 @@ const removeCapturedContainers = (
 //
 // After the atomic swap, each staged image is re-tagged to its
 // captured target name (`promoteStagedImages`) and the original
-// captured containers are removed. There is NO crash-recovery marker:
-// the staged image is left at its TARGET name, so on the next boot the
-// supervisor's image-match adoption (`decideRunAction` in
+// captured containers are removed. The IMAGE resumption contract needs
+// no scanner: the staged image is left at its TARGET name, so on the
+// next boot the supervisor's image-match adoption (`decideRunAction` in
 // `runtime/docker/container.ts`) finds the image locally by name and
 // `docker run`s it without scanning or re-tagging — the resumption
-// contract is carried by the image name itself, not an on-disk marker.
+// contract is carried by the image name itself.
+//
+// The one gap the image-name contract does NOT cover is a hard kill
+// (SIGKILL / power-loss) landing BETWEEN the atomic swap and the end of
+// this promotion+removal handoff: the swap published a new tree but the
+// images are only PARTIALLY promoted, and `Effect.uninterruptible` does
+// not survive a SIGKILL so the cleanup finalizer never runs. The
+// interrupted-restore sentinel (`interrupted-restore.ts`) closes exactly
+// that gap — it rides the swap into the live root and is cleared the
+// instant this handoff completes, so the next boot's
+// `recoverInterruptedRestore` resumes a still-pending one and a clean
+// restore leaves nothing behind.
 
 interface StagedContainerImage {
 	readonly captured: CapturedContainer;
@@ -913,11 +925,14 @@ export const runRestore = (
 		// has the inner scope clean the still-tagged staging refs so Docker is
 		// not littered with orphan `devstack-snapshot:restore-*` tags. The
 		// post-publish sequence runs under `Effect.uninterruptible` so an outer
-		// interrupt cannot arrive mid-handoff and tear the state. No on-disk
-		// recovery marker is written: `promoteStagedImages` leaves each image
-		// at its captured TARGET name, so R2 (the next acquire's image-match
-		// recreate-from-fresh) re-runs the deploy from the local image with no
-		// scanner.
+		// Effect-level interrupt cannot arrive mid-handoff and tear the state.
+		// `promoteStagedImages` leaves each image at its captured TARGET name,
+		// so R2 (the next acquire's image-match recreate-from-fresh) re-runs the
+		// deploy from the local image with no scanner. `Effect.uninterruptible`
+		// does NOT survive a SIGKILL, though — the interrupted-restore sentinel
+		// (written into the staged tree, riding the swap into the live root, and
+		// cleared the instant this handoff completes) is the durable breadcrumb
+		// that lets the next boot resume a hard-kill-mid-promotion.
 		yield* Effect.scoped(
 			Effect.gen(function* () {
 				const stagedImages: StagedContainerImage[] = [];
@@ -992,6 +1007,21 @@ export const runRestore = (
 							}),
 						);
 					}
+					// Write the interrupted-restore sentinel into the STAGED tree
+					// root so it RIDES the atomic stage-and-swap into the live
+					// runtime root (the swap is a `rename(staging → stackRoot)`, so
+					// the sentinel is published atomically WITH the new tree — there
+					// is no pre-swap window where it could be observed early or lost).
+					// The clear on the success path below removes it the instant the
+					// promotion+removal handoff completes; a hard kill AFTER the swap
+					// but mid-promotion leaves it live for the next boot's
+					// `recoverInterruptedRestore` to resume. Best-effort: a write
+					// failure is logged, not fatal (it only widens the already-
+					// existing unrecoverable window).
+					yield* writeRestoreSentinel(inputs.runtimeStagingPath, {
+						snapshotId: inputs.snapshotId,
+						artifactDir: inputs.artifactDir,
+					});
 					return stagedImages;
 				});
 
@@ -1022,10 +1052,13 @@ export const runRestore = (
 				//   container removal. Each promoted image is left at its
 				//   captured TARGET name, so R2 (the next acquire's image-match
 				//   recreate-from-fresh) re-runs the deploy from the local image
-				//   — no recovery marker, no scanner. R1 is STRICTLY before R2
-				//   (R2 runs in the caller's converge after `runRestore`
-				//   returns), and is NEVER expressed as
-				//   flip-image-and-let-decideRunAction-recreate.
+				//   — no scanner. R1 is STRICTLY before R2 (R2 runs in the
+				//   caller's converge after `runRestore` returns), and is NEVER
+				//   expressed as flip-image-and-let-decideRunAction-recreate.
+				//   The interrupted-restore sentinel (written into the staged tree
+				//   above, now live after the swap) is the durable breadcrumb a
+				//   hard kill BETWEEN the swap and this handoff completing leaves
+				//   behind; it is cleared the instant the handoff finishes below.
 				if (stagedImages.length > 0) {
 					yield* Effect.uninterruptible(
 						Effect.gen(function* () {
@@ -1037,6 +1070,17 @@ export const runRestore = (
 				} else {
 					recoveryHandoffComplete = true;
 				}
+
+				// Success path: the promotion+removal handoff is complete, so the
+				// interrupted-restore sentinel has served its purpose — clear it
+				// from the LIVE runtime root (it rode the swap in) so the next boot
+				// reads no sentinel and never loops. A hard kill that lands AFTER
+				// `recoveryHandoffComplete = true` but BEFORE this clear is benign:
+				// re-running the restore on the next boot is idempotent (re-stages
+				// from the preserved artifact, re-promotes to the same TARGET
+				// names, re-removes the already-absent containers), then clears the
+				// sentinel. Idempotent (`force: true`), best-effort.
+				yield* clearRestoreSentinel(inputs.runtimeStackRoot);
 			}),
 		);
 

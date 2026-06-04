@@ -25,6 +25,19 @@ export {
 // Restore
 export { RestorePhaseError, runRestore, type RestoreParticipant } from './restore.ts';
 
+// Interrupted-restore sentinel + boot-time auto-recovery
+export {
+	clearRestoreSentinel,
+	readRestoreSentinel,
+	recoverInterruptedRestore,
+	RESTORE_SENTINEL_FILE_NAME,
+	RestoreSentinelSchema,
+	SNAPSHOT_RESTORE_SENTINEL_VERSION,
+	writeRestoreSentinel,
+	type RecoverInterruptedRestoreDeps,
+	type RestoreSentinel,
+} from './interrupted-restore.ts';
+
 // Wipe
 export {
 	CACHE_DIR_NAME,

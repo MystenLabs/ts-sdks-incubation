@@ -32,6 +32,10 @@ import {
 	layerBuiltInPluginRuntime,
 	superviseStackEffect,
 } from '../../orchestrators/boot.ts';
+import {
+	recoverInterruptedRestore,
+	SnapshotOrchestratorService,
+} from '../../orchestrators/snapshot/index.ts';
 import { type CliError, CliInternalError } from '../../surfaces/cli/errors.ts';
 import { type CommandResult, probeSupervisorPresence } from '../../surfaces/cli/commands/index.ts';
 import { ExitCode } from '../../surfaces/cli/sysexits.ts';
@@ -142,6 +146,16 @@ export const runApplyLive = (
 				extras: stack.options.extras,
 			});
 			const stackPaths = yield* StackPathsService;
+			// Mirror the up-path recovery: resume any restore interrupted by a
+			// hard kill between the atomic swap and the image-promotion handoff
+			// completing (the interrupted-restore sentinel rode the swap into the
+			// live root and was never cleared) BEFORE the one-shot apply starts
+			// the stack. Idempotent + no-op when no sentinel is present.
+			const snapshot = yield* SnapshotOrchestratorService;
+			yield* recoverInterruptedRestore({
+				liveRoot: stackPaths.stackRoot,
+				restoreSnapshot: (id) => snapshot.restore({ id }),
+			});
 			yield* superviseStackEffect(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
