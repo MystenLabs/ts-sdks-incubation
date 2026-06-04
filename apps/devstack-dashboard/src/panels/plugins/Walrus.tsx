@@ -45,6 +45,7 @@ import {
 } from '../../lib/walrus.ts';
 import {
 	Badge,
+	Banner,
 	CopyChip,
 	Dot,
 	EmptyState,
@@ -99,8 +100,14 @@ const Field = ({ label, children }: { label: string; children: ReactNode }) => (
 	</div>
 );
 
-/** Reachability of the aggregator daemon, probed directly from the browser. */
-type DaemonState = 'probing' | 'reachable' | 'unreachable';
+/** Health states for the browser-direct aggregator-daemon probe.
+ *  - `up`          — a probe candidate answered 2xx (green).
+ *  - `down`        — a probe candidate answered a *readable* non-2xx status; the
+ *                    daemon is genuinely down / a proxy fronts a dead daemon (red).
+ *  - `unreachable` — no readable response (fetch threw, or an opaque CORS-hidden
+ *                    response): genuinely ambiguous, may still work in-process
+ *                    (yellow). */
+type DaemonState = 'probing' | 'up' | 'down' | 'unreachable';
 
 interface DaemonProbe {
 	readonly state: DaemonState;
@@ -108,30 +115,79 @@ interface DaemonProbe {
 }
 
 /**
- * Probe the Walrus aggregator daemon directly from the browser. The storage
- * routes set `cors: true`, so a readable response means the daemon is up; a
- * CORS-opaque response that still resolves means the socket is alive even though
- * we can't read the body. A network rejection means genuinely unreachable.
+ * Probe the Walrus aggregator daemon directly from the browser. We try two
+ * candidates (`${root}/v1/api` then the root). The storage routes set
+ * `cors: true`, so a healthy daemon answers a *readable* 2xx. Three outcomes:
+ *
+ *   - `up`          — a *readable* 2xx from a candidate.
+ *   - `down`        — a *readable* non-2xx (404/502/503…). A response WAS received
+ *                     and the browser could read its status; a healthy daemon
+ *                     answers 2xx, so this is a wrong URL or — more often — a
+ *                     proxy/load-balancer in front of a dead daemon. A genuine
+ *                     outage we must surface in red, not soften.
+ *   - `unreachable` — no readable status at all from any candidate. Either the
+ *                     cross-origin `fetch` *threw* (network down / CORS preflight
+ *                     rejected) and even a `no-cors` ping couldn't confirm the
+ *                     socket, OR the socket answered but only as an *opaque*
+ *                     (CORS-hidden) response we can't read a status from. Both are
+ *                     genuinely ambiguous — the in-process aggregator may still
+ *                     serve storage — so they stay a soft yellow with the "may be
+ *                     CORS/network" copy.
  */
 const probeAggregator = async (baseUrl: string): Promise<DaemonProbe> => {
 	const root = baseUrl.replace(/\/+$/, '');
 	const candidates = [`${root}/v1/api`, root];
 	let lastDetail = 'no response';
+	// A readable non-2xx is a genuine daemon-down signal. We remember it but keep
+	// trying the next candidate (which might return 2xx); if none does, this wins
+	// over the ambiguous `unreachable` fallback.
+	let downDetail: string | null = null;
 	for (const url of candidates) {
 		try {
 			const res = await fetch(url, { method: 'GET', mode: 'cors' });
-			if (res.ok) return { state: 'reachable', detail: `HTTP ${res.status} · ${url}` };
-			lastDetail = `HTTP ${res.status}`;
+			// `type: 'opaque'` means a no-cors response slipped through with a hidden
+			// status (res.ok forced false, res.status forced 0) — we can't read it, so
+			// treat it as the ambiguous reachable-but-unreadable case, not `down`.
+			if (res.type === 'opaque') {
+				lastDetail = `reachable (opaque) · ${url}`;
+				continue;
+			}
+			if (res.ok) return { state: 'up', detail: `HTTP ${res.status} · ${url}` };
+			// Readable non-2xx — a response came back and we can read its status. A
+			// healthy daemon returns 2xx, so this is a down/misrouted daemon.
+			downDetail = `HTTP ${res.status} on ${url} (expected 2xx)`;
+			lastDetail = downDetail;
 		} catch (err) {
+			// The CORS-mode fetch threw (network/CORS). A `no-cors` ping that *resolves*
+			// proves a socket is alive but yields an opaque, unreadable response — we
+			// still can't distinguish a healthy daemon from a down one behind a proxy,
+			// so it remains the ambiguous `unreachable` case, not green.
 			try {
 				await fetch(url, { method: 'GET', mode: 'no-cors' });
-				return { state: 'reachable', detail: `reachable (opaque) · ${url}` };
+				lastDetail = `reachable (opaque) · ${url}`;
 			} catch {
 				lastDetail = err instanceof Error ? err.message : String(err);
 			}
 		}
 	}
+	// A readable non-2xx anywhere is a genuine outage (red); otherwise no readable
+	// response at all, which is the ambiguous CORS/network case (soft yellow).
+	if (downDetail !== null) return { state: 'down', detail: downDetail };
 	return { state: 'unreachable', detail: lastDetail };
+};
+
+const PROBE_TOKEN: Record<DaemonState, 'green' | 'yellow' | 'red'> = {
+	probing: 'yellow',
+	up: 'green',
+	down: 'red',
+	unreachable: 'yellow',
+};
+
+const PROBE_LABEL: Record<DaemonState, string> = {
+	probing: 'probing',
+	up: 'reachable',
+	down: 'down',
+	unreachable: 'unreachable',
 };
 
 const byName = (endpoints: ReadonlyArray<Endpoint>, name: string): Endpoint | null =>
@@ -186,9 +242,27 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 		};
 	}, [aggregator?.url, network]);
 
-	const clusterReady = probe.state === 'reachable';
+	const clusterReady = probe.state === 'up';
+	const probeToken = PROBE_TOKEN[probe.state];
+	// Two distinct banner-worthy states. `down` = a readable non-2xx from the
+	// aggregator's HTTP API: a genuine outage, surfaced in red. `unreachable` = no
+	// readable response: the ambiguous CORS/network case, surfaced in soft yellow.
+	// `up`/`probing` get no banner.
+	const down = probe.state === 'down';
+	const unreachable = probe.state === 'unreachable';
 	const nodeCount = nodeEndpoints.length;
 	const epoch = epochQ.data ?? null;
+
+	// Re-probe the aggregator daemon on demand (banner action buttons).
+	const runProbe = () => {
+		const url = aggregator?.url ?? null;
+		if (!url) {
+			setProbe({ state: 'unreachable', detail: 'no aggregator endpoint' });
+			return;
+		}
+		setProbe({ state: 'probing', detail: '' });
+		void probeAggregator(url).then(setProbe);
+	};
 
 	return (
 		<PluginScaffold
@@ -223,6 +297,45 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 				</>
 			}
 		>
+			{/* `down` = the aggregator's HTTP API answered with a readable non-2xx
+			    status — a genuine outage, surfaced in red: storage requests will
+			    fail. */}
+			{down && (
+				<Banner
+					tone="danger"
+					title="Walrus aggregator is down"
+					action={
+						<button className="btn btn-sm" onClick={runProbe}>
+							<Icon name="refresh" size={13} /> Probe
+						</button>
+					}
+				>
+					The aggregator's HTTP API returned a non-2xx status — the daemon is down (or a proxy is
+					in front of a dead daemon). Storage requests will fail until it recovers.
+					{probe.detail ? ` (${probe.detail})` : ''}
+				</Banner>
+			)}
+
+			{/* `unreachable` = no readable response (fetch threw, or an opaque
+			    CORS-hidden response). Genuinely ambiguous — may still work
+			    in-process — so this stays a soft yellow, NOT red. */}
+			{unreachable && (
+				<Banner
+					tone="warn"
+					title="Aggregator unreachable from the browser"
+					action={
+						<button className="btn btn-sm" onClick={runProbe}>
+							<Icon name="refresh" size={13} /> Probe
+						</button>
+					}
+				>
+					Couldn't read a response from the aggregator's HTTP API. This may be a CORS or network
+					issue from the browser rather than the daemon being down — storage requests may still
+					work in-process.
+					{probe.detail ? ` (${probe.detail})` : ''}
+				</Banner>
+			)}
+
 			{/* KPIs — storage epoch + shard count come from on-chain Walrus events
 			    over the node's GraphQL; blobs-stored is derived from the recent-blobs
 			    query (a floor: it counts blobs seen in the recent register/certify
@@ -244,7 +357,7 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 								: `0/${nodeCount}`
 					}
 					sub="nodes reachable"
-					token={clusterReady ? 'green' : probe.state === 'probing' ? 'yellow' : 'white'}
+					token={probeToken}
 					icon="database"
 				/>
 				<Kpi
@@ -305,26 +418,10 @@ export const WalrusView = ({ row, endpoint, projection, chain }: PluginViewProps
 						</Field>
 						<Field label="Daemon">
 							<span className="row" style={{ gap: 6, justifyContent: 'flex-end' }}>
-								<Dot
-									token={clusterReady ? 'green' : probe.state === 'probing' ? 'yellow' : 'red'}
-									pulse={probe.state === 'probing'}
-								/>
+								<Dot token={probeToken} pulse={probe.state === 'probing'} />
 								<Tooltip label={probe.detail || 'probing the aggregator daemon'}>
-									<span
-										style={{
-											fontSize: 12.5,
-											color: clusterReady
-												? 'var(--c-green)'
-												: probe.state === 'probing'
-													? 'var(--c-yellow)'
-													: 'var(--c-red)',
-										}}
-									>
-										{probe.state === 'probing'
-											? 'probing'
-											: clusterReady
-												? 'reachable'
-												: 'unreachable'}
+									<span style={{ fontSize: 12.5, color: `var(--c-${probeToken})` }}>
+										{PROBE_LABEL[probe.state]}
 									</span>
 								</Tooltip>
 							</span>
