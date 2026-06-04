@@ -1,16 +1,15 @@
 // Supervisor post-start dispatch direct tests.
 //
 // This file pins the wiring contract directly: a minimal stack whose
-// plugins emit contributions inline via the typed `ctx` verbs (+ static
-// `errorContributions`) is supervised to ready, and we assert each
-// buffered contribution reached the matching `ContributionDispatcher`
-// method at the supervisor boundary.
+// plugins emit contributions inline via the typed `ctx` verbs is
+// supervised to ready, and we assert each buffered contribution reached
+// the matching `ContributionDispatcher` method at the supervisor
+// boundary.
 //
 // Architecture invariants under test:
 //   1. The supervisor's post-start replay walks each plugin's ctx buffer
-//      (in emit order) AND its `errorContributions` field, routing the
-//      former through the closed `ContributionDispatcher` and the latter
-//      into the FormatterRegistry.
+//      (in emit order), routing each decl through the closed
+//      `ContributionDispatcher`.
 //   2. Each decl kind dispatches to its matching dispatcher method.
 //      Plugins emitting decls of different kinds dispatch differently.
 //   3. Dispatch occurs once per plugin after acquire succeeds — no
@@ -35,7 +34,7 @@ import {
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
-import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
+import { definePlugin } from '../../../src/substrate/plugin.ts';
 import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../src/contracts/projection.ts';
@@ -293,19 +292,8 @@ const packageProjectionDecl: ProjectionDecl = {
 	},
 };
 
-const errorContribAlpha: PluginErrorContribution = {
-	_tag: 'PluginErrorContribution',
-	errorTags: ['AlphaError'],
-	formatter: (value) => `<<alpha ${value._tag}>>`,
-};
-
-const errorContribBeta: PluginErrorContribution = {
-	_tag: 'PluginErrorContribution',
-	errorTags: ['BetaError', 'GammaError'],
-};
-
 // -----------------------------------------------------------------------------
-// Test plugins — one leaf per capability kind, plus one error-only plugin.
+// Test plugins — one leaf per capability kind.
 // -----------------------------------------------------------------------------
 
 const pluginSnap = definePlugin({
@@ -388,15 +376,6 @@ const pluginStableKey = definePlugin({
 	section: 'service',
 	pluginKey: 'plug-stable-key',
 	start: () => Effect.succeed({ v: 'stable-key' as const }),
-	errorContributions: [errorContribAlpha],
-});
-
-const pluginErrorOnly = definePlugin({
-	id: 'test:errorOnly',
-	role: 'task' as const,
-	section: 'service',
-	start: () => Effect.succeed({ v: 'err' as const }),
-	errorContributions: [errorContribBeta],
 });
 
 // -----------------------------------------------------------------------------
@@ -1024,49 +1003,6 @@ describe('supervisor harvest loop', () => {
 
 			const snapshot = yield* SubscriptionRef.get(state);
 			expect(snapshot.rows.map((row) => row.key)).toEqual(['test:snap#0', 'plug-stable-key']);
-		}),
-	);
-
-	it.effect('runs the dispatch path for plugins that contribute only errorContributions', () =>
-		// The plugin emits NO ctx contributions — only a
-		// `PluginErrorContribution`. The supervisor feeds the error
-		// contribution directly into the FormatterRegistry; no dispatcher
-		// method fires (the buffer is empty). We assert the supervisor
-		// reached ready WITHOUT calling any dispatcher method — the
-		// dispatch path completed cleanly.
-		Effect.gen(function* () {
-			const { ref, dispatcher } = yield* makeCapture();
-			const stack: SupervisedStack = {
-				_tag: 'Stack',
-				members: [pluginErrorOnly],
-				options: {},
-			};
-			const state = yield* makeProjectionRef();
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
-					for (const [key] of handle.graph.nodes) {
-						yield* handle.registry.awaitReady(key);
-					}
-				}),
-			);
-
-			const captured = yield* Ref.get(ref);
-			// Zero capability dispatches — only an error contribution.
-			expect(captured.snapshotable).toEqual([]);
-			expect(captured.routable).toEqual([]);
-			expect(captured.codegenable).toEqual([]);
-			expect(captured.strategy).toEqual([]);
-
-			// The projection now lists the error-only plugin among rows
-			// (the supervisor declares rows for non-inner top-level
-			// plugins post-acquire). Pins that the harvest path
-			// completed without short-circuiting on the missing
-			// capability tuple.
-			const snap = yield* SubscriptionRef.get(state);
-			const rowKeys = snap.rows.map((r) => r.key);
-			expect(rowKeys).toContain('test:errorOnly#0');
 		}),
 	);
 

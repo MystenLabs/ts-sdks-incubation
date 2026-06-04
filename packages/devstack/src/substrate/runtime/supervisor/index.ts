@@ -20,8 +20,7 @@
 //                               replays each plugin's ctx buffer through.
 //   - `acquire-node.ts`       — per-plugin acquire pipeline +
 //                               buildRegistry + acquireFullGraph + the
-//                               static dispatch (dual-catch + error-
-//                               contribution → FormatterRegistry feed).
+//                               static dispatch (dual-catch).
 //   - `teardown.ts`           — slice teardown + selective restart.
 //   - `background-tasks.ts`   — injected command handler, snapshot
 //                               capture, stack restart, post-acquire

@@ -32,7 +32,6 @@ import { Effect, type Scope } from 'effect';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource } from '../../api/define-plugin.ts';
 import { bootPostgresSidecar, credentialedUrl, withDatabase } from '../postgres/index.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
 import { emitContributions, PluginContext } from '../../substrate/plugin-ctx.ts';
@@ -52,7 +51,7 @@ import { makeCodegenable } from './codegen.ts';
 import type { SuiProbeKey } from './chain-probe.ts';
 import { makeSnapshotable } from './snapshot.ts';
 import { bootSuiService } from './service.ts';
-import { suiPluginError, SUI_ERROR_TAGS, type SuiPluginError } from './errors.ts';
+import { suiPluginError, type SuiPluginError } from './errors.ts';
 import { makeSuiForkRoutables, makeSuiLocalRoutables } from './routable.ts';
 import { faucetCapabilityKey, type FaucetStrategy } from '../faucet/index.ts';
 import { suiLocalStrategy } from './local-faucet-strategy.ts';
@@ -91,7 +90,6 @@ type SuiResolvedRuntime = SuiResolved & {
 
 /** The Sui plugin's resource identity. The id is `'sui'` (singular). */
 export const suiResource = resource<'sui', SuiResolved>('sui');
-const suiErrorContributions = pluginErrorContributions(SUI_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Plugin construction (internal — used by sui() + suiFor())
@@ -535,7 +533,6 @@ const buildSuiPlugin = (opts: SuiOptions) =>
 				);
 				return yield* bootAndEmit(opts, indexer, validatorImage);
 			}),
-		errorContributions: suiErrorContributions,
 	});
 
 const buildPlugin = <O extends SuiOptions>(opts: O) => buildSuiPlugin(opts);
@@ -618,7 +615,6 @@ export type {
 	SuiConfigError,
 	ForkUnsupportedError,
 } from './errors.ts';
-export { SUI_ERROR_TAGS } from './errors.ts';
 
 // Cross-plugin seams (consumed by Walrus/Seal/Deepbook fork variants
 // and by Account/Coin/Wallet/Package).

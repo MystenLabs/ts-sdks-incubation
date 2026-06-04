@@ -36,7 +36,6 @@ import { Effect } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceValueOf } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
@@ -207,7 +206,6 @@ export type DeepbookOptions<
 // ---------------------------------------------------------------------------
 
 const DEFAULT_NAME = 'deepbook';
-const deepbookErrorContributions = pluginErrorContributions(DEEPBOOK_ERROR_TAGS);
 
 const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 	DeepbookKnownNetwork,
@@ -475,7 +473,6 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
@@ -722,7 +719,6 @@ const buildLocalPlugin = <
 					}),
 				),
 			),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
@@ -832,7 +828,6 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				}
 				return resolved;
 			}),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
@@ -994,7 +989,6 @@ export {
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
 } from './faucet-strategy.ts';
 export {
-	DEEPBOOK_ERROR_TAGS,
 	type DeepbookError,
 	type DeepbookPluginError,
 	type DeepbookConfigError,

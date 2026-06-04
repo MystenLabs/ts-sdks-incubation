@@ -7,7 +7,6 @@
 import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import {
 	PortBrokerService,
 	type PortProbeHost,
@@ -20,7 +19,6 @@ import { renderUrl, routedHostname } from '../../substrate/runtime/routed-url.ts
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 
 import {
-	HOST_SERVICE_ERROR_TAGS,
 	HostServiceAcquireError,
 	type HostServiceConfigError,
 	type HostServiceError,
@@ -52,7 +50,6 @@ export const hostServiceResourceId = <Name extends string>(name: Name): `host-se
 export const hostServiceResource = <Name extends string>(name: Name) =>
 	resource<`host-service/${Name}`, HostServiceValue>(hostServiceResourceId(name));
 
-const hostServiceErrorContributions = pluginErrorContributions(HOST_SERVICE_ERROR_TAGS);
 const HOST_SERVICE_PORT_PROBE_HOST: PortProbeHost = '0.0.0.0';
 
 export type HostServiceAfter = ReadonlyArray<AnyResourceRef>;
@@ -152,7 +149,6 @@ export const hostService = <const After extends HostServiceAfter = readonly []>(
 				);
 				return prepared.value;
 			}),
-		errorContributions: hostServiceErrorContributions,
 	});
 };
 
@@ -174,7 +170,6 @@ export {
 	prepareHostService,
 	HOST_SERVICE_DEFAULT_ENDPOINT_NAME,
 	HOST_SERVICE_DEFAULT_ENTRYPOINT_PORT,
-	HOST_SERVICE_ERROR_TAGS,
 	HOST_SERVICE_PORT_TOKEN,
 	HostServiceAcquireError,
 	makeHostServiceRoutable,

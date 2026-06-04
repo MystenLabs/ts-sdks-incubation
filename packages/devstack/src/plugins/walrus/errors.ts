@@ -75,8 +75,8 @@ export const walrusConfigError = (
 /** Union of every error a Walrus-plugin caller may encounter. */
 export type WalrusError = WalrusPluginError | ForkIncompatibleError | WalrusConfigError;
 
-/** Error tags this plugin contributes — surfaced to the cause
- *  walker via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const WALRUS_ERROR_TAGS: ReadonlyArray<WalrusError['_tag']> = [
 	'WalrusPluginError',
 	'ForkIncompatibleError',

@@ -75,9 +75,7 @@ export {
 } from './supervisor/index.ts';
 
 // ---------------------------------------------------------------------
-// Observability — Logger service + default Layers, plus the formatter
-// registry the supervisor feeds plugin error-contributions into.
-// Consumers: supervisor tests, formatter-registry tests.
+// Observability — Logger service + default Layers.
+// Consumers: supervisor tests.
 // ---------------------------------------------------------------------
-export { FormatterRegistryService } from './observability/index.ts';
 export { Logger, layerLogger } from './observability/logger.ts';

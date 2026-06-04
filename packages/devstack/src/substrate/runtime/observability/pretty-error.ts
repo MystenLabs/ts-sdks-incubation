@@ -21,14 +21,13 @@ import type { StructuredError } from '../../projection.ts';
 
 import {
 	type FormatOptions,
-	type FormatterRegistry,
 	type TaggedErrorLike,
 	formatCause,
 	formatValue,
 	isTaggedError,
 } from './cascade-formatter.ts';
 
-export type { FormatOptions, FormatterRegistry, TaggedErrorLike };
+export type { FormatOptions, TaggedErrorLike };
 
 /** Render any value (Cause, tagged error, plain Error, anything)
  *  using the cascade rules. The pretty-error variant exists so

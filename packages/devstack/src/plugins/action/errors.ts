@@ -50,6 +50,6 @@ export const actionError = (
 	parts: Omit<ActionError, '_tag' | 'phase'>,
 ): ActionError => ({ _tag: 'ActionError', phase, ...parts });
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const ACTION_ERROR_TAGS = ['ActionError'] as const;

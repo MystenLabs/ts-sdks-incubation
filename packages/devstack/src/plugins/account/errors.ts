@@ -120,8 +120,8 @@ export type AccountVariantKind = 'ephemeral' | 'signer' | 'impersonate';
 /** Union of every error an Account-plugin caller may encounter. */
 export type AccountError = AccountAcquireError | AccountSignError;
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const ACCOUNT_ERROR_TAGS: ReadonlyArray<AccountError['_tag']> = [
 	'AccountAcquireError',
 	'AccountSignError',

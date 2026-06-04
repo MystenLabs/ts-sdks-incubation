@@ -3,15 +3,12 @@
 // ONE storage + finalizer + snapshot core, TWO primitives over it:
 //
 //   - `makeScopedMultimap<K, V>()` — the raw seq-tagged multimap.
-//     The substrate registries (`StrategyRegistry`, `FormatterRegistry`)
-//     share the same shape: a store of a per-key LIST of seq-tagged
-//     entries plus a per-registration scope finalizer that drops the
-//     entries it added when the surrounding scope closes.
-//     The winner policy differs per registry (priority+seq, non-null
-//     formatter+seq, plain last-seq), so each call site folds the
-//     surviving entries with its own rule over the snapshot this
-//     primitive exposes. Strategy/formatter need the RAW
-//     `MultimapEntry{value,seq}` for those folds, not a pre-folded
+//     The `StrategyRegistry` is built on it: a store of a per-key LIST
+//     of seq-tagged entries plus a per-registration scope finalizer that
+//     drops the entries it added when the surrounding scope closes.
+//     The winner policy (priority+seq) is folded at the call site over
+//     the snapshot this primitive exposes — the registry needs the RAW
+//     `MultimapEntry{value,seq}` for that fold, not a pre-folded
 //     value — hence the multimap surface stays.
 //
 //   - `defineScopedRefMap<K, V>(name)` — a typed `Context.Service`
@@ -66,9 +63,8 @@ export interface MultimapEntry<V> {
 }
 
 /** A single `(key, value)` pair to register. A registration may carry
- *  several pairs (formatter-registry contributes one tag-entry per
- *  declared error tag); all pairs in one `register` call share one
- *  `seq` and one finalizer. */
+ *  several pairs; all pairs in one `register` call share one `seq` and
+ *  one finalizer. */
 interface MultimapItem<K extends string, V> {
 	readonly key: K;
 	readonly value: V;

@@ -122,15 +122,6 @@ type StartValue<Start> = Start extends (
 	? Value
 	: never;
 
-export interface PluginErrorContribution {
-	readonly _tag: 'PluginErrorContribution';
-	readonly errorTags: ReadonlyArray<string>;
-	readonly formatter?: (
-		value: { readonly _tag: string } & Readonly<Record<string, unknown>>,
-		recurse: (inner: unknown) => string,
-	) => string | null;
-}
-
 export interface WatchDecl {
 	readonly paths: ReadonlyArray<string>;
 	readonly cascade?: boolean;
@@ -142,7 +133,6 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	readonly pluginKey?: PluginKey | string;
 	readonly watch?: WatchDecl;
 	readonly start: Start;
-	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	/** Dashboard section bucket the plugin's rows belong to. Required so
 	 *  the renderer never has to pattern-match on plugin name substrings
 	 *  to compute it. The supervisor stamps this onto every row at
@@ -185,7 +175,6 @@ export interface Plugin<
 	readonly start: (
 		deps: ResolvedDependencies<DependencyInput | undefined>,
 	) => Effect.Effect<Value, unknown, unknown>;
-	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
@@ -327,9 +316,6 @@ export function definePlugin(
 		start: spec.start as AnyPlugin['start'],
 		...(spec.pluginKey === undefined ? {} : { pluginKey: spec.pluginKey }),
 		...(spec.watch === undefined ? {} : { watch: spec.watch }),
-		...(spec.errorContributions === undefined
-			? {}
-			: { errorContributions: spec.errorContributions }),
 		...(spec.endpointSection === undefined ? {} : { endpointSection: spec.endpointSection }),
 		...(spec.keepAliveOnRestore === undefined
 			? {}

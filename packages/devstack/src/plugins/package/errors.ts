@@ -52,8 +52,8 @@ export const publishError = (
 	parts: Omit<PublishError, '_tag' | 'phase'>,
 ): PublishError => ({ _tag: 'PublishError', phase, ...parts });
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const PACKAGE_ERROR_TAGS = ['PublishError'] as const;
 
 export type PackageError = PublishError;

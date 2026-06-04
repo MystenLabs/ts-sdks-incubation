@@ -66,6 +66,6 @@ export const coinError = (
 	parts: Omit<CoinError, '_tag' | 'phase'>,
 ): CoinError => ({ _tag: 'CoinError', phase, ...parts });
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const COIN_ERROR_TAGS = ['CoinError'] as const;

@@ -3,8 +3,8 @@
 // ONE storage + finalizer + snapshot core, TWO primitives over it:
 //
 //   - `makeScopedMultimap<K, V>()` — the raw seq-tagged multimap
-//     (StrategyRegistry / FormatterRegistry fold their own winner over
-//     the `MultimapEntry{value,seq}` snapshot this exposes).
+//     (the StrategyRegistry folds its own winner over the
+//     `MultimapEntry{value,seq}` snapshot this exposes).
 //
 //   - `defineScopedRefMap<K, V>(name)` — a typed `Context.Service`
 //     factory over the SAME core, a last-write-wins `K -> V`

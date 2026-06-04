@@ -4,9 +4,8 @@
 //   1. Seed projection identity + booting slice so early-mounted
 //      renderers see a complete baseline.
 //   2. Resolve the dep graph + boot the registry.
-//   3. Build the substrate-wiring bag: logger overlay, runtime root,
-//      FormatterRegistry (caller-pre-built or substrate-default), and the
-//      closed contribution dispatcher.
+//   3. Build the substrate-wiring bag: logger overlay, runtime root, and
+//      the closed contribution dispatcher.
 //   4. Compose the `SupervisorState` record (one bag passed to every
 //      module).
 //   5. Build `runInitialAcquire` — the deferred initial-acquire body.
@@ -21,7 +20,6 @@ import {
 	Effect,
 	Exit,
 	type Fiber,
-	Layer,
 	Queue,
 	Ref,
 	Scope,
@@ -33,10 +31,6 @@ import type { EngineCommand, EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { AccountProjection, SubscribableState } from '../../projection.ts';
-import {
-	FormatterRegistryService,
-	layerFormatterRegistry,
-} from '../observability/formatter-registry.ts';
 import {
 	noopContributionDispatcher,
 	type ContributionDispatcher,
@@ -91,7 +85,6 @@ import {
 
 const loggerAccess = OptionalService(Logger);
 const runtimeRootAccess = OptionalService(RuntimeRoot);
-const formatterRegistryAccess = OptionalService(FormatterRegistryService);
 
 export interface SupervisorHandle {
 	readonly identity: Identity;
@@ -295,30 +288,11 @@ export const startSupervisor = (
 			logStore,
 		});
 
-		// Resolve the FormatterRegistry for this stack. The supervisor feeds
-		// each plugin's static `errorContributions` field directly into it
-		// from `acquire-node`.
-		// Two paths:
-		//   (a) the caller layered a `FormatterRegistryService` into
-		//       `pluginContext` (CLI / e2e do, so the cascade formatter
-		//       downstream reads the same instance) — use THAT.
-		//   (b) bare path — build the substrate default on the SURROUNDING
-		//       (supervisor) scope so it lives for the supervisor's lifetime.
-		const formatterRegistry = yield* formatterRegistryAccess.readEffect(
-			pluginContext,
-			Effect.gen(function* () {
-				return Context.get(yield* Layer.build(layerFormatterRegistry), FormatterRegistryService);
-			}),
-		);
-
 		const pluginRuntimeContext = pluginContext.pipe(
 			Context.add(Logger, Logger.of(logger)),
 			// Observability store. Exposed so the control-plane `domain` can
 			// query the cross-service log ring.
 			Context.add(LogStore, LogStore.of(logStore)),
-			// The formatter registry the supervisor folds plugin
-			// `errorContributions` into during acquire.
-			Context.add(FormatterRegistryService, formatterRegistry),
 			// Expose the control plane (live projection + fire-and-forget
 			// command dispatch + the plugin-domain accessor surface) to
 			// in-process surfaces like the dashboard plugin. Reads the same

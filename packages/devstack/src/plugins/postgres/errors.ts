@@ -103,8 +103,10 @@ export type PostgresError =
 	| PostgresConnectionTimeout
 	| DatabaseCreateFailed;
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Consumed by the
+ *  acquire-body `passthroughOrWrap` (to let typed postgres failures
+ *  through unwrapped) and pinned against the user-facing error catalog
+ *  by the error-catalog-parity test. */
 export const POSTGRES_ERROR_TAGS: ReadonlyArray<PostgresError['_tag']> = [
 	'PostgresPluginError',
 	'PostgresConfigError',

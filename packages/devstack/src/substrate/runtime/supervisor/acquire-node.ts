@@ -6,8 +6,7 @@
 //     to the supervisor's outer scope.
 //   - `acquireNode(...)` — runs one plugin's `start` body inside its
 //     entry scope; on success replays the ctx-buffered contributions
-//     through the closed `ContributionDispatcher` and feeds the static
-//     `errorContributions` field directly into the FormatterRegistry.
+//     through the closed `ContributionDispatcher`.
 //   - `acquireKeys` / `acquireFullGraph` — fan out per-node acquires
 //     in parallel; each node waits on its own upstream ready gate.
 
@@ -25,9 +24,7 @@ import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { PluginCtx } from '../../plugin-ctx.ts';
 import { PluginContext } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies } from '../../plugin.ts';
-import type { PluginErrorContribution } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { FormatterRegistryService } from '../observability/formatter-registry.ts';
 import { StrategyRegistryService } from '../strategy-registry/service.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
 import { prettyErrorStructured, type LoggerShape } from '../observability/index.ts';
@@ -85,16 +82,6 @@ export class ContributionBufferSealedError extends Error {
 // -----------------------------------------------------------------------------
 
 const strategyRegistryAccess = OptionalService(StrategyRegistryService);
-const formatterRegistryAccess = OptionalService(FormatterRegistryService);
-
-/** Fallback formatter registry for bare supervisor paths that don't
- *  layer a FormatterRegistryService (smoke tests). A real stack always
- *  carries one via the orchestrator composition; plugins with
- *  `errorContributions` only render their cascade there. */
-const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
-	register: () => Effect.void,
-	snapshot: Effect.succeed(new Map() as never),
-};
 
 /**
  * Build the per-plugin `PluginCtx` + its replay buffer. The four
@@ -185,8 +172,7 @@ const causeTagOf = (cause: unknown): string | undefined => {
 
 /**
  * Replay one plugin's buffered contributions through the closed
- * `ContributionDispatcher` after a successful `start`, plus feed its
- * static `errorContributions` directly into the FormatterRegistry.
+ * `ContributionDispatcher` after a successful `start`.
  *
  * Failure semantics: a dispatch BODY failure is an orchestrator-fault —
  * the supervisor publishes
@@ -201,7 +187,6 @@ const causeTagOf = (cause: unknown): string | undefined => {
 const dispatchBufferedContributions = (
 	pluginKey: PluginKey,
 	buffer: ReadonlyArray<BufferedContribution>,
-	errorContributions: ReadonlyArray<PluginErrorContribution>,
 	pluginContext: Context.Context<never>,
 	pluginScope: Scope.Scope,
 	dispatcher: ContributionDispatcher,
@@ -210,19 +195,11 @@ const dispatchBufferedContributions = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const strategyRegistry = strategyRegistryAccess.read(pluginContext, noopStrategyRegistry);
-		const formatterRegistry = formatterRegistryAccess.read(pluginContext, noopFormatterRegistry);
 		const dispatchCtx: ContributionDispatchContext = {
 			pluginKey,
 			publish: (event) => publish(ref, hub, event),
 			strategyRegistry,
 		};
-
-		// Error contributions feed the FormatterRegistry DIRECTLY.
-		// Registered on the plugin's scope so the formatters reap on
-		// plugin teardown.
-		for (const contribution of errorContributions) {
-			yield* Scope.provide(formatterRegistry.register(contribution), pluginScope);
-		}
 
 		for (const decl of buffer) {
 			const body = ((): Effect.Effect<void, unknown, Scope.Scope> => {
@@ -423,19 +400,16 @@ export const acquireNode = (
 		if (result.ok) {
 			// The ctx buffer (decls the 5 verbs pushed during `start`, in
 			// emit order) is the SOLE source of post-start contributions.
-			// `errorContributions` stays a static `PluginSpec` field, read
-			// here and fed directly into the FormatterRegistry. The dispatch
-			// is a closed exhaustive switch on the decl discriminant — its
-			// internal dual-catch keeps an orchestrator-fault (a failing
-			// dispatch body) off the plugin's `markFailed` path, so a
-			// surfaced failure here would be an unexpected defect only.
-			const errorContributions = entry.node.member.errorContributions ?? [];
-			if (buffer.length > 0 || errorContributions.length > 0) {
+			// The dispatch is a closed exhaustive switch on the decl
+			// discriminant — its internal dual-catch keeps an
+			// orchestrator-fault (a failing dispatch body) off the plugin's
+			// `markFailed` path, so a surfaced failure here would be an
+			// unexpected defect only.
+			if (buffer.length > 0) {
 				const dispatchExit = yield* Effect.exit(
 					dispatchBufferedContributions(
 						key,
 						buffer,
-						errorContributions,
 						pluginContext,
 						entry.scope,
 						dispatcher,
@@ -486,7 +460,6 @@ export const acquireNode = (
 				message: entry.node.member.role === 'task' ? 'plugin done' : 'plugin ready',
 				fields: {
 					contributions: buffer.length,
-					errorContributions: errorContributions.length,
 				},
 			});
 		} else {

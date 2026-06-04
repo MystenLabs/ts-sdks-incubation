@@ -20,7 +20,6 @@ export {
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,
-	type PluginErrorContribution,
 	type PluginSpec,
 	type ResourceIdOf,
 	type ResourceRef,

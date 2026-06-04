@@ -38,22 +38,16 @@
 //   1. `ctx.snapshotExtra` — secret-material subtree (ephemeral only).
 //   2. `ctx.codegen`       — `account-map` bindings (name → address).
 //   3. `ctx.provides`      — per-stack `account:<name>` registry entry.
-//
-// Plus `errorContributions: [{ errorTags: ACCOUNT_ERROR_TAGS }]` —
-// harvested by the supervisor into the FormatterRegistry so the
-// cascade formatter renders account-tagged failures with the right
-// taxonomy header.
 
 import { Effect } from 'effect';
 
 import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { suiResource, SuiLogAttr } from '../sui/index.ts';
 
 import { makeAccountCodegen } from './codegen.ts';
-import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
+import { accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
@@ -80,7 +74,6 @@ import {
 	type AccountValue,
 } from './service.ts';
 
-const accountErrorContributions = pluginErrorContributions(ACCOUNT_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Resource construction
@@ -373,7 +366,6 @@ export const account = <const N extends string, const Funding extends AccountFun
 
 				return resolved;
 			}),
-		errorContributions: accountErrorContributions,
 	});
 };
 
@@ -464,7 +456,6 @@ export type {
 	AccountSignPhase,
 	AccountVariantKind,
 } from './errors.ts';
-export { ACCOUNT_ERROR_TAGS } from './errors.ts';
 export type {
 	AccountFunding,
 	AccountFundingEntry,

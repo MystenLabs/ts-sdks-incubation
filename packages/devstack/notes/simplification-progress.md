@@ -3,11 +3,19 @@
 Living tracker for the owner-approved simplification (decisions in `simplification-roadmap.md` → "OWNER DECISIONS").
 Status: `[ ]` todo · `[~]` in progress · `[x]` done · `[-]` deferred/blocked
 
+## Committed so far (branch `mh/devstack-cleanup`, all green — typecheck + ~1866 unit tests)
+- `a9ad7167` — Step 0 PR#21 boot-restore fix + account→3 variants + deepbook synthesis & bundled-Move deletion + docker dead methods (**−1,828**)
+- `16816626` — reconcile inert graph-spec wrapper inlined (**−117**)
+- `83dab312` — spans strip: recording Tracer + SpanStore + Traces tab + 235 withSpan + 10 spans.ts (**−2,288**)
+- `9f9610e7` — SpanAttr→LogAttr rename (now annotateLogs keys) (~0)
+- `<pending>` — FormatterRegistry + dead errorContributions plumbing deleted (**−506**)
+- **Session total ~−4,700 src LOC + ~9.6k off the npm tarball. STEP 1 COMPLETE.** (`e1c960f9` between these is the parallel sui/postgres workstream, not part of this effort.)
+
 ## ⚠️ Coordination (active as of 2026-06-04)
-- sui-tools-external-pg MERGED (adaf37e1). Sui indexer now uses a self-owned Postgres SIDECAR (`sui/index.ts` imports `bootPostgresSidecar`/`credentialedUrl`/`withDatabase` from `plugins/postgres`). That sidecar is load-bearing.
-- **A SECOND parallel workstream is now "fixing postgres issues."** → **Do NOT touch `plugins/postgres/**` or the postgres-plugin decision is ON HOLD.** The `postgres()` plugin "extract-then-delete" is DEFERRED until that settles (and the keep/delete decision may change again).
-- **Spans strip must EXCLUDE postgres** files (`postgres/spans.ts`, withSpan in postgres) until the parallel postgres work lands — do sui/substrate/orchestrators/dashboard spans first, postgres last.
-- Working on branch `mh/devstack-cleanup` (off mh/devstack-stage-a). Steps 0+1 batch committed there.
+- The parallel postgres/sui workstream COMMITS TO THIS SAME BRANCH (`e1c960f9` landed between cleanup commits) → **verify `git status` is pure-mine before every `git add -A`.**
+- Sui indexer uses a self-owned Postgres SIDECAR (`sui/index.ts` imports `bootPostgresSidecar`/`credentialedUrl`/`withDatabase` from `plugins/postgres`) — load-bearing.
+- `postgres()` PLUGIN extract-then-delete is DEFERRED until the parallel postgres work settles (decision may change). Spans WERE stripped from postgres — owner confirmed no interference.
+- Steps 2 (cross-host) + 3 (substrate collapse) touch supervisor/cross-process heavily — closer to the parallel work; coordinate before starting.
 
 ## Honest target
 ~7–10k of git-tracked **src** removed (84k → ~74–77k) + ~9.6k off the npm tarball + proportional test deletion.
@@ -26,7 +34,10 @@ Boot-time restores ran before participant registration → identity guard always
 - `[x]` **inert reconcile spec wrapper** — DONE (commit 16816626, −117). Inlined the inert reconcileGraph at the 3 supervisor call sites; KEPT ReconcileSpec (label axis, used by wipe/prune) + executeFsPlan/ReconcileFsOp/plan() — audit over-scoped those.
 ### 1b. Observability surgery
 - `[x]` **spans strip-all** — DONE (commit 83dab312, **−2,288 LOC, 128 files, 10 spans.ts deleted**). Removed recording Tracer + SpanStore + dashboard Traces tab + GraphQL Span type + 235 withSpan + helpers + annotateCurrentSpan. Reduced observability/spans.ts to the SpanAttr log-keys; sui/spans.ts kept (trimmed) as a shared log-key vocab. Deleted the obsolete span-attr-namespace style gate.
-- `[ ]` **FormatterRegistry delete** — DEFERRED (NOT dead-simple): entangled with the supervisor error-contribution harvest (`acquire-node.ts` folds plugin `errorContributions` into it) + `pretty-error`. Needs its own careful task: ensure X_ERROR_TAGS still feed the cascade-formatter. ~420 LOC.
+- `[x]` **SpanAttr → LogAttr rename** — DONE (commit 9f9610e7). Surviving constants are `annotateLogs` keys, not spans; renamed symbols + files (observability/spans.ts→log-attrs.ts, sui/spans.ts→log-attrs.ts) across 18 files + the name-blindness allowlist.
+- `[x]` **FormatterRegistry delete** — DONE (**−506 LOC, 41 files**). Verified the cascade-formatter renders by SHAPE (only consulted the registry for a per-tag custom formatter, of which there were none) → deleted the ENTIRE dead `errorContributions` plumbing: formatter-registry.ts, api/plugin-errors.ts, the `PluginErrorContribution` field, the acquire-node harvest, the wiring, and all 13 `pluginErrorContributions(X_ERROR_TAGS)` calls. KEPT the error classes + all `X_ERROR_TAGS` (pinned by error-catalog-parity test; POSTGRES/DEEPBOOK feed passthroughOrWrap). Known-error render output unchanged.
+
+### ✅ STEP 1 COMPLETE — all clear-cut strips landed (5 commits, all green).
 - `[ ]` **dashboard `graphql-env.d.ts` regen** — stale (still lists SpanFilter/SpanRecord/spans), but DEAD (no SPA code references them). Run `pnpm --filter devstack-dashboard gql:generate` whenever the dashboard is next built. Harmless.
 
 ## Step 2 — cross-host / NFS drop  `[ ]`
@@ -35,9 +46,9 @@ Single-host only (keep parallel-stacks + same-host `up`/`apply`). Drop foreign-h
 ## Step 3 — substrate state-model collapse (the main event)  `[ ]`
 Collapse 8 systems → one state model. Keep supervisor core + contribution pipeline verbatim; keep control-plane (dashboard). Merge the 4 projection read-models; inline strategy-registry + lifecycle-facts; simplify scoped-registry single-mode LWW → plain `SubscriptionRef<Map>` (keep the multimap). e2e suite as safety net. (~1.5–4k LOC + large conceptual win)
 
-## Step 4 — runStack-as-seam + deepbook on-demand fetch  `[ ]`
+## Step 4 — runStack-as-seam  `[ ]`
 - `[ ]` Invert so CLI/TUI consume `runStack`'s RunHandle (one boot path); dedupe the Deferred/fork machinery.
-- `[ ]` Deepbook: stop shipping `move-assets` in `files`; fetch-cache pinned rev at first `apply` into a user cache; add prefetch + `DEEPBOOK_MOVE_SOURCE`.
+- `[-]` ~~Deepbook on-demand fetch~~ — MOOT (done early): bundled Move + `move-assets` shipping + fetch/build scripts already DELETED in step 1a. Explicit deepbook publishes via `localPackage` and needs no bundled Move, so there is nothing to fetch.
 
 ## Step 5 — follow-ups  `[-]`
 - `[-]` Revisit **postgres** delete (after the external-pg work settles + owner confirms).

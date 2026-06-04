@@ -1,12 +1,9 @@
 // L0 observability barrel.
 //
-// Six primitives:
+// Five primitives:
 //   - Logger              — bounded per-tag structured log buffer.
 //   - LogAttr + helpers  — span/annotation conventions.
 //   - cascade-formatter   — pure Cause → string walker (CLI / TUI / prune).
-//   - FormatterRegistry   — substrate-owned per-tag formatter store;
-//                            populated by the supervisor's harvest loop
-//                            from each plugin's `errorContributions`.
 //   - pretty-error        — IO convenience over the formatter +
 //                            StructuredError projection.
 //   - capture             — collapsed subprocess output capture.
@@ -17,7 +14,6 @@ export * from './log-store.ts';
 export * from './redaction.ts';
 export * from './log-attrs.ts';
 export * from './cascade-formatter.ts';
-export * from './formatter-registry.ts';
 export * from './pretty-error.ts';
 export * from './subprocess-capture.ts';
 export * from './process-lines.ts';

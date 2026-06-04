@@ -100,8 +100,8 @@ export const sealConfigError = defineConfigError('SealConfigError');
 // Error-tag inventory
 // ---------------------------------------------------------------------------
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const SEAL_ERROR_TAGS = ['SealError', 'ForkIncompatibleError', 'SealConfigError'] as const;
 
 /** Union of every error a Seal-plugin caller may encounter. */

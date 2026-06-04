@@ -2,15 +2,15 @@
 //
 // A plugin emits its five contribution kinds inline from `start` via the
 // typed `ctx` verbs (ctx.snapshotExtra / ctx.codegen / ctx.endpoint /
-// ctx.publish / ctx.provides), plus a static `errorContributions` field.
-// The supervisor replays the ctx buffer through the closed
-// `ContributionDispatcher` after a successful `start`. We assert:
+// ctx.publish / ctx.provides). The supervisor replays the ctx buffer
+// through the closed `ContributionDispatcher` after a successful
+// `start`. We assert:
 //   - the ORDERED dispatched-contribution set (kind + payload
 //     discriminator) matches the emit order,
 //   - the routable endpoint "event" fires once,
 //   - the strategy registration fires once,
-//   - the plugin reaches `ready` (the static errorContributions feed +
-//     the whole dispatch path completed cleanly).
+//   - the plugin reaches `ready` (the whole dispatch path completed
+//     cleanly).
 //
 // Plus the start-fails-after-emit case: a plugin that buffers decls via
 // ctx then ERRORS in start must NOT dispatch anything (the post-start
@@ -30,7 +30,7 @@ import {
 	type ContributionDispatcher,
 	type SupervisedStack,
 } from '../../src/substrate/runtime/index.ts';
-import { definePlugin, type PluginErrorContribution } from '../../src/substrate/plugin.ts';
+import { definePlugin } from '../../src/substrate/plugin.ts';
 import { PluginContext } from '../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../src/contracts/projection.ts';
@@ -102,12 +102,6 @@ const strategyDecl: StrategyContributorDecl<'frame-strategy', { readonly run: 'o
 	autoMounted: false,
 };
 
-const errorContrib: PluginErrorContribution = {
-	_tag: 'PluginErrorContribution',
-	errorTags: ['FrameError'],
-	formatter: (value) => `<<frame ${value._tag}>>`,
-};
-
 // -----------------------------------------------------------------------------
 // Capture harness — one ordered log across ALL kinds + per-kind detail,
 // built as a `ContributionDispatcher` (the closed post-start seam).
@@ -177,7 +171,6 @@ const runPlugin = (member: SupervisedStack['members'][number], rowKey: string) =
 
 // -----------------------------------------------------------------------------
 // ctx-verbs plugin — emits the five decls in order from `start`.
-// `errorContributions` stays a static field (it is NOT a ctx verb).
 // -----------------------------------------------------------------------------
 
 const ctxPlugin = definePlugin({
@@ -194,7 +187,6 @@ const ctxPlugin = definePlugin({
 			ctx.provides(strategyDecl);
 			return { v: 'ctx' as const };
 		}),
-	errorContributions: [errorContrib],
 });
 
 // -----------------------------------------------------------------------------
@@ -215,7 +207,6 @@ const ctxFailPlugin = definePlugin({
 			yield* Effect.fail({ _tag: 'StartBoom' as const });
 			return { v: 'ctx-fail' as const };
 		}),
-	errorContributions: [errorContrib],
 });
 
 describe('ctx-emission → static dispatch (P3/P4)', () => {

@@ -25,14 +25,10 @@
 //   - `ContainerRuntimeService` yielded in the acquire body for the
 //     container + image + exec contract.
 //   - `IdentityContext` yielded for the app/stack identity strings.
-//   - `errorContributions` declares POSTGRES_ERROR_TAGS so the
-//     supervisor's harvest loop registers them with the
-//     FormatterRegistry.
 
 import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { passthroughOrWrap } from '../../substrate/runtime/passthrough-or-wrap.ts';
@@ -52,8 +48,6 @@ import { makeSnapshotable } from './snapshot.ts';
  *  factory below; postgres is a topological leaf with no cross-plugin
  *  dependents (sui owns its indexer DB as a sidecar, not a `dependsOn`). */
 const postgresResource = resource<'postgres', Postgres>('postgres');
-
-const postgresErrorContributions = pluginErrorContributions(POSTGRES_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Plugin construction
@@ -155,7 +149,6 @@ const buildPlugin = (opts: PostgresPluginOptions) => {
 					postgresPluginError('unknown', `postgres(${name}): unknown failure`, cause),
 				),
 			),
-		errorContributions: postgresErrorContributions,
 	});
 };
 
@@ -195,7 +188,6 @@ export type {
 	DatabaseCreateFailed,
 	PostgresPhase,
 } from './errors.ts';
-export { POSTGRES_ERROR_TAGS } from './errors.ts';
 export type { PostgresIdentityPayload } from './snapshot.ts';
 
 // Connection-string builders — exposed for downstream consumers that

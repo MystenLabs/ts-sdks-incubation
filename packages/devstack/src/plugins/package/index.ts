@@ -25,7 +25,6 @@ import { Effect } from 'effect';
 
 import { projection } from '../../api/define-capabilities.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
@@ -54,9 +53,6 @@ import {
 	type ResolvedLocalPackage,
 } from './registry.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import { PACKAGE_ERROR_TAGS } from './errors.ts';
-
-const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Publisher account ref — explicit upstream
@@ -95,7 +91,6 @@ export type {
 } from './publish-output.ts';
 export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
-export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
 
@@ -351,7 +346,6 @@ const buildLocalPlugin = <
 				}
 				return projected;
 			}),
-		errorContributions: packageErrorContributions,
 	});
 };
 
@@ -392,7 +386,6 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 				// output-walker.
 				return resolved;
 			}),
-		errorContributions: packageErrorContributions,
 	});
 };
 

@@ -41,7 +41,6 @@ import { Effect, Path } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { RoutableDecl } from '../../contracts/routable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -58,7 +57,7 @@ import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.t
 
 import { makeCodegenable } from './codegen.ts';
 import { walrusPluginKey } from './plugin-key.ts';
-import { WALRUS_ERROR_TAGS, walrusPluginError, type WalrusPluginError } from './errors.ts';
+import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import { makeWalFaucetContribution, type WalFaucetStrategy } from './faucet-strategy.ts';
 import { bootWalrusService, type WalrusMode } from './service.ts';
 import {
@@ -101,7 +100,6 @@ export interface WalrusResolved {
 
 /** Walrus plugin resource. */
 export const walrusResource = resource<'walrus', WalrusResolved>('walrus');
-const walrusErrorContributions = pluginErrorContributions(WALRUS_ERROR_TAGS);
 
 export interface WalrusNetworkIdentity {
 	readonly app: string;
@@ -333,7 +331,6 @@ const buildLocalPlugin = (opts: WalrusLocalClusterOptions) => {
 				]);
 				return resolvedValue;
 			}),
-		errorContributions: walrusErrorContributions,
 	});
 };
 
@@ -416,7 +413,6 @@ const buildKnownPlugin = (opts: WalrusKnownDeploymentOptions) => {
 				} satisfies StrategyContributorDecl<typeof WALRUS_STATE_REGISTRY_KEY, WalrusStateEntry>);
 				return resolvedValue;
 			}),
-		errorContributions: walrusErrorContributions,
 	});
 };
 
@@ -459,7 +455,6 @@ export const walCoin = (walrusMember: ResourceRef<'walrus', WalrusResolved>) => 
 					source: 'walrus',
 				} satisfies WalCoinValue;
 			}),
-		errorContributions: walrusErrorContributions,
 	});
 };
 
@@ -507,7 +502,6 @@ export type { WalrusKnownDeploymentOptions, WalrusKnownNetwork } from './mode/kn
 export type { WalrusStorageNode } from './storage-nodes.ts';
 export type { WalrusBindings, WalrusNodeBinding } from './codegen.ts';
 export type { WalrusError, WalrusPluginError, WalrusConfigError, WalrusPhase } from './errors.ts';
-export { WALRUS_ERROR_TAGS } from './errors.ts';
 export {
 	walCoinType,
 	walFaucetStrategyKey,

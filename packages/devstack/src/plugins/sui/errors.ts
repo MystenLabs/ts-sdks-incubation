@@ -99,8 +99,8 @@ export type SuiError =
 	| SuiConfigError
 	| ForkUnsupportedError;
 
-/** Error tags this plugin contributes — surfaced to the cause
- *  walker via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const SUI_ERROR_TAGS: ReadonlyArray<SuiError['_tag']> = [
 	'SuiPluginError',
 	'SuiCliError',

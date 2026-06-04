@@ -222,9 +222,9 @@ describe('release surface static checks', () => {
 		const substrate = readText('src/substrate/index.ts');
 
 		for (const leaked of [
-			// `PluginErrorContribution` is intentionally part of the public
-			// plugin-author vocabulary — custom plugin authors need it to
-			// declare `errorContributions` (plugin-author-symmetry invariant).
+			// Per-plugin `*_ERROR_TAGS` stay plugin-internal — they back the
+			// error-catalog-parity test (imported from each plugin's
+			// `errors.ts`), never the public barrels.
 			'LifecycleFact',
 			'chainProbeFor',
 			'ERROR_TAGS',
