@@ -89,19 +89,25 @@ import type { SuiLocalOptions } from './spec.ts';
 
 /** Default ready-probe timeout for localnet.
  *
- *  This budget now covers TWO bands, because the ready-gate proves
+ *  This budget covers TWO bands, because the ready-gate proves
  *  caught-up-to-head, not just RPC-bound:
  *
- *    - cold boot — genesis + faucet bootstrap; the checkpoint store is
- *      empty so the catch-up gate is satisfied almost immediately.
- *    - warm restart / snapshot restore — `sui start` ALWAYS re-executes
- *      its on-disk checkpoint store from seq=0 (the swarm boot model); a
- *      restored or warm-resumed validator replays its committed store
- *      back up to head before it serves committed objects. A multi-
- *      thousand-checkpoint store replays for 60-120s (~50x realtime).
+ *    - cold boot — genesis + faucet bootstrap; nothing to re-sync, so the
+ *      catch-up gate is satisfied almost immediately.
+ *    - warm restart / snapshot restore — the VALIDATOR resumes from its
+ *      persisted db instantly (stable committee key), but `sui start`
+ *      mints the embedded FULLNODE a fresh keypair + db-path on every
+ *      invocation (it never reuses the saved fullnode.yaml), so the
+ *      fullnode — which serves this RPC — boots with an empty db and
+ *      re-syncs the whole chain from genesis (~50x realtime; a multi-
+ *      thousand-checkpoint chain takes 60-120s). The catch-up gate waits
+ *      for that fullnode re-sync, not a validator replay. (Upstream fix
+ *      proposed to make `sui start` resume a stable fullnode — see
+ *      sui-swarm-config node_config_builder.rs; until then the re-sync is
+ *      intrinsic to a localnet restart.)
  *
- *  60s was a genesis-sized ceiling; it gives up mid-replay on a restore.
- *  180s covers the replay band with margin while still bounding a wedged
+ *  60s was a genesis-sized ceiling; it gives up mid-resync on a restore.
+ *  180s covers the re-sync band with margin while still bounding a wedged
  *  boot (timeout → typed `rpc-probe` error). */
 export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
@@ -196,15 +202,18 @@ export const bootLocalMode = (
 
 		// Caught-up-to-head gate. `waitForReady` only proves the RPC
 		// listener is BOUND. On a warm restart / snapshot restore the
-		// validator then re-executes its committed checkpoint store from
-		// seq=0 (~50x realtime); during that replay it serves stale /
-		// not-yet-existent objects, so downstream deploy-verify probes that
-		// run before catch-up read their committed ids as not-found and
-		// spuriously re-deploy with fresh ids. Wait once here, per boot,
-		// until the checkpoint head stabilizes to live cadence — so every
-		// downstream verify runs against a validator that already serves
-		// its committed state. On a cold/genesis boot the store is empty
-		// and this satisfies almost immediately.
+		// validator resumes from its persisted db instantly, but the
+		// embedded fullnode that serves this RPC gets a fresh key + empty
+		// db each `sui start` (see DEFAULT_LOCAL_READY_TIMEOUT) and
+		// re-syncs the chain from seq=0 (~50x realtime); during that
+		// re-sync it serves stale / not-yet-existent objects, so downstream
+		// deploy-verify probes that run before catch-up read their
+		// committed ids as not-found and spuriously re-deploy with fresh
+		// ids. Wait once here, per boot, until the checkpoint head
+		// stabilizes to live cadence — so every downstream verify runs
+		// against a fullnode that already serves the committed state. On a
+		// cold/genesis boot there is nothing to re-sync and this satisfies
+		// almost immediately.
 		yield* setCurrentPluginPhase('waiting for Sui checkpoint replay to catch up to head');
 		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),

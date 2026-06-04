@@ -9,15 +9,19 @@
 # state. Chain state lives in the container's writable layer — `docker
 # stop`/`start` preserves it; `docker rm` destroys it.
 #
-# Resume is NOT instant-to-head. `sui start` re-executes the persisted
-# checkpoint store from seq=0 on EVERY boot (the swarm boot model) — a
-# warm restart and a snapshot restore both replay the committed store
-# back up to its head (~50x realtime; a multi-thousand-checkpoint store
-# replays for 60-120s). During that replay the validator serves stale /
-# not-yet-existent objects, so a ready signal that only proves the RPC
-# port is bound races the replay. The caught-up-to-head gate lives on
-# the orchestrator side (devstack's sui plugin `waitForCheckpointCatchUp`),
-# not in this entrypoint.
+# Resume is NOT instant-to-head — but NOT because the validator replays.
+# The validator resumes from its persisted RocksDB instantly (its committee
+# key is stable across boots). The cost is the EMBEDDED FULLNODE: `sui
+# start` mints it a fresh keypair + db-path on every invocation (it never
+# reuses the saved fullnode.yaml — see sui-swarm-config
+# node_config_builder.rs), so the fullnode boots with an empty db and
+# re-syncs the whole chain from genesis (~50x realtime; a multi-thousand-
+# checkpoint chain takes 60-120s). That fullnode serves the JSON-RPC, so a
+# ready signal that only proves the RPC port is bound races the re-sync.
+# The caught-up-to-head gate lives on the orchestrator side (devstack's sui
+# plugin `waitForCheckpointCatchUp`), not in this entrypoint. (An upstream
+# fix to make `sui start` resume a stable fullnode is proposed; until it
+# lands this re-sync is intrinsic to a localnet restart.)
 #
 # Slow checkpoint pruning. Localnet's stock fullnode.yaml ships with
 # `num-epochs-to-retain: 0`, which prunes checkpoints aggressively
@@ -148,6 +152,18 @@ clear_stale_postgres_pid() {
 }
 
 clear_stale_postgres_pid
+
+# Reclaim orphaned fullnode databases. Because `sui start` mints a fresh
+# fullnode keypair every boot (see header), the embedded fullnode lands on
+# a NEW full_node_db/<key>/ dir each time and re-syncs from genesis — it
+# never reuses a prior db. Left alone these accumulate one full (growing)
+# copy of the chain per boot (observed ~1.4GB over 16 restarts). The
+# validator/consensus dbs are keyed by the stable committee key and ARE
+# reused, so they are untouched. Removing the fullnode db tree before `sui
+# start` recreates it loses nothing (the fresh fullnode rebuilds it from
+# the validator regardless) and bounds disk to a single copy. Disk hygiene
+# only — it does NOT speed up the re-sync.
+rm -rf "$SUI_HOME/.sui/sui_config/full_node_db" 2>/dev/null || true
 
 # Strip `--with-faucet[=<addr>]` from sui's args and remember the bind
 # address. POSIX-sh argument shuffling: rebuild "$@" by collecting
