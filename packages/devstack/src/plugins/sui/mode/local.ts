@@ -96,26 +96,24 @@ import type { SuiLocalOptions } from './spec.ts';
 
 /** Default ready-probe timeout for localnet.
  *
- *  This budget covers TWO bands, because the ready-gate proves
- *  caught-up-to-head, not just RPC-bound:
+ *  The pinned sui-tools image carries the embedded-fullnode resume fix
+ *  (sui #26884), so BOTH the validator AND the embedded fullnode resume
+ *  from their persisted dbs on every `sui start` — there is no per-boot
+ *  genesis re-sync. (Pre-#26884, each `sui start` minted the fullnode a
+ *  fresh key + empty db and it re-synced the whole chain from seq=0 at
+ *  ~50x realtime; that band no longer exists.) So both bands satisfy the
+ *  catch-up gate almost immediately:
  *
- *    - cold boot — genesis + faucet bootstrap; nothing to re-sync, so the
- *      catch-up gate is satisfied almost immediately.
- *    - warm restart / snapshot restore — the VALIDATOR resumes from its
- *      persisted db instantly (stable committee key), but `sui start`
- *      mints the embedded FULLNODE a fresh keypair + db-path on every
- *      invocation (it never reuses the saved fullnode.yaml), so the
- *      fullnode — which serves this RPC — boots with an empty db and
- *      re-syncs the whole chain from genesis (~50x realtime; a multi-
- *      thousand-checkpoint chain takes 60-120s). The catch-up gate waits
- *      for that fullnode re-sync, not a validator replay. (Upstream fix
- *      proposed to make `sui start` resume a stable fullnode — see
- *      sui-swarm-config node_config_builder.rs; until then the re-sync is
- *      intrinsic to a localnet restart.)
+ *    - cold boot — genesis + faucet bootstrap; empty store, live cadence
+ *      from the first sample.
+ *    - warm restart / snapshot restore — both nodes resume from disk;
+ *      the head is already at the persisted tip, so it stabilizes at
+ *      once.
  *
- *  60s was a genesis-sized ceiling; it gives up mid-resync on a restore.
- *  180s covers the re-sync band with margin while still bounding a wedged
- *  boot (timeout → typed `rpc-probe` error). */
+ *  180s is therefore generous headroom, not a re-sync budget: the gate
+ *  satisfies in a couple of polls on a healthy boot, and the timeout only
+ *  bounds a genuinely wedged boot (RPC bound but head never stabilizing
+ *  → typed `rpc-probe` error). */
 export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
 // In-container ports the sui binary binds on. These match the router
@@ -233,21 +231,19 @@ export const bootLocalMode = (
 			readyTimeout,
 		).pipe(Effect.annotateLogs({ [SuiSpans.container]: handle.name }));
 
-		// Caught-up-to-head gate. `waitForReady` only proves the RPC
-		// listener is BOUND. On a warm restart / snapshot restore the
-		// validator resumes from its persisted db instantly, but the
-		// embedded fullnode that serves this RPC gets a fresh key + empty
-		// db each `sui start` (see DEFAULT_LOCAL_READY_TIMEOUT) and
-		// re-syncs the chain from seq=0 (~50x realtime); during that
-		// re-sync it serves stale / not-yet-existent objects, so downstream
-		// deploy-verify probes that run before catch-up read their
-		// committed ids as not-found and spuriously re-deploy with fresh
-		// ids. Wait once here, per boot, until the checkpoint head
-		// stabilizes to live cadence — so every downstream verify runs
-		// against a fullnode that already serves the committed state. On a
-		// cold/genesis boot there is nothing to re-sync and this satisfies
-		// almost immediately.
-		yield* setCurrentPluginPhase('waiting for Sui checkpoint replay to catch up to head');
+		// Head-stabilization gate. `waitForReady` only proves the RPC
+		// listener is BOUND, not that it serves the committed head. With the
+		// #26884 resume fix both the validator and the embedded fullnode
+		// resume from their persisted dbs (see DEFAULT_LOCAL_READY_TIMEOUT),
+		// so there is no genesis re-sync — this gate is now a FAST safety
+		// check, not a long wait: it polls the checkpoint head until it
+		// stabilizes to live cadence, satisfying in a couple of polls on both
+		// warm-restart and cold boot. Kept because it is cheap and closes a
+		// real correctness window: it guarantees the RPC serves the persisted
+		// head BEFORE downstream deploy-verify probes read object ids —
+		// without it a probe firing into a still-settling head could read a
+		// committed id as not-found and spuriously re-deploy with fresh ids.
+		yield* setCurrentPluginPhase('waiting for Sui checkpoint head to stabilize');
 		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
 			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
 		);
@@ -466,6 +462,12 @@ const ensureLocalValidatorContainerAttempt = (
 			// entrypoint the DSN so it enables `--with-graphql` against it
 			// (sui-owned sidecar by default, or a BYO DB). Omitted = RPC +
 			// faucet only.
+			//
+			// The DSN is a credentialed env var, so it (and the sidecar's
+			// POSTGRES_PASSWORD) bakes into the `docker commit` snapshot
+			// image. Deliberate and accepted: the password is a deterministic
+			// localnet credential (derived per app/stack/stackRoot) with no
+			// production exposure.
 			...(params.indexer !== undefined
 				? {
 						networkAttach: [params.indexer.network],
@@ -757,10 +759,10 @@ const waitForReady = (
 // Caught-up-to-head gate
 // ---------------------------------------------------------------------------
 
-/** Poll interval for the checkpoint catch-up gate. Replay runs ~50x
- *  realtime (hundreds of checkpoints per second); a 1s interval samples
- *  a large enough window to tell replay cadence (hundreds/poll) apart
- *  from live cadence (a handful/poll). */
+/** Poll interval for the head-stabilization gate. With the #26884 resume
+ *  fix there is no routine re-sync, but a 1s interval still samples a wide
+ *  enough window to tell any transient fast burst (hundreds/poll) apart
+ *  from live cadence (a handful/poll) before declaring the head stable. */
 const CATCH_UP_POLL_INTERVAL_MS = 1_000;
 
 /** Per-poll delta at or below which the head is considered to be moving
@@ -883,15 +885,17 @@ export const makeCatchUpEvaluator = (opts?: {
 	};
 };
 
-/** Caught-up-to-head gate.
+/** Head-stabilization gate.
  *
- *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the
- *  validator as caught up once the per-poll delta drops from the fast
- *  replay rate (hundreds/poll) to live cadence (`<= CATCH_UP_LIVE_
+ *  Polls `sui_getLatestCheckpointSequenceNumber` and treats the head as
+ *  stable once the per-poll delta is at live cadence (`<= CATCH_UP_LIVE_
  *  CADENCE_DELTA`/poll) and HOLDS there for `CATCH_UP_STABLE_POLLS_
- *  REQUIRED` consecutive polls. Cold/genesis boots satisfy this almost
- *  immediately (the store is empty, so deltas are live-cadence from the
- *  first sample); warm/restore boots wait out the whole replay.
+ *  REQUIRED` consecutive polls. With the #26884 resume fix both nodes
+ *  resume from disk, so there is no genesis re-sync to wait out: cold and
+ *  warm/restore boots alike are at live cadence from the first samples
+ *  and satisfy in a couple of polls. The fast-replay reset branch in the
+ *  evaluator is retained as a cheap guard for any transient burst rather
+ *  than a routine restart band.
  *
  *  A wedged boot (RPC bound but head never stabilizing) lapses the outer
  *  deadline → typed `rpc-probe` error rather than hanging forever. */
@@ -920,10 +924,11 @@ const waitForCheckpointCatchUp = (
 				(cause): SuiPluginError =>
 					suiPluginError(
 						'rpc-probe',
-						`sui local mode: validator did not catch up to checkpoint head within ` +
-							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). The checkpoint replay ` +
-							`(warm restart / snapshot restore re-executes the committed store from seq=0) ` +
-							`never stabilized to live cadence: ${formatUnknownError(cause)}`,
+						`sui local mode: checkpoint head did not stabilize within ` +
+							`${readyTimeoutMs}ms (last seq=${evaluator.last() ?? 'n/a'}). With the #26884 ` +
+							`resume fix both nodes resume from disk, so the head should reach live cadence ` +
+							`almost immediately; a stall here points to a wedged boot, not a re-sync: ` +
+							`${formatUnknownError(cause)}`,
 						cause,
 					),
 			),

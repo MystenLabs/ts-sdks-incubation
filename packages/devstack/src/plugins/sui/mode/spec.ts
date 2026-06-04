@@ -24,13 +24,13 @@ export interface SuiCommonOptions {
 	readonly readyTimeout?: Duration.Duration;
 }
 
-/** Local container mode — in-stack validator + faucet + GraphQL. GraphQL
- *  + its indexer + a Postgres are ON BY DEFAULT: the sui plugin OWNS a
- *  postgres sidecar container (labelled under sui) so a bare
- *  `sui({ mode: 'local' })` boots the full GraphQL surface with no
- *  cross-plugin wiring. Two escape hatches: `indexer: false` opts out
- *  (RPC + faucet only), and `indexerDb` points GraphQL at a Postgres the
- *  caller already runs (no sidecar). */
+/** Local container mode — in-stack validator + faucet + GraphQL. GraphQL,
+ *  its indexer, and a Postgres are ON BY DEFAULT: the sui plugin OWNS a
+ *  postgres sidecar container (labelled under sui) and auto-creates its
+ *  `sui_indexer` DB, so a bare `sui()` boots the full GraphQL surface with
+ *  no cross-plugin wiring. Two escape hatches: `indexer: false` opts out
+ *  (RPC + faucet only, no sidecar), and `indexerDb` points GraphQL at a
+ *  Postgres the caller already runs (no sidecar). */
 export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly mode: 'local';
 	/** Image override — `{pull}` skips the build; `{build}` uses
@@ -38,7 +38,11 @@ export interface SuiLocalOptions extends SuiCommonOptions {
 	readonly image?:
 		| { readonly pull: string }
 		| { readonly build: { readonly context: string; readonly dockerfile?: string } };
-	/** Sui binary version (default in mode/local.ts). */
+	/** Effectively DEAD for the default path: local mode now bases on the
+	 *  pinned `mysten/sui-tools` image, not a versioned tarball, so
+	 *  `resolveImage` ignores this field for the vendored build. Kept as a
+	 *  public option (it could be threaded into a custom `{build}`
+	 *  Dockerfile's build args) but currently has no in-repo reader. */
 	readonly version?: string;
 	/** GraphQL/indexer/Postgres on-off. Default `true` — sui owns a
 	 *  postgres sidecar and runs `--with-graphql` against it. `false` ⇒
