@@ -54,15 +54,25 @@ export {
 	containerImagesBundlePath,
 	contributionPath,
 	DEPLOY_CACHE_NAMESPACES,
+	IntegrityFileSchema,
 	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SNAPSHOT_ID_RULE,
+	SNAPSHOT_INTEGRITY_VERSION,
 	SNAPSHOT_META_VERSION,
 	parseSnapshotId,
 	snapshotIdFromString,
+	type IntegrityFile,
 	type SnapshotCatalogEntry,
 	type SnapshotId,
 	type SnapshotMetadata,
 } from './descriptor.ts';
+
+export {
+	computeArtifactIntegrity,
+	SnapshotIntegrityError,
+	verifyArtifactIntegrity,
+	writeArtifactIntegrity,
+} from './integrity.ts';

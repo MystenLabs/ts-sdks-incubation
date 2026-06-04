@@ -456,6 +456,7 @@ describe('snapshot capture container images', () => {
 				expect(Exit.isSuccess(exit)).toBe(true);
 				expect(removeImageCalls).toEqual([]);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(true);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(true);
 				expect(readFileSync(join(root, 'artifact', imageBundlePath))).toHaveLength(
 					dockerSaveBundleTarWithLateMetadata(['snapshot:validator-container']).length,
 				);
@@ -504,6 +505,7 @@ describe('snapshot capture container images', () => {
 					{ digest: 'sha256:validator-container', tag: 'snapshot:validator-container' },
 				]);
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);
@@ -536,6 +538,7 @@ describe('snapshot capture container images', () => {
 					expect(error.value.phase).toBe('save-images');
 				}
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);
@@ -569,6 +572,7 @@ describe('snapshot capture container images', () => {
 					expect(error.value.phase).toBe('save-images');
 				}
 				expect(existsSync(join(root, 'artifact', SnapshotLayout.metaFile))).toBe(false);
+				expect(existsSync(join(root, 'artifact', SnapshotLayout.integrityFile))).toBe(false);
 			}),
 		),
 	);

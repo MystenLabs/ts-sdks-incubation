@@ -102,6 +102,38 @@ describe('toContractError — Docker operation mappings', () => {
 		expect(err._tag).toBe('ContainerPortPublishConflict');
 	});
 
+	it('wrapCreateError surfaces an implicit-pull miss as the typed recoverable ImageNotFound, not fatal ContainerCreateFailed', () => {
+		// `docker run` against a local-only ref that isn't present tries an
+		// implicit registry pull; the stderr is `Unable to find image
+		// '<ref>' locally` + `manifest unknown`. This must classify as the
+		// recoverable `ImageNotFound` so the create path can fall back to
+		// the digest — NOT as a fatal `ContainerCreateFailed`.
+		const err = wrapCreateError('devstack-wallet-wallet-sui-validator')(
+			new CaptureError({
+				op: 'docker.run',
+				stdout: '',
+				stderr:
+					"Unable to find image 'devstack-restored:abc123' locally\n" +
+					'docker: Error response from daemon: manifest unknown.',
+				exitCode: 125,
+			}),
+		);
+		expect(err._tag).toBe('ImageNotFound');
+		expect(err._tag).not.toBe('ContainerCreateFailed');
+	});
+
+	it('wrapCreateError classifies a "No such image" create miss as ImageNotFound', () => {
+		const err = wrapCreateError('devstack-wallet-wallet-sui-validator')(
+			new CaptureError({
+				op: 'docker.run',
+				stdout: '',
+				stderr: 'docker: Error response from daemon: No such image: devstack-restored:abc123',
+				exitCode: 125,
+			}),
+		);
+		expect(err._tag).toBe('ImageNotFound');
+	});
+
 	it('wrapNetworkError classifies exhausted predefined Docker bridge pools distinctly', () => {
 		const err = wrapNetworkError(
 			'create',

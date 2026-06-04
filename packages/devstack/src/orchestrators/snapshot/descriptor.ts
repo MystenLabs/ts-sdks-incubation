@@ -15,6 +15,7 @@
 //                            committed managed-container images
 //   contributions/<encoded-plugin>.json
 //                          — one typed metadata slice per participant
+//   integrity.json         — hashes over the above for resume / probe
 //
 // Layout discipline:
 //   - `meta.json` is authoritative. Architecture § Snapshotable
@@ -41,6 +42,7 @@ export const SnapshotLayout = {
 	hostTreeTar: 'host-tree.tar',
 	containersDir: 'containers',
 	contributionsDir: 'contributions',
+	integrityFile: 'integrity.json',
 } as const;
 
 export type SnapshotId = Brand<string, 'SnapshotId'>;
@@ -248,6 +250,17 @@ export const SnapshotMetadataSchema = versionedDocSchema(SNAPSHOT_META_VERSION, 
 	participants: Schema.Array(Schema.String),
 });
 export type SnapshotMetadata = Schema.Schema.Type<typeof SnapshotMetadataSchema>;
+
+/** Integrity record — per-file SHA-256 over the artifact's contents.
+ *  Separate file so restore can re-verify after an atomic swap landed
+ *  without re-reading the (potentially large) tar. */
+export const SNAPSHOT_INTEGRITY_VERSION = 1 as const;
+
+export const IntegrityFileSchema = versionedDocSchema(SNAPSHOT_INTEGRITY_VERSION, {
+	/** Relative-path → hex-encoded SHA-256 of the file's bytes. */
+	hashes: Schema.Record(Schema.String, Schema.String),
+});
+export type IntegrityFile = Schema.Schema.Type<typeof IntegrityFileSchema>;
 
 // -----------------------------------------------------------------------------
 // Catalog-listing shape — projected by service.ts; partial / corrupt

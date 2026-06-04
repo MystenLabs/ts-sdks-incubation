@@ -82,6 +82,7 @@ import {
 	readImageBundleTags,
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
+import { verifyArtifactIntegrity } from './integrity.ts';
 import { CACHE_DIR_NAME, SNAPSHOTS_DIR_NAME } from './wipe.ts';
 
 // -----------------------------------------------------------------------------
@@ -98,6 +99,8 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'meta-corrupt',
 			'meta-absent',
 			'read-contribution',
+			'read-integrity',
+			'verify-integrity',
 			'preflight',
 			'cache-missing',
 			'pre-restore-hook',
@@ -204,6 +207,21 @@ const readMeta = (
 		}
 		return meta;
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.read-meta'));
+
+const verifyIntegrity = (
+	artifactDir: string,
+): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+	verifyArtifactIntegrity(artifactDir).pipe(
+		Effect.catchTag('SnapshotIntegrityError', (err) =>
+			Effect.fail(
+				new RestorePhaseError({
+					phase: err.kind === 'missing' ? 'read-integrity' : 'verify-integrity',
+					detail: err.detail,
+					cause: err.cause,
+				}),
+			),
+		),
+	);
 
 // -----------------------------------------------------------------------------
 // Managed-container removal by label.
@@ -836,12 +854,15 @@ export const runRestore = (
 			'devstack.snapshot.artifact': inputs.artifactDir,
 		});
 
-		// Authoritative meta read (PURE — no mutation). There is no separate
-		// integrity re-hash: the artifact is atomically published (never a
-		// half-observed tree) and never transmitted; the host-tree tar is
-		// path-validated on extraction and the image bundle manifest is
-		// verified before docker load.
+		// Authoritative meta read (PURE — no mutation), then re-verify the
+		// artifact's per-file SHA-256 integrity before any mutation. The
+		// artifact is being RESTORED here, so `integrity.json` is re-hashed
+		// and compared file-by-file: a missing record fails at
+		// `read-integrity`, a hash/file-list disagreement at
+		// `verify-integrity` — both fail-closed before the host-tree untar,
+		// docker load, or container replacement.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
+		yield* verifyIntegrity(inputs.artifactDir);
 
 		// step0 — PRECONDITION: identity guard, FAIL-CLOSED before the FIRST
 		//    mutation. Compare the metadata's runtime identity and the merged

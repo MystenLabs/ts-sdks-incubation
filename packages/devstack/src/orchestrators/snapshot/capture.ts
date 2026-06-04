@@ -66,6 +66,7 @@ import {
 	readImageBundleTags,
 	verifyImageBundleTags,
 } from './image-bundle-tags.ts';
+import { writeArtifactIntegrity } from './integrity.ts';
 import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
@@ -100,6 +101,7 @@ export class CapturePhaseError extends Schema.TaggedErrorClass<CapturePhaseError
 			'tar-host-tree',
 			'write-contribution',
 			'write-meta',
+			'write-integrity',
 			'retag-image',
 			'remove-container',
 			'resume',
@@ -699,9 +701,9 @@ export const runCapture = (
 						);
 				}
 
-				// 6. WRITE meta.json LAST. The caller publishes via stage-and-swap
-				//    (atomic rename), so catalog readers never observe a
-				//    half-written artifact.
+				// 6. WRITE meta.json, then integrity over the full artifact.
+				//    The caller publishes via stage-and-swap (atomic rename),
+				//    so catalog readers never observe a half-written artifact.
 				const meta: SnapshotMetadata = {
 					version: SNAPSHOT_META_VERSION,
 					id: inputs.snapshotId,
@@ -722,6 +724,9 @@ export const runCapture = (
 						JSON.stringify(meta, null, 2),
 					)
 					.pipe(Effect.catch(failPhase('write-meta', `write meta.json failed`)));
+				yield* writeArtifactIntegrity(inputs.stagingDir).pipe(
+					Effect.catch(failPhase('write-integrity', `write integrity.json failed`)),
+				);
 
 				return meta;
 			}),

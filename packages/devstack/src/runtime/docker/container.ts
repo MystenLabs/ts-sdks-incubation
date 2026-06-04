@@ -46,6 +46,7 @@ import {
 	DaemonUnreachable,
 	type DockerRuntimeError,
 	ForeignDockerResource,
+	ImageNotFound,
 	RecreateRefused,
 } from './errors.ts';
 import { dockerInspectAndDecode } from './inspect-and-decode.ts';
@@ -653,15 +654,75 @@ const startAndAdopt = (
 		);
 	});
 
+/** `docker run` create with a single `imageRef`. The typed
+ *  `ImageNotFound` (from `wrapCreateError`) is propagated as-is so the
+ *  caller can decide whether a digest fallback is available. */
+const createWithImageRef = (
+	spec: EnsureContainerSpec,
+	cycle: number,
+	imageRef: string,
+): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
+	Effect.gen(function* () {
+		const args = createArgv(spec, cycle, imageRef);
+		const created = yield* dockerRun('run', args).pipe(Effect.mapError(wrapCreateError(spec.name)));
+		return created.stdout.trim();
+	});
+
 const freshCreate = (
 	spec: EnsureContainerSpec,
 	cycle: number,
 ): Effect.Effect<string, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const args = createArgv(spec, cycle, spec.image.tag ?? spec.image.digest);
-		const created = yield* dockerRun('run', args).pipe(Effect.mapError(wrapCreateError(spec.name)));
-		return created.stdout.trim();
+		// Tag-first: `docker run` resolves a human tag when present, else
+		// the content-addressed digest. `digest` is always present on an
+		// `ImageRef`; `tag` is optional.
+		const taggedRef = spec.image.tag ?? spec.image.digest;
+		const digestRef = spec.image.digest;
+		return yield* createWithImageRef(spec, cycle, taggedRef).pipe(
+			// Image-not-found on create means `docker run` tried an implicit
+			// registry pull because the local-only ref wasn't present (an
+			// interrupted restore left the target un-promoted, or a built
+			// image was GC'd). A dangling restored image still resolves by
+			// DIGEST unless pruned, so retry with the digest when it differs
+			// from the tag we just tried. If that also misses (or there is no
+			// distinct digest to try), surface a clear, actionable error.
+			Effect.catchTag('ImageNotFound', (notFound) => {
+				if (digestRef === taggedRef) {
+					return Effect.fail(missingImageError(spec, taggedRef));
+				}
+				return createWithImageRef(spec, cycle, digestRef).pipe(
+					Effect.catchTag('ImageNotFound', () =>
+						Effect.fail(missingImageError(spec, taggedRef, digestRef, notFound)),
+					),
+				);
+			}),
+		);
 	});
+
+/** Clear, actionable failure when neither the tagged nor digest ref
+ *  could be created because the image is absent locally. Names the
+ *  missing image and points at restore so an operator knows the fix is
+ *  re-running restore (which re-promotes / re-loads the image) rather
+ *  than a generic create failure. */
+const missingImageError = (
+	spec: EnsureContainerSpec,
+	taggedRef: string,
+	digestRef?: string,
+	cause?: ImageNotFound,
+): ContainerCreateFailed => {
+	const tried =
+		digestRef !== undefined && digestRef !== taggedRef
+			? `tag '${taggedRef}' and digest '${digestRef}'`
+			: `image '${taggedRef}'`;
+	const causeDetail = cause === undefined ? '' : ` (${cause.detail})`;
+	return new ContainerCreateFailed({
+		name: spec.name,
+		stderr:
+			`required image is not present locally — tried ${tried}${causeDetail}. ` +
+			'Re-run restore to re-promote / re-load the target image before booting.',
+		exitCode: undefined,
+	});
+};
 
 const resumeStart = (
 	name: string,
