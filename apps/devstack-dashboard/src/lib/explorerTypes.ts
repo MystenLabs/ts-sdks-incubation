@@ -175,7 +175,6 @@ export type EntityKind = 'package' | 'object' | 'address';
 export interface OwnedObjectView {
 	readonly id: string;
 	readonly version: string;
-	readonly digest: string;
 	/** Full Move type tag (`0x2::coin::Coin<0x2::sui::SUI>`, …). */
 	readonly type: string;
 }

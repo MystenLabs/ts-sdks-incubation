@@ -59,7 +59,7 @@ import { isSuiFrameworkObjectForCoin } from './type-strings.ts';
  *  `TxResult` (which adds `effects` + `balanceChanges` — fields the
  *  mint produce body does not surface). The shape is structurally
  *  compatible — Account's `signAndExecute` widens to this surface. */
-export type MintSignAndExecuteResult =
+type MintSignAndExecuteResult =
 	| {
 			readonly $kind: 'Transaction';
 			readonly Transaction: {
@@ -75,7 +75,7 @@ export type MintSignAndExecuteResult =
 			};
 	  };
 
-export interface MintTransactionSigner {
+interface MintTransactionSigner {
 	readonly signAndExecute: (
 		tx: Uint8Array,
 	) => Effect.Effect<

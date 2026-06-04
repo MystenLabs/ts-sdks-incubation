@@ -540,7 +540,7 @@ const resolveLocalOptions = (
 		package: opts.package ?? synth.package,
 		pools: opts.pools ?? synth.pools,
 		pyth: opts.pyth ?? synth.pyth,
-		deepTreasuryIdKey: opts.deepTreasuryIdKey ?? synth.deepTreasuryIdKey,
+		deepTreasuryIdKey: opts.deepTreasuryIdKey ?? 'deepTreasuryId',
 	} as ResolvedLocalOptions;
 };
 
@@ -1074,10 +1074,6 @@ export { deepbookCore as deepbook };
 export {
 	DEEPBOOK_DEEP_FAUCET_STRATEGY_KEY,
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
-	makeDeepbookDeepFundingContribution,
-	makeDeepbookDeepFundingStrategy,
-	type DeepbookDeepFundingStrategy,
-	type DeepbookDeepFundingStrategyOptions,
 } from './faucet-strategy.ts';
 export {
 	DEEPBOOK_ERROR_TAGS,
@@ -1103,4 +1099,3 @@ export {
 	SUI_PRICE_FEED_ID,
 	USDC_PRICE_FEED_ID,
 } from './types.ts';
-export { DeepbookSpans } from './spans.ts';

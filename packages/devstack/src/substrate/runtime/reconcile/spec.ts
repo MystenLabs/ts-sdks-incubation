@@ -9,16 +9,9 @@
 //   - target     — `running | absent` (intent only; `decideRunAction`
 //                  picks the concrete docker action, engine untouched).
 //   - fsPlan     — staged file-tree mutation vocabulary.
-//   - cachePolicy— a STRUCTURED PAIR over the content-addressed cache +
-//                  its snapshot byproducts (the two dispositions move
-//                  together today but must be modelable independently —
-//                  never a coarse enum).
 //   - scope      — `graph-keys(subset)` (in-supervisor, dep-ordered) |
 //                  `label(tuple)` (out-of-supervisor, flat sweep).
 //   - direction  — `converge` (forward dep order) | `drain` (reverse).
-//   - locks      — declared lock riders.
-//   - ownership  — cross-process arbitration rider (arbitration stays
-//                  ABOVE reconcile — modelled, not executed here).
 //
 // The graph axis (`reconcileGraph`, `./graph.ts`) handles
 // `scope.kind === 'graph-keys'` + `converge|drain`; the label axis
@@ -54,31 +47,6 @@ export interface ReconcileLabelTuple {
 export type ReconcileScope =
 	| { readonly kind: 'graph-keys'; readonly keys: ReadonlyArray<PluginKey> }
 	| { readonly kind: 'label'; readonly tuple: ReconcileLabelTuple };
-
-// -----------------------------------------------------------------------------
-// Cache policy — a STRUCTURED PAIR, never a coarse enum
-// -----------------------------------------------------------------------------
-
-/** How the live content-addressed cache (`cache/<ns>/<chain>/<hash>`) is
- *  treated. `reuse-verified` is the default and IS warm-restart id
- *  stability (memory: warm-restart-id-stability). */
-export type CacheDisposition = 'reuse-verified' | 'preserve' | 'drop';
-
-/** How the snapshot byproducts of the cache are treated, INDEPENDENTLY of
- *  the cache itself. `reap-byproducts` is prune's GC of meta-missing
- *  snapshot images. */
-export type SnapshotsDisposition = 'preserve' | 'drop' | 'reap-byproducts';
-
-/** The structured cache-policy pair. The two dispositions are projections
- *  of one decision today (e.g. wipe's `--keep-cache`), but they MUST be
- *  modelable independently — control-file / per-namespace preservation is
- *  a restore-direction constant, never folded into a single enum. Else
- *  warm-restart ids churn / the command-channel breaks (guard:
- *  `private-content-boot.test.ts`). */
-export interface CachePolicy {
-	readonly cacheDisposition: CacheDisposition;
-	readonly snapshotsDisposition: SnapshotsDisposition;
-}
 
 // -----------------------------------------------------------------------------
 // fsPlan — the staged file-tree mutation vocabulary
@@ -162,12 +130,12 @@ export interface ReapImagesOp<E> {
 	readonly onError: ReconcileFsFailer<E>;
 }
 
-/** SWAP-TREE op — restore publishes via `untar-artifact`; capture builds
- *  via `tar-subtrees`. Publish a new `targetPath` tree by running `build`
- *  (which populates the staging dir) then the UNCHANGED `stageAndSwap`
- *  rename — `stageAndSwap` is NOT modified and NOT reimplemented; the
- *  executor only assembles its args from this op. The build's result is
- *  observed by
+/** SWAP-TREE op — restore publishes its untarred artifact; capture builds
+ *  via tar subtrees. Publish a new `targetPath` tree by running
+ *  `buildEffect` (which populates the staging dir) then the UNCHANGED
+ *  `stageAndSwap` rename — `stageAndSwap` is NOT modified and NOT
+ *  reimplemented; the executor only assembles its args from this op. The
+ *  build's result is observed by
  *  the caller through its OWN closure (e.g. restore pushes staged image
  *  refs into a caller-held array), so the executor discards it and returns
  *  the default `FsPlanResult` — the build value never threads back through
@@ -175,14 +143,11 @@ export interface ReapImagesOp<E> {
  *
  *  The preserve riders map 1:1 onto `stageAndSwap`'s args as PER-DIRECTION
  *  named constants, NOT a cache-policy projection: `preserveFromTarget` is
- *  restore's per-namespace cache + control-file list; `preserveOnPreseed`
+ *  restore's control-file list (the deploy cache is NOT preserved from live —
+ *  it rides the snapshot's host-tree, self-contained); `preserveOnPreseed`
  *  is codegen's whole-tree pre-build clone. */
 export interface SwapTreeOp<E> {
 	readonly op: 'swap-tree';
-	/** The build body's identity — `untar-artifact` (restore) /
-	 *  `tar-subtrees` (capture). Names the build so the vocabulary is
-	 *  closed; the actual work is in `build`. */
-	readonly build: 'untar-artifact' | 'tar-subtrees';
 	readonly targetPath: string;
 	readonly stagingPath: string;
 	readonly backupPath: string;
@@ -192,8 +157,9 @@ export interface SwapTreeOp<E> {
 	 *  caller's own closure (see above) and discarded by the executor. */
 	readonly buildEffect: EffectT.Effect<unknown, E, FileSystem.FileSystem>;
 	/** Per-direction preserve rider — NOT a cache-policy projection.
-	 *  Restore supplies its per-namespace cache + control-file list here as
-	 *  a restore-direction constant. */
+	 *  Restore supplies its control-file list here as a restore-direction
+	 *  constant (the deploy cache rides the snapshot's host-tree, so it is
+	 *  NOT preserved from live). */
 	readonly preserveFromTarget?: ReadonlyArray<StageAndSwapPreservedPath>;
 	/** Per-direction preserve rider — codegen's whole-tree pre-build clone
 	 *  (mtime-stable). */
@@ -227,27 +193,6 @@ export interface ReconcileFsPlan<E = never> {
 	readonly ops: ReadonlyArray<ReconcileFsOp<E>>;
 }
 
-/** An ordered precondition that runs as step 0, BEFORE the first mutation
- *  (e.g. restore's identity-guard, fail-closed). An opaque tagged slot in
- *  the contract; axes that don't run preconditions ignore it. Guard:
- *  `restore.test.ts` (sweep/load/tag === [] on mismatch). */
-export interface ReconcilePrecondition {
-	readonly tag: string;
-}
-
-/** Declared lock riders the reconcile must hold for its duration (e.g.
- *  `stack.lock`; codegen uses its own `codegenLockFile`). */
-export interface ReconcileLocks {
-	readonly files: ReadonlyArray<string>;
-}
-
-/** Cross-process ownership arbitration rider. Arbitration STAYS ABOVE
- *  reconcile in `cli/wirings`; this slot only declares the required rider
- *  so the contract is closed. */
-export interface ReconcileOwnership {
-	readonly requireSoleHolder: boolean;
-}
-
 // -----------------------------------------------------------------------------
 // The unified spec
 // -----------------------------------------------------------------------------
@@ -265,18 +210,13 @@ export type ReconcileDirection = 'converge' | 'drain';
  *  `E` parameter is the caller's fs-plan error tag (e.g. `WipePhaseError`
  *  / `PrunePhaseError`), defaulting to `never` for the graph flows that
  *  carry no fsPlan. The graph axis (`reconcileGraph`) consumes `target`,
- *  `cachePolicy`, `scope` (graph-keys) and `direction`; the label axis
- *  (`reconcileLabel`) additionally executes `fsPlan` over a label scope.
- *  The remaining slots stay typed-but-optional. */
+ *  `scope` (graph-keys) and `direction`; the label axis
+ *  (`reconcileLabel`) additionally executes `fsPlan` over a label scope. */
 export interface ReconcileSpec<E = never> {
-	readonly precondition?: ReconcilePrecondition;
 	readonly target: ReconcileTarget;
 	readonly fsPlan?: ReconcileFsPlan<E>;
-	readonly cachePolicy: CachePolicy;
 	readonly scope: ReconcileScope;
 	readonly direction: ReconcileDirection;
-	readonly locks?: ReconcileLocks;
-	readonly ownership?: ReconcileOwnership;
 }
 
 // -----------------------------------------------------------------------------
@@ -296,21 +236,6 @@ export const labelScope = (tuple: ReconcileLabelTuple): ReconcileScope => ({
 	kind: 'label',
 	tuple,
 });
-
-/** The structured cache-policy pair constructor. */
-export const cachePolicy = (
-	cacheDisposition: CacheDisposition,
-	snapshotsDisposition: SnapshotsDisposition,
-): CachePolicy => ({ cacheDisposition, snapshotsDisposition });
-
-/** `reuse-verified` cache + `preserve` snapshots — the warm-restart
- *  default carried by up / restart. */
-export const reuseVerifiedPolicy = (): CachePolicy =>
-	cachePolicy('reuse-verified', 'preserve');
-
-/** `preserve` cache + `preserve` snapshots — the down / restore default
- *  (nothing dropped; stop ≠ rm). */
-export const preserveAllPolicy = (): CachePolicy => cachePolicy('preserve', 'preserve');
 
 /** Pure spec constructor. No behavior — just folds the axes into the
  *  closed `ReconcileSpec` shape. Generic on the fs-plan error tag `E`. */

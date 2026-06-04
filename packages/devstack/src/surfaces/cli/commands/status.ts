@@ -12,7 +12,6 @@
 import { Effect } from 'effect';
 
 import type { SubscribableState } from '../../../substrate/projection.ts';
-import { deriveStackViewModel } from '../../tui/display-derivation.ts';
 import type { CliError } from '../errors.ts';
 import { emitSuccess } from '../output.ts';
 import type { CommandContext, CommandResult } from './index.ts';
@@ -32,12 +31,6 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 			errorCount: 0,
 		};
 	}
-	// Per-status row counts from the single canonical surface-neutral
-	// ViewModel — emitted ALONGSIDE the flat rowCount/endpointCount/errorCount
-	// below (the stable JSON contract is preserved, not replaced). No health
-	// enum: status serves a raw-counts contract, distinct from the TUI/web
-	// health surfaces.
-	const vm = deriveStackViewModel(state);
 	return {
 		present: true as const,
 		identity: { ...state.identity },
@@ -47,13 +40,6 @@ export const buildStatusPayload = (state: SubscribableState | null) => {
 		accountCount: state.accounts.length,
 		packageCount: state.packages.length,
 		errorCount: state.errors.length,
-		rowStatusCounts: {
-			ready: vm.readyRows,
-			active: vm.activeRows,
-			failed: vm.failedRows,
-			waiting: vm.waitingRows,
-			stopped: vm.stoppedRows,
-		},
 		rows: state.rows.map((r) => ({
 			key: r.key as string,
 			role: r.role,

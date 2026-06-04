@@ -47,6 +47,7 @@ import { tarHostTree as streamHostTreeTar } from '../../substrate/runtime/host-t
 import {
 	containerImagesBundlePath,
 	contributionPath,
+	deployCacheSubtreeRelPaths,
 	SnapshotLayout,
 	type CapturedContainer,
 	type CapturedSubtree,
@@ -59,6 +60,7 @@ import {
 	isSafeSnapshotPathSegment,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 } from './descriptor.ts';
+import { CACHE_DIR_NAME } from './wipe.ts';
 import {
 	ImageBundleTagScanError,
 	readImageBundleTags,
@@ -72,6 +74,13 @@ import {
 	type IdentityContributionConflictError,
 	type IdentityGuardError,
 } from './identity-guard.ts';
+
+/** Synthetic "plugin" key for the orchestrator-owned deploy-cache subtrees.
+ *  The cache is per-stack runtime state (not plugin-declared), so the capture
+ *  orchestrator injects `cache/<ns>` subtrees under this key rather than
+ *  attributing them to any one plugin. Distinct from any real plugin name (the
+ *  `__…__` sentinel shape), so it cannot collide with a participant. */
+const DEPLOY_CACHE_SUBTREE_PLUGIN = '__deploy-cache__';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -477,14 +486,9 @@ export const gatherCaptureParticipants = (
 		// `SnapshotIdentityEmpty` fail-closed guard — only EARLIER.
 		yield* requireIdentity(identityMerged, 'snapshot');
 
-		// Declared host-tree subtrees, captured as concrete descriptors.
-		// Deploy/mint artifact caches (`cache/<ns>`) are NOT tarred: they
-		// survive via the LIVE cache that a wipe preserves alongside
-		// `snapshots/` (the cache+snapshots coupling); the captured copy
-		// would be redundant. Only real host-tree data — walrus blobs, the
-		// seal vault, keystores — rides the tar. See
-		// LIVE_RESTORE_PRESERVED_PATHS in restore.ts.
-		const declaredSubtrees: CapturedSubtree[] = participants.flatMap((p) =>
+		// Declared host-tree subtrees, captured as concrete descriptors —
+		// real host-tree data (walrus blobs, the seal vault, keystores).
+		const pluginSubtrees: CapturedSubtree[] = participants.flatMap((p) =>
 			p.decl.subtrees.map((relPath) => ({
 				plugin: p.plugin,
 				relPath,
@@ -492,6 +496,30 @@ export const gatherCaptureParticipants = (
 				secretMaterial: p.decl.secretMaterial ?? false,
 			})),
 		);
+
+		// Deploy/mint artifact caches (`cache/<ns>`) ride the host-tree tar too,
+		// so the snapshot is SELF-CONTAINED: a fresh runner with an empty live
+		// cache recovers the deploy ids from the snapshot itself (cross-machine
+		// restore). Restore untars them and the post-restore boot REUSES the
+		// deploy rather than re-running it with fresh ids. `missingTolerance:
+		// 'fine'` — a namespace whose plugin is disabled (e.g. `cache/deepbook`
+		// in a deepbook-less stack) simply isn't on disk and is skipped; only the
+		// namespaces that exist are tarred (and recorded in `meta.subtrees`). Not
+		// secret material — these are public on-chain deploy/mint ids. See
+		// LIVE_RESTORE_PRESERVED_PATHS in restore.ts.
+		const deployCacheSubtrees: CapturedSubtree[] = deployCacheSubtreeRelPaths(CACHE_DIR_NAME).map(
+			(relPath) => ({
+				plugin: DEPLOY_CACHE_SUBTREE_PLUGIN,
+				relPath,
+				missingTolerance: 'fine' as const,
+				secretMaterial: false,
+			}),
+		);
+
+		// Deploy cache FIRST so it lands at the FRONT of the host-tree tar — the
+		// restore preflight scans for the cache namespaces and short-circuits the
+		// (potentially huge — walrus blobs) tar read once they're all found.
+		const declaredSubtrees: CapturedSubtree[] = [...deployCacheSubtrees, ...pluginSubtrees];
 
 		return {
 			participants: gathered,

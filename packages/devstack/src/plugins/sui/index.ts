@@ -400,15 +400,8 @@ export {
 	hashMoveSources,
 	runMoveBuild,
 	scrubLocksHost,
-	containerInnerScript,
-	extractTrailingJson,
-	parseBuildOutput,
-	stripPinnedSections,
 	type BuildOutput,
 	type MoveBuildContainer,
 	type MoveBuildError,
-	type MoveBuildPhase,
-	type MoveBuildInput,
-	type MoveBuildOutput,
 } from './move/index.ts';
 export { currentLedgerObjectRef } from './ledger/object-ref.ts';

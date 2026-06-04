@@ -184,7 +184,7 @@ describe('stageAndSwap', () => {
 					targetPath: target,
 					stagingPath: staging,
 					backupPath: backup,
-					preserveFromTarget: [{ relativePath: 'commands.ndjson', kind: 'file' }],
+					preserveFromTarget: [{ relativePath: 'commands.ndjson' }],
 					build: Effect.gen(function* () {
 						const fs = yield* FileSystem.FileSystem;
 						yield* fs.writeFileString(join(staging, 'payload'), 'new-content');
@@ -218,8 +218,8 @@ describe('stageAndSwap', () => {
 					stagingPath: staging,
 					backupPath: backup,
 					preserveFromTarget: [
-						{ relativePath: 'captured/id', kind: 'file', overwrite: false },
-						{ relativePath: 'fallback/id', kind: 'file', overwrite: false },
+						{ relativePath: 'captured/id', overwrite: false },
+						{ relativePath: 'fallback/id', overwrite: false },
 					],
 					build: Effect.gen(function* () {
 						const fs = yield* FileSystem.FileSystem;
@@ -289,7 +289,7 @@ describe('stageAndSwap', () => {
 					targetPath: target,
 					stagingPath: staging,
 					backupPath: backup,
-					preserveFromTarget: [{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME, kind: 'file' }],
+					preserveFromTarget: [{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME }],
 					publishLockPath: runtimeControlLockPathForStackRoot(target),
 					build: buildSucceeds(staging, 'new-content'),
 				}).pipe(Effect.provideService(FileSystem.FileSystem, wrappedFs));

@@ -107,17 +107,6 @@ export const isRestorableContainerImageName = (imageName: string): boolean =>
 	!imageName.includes('@') &&
 	!imageName.startsWith('sha256:');
 
-const snapshotPathSegment = (kind: string, value: string): string => {
-	if (!isSafeSnapshotPathSegment(value)) {
-		throw new SnapshotDescriptorError({
-			kind: 'invalid-segment',
-			detail: `unsafe snapshot ${kind} path segment`,
-			value,
-		});
-	}
-	return value;
-};
-
 const encodedSnapshotPathSegment = (value: string): string => {
 	let hex = '';
 	for (const byte of new TextEncoder().encode(value)) {
@@ -125,13 +114,6 @@ const encodedSnapshotPathSegment = (value: string): string => {
 	}
 	return `p-${hex}`;
 };
-
-/** Canonical sub-path for one captured container image. */
-export const containerImagePath = (plugin: string, role: string): string =>
-	`${SnapshotLayout.containersDir}/${snapshotPathSegment(
-		'plugin',
-		plugin,
-	)}/${snapshotPathSegment('role', role)}.tar`;
 
 /** Canonical sub-path for the deduplicated managed-container image bundle. */
 export const containerImagesBundlePath = (): string => `${SnapshotLayout.containersDir}/images.tar`;
@@ -183,10 +165,16 @@ export type CapturedSubtree = Schema.Schema.Type<typeof CapturedSubtreeSchema>;
  *  objects, seal key-server object, deepbook pool ids, coin treasury. These
  *  must come back after a restore so the post-restore boot REUSES the deploy
  *  instead of re-running it with fresh ids (which orphans every pre-snapshot
- *  object). The contract has a SINGLE source: capture does not tar
- *  `cache/<ns>`; the LIVE cache (preserved across a wipe) is the sole copy,
- *  and restore PRESERVES it across the stage-and-swap (see
- *  LIVE_RESTORE_PRESERVED_PATHS in restore.ts). A slash-prefixed plugin
+ *  object).
+ *
+ *  The contract is SELF-CONTAINED: capture TARs `cache/<ns>` into the
+ *  snapshot's host-tree (see `deployCacheSubtreeRelPaths`), and restore
+ *  untars that copy and DROPS the deploy-cache from the stage-and-swap
+ *  preserve list — the snapshot's cache is the SOLE source on restore
+ *  (no preserve-from-live, so no double-store drift). This is what makes a
+ *  CROSS-MACHINE restore work: a fresh runner with an empty live cache
+ *  recovers the ids from the snapshot itself. (Earlier the live cache was
+ *  the sole source, which only works same-machine.) A slash-prefixed plugin
  *  namespace (`seal/package`, `deepbook/pools`) nests under its root, so the
  *  root entry covers all of that plugin's namespaces. The generic per-call
  *  `cache/entry` is NOT here and stays dropped on restore. */
@@ -198,6 +186,14 @@ export const DEPLOY_CACHE_NAMESPACES: ReadonlyArray<string> = [
 	'coin-mint',
 	'action',
 ];
+
+/** Host-tree subtree relPaths (relative to the stack root) for the deploy-cache
+ *  namespaces. Capture tars these into `host-tree.tar` so the snapshot is
+ *  self-contained; restore untars them into the swapped tree. The on-disk cache
+ *  lives at `<stackRoot>/cache/<ns>/<chain>/<contentHash>.json`, so the root
+ *  `cache/<ns>` entry covers every nested namespace + chain under it. */
+export const deployCacheSubtreeRelPaths = (cacheDirName: string): ReadonlyArray<string> =>
+	DEPLOY_CACHE_NAMESPACES.map((namespace) => `${cacheDirName}/${namespace}`);
 
 /** Identity slice that fires the cross-chain refusal guard. The
  *  orchestrator threads contributions from participating plugins
@@ -215,7 +211,6 @@ export const OpaqueContributionStateSchema = Schema.Struct({
 	encoding: Schema.Literal('json'),
 	value: Schema.Unknown,
 });
-export type OpaqueContributionState = Schema.Schema.Type<typeof OpaqueContributionStateSchema>;
 
 /** Per-participant metadata envelope. The plugin payload is explicitly
  *  opaque so a successful decode cannot be mistaken for validation of

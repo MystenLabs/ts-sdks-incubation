@@ -5,23 +5,25 @@
 // restore between them:
 //
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
-//   offline restore (REUSES the live deploy cache — D1 dropped the captured copy)
+//   offline restore (cache comes from the SNAPSHOT's host-tree — self-contained)
 //   boot 2: assert S1 survived, S2 rolled back, S3 writable
 //
 // S2-gone proves the rollback rolled back; S3 proves the stack is writable
 // again after restore. The fresh actor keypair is shared across both boots
 // and funded BEFORE the snapshot so its funding survives the restore.
 //
-// Post-D1, the restore REUSES the live deploy cache directly (the captured
-// `cache/<ns>` tar was deleted), so a plain restore-survival no longer PROVES
-// anything about self-containment — survival could just be the in-place reuse.
-// The test's teeth therefore move to proving the OPPOSITE in a load-bearing
-// THIRD phase: wipe the live deploy cache, re-boot, and check each probe's S1.
-// For a CACHE-DERIVED subsystem (`Probe.orphansOnCacheLoss === true`: walrus +
-// vault-seal) S1 must NO LONGER resolve — cache loss makes the deploy re-run
-// with FRESH ids and orphan S1 (a LOUD divergence) rather than being silently
-// masked. For a non-cache-derived subsystem (sui, deepbook) S1 legitimately
-// survives. Surfaced as `s1OrphanedAfterCacheWipe` and asserted upstream as
+// Snapshots are SELF-CONTAINED: capture tars `cache/<ns>` into the artifact and
+// restore untars it (the snapshot's cache is the SOLE source — no
+// preserve-from-live). The cross-machine variant of this is exercised in
+// restore.test.ts (rm the live cache, restore, survival holds). Survival alone
+// here would not distinguish snapshot-supplied ids from a stale live cache, so
+// the test's teeth are in a load-bearing THIRD phase: wipe the live deploy cache
+// AFTER restore, re-boot, and check each probe's S1. For a CACHE-DERIVED
+// subsystem (`Probe.orphansOnCacheLoss === true`: walrus + vault-seal) S1 must
+// NO LONGER resolve — cache loss makes the deploy re-run with FRESH ids and
+// orphan S1 (a LOUD divergence) rather than being silently masked. For a
+// non-cache-derived subsystem (sui, deepbook) S1 legitimately survives. Surfaced
+// as `s1OrphanedAfterCacheWipe` and asserted upstream as
 // `s1OrphanedAfterCacheWipe === orphansOnCacheLoss`.
 
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -148,10 +150,19 @@ export const runMatrix = async (params: {
 			}),
 	});
 
-	// OFFLINE RESTORE — no supervisor is live between the two boots. Post-D1 the
-	// restore REUSES the live deploy cache directly (D0's wipe preserves it; D1
-	// dropped the captured `cache/<ns>` tar). The live cache is left INTACT here
-	// so survival comes from that reuse — the captured-copy path no longer exists.
+	// CROSS-MACHINE SIMULATION — wipe the LIVE deploy cache BEFORE the offline
+	// restore so this runtime root looks like a FRESH CI runner (CI seeds on
+	// runner A, restores on runner B with no live cache). Self-contained
+	// snapshots make this work: the restore untars `cache/<ns>` from the
+	// snapshot's host-tree (the SOLE source — restore does NOT preserve-from-
+	// live), so the empty live cache is repopulated from the snapshot itself.
+	// Boot 2 below then proves SURVIVAL holds (ids reused from the restored
+	// cache, no orphaning) — covering the exact path that was failing in CI with
+	// `cache-missing`. (The same empty-live-cache shape is also unit-covered in
+	// restore.test.ts against the preflight + untar.)
+	const liveCacheBeforeRestore = join(runtimeRoot, 'stacks', params.stack, 'cache');
+	rmSync(liveCacheBeforeRestore, { recursive: true, force: true });
+	console.log('[snapshot-matrix] live deploy cache wiped — simulating a fresh cross-machine runner');
 	await restoreSnapshotOffline({
 		runtimeRoot,
 		app: params.app,
@@ -159,7 +170,7 @@ export const runMatrix = async (params: {
 		network: 'sui:local',
 		snapshotId: params.snapshotId,
 	});
-	console.log('[snapshot-matrix] offline restore complete (live cache reused)');
+	console.log('[snapshot-matrix] offline restore complete (cache recovered from snapshot host-tree)');
 
 	// BOOT 2 — assert S1 survived, S2 rolled back, S3 writable.
 	const outcomes = new Map<string, ProbeOutcome>();

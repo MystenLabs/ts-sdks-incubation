@@ -251,7 +251,7 @@ local-keygen/live/fork-known, deepbook local/live/fork):
 ## 10. L2 wrapper-service around `defineScopedRefMap`
 
 When an L2 plugin owns a per-stack `K → V` registry **and adds plugin-specific methods** (Sui-coin's
-`CoinRegistry` exposes `bySymbol` / `byWitness` / `byType`), use the wrapper-service shape:
+`CoinRegistry` exposes `byWitness` / `byType` / `list` / `register`), use the wrapper-service shape:
 
 ```ts
 const FooRefMap = defineScopedRefMap<FooKey, FooRecord>('FooRegistry');
@@ -282,7 +282,7 @@ the wrapper shape when the first plugin-specific method lands.
 ## 11. ArtifactPublisher
 
 All cacheable produce / verify / register artifacts go through `ArtifactPublisher`
-(`primitives/artifact-publisher.ts` + `substrate/runtime/artifact-publisher/`):
+(`primitives/artifact-publisher.ts` + `substrate/runtime/cache/`):
 
 - Pattern: `cache → verify(cached) → produce → register`.
 - Use `LENIENT_RETRY_PROFILE` for chain reads.

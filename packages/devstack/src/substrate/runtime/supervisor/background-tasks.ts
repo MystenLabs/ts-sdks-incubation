@@ -217,7 +217,7 @@ const publishHookFailure = (
 	deps: SupervisorState,
 	cause: Cause.Cause<unknown>,
 	message: string,
-	pluginKey: PluginKey | null = null,
+	pluginKey: PluginKey | null,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		yield* publish(deps.ref, deps.hub, {

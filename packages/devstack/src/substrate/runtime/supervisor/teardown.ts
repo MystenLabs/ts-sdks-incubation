@@ -21,7 +21,7 @@ import {
 	type RestartTargetMissing,
 } from '../lifecycle/index.ts';
 import { reconcileGraph, type ReconcileGraphDeps } from '../reconcile/graph.ts';
-import { graphKeysScope, reconcileSpec, reuseVerifiedPolicy } from '../reconcile/spec.ts';
+import { graphKeysScope, reconcileSpec } from '../reconcile/spec.ts';
 import { bestEffort, publish } from './wiring.ts';
 
 // -----------------------------------------------------------------------------
@@ -124,7 +124,6 @@ export const doSelectiveRestart = (
 			dispatcher,
 			logger,
 			identity,
-			parentScope,
 		};
 		const at = Date.now();
 		for (const root of roots) {
@@ -137,7 +136,6 @@ export const doSelectiveRestart = (
 		yield* reconcileGraph(
 			reconcileSpec({
 				target: 'absent',
-				cachePolicy: reuseVerifiedPolicy(),
 				scope,
 				direction: 'drain',
 			}),
@@ -159,7 +157,6 @@ export const doSelectiveRestart = (
 		yield* reconcileGraph(
 			reconcileSpec({
 				target: 'running',
-				cachePolicy: reuseVerifiedPolicy(),
 				scope,
 				direction: 'converge',
 			}),

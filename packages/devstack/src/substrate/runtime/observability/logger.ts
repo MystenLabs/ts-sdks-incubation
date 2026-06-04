@@ -15,7 +15,7 @@
 // reads are snapshot-consistent. Cross-process atomicity (when the
 // same log lands in two devstack processes via a shared file)
 // is delegated to the cross-process lock primitive in
-// `../cross-process/lock.ts`.
+// `../cross-process/stack-lock.ts`.
 
 import { Context, Effect, Layer, Ref } from 'effect';
 

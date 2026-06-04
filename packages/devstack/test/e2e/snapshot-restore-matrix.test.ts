@@ -4,18 +4,21 @@
 // runtime root with an OFFLINE restore between them:
 //
 //   boot 1: create S1 (assert exists) -> snapshot -> create S2 (assert exists)
-//   offline restore (REUSES the live deploy cache — D1 dropped the captured copy)
+//   offline restore (cache untarred from the SNAPSHOT's host-tree — self-contained)
 //   boot 2: assert S1 survived, assert S2 is gone, create S3 (assert exists)
 //   boot 3: wipe the live deploy cache, re-boot, assert each probe's S1 matches
 //           its `orphansOnCacheLoss` expectation (cache-derived probes ORPHAN)
 //
-// Post-D1 the restore reuses the live deploy cache directly, so survival alone
-// no longer proves self-containment. The fail-loud third phase pins the OPPOSITE
-// for the CACHE-DERIVED subsystems (walrus + vault-seal): wiping the live cache
-// must make the deploy re-run with FRESH ids and orphan S1 (a LOUD divergence) —
-// cache loss is never silently masked. Subsystems whose identity is NOT
-// cache-derived (sui genesis-deterministic; deepbook S1 is a chain object id)
-// are asserted to SURVIVE the wipe instead — see `Probe.orphansOnCacheLoss`.
+// Snapshots are self-contained (capture tars `cache/<ns>`; restore untars it as
+// the SOLE source — no preserve-from-live), so the cross-machine restore works;
+// that empty-live-cache shape is unit-covered in restore.test.ts. Same-machine
+// survival alone here would not distinguish snapshot-supplied ids from a stale
+// live cache, so the fail-loud third phase pins the OPPOSITE for the
+// CACHE-DERIVED subsystems (walrus + vault-seal): wiping the live cache must make
+// the deploy re-run with FRESH ids and orphan S1 (a LOUD divergence) — cache loss
+// is never silently masked. Subsystems whose identity is NOT cache-derived (sui
+// genesis-deterministic; deepbook S1 is a chain object id) are asserted to
+// SURVIVE the wipe instead — see `Probe.orphansOnCacheLoss`.
 //
 // S2-gone proves the rollback actually rolled back; S3 proves the stack is
 // writable again after a restore. This closes the gap that
@@ -107,11 +110,11 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 	// Codegen output is a pure projection of the deployed packageId — NOT
 	// snapshot state. It lives OUTSIDE the runtime stack root (`<runtimeRoot>/
 	// codegen` here; `<appRoot>/src/generated` in production), so a restore does
-	// NOT roll it back. It "survives" instead because the package deploy cache is
-	// preserved across restore (DEPLOY_CACHE_PRESERVED_NAMESPACES), so the
-	// post-restore boot reuses the SAME packageId and the codegen cycle re-emits
-	// identical bindings. This resolves the user-facing concern ("editing move
-	// code updates codegen; a restore must bring it back") via package-id
+	// NOT roll it back. It "survives" instead because the package deploy cache
+	// rides the snapshot's host-tree (self-contained) and is untarred on restore,
+	// so the post-restore boot reuses the SAME packageId and the codegen cycle
+	// re-emits identical bindings. This resolves the user-facing concern ("editing
+	// move code updates codegen; a restore must bring it back") via package-id
 	// stability rather than by capturing the generated files.
 	//
 	// Proof: emit codegen (packageId_1), snapshot, CORRUPT the on-disk packageId

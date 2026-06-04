@@ -15,17 +15,6 @@ import {
 } from '../sui/index.ts';
 import { publishError, type PublishError } from './errors.ts';
 
-export {
-	containerInnerScript,
-	extractTrailingJson,
-	parseBuildOutput,
-	stripPinnedSections,
-	type MoveBuildContainer,
-	type MoveBuildError,
-	type MoveBuildPhase,
-	type MoveBuildInput,
-	type MoveBuildOutput,
-} from '../sui/index.ts';
 export type { BuildOutput };
 
 export interface BuildInputs {
@@ -60,7 +49,6 @@ export const runMoveBuild = (
 	runMoveBuildNeutral({
 		sourcePath: inputs.sourcePath,
 		packageName: inputs.packageName,
-		chainId: inputs.chainId,
 		...(inputs.buildContainer !== undefined
 			? { buildContainer: inputs.buildContainer satisfies MoveBuildContainer }
 			: {}),

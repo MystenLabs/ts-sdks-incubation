@@ -11,7 +11,9 @@ import { Deferred, Effect, Fiber, Layer, Stream } from 'effect';
 
 import {
 	defineScopedRefMap,
+	setSingleEntry,
 	ScopedRefMapKeyMissingError,
+	type MultimapEntry,
 } from '../../../../src/substrate/runtime/scoped-registry/index.ts';
 
 // ---------------------------------------------------------------
@@ -54,6 +56,27 @@ describe('defineScopedRefMap', () => {
 			expect(a).toEqual({ tag: 'second', n: 2 });
 			const all = yield* reg.entries();
 			expect(all).toHaveLength(1);
+		}).pipe(Effect.provide(Foo.layer));
+	});
+
+	it.effect('repeated set on the same key keeps LWW + insertion order across many writes', () => {
+		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
+		return Effect.gen(function* () {
+			const reg = yield* Foo.Service;
+			yield* reg.set(fooKey('x'), { tag: 'x', n: 0 });
+			yield* reg.set(fooKey('y'), { tag: 'y', n: 0 });
+			// Hammer the same key 50 times — the internal store must stay at one
+			// entry per key (setSingle filter-then-append), so the projection is
+			// unaffected and `x` re-sorts to the END (its seq advanced past `y`).
+			for (let i = 1; i <= 50; i++) {
+				yield* reg.set(fooKey('x'), { tag: 'x', n: i });
+			}
+			const all = yield* reg.entries();
+			expect(all).toEqual([
+				['y', { tag: 'y', n: 0 }],
+				['x', { tag: 'x', n: 50 }],
+			]);
+			expect(yield* reg.get(fooKey('x'))).toEqual({ tag: 'x', n: 50 });
 		}).pipe(Effect.provide(Foo.layer));
 	});
 
@@ -189,15 +212,33 @@ describe('defineScopedRefMap', () => {
 			expect(seen[2]?.map(([k]) => k)).toEqual(['a', 'b']);
 		}).pipe(Effect.provide(Foo.layer));
 	});
+});
 
-	it.effect('changes helper mirrors the service .changes property', () => {
-		const Foo = defineScopedRefMap<FooKey, FooValue>('Foo');
-		return Effect.gen(function* () {
-			const reg = yield* Foo.Service;
-			// Both forms reference the same SubscriptionRef-backed stream.
-			const fromService = reg.changes;
-			const fromHelper = Foo.changes(reg);
-			expect(fromHelper).toBe(fromService);
-		}).pipe(Effect.provide(Foo.layer));
+// The pure store mutation behind single-mode `set`. White-box test of the
+// one-entry-per-key invariant: single mode has no per-set finalizer, so a plain
+// append would leak prior same-key entries for the layer scope (O(history)
+// lookups + memory). setSingleEntry must FILTER-then-append.
+describe('setSingleEntry', () => {
+	const fk = (s: string): FooKey => s as FooKey;
+
+	it('keeps exactly one entry per key across repeated sets (no history leak)', () => {
+		let state: ReadonlyMap<FooKey, ReadonlyArray<MultimapEntry<FooValue>>> = new Map();
+		for (let seq = 1; seq <= 100; seq++) {
+			state = setSingleEntry(state, fk('a'), { tag: 'a', n: seq }, seq);
+		}
+		const entries = state.get(fk('a'))!;
+		// Before the fix this array would have grown to 100 entries.
+		expect(entries).toHaveLength(1);
+		expect(entries[0]).toEqual({ value: { tag: 'a', n: 100 }, seq: 100 });
+	});
+
+	it('replaces only the target key, leaving siblings untouched', () => {
+		let state: ReadonlyMap<FooKey, ReadonlyArray<MultimapEntry<FooValue>>> = new Map();
+		state = setSingleEntry(state, fk('a'), { tag: 'a', n: 1 }, 1);
+		state = setSingleEntry(state, fk('b'), { tag: 'b', n: 1 }, 2);
+		state = setSingleEntry(state, fk('a'), { tag: 'a', n: 2 }, 3);
+		expect(state.get(fk('a'))).toEqual([{ value: { tag: 'a', n: 2 }, seq: 3 }]);
+		expect(state.get(fk('b'))).toEqual([{ value: { tag: 'b', n: 1 }, seq: 2 }]);
+		expect([...state.keys()]).toEqual(['a', 'b']);
 	});
 });

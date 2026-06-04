@@ -23,7 +23,6 @@ import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { SNAPSHOT_IMAGE_ROLE } from '../../runtime/docker/container.ts';
 import { appName, stackName } from '../../substrate/brand.ts';
 import {
-	cachePolicy,
 	labelScope,
 	reconcileLabel,
 	reconcileSpec,
@@ -121,14 +120,9 @@ const readMetaOpt = (
  * to `role: SNAPSHOT_IMAGE_ROLE`, carrying NO container target (prune
  * mutates no containers — `target: 'running'` is the label-scope no-op
  * container target) and an `fsPlan` of two ops — `reap-meta-missing`
- * (catalog GC) then `reap-images` (byproduct image sweep, the
- * `reap-byproducts` cache disposition's concrete mechanism). The
- * `reap-byproducts` logic is prune's projection; the `PruneResult` shape
- * carries `reaped` + `imagesSwept`.
- *
- * cachePolicy stays a `{cache, snapshots}` PAIR:
- * `preserve` cache (prune never touches the live deploy cache) +
- * `reap-byproducts` snapshots (the image GC).
+ * (catalog GC) then `reap-images` (byproduct image sweep). Prune never
+ * touches the live deploy cache — only the snapshot byproducts (the image
+ * GC); the `PruneResult` shape carries `reaped` + `imagesSwept`.
  */
 export const runPrune = (
 	inputs: PruneInputs,
@@ -173,7 +167,6 @@ export const runPrune = (
 					role: SNAPSHOT_IMAGE_ROLE,
 				}),
 				direction: 'drain',
-				cachePolicy: cachePolicy('preserve', 'reap-byproducts'),
 				fsPlan: { ops: [reapMetaMissing, reapImages] },
 			}),
 			{ runtime: inputs.runtime },

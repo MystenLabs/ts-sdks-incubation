@@ -67,14 +67,16 @@ export class SuiExecuteError extends Schema.TaggedErrorClass<SuiExecuteError>()(
 /** The SDK client this helper drives. Accepts any `ClientWithCoreApi`
  *  (the published cross-transport surface from `@mysten/sui/client`).
  *  `executeSuiTx` calls `client.core.executeTransaction` /
- *  `client.core.waitForTransaction` per STYLE_GUIDE §16. */
-export type SuiExecuteClient = ClientWithCoreApi;
+ *  `client.core.waitForTransaction` per STYLE_GUIDE §16. File-local: the
+ *  `executeSuiTx` params type is the public surface; callers pass a
+ *  `ClientWithCoreApi` directly. */
+type SuiExecuteClient = ClientWithCoreApi;
 
 /** Serialised transaction-build callback. Returns the BCS bytes ready
  *  for signing. The caller owns the `Transaction` construction (this
  *  helper does not import `@mysten/sui/transactions`) and resolves it
  *  via `Transaction.build({ client })`. */
-export type SerializedTxBuilder = () => Promise<Uint8Array>;
+type SerializedTxBuilder = () => Promise<Uint8Array>;
 
 export interface TransactionSignerScope<SignError = unknown> {
 	readonly signTransaction: (
@@ -97,7 +99,7 @@ export interface ResolvedSigner {
 /** Flat per-object change record. Mirrors the union of fields that
  *  `PublishObjectChange` (package) and `ActionObjectChange` (action)
  *  expose so callers can pick whichever subset they surface. */
-export interface ExecutedObjectChange {
+interface ExecutedObjectChange {
 	readonly objectId: string;
 	readonly objectType?: string;
 	readonly outputState?: string;
@@ -150,7 +152,7 @@ export const formatExecutedFailure = (failure: ExecutedFailure): string =>
  *  transport / protocol failures (sign refused, RPC unreachable,
  *  finality wait broke, no digest) surface through `SuiExecuteError`.
  *  See STYLE_GUIDE §2 for the return-channel discipline this matches. */
-export type SuiExecuteResult =
+type SuiExecuteResult =
 	| { readonly $kind: 'Transaction'; readonly Transaction: ExecutedReceipt }
 	| { readonly $kind: 'FailedTransaction'; readonly FailedTransaction: ExecutedFailure };
 
@@ -421,13 +423,3 @@ export const isSuiStaleObjectVersionError = (err: SuiExecuteError): boolean => {
 	);
 };
 
-// ---------------------------------------------------------------------------
-// Sibling helpers
-// ---------------------------------------------------------------------------
-
-export {
-	signAndDispatch,
-	type SignAndDispatchResult,
-	type SignAndDispatchSigner,
-	type TransactionSignerSource,
-} from './sign-and-dispatch.ts';

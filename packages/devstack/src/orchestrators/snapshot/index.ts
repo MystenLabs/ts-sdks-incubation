@@ -17,21 +17,13 @@ export {
 // Capture
 export {
 	CapturePhaseError,
-	gatherCaptureParticipants,
 	resumeAfterCapture,
 	runCapture,
-	type CaptureInputs,
-	type GatheredCapture,
 	type SnapshotParticipant,
 } from './capture.ts';
 
 // Restore
-export {
-	RestorePhaseError,
-	runRestore,
-	type RestoreInputs,
-	type RestoreParticipant,
-} from './restore.ts';
+export { RestorePhaseError, runRestore, type RestoreParticipant } from './restore.ts';
 
 // Wipe
 export {
@@ -40,51 +32,36 @@ export {
 	runWipe,
 	SNAPSHOTS_DIR_NAME,
 	WipePhaseError,
-	type WipeInputs,
 	type WipeTargets,
 } from './wipe.ts';
 
 // Prune
-export { PrunePhaseError, runPrune, type PruneInputs, type PruneResult } from './prune.ts';
+export { PrunePhaseError, runPrune, type PruneResult } from './prune.ts';
 
 // Identity guard
 export {
 	IdentityContributionConflictError,
 	IdentityEmptyError,
 	IdentityMismatchError,
-	IdentityMissingLiveError,
-	IdentityMissingSnapshotError,
 	mergeContributions,
-	requireIdentity,
 	runIdentityGuard,
-	runRuntimeIdentityGuard,
-	type IdentityContribution,
 	type IdentityGuardError,
 	type SnapshotRuntimeIdentity,
 } from './identity-guard.ts';
 
 // Descriptor types
 export {
-	containerImagePath,
 	containerImagesBundlePath,
 	contributionPath,
 	DEPLOY_CACHE_NAMESPACES,
-	IdentitySliceSchema,
-	OpaqueContributionStateSchema,
 	SnapshotDescriptorError,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	SNAPSHOT_CONTRIBUTION_VERSION,
 	SNAPSHOT_ID_RULE,
 	SNAPSHOT_META_VERSION,
-	isValidSnapshotId,
 	parseSnapshotId,
 	snapshotIdFromString,
-	type CapturedContainer,
-	type CapturedSubtree,
-	type ContributionDoc,
-	type IdentitySlice,
-	type OpaqueContributionState,
 	type SnapshotCatalogEntry,
 	type SnapshotId,
 	type SnapshotMetadata,

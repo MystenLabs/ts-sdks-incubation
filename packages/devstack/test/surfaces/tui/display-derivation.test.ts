@@ -31,7 +31,6 @@ import {
 	deriveHealth,
 	deriveStackViewModel,
 	endpointsForRow,
-	endpointsSummaryForRow,
 	endpointLine,
 	errorSummaryFor,
 	groupRows,
@@ -413,22 +412,6 @@ describe('display-derivation', () => {
 			expect(endpointsForRow(row, [endpoint])).toEqual([]);
 		});
 
-		it('summarizes row endpoints inline for table rendering', () => {
-			const walletEndpoint = {
-				endpointKey: endpointKey('wallet#0:wallet-app'),
-				pluginKey: pluginKey('wallet#0'),
-				name: 'wallet-app',
-				url: 'http://wallet.demo.localhost:5175',
-				displayUrl: null,
-				wireProtocol: 'http' as const,
-				registeredAt: 0,
-			};
-			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
-			expect(endpointsSummaryForRow(row, [walletEndpoint])).toBe(
-				'wallet-app: http://wallet.demo.localhost:5175',
-			);
-		});
-
 		it('prefers routed endpoints over raw operational loopback fallbacks', () => {
 			const row = fakeRow({ key: pluginKey('wallet#0'), role: 'service' });
 			const operational = {
@@ -450,9 +433,6 @@ describe('display-derivation', () => {
 				registeredAt: 0,
 			};
 			expect(visibleEndpointsForRow(row, [operational, routed])).toEqual([routed]);
-			expect(endpointsSummaryForRow(row, [operational, routed])).toBe(
-				'wallet-app: http://api.wallet.arena.localhost:6173',
-			);
 		});
 
 		it('groups rows in operator scan order using each row.section', () => {

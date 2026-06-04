@@ -8,12 +8,12 @@
 // `mvrPlaceholder`, `publishingPackageName`, `moduleName`) — those
 // are L2 concerns, not substrate.
 //
-// The five Sui-specific lookup shapes (`bySymbol`, `byWitness`,
-// `byType`, `list`, `register`) live on the L2 `CoinRegistry`
-// wrapper. The underlying generic primitive only knows `K -> V`;
-// the wrapper iterates the snapshot for the symbol / witness /
-// type-based queries (cardinality is bounded by declared coins
-// per stack, typically < 10).
+// The four Sui-specific lookup shapes (`byWitness`, `byType`,
+// `list`, `register`) live on the L2 `CoinRegistry` wrapper. The
+// underlying generic primitive only knows `K -> V`; the wrapper
+// iterates the snapshot for the witness / type-based queries
+// (cardinality is bounded by declared coins per stack, typically
+// < 10).
 //
 // Lifetime: one instance per stack scope (the generic primitive's
 // `layer` is scope-bound). Plugins yield `CoinRegistryService`
@@ -71,12 +71,11 @@ export type CoinKey = string & { readonly _brand: 'CoinKey' };
 
 const coinKey = (fullCoinType: string): CoinKey => fullCoinType as CoinKey;
 
-/** Per-stack registry of all discovered coins. The five lookup
+/** Per-stack registry of all discovered coins. The four lookup
  *  shapes are Sui-specific projections over a generic `K -> V`
  *  scope-bound ref-map. */
 export interface CoinRegistry {
 	readonly register: (record: CoinRecord) => Effect.Effect<void>;
-	readonly bySymbol: (symbol: string) => Effect.Effect<ReadonlyArray<CoinRecord>>;
 	readonly byWitness: (packageName: string, witness: string) => Effect.Effect<CoinRecord | null>;
 	readonly byType: (fullCoinType: string) => Effect.Effect<CoinRecord | null>;
 	readonly list: () => Effect.Effect<ReadonlyArray<CoinRecord>>;
@@ -89,15 +88,6 @@ const CoinRefMap = defineScopedRefMap<CoinKey, CoinRecord>('CoinRegistry');
 
 const wrapRefMap = (refMap: ScopedRefMap<CoinKey, CoinRecord>): CoinRegistry => ({
 	register: (record) => refMap.set(coinKey(record.type), record),
-	bySymbol: (symbol) =>
-		refMap.entries().pipe(
-			Effect.map((entries) => {
-				const lowered = symbol.toLowerCase();
-				return entries
-					.map(([, r]) => r)
-					.filter((r) => r.key === lowered || r.symbol?.toLowerCase() === lowered);
-			}),
-		),
 	byWitness: (packageName, witness) =>
 		refMap.entries().pipe(
 			Effect.map((entries) => {

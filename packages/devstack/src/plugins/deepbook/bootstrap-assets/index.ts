@@ -35,11 +35,7 @@ export const deepbookMoveAssetRoot = (): string =>
 
 /** Absolute path to a bundled Move package, verifying its `Move.toml` exists. */
 export const deepbookMoveSource = (
-	relativePath:
-		| 'deepbookv3/deepbook'
-		| 'deepbookv3/token'
-		| 'deepbookv3/dusdc'
-		| 'deepbook-sandbox/pyth',
+	relativePath: 'deepbookv3/deepbook' | 'deepbook-sandbox/pyth',
 ): string => {
 	const root = deepbookMoveAssetRoot();
 	const sourcePath = resolve(root, relativePath);

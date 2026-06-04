@@ -66,7 +66,6 @@ export interface MoveBuildContainer {
 export interface BuildInputs {
 	readonly sourcePath: string;
 	readonly packageName: string;
-	readonly chainId: string;
 	readonly buildContainer?: MoveBuildContainer;
 	readonly runtime?: ContainerRuntime;
 	readonly buildImage?: ImageRef;
@@ -118,18 +117,6 @@ export const containerScrubShellScript = (workspaceRoot: string, moveHomeRoot: s
 		`-exec gawk -i inplace -f /tmp/scrub-move-lock.awk {} ';' || true`;
 	return [stage, findPkg, findCache].join('; ');
 };
-
-export interface MoveBuildInput {
-	readonly packagePath: string;
-	readonly rpcUrl: string;
-	readonly faucetUrl?: string;
-}
-
-export interface MoveBuildOutput {
-	readonly exitCode: number;
-	readonly stdoutJson: string;
-	readonly stderr: string;
-}
 
 export const shellQuote = (s: string): string => `'${s.replaceAll("'", "'\\''")}'`;
 
@@ -204,7 +191,7 @@ export const containerInnerScript = (pkgName: string): string => {
  *  transitive local deps were pre-staged (see `stageLocalMoveDeps`). Copying only
  *  `/workspace/<pkg>` would drop sibling local dependencies
  *  (`{ local = "../token" }`), failing the build with "Invalid directory at ../…". */
-export const containerInnerScriptOneShot = (pkgName: string): string => {
+const containerInnerScriptOneShot = (pkgName: string): string => {
 	const quotedPkg = shellQuote(pkgName);
 	const scratchRoot = '/tmp/move-build-$$';
 	const scratchPkg = `${scratchRoot}/${quotedPkg}`;
@@ -524,7 +511,7 @@ export const copyLocalMoveDeps = async (
 };
 
 /** Build-path wrapper around {@link copyLocalMoveDeps}. */
-export const stageLocalMoveDeps = (
+const stageLocalMoveDeps = (
 	packageSrc: string,
 	stagedPackage: string,
 	stagingRoot: string,

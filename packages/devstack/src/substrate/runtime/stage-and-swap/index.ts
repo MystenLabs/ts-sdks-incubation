@@ -65,7 +65,6 @@ export class StageAndSwapError extends Schema.TaggedErrorClass<StageAndSwapError
 
 export interface StageAndSwapPreservedPath {
 	readonly relativePath: string;
-	readonly kind: 'file' | 'directory';
 	/** When `false`, the backed-up live copy is preserved into staging ONLY if
 	 *  staging does not already carry the path — so a value the build already
 	 *  placed there (e.g. a deploy cache untarred from the snapshot's host-tree)

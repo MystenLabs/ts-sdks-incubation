@@ -664,15 +664,6 @@ export const endpointLine = (endpoint: Endpoint): string => {
 	return `${endpoint.name}: ${target}${backing}${protocol}`;
 };
 
-export const endpointsSummaryForRow = (
-	row: Pick<Row, 'key' | 'endpoints'>,
-	endpoints: ReadonlyArray<Endpoint>,
-): string => {
-	const rowEndpoints = visibleEndpointsForRow(row, endpoints);
-	if (rowEndpoints.length === 0) return '';
-	return rowEndpoints.map(endpointLine).join(' | ');
-};
-
 export const accountLine = (account: AccountProjection): string => {
 	const address = account.address ?? '<pending>';
 	const scheme = account.scheme ?? 'scheme pending';

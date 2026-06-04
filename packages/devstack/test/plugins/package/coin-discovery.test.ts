@@ -12,9 +12,7 @@ import { describe, expect, it } from '@effect/vitest';
 // This pins the load-bearing behavior at its new home: a fresh local
 // publish populates the registry with the SAME records (including the
 // publisher-owns-cap gate on `treasuryCapId`) the sink produced. The two
-// ownership scenarios mirror `test/orchestrators/built-in-plugin-layers.test.ts`
-// (which still covers the now-dead sink path until it is deleted) so the
-// move is provably byte-identical.
+// ownership scenarios prove the move is byte-identical.
 
 import { discoverPublishedCoins } from '../../../src/plugins/package/index.ts';
 import type { LocalPackagePublishOutput } from '../../../src/plugins/package/publish-output.ts';

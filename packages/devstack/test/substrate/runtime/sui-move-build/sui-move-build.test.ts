@@ -304,7 +304,6 @@ describe('sui-move-build helpers', () => {
 				const result = yield* runMoveBuild({
 					sourcePath,
 					packageName: 'vault',
-					chainId: 'localnet',
 					runtime,
 					buildImage: { digest: 'sha256:sui' },
 				});

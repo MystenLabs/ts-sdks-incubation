@@ -1,8 +1,7 @@
 // Universal content-addressed cache primitive.
 //
 // Architecture § Cache data model: `(namespace, chain, content-hash)`
-// keys; lookup / write / GC. Cache entries can be dropped at will;
-// state-store entries are durable.
+// keys; lookup / write / GC. Cache entries can be dropped at will.
 //
 // This is L0 substrate — no service names. Plugins choose their own
 // `namespace`; `chain` is a plain string key forwarded verbatim.

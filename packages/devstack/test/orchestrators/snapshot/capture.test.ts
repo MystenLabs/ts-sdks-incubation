@@ -14,7 +14,7 @@
 //   - committed temp-tag cleanup on a mid-capture failure,
 //   - the resume tail retags-to-original + hard-rms + runs resume.
 
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -29,7 +29,9 @@ import type {
 } from '../../../src/contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../../src/contracts/snapshotable.ts';
 import {
+	CACHE_DIR_NAME,
 	CapturePhaseError,
+	DEPLOY_CACHE_NAMESPACES,
 	IdentityEmptyError,
 	SnapshotLayout,
 	SNAPSHOT_CONTRIBUTION_VERSION,
@@ -199,6 +201,44 @@ it.effect('records user-facing labels in metadata without using them as artifact
 			expect(exit.value.id).toBe('snap-images');
 			expect(exit.value.label).toBe('release candidate');
 			expect(existsSync(join(root, 'artifact', 'release candidate'))).toBe(false);
+		}),
+	),
+);
+
+it.effect('captures the deploy cache into the snapshot host-tree (self-contained)', () =>
+	withTempRoot(TEMP_PREFIX, (root) =>
+		Effect.gen(function* () {
+			const runtime = runtimeStub({ handlesByRole: {} });
+			mkdirSync(join(root, 'artifact'), { recursive: true });
+			// Seed two deploy-cache namespaces on the live stack root; a third is
+			// deliberately absent (a disabled-plugin shape — must be skipped, not
+			// fail). Capture must tar the present ones into the host-tree so the
+			// snapshot is self-contained (cross-machine restore).
+			const stackRoot = join(root, 'runtime-stack');
+			const ns0 = DEPLOY_CACHE_NAMESPACES[0]!;
+			const ns1 = DEPLOY_CACHE_NAMESPACES[1]!;
+			mkdirSync(join(stackRoot, CACHE_DIR_NAME, ns0, 'local'), { recursive: true });
+			writeFileSync(join(stackRoot, CACHE_DIR_NAME, ns0, 'local', 'ids.json'), 'a');
+			mkdirSync(join(stackRoot, CACHE_DIR_NAME, ns1, 'local'), { recursive: true });
+			writeFileSync(join(stackRoot, CACHE_DIR_NAME, ns1, 'local', 'ids.json'), 'b');
+
+			const exit = yield* runCaptureExit(root, runtime, [participant([])]).pipe(
+				Effect.provide(NodeFileSystem.layer),
+			);
+
+			expect(Exit.isSuccess(exit)).toBe(true);
+			if (!Exit.isSuccess(exit)) return;
+			expect(exit.value.hostTreeIncluded).toBe(true);
+			const capturedCacheRelPaths = exit.value.subtrees
+				.filter((s) => s.relPath.startsWith(`${CACHE_DIR_NAME}/`))
+				.map((s) => s.relPath)
+				.sort();
+			expect(capturedCacheRelPaths).toEqual(
+				[`${CACHE_DIR_NAME}/${ns0}`, `${CACHE_DIR_NAME}/${ns1}`].sort(),
+			);
+			// The host-tree tar exists and is non-empty.
+			const tarPath = join(root, 'artifact', SnapshotLayout.hostTreeTar);
+			expect(existsSync(tarPath)).toBe(true);
 		}),
 	),
 );

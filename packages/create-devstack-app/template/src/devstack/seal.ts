@@ -9,7 +9,6 @@ import { resolve } from 'node:path';
 import type { PluginContext, PluginContribution, PluginModule } from './contribution.js';
 
 export const sealModule: PluginModule = {
-	id: 'seal',
 	setup(ctx: PluginContext): PluginContribution {
 		const sealPublisher = account('seal_publisher', {
 			kind: 'ephemeral',

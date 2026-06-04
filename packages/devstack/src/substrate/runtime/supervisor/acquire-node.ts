@@ -122,7 +122,6 @@ const noopCache: Cache = {
 const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
 	register: () => Effect.void,
 	snapshot: Effect.succeed(new Map() as never),
-	tags: Effect.succeed([]),
 };
 
 /**
@@ -141,7 +140,7 @@ const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
  */
 const makePluginCtx = (
 	pluginContext: Context.Context<never>,
-	pluginKey: PluginKey | null = null,
+	pluginKey: PluginKey,
 ): {
 	readonly ctx: PluginCtx;
 	readonly buffer: BufferedContribution[];

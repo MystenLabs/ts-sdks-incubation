@@ -55,6 +55,30 @@ describe('makeCatchUpEvaluator', () => {
 		expect(e.step(906).caughtUp).toBe(true); // delta 3 → stable=2 → caught up
 	});
 
+	it('a negative delta (checkpoint regression) does NOT count as live cadence', () => {
+		const e = makeCatchUpEvaluator();
+		expect(e.step(100).caughtUp).toBe(false); // baseline
+		expect(e.step(102).caughtUp).toBe(false); // delta 2 → stable=1
+		// Head regresses (mid-re-sync / reset): delta is negative. Even though
+		// -2 <= liveCadenceDelta, a regression must NOT advance the streak — it
+		// resets it, so the gate keeps waiting for forward progress.
+		const regressed = e.step(100);
+		expect(regressed.caughtUp).toBe(false);
+		expect((regressed as { detail: { regressed?: boolean } }).detail.regressed).toBe(true);
+		// After the reset it takes two fresh forward live-cadence polls again.
+		expect(e.step(102).caughtUp).toBe(false); // delta 2 → stable=1
+		expect(e.step(104).caughtUp).toBe(true); // delta 2 → stable=2 → caught up
+	});
+
+	it('a regression on the verge of caught-up withholds the verdict', () => {
+		// Without the guard, a -1 delta arriving when stable=stablePollsRequired-1
+		// would tip the gate to caught-up off a backwards head. The guard resets.
+		const e = makeCatchUpEvaluator({ liveCadenceDelta: 5, stablePollsRequired: 2 });
+		expect(e.step(50).caughtUp).toBe(false); // baseline
+		expect(e.step(52).caughtUp).toBe(false); // delta 2 → stable=1
+		expect(e.step(51).caughtUp).toBe(false); // delta -1 → REGRESSED → stable=0
+	});
+
 	it('an unparseable sample resets the stability streak', () => {
 		const e = makeCatchUpEvaluator();
 		expect(e.step(10).caughtUp).toBe(false); // baseline

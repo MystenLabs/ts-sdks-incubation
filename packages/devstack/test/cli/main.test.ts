@@ -138,9 +138,10 @@ const writeRestorableSnapshotArtifact = async (
 ): Promise<void> => {
 	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
 	mkdirSync(join(snapshotDir, SnapshotLayout.contributionsDir), { recursive: true });
-	// Seed a live deploy-cache namespace so restore's PR#1 cache-existence
-	// preflight (fail-closed when the sole source of the on-chain ids is gone)
-	// is satisfied — post-D1 the live cache is the source restore reuses.
+	// This baseline snapshot records no host-tree / deploy-cache subtrees, so the
+	// restore cache preflight (now checked against the SNAPSHOT, not the live
+	// stack) has nothing to verify and passes. The live cache seed below is left
+	// as a harmless realistic fixture (a deployed stack would have one).
 	mkdirSync(join(stackRoot, CACHE_DIR_NAME, DEPLOY_CACHE_NAMESPACES[0]!), { recursive: true });
 	const participants = Object.entries(identity);
 	writeFileSync(

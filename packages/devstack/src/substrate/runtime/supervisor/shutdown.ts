@@ -19,7 +19,7 @@ import { Deferred, Effect, Ref } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
 import { reconcileGraph } from '../reconcile/graph.ts';
-import { graphKeysScope, preserveAllPolicy, reconcileSpec } from '../reconcile/spec.ts';
+import { graphKeysScope, reconcileSpec } from '../reconcile/spec.ts';
 import { requestBackgroundStackRestartInterrupt } from './background-tasks.ts';
 import type { SupervisorState } from './state.ts';
 import { publish, setCyclePhase } from './wiring.ts';
@@ -56,7 +56,6 @@ export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<vo
 				yield* reconcileGraph(
 					reconcileSpec({
 						target: 'absent',
-						cachePolicy: preserveAllPolicy(),
 						scope: graphKeysScope([...graph.nodes.keys()]),
 						direction: 'drain',
 					}),

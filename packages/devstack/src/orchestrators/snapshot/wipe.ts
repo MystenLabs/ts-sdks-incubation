@@ -23,7 +23,6 @@ import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import { appName, stackName } from '../../substrate/brand.ts';
 import {
-	cachePolicy,
 	labelScope,
 	reconcileLabel,
 	reconcileSpec,
@@ -192,12 +191,10 @@ export const planWipe = (
  * `sweep-networks-volumes`; child removal → `remove-runtime-tree`). The
  * reap-empty step is best-effort (no phase).
  *
- * cachePolicy stays a `{cache, snapshots}` PAIR. The two
- * dispositions ride the ONE `keepSnapshots` flag (decision-1: `snapshots/`
- * and `cache/` are coupled — there is no asymmetric keep-snapshots-drop-
- * cache degree of freedom on disk). The pair models the future
- * `--keep-cache` axis; the on-disk preservation is driven by
- * `isPreservedChild`, not by the policy enum.
+ * `snapshots/` and `cache/` are coupled (decision-1: there is no asymmetric
+ * keep-snapshots-drop-cache degree of freedom on disk), so the single
+ * `keepSnapshots` flag drives both: the on-disk preservation is driven by
+ * `isPreservedChild`.
  */
 export const runWipe = (
 	inputs: WipeInputs,
@@ -210,7 +207,6 @@ export const runWipe = (
 		});
 
 		const preserve = inputs.keepSnapshots ?? true;
-		const disposition = preserve ? 'preserve' : 'drop';
 
 		const sweepChildren: ReconcileFsOp<WipePhaseError> = {
 			op: 'sweep-children',
@@ -233,7 +229,6 @@ export const runWipe = (
 					stack: stackName(inputs.labelMatch.stack),
 				}),
 				direction: 'drain',
-				cachePolicy: cachePolicy(disposition, disposition),
 				fsPlan: { ops: [sweepChildren, reapEmpty] },
 			}),
 			{

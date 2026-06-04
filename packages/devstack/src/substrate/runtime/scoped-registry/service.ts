@@ -1,6 +1,6 @@
-// Unified scoped seq-tagged registry primitive.
+// Scoped seq-tagged registry primitive.
 //
-// ONE storage + finalizer + snapshot core, TWO surfaces:
+// ONE storage + finalizer + snapshot core, TWO primitives over it:
 //
 //   - `makeScopedMultimap<K, V>()` — the raw seq-tagged multimap.
 //     The substrate registries (`StrategyRegistry`, `FormatterRegistry`)
@@ -14,13 +14,10 @@
 //     `MultimapEntry{value,seq}` for those folds, not a pre-folded
 //     value — hence the multimap surface stays.
 //
-//   - `defineScopedRegistry<K, V>(name, { multi? })` — a typed
-//     `Context.Service` factory over the SAME core. With `multi: true`
-//     it exposes the multimap ops; by default (single mode) it exposes
-//     a last-write-wins `K -> V` projection (set/get/find/has/entries/
-//     changes) — the former `defineScopedRefMap`. Each call returns a
-//     fresh Service class keyed by `name`; the `multi` flag does NOT
-//     change Service identity.
+//   - `defineScopedRefMap<K, V>(name)` — a typed `Context.Service`
+//     factory over the SAME core, exposing a last-write-wins `K -> V`
+//     projection (set/get/find/has/entries/changes). Each call returns
+//     a fresh Service class keyed by `name`. Used by coin/package.
 //
 // Why a per-key LIST tagged by a monotonic seq (rather than a single
 // value-per-key with prior-restore):
@@ -40,11 +37,13 @@
 //     does not matter.
 //
 // The single-mode projection is LWW over exactly this store: each
-// `set` is a fresh-seq `register([{key, value}])`, `find`/`get` fold
-// the highest surviving seq, and `entries` orders keys by their
-// winning entry's seq — which reproduces the old append-after-filter
-// SubscriptionRef array verbatim (re-setting a key advances its seq,
-// so it sorts to the end exactly as the prior implementation moved it).
+// `set` is a fresh-seq filter-then-append (it drops the prior same-key
+// entry so the store holds STRICTLY one entry per key — no per-set
+// finalizer bounds it otherwise), `find`/`get` read that lone entry,
+// and `entries` orders keys by their entry's seq — which reproduces the
+// old append-after-filter SubscriptionRef array verbatim (re-setting a
+// key advances its seq, so it sorts to the end exactly as the prior
+// implementation moved it).
 //
 // Scope-local, like every substrate registry: the backing
 // `SubscriptionRef` is private to the build effect, so it dies with
@@ -99,17 +98,36 @@ export interface ScopedMultimap<K extends string, V> {
 
 type State<K extends string, V> = ReadonlyMap<K, ReadonlyArray<MultimapEntry<V>>>;
 
+/** Pure single-mode store mutation: replace `key`'s entry list with a SINGLE
+ *  `(value, seq)` entry (filter-then-append). Dropping any prior same-key entry
+ *  keeps the store at exactly one entry per key — single mode has no per-set
+ *  finalizer to bound it, so a plain append would leak history for the whole
+ *  layer scope. Exported so the one-entry-per-key invariant is unit-testable
+ *  without the SubscriptionRef plumbing. */
+export const setSingleEntry = <K extends string, V>(
+	state: State<K, V>,
+	key: K,
+	value: V,
+	seq: number,
+): State<K, V> => {
+	const next = new Map(state);
+	next.set(key, [{ value, seq }]);
+	return next;
+};
+
 /** The shared core: the seq-tagged store + its ops, plus the backing
  *  `SubscriptionRef` so single mode can expose `.changes`, and a
  *  scope-free LWW `setSingle` the single-mode projection writes
  *  through. Multimap callers ignore `ref`/`setSingle`. */
 interface ScopedRegistryCore<K extends string, V> extends ScopedMultimap<K, V> {
 	readonly ref: SubscriptionRef.SubscriptionRef<State<K, V>>;
-	/** Stamp a fresh `seq` and append `(key, value)` WITHOUT a
-	 *  finalizer. The LWW single-mode surface lives for the whole layer
-	 *  scope (the old `defineScopedRefMap` had no per-set reaping), so it
-	 *  needs no `Scope.Scope` — keeping `set: Effect.Effect<void>`. The
-	 *  monotonic `seq` still drives last-write-wins + insertion order. */
+	/** Stamp a fresh `seq` and replace `key`'s entry with `(value, seq)`
+	 *  (filter-then-append) WITHOUT a finalizer. The LWW single-mode
+	 *  surface lives for the whole layer scope (the old `defineScopedRefMap`
+	 *  had no per-set reaping), so it needs no `Scope.Scope` — keeping
+	 *  `set: Effect.Effect<void>`. Dropping the prior same-key entry keeps
+	 *  the store at one entry per key (no unbounded history); the monotonic
+	 *  `seq` still drives last-write-wins + insertion order. */
 	readonly setSingle: (key: K, value: V) => Effect.Effect<void>;
 }
 
@@ -159,12 +177,16 @@ const makeScopedRegistryCore = <K extends string, V>(): Effect.Effect<ScopedRegi
 		const setSingle: ScopedRegistryCore<K, V>['setSingle'] = (key, value) =>
 			Effect.gen(function* () {
 				const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
-				yield* SubscriptionRef.update(ref, (current) => {
-					const next = new Map(current);
-					const existing = next.get(key) ?? [];
-					next.set(key, [...existing, { value, seq }]);
-					return next;
-				});
+				// FILTER-then-append (see `setSingleEntry`): single mode is
+				// last-write-wins with NO per-set finalizer (the LWW surface lives
+				// for the whole layer scope), so a plain append would let prior
+				// same-key entries accumulate for the stack lifetime — O(history)
+				// lookups + leaked memory. The fresh `seq` still drives insertion
+				// order (a re-set sorts to the end), so `projectEntries`/`changes`
+				// are byte-identical.
+				yield* SubscriptionRef.update(ref, (current) =>
+					setSingleEntry(current, key, value, seq),
+				);
 			});
 
 		const entriesFor: ScopedMultimap<K, V>['entriesFor'] = (key) =>
@@ -302,14 +324,13 @@ const makeSingleSurface = <K extends string, V>(
 };
 
 // -----------------------------------------------------------------------------
-// defineScopedRegistry — the typed Context.Service factory.
+// defineScopedRefMap — the typed Context.Service factory.
 // -----------------------------------------------------------------------------
 
 /**
- * Single-mode factory — a last-write-wins `ScopedRefMap<K, V>` service
- * over the shared seq-tagged core: `set`/`get`/`find`/`has`/`entries`/
- * `changes`, insertion order, `get` fails with
- * `ScopedRefMapKeyMissingError`.
+ * Factory: a last-write-wins `ScopedRefMap<K, V>` service over the
+ * shared seq-tagged core: `set`/`get`/`find`/`has`/`entries`/`changes`,
+ * insertion order, `get` fails with `ScopedRefMapKeyMissingError`.
  *
  * The `name` becomes both the human-readable registry name (used in
  * `ScopedRefMapKeyMissingError.registryName`) and the Context.Service
@@ -319,6 +340,10 @@ const makeSingleSurface = <K extends string, V>(
  * not per-id-string — the id string is a debugging aid). The return
  * type is left to inference so the inner Service class's identity flows
  * through to callers.
+ *
+ * `Service` is a `Context.Service` tag class plugin authors yield from
+ * their `acquire` body; `layer` is the scope-bound Layer. Used by
+ * coin/package.
  */
 const defineSingle = <K extends string, V>(name: string) => {
 	const serviceId = `@devstack/substrate/ScopedRefMap/${name}`;
@@ -332,68 +357,12 @@ const defineSingle = <K extends string, V>(name: string) => {
 		),
 	);
 
-	const changes = (svc: ScopedRefMap<K, V>): Stream.Stream<ReadonlyArray<readonly [K, V]>> =>
-		svc.changes;
-
-	return { Service, layer, changes } as const;
-};
-
-/**
- * Multi-mode factory — the raw `ScopedMultimap<K, V>` service: seq-tagged
- * list, caller-folds-winner, drop-by-seq finalizer. Same shared core, no
- * pre-folding. The service id matches single mode
- * (`@devstack/substrate/ScopedRefMap/${name}`) so the `multi` flag never
- * alters Service identity.
- */
-const defineMulti = <K extends string, V>(name: string) => {
-	const serviceId = `@devstack/substrate/ScopedRefMap/${name}`;
-
-	class Service extends Context.Service<Service, ScopedMultimap<K, V>>()(serviceId) {}
-
-	const layer: Layer.Layer<Service> = Layer.effect(
-		Service,
-		makeScopedRegistryCore<K, V>().pipe(
-			Effect.map(({ register, entriesFor, snapshot, keys }) =>
-				Service.of({ register, entriesFor, snapshot, keys }),
-			),
-		),
-	);
-
 	return { Service, layer } as const;
 };
 
 /**
- * Factory: declare a typed `K -> V` scoped registry service over the
- * shared seq-tagged core. `opts.multi` selects the surface, NOT the
- * identity:
- *   - default (single mode) — a last-write-wins `ScopedRefMap<K, V>`.
- *   - `multi: true` — the raw `ScopedMultimap<K, V>` (seq-tagged list,
- *     caller-folds-winner, drop-by-seq finalizer).
- *
- * The service id is `@devstack/substrate/ScopedRefMap/${name}` in BOTH
- * modes so Coin/Package inner-service ids don't churn across the flag.
- * `Service` is a `Context.Service` tag class plugin authors yield from
- * their `acquire` body; `layer` is the scope-bound Layer; single mode
- * additionally returns a `changes` stream helper.
- */
-export function defineScopedRegistry<K extends string, V>(
-	name: string,
-	opts: { readonly multi: true },
-): ReturnType<typeof defineMulti<K, V>>;
-export function defineScopedRegistry<K extends string, V>(
-	name: string,
-	opts?: { readonly multi?: false },
-): ReturnType<typeof defineSingle<K, V>>;
-export function defineScopedRegistry<K extends string, V>(
-	name: string,
-	opts?: { readonly multi?: boolean },
-) {
-	return opts?.multi ? defineMulti<K, V>(name) : defineSingle<K, V>(name);
-}
-
-/**
- * Thin `defineScopedRefMap(name)` alias for the single-mode factory,
- * used by coin/package. Identical to `defineScopedRegistry(name)`
- * (single mode).
+ * Declare a typed `K -> V` scoped registry service over the shared
+ * seq-tagged core — a last-write-wins `ScopedRefMap<K, V>`. Used by
+ * coin/package.
  */
 export const defineScopedRefMap = <K extends string, V>(name: string) => defineSingle<K, V>(name);

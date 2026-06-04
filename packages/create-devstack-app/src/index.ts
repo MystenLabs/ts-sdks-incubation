@@ -142,7 +142,7 @@ export async function scaffold(opts: ScaffoldOptions): Promise<ScaffoldResult> {
 	log('next steps:');
 	log(`  cd ${opts.name}`);
 	if (!installed) log('  pnpm install');
-	log('  pnpm dev          # bring up localnet, publish hello, start vite');
+	log('  pnpm dev          # bring up localnet, publish the move packages (counter, vault), start vite');
 	log('  pnpm test:e2e     # start the stack and run the Playwright spec');
 	log('');
 

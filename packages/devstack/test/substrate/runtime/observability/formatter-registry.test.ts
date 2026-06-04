@@ -5,8 +5,8 @@
 //      immutable `FormatterRegistry` the cascade formatter consumes.
 //   2. The cascade formatter consults the registry when rendering a
 //      tagged error whose `_tag` matches.
-//   3. Scope close reaps registrations — `tags()` no longer lists the
-//      contribution's tags afterwards.
+//   3. Scope close reaps registrations — `snapshot` no longer carries
+//      the contribution's formatters afterwards.
 //   4. Multi-plugin registrations for overlapping tags last-write-wins
 //      on the formatter slot.
 
@@ -44,12 +44,10 @@ describe('FormatterRegistryService', () => {
 					const fmt = yield* FormatterRegistryService;
 					yield* fmt.register(contribA);
 					yield* fmt.register(contribB);
-					const tags = yield* fmt.tags;
-					expect(new Set(tags)).toEqual(new Set(['SuiPluginError', 'SuiCliError', 'WalrusError']));
 					const snap = yield* fmt.snapshot;
 					expect(snap.has('SuiPluginError')).toBe(true);
-					// WalrusError is in `tags()` but not in `snapshot` because
-					// no formatter was registered — snapshot only contains
+					// WalrusError is registered but not in `snapshot` because
+					// no formatter was provided — snapshot only contains
 					// entries with an actual formatter.
 					expect(snap.has('WalrusError')).toBe(false);
 				}),
@@ -86,14 +84,14 @@ describe('FormatterRegistryService', () => {
 				yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* fmt.register(contribA);
-						const tags = yield* fmt.tags;
-						expect(new Set(tags)).toEqual(new Set(['SuiPluginError', 'SuiCliError']));
+						const snap = yield* fmt.snapshot;
+						expect(snap.has('SuiPluginError')).toBe(true);
 					}),
 				);
 				// After the inner scope closes, the registrations must be
-				// reaped — same outer service, empty tag list.
-				const tagsAfter = yield* fmt.tags;
-				expect(tagsAfter).toEqual([]);
+				// reaped — same outer service, empty snapshot.
+				const snapAfter = yield* fmt.snapshot;
+				expect(snapAfter.size).toBe(0);
 			}).pipe(Effect.provide(layerStable));
 		}),
 	);

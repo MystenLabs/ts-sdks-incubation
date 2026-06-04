@@ -344,7 +344,6 @@ export const fetchOwnedObjects = async (
 	return objects.map((o) => ({
 		id: o.objectId,
 		version: o.version,
-		digest: o.digest,
 		type: o.type,
 	}));
 };

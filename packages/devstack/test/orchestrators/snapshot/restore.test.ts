@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -100,6 +101,34 @@ const tarWithSingleEntry = (entryPath: string): Buffer => {
 	header.write('00000000000', 124, 'ascii');
 	header[156] = '0'.charCodeAt(0);
 	return Buffer.concat([header, Buffer.alloc(1024)]);
+};
+
+/** Build a checksum-less ustar archive with one or more entries. Sufficient for
+ *  the JS tar READER (it parses path/size/typeflag and never verifies the
+ *  checksum or magic), so it drives the host-tree cache-namespace scan in the
+ *  preflight. NOT valid enough for system `tar -x` (which DOES check the
+ *  checksum) — extraction tests build a real archive via spawn('tar'). Each
+ *  entry is either a zero-size path or `{ path, body }` for a regular file. */
+const tarWithEntries = (entries: ReadonlyArray<string | { path: string; body: string }>): Buffer => {
+	const blocks: Buffer[] = [];
+	for (const entry of entries) {
+		const path = typeof entry === 'string' ? entry : entry.path;
+		const body = typeof entry === 'string' ? '' : entry.body;
+		const bodyBytes = Buffer.from(body, 'utf8');
+		const header = Buffer.alloc(512);
+		header.write(path, 0, 'utf8');
+		header.write(bodyBytes.length.toString(8).padStart(11, '0'), 124, 'ascii');
+		header[156] = '0'.charCodeAt(0);
+		blocks.push(header);
+		if (bodyBytes.length > 0) {
+			const padded = Buffer.alloc(Math.ceil(bodyBytes.length / 512) * 512);
+			bodyBytes.copy(padded);
+			blocks.push(padded);
+		}
+	}
+	// Two trailing zero blocks mark end-of-archive.
+	blocks.push(Buffer.alloc(1024));
+	return Buffer.concat(blocks);
 };
 
 const runtimeStub = (
@@ -531,7 +560,7 @@ describe('snapshot restore safety', () => {
 		),
 	);
 
-	it.effect('preserves only runtime-control paths and drops plugin-owned wallet state', () =>
+	it.effect('preserves only runtime-control paths and drops plugin-owned + live cache state', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
 				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
@@ -546,10 +575,12 @@ describe('snapshot restore safety', () => {
 				mkdirSync(join(stackRoot, 'wallet'), { recursive: true });
 				writeFileSync(walletTokenPath, '0123456789abcdef0123456789abcdef');
 				writeFileSync(join(stackRoot, 'wallet', 'session'), 'drop');
-				// The live deploy cache is the SOLE source of the on-chain ids
-				// restore reuses: a per-namespace dir is PRESERVED across the swap
-				// (and satisfies the PR#1 preflight); the generic per-call
-				// `cache/entry` is NOT a deploy namespace and is DROPPED.
+				// Self-contained snapshots: the deploy cache rides the snapshot's
+				// host-tree, NOT preserved-from-live. This snapshot carries NO
+				// host-tree (hostTreeIncluded: false), so the swap drops the LIVE
+				// cache entirely — including the deploy namespace and the generic
+				// per-call `cache/entry`. (When the snapshot DOES carry the cache,
+				// the untarred copy lands in staging — see the cross-machine test.)
 				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
 				mkdirSync(join(stackRoot, CACHE_DIR_NAME, deployNs), { recursive: true });
 				writeFileSync(join(stackRoot, CACHE_DIR_NAME, deployNs, 'ids.json'), 'deploy-ids');
@@ -582,36 +613,53 @@ describe('snapshot restore safety', () => {
 				expect(readFileSync(join(stackRoot, 'container-claims.json'), 'utf8')).toBe(
 					'{"version":1,"claims":[]}\n',
 				);
-				// The per-namespace deploy cache is PRESERVED across the swap so
-				// the post-restore boot reuses the deploy ids (no fresh-id orphan).
-				expect(readFileSync(join(stackRoot, CACHE_DIR_NAME, deployNs, 'ids.json'), 'utf8')).toBe(
-					'deploy-ids',
-				);
+				// The LIVE deploy cache is NOT preserved from live — the snapshot is
+				// the sole source, and this snapshot carries none, so it is dropped.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, deployNs))).toBe(false);
 				expect(existsSync(walletTokenPath)).toBe(false);
 				expect(existsSync(join(stackRoot, 'wallet', 'session'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'snapshots', meta.id, SnapshotLayout.metaFile))).toBe(
 					true,
 				);
-				// The generic per-call cache entry is NOT a deploy namespace → dropped.
+				// The generic per-call cache entry is dropped too.
 				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, 'entry'))).toBe(false);
 				expect(existsSync(join(stackRoot, 'unrelated-runtime-state'))).toBe(false);
 			}),
 		),
 	);
 
-	// PR#1 — the live deploy cache is the SOLE source of the on-chain ids post-D1.
-	// If NONE of the deploy-cache namespaces exists, restore must REFUSE with a
-	// typed `cache-missing` error BEFORE any mutation (fail-closed, matching the
-	// identity-guard posture) rather than let the next boot silently re-deploy
-	// with fresh ids and orphan every pre-snapshot object.
-	it.effect('refuses with cache-missing when the live deploy cache is absent (PR#1)', () =>
+	// The SNAPSHOT's host-tree cache is the SOLE source of the on-chain ids on
+	// restore (self-contained snapshots). If the metadata RECORDS a deploy-cache
+	// subtree but the host-tree tar is MISSING it (a partial/corrupt artifact),
+	// restore must REFUSE with a typed `cache-missing` error BEFORE any mutation
+	// rather than let the next boot re-deploy that namespace with fresh ids and
+	// orphan its pre-snapshot objects. Checked against the SNAPSHOT, not the live
+	// stack — so a cross-machine restore onto an empty live cache is unaffected.
+	it.effect('refuses with cache-missing when the snapshot host-tree omits a recorded cache ns', () =>
 		withTempRoot(TEMP_PREFIX, (root) =>
 			Effect.gen(function* () {
 				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const meta = metadata({ containers: [capturedContainer()] });
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				// Metadata claims the snapshot captured `cache/<ns>`...
+				const meta = metadata({
+					containers: [capturedContainer()],
+					hostTreeIncluded: true,
+					subtrees: [
+						{
+							plugin: '__deploy-cache__',
+							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+							missingTolerance: 'fine',
+							secretMaterial: false,
+						},
+					],
+				});
 				const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
 				writeImageBundle(artifactDir);
-				// NOTE: deliberately do NOT seed the deploy cache.
+				// ...but the host-tree tar carries an UNRELATED entry, not the cache.
+				writeFileSync(
+					join(artifactDir, SnapshotLayout.hostTreeTar),
+					tarWithEntries(['postgres/data/x']),
+				);
 
 				const exit = yield* Effect.exit(
 					runRestore({
@@ -637,6 +685,65 @@ describe('snapshot restore safety', () => {
 				}
 				// Fail-closed BEFORE any mutation — no container sweep ran.
 				expect(sweepCalls).toEqual([]);
+			}),
+		),
+	);
+
+	// The positive companion: when the snapshot's host-tree CARRIES every
+	// deploy-cache namespace its metadata records, the preflight passes and the
+	// snapshot's cache is untarred into the swapped tree (sole source). Mirrors a
+	// CROSS-MACHINE restore — the live stack has NO cache; the snapshot supplies
+	// the ids.
+	it.effect('restores the deploy cache from the snapshot host-tree (cross-machine)', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const stackRoot = join(root, 'runtime-stack');
+				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+				const cacheRel = `${CACHE_DIR_NAME}/${deployNs}/local/ids.json`;
+				const meta = metadata({
+					hostTreeIncluded: true,
+					subtrees: [
+						{
+							plugin: '__deploy-cache__',
+							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+							missingTolerance: 'fine',
+							secretMaterial: false,
+						},
+					],
+				});
+				const artifactDir = writeArtifact(stackRoot, meta);
+				// Build a REAL host-tree tar (valid checksum so system `tar -x`
+				// extracts it) carrying the deploy-cache namespace, mirroring what
+				// capture's `tarHostTree` produces.
+				const srcDir = join(root, 'host-tree-src');
+				mkdirSync(join(srcDir, CACHE_DIR_NAME, deployNs, 'local'), { recursive: true });
+				writeFileSync(join(srcDir, cacheRel), 'snapshot-deploy-ids');
+				const tarResult = spawnSync(
+					'tar',
+					['-c', '-f', join(artifactDir, SnapshotLayout.hostTreeTar), '-C', srcDir, '-p', cacheRel],
+					{ encoding: 'utf8' },
+				);
+				expect(tarResult.status, tarResult.stderr).toBe(0);
+				// The live stack has NO cache at all — a fresh-runner shape.
+				expect(existsSync(join(stackRoot, CACHE_DIR_NAME))).toBe(false);
+
+				const exit = yield* Effect.exit(
+					runRestore({
+						snapshotId: snapshotIdFromString(meta.id),
+						artifactDir,
+						runtimeStackRoot: stackRoot,
+						runtimeStagingPath: join(root, 'runtime-stack.staging'),
+						runtimeBackupPath: join(root, 'runtime-stack.bak'),
+						participants: restoreIdentityParticipants(),
+						runtime: runtimeStub(sweepCalls),
+						runtimeIdentity,
+					}),
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The cache came from the snapshot, not from any live copy.
+				expect(readFileSync(join(stackRoot, cacheRel), 'utf8')).toBe('snapshot-deploy-ids');
 			}),
 		),
 	);

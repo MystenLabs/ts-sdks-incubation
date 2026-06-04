@@ -105,12 +105,6 @@ import type { SuiLocalOptions } from './spec.ts';
  *  boot (timeout → typed `rpc-probe` error). */
 export const DEFAULT_LOCAL_READY_TIMEOUT = Duration.seconds(180);
 
-/** Default sui validator binary version pinned by the vendored
- *  `images/sui/` Dockerfile. The build arg `SUI_VERSION` is threaded
- *  through to the release-tarball URL. Bump in lockstep with matching
- *  Walrus / Seal versions (else the Move package ABIs drift). */
-export const DEFAULT_SUI_VERSION = DEFAULT_SUI_CLI_VERSION;
-
 // In-container ports the sui binary binds on. These match the router
 // entrypoint ports; direct host publishes below use different high
 // ports so Traefik owns the public listener ports.
@@ -297,7 +291,7 @@ export const resolveImage = (
 					),
 				);
 		}
-		const version = opts.version ?? DEFAULT_SUI_VERSION;
+		const version = opts.version ?? DEFAULT_SUI_CLI_VERSION;
 		const owner = {
 			app: identity.app,
 			stack: identity.stack,
@@ -776,8 +770,11 @@ export type CatchUpVerdict =
  *    - the FIRST numeric sample only establishes a baseline (its delta is
  *      `+Infinity`), so the gate always takes at least two samples before
  *      it can declare caught-up — cheap on cold boot, correct on restore.
- *    - a delta `<= CATCH_UP_LIVE_CADENCE_DELTA` counts toward the live-
- *      cadence streak; a larger delta (fast replay) resets it.
+ *    - a NEGATIVE delta (the head regressed — mid-re-sync / reset) resets
+ *      the streak; it is NOT counted as live cadence even though it is
+ *      `<= CATCH_UP_LIVE_CADENCE_DELTA`.
+ *    - a delta in `[0, CATCH_UP_LIVE_CADENCE_DELTA]` counts toward the
+ *      live-cadence streak; a larger delta (fast replay) resets it.
  *    - `CATCH_UP_STABLE_POLLS_REQUIRED` consecutive live-cadence deltas →
  *      caught-up. */
 export const makeCatchUpEvaluator = (opts?: {
@@ -799,6 +796,19 @@ export const makeCatchUpEvaluator = (opts?: {
 			}
 			const delta = previous === undefined ? Number.POSITIVE_INFINITY : sample - previous;
 			previous = sample;
+			// A NEGATIVE delta means the checkpoint sequence REGRESSED (the head
+			// went backwards — e.g. an RPC reading a node mid-re-sync, or a
+			// reset). That is NOT live cadence: a regression satisfies
+			// `<= liveCadenceDelta`, so counting it toward the streak could
+			// falsely declare caught-up while the store is still settling. Reset
+			// the streak and keep waiting for forward, live-cadence progress.
+			if (delta < 0) {
+				stablePolls = 0;
+				return {
+					caughtUp: false,
+					detail: { current: sample, delta, stablePolls, regressed: true },
+				};
+			}
 			if (delta <= liveCadenceDelta) {
 				stablePolls += 1;
 			} else {

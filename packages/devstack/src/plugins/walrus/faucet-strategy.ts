@@ -16,7 +16,7 @@ import { Effect, Schema } from 'effect';
 
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
-import type { AccountFundingRequest, AccountFundingStrategy } from '../account/index.ts';
+import type { AccountFundingStrategy } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
 import type { WalExchangeProbeKey } from './wal-swap.ts';
 import { swapAccountSuiForWal, type WalExchangeHandle, type WalSwapSdk } from './wal-swap.ts';
@@ -130,9 +130,6 @@ export const makeWalFaucetContribution = (
 	strategy,
 	autoMounted: true,
 });
-
-/** Per-request shape — the shared account funding request. */
-export type WalFaucetRequest = AccountFundingRequest;
 
 /** Faucet strategy value — closed over the WAL exchange's object id.
  *  The requesting account signs the swap through the shared account

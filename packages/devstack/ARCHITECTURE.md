@@ -219,7 +219,7 @@ not a persistent cache.
 ## ArtifactPublisher
 
 Pattern: `cache → verify(cached) → produce → register`. Substrate primitive at
-`primitives/artifact-publisher.ts` + `substrate/runtime/artifact-publisher/`. The produce body shape
+`primitives/artifact-publisher.ts` + `substrate/runtime/cache/`. The produce body shape
 is plugin-owned — write what fits the on-chain operation.
 
 ---

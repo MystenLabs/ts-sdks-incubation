@@ -307,9 +307,8 @@ const livePidsForStack = (
 
 /** True when the group is one of the two shared shapes the
  *  orchestrator knows about: `_per-app_` (cross-stack-per-app shared)
- *  or the router-singleton (`ROUTER_SHARED_APP`). Surfaces consult
- *  this instead of recomputing the predicate. */
-export const isSharedLifecyclePruneGroup = (app: string, stack: string): boolean =>
+ *  or the router-singleton (`ROUTER_SHARED_APP`). */
+const isSharedGroup = (app: string, stack: string): boolean =>
 	stack === PER_APP_SHARED_STACK || app === ROUTER_SHARED_APP;
 
 const sharedKindFor = (app: string, stack: string): SharedGroupKind | null => {
@@ -325,9 +324,8 @@ export const isRouterLifecyclePruneGroup = (
 	group: Pick<LifecyclePruneGroup, 'app' | 'stack'>,
 ): boolean => group.app === ROUTER_SHARED_APP && group.stack.startsWith(`${ROUTER_SHARED_APP}-`);
 
-// Internal aliases for back-compat call sites in this file.
+// Internal alias for back-compat call sites in this file.
 const isRouterGroup = isRouterLifecyclePruneGroup;
-const isSharedGroup = isSharedLifecyclePruneGroup;
 
 /** Label-tuple match for the `removeDevstack*` sweepers — router-shared
  *  resources stamp `{app: ROUTER_SHARED_APP, stack: <profile-name>}`

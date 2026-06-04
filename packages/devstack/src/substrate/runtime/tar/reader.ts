@@ -25,24 +25,24 @@
 // NOT canonicalized here; relative targets are caught by `..` rejection,
 // and native `tar -x` refuses escaping paths as a second layer.
 
-export const TAR_BLOCK_SIZE = 512;
+const TAR_BLOCK_SIZE = 512;
 
 /** Max bytes a single pax/gnu extended-header record may declare. A
  *  larger declared size is rejected so a malicious archive cannot force
  *  unbounded in-memory buffering of an "extended path". */
-export const MAX_TAR_EXTENDED_PATH_BYTES = 1024 * 1024;
+const MAX_TAR_EXTENDED_PATH_BYTES = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // Byte helpers — shared by both header parse and content buffering.
 // ---------------------------------------------------------------------------
 
-export const bytesToString = (bytes: Uint8Array): string => {
+const bytesToString = (bytes: Uint8Array): string => {
 	const nul = bytes.indexOf(0);
 	const end = nul === -1 ? bytes.length : nul;
 	return Buffer.from(bytes.subarray(0, end)).toString('utf8');
 };
 
-export const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
+const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 	if (a.length === 0) return b;
 	if (b.length === 0) return a;
 	const out = new Uint8Array(a.length + b.length);
@@ -51,12 +51,11 @@ export const concatBytes = (a: Uint8Array, b: Uint8Array): Uint8Array => {
 	return out;
 };
 
-export const consumeBytes = (buffer: Uint8Array, count: number): Uint8Array =>
-	buffer.subarray(count);
+const consumeBytes = (buffer: Uint8Array, count: number): Uint8Array => buffer.subarray(count);
 
-export const isZeroBlock = (block: Uint8Array): boolean => block.every((byte) => byte === 0);
+const isZeroBlock = (block: Uint8Array): boolean => block.every((byte) => byte === 0);
 
-export const parseTarSize = (header: Uint8Array): number | null => {
+const parseTarSize = (header: Uint8Array): number | null => {
 	const raw = bytesToString(header.subarray(124, 136)).trim();
 	if (raw === '') return 0;
 	if (!/^[0-7]+$/.test(raw)) return null;
@@ -64,13 +63,13 @@ export const parseTarSize = (header: Uint8Array): number | null => {
 	return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
 };
 
-export const tarPathFromHeader = (header: Uint8Array): string => {
+const tarPathFromHeader = (header: Uint8Array): string => {
 	const name = bytesToString(header.subarray(0, 100));
 	const prefix = bytesToString(header.subarray(345, 500));
 	return prefix === '' ? name : `${prefix}/${name}`;
 };
 
-export const tarLinkPathFromHeader = (header: Uint8Array): string =>
+const tarLinkPathFromHeader = (header: Uint8Array): string =>
 	bytesToString(header.subarray(157, 257));
 
 const trimExtendedPath = (bytes: Uint8Array): string => {
@@ -101,7 +100,7 @@ export const isSafeArchivePath = (entryPath: string): boolean => {
 	return meaningfulSegments.length > 0 && !meaningfulSegments.includes('..');
 };
 
-export const parsePaxRecords = (bytes: Uint8Array): Record<string, string> => {
+const parsePaxRecords = (bytes: Uint8Array): Record<string, string> => {
 	const text = Buffer.from(bytes).toString('utf8');
 	const records: Record<string, string> = {};
 	let offset = 0;
@@ -140,7 +139,7 @@ export interface TarEntry {
 	readonly size: number;
 }
 
-export type TarEntryDisposition = 'skip' | 'capture' | 'stop';
+type TarEntryDisposition = 'skip' | 'capture' | 'stop';
 
 /** What the reader should do with one resolved entry's body. `'skip'`
  *  advances past the (padded) body without buffering; `'capture'`
@@ -172,7 +171,7 @@ interface BufferingContent {
 /** Streaming parser state. Construct once per stream via
  *  `makeTarReaderState`, feed every chunk to `processTarChunk`, then
  *  call `finishTarReader` after EOF. */
-export interface TarReaderState {
+interface TarReaderState {
 	buffer: Uint8Array;
 	skipRemaining: number;
 	content: BufferingContent | null;
@@ -193,7 +192,7 @@ export const makeTarReaderState = (): TarReaderState => ({
 /** Caller hooks. `onEntry` decides the per-entry directive; `onContent`
  *  receives the buffered body for `'capture'` entries. Both may return
  *  an error of the caller's `E` type to abort the scan. */
-export interface TarReaderHooks<E> {
+interface TarReaderHooks<E> {
 	readonly onEntry: (entry: TarEntry) => TarEntryDirective | E;
 	readonly onContent?: (entry: TarEntry, body: Uint8Array) => null | E;
 	/** Raised when a pax/gnu extended record is invalid (oversized, or a

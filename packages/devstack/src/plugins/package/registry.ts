@@ -12,13 +12,11 @@
 // defineScopedRefMap"): the module-private inner `PackageRefMap` is the
 // raw substrate primitive; the publicly-exported `PackageRegistryService`
 // is the L2 wrapper that the rest of the plugin (and external siblings)
-// yield. Today the wrapper only re-exposes the four substrate ops
-// (`set` / `find` / `has` / `entries` + `changes`), but the shape
-// matches Coin's wrapper so future plugin-specific lookups (e.g.
-// `byPublisher`, `byPackageId`) land in one place instead of every
-// consumer reaching into the raw map.
+// yield. The wrapper re-exposes the substrate ops consumers actually use
+// (`set` / `find` / `entries`), keeping plugin-specific behavior in one
+// place instead of every consumer reaching into the raw map.
 
-import { Context, Effect, Layer, type Stream } from 'effect';
+import { Context, Effect, Layer } from 'effect';
 
 import {
 	defineScopedRefMap,
@@ -55,15 +53,13 @@ export type ResolvedPackage = ResolvedLocalPackage | ResolvedKnownPackage;
 export type PackageKey = string;
 
 /** L2 wrapper shape — the operations exposed on `PackageRegistryService`.
- *  Today these are a 1:1 re-projection of the substrate primitive's
- *  generic `ScopedRefMap<K, V>`; future plugin-specific lookups land
- *  here without forcing every consumer to learn a new shape. */
+ *  A 1:1 re-projection of the substrate primitive's generic
+ *  `ScopedRefMap<K, V>`, namespaced to the package domain so consumers
+ *  share one shape. */
 export interface PackageRegistry {
 	readonly set: (key: PackageKey, value: ResolvedPackage) => Effect.Effect<void>;
 	readonly find: (key: PackageKey) => Effect.Effect<ResolvedPackage | null>;
-	readonly has: (key: PackageKey) => Effect.Effect<boolean>;
 	readonly entries: () => Effect.Effect<ReadonlyArray<readonly [PackageKey, ResolvedPackage]>>;
-	readonly changes: Stream.Stream<ReadonlyArray<readonly [PackageKey, ResolvedPackage]>>;
 }
 
 // Module-private inner substrate primitive — instantiated once per
@@ -74,9 +70,7 @@ const PackageRefMap = defineScopedRefMap<PackageKey, ResolvedPackage>('PackageRe
 const wrapRefMap = (refMap: ScopedRefMap<PackageKey, ResolvedPackage>): PackageRegistry => ({
 	set: refMap.set,
 	find: refMap.find,
-	has: refMap.has,
 	entries: refMap.entries,
-	changes: refMap.changes,
 });
 
 /** Context.Service tag for the per-stack `PackageRegistry`. Plugins

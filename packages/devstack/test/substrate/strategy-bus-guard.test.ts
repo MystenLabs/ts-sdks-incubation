@@ -13,9 +13,11 @@
 // capabilityKey: ... })` STRING-LITERAL key under `src/plugins/**` and
 // assert none equals a plugin id. Capability keys are `<domain>:<disc>`
 // shaped (`coinType:WAL`, `chain-probe:sui:mainnet`) — never a bare
-// plugin id. Today no plugin authors through `ctx` yet, so the scan is
-// empty and the gate passes trivially; it is the PERMANENT guard that
-// fails the moment a conversion (P2+) wires a plugin-id key.
+// plugin id. Plugins DO author through `ctx` today, but they compute
+// their capability keys via helpers rather than bare string literals, so
+// the literal scan finds nothing to reject and the gate passes; it is the
+// PERMANENT guard that fails the moment a conversion wires a string-literal
+// plugin-id key.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';

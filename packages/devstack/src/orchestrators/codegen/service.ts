@@ -38,7 +38,8 @@
 // What this module does NOT do:
 //   - Construct plugin-level resolved blobs (plugins pass them at
 //     factory-build time).
-//   - Decode the manifest envelope (see `manifest-bridge.ts`).
+//   - Decode the manifest envelope (plugins pass resolved blobs at
+//     factory-build time; the orchestrator never re-reads the envelope).
 //   - Watch files. Re-emit is driven by the supervisor cycle (and
 //     on-demand by the CLI); the app's own toolchain (Vite/HMR)
 //     watches the emitted output tree.

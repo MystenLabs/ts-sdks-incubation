@@ -7,7 +7,6 @@ import { walCoin, walrus } from '@mysten-incubation/devstack';
 import type { PluginContribution, PluginModule } from './contribution.js';
 
 export const walrusModule: PluginModule = {
-	id: 'walrus',
 	setup(): PluginContribution {
 		const walrusCluster = walrus({ local: { nodeCount: 1 } });
 		const wal = walCoin(walrusCluster);

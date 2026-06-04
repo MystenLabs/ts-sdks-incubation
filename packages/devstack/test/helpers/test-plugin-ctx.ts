@@ -2,12 +2,9 @@
 // with a decl-CAPTURING fake ctx and assert on the captured
 // contributions.
 //
-// Stage B converts plugins from a `capabilities: ({value,runtime}) =>
-// CapabilityDecl[]` second-closure to emitting contributions INLINE in
-// `start(deps)` via the typed `ctx.*` verbs (`const ctx = yield*
-// PluginContext`; see `src/substrate/plugin-ctx.ts`). Tests that
-// previously drove the `capabilities` closure as a pure function (and
-// inspected the returned decls) must instead drive `start(deps)` with
+// Plugins emit contributions INLINE in `start(deps)` via the typed
+// `ctx.*` verbs (`const ctx = yield* PluginContext`; see
+// `src/substrate/plugin-ctx.ts`). Tests drive `start(deps)` with
 // THIS harness — PROVIDING the captured ctx as the `PluginContext`
 // service via `harness.provide(...)` (mirroring the supervisor's
 // `Effect.provideService(start(deps), PluginContext, ctx)`) — and assert

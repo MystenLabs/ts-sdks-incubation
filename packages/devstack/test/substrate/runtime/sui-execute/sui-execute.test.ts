@@ -7,8 +7,12 @@ import {
 	executeSuiTx,
 	SuiExecuteError,
 	type TransactionSignerScope,
-	type SuiExecuteClient,
 } from '../../../../src/plugins/sui/exec/index.ts';
+
+// Derived from the public `executeSuiTx` param surface so the mocks pin
+// to whatever client shape the helper actually accepts — no need to
+// import the file-local `SuiExecuteClient` alias.
+type SuiExecuteClient = Parameters<typeof executeSuiTx>[0]['client'];
 
 const stubSignTransaction = (_tx: Uint8Array) =>
 	Effect.succeed({ bytes: 'aa', signature: 'sig-1' });

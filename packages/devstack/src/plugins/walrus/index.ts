@@ -512,7 +512,6 @@ export {
 	walCoinType,
 	walFaucetStrategyKey,
 	type WalFaucetStrategy,
-	type WalFaucetRequest,
 } from './faucet-strategy.ts';
 export {
 	WALRUS_STATE_REGISTRY_KEY,
@@ -520,5 +519,4 @@ export {
 	type WalrusLocalStateEntry,
 	type WalrusKnownStateEntry,
 } from './registry-publish.ts';
-export { WALRUS_ROUTER_PORT } from './storage-nodes.ts';
 export { WalrusSpans } from './spans.ts';

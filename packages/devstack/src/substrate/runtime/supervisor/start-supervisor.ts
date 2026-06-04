@@ -513,11 +513,10 @@ export const startSupervisor = (
 		yield* Effect.addFinalizer(() =>
 			traced(
 				Effect.gen(function* () {
-					const fullDrain = plan(
-						graph,
-						{ kind: 'graph-keys', keys: [...graph.nodes.keys()] },
-						'drain',
-					);
+					const fullDrain = plan(graph, {
+						kind: 'graph-keys',
+						keys: [...graph.nodes.keys()],
+					});
 					yield* teardownKeys(graph, registry, fullDrain.teardownOrder).pipe(
 						Effect.catch(() => Effect.void),
 					);

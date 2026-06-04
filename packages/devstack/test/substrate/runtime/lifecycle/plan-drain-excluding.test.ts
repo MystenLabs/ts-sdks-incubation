@@ -55,7 +55,7 @@ describe('planExcluding', () => {
 			]),
 		);
 
-		const full = plan(graph, { kind: 'graph-keys', keys: [...graph.nodes.keys()] }, 'drain');
+		const full = plan(graph, { kind: 'graph-keys', keys: [...graph.nodes.keys()] });
 		const partial = planExcluding(graph, (node) => node.keepAliveOnRestore);
 
 		expect(full.slice.size).toBe(graph.nodes.size);

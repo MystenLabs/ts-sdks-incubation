@@ -1,11 +1,8 @@
 // Single L3 boot seam.
 //
-// Merges the former `run.ts` (substrate lifecycle + supervise entrypoint),
-// `runtime-composition.ts` (production orchestrator assembly + contribution
-// dispatcher + post-acquire hook), and `built-in-plugin-layers.ts` (built-in
-// coin/package registry layers) into one module. Consumed by both the CLI
-// verb wirings (`cli/wirings/*`) and the library-facing programmatic surface
-// (`api/run-stack.ts`), plus the e2e boot harness.
+// Consumed by both the CLI verb wirings (`cli/wirings/*`) and the
+// library-facing programmatic surface (`api/run-stack.ts`), plus the e2e
+// boot harness.
 //
 // Composes the substrate Layer stack (L0) + the Docker `ContainerRuntime`
 // adapter (L1), yields the substrate services into a `Context.Context<never>`
@@ -291,15 +288,6 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 		);
 	});
 
-/** End-to-end run: builds the substrate Layer stack, provides it to
- *  `superviseStackEffect`, applies a quiet Logger by default unless the
- *  caller passes one in `opts.loggerLayer`. The returned Effect has
- *  type `Effect<void, ..., never>` — all requirements are discharged
- *  by the layer stack composed here.
- *
- *  Callers that need to capture intermediate state (errors, terminal
- *  snapshot, etc.) supply `opts.withinScope` and read off the
- *  supervisor handle directly. */
 // ───────────────────────────────────────────────────────────────────────────
 // Production orchestrator assembly
 // ───────────────────────────────────────────────────────────────────────────
@@ -308,27 +296,11 @@ export interface ProductionCodegenOptions {
 	readonly appRoot?: string;
 	readonly outputDir?: string;
 	readonly stackSubdir?: string | null;
-	/** Absolute path to the dev-only + secret `generated-extras` tree
-	 *  for this stack. Threaded into `CodegenRoot.extrasDir`; recorded
-	 *  in the manifest as `codegen.extrasDir` for the `@devstack-dev`
-	 *  Vite alias. When omitted, falls back to
-	 *  `<appRoot>/.devstack/stacks/<stack>/generated-extras` is NOT
-	 *  derivable here (no stack name in scope), so the cold-start
-	 *  default `<outputDir>/../generated-extras`-style fallback is left
-	 *  to the resolver/Vite plugin; callers (`run-stack`, the CLI verb
-	 *  wirings) always supply the resolved value. */
+	/** Resolved absolute path to the dev-only + secret `generated-extras`
+	 *  tree for this stack, threaded into `CodegenRoot.extrasDir` and
+	 *  recorded in the manifest as `codegen.extrasDir` for the
+	 *  `@devstack-dev` Vite alias. */
 	readonly extrasDir?: string;
-}
-
-/** The per-stack codegen inputs the single seam needs: the app root, the
- *  resolved effective stack (already through the explicit-`--stack` >
- *  `config.stackName` > inferred ladder), the config's declared primary
- *  `stackName`, and the app's optional explicit `codegen` pins. */
-export interface ProductionCodegenSeamInput {
-	readonly appRoot: string;
-	readonly effectiveStack: string;
-	readonly primaryStack: string | undefined;
-	readonly codegen?: { readonly outputDir?: string; readonly stackSubdir?: string | null } | undefined;
 }
 
 /**
@@ -341,10 +313,20 @@ export interface ProductionCodegenSeamInput {
  * so the two never clobber. The resolved literal `outputDir`/`stackSubdir`/
  * `extrasDir` flow into `layerProductionOrchestrators({ codegen })`
  * unchanged — `paths.ts` keeps consuming literals (minimal blast radius).
+ *
+ * The per-stack inputs: the app root, the resolved effective stack
+ * (already through the explicit-`--stack` > `config.stackName` > inferred
+ * ladder), the config's declared primary `stackName`, and the app's
+ * optional explicit `codegen` pins.
  */
-export const resolveProductionCodegenOptions = (
-	input: ProductionCodegenSeamInput,
-): ProductionCodegenOptions => {
+export const resolveProductionCodegenOptions = (input: {
+	readonly appRoot: string;
+	readonly effectiveStack: string;
+	readonly primaryStack: string | undefined;
+	readonly codegen?:
+		| { readonly outputDir?: string; readonly stackSubdir?: string | null }
+		| undefined;
+}): ProductionCodegenOptions => {
 	const resolved = resolveCodegenOutput({
 		appRoot: input.appRoot,
 		effectiveStack: input.effectiveStack,
@@ -363,22 +345,14 @@ export const resolveProductionCodegenOptions = (
 export interface ProductionRouterOptions {
 	readonly codegen?: ProductionCodegenOptions;
 	readonly disabled?: boolean;
-	readonly image?: string;
-	readonly profile?: RouterProfile;
-}
-
-export interface ProductionPostAcquireOptions {
-	readonly extras?: ManifestExtrasInput;
-}
-
-export interface ManifestEndpointRegistry {
-	readonly register: (entry: EndpointEntry) => Effect.Effect<void, never, Scope.Scope>;
-	readonly entries: Effect.Effect<ReadonlyArray<EndpointEntry>>;
 }
 
 export class ManifestEndpointRegistryService extends Context.Service<
 	ManifestEndpointRegistryService,
-	ManifestEndpointRegistry
+	{
+		readonly register: (entry: EndpointEntry) => Effect.Effect<void, never, Scope.Scope>;
+		readonly entries: Effect.Effect<ReadonlyArray<EndpointEntry>>;
+	}
 >()('@devstack/orchestrators/ManifestEndpointRegistry') {}
 
 export const layerManifestEndpointRegistry: Layer.Layer<ManifestEndpointRegistryService> =
@@ -435,7 +409,7 @@ const productionCodegenExtrasDir = (appRoot: string, extrasDir: string | undefin
 };
 
 export const layerProductionOrchestrators = (router: ProductionRouterOptions = {}) => {
-	const profile = router.profile ?? productionRouterProfile();
+	const profile = productionRouterProfile();
 	return Layer.mergeAll(
 		layerSnapshotOrchestrator,
 		layerManifestEndpointRegistry,
@@ -448,7 +422,7 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 					layerRouterConfigLiteral({
 						disabled: router.disabled ?? false,
 						profile,
-						image: router.image ?? DEFAULT_TRAEFIK_IMAGE,
+						image: DEFAULT_TRAEFIK_IMAGE,
 						routeReadinessProbe: {
 							enabled: router.disabled !== true,
 						},
@@ -477,18 +451,6 @@ export const layerProductionOrchestrators = (router: ProductionRouterOptions = {
 	);
 };
 
-/** All three sink-feeds for one routable endpoint, derived together. */
-export interface EndpointSinks {
-	/** Router sink: the post-mint `ResolvedRoute` the router wrote its
-	 *  dispatch file from and publishes onto its `applied` ref. Carried
-	 *  through verbatim so all three sinks derive from this ONE object. */
-	readonly route: ResolvedRoute;
-	/** Manifest sink: the on-disk manifest's `EndpointEntry`. */
-	readonly manifestEntry: EndpointEntry;
-	/** Projection sink: the `endpoint.registered` engine event. */
-	readonly event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }>;
-}
-
 /** The single adapter for routable endpoints: ONE `ResolvedRoute` (the
  *  router's post-mint source of truth) → ALL THREE sink-feeds at once —
  *  the router's own `route`, the manifest `EndpointEntry`, and the
@@ -513,7 +475,7 @@ export const endpointSinksFromRoute = (
 	route: ResolvedRoute,
 	pluginKey: PluginKey,
 	registeredAt = Date.now(),
-): EndpointSinks => {
+) => {
 	const url =
 		route.wireProtocol === 'tcp'
 			? `tcp://127.0.0.1:${route.entrypointPort}`
@@ -525,6 +487,15 @@ export const endpointSinksFromRoute = (
 		wireProtocol: route.wireProtocol,
 	} as const;
 	const endpointKeyString = `${pluginKey}:${decl.endpointName}`;
+	const event: Extract<EngineEvent, { readonly tag: 'endpoint.registered' }> = {
+		tag: 'endpoint.registered',
+		endpoint: {
+			...common,
+			endpointKey: endpointKey(endpointKeyString),
+			pluginKey,
+			registeredAt,
+		},
+	};
 	return {
 		route,
 		manifestEntry: {
@@ -532,15 +503,7 @@ export const endpointSinksFromRoute = (
 			endpointKey: endpointKeyString,
 			pluginKey: String(pluginKey),
 		},
-		event: {
-			tag: 'endpoint.registered',
-			endpoint: {
-				...common,
-				endpointKey: endpointKey(endpointKeyString),
-				pluginKey,
-				registeredAt,
-			},
-		},
+		event,
 	};
 };
 
@@ -704,7 +667,7 @@ const operationalManifestEndpointEntries = (
 };
 
 export const buildProductionPostAcquireHook = (
-	options: ProductionPostAcquireOptions = {},
+	options: { readonly extras?: ManifestExtrasInput } = {},
 ): Effect.Effect<
 	SupervisorPostAcquireHook,
 	never,
@@ -825,5 +788,3 @@ export const extendBuiltInPluginContext = (
 			Context.add(FileSystem.FileSystem, fileSystem),
 		) as Context.Context<never>;
 	});
-
-export type { ResolvedRoute };

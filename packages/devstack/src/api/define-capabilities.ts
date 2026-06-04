@@ -4,34 +4,17 @@
 // `ctx` verbs (`ctx.codegen`/`ctx.endpoint`/`ctx.snapshotExtra`/
 // `ctx.publish`/`ctx.provides`). These helpers build the payload-shaped
 // decls those verbs accept, stamping the `kind` discriminant while
-// preserving narrow payload types. The five contribution kinds are a
-// closed union.
+// preserving narrow payload types. `codegenable` and `projection` are the
+// two helpers with live plugin-author call sites; the remaining
+// contribution kinds (routable / snapshotable / strategy-contributor) are
+// built inline by the built-in plugins as object literals.
 
 import type { CodegenableDecl } from '../contracts/codegenable.ts';
 import type { ProjectionDecl, ProjectionEvent } from '../contracts/projection.ts';
-import type { RoutableDecl } from '../contracts/routable.ts';
-import type { SnapshotableDecl } from '../contracts/snapshotable.ts';
-import type { StrategyContributorDecl } from '../contracts/strategy-contributor.ts';
 
 export const codegenable = <const Emitter extends string>(
 	decl: Omit<CodegenableDecl<Emitter>, 'kind'>,
 ): CodegenableDecl<Emitter> => ({ ...decl, kind: 'codegenable' });
-
-export const snapshotable = (decl: Omit<SnapshotableDecl, 'kind'>): SnapshotableDecl => ({
-	...decl,
-	kind: 'snapshotable',
-});
-
-// Distributive `Omit` so the discriminated `RoutableHttpDecl | RoutableTcpDecl`
-// preserves per-variant fields (notably `cors`, which lives on HTTP only).
-type RoutableDeclInput = RoutableDecl extends infer T
-	? T extends RoutableDecl
-		? Omit<T, 'kind'>
-		: never
-	: never;
-
-export const routable = (decl: RoutableDeclInput): RoutableDecl =>
-	({ ...decl, kind: 'routable' }) as RoutableDecl;
 
 /** Build a `ProjectionDecl` envelope from a `{kind, key, payload}`
  *  shorthand. Stamps `tag: 'projection.updated'` and (when `at` is
@@ -58,7 +41,3 @@ export const projection = (
 		},
 	};
 };
-
-export const strategyContributor = <const Key extends string, Strategy>(
-	decl: Omit<StrategyContributorDecl<Key, Strategy>, 'kind'>,
-): StrategyContributorDecl<Key, Strategy> => ({ ...decl, kind: 'strategy-contributor' });

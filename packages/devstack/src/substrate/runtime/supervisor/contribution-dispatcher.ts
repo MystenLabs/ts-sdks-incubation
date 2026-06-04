@@ -82,8 +82,7 @@ export interface ContributionDispatcher {
 
 /** A dispatcher whose methods are all no-ops. Used by bare smoke-test
  *  `supervise()` paths that layer no orchestrators — the buffered
- *  contributions simply have nowhere to go (matching the old empty
- *  `OrchestratorSinks` default). */
+ *  contributions simply have nowhere to go. */
 export const noopContributionDispatcher: ContributionDispatcher = {
 	snapshotable: () => Effect.void,
 	routable: () => Effect.void,

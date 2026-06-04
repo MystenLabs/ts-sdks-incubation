@@ -34,7 +34,7 @@ import {
 	ContributionDocSchema,
 	containerImagesBundlePath,
 	contributionPath,
-	DEPLOY_CACHE_NAMESPACES,
+	deployCacheSubtreeRelPaths,
 	SnapshotLayout,
 	SnapshotMetadataSchema,
 	type SnapshotId,
@@ -46,6 +46,14 @@ import {
 	isSafeSnapshotRelativePath,
 	parseSnapshotId,
 } from './descriptor.ts';
+import {
+	makeTarReaderState,
+	processTarChunk,
+	finishTarReader,
+	skipEntry,
+	stopScan,
+	type TarEntry,
+} from '../../substrate/runtime/tar/reader.ts';
 import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
@@ -605,68 +613,153 @@ const restoreHostTree = (
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
 
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
-	{ relativePath: SNAPSHOTS_DIR_NAME, kind: 'directory' },
-	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME, kind: 'file' },
-	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME, kind: 'file' },
-	{ relativePath: 'roster.json', kind: 'file' },
-	{ relativePath: 'container-claims.json', kind: 'file' },
-	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES in descriptor.ts). The
-	// capture does NOT tar these, so there is no captured copy in staging — the
-	// LIVE cache is the SOLE source. A wipe preserves it, so it
-	// is present at restore time; this entry preserves it across the stage-and-swap
-	// (preserve-ALWAYS — overwrite defaults true) so the post-restore boot REUSES
-	// the deploy instead of re-running it with fresh ids (which would orphan every
-	// pre-snapshot object). Chain rollback reconciles any drift between the rolled-
-	// back chain state and the live deploy ids. The generic per-call `cache/entry`
-	// is NOT a deploy namespace and stays dropped (restore.test.ts pins that
-	// rollback); a lost live cache (e.g. a hard reset) is surfaced LOUD by the
-	// matrix probe's fail-loud assertion rather than silently re-deployed.
-	...DEPLOY_CACHE_NAMESPACES.map(
-		(namespace): StageAndSwapPreservedPath => ({
-			relativePath: `${CACHE_DIR_NAME}/${namespace}`,
-			kind: 'directory',
-		}),
-	),
+	{ relativePath: SNAPSHOTS_DIR_NAME },
+	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME },
+	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME },
+	{ relativePath: 'roster.json' },
+	{ relativePath: 'container-claims.json' },
+	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES) are DELIBERATELY ABSENT from
+	// this preserve list. The snapshot's host-tree tar now CARRIES `cache/<ns>`
+	// (see `deployCacheSubtreeRelPaths` in descriptor.ts + capture's gather), so
+	// the restore untars the snapshot's cache into the swapped tree — that copy
+	// is the SOLE source on restore (no preserve-from-live, so no double-store
+	// drift). On a same-machine rollback the snapshot's (older) ids are the
+	// correct rollback target; on a CROSS-MACHINE restore (a fresh runner with an
+	// empty live cache) the snapshot populates the cache from nothing. Either way
+	// the post-restore boot REUSES the deploy rather than re-running it with fresh
+	// ids (which would orphan every pre-snapshot object). The generic per-call
+	// `cache/entry` is not a deploy namespace and is not captured, so it stays
+	// dropped on restore (restore.test.ts pins that rollback); a hard reset that
+	// wipes the live cache after restore re-deploys with fresh ids, surfaced LOUD
+	// by the matrix probe's fail-loud assertion.
 ];
 
 // -----------------------------------------------------------------------------
 // Cache-existence preflight — fail-closed BEFORE any mutation.
 // -----------------------------------------------------------------------------
 
-/**
- * The live `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source of
- * the on-chain deploy/mint ids (capture does not tar `cache/<ns>`; a wipe
- * preserves the live cache alongside `snapshots/`). Restore PRESERVES that
- * live cache across the stage-and-swap so the post-restore boot REUSES the
- * deploy instead of re-running it with fresh ids.
- *
- * If NONE of the deploy-cache namespaces exists on disk, that sole source is
- * gone — a restore would let the next boot silently re-deploy with FRESH ids,
- * orphaning every pre-snapshot object. Refuse here (fail-closed, BEFORE any
- * mutation, matching the identity-guard posture) with a typed `cache-missing`
- * error rather than silently orphaning. A genuine first-ever restore with no
- * deploy yet is not a real scenario for the cache-derived subsystems the
- * teeth protect (walrus/seal); the matrix's hard-reset phase asserts this
- * loudly instead of a silent re-deploy.
- */
-const requireDeployCachePresent = (
-	stackRoot: string,
-): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+/** The deploy-cache subtree relPaths (`cache/<ns>`) the snapshot RECORDS as
+ *  captured in its metadata. Capture tars a namespace only if it existed on disk
+ *  (`missingTolerance: 'fine'`) and writes `meta.subtrees` AFTER a successful
+ *  tar, so a relPath here means "this snapshot intended to carry this cache
+ *  namespace". A disabled-plugin namespace (e.g. `cache/deepbook` in a
+ *  deepbook-less stack) is simply absent from the list, so the preflight never
+ *  over-requires it. */
+const recordedDeployCacheRelPaths = (meta: SnapshotMetadata): ReadonlyArray<string> => {
+	const expected = new Set(deployCacheSubtreeRelPaths(CACHE_DIR_NAME));
+	const recorded: string[] = [];
+	for (const subtree of meta.subtrees) {
+		if (expected.has(subtree.relPath)) recorded.push(subtree.relPath);
+	}
+	return recorded;
+};
+
+/** Stream the host-tree tar and collect which of `expectedRelPaths` physically
+ *  appear as an entry prefix. An entry path `cache/<ns>/<chain>/<hash>.json`
+ *  (or the bare `cache/<ns>/` directory) marks `cache/<ns>` present. Read-only:
+ *  bodies are skipped, never buffered. */
+const scanHostTreeCacheRelPaths = (
+	artifactDir: string,
+	expectedRelPaths: ReadonlyArray<string>,
+): Effect.Effect<ReadonlySet<string>, RestorePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		for (const namespace of DEPLOY_CACHE_NAMESPACES) {
-			const present = yield* fs
-				.exists(`${stackRoot}/${CACHE_DIR_NAME}/${namespace}`)
-				.pipe(Effect.catch(() => Effect.succeed(false)));
-			if (present) return;
-		}
-		return yield* failRestore(
-			'cache-missing',
-			`live deploy cache is absent under ${stackRoot}/${CACHE_DIR_NAME}/ ` +
-				`(none of ${DEPLOY_CACHE_NAMESPACES.join(', ')} present). Post-D1 the live cache is the ` +
-				`SOLE source of the on-chain deploy/mint ids restore reuses; restoring without it would ` +
-				`let the next boot re-deploy with FRESH ids and orphan every pre-snapshot object. Refusing.`,
+		const tarPath = `${artifactDir}/${SnapshotLayout.hostTreeTar}`;
+		const present = new Set<string>();
+		const state = makeTarReaderState();
+		const matchEntry = (entryPath: string): void => {
+			for (const rel of expectedRelPaths) {
+				if (present.has(rel)) continue;
+				if (entryPath === rel || entryPath.startsWith(`${rel}/`)) present.add(rel);
+			}
+		};
+		const hooks = {
+			onEntry: (entry: TarEntry) => {
+				matchEntry(entry.path);
+				// Stop as soon as every expected namespace is found — the host-tree
+				// tar can be large (walrus blobs, the seal vault), and capture tars
+				// the deploy cache FIRST, so the answer settles in the leading
+				// entries. `stopScan` flips `state.stopped`; the `takeWhile` below
+				// then halts the stream so the trailing blob bytes are never read.
+				return present.size === expectedRelPaths.length ? stopScan() : skipEntry();
+			},
+			onExtendedError: (detail: string): RestorePhaseError =>
+				new RestorePhaseError({ phase: 'cache-missing', detail }),
+		} as const;
+		const tarStream = fs.stream(tarPath).pipe(
+			Stream.mapError(
+				(cause): RestorePhaseError =>
+					new RestorePhaseError({
+						phase: 'cache-missing',
+						detail: `read host-tree tar failed at ${tarPath}`,
+						cause,
+					}),
+			),
+			// Stop pulling chunks once the reader signalled `stop` (all namespaces
+			// found) — genuinely terminates the disk read, not just the parse.
+			Stream.takeWhile(() => !state.stopped),
 		);
+		yield* Stream.runForEach(tarStream, (chunk) => {
+			const error = processTarChunk(state, chunk, hooks);
+			return error === null ? Effect.void : Effect.fail(error);
+		});
+		const finalError = finishTarReader(
+			state,
+			(detail): RestorePhaseError => new RestorePhaseError({ phase: 'cache-missing', detail }),
+		);
+		if (finalError !== null) return yield* Effect.fail(finalError);
+		return present;
+	});
+
+/**
+ * The SNAPSHOT's host-tree `cache/<DEPLOY_CACHE_NAMESPACES>` is the SOLE source
+ * of the on-chain deploy/mint ids on restore (capture tars `cache/<ns>` into the
+ * artifact; restore untars it and does NOT preserve-from-live — see
+ * LIVE_RESTORE_PRESERVED_PATHS). So the cache check is against the SNAPSHOT, not
+ * the live stack — which is exactly what makes a CROSS-MACHINE restore work: a
+ * fresh runner has an empty live cache, and the snapshot supplies the ids.
+ *
+ * Refuse (fail-closed, BEFORE any mutation, matching the identity-guard posture)
+ * if the snapshot's cache is NOT self-contained: every deploy-cache namespace
+ * the metadata RECORDS as captured must be physically present in the host-tree
+ * tar. A partial loss (metadata claims `cache/<ns>` but the tar lacks it — a
+ * corrupted/tampered artifact) would let the post-restore boot re-deploy that
+ * namespace with FRESH ids and orphan its pre-snapshot objects. Requiring ALL
+ * recorded namespaces (not just ANY one) is the FIX over the prior "any one dir
+ * present" check, which passed a partial cache and re-minted the rest.
+ *
+ * A snapshot that records NO deploy-cache subtrees (a genuine pre-deploy /
+ * empty-stack capture) has nothing to verify and passes — there are no minted
+ * ids to lose. The matrix's hard-reset phase asserts the loud re-deploy on a
+ * post-restore live-cache wipe.
+ */
+const requireSnapshotDeployCache = (
+	meta: SnapshotMetadata,
+	artifactDir: string,
+): Effect.Effect<void, RestorePhaseError, FileSystem.FileSystem> =>
+	Effect.gen(function* () {
+		const recorded = recordedDeployCacheRelPaths(meta);
+		if (recorded.length === 0) return;
+		if (!meta.hostTreeIncluded) {
+			return yield* failRestore(
+				'cache-missing',
+				`snapshot metadata records deploy-cache subtrees (${recorded.join(', ')}) but the ` +
+					`artifact carries no host-tree tar. The snapshot's cache is the SOLE source of the ` +
+					`on-chain deploy/mint ids restore reuses; restoring without it would let the next boot ` +
+					`re-deploy with FRESH ids and orphan every pre-snapshot object. Refusing.`,
+			);
+		}
+		const present = yield* scanHostTreeCacheRelPaths(artifactDir, recorded);
+		const missing = recorded.filter((rel) => !present.has(rel));
+		if (missing.length > 0) {
+			return yield* failRestore(
+				'cache-missing',
+				`snapshot host-tree is missing deploy-cache namespaces it recorded as captured ` +
+					`(${missing.join(', ')}). The snapshot's cache is the SOLE source of the on-chain ` +
+					`deploy/mint ids restore reuses; a partial cache would let the next boot re-deploy the ` +
+					`missing namespaces with FRESH ids and orphan their pre-snapshot objects. Refusing.`,
+			);
+		}
 	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.cache-preflight'));
 
 // -----------------------------------------------------------------------------
@@ -768,10 +861,14 @@ export const runRestore = (
 		yield* runIdentityGuard(meta.identity, live);
 
 		// step0b — cache-existence preflight, ALSO fail-closed before any
-		//    mutation. The live deploy cache is the SOLE source of the
-		//    on-chain ids restore reuses; if it is gone, refuse (`cache-missing`)
-		//    rather than let the next boot silently re-deploy with fresh ids.
-		yield* requireDeployCachePresent(inputs.runtimeStackRoot);
+		//    mutation. The SNAPSHOT's host-tree cache is the SOLE source of the
+		//    on-chain ids restore reuses (capture tars it; restore untars it and
+		//    does NOT preserve-from-live). Refuse (`cache-missing`) if the
+		//    snapshot is not self-contained — any recorded deploy-cache namespace
+		//    missing from the tar — rather than let the next boot re-deploy that
+		//    namespace with fresh ids. Checked against the SNAPSHOT (not the live
+		//    stack), so a cross-machine restore onto an empty live cache passes.
+		yield* requireSnapshotDeployCache(meta, inputs.artifactDir);
 
 		// Plugin-level preRestore hooks (run AFTER identity-guard so a
 		// mismatch refuses without ever calling them). Pre-restore validation
@@ -879,7 +976,6 @@ export const runRestore = (
 
 				const swapTree: ReconcileFsOp<RestorePhaseError | StageAndSwapError> = {
 					op: 'swap-tree',
-					build: 'untar-artifact',
 					targetPath: inputs.runtimeStackRoot,
 					stagingPath: inputs.runtimeStagingPath,
 					backupPath: inputs.runtimeBackupPath,

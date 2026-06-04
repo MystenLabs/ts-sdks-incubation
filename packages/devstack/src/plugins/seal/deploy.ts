@@ -174,7 +174,6 @@ export const runSealPublishTransaction = (
 		const buildOutput = yield* runMoveBuild({
 			sourcePath: inputs.movePackagePath,
 			packageName: inputs.name,
-			chainId: inputs.chain,
 			runtime: inputs.runtime,
 			...(inputs.buildImage !== undefined ? { buildImage: inputs.buildImage } : {}),
 		}).pipe(Effect.mapError((err) => moveBuildToSealError(inputs.name, err)));

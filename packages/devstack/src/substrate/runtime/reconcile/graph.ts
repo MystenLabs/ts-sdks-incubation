@@ -2,7 +2,7 @@
 //
 // Two pieces:
 //
-//   1. `plan(graph, scope, direction)` — the single dep-ordering body.
+//   1. `plan(graph, scope)` — the single dep-ordering body.
 //      Given a slice (carried on a `graph-keys` scope) it produces the
 //      teardown (reverse-dep) and acquire (forward-dep) orderings via the
 //      kept `orderByLevel` level-ordering helper. Full-graph drains call
@@ -16,14 +16,14 @@
 //      `acquireKeys` / `teardownKeys` execution primitives by the spec's
 //      direction. It does NOT re-implement acquire/teardown. The graph
 //      axis handles ONLY `scope.kind === 'graph-keys'` + `converge | drain`;
-//      fsPlan and cachePolicy execution in the graph axis are unwired
-//      seams (marked TODO below — the TYPES already accept them).
+//      fsPlan execution in the graph axis is an unwired seam (marked TODO
+//      below — the TYPE already accepts it).
 //
 // `decideRunAction` / `ensureContainer` are untouched — reconcileGraph
 // only chooses target/direction and never re-implements per-container
 // action execution.
 
-import { Context, Effect, Queue, Scope, SubscriptionRef } from 'effect';
+import { Context, Effect, Queue, SubscriptionRef } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
@@ -54,14 +54,12 @@ export interface GraphPlan {
 }
 
 /** Order a slice (carried on a `graph-keys` scope) into teardown +
- *  acquire orderings. The `direction` argument names the PRIMARY intent of
- *  the caller — but both orderings are always produced because a
+ *  acquire orderings. Both orderings are always produced because a
  *  `drain∘converge` flow (selective-restart) needs both. Pure; delegates
  *  level math to the kept `orderByLevel`. */
 export const plan = (
 	graph: ResolvedGraph,
 	scope: { readonly kind: 'graph-keys'; readonly keys: ReadonlyArray<PluginKey> },
-	_direction: 'converge' | 'drain',
 ): GraphPlan => {
 	const slice = new Set<PluginKey>(scope.keys);
 	const teardownOrder = orderByLevel(graph, slice, 'reverse');
@@ -85,12 +83,6 @@ export interface ReconcileGraphDeps {
 	readonly dispatcher: ContributionDispatcher;
 	readonly logger: LoggerShape;
 	readonly identity: Identity;
-	/** The supervisor's outer scope — needed by `converge` callers that
-	 *  rebuild per-node scopes (`resetForRestart`) around the reconcile.
-	 *  `reconcileGraph` itself never reads it (drain/converge only sequence
-	 *  the kept primitives); it's optional so a pure `drain` caller
-	 *  (shutdown) needn't fabricate one. */
-	readonly parentScope?: Scope.Scope;
 }
 
 /**
@@ -115,7 +107,7 @@ export interface ReconcileGraphDeps {
 export const reconcileGraph = (
 	spec: ReconcileSpec,
 	deps: ReconcileGraphDeps,
-): Effect.Effect<GraphPlan, never, never> =>
+): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		// Label scope is the FLAT out-of-supervisor sweep — it has no
 		// dep-graph to order, so it lives in the sibling `reconcileLabel`
@@ -132,14 +124,8 @@ export const reconcileGraph = (
 		// `stageAndSwap` vocabulary (up/down/restart carry none today;
 		// codegen's swap-tree lands as a sibling). `spec.fsPlan` is
 		// typed-but-inert in the graph axis.
-		// TODO: cachePolicy execution (cache + snapshots dispositions).
-		// `spec.cachePolicy` is carried but not enforced in the graph axis
-		// yet — up/restart both ride `reuse-verified` today, which is the
-		// existing cache lookup→verify→reuse loop (untouched).
-		// TODO: `spec.precondition` / `spec.locks` / `spec.ownership`
-		// riders.
 
-		const built = plan(deps.graph, spec.scope, spec.direction);
+		const built = plan(deps.graph, spec.scope);
 		if (spec.direction === 'drain') {
 			yield* teardownKeys(deps.graph, deps.registry, built.teardownOrder);
 		} else {
@@ -154,5 +140,4 @@ export const reconcileGraph = (
 				deps.identity,
 			);
 		}
-		return built;
 	}).pipe(Effect.withSpan('lifecycle.reconcile.graph'));

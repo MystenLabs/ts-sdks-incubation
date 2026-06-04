@@ -379,7 +379,7 @@ const joinPath = (...parts: ReadonlyArray<string>): string =>
  *
  * Hand-parse rather than pull in a TOML dependency: the sibling Move-build
  * path already harvests `{ local = "../x" }` deps from Move.toml by regex
- * (`sui-move-build/index.ts`), and we only need the `[addresses]` section's
+ * (`plugins/sui/move/index.ts`), and we only need the `[addresses]` section's
  * left-hand labels — never their values.
  */
 const resolveSummaryDirName = async (sourcePath: string): Promise<string | null> => {
