@@ -13,11 +13,12 @@
 //                  `label(tuple)` (out-of-supervisor, flat sweep).
 //   - direction  — `converge` (forward dep order) | `drain` (reverse).
 //
-// The graph axis (`reconcileGraph`, `./graph.ts`) handles
-// `scope.kind === 'graph-keys'` + `converge|drain`; the label axis
-// (`reconcileLabel`, `./label.ts`) handles `scope.kind === 'label'`
-// sweeps + their fsPlan. Slots not yet executed in a given axis are
-// typed-but-inert there.
+// The label axis (`reconcileLabel`, `./label.ts`) consumes this spec for
+// `scope.kind === 'label'` sweeps + their fsPlan. The in-supervisor graph
+// flows do NOT route through this spec: they sequence `teardownKeys` /
+// `acquireKeys` directly over the orderings from `plan` (`./graph.ts`).
+// The `graph-keys` scope variant is the shape `plan` consumes. Slots not
+// used by a given flow are typed-but-inert there.
 
 import type { AppName, PluginKey, StackName } from '../../brand.ts';
 
@@ -65,7 +66,7 @@ export type ReconcileScope =
 //     `preserveOnPreseed`) stay PER-DIRECTION named constants.
 //
 // Each op carries the live callbacks / failers it needs (this is an
-// in-process plan, not a serialized one — like `ReconcileGraphDeps` it
+// in-process plan, not a serialized one — like `ReconcileLabelDeps` it
 // holds live objects). The preserve-list BUILDERS are per-direction: wipe
 // supplies its wholesale `isPreservedChild` predicate here; restore's
 // per-namespace + control-file preserve list is a SEPARATE constant.
@@ -205,12 +206,13 @@ export type ReconcileTarget = 'running' | 'absent';
  *  order, `drain` is reverse (teardown) order. */
 export type ReconcileDirection = 'converge' | 'drain';
 
-/** The one structured spec every lifecycle flow compiles down to. The
- *  `E` parameter is the caller's fs-plan error tag (e.g. `WipePhaseError`
- *  / `PrunePhaseError`), defaulting to `never` for the graph flows that
- *  carry no fsPlan. The graph axis (`reconcileGraph`) consumes `target`,
- *  `scope` (graph-keys) and `direction`; the label axis
- *  (`reconcileLabel`) additionally executes `fsPlan` over a label scope. */
+/** The structured spec the label-scope lifecycle flows (wipe / prune)
+ *  compile down to. The `E` parameter is the caller's fs-plan error tag
+ *  (e.g. `WipePhaseError` / `PrunePhaseError`). The label axis
+ *  (`reconcileLabel`) consumes `target` + `scope` (label) and executes
+ *  `fsPlan` over the label scope; `direction` records the flow's intent.
+ *  (The in-supervisor graph flows do NOT build a spec — they sequence
+ *  `teardownKeys` / `acquireKeys` directly over `plan`'s orderings.) */
 export interface ReconcileSpec<E = never> {
 	readonly target: ReconcileTarget;
 	readonly fsPlan?: ReconcileFsPlan<E>;
@@ -221,12 +223,6 @@ export interface ReconcileSpec<E = never> {
 // -----------------------------------------------------------------------------
 // Pure constructors (no behavior)
 // -----------------------------------------------------------------------------
-
-/** A graph-keys scope over an explicit subset of plugin keys. */
-export const graphKeysScope = (keys: ReadonlyArray<PluginKey>): ReconcileScope => ({
-	kind: 'graph-keys',
-	keys,
-});
 
 /** A flat label scope over an out-of-supervisor surface (docker resources
  *  by `{app, stack[, plugin, role]}`). The label flows (wipe / prune)

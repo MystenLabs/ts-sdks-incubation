@@ -221,8 +221,8 @@ export const handleCommand = (
 				// gets that converge for free (supervisor was DOWN, boots fresh
 				// after). For a LIVE supervisor (the dashboard path) nothing else
 				// re-acquires — so we chain a drain + re-acquire here via
-				// `doSelectiveRestart`, which is itself routed through
-				// `reconcileGraph(drain)∘reconcileGraph(converge)`, mirroring
+				// `doSelectiveRestart`, which sequences `teardownKeys` (drain)
+				// then `acquireKeys` (converge) directly, mirroring
 				// `stack.restart`. The handler runs first (and publishes
 				// `snapshot.restored`); we only converge once it succeeded.
 				//

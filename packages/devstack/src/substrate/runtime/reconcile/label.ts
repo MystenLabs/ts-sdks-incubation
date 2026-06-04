@@ -1,11 +1,12 @@
 // Reconcile over a flat label scope.
 //
-// The out-of-supervisor sibling of `reconcileGraph` (`./graph.ts`). Where
-// the graph axis is dep-ordered (in-supervisor), the LABEL axis is a FLAT
-// sweep over docker resources matched by an `{app, stack[, plugin, role]}`
-// tuple plus a file-tree fs-plan — there is no live dep-graph to order
-// (guardrail: graph-scope gets dep-order, label-scope gets the flat
-// `removeManaged*` sweep).
+// The out-of-supervisor sibling of the in-supervisor graph flows (which
+// sequence `teardownKeys` / `acquireKeys` directly over `plan`'s
+// orderings, `./graph.ts`). Where the graph flows are dep-ordered, the
+// LABEL axis is a FLAT sweep over docker resources matched by an
+// `{app, stack[, plugin, role]}` tuple plus a file-tree fs-plan — there
+// is no live dep-graph to order (guardrail: graph-scope gets dep-order,
+// label-scope gets the flat `removeManaged*` sweep).
 //
 // `reconcileLabel(spec, deps)` executes, in order:
 //
@@ -75,10 +76,11 @@ export const reconcileLabel = <E>(
 ): Effect.Effect<FsPlanResult, E, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
 		if (spec.scope.kind !== 'label') {
-			// Wiring bug — `reconcileLabel` is the label-axis executor; a
-			// graph-keys spec must go through `reconcileGraph`.
+			// Wiring bug — `reconcileLabel` is the label-axis executor; the
+			// in-supervisor graph flows drive `teardownKeys` / `acquireKeys`
+			// directly and never build a label-scope spec.
 			return yield* Effect.die(
-				'reconcileLabel: expected a label scope; graph-keys scopes go through reconcileGraph',
+				'reconcileLabel: expected a label scope; graph-keys flows drive teardownKeys/acquireKeys directly',
 			);
 		}
 		const tuple = spec.scope.tuple;

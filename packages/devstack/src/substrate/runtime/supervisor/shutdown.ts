@@ -18,10 +18,10 @@
 import { Deferred, Effect, Ref } from 'effect';
 
 import type { EngineCommand } from '../../events.ts';
-import { reconcileGraph } from '../reconcile/graph.ts';
-import { graphKeysScope, reconcileSpec } from '../reconcile/spec.ts';
+import { plan } from '../reconcile/graph.ts';
 import { requestBackgroundStackRestartInterrupt } from './background-tasks.ts';
 import type { SupervisorState } from './state.ts';
+import { teardownKeys } from './teardown.ts';
 import { publish, setCyclePhase } from './wiring.ts';
 
 export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<void, never, never> =>
@@ -47,20 +47,16 @@ export const handleShutdownRequested = (deps: SupervisorState): Effect.Effect<vo
 					message: 'shutdown requested',
 				});
 				yield* requestBackgroundStackRestartInterrupt(deps);
-				// Graceful drain of the WHOLE graph, sequenced through the
-				// reconcile graph-axis (`drain` direction → the kept
-				// `teardownKeys` over reverse-dep order, over the full key
-				// set). This whole block stays `Effect.uninterruptible` so a
-				// second SIGINT can't slip an interrupt between the teardown
-				// and the latch/deferred writes (Bug #13).
-				yield* reconcileGraph(
-					reconcileSpec({
-						target: 'absent',
-						scope: graphKeysScope([...graph.nodes.keys()]),
-						direction: 'drain',
-					}),
-					{ graph, registry, ref, hub: deps.hub, pluginContext: deps.pluginContext, dispatcher: deps.dispatcher, logger: deps.logger, identity: deps.identity },
-				);
+				// Graceful drain of the WHOLE graph: the kept `teardownKeys`
+				// over reverse-dep order, over the full key set. This whole
+				// block stays `Effect.uninterruptible` so a second SIGINT can't
+				// slip an interrupt between the teardown and the latch/deferred
+				// writes (Bug #13).
+				const fullDrain = plan(graph, {
+					kind: 'graph-keys',
+					keys: [...graph.nodes.keys()],
+				});
+				yield* teardownKeys(graph, registry, fullDrain.teardownOrder);
 				yield* Effect.yieldNow;
 				yield* Deferred.succeed(deps.shutdownComplete, void 0).pipe(Effect.ignore);
 			}),
