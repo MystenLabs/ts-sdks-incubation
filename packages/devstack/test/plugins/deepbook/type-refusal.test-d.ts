@@ -9,7 +9,6 @@
 // (STYLE_GUIDE §3 / §9).
 
 import { deepbookFor } from '../../../src/plugins/deepbook/index.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
 import type * as DB from '../../../src/plugins/deepbook/index.ts';
 import type { NetworkConfig } from '../../../src/substrate/network.ts';
 
@@ -33,11 +32,11 @@ export type _NoUsdcMarginDefaultsOnDeepbookBarrel = DPV['USDC_MARGIN_DEFAULTS'];
 // @ts-expect-error — margin defaults are not exported without margin behavior
 export type _NoDefaultPoolRiskConfigOnDeepbookBarrel = DPV['DEFAULT_POOL_RISK_CONFIG'];
 
-const localNet: NetworkConfig<'local'> = { mode: 'local', chain: chainId('sui:localnet') };
-const liveNet: NetworkConfig<'live'> = { mode: 'live', chain: chainId('sui:testnet') };
+const localNet: NetworkConfig<'local'> = { mode: 'local', chain: 'sui:localnet' };
+const liveNet: NetworkConfig<'live'> = { mode: 'live', chain: 'sui:testnet' };
 const forkNet: NetworkConfig<'fork'> = {
 	mode: 'fork',
-	chain: chainId('sui:mainnet-fork'),
+	chain: 'sui:mainnet-fork',
 	checkpoint: '1',
 };
 

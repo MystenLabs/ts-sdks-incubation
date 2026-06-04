@@ -7,7 +7,7 @@ import { describe, expect, it } from '@effect/vitest';
 import { Deferred, Effect, Exit, Fiber, Option, type Scope } from 'effect';
 
 import { definePlugin } from '../../../src/api/define-plugin.ts';
-import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import { Logger, type LoggerShape } from '../../../src/substrate/runtime/observability/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
 import { IdentityContext, RuntimeRoot } from '../../../src/substrate/runtime/paths.ts';
@@ -459,7 +459,7 @@ describe('acquireHostService', () => {
 					Effect.provideService(IdentityContext, {
 						app: appName('host-service-test'),
 						stack: stackName('host-service-test'),
-						chain: chainId('localnet'),
+						chain: 'localnet',
 					}),
 					Effect.provideService(RuntimeRoot, { root: '/tmp/host-service-test-root' }),
 				) as Effect.Effect<HostServiceValue, unknown, Scope.Scope>;

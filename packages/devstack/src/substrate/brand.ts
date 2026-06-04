@@ -15,11 +15,8 @@ export type PluginKey = Brand<string, 'PluginKey'>;
 /** Opaque endpoint key — `(pluginKey, dispatchId)` digest, branded. */
 export type EndpointKey = Brand<string, 'EndpointKey'>;
 
-/** Content-hash brand. Substrate folds chainId into the final cache key. */
+/** Content-hash brand. Substrate folds the chain string into the final cache key. */
 export type ContentHash = Brand<string, 'ContentHash'>;
-
-/** Chain identity brand (e.g. `sui:mainnet`, `sui:fork@<height>`). */
-export type ChainId = Brand<string, 'ChainId'>;
 
 /** Stack identity triple components. Validated once at boot. */
 export type AppName = Brand<string, 'AppName'>;
@@ -31,6 +28,5 @@ export type StackName = Brand<string, 'StackName'>;
 export const pluginKey = (s: string): PluginKey => s as PluginKey;
 export const endpointKey = (s: string): EndpointKey => s as EndpointKey;
 export const contentHash = (s: string): ContentHash => s as ContentHash;
-export const chainId = (s: string): ChainId => s as ChainId;
 export const appName = (s: string): AppName => s as AppName;
 export const stackName = (s: string): StackName => s as StackName;

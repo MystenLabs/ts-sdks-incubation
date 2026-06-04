@@ -15,7 +15,6 @@
 import { Effect } from 'effect';
 
 import { chainProbeCapabilityKey, type ChainProbe } from '../../../contracts/chain-probe.ts';
-import type { ChainId } from '../../brand.ts';
 import type { StrategyNotFoundError } from '../errors.ts';
 import { StrategyRegistryService } from './service.ts';
 
@@ -31,7 +30,7 @@ import { StrategyRegistryService } from './service.ts';
  * sites stop repeating it.
  */
 export const chainProbeFor = <Key = unknown>(
-	chain: ChainId,
+	chain: string,
 ): Effect.Effect<ChainProbe<Key>, StrategyNotFoundError, StrategyRegistryService> =>
 	Effect.gen(function* () {
 		const registry = yield* StrategyRegistryService;

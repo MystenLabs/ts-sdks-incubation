@@ -44,7 +44,6 @@ import { Effect, FileSystem, Path, Schema, type Scope } from 'effect';
 
 import { decodeJsonText } from '../../../substrate/runtime/runtime-decode.ts';
 
-import type { ChainId } from '../../../substrate/brand.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { ContainerRuntime, ImageRef } from '../../../contracts/container-runtime.ts';
@@ -142,7 +141,7 @@ export interface LocalKeygenDeps {
 	readonly sdk: SealSuiSdk;
 	readonly buildImage?: ImageRef;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;
-	readonly chain: ChainId;
+	readonly chain: string;
 	/** Per-stack on-disk dir under `runtime/seal/`. Host path for the
 	 *  config yaml + master-key env-file. */
 	readonly servicePath: string;

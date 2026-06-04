@@ -2,7 +2,6 @@ import { Effect, Exit, Fiber } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { vi } from 'vitest';
 
-import { chainId } from '../../../src/substrate/brand.ts';
 import { layerLeaseBroker } from '../../../src/substrate/runtime/lease-broker/index.ts';
 import { layerStrategyRegistry } from '../../../src/substrate/runtime/strategy-registry/index.ts';
 import {
@@ -112,7 +111,7 @@ const makeGate = (): Gate => {
 };
 
 const makeAccountCtx = (sdk: SuiSdkShim): AccountAcquireContext => ({
-	sui: { mode: 'local', chain: chainId('sui:localnet'), sdk },
+	sui: { mode: 'local', chain: 'sui:localnet', sdk },
 	runtimeRoot: '/tmp/devstack-publish-executor-test',
 	app: 'test-app',
 	stack: 'test-stack',

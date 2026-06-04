@@ -63,7 +63,6 @@ import { resolveInlineVariant } from './variants/inline.ts';
 import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
-import type { ChainId } from '../../substrate/brand.ts';
 import {
 	extractExecuteDigest,
 	type ExecutedFailure,
@@ -310,7 +309,7 @@ export const validateAccountName = (name: string): Effect.Effect<void, AccountAc
  *  chain, sdk) rather than at the wide `SuiClient` shape. */
 export interface AccountSuiShim {
 	readonly mode: 'local' | 'local-rpc' | 'live' | 'fork';
-	readonly chain: ChainId;
+	readonly chain: string;
 	/** SDK shim — exposes `executeTransaction` + `waitForTransaction`
 	 *  for the signAndExecute pipeline. */
 	readonly sdk: SuiSdkShim;

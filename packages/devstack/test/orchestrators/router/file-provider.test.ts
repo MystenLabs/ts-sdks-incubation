@@ -26,12 +26,12 @@ import {
 	type ResolvedRoute,
 	type UpstreamResolver,
 } from '../../../src/orchestrators/router/file-provider.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 
 const stubUpstreams: UpstreamResolver = {

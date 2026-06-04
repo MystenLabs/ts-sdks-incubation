@@ -45,7 +45,6 @@ import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../../sui/index.ts';
 import { contentHash as brandContentHash } from '../../../substrate/brand.ts';
-import type { ChainId } from '../../../substrate/brand.ts';
 import { expectPositiveInteger } from '../../../substrate/runtime/config-validation.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
@@ -195,7 +194,7 @@ export interface LocalClusterDeps {
 	readonly publisher: ArtifactPublisher;
 	readonly probe: ChainProbe<SuiProbeKey>;
 	readonly suiSdk: WalSwapSdk;
-	readonly suiChainId: ChainId;
+	readonly suiChainId: string;
 	readonly suiRpcUrlInNetwork: string;
 	readonly walrusFaucetUrlInNetwork: string;
 	readonly waitForFundsReady: Effect.Effect<void, unknown>;

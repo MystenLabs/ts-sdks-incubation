@@ -16,14 +16,14 @@
 
 import type { Effect, Scope } from 'effect';
 
-import type { ChainId, ContentHash } from '../substrate/brand.ts';
+import type { ContentHash } from '../substrate/brand.ts';
 
 /** Input contract for ArtifactPublisher.publish. */
 export interface ArtifactSpec<Produced, Verified> {
 	/** Cache namespace — plugin-chosen, e.g. `package`. */
 	readonly namespace: string;
-	/** Chain identity — substrate folds into the cache key. */
-	readonly chain: ChainId;
+	/** Chain identity (plain string value) — substrate folds into the cache key. */
+	readonly chain: string;
 	/** Content-hash of canonical input bytes. */
 	readonly contentHash: ContentHash;
 	/** Verify probe — typed Schema; lenient mode. Returns null on

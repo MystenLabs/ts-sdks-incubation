@@ -19,7 +19,7 @@ import {
 	RouterService,
 	type ResolvedRoute,
 } from '../../src/orchestrators/router/index.ts';
-import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { appName, stackName } from '../../src/substrate/brand.ts';
 import { renderNetworkLabels } from '../../src/runtime/docker/index.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 
@@ -233,7 +233,7 @@ describe('router real Docker traffic', () => {
 		const identity = {
 			app: appName(`router-e2e-${process.pid}`),
 			stack: stackName('main'),
-			chain: chainId('sui:local'),
+			chain: 'sui:local',
 		};
 		const route: RoutableDecl = {
 			kind: 'routable',

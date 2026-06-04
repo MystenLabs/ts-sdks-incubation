@@ -10,13 +10,15 @@
 import type { Effect, Scope } from 'effect';
 
 import type { ArtifactPublishError, ArtifactSpec } from './artifact-publisher.ts';
-import type { ChainId, ContentHash } from '../substrate/brand.ts';
+import type { ContentHash } from '../substrate/brand.ts';
 
 /** Cache key components. The substrate computes the on-disk key
- *  from these — plugins never construct path strings. */
+ *  from these — plugins never construct path strings. The `chain` is a
+ *  plain string value supplied by the caller; the substrate keys on it
+ *  verbatim (preserving warm-restart id stability). */
 export interface CacheKey {
 	readonly namespace: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly contentHash: ContentHash;
 }
 

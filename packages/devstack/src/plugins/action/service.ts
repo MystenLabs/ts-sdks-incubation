@@ -36,7 +36,7 @@ import { createHash } from 'node:crypto';
 
 import { Cause, Effect, Schema, type Scope } from 'effect';
 
-import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
+import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import {
 	artifactPublishError,
 	type ArtifactPublishError,
@@ -100,7 +100,7 @@ const VerifyTxShape = Schema.Struct({
  *  `staticDiscriminator` + optional `dynamicMaterial` string suffice. */
 export interface ActionAcquireInputs {
 	readonly actionName: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly staticDiscriminator: StaticDiscriminator;
 	/** Resolved dynamic-discriminator material — already projected to
 	 *  a string at acquire-time by `index.ts` (the callback form

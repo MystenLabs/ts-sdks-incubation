@@ -24,7 +24,7 @@ import type {
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
 import { postgres } from '../../../src/plugins/postgres/index.ts';
 import type { Postgres, PostgresServiceOptions } from '../../../src/plugins/postgres/service.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/service.ts';
@@ -38,7 +38,7 @@ const STACK_ROOT = '/tmp/codegen-host-test-stack-root';
 const identity: Identity = {
 	app: appName(APP),
 	stack: stackName(STACK),
-	chain: chainId('sui:local'),
+	chain: 'sui:local',
 };
 
 /** Minimal `ContainerRuntime` fake that lets `bootPostgresService` run

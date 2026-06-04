@@ -17,7 +17,7 @@ import type {
 	ExecResult,
 	ImageRef,
 } from '../../../contracts/container-runtime.ts';
-import { contentHash, type ChainId, type ContentHash } from '../../../substrate/brand.ts';
+import { contentHash, type ContentHash } from '../../../substrate/brand.ts';
 import { mintRandomSuffix } from '../../../substrate/runtime/random-suffix.ts';
 import { decodeJsonTextSync } from '../../../substrate/runtime/runtime-decode.ts';
 
@@ -66,7 +66,7 @@ export interface MoveBuildContainer {
 export interface BuildInputs {
 	readonly sourcePath: string;
 	readonly packageName: string;
-	readonly chainId: ChainId | string;
+	readonly chainId: string;
 	readonly buildContainer?: MoveBuildContainer;
 	readonly runtime?: ContainerRuntime;
 	readonly buildImage?: ImageRef;

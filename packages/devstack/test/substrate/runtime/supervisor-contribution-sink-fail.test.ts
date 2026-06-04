@@ -12,7 +12,7 @@
 import { Data, Effect, Queue, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import { definePlugin } from '../../../src/substrate/plugin.ts';
@@ -29,7 +29,7 @@ import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 const identity: Identity = {
 	app: appName('contribution-sink-fail-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 const codegenDecl: CodegenableDecl<'failing-emitter'> = {

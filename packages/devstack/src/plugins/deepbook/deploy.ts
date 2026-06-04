@@ -9,7 +9,6 @@ import { bcs } from '@mysten/sui/bcs';
 import { Transaction } from '@mysten/sui/transactions';
 import { normalizeStructTag, normalizeSuiAddress } from '@mysten/sui/utils';
 
-import { chainId as brandChainId } from '../../substrate/brand.ts';
 import {
 	artifactPublishError,
 	type ArtifactPublishError,
@@ -338,7 +337,7 @@ export const createDeepbookPools = (
 			CachedDeepbookPoolsResult
 		>(publisher, {
 			namespace: 'deepbook/pools',
-			chain: brandChainId(chain),
+			chain,
 			contentHash: poolInputsHash(pkg, signer, pools),
 			verify: (cached) => buildVerifyProbe(sdk, cached),
 			produce: Effect.gen(function* () {
@@ -687,7 +686,7 @@ export const seedDeepbookPools = (
 				CachedDeepbookSeedResult
 			>(publisher, {
 				namespace: `deepbook/seed/${spec.name}`,
-				chain: brandChainId(chain),
+				chain,
 				contentHash: seedInputsHash(pkg, signer, spec, pool),
 				verify: (cached) => buildSeedVerifyProbe(sdk, cached),
 				produce: Effect.gen(function* () {

@@ -23,7 +23,6 @@ import {
 	type AccountValue,
 	validateAccountName,
 } from '../../../src/plugins/account/service.ts';
-import { chainId } from '../../../src/substrate/brand.ts';
 import { resolveEnvVariant } from '../../../src/plugins/account/variants/env.ts';
 import { resolveEphemeralVariant } from '../../../src/plugins/account/variants/ephemeral.ts';
 import { resolveInlineVariant } from '../../../src/plugins/account/variants/inline.ts';
@@ -329,7 +328,7 @@ describe('account impersonation variant', () => {
 		const ctx: AccountAcquireContext = {
 			sui: {
 				mode: 'fork',
-				chain: chainId('sui:mainnet-fork'),
+				chain: 'sui:mainnet-fork',
 				sdk: {
 					core: {
 						getObject: () => Promise.reject(new Error('unused')),

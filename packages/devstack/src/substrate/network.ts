@@ -3,8 +3,6 @@
 // dedicated NetworkResolver contract — identity threads through Context
 // directly).
 
-import type { ChainId } from './brand.ts';
-
 /** Network mode registry. Architecture: fork is a network mode, not
  *  an orchestrator. Module augmentation can add modes without widening
  *  every config field. */
@@ -22,9 +20,9 @@ export type NetworkConfig<Mode extends NetworkMode = NetworkMode> = Readonly<
 	{
 		readonly mode: Mode;
 		/** Chain identity the plugin uses for cache-key folding, ChainProbe
-		 *  dispatch, etc. Branded so downstream lookups (chain-probe /
-		 *  faucet capability keys) accept it without a re-wrap. */
-		readonly chain: ChainId;
+		 *  dispatch, etc. A plain string value: downstream lookups
+		 *  (chain-probe / faucet capability keys) key on it directly. */
+		readonly chain: string;
 		/** Source provenance for renderer display. */
 		readonly source?: 'cli' | 'env' | 'config' | 'default';
 	} & DevstackNetworkModeRegistry[Mode]

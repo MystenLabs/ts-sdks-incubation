@@ -10,7 +10,7 @@
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
 import {
 	SpanAttr,
 	spanWithLabels,
@@ -42,7 +42,7 @@ describe('spanWithLabels', () => {
 				layerIdentity({
 					app: appName('test-app'),
 					stack: stackName('test-stack'),
-					chain: chainId('sui:test'),
+					chain: 'sui:test',
 				}),
 			),
 		),

@@ -15,7 +15,6 @@ import {
 } from '../../../primitives/artifact-publisher.ts';
 import { acquireOnChainArtifact } from '../../internal/acquire-on-chain-artifact.ts';
 import { probeManyLenient } from '../../../substrate/runtime/probes.ts';
-import { chainId as brandChainId } from '../../../substrate/brand.ts';
 import {
 	executeSuiTx,
 	formatExecutedFailure,
@@ -231,7 +230,7 @@ export const initLocalPythFeeds = (
 
 		const cached = yield* acquireOnChainArtifact<CachedPythHandle, CachedPythHandle>(publisher, {
 			namespace: 'deepbook/pyth',
-			chain: brandChainId(chain),
+			chain,
 			contentHash: pythInputsHash(pkg, signer, feeds),
 			verify: (entry) => buildVerifyProbe(sdk, entry),
 			produce: Effect.gen(function* () {

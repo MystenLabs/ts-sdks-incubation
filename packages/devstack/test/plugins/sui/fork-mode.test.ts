@@ -5,7 +5,7 @@ import { Effect, Exit, Option } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 import { Transaction, TransactionDataBuilder } from '@mysten/sui/transactions';
 
-import { chainId, type NetworkConfig } from '../../../src/substrate/index.ts';
+import { type NetworkConfig } from '../../../src/substrate/index.ts';
 import { sui, suiFor } from '../../../src/plugins/sui/index.ts';
 import { DEFAULT_EPHEMERAL_FUND_MIST } from '../../../src/plugins/account/index.ts';
 import {
@@ -32,7 +32,7 @@ describe('sui fork mode', () => {
 	it('constructs through the mode-narrowed fork factory', () => {
 		const fork: NetworkConfig<'fork'> = {
 			mode: 'fork',
-			chain: chainId('sui:mainnet-fork'),
+			chain: 'sui:mainnet-fork',
 		};
 
 		expect(() => suiFor(fork).mainnet()).not.toThrow();

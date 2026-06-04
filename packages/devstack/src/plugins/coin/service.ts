@@ -25,7 +25,6 @@
 
 import { Effect, type Scope } from 'effect';
 
-import type { ChainId } from '../../substrate/brand.ts';
 import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
@@ -68,7 +67,7 @@ export type CoinAddressForm =
 export interface CoinAcquireContext {
 	readonly registry: CoinRegistry;
 	readonly sdk: MetadataSdkShim & MintSdkShim;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly publisher: ArtifactPublisher;
 }
 

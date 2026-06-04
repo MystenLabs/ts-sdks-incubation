@@ -17,7 +17,7 @@ import {
 	type ArtifactPublishError,
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
-import { contentHash, type ChainId, type ContentHash } from '../../substrate/brand.ts';
+import { contentHash, type ContentHash } from '../../substrate/brand.ts';
 import {
 	executeSuiTx,
 	formatExecutedFailure,
@@ -81,7 +81,7 @@ export type SealPackageVerified = Schema.Schema.Type<typeof SealPackageVerifySha
 
 export interface SealPublishInputs {
 	readonly name: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly movePackagePath: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
@@ -281,7 +281,7 @@ export interface RegisterKeyServerTransactionInputs {
 
 export interface RegisterKeyServerInputs extends RegisterKeyServerTransactionInputs {
 	readonly name: string;
-	readonly chain: ChainId;
+	readonly chain: string;
 	readonly signer: AccountValue;
 	readonly sdk: SealSuiSdk;
 	readonly chainProbe: ChainProbe<SealObjectProbeKey>;

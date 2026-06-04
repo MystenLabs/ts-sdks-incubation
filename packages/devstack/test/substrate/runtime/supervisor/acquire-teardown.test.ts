@@ -19,7 +19,7 @@
 import { Effect, Ref } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
 import type { Identity } from '../../../../src/substrate/identity.ts';
 import {
 	makeProjectionRef,
@@ -31,7 +31,7 @@ import { definePlugin } from '../../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('acquire-teardown-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 describe('supervisor acquire pipeline', () => {

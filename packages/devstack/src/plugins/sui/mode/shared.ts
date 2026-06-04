@@ -20,7 +20,6 @@ import type { SuiSdkShim } from '../chain-probe.ts';
 import type { ChainProbe } from '../../../contracts/chain-probe.ts';
 import type { ImageRef } from '../../../contracts/container-runtime.ts';
 import type { SuiProbeKey } from '../chain-probe.ts';
-import type { ChainId } from '../../../substrate/brand.ts';
 
 /** Funds-ready strategy contributed by Sui. Mode-aware:
  *
@@ -91,12 +90,11 @@ export interface SuiClient {
 		readonly graphqlUrl: string | null;
 	};
 	/** Chain identity — the substrate's content-addressed cache folds
-	 *  this into its keys (`(namespace, chainId, contentHash)`) so
-	 *  on-chain artifacts re-derive when the chain is wiped. Branded so
-	 *  consumers can hand it directly
-	 *  to `chainProbeCapabilityKey(chain)` / `faucetCapabilityKey(chain)`
-	 *  without a cast. */
-	readonly chain: ChainId;
+	 *  this into its keys (`(namespace, chain, contentHash)`) so
+	 *  on-chain artifacts re-derive when the chain is wiped. A plain
+	 *  string value handed directly to `chainProbeCapabilityKey(chain)`
+	 *  / `faucetCapabilityKey(chain)`. */
+	readonly chain: string;
 	/** Mode-aware funds-transferable gate; trivially-succeeding on
 	 *  faucet-less networks. */
 	readonly waitForTransactionsReady: WaitForTransactionsReady;

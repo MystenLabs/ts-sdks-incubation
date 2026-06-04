@@ -3,7 +3,7 @@
 import { Effect, type Scope } from 'effect';
 
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import {
 	hashMoveSources as hashMoveSourcesNeutral,
 	runMoveBuild as runMoveBuildNeutral,
@@ -31,7 +31,7 @@ export type { BuildOutput };
 export interface BuildInputs {
 	readonly sourcePath: string;
 	readonly packageName: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly buildContainer?: ChainBuildContainer;
 	readonly runtime?: ContainerRuntime;
 	readonly buildImage?: ImageRef;

@@ -39,7 +39,7 @@ import {
 	type ArtifactPublisher,
 } from '../../primitives/artifact-publisher.ts';
 import type { ChainProbe } from '../../contracts/chain-probe.ts';
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import { atomicWriteFileSync } from '../../substrate/runtime/atomic-write.ts';
 import { hostBindMountOwner } from '../../substrate/runtime/host-bind-mount-owner.ts';
 import { HOST_GATEWAY_EXTRA_HOSTS } from '../../substrate/runtime/host-gateway.ts';
@@ -133,7 +133,7 @@ const deployOutputFilesComplete = (
 /** Inputs to one deploy round. */
 export interface DeployInputs {
 	readonly walrusName: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly contentHash: ContentHash;
 	/** Pre-derived host output dir — substrate's `servicePath('walrus',
 	 *  name, 'deploy')` equivalent. Persists across teardown

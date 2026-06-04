@@ -32,7 +32,7 @@ import * as NodePath from '@effect/platform-node/NodePath';
 import { Effect, Exit, Layer } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	SnapshotIdError,
@@ -49,7 +49,7 @@ import { withTempRoot } from '../../helpers/with-temp-root.ts';
 const identity: Identity = {
 	app: appName('snapshot-tdz-test'),
 	stack: stackName('main'),
-	chain: chainId('sui:local'),
+	chain: 'sui:local',
 };
 
 /** A container runtime whose `inspectByLabels` returns no containers —

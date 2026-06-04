@@ -22,7 +22,7 @@ import * as NodeChildProcessSpawner from '@effect/platform-node/NodeChildProcess
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 import { readStackEngine, type Stack } from '../../src/api/define-devstack.ts';
-import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { appName, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import {
 	IdentityContext,
@@ -219,7 +219,7 @@ export const runBoot = async (opts: BootOptions): Promise<BootResult> => {
 	const identity: Identity = {
 		app: appName(opts.appName),
 		stack: stackName(opts.stackName),
-		chain: chainId(opts.chainId ?? 'sui:local'),
+		chain: opts.chainId ?? 'sui:local',
 	};
 
 	// One fresh tmpdir per call by default. Tests can pass a root to

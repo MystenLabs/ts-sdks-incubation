@@ -5,7 +5,6 @@ import { join } from 'node:path';
 import { Effect, Exit, Option, Schema, type Scope } from 'effect';
 import { afterAll, describe, expect, it } from '@effect/vitest';
 
-import { chainId } from '../../../src/substrate/brand.ts';
 import type {
 	ChainProbe,
 	ChainProbeError,
@@ -257,7 +256,7 @@ describe('local package mode — A5 capture asymmetry regression', () => {
 				acquireLocal(publisher, okVerifyProbe, registry, {
 					packageName: 'cached_pkg',
 					sourcePath,
-					chainId: chainId('sui:test-a5'),
+					chainId: 'sui:test-a5',
 					publisherAddress: '0xpublisheraddr',
 					capture: (_output): Readonly<Record<string, string>> => {
 						throw new Error('user-side capture typo: missing field "renamed_admin"');
@@ -324,7 +323,7 @@ describe('local package mode — A5 capture asymmetry regression', () => {
 				acquireLocal(publisher, okVerifyProbe, registry, {
 					packageName: 'fresh_pkg',
 					sourcePath,
-					chainId: chainId('sui:test-a5'),
+					chainId: 'sui:test-a5',
 					publisherAddress: '0xpublisheraddr',
 					capture: (_output): Readonly<Record<string, string>> => {
 						throw new Error('user-side capture typo on miss');
@@ -393,7 +392,7 @@ describe('local package mode — intra-stack name-collision guard', () => {
 					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
 						packageName: 'collide',
 						sourcePath: firstSource,
-						chainId: chainId('sui:collide-test'),
+						chainId: 'sui:collide-test',
 						publisherAddress: '0xpublisheraddr',
 						executor: succeedingExecutor,
 					}),
@@ -407,7 +406,7 @@ describe('local package mode — intra-stack name-collision guard', () => {
 					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
 						packageName: 'collide',
 						sourcePath: secondSource,
-						chainId: chainId('sui:collide-test'),
+						chainId: 'sui:collide-test',
 						publisherAddress: '0xpublisheraddr',
 						executor: succeedingExecutor,
 					}),
@@ -453,7 +452,7 @@ describe('local package mode — intra-stack name-collision guard', () => {
 					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
 						packageName: 'reentrant',
 						sourcePath,
-						chainId: chainId('sui:reentrant-test'),
+						chainId: 'sui:reentrant-test',
 						publisherAddress: '0xpublisheraddr',
 						executor: succeedingExecutor,
 					}),
@@ -465,7 +464,7 @@ describe('local package mode — intra-stack name-collision guard', () => {
 					acquireLocal(cacheMissPublisher(), okVerifyProbe, registry, {
 						packageName: 'reentrant',
 						sourcePath,
-						chainId: chainId('sui:reentrant-test'),
+						chainId: 'sui:reentrant-test',
 						publisherAddress: '0xpublisheraddr',
 						executor: succeedingExecutor,
 					}),

@@ -61,7 +61,7 @@ import {
 	UpstreamResolverService,
 } from '../../../src/orchestrators/router/service.ts';
 import { layerTraefikContainerOpsStub } from '../../../src/orchestrators/router/traefik-container.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
@@ -309,7 +309,7 @@ const makeTmpDir = (): string => {
 const behaviorIdentity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 
 const behaviorUpstreams = Layer.succeed(UpstreamResolverService)({

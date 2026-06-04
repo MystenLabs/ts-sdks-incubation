@@ -22,7 +22,7 @@
 import { Context, Effect, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../../src/substrate/brand.ts';
 import type { EngineCommand, EngineEvent } from '../../../../src/substrate/events.ts';
 import type { Identity } from '../../../../src/substrate/identity.ts';
 import {
@@ -37,7 +37,7 @@ import { definePlugin } from '../../../../src/substrate/plugin.ts';
 const identity: Identity = {
 	app: appName('snapshot-restore-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 // A command handler standing in for the injected snapshot L3 handler.

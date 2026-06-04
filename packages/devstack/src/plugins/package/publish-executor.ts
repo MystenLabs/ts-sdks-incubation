@@ -35,7 +35,6 @@ import { Transaction } from '@mysten/sui/transactions';
 
 import type { AccountValue, TxResult } from '../account/index.ts';
 import type { ContainerRuntime, ImageRef } from '../../contracts/container-runtime.ts';
-import type { ChainId } from '../../substrate/brand.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
 import {
 	buildForkImpersonationTransactionBytes,
@@ -193,7 +192,7 @@ export const makePublishExecutor = (inputs: PublishExecutorInputs): PublishExecu
 	}: {
 		readonly sourcePath: string;
 		readonly packageName: string;
-		readonly chainId: ChainId;
+		readonly chainId: string;
 	}): Effect.Effect<BuildOutput, PublishError, Scope.Scope> =>
 		runMoveBuild({
 			sourcePath,

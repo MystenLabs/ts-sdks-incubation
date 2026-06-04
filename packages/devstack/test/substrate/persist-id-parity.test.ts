@@ -40,7 +40,7 @@ import {
 	layerStackPaths,
 	StackPathsService,
 } from '../../src/substrate/runtime/paths.ts';
-import { appName, chainId, contentHash, stackName } from '../../src/substrate/brand.ts';
+import { appName, contentHash, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 
 // The identity's chain is the RAW network string. The spec's chain is
@@ -53,7 +53,7 @@ const HEX_SPEC_CHAIN = '35834a8a';
 const identity: Identity = {
 	app: appName('persist-parity-app'),
 	stack: stackName('persist-parity-stack'),
-	chain: chainId(RAW_IDENTITY_CHAIN),
+	chain: RAW_IDENTITY_CHAIN,
 };
 
 interface CachedArtifact {
@@ -97,7 +97,7 @@ describe('ctx.persist id/path parity (B.1)', () => {
 					namespace: 'parity-ns',
 					// HEX chain id — exactly what a real plugin forwards from
 					// `sui.chain`. Distinct from identity.chain (raw string).
-					chain: chainId(HEX_SPEC_CHAIN),
+					chain: HEX_SPEC_CHAIN,
 					contentHash: contentHash('abc123content'),
 					verify: () => Effect.succeed(true as const),
 					produce: Effect.gen(function* () {

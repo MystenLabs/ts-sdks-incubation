@@ -22,7 +22,7 @@
 import { Context, Effect, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { appName, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import {
 	supervise,
@@ -41,7 +41,7 @@ import type { StrategyContributorDecl } from '../../src/contracts/strategy-contr
 const identity: Identity = {
 	app: appName('frame-equiv-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 // -----------------------------------------------------------------------------

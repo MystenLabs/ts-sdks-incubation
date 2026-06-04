@@ -30,7 +30,7 @@ import type {
 	TaggedImageRef,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
-import { chainId, contentHash } from '../../substrate/brand.ts';
+import { contentHash } from '../../substrate/brand.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -326,7 +326,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 					},
 					{
 						namespace: 'runtime-docker-build',
-						chain: chainId('n/a'),
+						chain: 'n/a',
 						contentHash: contentHash(hash),
 					},
 				).pipe(

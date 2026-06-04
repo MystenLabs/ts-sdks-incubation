@@ -19,18 +19,17 @@
 //                   so wallet-standard / MVR / known-package lookups
 //                   work.
 
-import type { ChainId } from '../../substrate/brand.ts';
 import type { SuiPluginMode } from './mode/spec.ts';
 
 /** Plugin-internal shape — the resolved mode's identity, populated
  *  by the mode-specific builder. */
 export interface ResolvedSuiNetwork {
 	readonly mode: SuiPluginMode;
-	/** Branded chain identity — assembled by the mode builders so
-	 *  downstream lookups (chain-probe / faucet capability keys) and
-	 *  the substrate's `NetworkConfig` projection both accept it without
-	 *  a re-wrap. */
-	readonly chain: ChainId;
+	/** Chain identity (plain string value) — assembled by the mode
+	 *  builders; downstream lookups (chain-probe / faucet capability
+	 *  keys) and the substrate's `NetworkConfig` projection key on it
+	 *  directly. */
+	readonly chain: string;
 	readonly rpc: string;
 	readonly faucet?: string;
 	readonly graphql?: string;

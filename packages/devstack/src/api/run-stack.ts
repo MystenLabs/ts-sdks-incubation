@@ -40,7 +40,7 @@ import {
 	SubscriptionRef,
 } from 'effect';
 
-import { appName, chainId, stackName } from '../substrate/brand.ts';
+import { appName, stackName } from '../substrate/brand.ts';
 import type { Identity } from '../substrate/identity.ts';
 import type { EngineEvent } from '../substrate/events.ts';
 import type { SubscribableState } from '../substrate/projection.ts';
@@ -166,7 +166,7 @@ const resolveIdentity = (
 	return {
 		app: appName(app),
 		stack: stackName(stackNameStr),
-		chain: chainId(resolved.raw),
+		chain: resolved.raw,
 	};
 };
 

@@ -28,7 +28,7 @@ import {
 	type SealPublishTransactionBuilder,
 	type SealRegisterTransactionBuilder,
 } from '../../../src/plugins/seal/deploy.ts';
-import { chainId, contentHash } from '../../../src/substrate/brand.ts';
+import { contentHash } from '../../../src/substrate/brand.ts';
 
 const registerInputs: RegisterKeyServerTransactionInputs = {
 	keyServerUrl: 'http://seal.seal.app.localhost',
@@ -280,7 +280,7 @@ describe('seal deploy publish helpers', () => {
 				const exit = yield* Effect.exit(
 					runSealPublishTransaction({
 						name: 'seal',
-						chain: chainId('localnet'),
+						chain: 'localnet',
 						movePackagePath: sourcePath,
 						signer: signerNotReached,
 						sdk: { client: {} as never },

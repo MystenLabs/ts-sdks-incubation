@@ -150,13 +150,11 @@ export { IdentityContext } from './substrate/runtime/paths.ts';
 
 export {
 	appName,
-	chainId,
 	contentHash,
 	endpointKey,
 	stackName,
 	type AppName,
 	type Brand,
-	type ChainId,
 	type ContentHash,
 	type EndpointKey,
 	type StackName,

@@ -3,13 +3,13 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContainerRuntime, ImageRef } from '../../../src/contracts/container-runtime.ts';
 import { resolveImage } from '../../../src/plugins/sui/mode/local.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 
 const TEST_IDENTITY: Identity = {
 	app: appName('test-app'),
 	stack: stackName('test-stack'),
-	chain: chainId('test-chain'),
+	chain: 'test-chain',
 };
 
 const unusedRuntime = (overrides: Partial<ContainerRuntime> = {}): ContainerRuntime => ({

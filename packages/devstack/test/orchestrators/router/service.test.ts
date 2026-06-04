@@ -46,7 +46,7 @@ import {
 	TraefikContainerOpsService,
 	type TraefikContainerOps,
 } from '../../../src/orchestrators/router/traefik-container.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import { ownHolder } from '../../../src/substrate/runtime/cross-process/liveness.ts';
 import type { HttpProbeFetch } from '../../../src/substrate/runtime/http-probe.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
@@ -93,7 +93,7 @@ const unusedUpstreamsLayer = Layer.succeed(UpstreamResolverService)({
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 
 const identityLayer = layerIdentity(identity);

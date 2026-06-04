@@ -22,7 +22,7 @@
 import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import { appName, chainId, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	Logger,
@@ -77,7 +77,7 @@ const projectionDispatcher: ContributionDispatcher = {
 const identity: Identity = {
 	app: appName('supervisor-test-app'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 interface Captured {

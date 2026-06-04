@@ -9,13 +9,11 @@
 
 import type { Effect, Schema } from 'effect';
 
-import type { ChainId } from '../substrate/brand.ts';
-
 export type ChainProbeMode = 'lenient' | 'strict';
 
 /** Capability-key constructor — chain-probes are dispatched through
  *  the StrategyContributor registry by this key shape. */
-export const chainProbeCapabilityKey = (chain: ChainId): `chain-probe:${string}` =>
+export const chainProbeCapabilityKey = (chain: string): `chain-probe:${string}` =>
 	`chain-probe:${chain}`;
 
 /**

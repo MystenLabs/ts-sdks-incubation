@@ -36,7 +36,6 @@ import {
 } from '../../substrate/runtime/strategy-registry/index.ts';
 import type { AnyResourceRef, ResourceRef } from '../../api/define-plugin.ts';
 import type { LeaseBroker } from '../../substrate/runtime/lease-broker/index.ts';
-import type { ChainId } from '../../substrate/brand.ts';
 import type {
 	AccountFundingRequest as ContractAccountFundingRequest,
 	AccountFundingStrategy as ContractAccountFundingStrategy,
@@ -226,7 +225,7 @@ export interface FundEphemeralDefaultArgs {
 	/** Resolved sui chain id — the substrate-level chain identity used
 	 *  to compose the faucet strategy's capability key
 	 *  (`faucet:request:<chainId>`). */
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	/** Loud-by-default auto-promotion event (called on fork before the
 	 *  strategy is invoked, per the architecture's "no silent surprises"
 	 *  principle). */
@@ -389,7 +388,7 @@ export interface ApplyCrossCuttingFundingArgs {
 	readonly variant: AccountVariantKind;
 	readonly account: AccountValue;
 	readonly funding: ProjectedFunding;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly broker: LeaseBroker;
 	/** Required. See `FundEphemeralDefaultArgs.balanceReader`. */
 	readonly balanceReader: FundingBalanceReader;

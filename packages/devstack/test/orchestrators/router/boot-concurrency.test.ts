@@ -56,7 +56,7 @@ import {
 	type InspectedTraefikContainer,
 	type TraefikContainerOps,
 } from '../../../src/orchestrators/router/traefik-container.ts';
-import { appName, chainId, stackName } from '../../../src/substrate/brand.ts';
+import { appName, stackName } from '../../../src/substrate/brand.ts';
 import { layerIdentity } from '../../../src/substrate/runtime/paths.ts';
 
 // Per-test temp dirs swept once at the end of the file — same array-and-
@@ -82,7 +82,7 @@ const upstreamsLayer = Layer.succeed(UpstreamResolverService)({
 const identity = {
 	app: appName('my-app'),
 	stack: stackName('main'),
-	chain: chainId('sui:localnet'),
+	chain: 'sui:localnet',
 };
 const identityLayer = layerIdentity(identity);
 

@@ -26,7 +26,7 @@
 
 import { Duration, Effect, Schema, type Scope } from 'effect';
 
-import { contentHash as brandContentHash, type ChainId } from '../../substrate/brand.ts';
+import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import {
 	pickPublishedChange,
 	pickUpgradeCapChange,
@@ -93,7 +93,7 @@ export interface PublishExecutor {
 	readonly build: (inputs: {
 		readonly sourcePath: string;
 		readonly packageName: string;
-		readonly chainId: ChainId;
+		readonly chainId: string;
 	}) => Effect.Effect<BuildOutput, PublishError, Scope.Scope>;
 
 	/** Construct + sign + execute a `Transaction.publish({modules,
@@ -130,7 +130,7 @@ export interface PublishExecutor {
 export interface LocalModeInputs {
 	readonly packageName: string;
 	readonly sourcePath: string;
-	readonly chainId: ChainId;
+	readonly chainId: string;
 	readonly publisherAddress: string;
 	readonly mvrOverride?: string;
 	readonly capture?: (output: LocalPackagePublishOutput) => Readonly<Record<string, string>>;

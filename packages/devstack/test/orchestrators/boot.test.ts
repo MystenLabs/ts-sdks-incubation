@@ -36,7 +36,7 @@ import {
 	MoveCodegenService,
 	MoveSummaryRunnerService,
 } from '../../src/orchestrators/codegen/bindings.ts';
-import { appName, chainId, endpointKey, pluginKey, stackName } from '../../src/substrate/brand.ts';
+import { appName, endpointKey, pluginKey, stackName } from '../../src/substrate/brand.ts';
 import type { EngineEvent } from '../../src/substrate/events.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import { supervise, type ContributionDispatchContext } from '../../src/substrate/runtime/index.ts';
@@ -99,7 +99,7 @@ const tcpRoutable: RoutableDecl = {
 const identity: Identity = {
 	app: appName('router-runtime-composition'),
 	stack: stackName('main'),
-	chain: chainId('test:local'),
+	chain: 'test:local',
 };
 
 const routablePlugin = definePlugin({

@@ -37,7 +37,7 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import * as NodePath from '@effect/platform-node/NodePath';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { appName, chainId, stackName } from '../../src/substrate/brand.ts';
+import { appName, stackName } from '../../src/substrate/brand.ts';
 import type { Identity } from '../../src/substrate/identity.ts';
 import {
 	layerIdentity,
@@ -55,7 +55,7 @@ const CHAIN = 'sui:e2e-action-test';
 const identity: Identity = {
 	app: appName('e2e-action'),
 	stack: stackName('main'),
-	chain: chainId(CHAIN),
+	chain: CHAIN,
 };
 
 // `mkdtempSync` at module top-level (rather than per-`it`) because
@@ -124,7 +124,7 @@ const runOnce = (
 		const result = yield* Effect.scoped(
 			bootActionService(publisher, probe, {
 				actionName: 'e2e-test-action',
-				chainId: chainId(CHAIN),
+				chainId: CHAIN,
 				staticDiscriminator: {
 					actionName: 'e2e-test-action',
 					dependencyResourceIds: ['account/alice', 'package:connect_four'],

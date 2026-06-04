@@ -24,7 +24,7 @@
 import { Effect, Schema, type Scope } from 'effect';
 import { Transaction } from '@mysten/sui/transactions';
 
-import type { ChainId, ContentHash } from '../../substrate/brand.ts';
+import type { ContentHash } from '../../substrate/brand.ts';
 import { contentHash as brandContentHash } from '../../substrate/brand.ts';
 import { decodeUnknown } from '../../substrate/runtime/runtime-decode.ts';
 import {
@@ -266,7 +266,7 @@ const isCreatedObjectChange = (raw: unknown): raw is CreatedObjectChange => {
  *  we project it directly to `MintResult`. */
 export const performMint = (
 	publisher: ArtifactPublisher,
-	chain: ChainId,
+	chain: string,
 	signer: MintSigner,
 	sdk: MintSdkShim,
 	inputs: MintInputs,
