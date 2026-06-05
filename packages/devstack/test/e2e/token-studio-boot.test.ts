@@ -27,12 +27,12 @@
 // managed_coin move build (~10-20s with sui-move local). Subsequent
 // runs hit the docker layer cache + the on-disk move build cache.
 
-import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot } from './boot-config-impl.ts';
 import type {
 	LocalPackageResolved,
@@ -51,48 +51,11 @@ const CONFIG_PATH = resolve(
 	'devstack.config.ts',
 );
 
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
-
 const TREASURY_CAP_RE = /::coin::TreasuryCap<.+>$/;
 const COIN_METADATA_RE = /::coin::CoinMetadata<.+>$/;
 
 // The app this boot runs under (`runBoot({ appName: TOKEN_STUDIO_APP })`).
 const TOKEN_STUDIO_APP = 'token-studio';
-
-// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
-// `devstack-snapshot:*` images this boot minted, scoped by
-// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
-// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
-// user's other devstack images. Best-effort: swallow all failures so a missing
-// docker or an empty match can't fail the suite.
-const pruneManagedImagesForApp = (app: string): void => {
-	try {
-		spawnSync(
-			'docker',
-			[
-				'image',
-				'prune',
-				'-f',
-				'--filter',
-				`label=devstack.app=${app}`,
-				'--filter',
-				'label=devstack.managed=true',
-			],
-			{ encoding: 'utf8', timeout: 60_000 },
-		);
-	} catch {
-		// cleanup must never throw
-	}
-};
 
 describe('token-studio boots end-to-end', () => {
 	// Sweep the managed build/snapshot images this boot minted (under

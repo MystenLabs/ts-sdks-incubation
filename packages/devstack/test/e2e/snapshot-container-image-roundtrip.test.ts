@@ -16,17 +16,10 @@ import { ContainerRuntimeService } from '../../src/runtime/docker/index.ts';
 import { appName, stackName } from '../../src/substrate/brand.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
 	spawnSync('docker', [...args], { encoding: 'utf8', timeout });
-
-const dockerReachable = (): { readonly ok: boolean; readonly detail: string } => {
-	const res = docker(['info', '--format', '{{.ServerVersion}}'], 5_000);
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
 
 const prepareImage = (
 	sourceTag: string,
@@ -56,31 +49,6 @@ const snapshotTempTagsFor = (containerName: string): ReadonlyArray<string> => {
 		.split('\n')
 		.map((line) => line.trim())
 		.filter((line) => line.length > 0 && line.includes(containerName));
-};
-
-// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
-// `devstack-snapshot:*` images stamped with THIS test's unique app
-// (`devstack.app=<app>` + `devstack.managed=true`). Never tag-prefix, never
-// unfiltered — the app filter is the safety boundary so it can NEVER touch
-// the user's other devstack images. Best-effort: swallow all failures so a
-// missing docker or an empty match can't fail the suite.
-const pruneManagedImagesForApp = (app: string): void => {
-	try {
-		docker(
-			[
-				'image',
-				'prune',
-				'-f',
-				'--filter',
-				`label=devstack.app=${app}`,
-				'--filter',
-				'label=devstack.managed=true',
-			],
-			20_000,
-		);
-	} catch {
-		// cleanup must never throw
-	}
 };
 
 const cleanupDockerArtifacts = (containerName: string, imageTag: string, app: string): void => {

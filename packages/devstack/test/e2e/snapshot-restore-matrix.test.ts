@@ -31,7 +31,6 @@
 // vault (a seal-encrypted blob — survives AND still decrypts). A separate test
 // proves codegen output tracks the restored packageId across a restore.
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -40,6 +39,7 @@ import { Effect } from 'effect';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import { readStackEngine } from '../../src/api/define-devstack.ts';
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot } from './boot-config-impl.ts';
 import { vaultPackageIdOf } from './snapshot-matrix/clients.ts';
 import { restoreSnapshotOffline } from './snapshot-matrix/offline-restore.ts';
@@ -49,17 +49,6 @@ import { suiProbe } from './snapshot-matrix/probes/sui.ts';
 import { vaultSealProbe } from './snapshot-matrix/probes/vault-seal.ts';
 import { walrusProbe } from './snapshot-matrix/probes/walrus.ts';
 import { buildMatrixStack, STACK_APP, STACK_NAME } from './snapshot-matrix/stack.ts';
-
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
 
 // Force the REAL walrus + seal images. Other e2e tests set these stub
 // overrides; vitest forks should be clean, but delete defensively so a leaked
@@ -91,32 +80,6 @@ const CONFIG_FILE = 'config.ts';
 // The codegen test boots under this app (`appName: CODEGEN_APP`); the matrix
 // invariant boots under `STACK_APP`. Both must be swept in `afterAll`.
 const CODEGEN_APP = 'snapshot-matrix-codegen';
-
-// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
-// `devstack-snapshot:*` images this file's boots minted, scoped by
-// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
-// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
-// user's other devstack images. Best-effort: swallow all failures so a missing
-// docker or an empty match can't fail the suite.
-const pruneManagedImagesForApp = (app: string): void => {
-	try {
-		spawnSync(
-			'docker',
-			[
-				'image',
-				'prune',
-				'-f',
-				'--filter',
-				`label=devstack.app=${app}`,
-				'--filter',
-				'label=devstack.managed=true',
-			],
-			{ encoding: 'utf8', timeout: 60_000 },
-		);
-	} catch {
-		// cleanup must never throw
-	}
-};
 
 const readCodegenPackageId = (outputDir: string): string => {
 	const file = join(outputDir, CONFIG_FILE);

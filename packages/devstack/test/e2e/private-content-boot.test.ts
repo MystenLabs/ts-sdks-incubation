@@ -64,6 +64,7 @@ import {
 	WalletHttpPath,
 } from '../../src/plugins/wallet/protocol.ts';
 import type { WalletValue } from '../../src/plugins/wallet/service.ts';
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot, type BootResult } from './boot-config-impl.ts';
 
 const PRIVATE_CONTENT_APP_ORIGIN =
@@ -89,46 +90,6 @@ const WALRUS_STUB_IMAGE_TAG = 'walrus-test-stub:latest';
 const SEAL_STUB_IMAGE_TAG = 'seal-test-stub:latest';
 
 const SEAL_STUB_MOVE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
-
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
-
-// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
-// `devstack-snapshot:*` images this boot minted, scoped by
-// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
-// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
-// user's other devstack images. Best-effort: swallow all failures so a missing
-// docker or an empty match can't fail the suite. NB: the walrus/seal STUB
-// images are plain `docker build -t walrus-test-stub:latest` (no devstack
-// labels), so this prune deliberately does NOT touch them — they are not
-// managed devstack-build images and are reused across runs.
-const pruneManagedImagesForApp = (app: string): void => {
-	try {
-		spawnSync(
-			'docker',
-			[
-				'image',
-				'prune',
-				'-f',
-				'--filter',
-				`label=devstack.app=${app}`,
-				'--filter',
-				'label=devstack.managed=true',
-			],
-			{ encoding: 'utf8', timeout: 60_000 },
-		);
-	} catch {
-		// cleanup must never throw
-	}
-};
 
 const buildStubImage = (
 	tag: string,

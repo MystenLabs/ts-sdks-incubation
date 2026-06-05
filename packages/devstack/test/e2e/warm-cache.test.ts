@@ -44,7 +44,6 @@
 //   - the boot's `withinScope` test callback still fires after the stack is up.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -61,6 +60,7 @@ import {
 	type WarmBaselineSidecar,
 } from '../../src/orchestrators/warm/baseline.ts';
 import { WARM_BASELINE_SNAPSHOT_ID } from '../../src/orchestrators/warm/fingerprint.ts';
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot } from './boot-config-impl.ts';
 import { findResolved, getSuiBalance, suiClientOf } from './snapshot-matrix/clients.ts';
 
@@ -73,43 +73,6 @@ const MARKER_MIST = 100_000_000n; // 0.1 SUI
 // `test/e2e/**` unless `DEVSTACK_RUN_E2E=1`), so the file-level gate here is
 // Docker-only: a missing docker daemon early-returns the `it` as a no-op.
 // ─────────────────────────────────────────────────────────────────────────────
-
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
-
-// Label-scoped image prune: removes ONLY the managed `devstack-build:*` /
-// `devstack-snapshot:*` images this test's boots minted, scoped by
-// `devstack.app=<app>` + `devstack.managed=true`. The app filter is the safety
-// boundary — never tag-prefix, never unfiltered — so it can NEVER touch the
-// user's other devstack images. Best-effort: swallow all failures so a missing
-// docker or an empty match can't fail the suite.
-const pruneManagedImagesForApp = (app: string): void => {
-	try {
-		spawnSync(
-			'docker',
-			[
-				'image',
-				'prune',
-				'-f',
-				'--filter',
-				`label=devstack.app=${app}`,
-				'--filter',
-				'label=devstack.managed=true',
-			],
-			{ encoding: 'utf8', timeout: 60_000 },
-		);
-	} catch {
-		// cleanup must never throw
-	}
-};
 
 // Defensively clear any leaked image-override env so the warm fingerprint
 // (which folds `*_CARGO_IMAGE_OVERRIDE` / `*_FORK_IMAGE` / `DEVSTACK_*_IMAGE`
