@@ -1,7 +1,7 @@
 # Fork Greeting
 
 Fork mode against testnet with the impersonation **fork faucet**: a Move
-package (`greeting::board`) published by an *ephemeral* account that is
+package (`greeting::board`) published by an _ephemeral_ account that is
 auto-funded from a large-reserve "whale" address — **no pre-funded
 addresses and no environment variables required**.
 

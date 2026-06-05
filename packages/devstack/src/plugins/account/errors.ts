@@ -20,8 +20,6 @@
 export type AccountAcquirePhase =
 	| 'validate-name'
 	| 'validate-funding'
-	| 'load-keystore'
-	| 'read-env'
 	| 'decode-inline'
 	| 'bind-signer'
 	| 'bind-impersonation-slot'
@@ -117,19 +115,13 @@ export const accountSignError = (parts: Omit<AccountSignError, '_tag'>): Account
 
 /** Account variant discriminator. Mirrors the user-facing
  *  `AccountOptions` shape's `kind:` field. */
-export type AccountVariantKind =
-	| 'ephemeral'
-	| 'keystore'
-	| 'env'
-	| 'inline'
-	| 'signer'
-	| 'impersonate';
+export type AccountVariantKind = 'ephemeral' | 'signer' | 'impersonate';
 
 /** Union of every error an Account-plugin caller may encounter. */
 export type AccountError = AccountAcquireError | AccountSignError;
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Pinned against the
+ *  user-facing error catalog by the error-catalog-parity test. */
 export const ACCOUNT_ERROR_TAGS: ReadonlyArray<AccountError['_tag']> = [
 	'AccountAcquireError',
 	'AccountSignError',

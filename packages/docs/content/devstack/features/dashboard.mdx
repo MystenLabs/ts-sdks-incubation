@@ -10,10 +10,10 @@ in-process GraphQL server reading the stack's live projection. It's a normal sta
 like any other plugin and the router fronts it under a stack-scoped hostname.
 
 ```ts title="devstack.config.ts"
-import { defineDevstack, sui, account, postgres, dashboard } from '@mysten-incubation/devstack';
+import { defineDevstack, sui, account, dashboard } from '@mysten-incubation/devstack';
 
 export default defineDevstack({
-	members: [sui(), account('alice'), account('bob'), postgres(), dashboard()],
+	members: [sui(), account('alice'), account('bob'), dashboard()],
 	stackName: 'main',
 });
 ```
@@ -39,9 +39,9 @@ The dashboard is read-mostly, with a small set of guarded controls:
 
 - **Sui explorer** — addresses, objects, packages, and transactions, with resolve-first search.
 - **Walrus & Seal panels** — service status and live data for the storage and key-server plugins.
-- **Postgres stats** — per-instance database stats (when a `postgres()` member is in the stack).
-- **Logs & traces** — the cross-service log store and trace spans.
-- **Snapshot & restore progress** — capture and restore narrated live.
+- **Logs** — the cross-service log store.
+- **Snapshot & restore progress** — capture and restore narrated live, with each snapshot marked
+  `current`, `stale`, or `unknown` against the running stack's graph input id.
 - **Controls** — restart, shutdown, and advance-clock, each behind a confirmation.
 - **Faucet fund** — a one-click fund action: SUI funds a fixed amount; WAL and DEEP take an editable
   amount. Funding reuses the same registered in-process funding strategies the boot-time

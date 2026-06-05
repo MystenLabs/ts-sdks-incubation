@@ -17,7 +17,6 @@
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { hostname as nodeHostname } from 'node:os';
 import { createConnection } from 'node:net';
 import { join } from 'node:path';
 
@@ -478,7 +477,6 @@ export const locksProbe = (appRoot: string): Probe => ({
 	run: () =>
 		Effect.gen(function* () {
 			if (!existsSync(appRoot)) return okOutcome('(no app root yet)');
-			const ownHost = nodeHostname();
 			// Yield a fresh `LivenessProbeScope` so a single pid that
 			// shows up in multiple stack rosters under this app root is
 			// probed AT MOST once across the full lock scan.
@@ -503,7 +501,7 @@ export const locksProbe = (appRoot: string): Probe => ({
 					);
 					for (const holder of doc.holders) {
 						const liveness = yield* probe
-							.probeHolderLiveness(holder, ownHost)
+							.probeHolderLiveness(holder)
 							.pipe(Effect.catch(() => Effect.succeed('alive' as const)));
 						if (liveness === 'alive') totalLive += 1;
 						else orphans += 1;

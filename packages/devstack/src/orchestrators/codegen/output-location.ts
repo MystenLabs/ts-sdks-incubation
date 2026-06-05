@@ -1,12 +1,11 @@
 // Per-stack codegen output-location resolver.
 //
-// notes/per-stack-codegen-design.md §"Output-location rule": two stacks
-// of the same app must not emit Move codegen into the SAME
-// `src/generated/` dir — the second stack's `codegen.emitted` would
-// clobber the first's package-id / wallet-pair-token literals and break
-// the already-running app. This pure function is the single decision
-// point: it maps (appRoot, effective stack, primary stack) → the output
-// dir codegen owns for THIS stack.
+// Two stacks of the same app must not emit Move codegen into the SAME
+// `src/generated/` dir — the second stack's `codegen.emitted` would clobber
+// the first's package-id / wallet-pair-token literals and break the
+// already-running app. This pure function is the single decision point: it
+// maps (appRoot, effective stack, primary stack) → the output dir codegen owns
+// for THIS stack.
 //
 //   - Primary stack (`effectiveStack === primaryStack`, no explicit
 //     `--stack`/`$DEVSTACK_STACK` override) → `<appRoot>/src/generated`
@@ -17,9 +16,8 @@
 //     `.devstack/stacks/<stack>/manifest.json`, already gitignored +
 //     tsconfig-excluded.
 //   - An app that sets `codegen.outputDir` / `codegen.stackSubdir`
-//     explicitly (`defineDevstack({ codegen })`) keeps that behavior
-//     verbatim (back-compat escape hatch); per-stack isolation is then
-//     the app's responsibility.
+//     explicitly (`defineDevstack({ codegen })`) owns that output path;
+//     per-stack isolation is then the app's responsibility.
 //
 // The decision is made ONCE here, at the boot seam where both the
 // primary and effective stack names are in scope, and the resolved
@@ -54,8 +52,7 @@ export interface ResolveCodegenOutputInput {
 	 *  as primary. */
 	readonly primaryStack: string | undefined;
 	/** Explicit `defineDevstack({ codegen: { outputDir } })` value, if
-	 *  the app pinned one. Honored verbatim (back-compat) — relative
-	 *  paths resolve against `appRoot`. */
+	 *  the app pinned one. Relative paths resolve against `appRoot`. */
 	readonly explicitOutputDir?: string | undefined;
 	/** Explicit `defineDevstack({ codegen: { stackSubdir } })` value, if
 	 *  the app pinned one. Passed through unchanged. */
@@ -121,8 +118,8 @@ export const resolveCodegenOutput = (input: ResolveCodegenOutputInput): Resolved
 	const { appRoot, effectiveStack, primaryStack } = input;
 	const explicitStackSubdir = input.explicitStackSubdir ?? null;
 
-	// (1) Explicit override wins — back-compat escape hatch. Per-stack
-	// isolation is the app's responsibility once it pins `outputDir`.
+	// (1) Explicit override wins. Per-stack isolation is the app's
+	// responsibility once it pins `outputDir`.
 	if (input.explicitOutputDir !== undefined) {
 		const target = input.explicitOutputDir;
 		return {

@@ -49,9 +49,7 @@ const project = (cause: unknown, depth: number): string => {
 				: undefined;
 	if (message !== undefined && message.length > 0) {
 		const nested = depth < MAX_CAUSE_DEPTH ? nestedCauseMessage(tagged.cause, depth + 1) : null;
-		return nested !== null && !message.includes(nested)
-			? `${message} [cause: ${nested}]`
-			: message;
+		return nested !== null && !message.includes(nested) ? `${message} [cause: ${nested}]` : message;
 	}
 	try {
 		return JSON.stringify(cause);

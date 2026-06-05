@@ -60,9 +60,8 @@ export function CounterPanel({ connected }: { connected: boolean }) {
 		>
 			<div className="space-y-3">
 				<p className="text-xs text-neutral-500">
-					Package:{' '}
-					<span className="font-mono break-all">@local/counter</span> (resolved via dapp-kit MVR
-					override)
+					Package: <span className="font-mono break-all">@local/counter</span> (resolved via
+					dapp-kit MVR override)
 				</p>
 
 				<PanelButton testid="counter-create" disabled={!connected || isPending} onClick={onCreate}>

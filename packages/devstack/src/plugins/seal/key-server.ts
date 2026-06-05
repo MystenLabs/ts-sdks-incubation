@@ -57,7 +57,6 @@ import { deriveSubnetPrefix } from '../../substrate/runtime/subnet-broker.ts';
 import { isSealError, sealError, type SealError } from './errors.ts';
 import { KEY_SERVER_CONFIG_BASENAME, MASTER_KEY_ENVFILE_BASENAME } from './keygen.ts';
 import { DEFAULT_KEY_SERVER_PORT, SEAL_KEY_SERVER_ENDPOINT_NAME } from './routable.ts';
-import { SealSpans } from './spans.ts';
 
 export { DEFAULT_KEY_SERVER_PORT } from './routable.ts';
 
@@ -387,12 +386,4 @@ export const startKeyServer = (
 		);
 
 		return { containerName: spec.containerName };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.keyServer.start', {
-			attributes: {
-				[SealSpans.name]: name,
-				[SealSpans.containerName]: spec.containerName,
-				[SealSpans.routedUrl]: spec.routedUrl,
-			},
-		}),
-	);
+	});

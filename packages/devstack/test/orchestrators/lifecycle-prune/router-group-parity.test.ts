@@ -28,10 +28,7 @@ import {
 	lifecyclePruneRemovalMatchTuple,
 	isRouterLifecyclePruneGroup,
 } from '../../../src/orchestrators/lifecycle-prune/index.ts';
-import {
-	expectedNetworkOwnershipLabels,
-	LabelKey,
-} from '../../../src/runtime/docker/index.ts';
+import { expectedNetworkOwnershipLabels, LabelKey } from '../../../src/runtime/docker/index.ts';
 import { makeRouterProfile } from '../../../src/orchestrators/router/profile.ts';
 import { ROUTER_SHARED_APP } from '../../../src/orchestrators/router/sentinels.ts';
 
@@ -69,10 +66,7 @@ describe('lifecycle-prune router-group dry-run ↔ real-run parity', () => {
 
 		// `ensureNetwork(name, { app: ROUTER_SHARED_APP, stack: name, ... })`
 		// — see `orchestrators/router/traefik-container.ts:488`.
-		const onWireLabels = expectedNetworkOwnershipLabels(
-			ROUTER_SHARED_APP,
-			profile.networkName,
-		);
+		const onWireLabels = expectedNetworkOwnershipLabels(ROUTER_SHARED_APP, profile.networkName);
 
 		// Inventory key: `routerStackForContainer(container.name)` where
 		// `container.name === profile.containerName === profile.networkName`.

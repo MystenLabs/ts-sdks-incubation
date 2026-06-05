@@ -2,7 +2,7 @@
 // when `BuildOptions.labels` is set. Without this, devstack-built
 // images land unlabelled and are invisible to label-driven prune.
 
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,7 +14,7 @@ import { Effect, Layer } from 'effect';
 import { ChildProcessSpawner } from 'effect/unstable/process/ChildProcessSpawner';
 
 import { DockerHost, DockerSpawner, layerDockerHost } from '../../../src/runtime/docker/client.ts';
-import { build } from '../../../src/runtime/docker/image.ts';
+import { build, pull } from '../../../src/runtime/docker/image.ts';
 
 const layerDockerSpawnerFromNode: Layer.Layer<DockerSpawner, never, ChildProcessSpawner> =
 	Layer.effect(
@@ -58,6 +58,23 @@ const writeShim = (path: string, log: string): void => {
 	chmodSync(path, 0o755);
 };
 
+const writeEnvShim = (path: string, envLog: string): void => {
+	writeFileSync(
+		path,
+		[
+			'#!/bin/sh',
+			`printf '%s' "\${DOCKER_CONFIG:-}" > ${JSON.stringify(envLog)}`,
+			'if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then',
+			'  printf "sha256:deadbeef"',
+			'  exit 0',
+			'fi',
+			'exit 0',
+			'',
+		].join('\n'),
+	);
+	chmodSync(path, 0o755);
+};
+
 const readArgvBatches = (log: string): ReadonlyArray<ReadonlyArray<string>> => {
 	const raw = readFileSync(log, 'utf8');
 	return raw
@@ -67,6 +84,78 @@ const readArgvBatches = (log: string): ReadonlyArray<ReadonlyArray<string>> => {
 };
 
 describe('build — image label stamping', () => {
+	it.effect('runs docker with a credential-helper-free DOCKER_CONFIG', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-build-config-'));
+			const previousDockerConfig = process.env.DOCKER_CONFIG;
+			try {
+				const sourceConfig = join(root, 'source-docker-config');
+				mkdirSync(sourceConfig);
+				writeFileSync(
+					join(sourceConfig, 'config.json'),
+					JSON.stringify({
+						auths: { 'registry.example.com': { auth: 'static-token' } },
+						credsStore: 'desktop',
+						credHelpers: { 'registry-1.docker.io': 'desktop' },
+						currentContext: 'desktop-linux',
+						proxies: { default: { httpProxy: 'http://proxy.local:8080' } },
+					}),
+				);
+				process.env.DOCKER_CONFIG = sourceConfig;
+				const bin = join(root, 'docker');
+				const envLog = join(root, 'docker-config.txt');
+				writeEnvShim(bin, envLog);
+
+				yield* build({
+					tag: 'devstack-build:abc123',
+					contextPath: '/tmp/ctx',
+				}).pipe(Effect.provide(fakeDockerLayer(bin)));
+
+				const dockerConfig = readFileSync(envLog, 'utf8');
+				expect(dockerConfig).not.toBe('');
+				const parsed = JSON.parse(readFileSync(join(dockerConfig, 'config.json'), 'utf8')) as {
+					readonly auths?: unknown;
+					readonly credsStore?: unknown;
+					readonly credHelpers?: unknown;
+					readonly currentContext?: unknown;
+					readonly proxies?: unknown;
+				};
+				expect(parsed.auths).toEqual({ 'registry.example.com': { auth: 'static-token' } });
+				expect(parsed.credsStore).toBeUndefined();
+				expect(parsed.credHelpers).toBeUndefined();
+				expect(parsed.currentContext).toBe('desktop-linux');
+				expect(parsed.proxies).toEqual({
+					default: { httpProxy: 'http://proxy.local:8080' },
+				});
+			} finally {
+				if (previousDockerConfig === undefined) {
+					delete process.env.DOCKER_CONFIG;
+				} else {
+					process.env.DOCKER_CONFIG = previousDockerConfig;
+				}
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
+	it.effect('returns the inspected digest after pulling an image', () =>
+		Effect.gen(function* () {
+			const root = mkdtempSync(join(tmpdir(), 'docker-pull-digest-'));
+			try {
+				const bin = join(root, 'docker');
+				const log = join(root, 'docker.log');
+				writeShim(bin, log);
+
+				const digest = yield* pull('registry.example.com/devstack/image:latest').pipe(
+					Effect.provide(fakeDockerLayer(bin)),
+				);
+				expect(digest).toBe('sha256:deadbeef');
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		}),
+	);
+
 	it.effect('emits --label key=value flags before contextPath', () =>
 		Effect.gen(function* () {
 			const root = mkdtempSync(join(tmpdir(), 'docker-build-labels-'));

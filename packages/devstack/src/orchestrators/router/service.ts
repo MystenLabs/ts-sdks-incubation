@@ -229,11 +229,6 @@ const warnDispatchDecodeDiagnostic = (
 	diagnostic: DispatchRouteScanDiagnostic,
 ): Effect.Effect<void> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'router.dispatch.path': diagnostic.path,
-			'router.dispatch.file_id': diagnostic.dispatchFileId,
-			'router.dispatch.decode_reason': diagnostic.reason,
-		});
 		yield* Effect.logWarning(
 			`router dispatch route file ${diagnostic.path} could not be fully decoded; ` +
 				`reason=${diagnostic.reason}; treating it as an unknown route lease where destructive bootstrap safety matters`,
@@ -772,7 +767,7 @@ export const layerRouterService: Layer.Layer<
 					}),
 				);
 				return report;
-			}).pipe(Effect.withSpan('orchestrator.router.boot'));
+			});
 
 		// ---------------------------------------------------------------
 		// contributeRoute — resolve + write dispatch file + scope finalizer.
@@ -959,7 +954,7 @@ export const layerRouterService: Layer.Layer<
 				}
 
 				return resolved;
-			}).pipe(Effect.withSpan('orchestrator.router.contributeRoute'));
+			});
 
 		return RouterService.of({ boot, contributeRoute, applied });
 	}),

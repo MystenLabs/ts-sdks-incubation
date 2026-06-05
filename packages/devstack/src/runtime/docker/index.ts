@@ -14,7 +14,13 @@ export {
 } from './service.ts';
 
 // Configuration / wiring services
-export { DockerHost, DockerSpawner, layerDockerHost, layerDockerHostDefault } from './client.ts';
+export {
+	dockerCliEnv,
+	DockerHost,
+	DockerSpawner,
+	layerDockerHost,
+	layerDockerHostDefault,
+} from './client.ts';
 
 // Typed errors — plugins that want precise tags can catchTag on these
 // BEFORE the contract projection collapses them to the narrow envelope.
@@ -71,7 +77,6 @@ export {
 	loadImage,
 	pull,
 	refOf,
-	saveImage,
 	type TagImageOptions,
 	tagImage,
 } from './image.ts';
@@ -92,8 +97,6 @@ export {
 	type VolumeSummary,
 } from './inventory.ts';
 
-export { followLogs, type FollowLogsOptions } from './logs.ts';
-
 export {
 	connect,
 	disconnect,
@@ -103,7 +106,6 @@ export {
 	listAttachedContainers,
 	type NetworkAttachedEndpoint,
 	readIps,
-	SHARED_NETWORK_NAME,
 	waitForIp,
 	type WaitForIpOptions,
 } from './network.ts';
@@ -119,7 +121,6 @@ export {
 	removeManagedImages,
 	removeManagedNetworks,
 	removeManagedVolumes,
-	sweepOrphans,
 	type DevstackNetworkRemovalSummary,
 	type ForeignNetworkHolder,
 	type StaleNetworkEndpoint,

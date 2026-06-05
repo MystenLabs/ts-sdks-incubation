@@ -40,8 +40,8 @@ extras.ts
 ```
 
 The primary/secondary rule above is the default. An app can pin an explicit output dir in the stack
-options as a back-compat escape hatch — `outputDir` (and the optional `stackSubdir`) are then
-honored verbatim, and per-stack isolation becomes the app's responsibility:
+options; `outputDir` (and the optional `stackSubdir`) are then honored verbatim, and per-stack
+isolation becomes the app's responsibility:
 
 ```ts
 import { defineDevstack, account, sui } from '@mysten-incubation/devstack';

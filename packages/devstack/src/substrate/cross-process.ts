@@ -22,8 +22,8 @@ import { versionedDocSchema } from './versioned-doc-schema.ts';
  *  the holder is mid-capture (peers' commands defer). */
 export type HolderIntent = 'normal' | 'snapshot';
 
-/** One holder entry in `roster.json`. PID + startTime liveness check
- *  is the industry-standard pattern referenced in the synthesis.
+/** One holder entry in `roster.json`. PID + startTime distinguish live
+ *  processes from PID reuse.
  *
  *  `startTime` is `number | null` — `null` means "the platform could
  *  not probe a start-time stamp for this process at write time" (an
@@ -31,9 +31,7 @@ export type HolderIntent = 'normal' | 'snapshot';
  *  `null` as the conservative branch (see `isOwnEntry` in `roster.ts`
  *  and `checkHolderLiveness` in `liveness.ts`): on a null recorded
  *  stamp the start-time comparison is skipped and the (pid, hostname)
- *  pair carries the identity. Writing `0` for "unknown" was the prior
- *  shape and caused a false-dead harvest: a later probe yielding a
- *  real stamp would mismatch the recorded `0`. */
+ *  pair carries the identity. */
 export interface RosterHolder {
 	readonly pid: number;
 	/** Process start-time, used for PID-reuse-safe liveness. `null`
@@ -45,7 +43,7 @@ export interface RosterHolder {
 	readonly intent: HolderIntent;
 }
 
-/** Roster document schema — versioned for forward compatibility. */
+/** Roster document schema — versioned for schema validation. */
 export interface RosterDocument {
 	readonly version: 1;
 	readonly holders: ReadonlyArray<RosterHolder>;
@@ -66,16 +64,13 @@ export const RosterDocumentSchema = versionedDocSchema(1, {
 
 /** Sweep policy — peers older than `staleAfterMillis` AND failing
  *  the PID liveness check are evicted on the next claim under the
- *  exclusive lock. Foreign-host entries are treated as alive
- *  (NFS-safe conservative default). */
+ *  exclusive lock. */
 export interface RosterSweepPolicy {
 	readonly heartbeatIntervalMillis: number;
 	readonly staleAfterMillis: number;
-	readonly trustForeignHosts: boolean;
 }
 
 export const DEFAULT_SWEEP_POLICY: RosterSweepPolicy = {
 	heartbeatIntervalMillis: 10_000,
 	staleAfterMillis: 30_000,
-	trustForeignHosts: true,
 };

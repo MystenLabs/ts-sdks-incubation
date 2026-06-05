@@ -20,16 +20,11 @@
 // with sui-execute and host-tree-tar transitives.
 
 // ---------------------------------------------------------------------
-// Projection — `makeProjectionRef`, persistence helpers.
-// Consumers: CLI wirings (apply, snapshot, up, main), boot-config-impl,
+// Projection — `makeProjectionRef`.
+// Consumers: CLI wirings (apply, snapshot, up), boot-config-impl,
 // api/run-stack (sync variant only).
 // ---------------------------------------------------------------------
 export { makeProjectionRef, makeProjectionRefSync } from './projection/state-ref.ts';
-export {
-	persistProjectionChanges,
-	readProjectionSnapshot,
-	writeProjectionSnapshot,
-} from './projection/persisted.ts';
 
 // ---------------------------------------------------------------------
 // Cross-process command channel — publisher / subscriber + path helpers.
@@ -52,7 +47,7 @@ export { claim, heartbeatFiber, release } from './cross-process/roster.ts';
 // ---------------------------------------------------------------------
 // Supervisor — handle/types and `startSupervisor` / `supervise` entry
 // points.
-// Consumers: CLI wirings (up, apply, snapshot, build-verb-layers,
+// Consumers: CLI wirings (up, apply, snapshot, wipe,
 // config-loader, identity, main) + supervisor tests + integration tests.
 // ---------------------------------------------------------------------
 export { startSupervisor, supervise } from './supervisor/index.ts';
@@ -75,9 +70,7 @@ export {
 } from './supervisor/index.ts';
 
 // ---------------------------------------------------------------------
-// Observability — Logger service + default Layers, plus the formatter
-// registry the supervisor feeds plugin error-contributions into.
-// Consumers: supervisor tests, formatter-registry tests.
+// Observability — Logger service + default Layers.
+// Consumers: supervisor tests.
 // ---------------------------------------------------------------------
-export { FormatterRegistryService } from './observability/index.ts';
 export { Logger, layerLogger } from './observability/logger.ts';

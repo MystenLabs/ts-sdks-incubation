@@ -37,7 +37,6 @@ import { Effect, FileSystem, Path } from 'effect';
 
 import { definePlugin, type ResourceRef } from '../../api/define-plugin.ts';
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
@@ -49,7 +48,7 @@ import { suiResource } from '../sui/index.ts';
 import type { SealObjectProbeKey } from './deploy.ts';
 import { sealPluginKey } from './plugin-key.ts';
 import { makeSealCodegenable, type SealBindings } from './codegen.ts';
-import { sealError, SEAL_ERROR_TAGS, type SealError } from './errors.ts';
+import { sealError, type SealError } from './errors.ts';
 import { validateForkKnownInputs, type ForkUpstream } from './mode/fork-known.ts';
 import type { KnownNetwork } from './mode/live.ts';
 import { validateLiveInputs } from './mode/live.ts';
@@ -75,8 +74,6 @@ import { makeKnownSnapshotable, makeLocalKeygenSnapshotable } from './snapshot.t
 import { bootSealService, type SealMode } from './service.ts';
 import { DEFAULT_SEAL_VERSION } from './bootstrap-assets/source-fetch.ts';
 
-const sealErrorContributions = pluginErrorContributions(SEAL_ERROR_TAGS);
-
 // ---------------------------------------------------------------------------
 // Resource exports — distilled-doc §"TypeScript exports consumed elsewhere"
 // ---------------------------------------------------------------------------
@@ -92,14 +89,8 @@ export {
 	type SealResourceId,
 } from './registry-publish.ts';
 export type { SealKeyManager } from './key-manager.ts';
-export {
-	type SealError,
-	type SealAnyError,
-	type SealConfigError,
-	SEAL_ERROR_TAGS,
-} from './errors.ts';
+export { type SealError, type SealAnyError, type SealConfigError } from './errors.ts';
 export type { SealBindings } from './codegen.ts';
-export { SealSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Options
@@ -346,7 +337,6 @@ const buildLocalKeygenPlugin = <const Signer extends SealSignerMember>(
 				);
 				return resolvedValue;
 			}),
-		errorContributions: sealErrorContributions,
 	});
 };
 
@@ -391,7 +381,6 @@ const buildLivePlugin = (opts: SealLiveOptions) => {
 					manager: null,
 				} satisfies SealResolved;
 			}),
-		errorContributions: sealErrorContributions,
 	});
 };
 
@@ -460,7 +449,6 @@ const buildForkKnownPlugin = (opts: SealForkKnownOptions) => {
 				);
 				return resolvedValue;
 			}),
-		errorContributions: sealErrorContributions,
 	});
 };
 

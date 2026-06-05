@@ -7,7 +7,6 @@ import type {
 	EnsureContainerSpec,
 } from '../../contracts/container-runtime.ts';
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
-import { SpanAttr } from './observability/spans.ts';
 
 /** Sentinel `stack` value for containers / volumes / networks that are
  *  shared across a single app's stacks but isolated PER APP — the
@@ -75,16 +74,5 @@ export const ensureManagedContainer = <E>(
 			...options.spec,
 			labels,
 		})
-		.pipe(
-			Effect.mapError(options.mapError),
-			Effect.withSpan('substrate.managedContainer.ensure', {
-				attributes: {
-					[SpanAttr.app]: labels.app,
-					[SpanAttr.stack]: labels.stack,
-					[SpanAttr.plugin]: labels.plugin,
-					[SpanAttr.containerRole]: labels.role,
-					[SpanAttr.containerName]: options.spec.name,
-				},
-			}),
-		);
+		.pipe(Effect.mapError(options.mapError));
 };

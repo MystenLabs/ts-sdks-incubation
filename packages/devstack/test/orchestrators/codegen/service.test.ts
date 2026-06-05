@@ -562,9 +562,7 @@ describe('codegen.runEmitCycle', () => {
 					});
 					expect(result.bindings?.packagesEmitted).toEqual(['hello']);
 					expect(
-						result.bindings?.filesWritten.some((path) =>
-							path.endsWith('/bindings/hello/index.ts'),
-						),
+						result.bindings?.filesWritten.some((path) => path.endsWith('/bindings/hello/index.ts')),
 					).toBe(true);
 
 					const packageModule = yield* Effect.promise(
@@ -680,52 +678,50 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 		}),
 	);
 
-	it.effect(
-		'fails fast when two contributors to one bucket disagree on outputLocation',
-		() =>
-			withTempRoot('codegen-test', (root) =>
-				Effect.gen(function* () {
-					const result = yield* runEmitCycle({
-						contributions: [
-							// First contributor establishes `generated` (non-sensitive).
-							fakeDecl({
-								emitterName: 'first',
-								outputPath: 'first.ts',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									outputLocation: 'generated',
-									project: (e) => e,
-								},
-								exports: { a: { x: 1 } },
-							}),
-							// Later contributor disagrees: routes to extras +
-							// sensitive. MUST be rejected, not silently ignored
-							// (would otherwise land the secret in committed tree).
-							fakeDecl({
-								emitterName: 'second',
-								outputPath: 'second.ts',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'config.ts',
-									outputLocation: 'generated-extras',
-									sensitive: true,
-									project: (e) => e,
-								},
-								exports: { b: { y: 2 } },
-							}),
-						],
-					}).pipe(Effect.flip);
-					expect(result).toBeInstanceOf(CodegenAggregateConflict);
-					if (result instanceof CodegenAggregateConflict) {
-						expect(result.bucket).toBe('config.ts');
-						expect(result.field).toBe('outputLocation');
-						expect(result.established).toBe('generated');
-						expect(result.conflicting).toBe('generated-extras');
-						expect([...result.emitters]).toEqual(['first', 'second']);
-					}
-				}).pipe(Effect.provide(baseLayer(root))),
-			),
+	it.effect('fails fast when two contributors to one bucket disagree on outputLocation', () =>
+		withTempRoot('codegen-test', (root) =>
+			Effect.gen(function* () {
+				const result = yield* runEmitCycle({
+					contributions: [
+						// First contributor establishes `generated` (non-sensitive).
+						fakeDecl({
+							emitterName: 'first',
+							outputPath: 'first.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								outputLocation: 'generated',
+								project: (e) => e,
+							},
+							exports: { a: { x: 1 } },
+						}),
+						// Later contributor disagrees: routes to extras +
+						// sensitive. MUST be rejected, not silently ignored
+						// (would otherwise land the secret in committed tree).
+						fakeDecl({
+							emitterName: 'second',
+							outputPath: 'second.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'config.ts',
+								outputLocation: 'generated-extras',
+								sensitive: true,
+								project: (e) => e,
+							},
+							exports: { b: { y: 2 } },
+						}),
+					],
+				}).pipe(Effect.flip);
+				expect(result).toBeInstanceOf(CodegenAggregateConflict);
+				if (result instanceof CodegenAggregateConflict) {
+					expect(result.bucket).toBe('config.ts');
+					expect(result.field).toBe('outputLocation');
+					expect(result.established).toBe('generated');
+					expect(result.conflicting).toBe('generated-extras');
+					expect([...result.emitters]).toEqual(['first', 'second']);
+				}
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
 	);
 
 	it.effect('fails fast when two contributors to one bucket disagree on sensitive', () =>
@@ -768,45 +764,41 @@ export function VecSet<K extends BcsType<any>>(...typeParameters: [
 		),
 	);
 
-	it.effect(
-		'emits an explicit gitignore line for a sensitive aggregate routed to generated',
-		() =>
-			withTempRoot('codegen-test', (root) =>
-				Effect.gen(function* () {
-					yield* runEmitCycle({
-						contributions: [
-							// Sensitive aggregate-only contributor routed to the
-							// runtime `generated` tree. Its standalone file is
-							// skipped (aggregateOnly), so the standalone sensitive
-							// scan never sees it — only the synthesized aggregate
-							// path makes it into `.gitignore`.
-							fakeDecl({
-								emitterName: 'secret-agg',
-								outputPath: 'secret-src.ts',
-								aggregateOnly: true,
-								aggregate: {
-									bucket: 'secrets.ts',
-									outputLocation: 'generated',
-									sensitive: true,
-									project: (e) => e,
-								},
-								exports: { token: { value: 'shhh' } },
-							}),
-						],
-					});
-					const gitignore = yield* Effect.promise(() =>
-						readFile(`${root}/.gitignore`, 'utf8'),
-					);
-					// The blanket `*` is always present; assert the EXPLICIT
-					// sensitive re-ignore line for the synthesized aggregate is
-					// emitted too (under the sensitive-files documentation block).
-					expect(gitignore).toContain(
-						'# sensitive files — never commit even if you override the `*` above.',
-					);
-					const lines = gitignore.split('\n');
-					expect(lines).toContain('secrets.ts');
-				}).pipe(Effect.provide(baseLayer(root))),
-			),
+	it.effect('emits an explicit gitignore line for a sensitive aggregate routed to generated', () =>
+		withTempRoot('codegen-test', (root) =>
+			Effect.gen(function* () {
+				yield* runEmitCycle({
+					contributions: [
+						// Sensitive aggregate-only contributor routed to the
+						// runtime `generated` tree. Its standalone file is
+						// skipped (aggregateOnly), so the standalone sensitive
+						// scan never sees it — only the synthesized aggregate
+						// path makes it into `.gitignore`.
+						fakeDecl({
+							emitterName: 'secret-agg',
+							outputPath: 'secret-src.ts',
+							aggregateOnly: true,
+							aggregate: {
+								bucket: 'secrets.ts',
+								outputLocation: 'generated',
+								sensitive: true,
+								project: (e) => e,
+							},
+							exports: { token: { value: 'shhh' } },
+						}),
+					],
+				});
+				const gitignore = yield* Effect.promise(() => readFile(`${root}/.gitignore`, 'utf8'));
+				// The blanket `*` is always present; assert the EXPLICIT
+				// sensitive re-ignore line for the synthesized aggregate is
+				// emitted too (under the sensitive-files documentation block).
+				expect(gitignore).toContain(
+					'# sensitive files — never commit even if you override the `*` above.',
+				);
+				const lines = gitignore.split('\n');
+				expect(lines).toContain('secrets.ts');
+			}).pipe(Effect.provide(baseLayer(root))),
+		),
 	);
 });
 

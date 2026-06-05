@@ -1,16 +1,15 @@
 // Supervisor post-start dispatch direct tests.
 //
 // This file pins the wiring contract directly: a minimal stack whose
-// plugins emit contributions inline via the typed `ctx` verbs (+ static
-// `errorContributions`) is supervised to ready, and we assert each
-// buffered contribution reached the matching `ContributionDispatcher`
-// method at the supervisor boundary.
+// plugins emit contributions inline via the typed `ctx` verbs is
+// supervised to ready, and we assert each buffered contribution reached
+// the matching `ContributionDispatcher` method at the supervisor
+// boundary.
 //
 // Architecture invariants under test:
 //   1. The supervisor's post-start replay walks each plugin's ctx buffer
-//      (in emit order) AND its `errorContributions` field, routing the
-//      former through the closed `ContributionDispatcher` and the latter
-//      into the FormatterRegistry.
+//      (in emit order), routing each decl through the closed
+//      `ContributionDispatcher`.
 //   2. Each decl kind dispatches to its matching dispatcher method.
 //      Plugins emitting decls of different kinds dispatch differently.
 //   3. Dispatch occurs once per plugin after acquire succeeds — no
@@ -23,6 +22,7 @@ import { Context, Deferred, Effect, Fiber, Layer, Queue, Ref, SubscriptionRef } 
 import { describe, expect, it } from '@effect/vitest';
 
 import { appName, pluginKey, stackName } from '../../../src/substrate/brand.ts';
+import type { EngineEvent } from '../../../src/substrate/events.ts';
 import type { Identity } from '../../../src/substrate/identity.ts';
 import {
 	Logger,
@@ -35,7 +35,9 @@ import {
 	type SupervisedStack,
 } from '../../../src/substrate/runtime/index.ts';
 import { CurrentPluginKey } from '../../../src/substrate/runtime/current-plugin.ts';
-import { definePlugin, type PluginErrorContribution } from '../../../src/substrate/plugin.ts';
+import { acquireKeys } from '../../../src/substrate/runtime/supervisor/acquire-node.ts';
+import { noopLogger } from '../../../src/substrate/runtime/supervisor/wiring.ts';
+import { definePlugin } from '../../../src/substrate/plugin.ts';
 import { PluginContext } from '../../../src/substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../../src/contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../src/contracts/projection.ts';
@@ -293,19 +295,8 @@ const packageProjectionDecl: ProjectionDecl = {
 	},
 };
 
-const errorContribAlpha: PluginErrorContribution = {
-	_tag: 'PluginErrorContribution',
-	errorTags: ['AlphaError'],
-	formatter: (value) => `<<alpha ${value._tag}>>`,
-};
-
-const errorContribBeta: PluginErrorContribution = {
-	_tag: 'PluginErrorContribution',
-	errorTags: ['BetaError', 'GammaError'],
-};
-
 // -----------------------------------------------------------------------------
-// Test plugins — one leaf per capability kind, plus one error-only plugin.
+// Test plugins — one leaf per capability kind.
 // -----------------------------------------------------------------------------
 
 const pluginSnap = definePlugin({
@@ -388,15 +379,6 @@ const pluginStableKey = definePlugin({
 	section: 'service',
 	pluginKey: 'plug-stable-key',
 	start: () => Effect.succeed({ v: 'stable-key' as const }),
-	errorContributions: [errorContribAlpha],
-});
-
-const pluginErrorOnly = definePlugin({
-	id: 'test:errorOnly',
-	role: 'task' as const,
-	section: 'service',
-	start: () => Effect.succeed({ v: 'err' as const }),
-	errorContributions: [errorContribBeta],
 });
 
 // -----------------------------------------------------------------------------
@@ -719,7 +701,6 @@ describe('supervisor harvest loop', () => {
 		}),
 	);
 
-
 	it.effect('hot restart reacquires with a fresh scope and ready gate', () =>
 		Effect.gen(function* () {
 			const starts = yield* Ref.make(0);
@@ -856,6 +837,202 @@ describe('supervisor harvest loop', () => {
 					yield* startup.handle.awaitShutdown;
 					const shuttingDown = yield* SubscriptionRef.get(state);
 					expect(shuttingDown.cycle.phase).toBe('shutting-down');
+				}),
+			);
+		}),
+	);
+
+	it.effect('selective restart interrupts an in-flight acquire before re-acquire', () =>
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const firstAcquireStarted = yield* Deferred.make<void>();
+			const firstAcquireFinalizers = yield* Ref.make(0);
+			const restartableKey = pluginKey('test:restart-acquiring#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-acquiring',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						const run = yield* Ref.updateAndGet(starts, (n) => n + 1);
+						if (run === 1) {
+							yield* Effect.addFinalizer(() => Ref.update(firstAcquireFinalizers, (n) => n + 1));
+							yield* Deferred.succeed(firstAcquireStarted, void 0).pipe(Effect.ignore);
+							return yield* Effect.never;
+						}
+						return { run };
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+					yield* Deferred.await(firstAcquireStarted);
+					expect(yield* startup.handle.registry.getStatus(restartableKey)).toBe('acquiring');
+
+					yield* Queue.offer(startup.handle.commands, {
+						tag: 'selective-restart.requested',
+						pluginKey: restartableKey,
+					});
+
+					while (true) {
+						const event = yield* Queue.take(startup.handle.events);
+						if (
+							event.tag === 'restart.completed' &&
+							event.target !== 'stack' &&
+							event.target.pluginKey === restartableKey
+						) {
+							break;
+						}
+					}
+
+					const acquired = yield* startup.handle.registry.awaitReady(restartableKey);
+					expect(acquired).toEqual({ run: 2 });
+					expect(yield* Ref.get(starts)).toBe(2);
+					expect(yield* Ref.get(firstAcquireFinalizers)).toBe(1);
+					expect(yield* startup.handle.registry.getStatus(restartableKey)).toBe('ready');
+					yield* Fiber.join(bootFiber);
+				}),
+			);
+		}),
+	);
+
+	it.effect('interrupted in-flight acquire fails the ready gate', () =>
+		Effect.gen(function* () {
+			const acquireStarted = yield* Deferred.make<void>();
+			const interruptedKey = pluginKey('test:interrupted-acquire#0');
+			const pluginInterrupted = definePlugin({
+				id: 'test:interrupted-acquire',
+				role: 'service' as const,
+				section: 'service',
+				start: () =>
+					Effect.gen(function* () {
+						yield* Deferred.succeed(acquireStarted, void 0).pipe(Effect.ignore);
+						return yield* Effect.never;
+					}),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginInterrupted], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const startup = yield* startSupervisor(stack, identity, state);
+					const bootFiber = yield* Effect.forkScoped(startup.runInitialAcquire);
+					yield* Deferred.await(acquireStarted);
+
+					yield* startup.handle.registry.interruptAcquire(interruptedKey);
+
+					const exit = yield* startup.handle.registry.awaitReady(interruptedKey).pipe(Effect.exit);
+					expect(exit._tag).toBe('Failure');
+					expect(yield* startup.handle.registry.getStatus(interruptedKey)).toBe('failed');
+
+					yield* Fiber.join(bootFiber);
+				}),
+			);
+		}),
+	);
+
+	it.effect('interrupt between acquire-fiber registration and gate open fails the ready gate', () =>
+		Effect.gen(function* () {
+			const starts = yield* Ref.make(0);
+			const interruptedKey = pluginKey('test:registered-before-gate#0');
+			const pluginInterrupted = definePlugin({
+				id: 'test:registered-before-gate',
+				role: 'service' as const,
+				section: 'service',
+				start: () => Ref.update(starts, (n) => n + 1).pipe(Effect.as({ ok: true })),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginInterrupted], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const scope = yield* Effect.scope;
+					const startup = yield* startSupervisor(stack, identity, state);
+					const events = yield* Queue.unbounded<EngineEvent>();
+					const registry = {
+						...startup.handle.registry,
+						setAcquireFiberIfEntry: (key, entry, fiber) =>
+							startup.handle.registry
+								.setAcquireFiberIfEntry(key, entry, fiber)
+								.pipe(
+									Effect.tap((registered) =>
+										registered ? Fiber.interrupt(fiber).pipe(Effect.asVoid) : Effect.void,
+									),
+								),
+					} satisfies typeof startup.handle.registry;
+
+					yield* acquireKeys(
+						registry,
+						[interruptedKey],
+						state,
+						events,
+						Context.empty(),
+						noopContributionDispatcher,
+						noopLogger,
+						identity,
+						scope,
+					);
+
+					const exit = yield* startup.handle.registry.awaitReady(interruptedKey).pipe(Effect.exit);
+					expect(exit._tag).toBe('Failure');
+					expect(yield* startup.handle.registry.getStatus(interruptedKey)).toBe('failed');
+					expect(yield* Ref.get(starts)).toBe(0);
+				}),
+			);
+		}),
+	);
+
+	it.effect('acquire fiber registration refuses stale restart generations', () =>
+		Effect.gen(function* () {
+			const restartableKey = pluginKey('test:restart-generation#0');
+			const pluginRestartable = definePlugin({
+				id: 'test:restart-generation',
+				role: 'service' as const,
+				section: 'service',
+				start: () => Effect.succeed({ ok: true }),
+			});
+			const state = yield* makeProjectionRef();
+			const stack: SupervisedStack = { _tag: 'Stack', members: [pluginRestartable], options: {} };
+
+			yield* Effect.scoped(
+				Effect.gen(function* () {
+					const scope = yield* Effect.scope;
+					const startup = yield* startSupervisor(stack, identity, state);
+					const staleEntry = startup.handle.registry.entries.get(restartableKey);
+					expect(staleEntry).toBeDefined();
+					if (staleEntry === undefined) return;
+
+					yield* startup.handle.registry.resetForRestart(restartableKey, scope);
+
+					const staleFiber = yield* Effect.forkScoped(
+						Effect.never as Effect.Effect<void, never, never>,
+					);
+					const staleRegistered = yield* startup.handle.registry.setAcquireFiberIfEntry(
+						restartableKey,
+						staleEntry,
+						staleFiber,
+					);
+					expect(staleRegistered).toBe(false);
+
+					const currentEntry = startup.handle.registry.entries.get(restartableKey);
+					expect(currentEntry).toBeDefined();
+					if (currentEntry === undefined) return;
+					const currentFiber = yield* Effect.forkScoped(
+						Effect.never as Effect.Effect<void, never, never>,
+					);
+					const currentRegistered = yield* startup.handle.registry.setAcquireFiberIfEntry(
+						restartableKey,
+						currentEntry,
+						currentFiber,
+					);
+					expect(currentRegistered).toBe(true);
+
+					yield* startup.handle.registry.interruptAcquire(restartableKey);
+					yield* Fiber.interrupt(staleFiber);
 				}),
 			);
 		}),
@@ -1024,49 +1201,6 @@ describe('supervisor harvest loop', () => {
 
 			const snapshot = yield* SubscriptionRef.get(state);
 			expect(snapshot.rows.map((row) => row.key)).toEqual(['test:snap#0', 'plug-stable-key']);
-		}),
-	);
-
-	it.effect('runs the dispatch path for plugins that contribute only errorContributions', () =>
-		// The plugin emits NO ctx contributions — only a
-		// `PluginErrorContribution`. The supervisor feeds the error
-		// contribution directly into the FormatterRegistry; no dispatcher
-		// method fires (the buffer is empty). We assert the supervisor
-		// reached ready WITHOUT calling any dispatcher method — the
-		// dispatch path completed cleanly.
-		Effect.gen(function* () {
-			const { ref, dispatcher } = yield* makeCapture();
-			const stack: SupervisedStack = {
-				_tag: 'Stack',
-				members: [pluginErrorOnly],
-				options: {},
-			};
-			const state = yield* makeProjectionRef();
-
-			yield* Effect.scoped(
-				Effect.gen(function* () {
-					const handle = yield* supervise(stack, identity, state, Context.empty(), dispatcher);
-					for (const [key] of handle.graph.nodes) {
-						yield* handle.registry.awaitReady(key);
-					}
-				}),
-			);
-
-			const captured = yield* Ref.get(ref);
-			// Zero capability dispatches — only an error contribution.
-			expect(captured.snapshotable).toEqual([]);
-			expect(captured.routable).toEqual([]);
-			expect(captured.codegenable).toEqual([]);
-			expect(captured.strategy).toEqual([]);
-
-			// The projection now lists the error-only plugin among rows
-			// (the supervisor declares rows for non-inner top-level
-			// plugins post-acquire). Pins that the harvest path
-			// completed without short-circuiting on the missing
-			// capability tuple.
-			const snap = yield* SubscriptionRef.get(state);
-			const rowKeys = snap.rows.map((r) => r.key);
-			expect(rowKeys).toContain('test:errorOnly#0');
 		}),
 	);
 

@@ -17,6 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { makeSnapshotReader } from '../../src/cli/snapshot-reader.ts';
 import {
 	SnapshotLayout,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	type SnapshotMetadata,
 } from '../../src/orchestrators/snapshot/index.ts';
@@ -30,6 +31,7 @@ const metadata = (overrides: Partial<SnapshotMetadata> = {}): SnapshotMetadata =
 	app: 'sample-app',
 	stack: 'main',
 	network: 'localnet',
+	graphInput: { version: SNAPSHOT_GRAPH_INPUT_VERSION, graphInputId: 'graph-fixture', nodes: [] },
 	hostTreeIncluded: false,
 	subtrees: [],
 	containers: [],

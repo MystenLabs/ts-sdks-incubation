@@ -8,14 +8,7 @@
 //   - write: round-trips through atomicWriteJsonSync (the file exists
 //     after, with the value).
 
-import {
-	chmodSync,
-	existsSync,
-	mkdtempSync,
-	readFileSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -148,11 +141,7 @@ describe('readVersionedDocumentSync', () => {
 describe('parseVersionedDocumentBodyOrNull', () => {
 	it('decodes a well-formed body', () => {
 		const doc: TestDoc = { version: 1, name: 'beta', items: [9] };
-		const out = parseVersionedDocumentBodyOrNull(
-			JSON.stringify(doc),
-			TestDocSchema,
-			'test-source',
-		);
+		const out = parseVersionedDocumentBodyOrNull(JSON.stringify(doc), TestDocSchema, 'test-source');
 		expect(out).toEqual(doc);
 	});
 

@@ -1,28 +1,17 @@
-// Roster claim / release / container-claim ledger — atomic-write
-// integration smoke.
+// Roster claim / release — atomic-write integration smoke.
 //
 // After the atomic-write consolidation, every roster mutation routes
 // through the canonical `atomicWriteFileSync` (no inline tempfile +
 // rename dances). These tests pin the contract from the consumer's
-// POV: claim writes a parseable roster, addClaim/removeClaim
-// round-trip through the container-claim ledger, no tempfile leaks
-// on success.
+// POV: claim writes a parseable roster, no tempfile leaks on success.
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { hostname } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
-import {
-	addClaim,
-	claim,
-	pruneStaleClaims,
-	readClaims,
-	release,
-	removeClaim,
-} from '../../../../src/substrate/runtime/cross-process/roster.ts';
+import { claim, release } from '../../../../src/substrate/runtime/cross-process/roster.ts';
 import { processStartTime } from '../../../../src/substrate/runtime/cross-process/liveness.ts';
 import { withTempRoot } from '../../../helpers/with-temp-root.ts';
 
@@ -33,13 +22,11 @@ const pathsFor = (
 ): {
 	readonly stackLockFile: string;
 	readonly rosterFile: string;
-	readonly containerClaimsFile: string;
 } => {
 	const stackRoot = join(root, 'app', 'main');
 	return {
 		stackLockFile: join(stackRoot, 'stack.lock'),
 		rosterFile: join(stackRoot, 'roster.json'),
-		containerClaimsFile: join(stackRoot, 'container-claims.json'),
 	};
 };
 
@@ -94,159 +81,6 @@ describe('roster.claim / release', () => {
 	);
 });
 
-describe('roster.addClaim / removeClaim (container-claim ledger)', () => {
-	it.effect(
-		'addClaim writes the container-claims.json via the canonical primitive',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					yield* claim(paths);
-					yield* addClaim(paths, 'devstack-main-sui');
-					const doc = yield* readClaims(paths);
-					expect(doc.claims).toHaveLength(1);
-					expect(doc.claims[0]?.containerKey).toBe('devstack-main-sui');
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-
-	it.effect(
-		'removeClaim reports last-claim-released when no peer holds it',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					yield* claim(paths);
-					yield* addClaim(paths, 'devstack-main-sui');
-					const result = yield* removeClaim(paths, 'devstack-main-sui');
-					expect(result.lastClaimReleased).toBe(true);
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-
-	it.effect(
-		'addClaim is idempotent for the same (containerKey, pid, host)',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					yield* claim(paths);
-					yield* addClaim(paths, 'devstack-main-sui');
-					yield* addClaim(paths, 'devstack-main-sui');
-					const doc = yield* readClaims(paths);
-					expect(doc.claims).toHaveLength(1);
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-
-	it.effect(
-		'addClaim prunes stale same-host claims before appending',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
-					yield* claim(paths);
-					writeFileSync(
-						claimsFile,
-						JSON.stringify({
-							version: 1,
-							claims: [
-								{
-									containerKey: 'devstack-main-sui',
-									pid: 0,
-									startTime: 1,
-									hostname: hostname(),
-									claimedAt: 1,
-								},
-							],
-						}),
-					);
-
-					yield* addClaim(paths, 'devstack-main-sui');
-
-					const doc = yield* readClaims(paths);
-					expect(doc.claims).toHaveLength(1);
-					expect(doc.claims[0]?.pid).toBe(process.pid);
-					expect(doc.claims[0]?.startTime).toEqual(expect.any(Number));
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-
-	it.effect(
-		'removeClaim ignores stale peers when computing last-claim release',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					yield* claim(paths);
-					yield* addClaim(paths, 'devstack-main-sui');
-					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
-					const current = yield* readClaims(paths);
-					writeFileSync(
-						claimsFile,
-						JSON.stringify({
-							version: 1,
-							claims: [
-								...current.claims,
-								{
-									containerKey: 'devstack-main-sui',
-									pid: 0,
-									startTime: 1,
-									hostname: hostname(),
-									claimedAt: 1,
-								},
-							],
-						}),
-					);
-
-					const result = yield* removeClaim(paths, 'devstack-main-sui');
-
-					expect(result.lastClaimReleased).toBe(true);
-					expect((yield* readClaims(paths)).claims).toEqual([]);
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-
-	it.effect(
-		'pruneStaleClaims keeps foreign-host claims conservative',
-		() =>
-			withTempRoot('roster-test', (root) =>
-				Effect.gen(function* () {
-					const paths = pathsFor(root);
-					const claimsFile = join(root, 'app', 'main', 'container-claims.json');
-					yield* claim(paths);
-					writeFileSync(
-						claimsFile,
-						JSON.stringify({
-							version: 1,
-							claims: [
-								{
-									containerKey: 'devstack-main-sui',
-									pid: 0,
-									startTime: 1,
-									hostname: 'other-host',
-									claimedAt: 1,
-								},
-							],
-						}),
-					);
-
-					const doc = yield* pruneStaleClaims(paths);
-
-					expect(doc.claims).toHaveLength(1);
-					expect(doc.claims[0]?.hostname).toBe('other-host');
-				}),
-			),
-		ROSTER_TEST_TIMEOUT_MS,
-	);
-});
-
 // Regression for Phase B1: `isOwnEntry` now matches on
 // `(pid, hostname, startTime)`. With the previous PID-only check, a
 // recycled-PID peer on a long-uptime host could be silently overwritten
@@ -272,9 +106,7 @@ describe('roster.isOwnEntry — (pid, hostname, startTime) triple match', () => 
 					// roster on disk to introduce a peer with the same pid +
 					// hostname but a different startTime.
 					yield* claim(paths);
-					const initialRoster = JSON.parse(
-						readFileSync(paths.rosterFile, 'utf8'),
-					) as {
+					const initialRoster = JSON.parse(readFileSync(paths.rosterFile, 'utf8')) as {
 						readonly version: 1;
 						readonly holders: ReadonlyArray<{
 							readonly pid: number;

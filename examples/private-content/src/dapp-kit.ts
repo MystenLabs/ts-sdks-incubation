@@ -20,8 +20,7 @@ const devstackNetwork = 'localnet' as const;
  * not resolved by the grpc client's MVR overrides. `undefined` until the
  * stack is applied.
  */
-export const vaultPackageId: string | undefined =
-	config.packages.vault?.byNetwork[config.network];
+export const vaultPackageId: string | undefined = config.packages.vault?.byNetwork[config.network];
 
 export const dAppKit = createDAppKit({
 	networks: [devstackNetwork],

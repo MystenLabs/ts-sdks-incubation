@@ -98,9 +98,7 @@ describe('acquireStackLock — dead-holder reclaim under multi-peer contention',
 						if (Exit.isFailure(exit)) {
 							const err = Exit.findErrorOption(exit);
 							if (err._tag === 'Some') {
-								expect.fail(
-									`peer failed under reclaim stress: ${JSON.stringify(err.value)}`,
-								);
+								expect.fail(`peer failed under reclaim stress: ${JSON.stringify(err.value)}`);
 							}
 							expect.fail('peer failed under reclaim stress with no error value');
 						}
@@ -134,9 +132,7 @@ describe('acquireStackLock — dead-holder reclaim under multi-peer contention',
 						}),
 						{ flag: 'wx' },
 					);
-					const exit = yield* Effect.scoped(acquireStackLock(lockPath, 250)).pipe(
-						Effect.exit,
-					);
+					const exit = yield* Effect.scoped(acquireStackLock(lockPath, 250)).pipe(Effect.exit);
 					if (Exit.isSuccess(exit)) {
 						expect.fail('expected timeout against a live holder');
 					}

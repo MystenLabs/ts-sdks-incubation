@@ -5,10 +5,9 @@
 // or use its direct/offline fallback.
 //
 // Detection reads the existing `roster.json` (architecture § Cross-
-// process safety protocol § Roster) and walks holders. A same-host
-// holder with a live PID + matching start-time → supervisor live.
-// Foreign-host holders are conservatively treated as live (NFS-safe
-// default; matches `liveness.ts` discipline).
+// process safety protocol § Roster) and walks holders. A holder with a
+// live PID + matching start-time → supervisor live (matches
+// `liveness.ts` discipline; devstack is single-host).
 
 import { Effect } from 'effect';
 

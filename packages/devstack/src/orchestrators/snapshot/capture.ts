@@ -53,6 +53,7 @@ import {
 	type CapturedSubtree,
 	type ContributionDoc,
 	type IdentitySlice,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 	type SnapshotId,
 	SNAPSHOT_META_VERSION,
@@ -242,7 +243,7 @@ const enumerateParticipantContainers = (
 			}
 		}
 		return containers;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.enumerate'));
+	});
 
 /** Commit one STOPPED container's writable layer to a temporary snapshot
  *  image tag. The container has already been gracefully stopped (RocksDB
@@ -261,9 +262,7 @@ const commitStoppedContainer = (
 		const stoppedHandle: ContainerHandle = { ...handle, status: 'exited' };
 		const imageRef = yield* runtime
 			.pauseAndCommit(stoppedHandle)
-			.pipe(
-				Effect.catch(failPhase('commit', `commit failed for ${handle.name}`, plugin)),
-			);
+			.pipe(Effect.catch(failPhase('commit', `commit failed for ${handle.name}`, plugin)));
 		const snapshotTag = imageRef.tag;
 		yield* registerCommittedRef(imageRef);
 		if (!isRestorableContainerImageName(snapshotTag)) {
@@ -285,7 +284,7 @@ const commitStoppedContainer = (
 			},
 			imageRef,
 		};
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.commit'));
+	});
 
 const saveCommittedImages = (
 	committed: ReadonlyArray<CommittedContainerCapture>,
@@ -325,7 +324,7 @@ const saveCommittedImages = (
 			savedTags,
 			committed.map((entry) => entry.captured.snapshotTag),
 		).pipe(Effect.catch(failImageBundleTagScan));
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.save-images'));
+	});
 
 const cleanupCommittedRefs = (
 	runtime: ContainerRuntime,
@@ -414,7 +413,7 @@ const writeHostTreeTar = (
 				),
 			),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.tar-host-tree'));
+	});
 
 // -----------------------------------------------------------------------------
 // Pre-stop gather — runs while plugins are LIVE (the gather-before-drain
@@ -460,11 +459,7 @@ export interface GatheredCapture {
  */
 export const gatherCaptureParticipants = (
 	participants: ReadonlyArray<SnapshotParticipant>,
-): Effect.Effect<
-	GatheredCapture,
-	IdentityGuardError | IdentityContributionConflictError,
-	never
-> =>
+): Effect.Effect<GatheredCapture, IdentityGuardError | IdentityContributionConflictError, never> =>
 	Effect.gen(function* () {
 		const identityContributions: IdentityContribution[] = [];
 		const gathered: GatheredParticipant[] = [];
@@ -529,7 +524,7 @@ export const gatherCaptureParticipants = (
 			declaredSubtrees,
 			participantKeys,
 		} satisfies GatheredCapture;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.gather'));
+	});
 
 // -----------------------------------------------------------------------------
 // Top-level capture — the bounce.
@@ -542,6 +537,7 @@ export interface CaptureInputs {
 	readonly app: string;
 	readonly stack: string;
 	readonly network: string;
+	readonly graphInput: SnapshotGraphInputIdentity;
 	readonly runtimeStackRoot: string;
 	readonly participants: ReadonlyArray<SnapshotParticipant>;
 	readonly runtime: ContainerRuntime;
@@ -590,13 +586,7 @@ export const runCapture = (
 > =>
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'capture',
-			'devstack.snapshot.id': inputs.snapshotId,
-		});
-		const grace = Duration.seconds(
-			inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS,
-		);
+		const grace = Duration.seconds(inputs.stopGraceSeconds ?? DEFAULT_CAPTURE_STOP_GRACE_SECONDS);
 
 		// 0. GATHER (plugins live) — identity fail-closed BEFORE any stop.
 		const gathered = yield* gatherCaptureParticipants(inputs.participants);
@@ -637,7 +627,9 @@ export const runCapture = (
 						inputs.runtime
 							.stop(entry.handle, grace)
 							.pipe(
-								Effect.catch(failPhase('stop', `graceful stop failed for ${entry.handle.name}`, entry.plugin)),
+								Effect.catch(
+									failPhase('stop', `graceful stop failed for ${entry.handle.name}`, entry.plugin),
+								),
 							),
 					{ concurrency: 'unbounded', discard: true },
 				);
@@ -712,6 +704,7 @@ export const runCapture = (
 					app: inputs.app,
 					stack: inputs.stack,
 					network: inputs.network,
+					graphInput: inputs.graphInput,
 					hostTreeIncluded,
 					subtrees,
 					containers: capturedContainers,
@@ -731,7 +724,7 @@ export const runCapture = (
 				return meta;
 			}),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture'));
+	});
 
 /**
  * The post-publish bounce tail: retag each committed image onto its
@@ -760,6 +753,16 @@ export const resumeAfterCapture = (
 		// imageName onto it (removeSourceAfterTag drops the temp snapshot
 		// tag — its label-owned image is now reachable by the original name).
 		for (const captured of meta.containers) {
+			// Image GC: the retag below moves `imageName` from the layer it
+			// currently resolves to (the now-superseded previous capture) onto
+			// the freshly-committed snapshot layer. The previous layer is then
+			// orphaned — no tag references it — and would dangle forever. Read
+			// the old layer's digest BEFORE the retag so we can drop it AFTER.
+			// A null here (first capture: nothing tagged that name yet) means
+			// there is no orphan to collect.
+			const oldDigest = yield* inputs.runtime
+				.inspectImageDigest(captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
 			// The contract's `tagImage` resolves the source by `tag ?? digest`
 			// (runtime/docker/service.ts), so the snapshot tag is the operative
 			// source; `digest` mirrors it to satisfy the `ImageRef` shape.
@@ -776,6 +779,37 @@ export const resumeAfterCapture = (
 						),
 					),
 				);
+			// ORDERING INVARIANT: GC runs strictly AFTER the retag succeeds.
+			// Removing the old layer before the retag would destroy the live
+			// image if the retag then failed. Now `imageName` resolves to the
+			// new committed layer; read that digest to confirm the orphan is
+			// genuinely distinct.
+			const newDigest = yield* inputs.runtime
+				.inspectImageDigest(captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
+			// Two guards before removal:
+			//   - null guard: no previous layer to collect (first capture).
+			//   - equal-digest guard: the commit produced an identical layer
+			//     id, so `imageName` still resolves to it — removing `oldDigest`
+			//     would delete the LIVE layer. Skip the no-op case.
+			if (oldDigest !== null && oldDigest !== newDigest) {
+				// Digest-only target: `removeImage` resolves `tag ?? digest`, so
+				// a digest-only ref drops the orphaned layer by id, NOT the live
+				// `imageName` tag. Best-effort — any failure (image-in-use,
+				// multiple tags, ImageRemoveFailed) is logged and swallowed; it
+				// must NEVER fail the capture. Mirrors `cleanupCommittedRefs`.
+				yield* inputs.runtime
+					.removeImage({ digest: oldDigest })
+					.pipe(
+						Effect.catch((cause) =>
+							Effect.logWarning(
+								`GC of superseded image layer ${oldDigest} for ${captured.imageName} failed (best-effort): ${String(
+									cause,
+								)}`,
+							),
+						),
+					);
+			}
 		}
 		// HARD-rm the stopped containers (claim-bypassing) so the resume's
 		// recreate sees facts:null → fresh → `docker run` the original name,
@@ -807,4 +841,4 @@ export const resumeAfterCapture = (
 				Effect.catch(failPhase('resume', `stack resume after capture failed`)),
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.capture.resume'));
+	});

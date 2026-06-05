@@ -36,7 +36,6 @@ import {
 } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
-import { SuiSpans } from '../spans.ts';
 import { toDockerHostGatewayUrl, type SuiClient, type WaitForTransactionsReady } from './shared.ts';
 
 // ---------------------------------------------------------------------------
@@ -52,7 +51,7 @@ export const DEFAULT_CHAIN_ID_TIMEOUT = Duration.seconds(30);
  *  cache folds into its keys (`(namespace, chainId, contentHash)`). */
 export const fetchChainId = (
 	sdkClient: SuiGrpcClient,
-	opts?: { readonly timeout?: Duration.Duration; readonly span?: string },
+	opts?: { readonly timeout?: Duration.Duration },
 ): Effect.Effect<string, SuiPluginError> => {
 	const timeout = opts?.timeout ?? DEFAULT_CHAIN_ID_TIMEOUT;
 	const timeoutMs = Duration.toMillis(timeout);
@@ -83,8 +82,6 @@ export const fetchChainId = (
 					),
 				),
 		}),
-		Effect.tap((id: string) => Effect.annotateCurrentSpan({ [SuiSpans.chain]: id })),
-		Effect.withSpan(opts?.span ?? 'devstack.plugin.sui.fetchChainId'),
 	);
 };
 

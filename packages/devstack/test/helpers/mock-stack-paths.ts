@@ -5,9 +5,7 @@
 // that previously lived in lock.test.ts + several runtime/docker tests.
 // The cross-process lock + roster files derive from `stackRoot` by
 // default; the optional `rosterBase` parameter redirects the
-// lock/roster/claims trio elsewhere (used by the orphan-window test to
-// point them at a path whose dirname is a regular file, forcing an
-// ENOTDIR on `mkdirSync(dirname)`).
+// lock/roster pair elsewhere.
 
 import { join } from 'node:path';
 
@@ -17,8 +15,8 @@ import { StackPathsService, type StackPaths } from '../../src/substrate/runtime/
 
 /**
  * Build a `StackPaths` value rooted at `stackRoot`. When `rosterBase`
- * is supplied, the stack-lock / roster / container-claims files are
- * placed under it instead of `stackRoot`.
+ * is supplied, the stack-lock / roster files are placed under it
+ * instead of `stackRoot`.
  */
 export const stackPathsFor = (stackRoot: string, rosterBase: string = stackRoot): StackPaths => {
 	const cacheDir = join(stackRoot, 'cache');
@@ -39,7 +37,6 @@ export const stackPathsFor = (stackRoot: string, rosterBase: string = stackRoot)
 		snapshotDir: join(stackRoot, 'snapshots'),
 		stackLockFile: join(rosterBase, 'stack.lock'),
 		rosterFile: join(rosterBase, 'roster.json'),
-		containerClaimsFile: join(rosterBase, 'container-claims.json'),
 		cacheEntry,
 		cacheChainDir,
 		cacheNamespaceDir,

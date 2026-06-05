@@ -8,28 +8,20 @@
 
 import { dirname } from 'node:path';
 
-import { Effect, Exit, FileSystem, Logger, SubscriptionRef } from 'effect';
+import { Effect, Exit, FileSystem, Logger } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
-import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
 import {
 	commandChannelPaths,
 	makeCommandChannelPublisher,
 	makeProjectionRef,
 	type SupervisedStack,
-	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
+import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
-	buildProductionContributionDispatcher,
-	buildProductionPostAcquireHook,
-	extendBuiltInPluginContext,
-	layerBuiltInPluginRuntime,
-	superviseStackEffect,
-} from '../../orchestrators/boot.ts';
-import {
+	computeSnapshotGraphInputFromStack,
 	SnapshotOrchestratorService,
-	type RestoreParticipant,
 	type SnapshotMetadata,
 } from '../../orchestrators/snapshot/index.ts';
 import { CliInternalError, CliUnavailableError } from '../../surfaces/cli/index.ts';
@@ -43,8 +35,9 @@ import {
 	resolvedIdentityForStack,
 	type ResolvedIdentity,
 } from './identity.ts';
-import { buildDirectSnapshotLayers, buildVerbLayers } from './build-verb-layers.ts';
+import { buildDirectSnapshotLayers, buildVerbLayers } from '../../orchestrators/layers.ts';
 import { provideFileSystem } from './provide-file-system.ts';
+import { readDevstackVersion } from './read-devstack-version.ts';
 
 const LIVE_SNAPSHOT_CAPTURE_TIMEOUT_MILLIS = 60 * 60 * 1000;
 
@@ -152,12 +145,6 @@ export const runSnapshotCaptureAgainstLiveSupervisor = (
 		);
 	});
 
-const snapshotIdentityParticipants = (meta: SnapshotMetadata): ReadonlyArray<RestoreParticipant> =>
-	Object.entries(meta.identity).map(([plugin, value]) => ({
-		plugin,
-		liveIdentity: Effect.succeed({ [plugin]: value }),
-	}));
-
 export const runSnapshotRestoreDirect = (
 	identity: ResolvedIdentity,
 	snapshotId: string,
@@ -165,10 +152,15 @@ export const runSnapshotRestoreDirect = (
 	const program = Effect.gen(function* () {
 		const snapshot = yield* SnapshotOrchestratorService;
 		const fs = yield* FileSystem.FileSystem;
-		const entries = yield* provideFileSystem(fs, snapshot.list);
-		const meta = entries.find((entry) => entry.id === snapshotId)?.metadata ?? null;
-		const participants = meta === null ? [] : snapshotIdentityParticipants(meta);
-		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId, participants }));
+		// Offline restore: there is NO live supervisor (ensured below), so no
+		// plugin contributes a live identity slice. Call `restore` with no
+		// `participants` — `runRestore` reads this as "no live stack" and
+		// skips ONLY the cross-plugin contribution guard (the snapshot's own
+		// recorded identity has nothing live to disagree with). The runtime
+		// guard (app/stack/network) and the snapshot-side emptiness refusal
+		// still fire. This is the same empty-participants startup restore
+		// contract interrupted-restore recovery uses.
+		yield* provideFileSystem(fs, snapshot.restore({ id: snapshotId }));
 	});
 	const restored = program.pipe(
 		Effect.provide(
@@ -222,7 +214,7 @@ export const runSnapshotCaptureDirectLoaded = (
 	args: { readonly snapshotId?: string; readonly name?: string },
 ): Effect.Effect<{ readonly snapshotId: string; readonly name: string }, unknown> =>
 	Effect.gen(function* () {
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const identityValue: Identity = identityValueFor(effectiveIdentity);
 		const appRoot = dirname(loaded.resolvedConfigPath);
@@ -235,21 +227,22 @@ export const runSnapshotCaptureDirectLoaded = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const contributionDispatcher = yield* buildProductionContributionDispatcher();
-			const postAcquireHook = yield* buildProductionPostAcquireHook({
-				extras: stack.options.extras,
-			});
 			let captureExit: Exit.Exit<void, unknown> = Exit.succeed(undefined);
 			const capturedMeta: { current: SnapshotMetadata | null } = { current: null };
-			yield* superviseStackEffect(
+			// The contribution dispatcher + post-acquire hook + built-in
+			// plugin-context extension are assembled in ONE place
+			// (`orchestrators/boot.ts superviseStackWithProductionBoot`); this
+			// one-shot verb supplies only the per-caller inputs (`extras`,
+			// `lifetime: 'one-shot'`, and the capture `withinScope` hook).
+			// Result semantics are unchanged: the hook still tees the capture
+			// `Exit` + metadata into the closure cells read below.
+			yield* superviseStackWithProductionBoot(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
 				state,
 				{
-					contributionDispatcher,
-					postAcquireHook,
+					extras: stack.options.extras,
 					lifetime: 'one-shot',
-					extendContext: extendBuiltInPluginContext,
 					// Offline one-shot capture: the bounce gather → stop → commit →
 					// retag → hard-rm runs here; NO `resume` is injected because
 					// this supervise scope is `one-shot` (it closes right after) —
@@ -259,10 +252,15 @@ export const runSnapshotCaptureDirectLoaded = (
 						Effect.gen(function* () {
 							const snapshot = yield* SnapshotOrchestratorService;
 							const fs = yield* FileSystem.FileSystem;
+							const graphInput = yield* computeSnapshotGraphInputFromStack({
+								stack,
+								devstackVersion: readDevstackVersion(),
+							});
 							return yield* snapshot
 								.capture({
 									...(args.snapshotId === undefined ? {} : { id: args.snapshotId }),
 									...(args.name === undefined ? {} : { label: args.name }),
+									graphInput,
 								})
 								.pipe(Effect.provideService(FileSystem.FileSystem, fs));
 						}).pipe(
@@ -281,7 +279,7 @@ export const runSnapshotCaptureDirectLoaded = (
 							Effect.asVoid,
 						),
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime));
+			);
 			if (Exit.isFailure(captureExit)) {
 				yield* Effect.failCause(captureExit.cause);
 			}
@@ -289,8 +287,6 @@ export const runSnapshotCaptureDirectLoaded = (
 				return yield* Effect.die('snapshot capture completed without metadata');
 			}
 			const meta = capturedMeta.current;
-			const stackPaths = yield* StackPathsService;
-			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
 			return { snapshotId: meta.id, name: meta.label ?? meta.id };
 		});
 
@@ -318,7 +314,7 @@ export const runSnapshotCaptureLiveAware = (
 			return yield* runSnapshotCaptureDirect(identity, args);
 		}
 		const loaded = yield* makeConfigLoader().load(args.configPath);
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		const effectiveIdentity = resolvedIdentityForStack(identity, stack);
 		const live = yield* runSnapshotCaptureAgainstLiveSupervisor(effectiveIdentity, args);
 		if (live !== null) return live;

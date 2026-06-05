@@ -19,11 +19,7 @@
 import { existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
 
-import {
-	OPTIONAL_PLUGINS,
-	PLUGIN_MANIFEST,
-	type PluginId,
-} from './plugin-manifest.js';
+import { OPTIONAL_PLUGINS, PLUGIN_MANIFEST, type PluginId } from './plugin-manifest.js';
 
 /** Posix-join template-relative segments (manifest paths are posix). */
 function tjoin(appDir: string, rel: string): string {
@@ -31,7 +27,9 @@ function tjoin(appDir: string, rel: string): string {
 }
 
 /** Optional plugins kept, in canonical order. `core` is implicit. */
-function selectedOptional(selected: ReadonlySet<PluginId>): ReadonlyArray<Exclude<PluginId, 'core'>> {
+function selectedOptional(
+	selected: ReadonlySet<PluginId>,
+): ReadonlyArray<Exclude<PluginId, 'core'>> {
 	return OPTIONAL_PLUGINS.filter((id) => selected.has(id));
 }
 

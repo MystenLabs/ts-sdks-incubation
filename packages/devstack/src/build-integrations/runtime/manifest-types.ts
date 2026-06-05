@@ -13,7 +13,4 @@ export {
 	type EndpointEntry,
 } from '../../substrate/manifest.ts';
 
-export {
-	decodeUnknownSync,
-	parseJsonTextSync,
-} from '../../substrate/runtime/runtime-decode.ts';
+export { decodeUnknownSync, parseJsonTextSync } from '../../substrate/runtime/runtime-decode.ts';

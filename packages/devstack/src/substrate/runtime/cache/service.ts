@@ -32,7 +32,6 @@ import type { Cache, CacheEntry, CacheKey } from '../../../primitives/cache.ts';
 import { atomicWriteJson } from '../atomic-write.ts';
 import { setCurrentPluginPhase } from '../current-plugin.ts';
 import { CacheError } from '../errors.ts';
-import { SpanAttr } from '../observability/spans.ts';
 import { StackPathsService } from '../paths.ts';
 import { decodeJsonText, parseJsonTextSync } from '../runtime-decode.ts';
 import { CacheEntryDoc } from './schema.ts';
@@ -122,26 +121,14 @@ export const layerCache: Layer.Layer<
 							cause,
 						}),
 					),
-					Effect.catch(() =>
-						Effect.annotateCurrentSpan({ [SpanAttr.cacheCorruption]: true }).pipe(
-							Effect.as(null as CacheEntryDoc | null),
-						),
-					),
+					Effect.catch(() => Effect.succeed(null as CacheEntryDoc | null)),
 				);
 				if (doc === null) return null;
 				return {
 					bytes: base64Decode(doc.bytes),
 					writtenAt: doc.writtenAt,
 				};
-			}).pipe(
-				Effect.withSpan('substrate.cache.lookup', {
-					attributes: {
-						namespace: key.namespace,
-						chain: key.chain,
-						contentHash: key.contentHash,
-					},
-				}),
-			);
+			});
 
 		const write = (key: CacheKey, bytes: Uint8Array): Effect.Effect<void, CacheError> =>
 			Effect.gen(function* () {
@@ -166,15 +153,7 @@ export const layerCache: Layer.Layer<
 					),
 					Effect.provideService(FileSystem.FileSystem, fs),
 				);
-			}).pipe(
-				Effect.withSpan('substrate.cache.write', {
-					attributes: {
-						namespace: key.namespace,
-						chain: key.chain,
-						contentHash: key.contentHash,
-					},
-				}),
-			);
+			});
 
 		const remove = (key: CacheKey): Effect.Effect<void, CacheError> =>
 			Effect.gen(function* () {
@@ -190,15 +169,7 @@ export const layerCache: Layer.Layer<
 						),
 					),
 				);
-			}).pipe(
-				Effect.withSpan('substrate.cache.delete', {
-					attributes: {
-						namespace: key.namespace,
-						chain: key.chain,
-						contentHash: key.contentHash,
-					},
-				}),
-			);
+			});
 
 		// publish: cache → verify → produce → register.
 		//
@@ -214,12 +185,6 @@ export const layerCache: Layer.Layer<
 			spec: ArtifactSpec<Produced, Verified>,
 		): Effect.Effect<Produced, ArtifactPublishError, Scope.Scope> =>
 			Effect.gen(function* () {
-				yield* Effect.annotateCurrentSpan({
-					[SpanAttr.artifactPublisherNamespace]: spec.namespace,
-					[SpanAttr.artifactPublisherChain]: spec.chain,
-					[SpanAttr.artifactPublisherContentHash]: spec.contentHash,
-				});
-
 				// 1. Cache lookup. Best-effort: a CacheError on lookup
 				//    surfaces as `cache-corrupt`; the substrate's contract
 				//    is "re-produce is always safe", so we coerce read
@@ -249,9 +214,6 @@ export const layerCache: Layer.Layer<
 							// probe-only signal that never escapes. Callers
 							// therefore type-narrow trivially against `Produced`.
 							yield* spec.register(cached);
-							yield* Effect.annotateCurrentSpan({
-								[SpanAttr.artifactPublisherPath]: 'hit',
-							});
 							// Reuse is the quiet, expected warm-restart path — debug
 							// only. The interesting (and noisy) case is a *re-run*,
 							// logged below.
@@ -271,16 +233,12 @@ export const layerCache: Layer.Layer<
 				//    walrus all get brand-new ids, and content bound to the old
 				//    ids (e.g. Seal-encrypted blobs) can no longer be resolved.
 				if (hit === null) {
-					yield* Effect.annotateCurrentSpan({ [SpanAttr.artifactPublisherPath]: 'miss' });
 					yield* Effect.logInfo(
 						`artifact-publisher: producing '${spec.namespace}' on chain ${spec.chain} — ` +
 							`no cached artifact for this chain + content hash ` +
 							`(first deploy on this chain, fresh genesis after a restart, or changed inputs).`,
 					);
 				} else {
-					yield* Effect.annotateCurrentSpan({
-						[SpanAttr.artifactPublisherPath]: 'verify-failed',
-					});
 					yield* Effect.logWarning(
 						`artifact-publisher: re-deploying '${spec.namespace}' on chain ${spec.chain} — ` +
 							`a cached artifact existed but failed on-chain verification ` +
@@ -313,7 +271,7 @@ export const layerCache: Layer.Layer<
 				// 5. Register — fires on EVERY cycle (architecture §10).
 				yield* spec.register(produced);
 				return produced;
-			}).pipe(Effect.withSpan('substrate.artifactPublisher.publish'));
+			});
 
 		return CacheService.of({
 			lookup,

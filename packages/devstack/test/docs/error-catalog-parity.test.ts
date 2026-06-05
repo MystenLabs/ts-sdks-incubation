@@ -44,7 +44,6 @@ import { DEEPBOOK_ERROR_TAGS } from '../../src/plugins/deepbook/errors.ts';
 import type { FaucetError } from '../../src/plugins/faucet/errors.ts';
 import { HOST_SERVICE_ERROR_TAGS } from '../../src/plugins/host-service/errors.ts';
 import { PACKAGE_ERROR_TAGS } from '../../src/plugins/package/errors.ts';
-import { POSTGRES_ERROR_TAGS } from '../../src/plugins/postgres/errors.ts';
 import { SEAL_ERROR_TAGS } from '../../src/plugins/seal/errors.ts';
 import { SUI_ERROR_TAGS } from '../../src/plugins/sui/errors.ts';
 import { WALLET_ERROR_TAGS } from '../../src/plugins/wallet/errors.ts';
@@ -115,7 +114,6 @@ const realTags = new Set<string>([
 	...FAUCET_ERROR_TAGS,
 	...HOST_SERVICE_ERROR_TAGS,
 	...PACKAGE_ERROR_TAGS,
-	...POSTGRES_ERROR_TAGS,
 	...SEAL_ERROR_TAGS,
 	...SUI_ERROR_TAGS,
 	...WALLET_ERROR_TAGS,

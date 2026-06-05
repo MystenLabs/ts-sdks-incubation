@@ -14,11 +14,7 @@ import { dirname, join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import {
-	composePlugins,
-	renderPanelsBarrel,
-	renderPluginsBarrel,
-} from '../src/compose.js';
+import { composePlugins, renderPanelsBarrel, renderPluginsBarrel } from '../src/compose.js';
 import {
 	ALL_PLUGINS,
 	OPTIONAL_PLUGINS,

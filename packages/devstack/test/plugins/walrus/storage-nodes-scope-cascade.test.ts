@@ -14,7 +14,7 @@
 // exit value". This test pins that behavior end-to-end: on probe
 // failure, every already-acquired container's stop finalizer runs.
 
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 import { describe, expect, it } from 'vitest';
 
 import type {
@@ -22,6 +22,7 @@ import type {
 	ContainerRuntime,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import {
 	DEFAULT_NODE_READY_TIMEOUT_MS,
 	WALRUS_ROUTER_PORT,
@@ -33,57 +34,39 @@ interface StopRecorder {
 	readonly stopped: string[];
 }
 
-const buildRecorderRuntime = (recorder: StopRecorder, probeFails: boolean): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: (spec) =>
-		Effect.acquireRelease(
-			Effect.sync((): ContainerHandle => {
-				recorder.started.push(spec);
-				return {
-					id: `container-${spec.name}`,
-					name: spec.name,
-					imageName: spec.image.tag ?? spec.image.digest,
-					status: 'running' as const,
-					ips: [],
-					labels: spec.labels,
-				};
-			}),
-			(handle) =>
-				Effect.sync(() => {
-					recorder.stopped.push(handle.name);
+const buildRecorderRuntime = (recorder: StopRecorder, probeFails: boolean): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureContainer: (spec) =>
+			Effect.acquireRelease(
+				Effect.sync((): ContainerHandle => {
+					recorder.started.push(spec);
+					return {
+						id: `container-${spec.name}`,
+						name: spec.name,
+						imageName: spec.image.tag ?? spec.image.digest,
+						status: 'running' as const,
+						ips: [],
+						labels: spec.labels,
+					};
 				}),
-		),
-	// `exec` is what the storage-node ready probe uses. Returning a
-	// non-zero exit code simulates "container created but not yet
-	// listening"; the probe's bounded retry then exhausts and the
-	// caller surfaces a ProbeTimeoutError → walrusPluginError.
-	exec: () =>
-		Effect.succeed({
-			exitCode: probeFails ? 1 : 0,
-			// Write-ready (`Active`) health body on the happy path so the boot
-			// ready-gate's `/v1/health` stage passes; empty on the failure path.
-			stdout: probeFails ? '' : '{"nodeStatus":"Active"}',
-			stderr: probeFails ? 'connection refused' : '',
-		}),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	unpause: () => Effect.die('unpause not used'),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+				(handle) =>
+					Effect.sync(() => {
+						recorder.stopped.push(handle.name);
+					}),
+			),
+		// `exec` is what the storage-node ready probe uses. Returning a
+		// non-zero exit code simulates "container created but not yet
+		// listening"; the probe's bounded retry then exhausts and the
+		// caller surfaces a ProbeTimeoutError → walrusPluginError.
+		exec: () =>
+			Effect.succeed({
+				exitCode: probeFails ? 1 : 0,
+				// Write-ready (`Active`) health body on the happy path so the boot
+				// ready-gate's `/v1/health` stage passes; empty on the failure path.
+				stdout: probeFails ? '' : '{"nodeStatus":"Active"}',
+				stderr: probeFails ? 'connection refused' : '',
+			}),
+	});
 
 const baseSpec = {
 	app: 'private-content',

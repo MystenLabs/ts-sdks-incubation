@@ -65,9 +65,19 @@ const commands = [
 				description: 'Select the attached renderer.',
 			},
 			{
-				name: 'warm',
-				description:
-					'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one.',
+				name: 'from-snapshot',
+				value: 'name-or-id',
+				description: 'Start by restoring a snapshot before the initial acquire.',
+			},
+			{
+				name: 'snapshot-cache',
+				value: 'name',
+				description: 'Use a named snapshot as a startup cache and refresh it when stale.',
+			},
+			{
+				name: 'snapshot-stale',
+				value: 'warn|block|clean-start',
+				description: 'Policy when --from-snapshot inputs differ from the current stack.',
 			},
 		],
 	},
@@ -82,7 +92,7 @@ const commands = [
 	},
 	{
 		name: 'status',
-		summary: 'Show the persisted stack projection.',
+		summary: 'Show the current stack projection (offline: from the manifest).',
 		usage: 'devstack status [options]',
 		lifecycle: 'offline',
 		sideEffects: 'read',

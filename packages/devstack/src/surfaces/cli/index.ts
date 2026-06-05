@@ -19,7 +19,13 @@ import { readFileSync } from 'node:fs';
 
 import { commandSchema } from './command-tree.ts';
 import { type CliError, CliInternalError, CliUsageError, exitCodeFor } from './errors.ts';
-import { type CliRendererMode, ENV_VARS, type GlobalFlags, type OutputMode } from './flags.ts';
+import {
+	type CliRendererMode,
+	ENV_VARS,
+	type GlobalFlags,
+	type OutputMode,
+	type SnapshotStalePolicy,
+} from './flags.ts';
 import { ExitCode } from './sysexits.ts';
 import { parseDevstackNetworkName } from '../../api/inference-network.ts';
 import { type CliIO, emitFailure, emitSuccess, nodeProcessIO } from './output.ts';
@@ -173,7 +179,9 @@ interface ConfigFlags extends IdentityFlags {
 
 interface UpFlags extends ConfigFlags {
 	readonly renderer?: CliRendererMode;
-	readonly warm?: boolean;
+	readonly fromSnapshot?: string;
+	readonly snapshotCache?: string;
+	readonly snapshotStale?: SnapshotStalePolicy;
 }
 
 interface DestructiveFlags extends IdentityFlags {
@@ -271,6 +279,7 @@ const pruneFlagParams = {
 } as const;
 
 const rendererParser = buildChoiceParser(['tui', 'plain', 'silent'] as const);
+const snapshotStaleParser = buildChoiceParser(['warn', 'block', 'clean-start'] as const);
 
 const outputModeFrom = (
 	flags: Pick<IdentityFlags, 'json'>,
@@ -317,7 +326,9 @@ const makeGlobalFlags = (
 		configPath: optionalEnv(flags.config, ctx.env, ENV_VARS.CONFIG_PATH),
 		network,
 		renderer: flags.renderer,
-		warm: flags.warm,
+		fromSnapshot: flags.fromSnapshot,
+		snapshotCache: flags.snapshotCache,
+		snapshotStalePolicy: flags.snapshotStale,
 		dryRun: flags.dryRun === true,
 		confirm: {
 			assumeYes: flags.yes === true,
@@ -467,9 +478,18 @@ const upCommand = buildCommand<UpFlags, [], DevstackCliContext>({
 				placeholder: 'tui|plain|silent',
 				brief: 'Select the attached renderer',
 			},
-			warm: boolFlag(
-				'Warm boot: restore a fingerprinted baseline snapshot when inputs are unchanged, else cold-boot and capture one',
+			fromSnapshot: stringFlag('Start by restoring a named snapshot before acquire', 'name-or-id'),
+			snapshotCache: stringFlag(
+				'Use a named snapshot as a startup cache and refresh it when stale',
+				'name',
 			),
+			snapshotStale: {
+				kind: 'parsed',
+				parse: snapshotStaleParser,
+				optional: true,
+				placeholder: 'warn|block|clean-start',
+				brief: 'Policy when --from-snapshot inputs differ from the current stack',
+			},
 		},
 	},
 	docs: {
@@ -492,7 +512,7 @@ const applyCommand = buildCommand<ConfigFlags, [], DevstackCliContext>({
 
 const statusCommand = buildCommand<IdentityFlags, [], DevstackCliContext>({
 	parameters: { flags: identityFlagParams },
-	docs: { brief: 'Show the persisted stack projection' },
+	docs: { brief: 'Show the current stack projection (offline: from the manifest)' },
 	func: function (flags) {
 		return runWithFlags(this, 'status', flags, [], (global) =>
 			runStatus(this.deps.status, { flags: global, io: this.io }),
@@ -691,11 +711,9 @@ const jsonRequested = (
  * `io.touched()` and short-circuits this projection in `dispatch`
  * before `flushBufferedProcess` is reached.
  *
- * The historic implementation collapsed ANY non-zero `code` to
- * `USAGE` (64), but that was wrong: it could only ever observe a
- * Stricli parse failure (the only writer to this field), so the
- * `USAGE` mapping holds by construction. Kept as a named function
- * so the invariant is documented at the call site.
+ * A non-zero value here means Stricli rejected argv before any verb
+ * ran, so mapping to `USAGE` holds by construction. Kept as a named
+ * function so the invariant is documented at the call site.
  */
 const normalizeStricliExitCode = (code: number | string | null | undefined): number => {
 	if (typeof code === 'number' && code !== 0) return ExitCode.USAGE;

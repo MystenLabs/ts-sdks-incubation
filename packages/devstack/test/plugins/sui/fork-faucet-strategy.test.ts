@@ -32,10 +32,7 @@ interface FakeCoin {
 // Minimal SuiSdkShim: the fork faucet only touches `.core.listCoins`,
 // `.core.getObject` (never hit — split/transfer has no object inputs),
 // and `.core.waitForTransaction`.
-const makeSdk = (
-	coins: ReadonlyArray<FakeCoin>,
-	onWait?: () => void,
-): SuiSdkShim =>
+const makeSdk = (coins: ReadonlyArray<FakeCoin>, onWait?: () => void): SuiSdkShim =>
 	({
 		core: {
 			getObject: () => Promise.reject(new Error('getObject should not be called')),
@@ -47,9 +44,7 @@ const makeSdk = (
 		},
 	}) as unknown as SuiSdkShim;
 
-const makeFork = (
-	impersonate: ForkAdminSurface['impersonate'],
-): ForkAdminSurface => ({
+const makeFork = (impersonate: ForkAdminSurface['impersonate']): ForkAdminSurface => ({
 	status: Effect.succeed({ checkpoint: '0', clock: 0 }),
 	advanceClock: () => Effect.void,
 	advanceCheckpoint: Effect.void,
@@ -65,37 +60,39 @@ const okImpersonate =
 		});
 
 describe('suiForkFaucetStrategy', () => {
-	it.effect('builds a split+transfer tx, paying gas with the first coin that covers request+gas', () =>
-		Effect.gen(function* () {
-			let bytes: Uint8Array | undefined;
-			const strategy = suiForkFaucetStrategy({
-				whale: WHALE,
-				fork: makeFork(okImpersonate((b) => (bytes = b))),
-				// Coins are NOT balance-ordered. The first (SMALL, 1 SUI) is dust
-				// below request+gas (2.1 SUI) and must be skipped; selection takes
-				// the first SUFFICIENT coin (MID, 3 SUI) — NOT objects[0], and NOT
-				// the largest (BIG, 5000 SUI, listed last).
-				sdk: makeSdk([
-					{ objectId: SMALL_COIN, version: '1', digest: DIGEST, balance: '1000000000' },
-					{ objectId: MID_COIN, version: '4', digest: DIGEST, balance: '3000000000' },
-					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
-				]),
-				perRequestCapMist: CAP,
-			});
+	it.effect(
+		'builds a split+transfer tx, paying gas with the first coin that covers request+gas',
+		() =>
+			Effect.gen(function* () {
+				let bytes: Uint8Array | undefined;
+				const strategy = suiForkFaucetStrategy({
+					whale: WHALE,
+					fork: makeFork(okImpersonate((b) => (bytes = b))),
+					// Coins are NOT balance-ordered. The first (SMALL, 1 SUI) is dust
+					// below request+gas (2.1 SUI) and must be skipped; selection takes
+					// the first SUFFICIENT coin (MID, 3 SUI) — NOT objects[0], and NOT
+					// the largest (BIG, 5000 SUI, listed last).
+					sdk: makeSdk([
+						{ objectId: SMALL_COIN, version: '1', digest: DIGEST, balance: '1000000000' },
+						{ objectId: MID_COIN, version: '4', digest: DIGEST, balance: '3000000000' },
+						{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
+					]),
+					perRequestCapMist: CAP,
+				});
 
-			yield* strategy.request({ address: RECIPIENT, amount: 2_000_000_000n });
+				yield* strategy.request({ address: RECIPIENT, amount: 2_000_000_000n });
 
-			expect(bytes).toBeDefined();
-			const data = TransactionDataBuilder.fromBytes(bytes!).snapshot();
-			expect(data.sender).toBe(WHALE);
-			expect(data.gasData.owner).toBe(WHALE);
-			expect(data.gasData.payment).toEqual([
-				{ objectId: MID_COIN, version: '4', digest: DIGEST },
-			]);
-			expect(data.gasData.budget).toBe('100000000');
-			// splitCoins(gas, [amount]) + transferObjects([coin], recipient)
-			expect(data.commands).toHaveLength(2);
-		}),
+				expect(bytes).toBeDefined();
+				const data = TransactionDataBuilder.fromBytes(bytes!).snapshot();
+				expect(data.sender).toBe(WHALE);
+				expect(data.gasData.owner).toBe(WHALE);
+				expect(data.gasData.payment).toEqual([
+					{ objectId: MID_COIN, version: '4', digest: DIGEST },
+				]);
+				expect(data.gasData.budget).toBe('100000000');
+				// splitCoins(gas, [amount]) + transferObjects([coin], recipient)
+				expect(data.commands).toHaveLength(2);
+			}),
 	);
 
 	it.effect('waits for finality on success', () =>
@@ -128,11 +125,15 @@ describe('suiForkFaucetStrategy', () => {
 						return { digest: '0x', success: true, raw: {} };
 					}),
 				),
-				sdk: makeSdk([{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' }]),
+				sdk: makeSdk([
+					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
+				]),
 				perRequestCapMist: 1_000_000_000n,
 			});
 
-			const exit = yield* Effect.exit(strategy.request({ address: RECIPIENT, amount: 2_000_000_000n }));
+			const exit = yield* Effect.exit(
+				strategy.request({ address: RECIPIENT, amount: 2_000_000_000n }),
+			);
 			expect(Exit.isFailure(exit)).toBe(true);
 			const err = Exit.findErrorOption(exit);
 			expect(Option.isSome(err)).toBe(true);
@@ -151,11 +152,15 @@ describe('suiForkFaucetStrategy', () => {
 				fork: makeFork(() =>
 					Effect.fail(suiPluginError('fork-impersonate', 'boom from the fork binary')),
 				),
-				sdk: makeSdk([{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' }]),
+				sdk: makeSdk([
+					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
+				]),
 				perRequestCapMist: CAP,
 			});
 
-			const exit = yield* Effect.exit(strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }));
+			const exit = yield* Effect.exit(
+				strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }),
+			);
 			expect(Exit.isFailure(exit)).toBe(true);
 			const err = Exit.findErrorOption(exit);
 			expect(Option.isSome(err)).toBe(true);
@@ -176,7 +181,9 @@ describe('suiForkFaucetStrategy', () => {
 				sdk: makeSdk([]),
 				perRequestCapMist: CAP,
 			});
-			const exit = yield* Effect.exit(strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }));
+			const exit = yield* Effect.exit(
+				strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }),
+			);
 			expect(Exit.isFailure(exit)).toBe(true);
 			const err = Exit.findErrorOption(exit);
 			if (Option.isSome(err)) {
@@ -196,10 +203,14 @@ describe('suiForkFaucetStrategy', () => {
 				fork: makeFork((_sender, _tx) =>
 					Effect.succeed({ digest: '0xfaileddigest', success: false, raw: {} }),
 				),
-				sdk: makeSdk([{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' }]),
+				sdk: makeSdk([
+					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
+				]),
 				perRequestCapMist: CAP,
 			});
-			const exit = yield* Effect.exit(strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }));
+			const exit = yield* Effect.exit(
+				strategy.request({ address: RECIPIENT, amount: 1_000_000_000n }),
+			);
 			expect(Exit.isFailure(exit)).toBe(true);
 			const err = Exit.findErrorOption(exit);
 			if (Option.isSome(err)) {
@@ -229,7 +240,9 @@ describe('suiForkFaucetStrategy', () => {
 			const strategy = suiForkFaucetStrategy({
 				whale: WHALE,
 				fork: makeFork(slowImpersonate),
-				sdk: makeSdk([{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' }]),
+				sdk: makeSdk([
+					{ objectId: BIG_COIN, version: '7', digest: DIGEST, balance: '5000000000000' },
+				]),
 				perRequestCapMist: CAP,
 				serialization: {
 					broker,

@@ -65,7 +65,7 @@ export interface DiscoverManifestPathOptions {
 	/** Stack name. Defaults through `$DEVSTACK_STACK`, then `'main'`. */
 	readonly stack?: string;
 	/** State-dir name. Defaults through `$DEVSTACK_RUNTIME_ROOT`, then
-	 *  the legacy `$DEVSTACK_STATE_DIR`, then `'.devstack'` (see
+	 *  `$DEVSTACK_STATE_DIR`, then `'.devstack'` (see
 	 *  `resolveDiscoveryEnv`). Absolute paths are honored — the walk-up
 	 *  degenerates into a single existence check in that case. */
 	readonly stateDir?: string;

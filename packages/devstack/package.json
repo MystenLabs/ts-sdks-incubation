@@ -60,15 +60,12 @@
 		"dist",
 		"images",
 		"dashboard-ui",
-		"move-assets",
 		"!dist/samples",
 		"!dist/node_modules"
 	],
 	"scripts": {
-		"build": "pnpm run build:deepbook-assets && pnpm run build:dashboard-ui && tsdown",
+		"build": "pnpm run build:dashboard-ui && tsdown",
 		"build:dashboard-ui": "node scripts/build-dashboard-ui.mjs",
-		"fetch:deepbook-move": "node scripts/fetch-deepbook-move.mjs",
-		"build:deepbook-assets": "pnpm run fetch:deepbook-move && node scripts/build-deepbook-assets.mjs",
 		"smoke:pack-consumer": "node scripts/packed-consumer-typecheck.mjs",
 		"typecheck": "tsc --noEmit",
 		"test": "vitest run",
@@ -90,7 +87,7 @@
 		"effect": "catalog:",
 		"graphql": "catalog:",
 		"graphql-yoga": "catalog:",
-		"ink": "^7.0.0",
+		"ink": "catalog:",
 		"react": "catalog:"
 	},
 	"devDependencies": {

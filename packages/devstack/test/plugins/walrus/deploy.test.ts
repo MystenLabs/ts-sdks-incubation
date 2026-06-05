@@ -8,9 +8,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterAll, describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, Stream, type Scope } from 'effect';
+import { Effect, Exit, Option, type Scope } from 'effect';
 
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import type {
 	ArtifactPublishError,
 	ArtifactPublisher,
@@ -26,31 +27,8 @@ import {
 } from '../../../src/plugins/walrus/deploy.ts';
 import { contentHash } from '../../../src/substrate/brand.ts';
 
-const unusedRuntimeMethod = () => Effect.die('not used');
-
-const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
-	ensureImage: unusedRuntimeMethod,
-	ensureNetwork: unusedRuntimeMethod,
-	ensureContainer: unusedRuntimeMethod,
-	exec: unusedRuntimeMethod,
-	runOneShot,
-	inspectByLabels: unusedRuntimeMethod,
-	followLogs: () => Stream.empty,
-	pause: unusedRuntimeMethod,
-	pauseAndCommit: unusedRuntimeMethod,
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: unusedRuntimeMethod,
-	tagImage: unusedRuntimeMethod,
-	removeImage: unusedRuntimeMethod,
-	unpause: unusedRuntimeMethod,
-	stop: unusedRuntimeMethod,
-	sweepOrphans: unusedRuntimeMethod,
-	removeManagedContainers: unusedRuntimeMethod,
-	removeManagedImages: unusedRuntimeMethod,
-	removeManagedNetworks: unusedRuntimeMethod,
-	removeManagedVolumes: unusedRuntimeMethod,
-});
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime =>
+	makeContainerRuntimeStub({ runOneShot });
 
 const deployInputs = (
 	outputDirHostPath = '/tmp/devstack/stacks/main/walrus/walrus/deploy',

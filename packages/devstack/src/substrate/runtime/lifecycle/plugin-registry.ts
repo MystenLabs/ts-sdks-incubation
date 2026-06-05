@@ -4,13 +4,14 @@
 // holds:
 //   - the live `LifecycleStatus` (Ref, single-fiber linearizable),
 //   - the resolved value (set when status transitions to `ready`),
+//   - the in-flight acquire fiber, when one is running,
 //   - the scope owning the plugin's `start` finalizers,
 //   - a `Deferred` that downstream consumers await for the ready gate.
 //
 // The registry tracks per-key lifecycle only; projection concerns stay
 // in the supervisor and reducer.
 
-import { Data, Deferred, Effect, Ref, Scope } from 'effect';
+import { Data, Deferred, Effect, Fiber, Ref, Scope } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
@@ -45,6 +46,7 @@ export type ResolvedValue = any;
 export interface PluginEntry {
 	readonly node: DepNode;
 	readonly statusRef: Ref.Ref<LifecycleStatus>;
+	readonly acquireFiberRef: Ref.Ref<Fiber.Fiber<void, never> | null>;
 	/** Resolved when the plugin reaches `ready`. Downstream consumers
 	 *  await this in the ready-gate. Failure is propagated by interruption
 	 *  via `Deferred.fail` to keep the error chain in the cause walker. */
@@ -83,9 +85,10 @@ export const makeEntry = (
 ): Effect.Effect<PluginEntry, never, never> =>
 	Effect.gen(function* () {
 		const statusRef = yield* Ref.make<LifecycleStatus>('pending');
+		const acquireFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 		const readyGate = yield* Deferred.make<ResolvedValue, PluginAcquireFailed>();
 		const scope = yield* Scope.fork(parentScope);
-		return { node, statusRef, readyGate, scope } satisfies PluginEntry;
+		return { node, statusRef, acquireFiberRef, readyGate, scope } satisfies PluginEntry;
 	});
 
 /** The lifecycle registry. Holds one entry per dep-graph node. */
@@ -118,6 +121,24 @@ export interface PluginRegistry {
 		key: PluginKey,
 		parentScope: Scope.Scope,
 	) => Effect.Effect<void, UnknownDependency>;
+	/** Record the acquire fiber currently running for this key, but only if
+	 *  the caller still owns the same registry entry generation it read before
+	 *  forking. Selective restart swaps entries; stale acquire parents must not
+	 *  write their old fiber into the new generation. */
+	readonly setAcquireFiberIfEntry: (
+		key: PluginKey,
+		expectedEntry: PluginEntry,
+		fiber: Fiber.Fiber<void, never>,
+	) => Effect.Effect<boolean, UnknownDependency>;
+	/** Clear the slot only when it still belongs to the same entry generation
+	 *  and settling acquire fiber. */
+	readonly clearAcquireFiberIfEntry: (
+		key: PluginKey,
+		expectedEntry: PluginEntry,
+		fiberId: number,
+	) => Effect.Effect<void, UnknownDependency>;
+	/** Interrupt any acquire fiber still running for this key. */
+	readonly interruptAcquire: (key: PluginKey) => Effect.Effect<void, UnknownDependency>;
 	/** Await `ready` for `key`. Suspends until the plugin's `readyGate`
 	 *  resolves. The deferred's failure channel propagates a
 	 *  `PluginAcquireFailed` so the supervisor's outer error path picks
@@ -203,8 +224,13 @@ export const makeRegistry = (
 		resetForRestart: (key, parentScope) =>
 			Effect.gen(function* () {
 				const entry = yield* getEntry(key);
+				const acquireFiber = yield* Ref.getAndSet(entry.acquireFiberRef, null);
+				if (acquireFiber !== null) {
+					yield* Fiber.interrupt(acquireFiber);
+				}
 				resolved.delete(key);
 				const readyGate = yield* Deferred.make<ResolvedValue, PluginAcquireFailed>();
+				const acquireFiberRef = yield* Ref.make<Fiber.Fiber<void, never> | null>(null);
 				const scope = yield* Scope.fork(parentScope);
 				// Authoritatively reset the status to `pending`. The
 				// transition table only admits `→ pending` from terminal
@@ -225,9 +251,33 @@ export const makeRegistry = (
 				mutableEntries.set(key, {
 					node: entry.node,
 					statusRef: entry.statusRef,
+					acquireFiberRef,
 					readyGate,
 					scope,
 				});
+			}),
+		setAcquireFiberIfEntry: (key, expectedEntry, fiber) =>
+			Effect.gen(function* () {
+				const entry = yield* getEntry(key);
+				if (entry !== expectedEntry) return false;
+				yield* Ref.set(entry.acquireFiberRef, fiber);
+				return true;
+			}),
+		clearAcquireFiberIfEntry: (key, expectedEntry, fiberId) =>
+			Effect.gen(function* () {
+				const entry = yield* getEntry(key);
+				if (entry !== expectedEntry) return;
+				yield* Ref.update(entry.acquireFiberRef, (current) =>
+					current !== null && current.id === fiberId ? null : current,
+				);
+			}),
+		interruptAcquire: (key) =>
+			Effect.gen(function* () {
+				const entry = yield* getEntry(key);
+				const acquireFiber = yield* Ref.getAndSet(entry.acquireFiberRef, null);
+				if (acquireFiber !== null) {
+					yield* Fiber.interrupt(acquireFiber);
+				}
 			}),
 		awaitReady: (key) =>
 			Effect.gen(function* () {

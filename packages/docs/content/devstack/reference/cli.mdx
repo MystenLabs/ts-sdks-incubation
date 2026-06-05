@@ -13,7 +13,8 @@ Boot a stack and stay attached until interrupted.
 
 Lifecycle: attached. Side effects: write. Docker: yes. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`, `--config <path>`, `--network <name>`,
-`--renderer <tui|plain|silent>`, `--warm`.
+`--renderer <tui|plain|silent>`, `--from-snapshot <name-or-id>`, `--snapshot-cache <name>`,
+`--snapshot-stale <warn|block|clean-start>`.
 
 ### `devstack apply [options]`
 
@@ -24,7 +25,7 @@ Lifecycle: live-aware. Side effects: write. Docker: yes. Options: `--json`, `--a
 
 ### `devstack status [options]`
 
-Show the persisted stack projection.
+Show the current stack projection (offline: from the manifest).
 
 Lifecycle: offline. Side effects: read. Docker: no. Options: `--json`, `--app <name>`,
 `--stack <name>`, `--state-dir <path>`, `--verbose`.
@@ -105,6 +106,9 @@ Lifecycle: offline. Side effects: destructive. Docker: yes. Options: `--json`, `
 
 ```bash
 devstack up --renderer tui
+devstack up --from-snapshot before-migration
+devstack up --from-snapshot before-migration --snapshot-stale block
+devstack up --snapshot-cache dev-baseline
 devstack apply
 ```
 
@@ -114,7 +118,9 @@ waits for completion; if no supervisor is live, it boots the stack in one-shot m
 emits generated files, and exits.
 
 Both commands accept `--config <path>`, `--network <name>`, `--app <name>`, `--stack <name>`,
-`--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`.
+`--state-dir <path>`, `--json`, and `--verbose`. Only `up` accepts `--renderer tui|plain|silent`,
+`--from-snapshot <name-or-id>`, `--snapshot-cache <name>`, and
+`--snapshot-stale warn|block|clean-start`. The default snapshot stale policy is `warn`.
 
 Accepted network names are `localnet`, `testnet`, `mainnet`, `devnet`, `testnet-fork`,
 `mainnet-fork`, and `devnet-fork`. The same names are accepted with a `sui:` prefix, and `local`
@@ -154,6 +160,15 @@ available in `plain` or `silent` renderer mode. `snapshot restore`, `snapshot de
 prompt for `y` in a TTY or require `--yes` when prompts are unavailable. `snapshot restore` and
 `wipe` refuse to mutate state while an attached `devstack up` session is live. `snapshot list` and
 `snapshot delete` operate on the selected stack root.
+
+Use `devstack up --from-snapshot <name-or-id>` when you want startup to restore a snapshot and then
+converge the stack. `--snapshot-stale warn` logs graph-input drift and proceeds, `block` refuses the
+restore, and `clean-start` skips the restore and boots normally when the snapshot's graph input id
+differs from the current stack.
+
+Use `devstack up --snapshot-cache <name>` to restore that named snapshot only when its graph input
+id matches the current stack. If it is missing or stale, devstack boots normally and refreshes the
+named snapshot after startup.
 
 ## Cleanup commands
 

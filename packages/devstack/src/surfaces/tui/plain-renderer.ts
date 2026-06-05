@@ -29,7 +29,7 @@ import type { SubscribableState } from '../../substrate/projection.ts';
 import {
 	AccountProjectionSchema,
 	PackageProjectionSchema,
-} from '../../substrate/runtime/projection/persisted.ts';
+} from '../../substrate/runtime/projection/update.ts';
 import {
 	accountLine,
 	endpointLine,

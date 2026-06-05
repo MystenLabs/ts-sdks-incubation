@@ -161,11 +161,11 @@ describe('makeEntrypointRegistry', () => {
 		expect(BUILT_IN_ENTRYPOINTS.some((entrypoint) => entrypoint.name.includes('.'))).toBe(false);
 	});
 
-	it('BUILT_IN_ENTRYPOINTS carries the plugin-owned postgres TCP entry', () => {
+	it('BUILT_IN_ENTRYPOINTS excludes removed plugin-owned TCP entries', () => {
 		const reg = makeEntrypointRegistry(BUILT_IN_ENTRYPOINTS);
-		const byName = new Map(reg.all().map((e) => [e.name, e]));
-		expect(byName.get('postgres-tcp')?.protocol).toBe('tcp');
-		expect(byName.get('postgres-tcp')?.port).toBe(5432);
+		expect(Effect.runSync(reg.byName('postgres-tcp').pipe(Effect.flip))._tag).toBe(
+			'UnknownEntrypoint',
+		);
 		expect(BUILT_IN_ENTRYPOINTS.map((entrypoint) => entrypoint.name)).not.toContain('redis-tcp');
 	});
 });

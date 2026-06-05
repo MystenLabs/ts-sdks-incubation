@@ -45,11 +45,7 @@ interface PhaseErrorFields<Phase extends string> {
  */
 export const makePhaseFailer =
 	<Phase extends string, E>(ErrorClass: new (fields: PhaseErrorFields<Phase>) => E) =>
-	(
-		phase: Phase,
-		detail: string,
-		plugin?: string,
-	): ((cause: unknown) => Effect.Effect<never, E>) =>
+	(phase: Phase, detail: string, plugin?: string): ((cause: unknown) => Effect.Effect<never, E>) =>
 	(cause) =>
 		Effect.fail(
 			new ErrorClass({ phase, detail, cause, ...(plugin === undefined ? {} : { plugin }) }),

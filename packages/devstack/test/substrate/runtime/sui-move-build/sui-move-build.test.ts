@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Stream } from 'effect';
+import { Effect } from 'effect';
 
 import type { ContainerRuntime, OneShotSpec } from '../../../../src/contracts/container-runtime.ts';
 import {
@@ -17,32 +17,10 @@ import {
 	scrubLocksHost,
 	stripPinnedSections,
 } from '../../../../src/plugins/sui/move/index.ts';
+import { makeContainerRuntimeStub } from '../../../helpers/container-runtime-stub.ts';
 
-const unusedRuntimeMethod = () => Effect.die('not used');
-
-const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
-	ensureImage: unusedRuntimeMethod,
-	ensureNetwork: unusedRuntimeMethod,
-	ensureContainer: unusedRuntimeMethod,
-	exec: unusedRuntimeMethod,
-	runOneShot,
-	inspectByLabels: unusedRuntimeMethod,
-	followLogs: () => Stream.empty,
-	pause: unusedRuntimeMethod,
-	pauseAndCommit: unusedRuntimeMethod,
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: unusedRuntimeMethod,
-	tagImage: unusedRuntimeMethod,
-	removeImage: unusedRuntimeMethod,
-	unpause: unusedRuntimeMethod,
-	stop: unusedRuntimeMethod,
-	sweepOrphans: unusedRuntimeMethod,
-	removeManagedContainers: unusedRuntimeMethod,
-	removeManagedImages: unusedRuntimeMethod,
-	removeManagedNetworks: unusedRuntimeMethod,
-	removeManagedVolumes: unusedRuntimeMethod,
-});
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime =>
+	makeContainerRuntimeStub({ runOneShot });
 
 describe('sui-move-build helpers', () => {
 	it('strips pinned Move.lock sections idempotently', () => {

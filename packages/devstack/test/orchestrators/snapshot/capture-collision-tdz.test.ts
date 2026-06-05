@@ -24,7 +24,7 @@
 // refactors `list` to an `Effect.fn` decorator that introduces a real
 // TDZ window), this test surfaces the breakage immediately.
 
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
@@ -38,12 +38,20 @@ import {
 	SnapshotIdError,
 	SnapshotLayout,
 	SnapshotOrchestratorService,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	layerSnapshotOrchestrator,
+	type SnapshotMetadata,
+	type SnapshotParticipant,
 } from '../../../src/orchestrators/snapshot/index.ts';
 import { ContainerRuntimeService } from '../../../src/runtime/docker/index.ts';
 import type { ContainerRuntime } from '../../../src/contracts/container-runtime.ts';
-import { layerIdentity, layerRuntimeRoot, layerStackPaths } from '../../../src/substrate/runtime/paths.ts';
+import {
+	layerIdentity,
+	layerRuntimeRoot,
+	layerStackPaths,
+} from '../../../src/substrate/runtime/paths.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 
 const identity: Identity = {
@@ -52,33 +60,30 @@ const identity: Identity = {
 	chain: 'sui:local',
 };
 
+const graphInput = {
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: 'graph-fixture',
+	nodes: [],
+} as const;
+
+const captureParticipant: SnapshotParticipant = {
+	plugin: 'fixture/plugin',
+	decl: {
+		kind: 'snapshotable',
+		subtrees: [],
+		missingTolerance: 'fine',
+	},
+	captureIdentity: Effect.succeed({ fixture: 'identity' }),
+	captureContribution: Effect.succeed(undefined),
+};
+
 /** A container runtime whose `inspectByLabels` returns no containers —
  *  the `capture` flow never reaches the participants because we trip
  *  the label-uniqueness branch before any runtime work fires. The
  *  other methods are `Effect.die` to surface accidental reach. */
-const unusedContainerRuntime: ContainerRuntime = {
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
+const unusedContainerRuntime: ContainerRuntime = makeContainerRuntimeStub({
 	inspectByLabels: () => Effect.succeed([]),
-	followLogs: () => Effect.die('followLogs not used') as never,
-	pause: () => Effect.die('pause not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Effect.die('saveImage not used') as never,
-	saveImages: () => Effect.die('saveImages not used') as never,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	unpause: () => Effect.die('unpause not used'),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-};
+});
 
 const containerRuntimeLayer = Layer.succeed(ContainerRuntimeService)(unusedContainerRuntime);
 
@@ -97,6 +102,11 @@ const plantSnapshot = (snapshotDir: string, label: string): void => {
 		app: String(identity.app),
 		stack: String(identity.stack),
 		network: String(identity.chain),
+		graphInput: {
+			version: SNAPSHOT_GRAPH_INPUT_VERSION,
+			graphInputId: 'graph-fixture',
+			nodes: [],
+		},
 		hostTreeIncluded: false,
 		subtrees: [],
 		containers: [],
@@ -116,7 +126,7 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 
 				const orchestrator = yield* SnapshotOrchestratorService;
 				const exit = yield* orchestrator
-					.capture({ label: duplicateLabel })
+					.capture({ label: duplicateLabel, graphInput })
 					.pipe(Effect.exit);
 
 				expect(Exit.isFailure(exit)).toBe(true);
@@ -138,10 +148,53 @@ describe('SnapshotOrchestrator.capture — label uniqueness branch (TDZ regressi
 				if (Exit.isFailure(exit)) {
 					const causeJson = JSON.stringify(exit.cause);
 					expect(causeJson).not.toContain('ReferenceError');
-					expect(causeJson).not.toContain(
-						'Cannot access',
-					); /* TDZ message fragment */
+					expect(causeJson).not.toContain('Cannot access'); /* TDZ message fragment */
 				}
+			}).pipe(
+				Effect.provide(
+					(() => {
+						const base = Layer.mergeAll(
+							NodeFileSystem.layer,
+							NodePath.layer,
+							layerRuntimeRoot(root),
+							layerIdentity(identity),
+							containerRuntimeLayer,
+						);
+						const withStackPaths = layerStackPaths.pipe(Layer.provideMerge(base));
+						return layerSnapshotOrchestrator.pipe(Layer.provideMerge(withStackPaths));
+					})(),
+				),
+			),
+		),
+	);
+
+	it.effect('can replace an existing label after publishing the replacement snapshot', () =>
+		withTempRoot('snapshot-replace-label', (root) =>
+			Effect.gen(function* () {
+				const snapshotDir = join(root, 'stacks', String(identity.stack), 'snapshots');
+				const duplicateLabel = 'cache-baseline';
+				const replacementId = 'snap-replacement-fixture';
+				plantSnapshot(snapshotDir, duplicateLabel);
+
+				const orchestrator = yield* SnapshotOrchestratorService;
+				const meta = yield* orchestrator.capture({
+					id: replacementId,
+					label: duplicateLabel,
+					graphInput,
+					replaceExistingLabel: true,
+					participants: [captureParticipant],
+				});
+
+				expect(meta.id).toBe(replacementId);
+				expect(meta.label).toBe(duplicateLabel);
+				expect(existsSync(join(snapshotDir, 'snap-existing-fixture'))).toBe(false);
+				expect(existsSync(join(snapshotDir, replacementId))).toBe(true);
+
+				const replacementMeta = JSON.parse(
+					readFileSync(join(snapshotDir, replacementId, SnapshotLayout.metaFile), 'utf8'),
+				) as SnapshotMetadata;
+				expect(replacementMeta.label).toBe(duplicateLabel);
+				expect(replacementMeta.graphInput.graphInputId).toBe(graphInput.graphInputId);
 			}).pipe(
 				Effect.provide(
 					(() => {

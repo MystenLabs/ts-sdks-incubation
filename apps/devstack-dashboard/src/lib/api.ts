@@ -506,21 +506,12 @@ export const fundAccount = (endpoint: string, args: FundArgs): Promise<FundResul
 		amountBaseUnits: args.amountBaseUnits ?? null,
 	}).then((d) => d.fund);
 
-// --- Observability: logs + spans --------------------------------------------
+// --- Observability: logs -----------------------------------------------------
 
 /** Filter for the cross-service log query (`LogFilter`). */
 export interface LogQueryFilter {
 	readonly services?: ReadonlyArray<string>;
 	readonly levels?: ReadonlyArray<string>;
-	readonly search?: string;
-	readonly sinceMillis?: number;
-	readonly limit?: number;
-}
-
-/** Filter for the completed-span query (`SpanFilter`). */
-export interface SpanQueryFilter {
-	readonly services?: ReadonlyArray<string>;
-	readonly statuses?: ReadonlyArray<string>;
 	readonly search?: string;
 	readonly sinceMillis?: number;
 	readonly limit?: number;
@@ -537,38 +528,16 @@ export interface LogRecord {
 	readonly fields: Record<string, unknown>;
 }
 
-/** One completed span, with `attributes` parsed from the wire JSON string. */
-export interface SpanRecord {
-	readonly traceId: string;
-	readonly spanId: string;
-	readonly parentId: string | null;
-	readonly name: string;
-	readonly service: string | null;
-	readonly startMillis: number;
-	readonly durationMillis: number;
-	readonly status: string;
-	/** Span attributes, parsed from `attributesJson` (empty object on failure). */
-	readonly attributes: Record<string, unknown>;
-}
-
 // The gql.tada-generated variable types want *mutable* `string[]` for the
-// list filter fields, but the public `LogQueryFilter`/`SpanQueryFilter` expose
-// `readonly` arrays (callers shouldn't mutate them). Project a readonly filter
-// onto the mutable wire shape by spreading each array.
+// list filter fields, but the public `LogQueryFilter` exposes `readonly`
+// arrays (callers shouldn't mutate them). Project a readonly filter onto the
+// mutable wire shape by spreading each array.
 const logFilterToWire = (filter: LogQueryFilter) => ({
 	sinceMillis: filter.sinceMillis,
 	search: filter.search,
 	limit: filter.limit,
 	services: filter.services ? [...filter.services] : undefined,
 	levels: filter.levels ? [...filter.levels] : undefined,
-});
-
-const spanFilterToWire = (filter: SpanQueryFilter) => ({
-	sinceMillis: filter.sinceMillis,
-	search: filter.search,
-	limit: filter.limit,
-	services: filter.services ? [...filter.services] : undefined,
-	statuses: filter.statuses ? [...filter.statuses] : undefined,
 });
 
 const parseJsonObject = (raw: string): Record<string, unknown> => {
@@ -597,26 +566,6 @@ const LogServicesDoc = graphql(`
 		logServices
 	}
 `);
-const SpansDoc = graphql(`
-	query Spans($filter: SpanFilter) {
-		spans(filter: $filter) {
-			traceId
-			spanId
-			parentId
-			name
-			service
-			startMillis
-			durationMillis
-			status
-			attributesJson
-		}
-	}
-`);
-const SpanServicesDoc = graphql(`
-	query SpanServices {
-		spanServices
-	}
-`);
 
 /** Query cross-service logs, parsing each record's `fieldsJson`. */
 export const fetchLogs = async (
@@ -640,31 +589,6 @@ export const fetchLogs = async (
 export const fetchLogServices = (endpoint: string): Promise<ReadonlyArray<string>> =>
 	execute(endpoint, LogServicesDoc).then((d) => d.logServices);
 
-/** Query completed spans, parsing each record's `attributesJson`. */
-export const fetchSpans = async (
-	endpoint: string,
-	filter?: SpanQueryFilter,
-): Promise<SpanRecord[]> => {
-	const { spans } = await execute(endpoint, SpansDoc, {
-		filter: filter ? spanFilterToWire(filter) : null,
-	});
-	return spans.map((s) => ({
-		traceId: s.traceId,
-		spanId: s.spanId,
-		parentId: s.parentId,
-		name: s.name,
-		service: s.service,
-		startMillis: s.startMillis,
-		durationMillis: s.durationMillis,
-		status: s.status,
-		attributes: parseJsonObject(s.attributesJson),
-	}));
-};
-
-/** Distinct services that have recorded spans (for filter chips). */
-export const fetchSpanServices = (endpoint: string): Promise<ReadonlyArray<string>> =>
-	execute(endpoint, SpanServicesDoc).then((d) => d.spanServices);
-
 // --- Domain queries ---------------------------------------------------------
 
 const SnapshotsDoc = graphql(`
@@ -675,6 +599,10 @@ const SnapshotsDoc = graphql(`
 			app
 			stack
 			network
+			snapshotGraphInputId
+			currentGraphInputId
+			graphInputStatus
+			graphInputWarning
 			createdAt
 			containerCount
 			subtreeCount
@@ -749,26 +677,6 @@ const FundableCoinsDoc = graphql(`
 		}
 	}
 `);
-const PostgresStatsDoc = graphql(`
-	query PostgresStats {
-		postgresStats {
-			pluginKey
-			available
-			database
-			plainUrl
-			databaseBytes
-			connectionCount
-			detail
-			tables {
-				schema
-				name
-				rowEstimate
-				totalBytes
-			}
-		}
-	}
-`);
-
 /** Snapshot catalog entries (orchestrator `list`). */
 export type SnapshotEntry = ResultOf<typeof SnapshotsDoc>['snapshots'][number];
 /** A DeepBook deployment + its pools. */
@@ -779,8 +687,6 @@ export type SealInfo = ResultOf<typeof SealInfoDoc>['sealInfo'][number];
 export type CoinCap = ResultOf<typeof CoinCapsDoc>['coinCaps'][number];
 /** A coin the faucet can fund right now (drives the Faucet panel). */
 export type FundableCoin = ResultOf<typeof FundableCoinsDoc>['fundableCoins'][number];
-/** Postgres wire-protocol stats for one plugin instance. */
-export type PostgresStats = ResultOf<typeof PostgresStatsDoc>['postgresStats'][number];
 /** Resolved stack mode (`local` | `fork` | `live`), or null when unset. */
 export type StackMode = ResultOf<typeof ModeDoc>['mode'];
 
@@ -808,10 +714,6 @@ export const fetchCoinCaps = (endpoint: string): Promise<ReadonlyArray<CoinCap>>
  *  their plugin registered a funding strategy). */
 export const fetchFundableCoins = (endpoint: string): Promise<ReadonlyArray<FundableCoin>> =>
 	execute(endpoint, FundableCoinsDoc).then((d) => d.fundableCoins);
-
-/** Postgres stats per plugin instance. */
-export const fetchPostgresStats = (endpoint: string): Promise<ReadonlyArray<PostgresStats>> =>
-	execute(endpoint, PostgresStatsDoc).then((d) => d.postgresStats);
 
 // Chain reads are NOT proxied through this control-plane API — the browser
 // queries the Sui node directly over gRPC (`client.core.*`); see `lib/chain.ts`.

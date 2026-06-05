@@ -16,7 +16,7 @@
 // `publishCommand`), the cross-service observability rings, and a single
 // generic `resolvedValues` accessor that hands out resolved plugin VALUES
 // WITHOUT interpreting them. Plugin-name-aware shaping (deepbook/seal/coin/
-// postgres/mode/mint) lives ABOVE the substrate in the dashboard plugin,
+// mode/mint/plugin-specific shaping lives ABOVE the substrate in the dashboard plugin,
 // which is allowed to name plugins. The projection (`SubscribableState`)
 // stays CLOSED — none of this leaks into it. Each accessor is a
 // self-contained `Effect` the supervisor populates from the resolved
@@ -25,12 +25,7 @@
 import { Context, type Effect, type SubscriptionRef } from 'effect';
 import type { EngineCommand } from '../../events.ts';
 import type { SubscribableState } from '../../projection.ts';
-import type {
-	LogFilter,
-	LogRecord,
-	SpanFilter,
-	SpanRecord,
-} from '../observability/index.ts';
+import type { LogFilter, LogRecord } from '../observability/index.ts';
 
 // -----------------------------------------------------------------------------
 // Domain data shapes — app-agnostic projections of plugin-resolved values.
@@ -46,6 +41,10 @@ export interface ControlPlaneSnapshotEntry {
 	readonly app: string | null;
 	readonly stack: string | null;
 	readonly network: string | null;
+	readonly snapshotGraphInputId: string | null;
+	readonly currentGraphInputId: string | null;
+	readonly graphInputStatus: 'matching' | 'stale' | 'unknown';
+	readonly graphInputWarning: string | null;
 	readonly participants: ReadonlyArray<string>;
 	readonly containerCount: number;
 	readonly subtreeCount: number;
@@ -79,9 +78,13 @@ export interface ControlPlaneDomain {
 	readonly snapshots: Effect.Effect<ReadonlyArray<ControlPlaneSnapshotEntry>>;
 	/** Restore a snapshot by id. Mirrors the orchestrator surface so the
 	 *  dashboard gets a real result the void `publishCommand` can't carry. */
-	readonly restoreSnapshot: (id: string) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
+	readonly restoreSnapshot: (
+		id: string,
+	) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
 	/** Delete a snapshot by id. */
-	readonly deleteSnapshot: (id: string) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
+	readonly deleteSnapshot: (
+		id: string,
+	) => Effect.Effect<{ readonly ok: boolean; readonly detail: string | null }>;
 	/** ALL resolved plugin values, in graph order, handed out
 	 *  uninterpreted. The seam an in-process surface above the substrate
 	 *  (the dashboard plugin) uses to find + shape plugin-domain values
@@ -94,12 +97,6 @@ export interface ControlPlaneDomain {
 	readonly logs: (filter?: LogFilter) => Effect.Effect<ReadonlyArray<LogRecord>>;
 	/** Distinct services currently present in the log ring (filter UI). */
 	readonly logServices: Effect.Effect<ReadonlyArray<string>>;
-	/** Completed-span ring (the dashboard Console "Traces" tab). Filterable
-	 *  by service / status / substring / time window. Degrades to empty when
-	 *  no span store is wired. */
-	readonly spans: (filter?: SpanFilter) => Effect.Effect<ReadonlyArray<SpanRecord>>;
-	/** Distinct services currently present in the span ring (filter UI). */
-	readonly spanServices: Effect.Effect<ReadonlyArray<string>>;
 }
 
 export interface ControlPlane {

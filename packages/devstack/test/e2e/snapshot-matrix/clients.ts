@@ -68,8 +68,10 @@ export const findResolved = (ctx: BootScopeContext, matcher: RegExp | string): u
 	return undefined;
 };
 
-export const suiOf = (ctx: BootScopeContext): SuiResolvedLite =>
-	findResolved(ctx, /^sui#\d+$/) as SuiResolvedLite;
+const SUI_RESOLVED_KEY = /^sui(?:#\d+|[:/])/;
+
+export const suiOf = (ctx: BootScopeContext): SuiResolvedLite | undefined =>
+	findResolved(ctx, SUI_RESOLVED_KEY) as SuiResolvedLite | undefined;
 export const walrusOf = (ctx: BootScopeContext): WalrusResolvedLite =>
 	findResolved(ctx, 'walrus:walrus') as WalrusResolvedLite;
 export const sealOf = (ctx: BootScopeContext): SealResolvedLite =>
@@ -90,7 +92,14 @@ export const deepbookOf = (ctx: BootScopeContext): DeepbookResolvedLite =>
 
 /** The `SuiGrpcClient` (ClientWithCoreApi) the harness built — reuse it for
  *  reads, `tx.build`, and as the WalrusClient/SealClient backing client. */
-export const suiClientOf = (ctx: BootScopeContext): ClientWithCoreApi => suiOf(ctx).sdk.client;
+export const suiClientOf = (ctx: BootScopeContext): ClientWithCoreApi => {
+	const sui = suiOf(ctx);
+	if (sui === undefined) {
+		const keys = [...ctx.resolvedValues.keys()].join(', ');
+		throw new Error(`suiClientOf: no resolved Sui value; boot resolved: [${keys}]`);
+	}
+	return sui.sdk.client;
+};
 
 export const makeWalrusClient = (
 	suiClient: ClientWithCoreApi,
@@ -277,7 +286,7 @@ export const makeEnv = (
 		// deref crash four frames deep.
 		if (suiOf(ctx) === undefined) {
 			const keys = [...ctx.resolvedValues.keys()].join(', ');
-			return yield* Effect.die(`makeEnv: no resolved 'sui#N' value; boot resolved: [${keys}]`);
+			return yield* Effect.die(`makeEnv: no resolved Sui value; boot resolved: [${keys}]`);
 		}
 		const suiClient = suiClientOf(ctx);
 		const address = keypair.toSuiAddress();

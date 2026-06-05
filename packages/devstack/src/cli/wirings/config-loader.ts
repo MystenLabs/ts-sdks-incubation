@@ -1,6 +1,7 @@
 // Shared config loader consumed by every verb wiring that imports a
-// `devstack.config.ts`. Returns a `LoadedConfig` whose `stack` field
-// is the validated `SupervisedStack` value.
+// `devstack.config.ts`. Returns the public stack handle exactly as the
+// config exported it, plus the validated internal engine stack for CLI
+// paths that need the erased runtime boundary shape.
 
 import { existsSync } from 'node:fs';
 import { isAbsolute, resolve as resolvePath } from 'node:path';
@@ -40,7 +41,10 @@ interface RawConfigModule {
 const validateStackModule = (
 	resolvedConfigPath: string,
 	mod: unknown,
-): LoadedConfig & { readonly stack: SupervisedStack } => {
+): LoadedConfig & {
+	readonly stack: Stack<SupervisedStack['members']>;
+	readonly engine: SupervisedStack;
+} => {
 	const m = mod as RawConfigModule;
 	const def = m.default;
 	if (def === null || typeof def !== 'object' || (def as { _tag?: unknown })._tag !== 'Stack') {
@@ -49,15 +53,17 @@ const validateStackModule = (
 		});
 	}
 	let stack: SupervisedStack;
+	const publicStack = def as Stack<SupervisedStack['members']>;
 	try {
-		stack = readStackEngine(def as Stack<SupervisedStack['members']>);
+		stack = readStackEngine(publicStack);
 	} catch (cause) {
 		throw new CliConfigInvalidError({
 			message: `config at ${resolvedConfigPath} default-exported an invalid Stack handle: ${cause instanceof Error ? cause.message : String(cause)}`,
 		});
 	}
 	return {
-		stack,
+		stack: publicStack,
+		engine: stack,
 		resolvedConfigPath,
 	};
 };

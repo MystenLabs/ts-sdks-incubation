@@ -20,7 +20,7 @@
 import { Context, Effect, Layer, Ref } from 'effect';
 
 import type { PluginKey } from '../../brand.ts';
-import { SpanAttr } from './spans.ts';
+import { LogAttr } from './log-attrs.ts';
 
 // -----------------------------------------------------------------------------
 // Public types
@@ -175,8 +175,8 @@ export const layerLogger: Layer.Layer<Logger> = Layer.effect(
 
 const logViaEffect = (line: LogLine): Effect.Effect<void> => {
 	const annotated = Effect.annotateLogs({
-		[SpanAttr.logTag]: line.tag,
-		[SpanAttr.plugin]: line.pluginKey ?? '(none)',
+		[LogAttr.logTag]: line.tag,
+		[LogAttr.plugin]: line.pluginKey ?? '(none)',
 		...line.fields,
 	});
 	switch (line.level) {

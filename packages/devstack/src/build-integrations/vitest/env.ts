@@ -8,9 +8,7 @@
 // to keep two stacks coexisting.
 //
 // `DEVSTACK_RUNTIME_ROOT` is the optional override for the on-disk
-// state root that contains `stacks/<stack>/manifest.json`. The older
-// `DEVSTACK_STATE_DIR` env var is also accepted on read, so example apps
-// can use either name.
+// state root that contains `stacks/<stack>/manifest.json`.
 //
 // `DEVSTACK_MANIFEST_PATH` is the top-of-the-precedence-ladder escape
 // hatch the engine writes; build integrations also honor it. Listed
@@ -35,9 +33,7 @@ export const VITEST_ENV_VARS = {
 	/** Override for the runtime root that holds
 	 *  `stacks/<stack>/manifest.json`. Defaults to `.devstack`. */
 	RUNTIME_ROOT: 'DEVSTACK_RUNTIME_ROOT',
-	/** Legacy alias for `RUNTIME_ROOT`. Accepted on read so the
-	 *  rewrite can coexist with example apps that still set the
-	 *  pre-rewrite name. New callers should use `RUNTIME_ROOT`. */
+	/** Alias for `RUNTIME_ROOT`. New callers should use `RUNTIME_ROOT`. */
 	RUNTIME_ROOT_LEGACY: 'DEVSTACK_STATE_DIR',
 	/** Top-precedence absolute path to a specific manifest file. The
 	 *  engine sets this when it spawns child processes; rarely set
@@ -57,8 +53,7 @@ export type VitestEnvVarName = (typeof VITEST_ENV_VARS)[keyof typeof VITEST_ENV_
  *  rather than rely on this. */
 export const DEFAULT_STACK_NAME = DEFAULT_DISCOVERY_STACK;
 
-/** Default runtime root when neither `DEVSTACK_RUNTIME_ROOT` nor the
- *  legacy `DEVSTACK_STATE_DIR` is set. */
+/** Default runtime root when no runtime-root override is set. */
 export const DEFAULT_RUNTIME_ROOT = '.devstack';
 
 /** The recommended stack name for test runs — the value the

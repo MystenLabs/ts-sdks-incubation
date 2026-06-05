@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it } from '@effect/vitest';
-import { Effect, Exit, Option, Stream } from 'effect';
+import { Effect, Exit, Option } from 'effect';
 
 import type { ChainProbe } from '../../../src/contracts/chain-probe.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import type {
 	ContainerRuntime,
 	ExecResult,
@@ -86,31 +87,8 @@ class FakeRegisterTx implements SealRegisterTransactionBuilder {
 	}
 }
 
-const unusedRuntimeMethod = () => Effect.die('not used');
-
-const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime => ({
-	ensureImage: unusedRuntimeMethod,
-	ensureNetwork: unusedRuntimeMethod,
-	ensureContainer: unusedRuntimeMethod,
-	exec: unusedRuntimeMethod,
-	runOneShot,
-	inspectByLabels: unusedRuntimeMethod,
-	followLogs: () => Stream.empty,
-	pause: unusedRuntimeMethod,
-	pauseAndCommit: unusedRuntimeMethod,
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: unusedRuntimeMethod,
-	tagImage: unusedRuntimeMethod,
-	removeImage: unusedRuntimeMethod,
-	unpause: unusedRuntimeMethod,
-	stop: unusedRuntimeMethod,
-	sweepOrphans: unusedRuntimeMethod,
-	removeManagedContainers: unusedRuntimeMethod,
-	removeManagedImages: unusedRuntimeMethod,
-	removeManagedNetworks: unusedRuntimeMethod,
-	removeManagedVolumes: unusedRuntimeMethod,
-});
+const oneShotRuntime = (runOneShot: ContainerRuntime['runOneShot']): ContainerRuntime =>
+	makeContainerRuntimeStub({ runOneShot });
 
 const signerNotReached: AccountValue = {
 	name: 'publisher',

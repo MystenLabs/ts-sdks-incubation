@@ -39,8 +39,7 @@ export interface DashboardContext {
 	readonly domain: ControlPlaneDomain;
 	/** Plugin-name-aware accessors the dashboard plugin shapes from the
 	 *  generic control-plane `resolvedValues`: fork-vs-local mode,
-	 *  deepbook/seal/coin capability ids, postgres wire-protocol stats,
-	 *  and the coin mint action. */
+	 *  deepbook/seal/coin capability ids, and the coin mint action. */
 	readonly pluginDomain: DashboardDomain;
 }
 

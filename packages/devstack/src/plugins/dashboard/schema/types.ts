@@ -34,8 +34,6 @@ import type {
 	DashboardDeepbookInfo,
 	DashboardDeepbookPool,
 	DashboardFundableCoin,
-	DashboardPostgresStats,
-	DashboardPostgresTable,
 	DashboardSealInfo,
 	DashboardSealKeyServer,
 } from '../domain.ts';
@@ -44,7 +42,7 @@ import type {
 // substrate imports — so the web schema can reuse the SAME canonical
 // bucketing + named policies without acquiring any TUI/ink coupling.
 import { deriveHealth, deriveStackViewModel } from '../../../surfaces/tui/display-derivation.ts';
-import type { LogRecord, SpanRecord } from '../../../substrate/runtime/observability/index.ts';
+import type { LogRecord } from '../../../substrate/runtime/observability/index.ts';
 import type {
 	AccountProjection,
 	BuildEntry as BuildEntryShape,
@@ -319,8 +317,8 @@ export const HealthSummary = builder.objectRef<HealthSummarySource>('HealthSumma
 // Sources are the app-agnostic `ControlPlane*` shapes the supervisor
 // populates from resolved plugin values. These cover only what the browser
 // cannot reach directly: codegen capability ids, in-process plugin state,
-// the snapshot catalog, and PG wire-protocol stats. Numeric counts/sizes
-// are carried as Float (GraphQL Int caps at 2^31; pg sizes can exceed it).
+// and the snapshot catalog. Numeric counts/sizes are carried as Float
+// (GraphQL Int caps at 2^31).
 
 export const SnapshotEntry = builder
 	.objectRef<ControlPlaneSnapshotEntry>('SnapshotEntry')
@@ -333,6 +331,10 @@ export const SnapshotEntry = builder
 			app: t.exposeString('app', { nullable: true }),
 			stack: t.exposeString('stack', { nullable: true }),
 			network: t.exposeString('network', { nullable: true }),
+			snapshotGraphInputId: t.exposeString('snapshotGraphInputId', { nullable: true }),
+			currentGraphInputId: t.exposeString('currentGraphInputId', { nullable: true }),
+			graphInputStatus: t.exposeString('graphInputStatus'),
+			graphInputWarning: t.exposeString('graphInputWarning', { nullable: true }),
 			participants: t.exposeStringList('participants'),
 			containerCount: t.exposeInt('containerCount'),
 			subtreeCount: t.exposeInt('subtreeCount'),
@@ -427,43 +429,16 @@ export const FundableCoin = builder.objectRef<DashboardFundableCoin>('FundableCo
 	}),
 });
 
-export const PostgresTable = builder.objectRef<DashboardPostgresTable>('PostgresTable').implement({
-	description: 'Per-table row estimate + total size (bytes).',
-	fields: (t) => ({
-		schema: t.exposeString('schema'),
-		name: t.exposeString('name'),
-		rowEstimate: t.exposeFloat('rowEstimate'),
-		totalBytes: t.exposeFloat('totalBytes'),
-	}),
-});
-
-export const PostgresStats = builder.objectRef<DashboardPostgresStats>('PostgresStats').implement({
-	description:
-		'Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.',
-	fields: (t) => ({
-		pluginKey: t.exposeString('pluginKey'),
-		database: t.exposeString('database'),
-		// Plain (password-less) DSN only — the credentialed form never leaves
-		// the backend.
-		plainUrl: t.exposeString('plainUrl'),
-		databaseBytes: t.exposeFloat('databaseBytes'),
-		connectionCount: t.exposeInt('connectionCount'),
-		tables: t.field({ type: [PostgresTable], resolve: (p) => p.tables }),
-		available: t.exposeBoolean('available'),
-		detail: t.exposeString('detail', { nullable: true }),
-	}),
-});
-
-// --- Observability: LogRecord / SpanRecord -----------------------------
+// --- Observability: LogRecord ------------------------------------------
 //
-// Sources are the substrate observability ring records. `level` (logs) and
-// `status` (spans) are carried as String, not GraphQL enums: the log level
-// vocabulary (trace/debug/info/warn/error/fatal) is wider than the
-// projection's row-tail LogLevel enum, and keeping it String decouples the
-// queryable surface from the row-tail enum (same hyphen/illegal-enum-safe
-// String pattern used by SealMode/CoinSource above). Structured `fields` /
-// `attributes` are serialized to a JSON string — the schema has no JSON
-// scalar and the console renders them as a detail blob.
+// Source is the substrate observability log ring records. `level` is
+// carried as String, not a GraphQL enum: the log level vocabulary
+// (trace/debug/info/warn/error/fatal) is wider than the projection's
+// row-tail LogLevel enum, and keeping it String decouples the queryable
+// surface from the row-tail enum (same hyphen/illegal-enum-safe String
+// pattern used by SealMode/CoinSource above). Structured `fields` are
+// serialized to a JSON string — the schema has no JSON scalar and the
+// console renders them as a detail blob.
 
 const fieldsJson = (fields: Readonly<Record<string, unknown>>): string => {
 	try {
@@ -488,24 +463,6 @@ export const LogRecordType = builder.objectRef<LogRecord>('LogRecord').implement
 	}),
 });
 
-export const SpanRecordType = builder.objectRef<SpanRecord>('SpanRecord').implement({
-	description:
-		'One completed span (queryable Console "Traces" tab). Recorded by the supervisor\'s recording Tracer.',
-	fields: (t) => ({
-		traceId: t.exposeString('traceId'),
-		spanId: t.exposeString('spanId'),
-		parentId: t.exposeString('parentId', { nullable: true }),
-		name: t.exposeString('name'),
-		service: t.exposeString('service', { nullable: true }),
-		startMillis: t.exposeFloat('startMillis'),
-		durationMillis: t.exposeFloat('durationMillis'),
-		// String: 'ok'/'error' kept as the raw wire contract.
-		status: t.field({ type: 'String', resolve: (r) => r.status }),
-		/** Flattened span attributes as a JSON string. */
-		attributesJson: t.field({ type: 'String', resolve: (r) => fieldsJson(r.attributes) }),
-	}),
-});
-
 // --- Observability filter inputs ---------------------------------------
 
 export const LogFilterInput = builder.inputType('LogFilter', {
@@ -514,17 +471,6 @@ export const LogFilterInput = builder.inputType('LogFilter', {
 		/** Levels (trace/debug/info/warn/error/fatal). Strings, not an enum
 		 *  (the level vocabulary is wider than the row-tail LogLevel enum). */
 		levels: t.stringList({ required: false }),
-		search: t.string({ required: false }),
-		sinceMillis: t.float({ required: false }),
-		limit: t.int({ required: false }),
-	}),
-});
-
-export const SpanFilterInput = builder.inputType('SpanFilter', {
-	fields: (t) => ({
-		services: t.stringList({ required: false }),
-		/** Statuses ('ok' / 'error'). Strings, not an enum. */
-		statuses: t.stringList({ required: false }),
 		search: t.string({ required: false }),
 		sinceMillis: t.float({ required: false }),
 		limit: t.int({ required: false }),

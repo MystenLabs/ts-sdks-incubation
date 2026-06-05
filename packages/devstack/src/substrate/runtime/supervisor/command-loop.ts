@@ -221,8 +221,8 @@ export const handleCommand = (
 				// gets that converge for free (supervisor was DOWN, boots fresh
 				// after). For a LIVE supervisor (the dashboard path) nothing else
 				// re-acquires — so we chain a drain + re-acquire here via
-				// `doSelectiveRestart`, which is itself routed through
-				// `reconcileGraph(drain)∘reconcileGraph(converge)`, mirroring
+				// `doSelectiveRestart`, which sequences `teardownKeys` (drain)
+				// then `acquireKeys` (converge) directly, mirroring
 				// `stack.restart`. The handler runs first (and publishes
 				// `snapshot.restored`); we only converge once it succeeded.
 				//
@@ -314,7 +314,7 @@ export const handleCommand = (
 			case 'stack.start':
 				return;
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.handleCommand'));
+	});
 
 /**
  * Dispatch one dequeued command. The loop is the SOLE consumer of the
@@ -330,7 +330,10 @@ export const handleCommand = (
  *  - every other fire-and-forget — run inline, swallowing failures (the
  *    handler already surfaced them on the event stream).
  */
-const dispatch = (deps: SupervisorState, next: QueuedCommand): Effect.Effect<void, never, Scope.Scope> => {
+const dispatch = (
+	deps: SupervisorState,
+	next: QueuedCommand,
+): Effect.Effect<void, never, Scope.Scope> => {
 	if (next.kind === 'submitted') {
 		return Effect.gen(function* () {
 			const exit = yield* Effect.exit(
@@ -351,4 +354,4 @@ export const commandLoop = (deps: SupervisorState): Effect.Effect<void, never, S
 			yield* dispatch(deps, yield* Queue.take(deps.queuedCommands));
 			if (yield* Ref.get(deps.shutdownLatch)) return;
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.commandLoop'));
+	});

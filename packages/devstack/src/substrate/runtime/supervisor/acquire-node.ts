@@ -6,12 +6,21 @@
 //     to the supervisor's outer scope.
 //   - `acquireNode(...)` — runs one plugin's `start` body inside its
 //     entry scope; on success replays the ctx-buffered contributions
-//     through the closed `ContributionDispatcher` and feeds the static
-//     `errorContributions` field directly into the FormatterRegistry.
+//     through the closed `ContributionDispatcher`.
 //   - `acquireKeys` / `acquireFullGraph` — fan out per-node acquires
 //     in parallel; each node waits on its own upstream ready gate.
 
-import { Cause, Context, Effect, Exit, Queue, Scope, SubscriptionRef } from 'effect';
+import {
+	Cause,
+	Context,
+	Deferred,
+	Effect,
+	Exit,
+	Fiber,
+	Queue,
+	Scope,
+	SubscriptionRef,
+} from 'effect';
 
 import type { CodegenableDecl } from '../../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../../contracts/projection.ts';
@@ -21,22 +30,14 @@ import type { StrategyContributorDecl } from '../../../contracts/strategy-contri
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
-import type { LifecycleStatus, PluginRole } from '../../lifecycle.ts';
+import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { PluginCtx } from '../../plugin-ctx.ts';
 import { PluginContext } from '../../plugin-ctx.ts';
 import { resolvePluginDependencies } from '../../plugin.ts';
-import type { PluginErrorContribution } from '../../plugin.ts';
 import type { SubscribableState } from '../../projection.ts';
-import { FormatterRegistryService } from '../observability/formatter-registry.ts';
 import { StrategyRegistryService } from '../strategy-registry/service.ts';
 import { CurrentPluginKey, CurrentPluginProgress } from '../current-plugin.ts';
-import {
-	annotateOp,
-	annotatePhase,
-	prettyErrorStructured,
-	withPluginSpan,
-	type LoggerShape,
-} from '../observability/index.ts';
+import { prettyErrorStructured, type LoggerShape } from '../observability/index.ts';
 import {
 	awaitUpstreams,
 	buildDependencyReaderFor,
@@ -91,16 +92,6 @@ export class ContributionBufferSealedError extends Error {
 // -----------------------------------------------------------------------------
 
 const strategyRegistryAccess = OptionalService(StrategyRegistryService);
-const formatterRegistryAccess = OptionalService(FormatterRegistryService);
-
-/** Fallback formatter registry for bare supervisor paths that don't
- *  layer a FormatterRegistryService (smoke tests). A real stack always
- *  carries one via the orchestrator composition; plugins with
- *  `errorContributions` only render their cascade there. */
-const noopFormatterRegistry: typeof FormatterRegistryService.Service = {
-	register: () => Effect.void,
-	snapshot: Effect.succeed(new Map() as never),
-};
 
 /**
  * Build the per-plugin `PluginCtx` + its replay buffer. The four
@@ -191,8 +182,7 @@ const causeTagOf = (cause: unknown): string | undefined => {
 
 /**
  * Replay one plugin's buffered contributions through the closed
- * `ContributionDispatcher` after a successful `start`, plus feed its
- * static `errorContributions` directly into the FormatterRegistry.
+ * `ContributionDispatcher` after a successful `start`.
  *
  * Failure semantics: a dispatch BODY failure is an orchestrator-fault —
  * the supervisor publishes
@@ -207,9 +197,6 @@ const causeTagOf = (cause: unknown): string | undefined => {
 const dispatchBufferedContributions = (
 	pluginKey: PluginKey,
 	buffer: ReadonlyArray<BufferedContribution>,
-	errorContributions: ReadonlyArray<PluginErrorContribution>,
-	pluginRole: PluginRole,
-	identity: Identity,
 	pluginContext: Context.Context<never>,
 	pluginScope: Scope.Scope,
 	dispatcher: ContributionDispatcher,
@@ -218,19 +205,11 @@ const dispatchBufferedContributions = (
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const strategyRegistry = strategyRegistryAccess.read(pluginContext, noopStrategyRegistry);
-		const formatterRegistry = formatterRegistryAccess.read(pluginContext, noopFormatterRegistry);
 		const dispatchCtx: ContributionDispatchContext = {
 			pluginKey,
 			publish: (event) => publish(ref, hub, event),
 			strategyRegistry,
 		};
-
-		// Error contributions feed the FormatterRegistry DIRECTLY.
-		// Registered on the plugin's scope so the formatters reap on
-		// plugin teardown.
-		for (const contribution of errorContributions) {
-			yield* Scope.provide(formatterRegistry.register(contribution), pluginScope);
-		}
 
 		for (const decl of buffer) {
 			const body = ((): Effect.Effect<void, unknown, Scope.Scope> => {
@@ -275,15 +254,7 @@ const dispatchBufferedContributions = (
 			);
 			yield* Scope.provide(guarded, pluginScope);
 		}
-	}).pipe(
-		withPluginSpan('lifecycle.supervisor.dispatchBufferedContributions', {
-			app: identity.app,
-			stack: identity.stack,
-			network: identity.chain,
-			pluginKey,
-			role: pluginRole,
-		}),
-	);
+	});
 
 // -----------------------------------------------------------------------------
 // Boot the registry from a graph
@@ -335,7 +306,9 @@ export const acquireNode = (
 	pluginContext: Context.Context<never>,
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
-	identity: Identity,
+	// Threaded through the acquire path for parity with acquireKeys/
+	// acquireFullGraph; no longer read here (only the removed span used it).
+	_identity: Identity,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
@@ -358,7 +331,6 @@ export const acquireNode = (
 			});
 			return;
 		}
-		yield* annotatePhase('acquire');
 		yield* logger.log(`supervisor/${key}`, key, {
 			level: 'debug',
 			message: 'plugin acquire start',
@@ -438,21 +410,16 @@ export const acquireNode = (
 		if (result.ok) {
 			// The ctx buffer (decls the 5 verbs pushed during `start`, in
 			// emit order) is the SOLE source of post-start contributions.
-			// `errorContributions` stays a static `PluginSpec` field, read
-			// here and fed directly into the FormatterRegistry. The dispatch
-			// is a closed exhaustive switch on the decl discriminant — its
-			// internal dual-catch keeps an orchestrator-fault (a failing
-			// dispatch body) off the plugin's `markFailed` path, so a
-			// surfaced failure here would be an unexpected defect only.
-			const errorContributions = entry.node.member.errorContributions ?? [];
-			if (buffer.length > 0 || errorContributions.length > 0) {
+			// The dispatch is a closed exhaustive switch on the decl
+			// discriminant — its internal dual-catch keeps an
+			// orchestrator-fault (a failing dispatch body) off the plugin's
+			// `markFailed` path, so a surfaced failure here would be an
+			// unexpected defect only.
+			if (buffer.length > 0) {
 				const dispatchExit = yield* Effect.exit(
 					dispatchBufferedContributions(
 						key,
 						buffer,
-						errorContributions,
-						entry.node.member.role,
-						identity,
 						pluginContext,
 						entry.scope,
 						dispatcher,
@@ -503,7 +470,6 @@ export const acquireNode = (
 				message: entry.node.member.role === 'task' ? 'plugin done' : 'plugin ready',
 				fields: {
 					contributions: buffer.length,
-					errorContributions: errorContributions.length,
 				},
 			});
 		} else {
@@ -512,15 +478,30 @@ export const acquireNode = (
 				message: 'plugin acquire failed',
 			});
 		}
-	}).pipe(
-		withPluginSpan('lifecycle.supervisor.acquireNode', {
-			app: identity.app,
-			stack: identity.stack,
-			network: identity.chain,
-			pluginKey: key,
-			role: registry.entries.get(key)?.node.member.role ?? 'service',
-		}),
-	);
+	});
+
+class PluginAcquireInterruptedBeforeReady extends Error {
+	readonly _tag = 'PluginAcquireInterruptedBeforeReady' as const;
+	constructor(readonly pluginKey: PluginKey) {
+		super(`plugin '${pluginKey}' acquire was interrupted before readiness`);
+		this.name = 'PluginAcquireInterruptedBeforeReady';
+	}
+}
+
+const failIfAcquireInterruptedBeforeReady = (
+	registry: PluginRegistry,
+	key: PluginKey,
+	entry: PluginEntry,
+): Effect.Effect<void, never, never> =>
+	Effect.gen(function* () {
+		if (registry.entries.get(key) !== entry) return;
+		const status = yield* registry
+			.getStatus(key)
+			.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus | null>(null)));
+		if (registry.entries.get(key) !== entry) return;
+		if (status !== 'pending' && status !== 'acquiring') return;
+		yield* bestEffort(registry.markFailed(key, new PluginAcquireInterruptedBeforeReady(key)));
+	});
 
 // -----------------------------------------------------------------------------
 // Acquire a key set in parallel. Each node waits on its own upstreams,
@@ -537,16 +518,69 @@ export const acquireKeys = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
+	parentScope: Scope.Scope,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({ 'devstack.level.size': keys.length });
-		yield* Effect.all(
+		const fibers = yield* Effect.all(
 			keys.map((key) =>
-				acquireNode(registry, key, ref, hub, pluginContext, dispatcher, logger, identity),
+				Effect.gen(function* () {
+					const entry = registry.entries.get(key);
+					if (entry === undefined) return yield* Effect.forkIn(Effect.void, parentScope);
+					const registeredGate = yield* Deferred.make<void, never>();
+					const readyToRegister = yield* Deferred.make<void, never>();
+					const guarded = Effect.gen(function* () {
+						const selfId = yield* Effect.fiberId;
+						yield* Effect.gen(function* () {
+							yield* Deferred.succeed(readyToRegister, void 0);
+							yield* Deferred.await(registeredGate);
+							yield* acquireNode(
+								registry,
+								key,
+								ref,
+								hub,
+								pluginContext,
+								dispatcher,
+								logger,
+								identity,
+							);
+						}).pipe(
+							Effect.onInterrupt(() => failIfAcquireInterruptedBeforeReady(registry, key, entry)),
+							Effect.ensuring(
+								registry
+									.clearAcquireFiberIfEntry(key, entry, selfId)
+									.pipe(Effect.catch(() => Effect.void)),
+							),
+						);
+					});
+					const fiber = yield* Effect.forkIn(Scope.provide(guarded, parentScope), parentScope);
+					yield* Deferred.await(readyToRegister);
+					const registered = yield* registry
+						.setAcquireFiberIfEntry(key, entry, fiber)
+						.pipe(Effect.catch(() => Effect.succeed(false)));
+					if (!registered) {
+						yield* Fiber.interrupt(fiber).pipe(Effect.asVoid);
+						return fiber;
+					}
+					yield* Deferred.succeed(registeredGate, void 0);
+					return fiber;
+				}),
+			),
+			{ concurrency: 'unbounded' },
+		);
+		yield* Effect.all(
+			fibers.map((fiber) =>
+				Fiber.await(fiber).pipe(
+					Effect.flatMap((exit) => {
+						if (Exit.isSuccess(exit) || Cause.hasInterruptsOnly(exit.cause)) {
+							return Effect.void;
+						}
+						return Effect.failCause(exit.cause);
+					}),
+				),
 			),
 			{ concurrency: 'unbounded', discard: true },
 		);
-	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireKeys'));
+	});
 
 export const acquireFullGraph = (
 	graph: ResolvedGraph,
@@ -557,9 +591,9 @@ export const acquireFullGraph = (
 	dispatcher: ContributionDispatcher,
 	logger: LoggerShape,
 	identity: Identity,
+	parentScope: Scope.Scope,
 ): Effect.Effect<void, never, never> =>
 	Effect.gen(function* () {
-		yield* annotateOp('acquireFullGraph');
 		yield* acquireKeys(
 			registry,
 			[...graph.nodes.keys()],
@@ -569,5 +603,6 @@ export const acquireFullGraph = (
 			dispatcher,
 			logger,
 			identity,
+			parentScope,
 		);
-	}).pipe(Effect.withSpan('lifecycle.supervisor.acquireFullGraph'));
+	});

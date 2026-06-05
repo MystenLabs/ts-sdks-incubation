@@ -49,14 +49,13 @@
 //
 // Prerequisites: docker reachable on the host. Soft-skips otherwise.
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { Effect } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import {
 	WALLET_AUTH_HEADER,
@@ -64,11 +63,14 @@ import {
 	WalletHttpPath,
 } from '../../src/plugins/wallet/protocol.ts';
 import type { WalletValue } from '../../src/plugins/wallet/service.ts';
+import { dockerReachable, dockerSpawnSync, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot, type BootResult } from './boot-config-impl.ts';
 
 const PRIVATE_CONTENT_APP_ORIGIN =
 	'http://dev.private-content.private-content.localhost:5175' as const;
 const PRIVATE_CONTENT_APP_PORT = 5170;
+// The app this boot runs under (`runBoot({ appName: PRIVATE_CONTENT_APP })`).
+const PRIVATE_CONTENT_APP = 'private-content';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = resolve(
 	HERE,
@@ -88,25 +90,11 @@ const SEAL_STUB_IMAGE_TAG = 'seal-test-stub:latest';
 
 const SEAL_STUB_MOVE_DIR = resolve(HERE, 'fixtures', 'seal-stub');
 
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
-
 const buildStubImage = (
 	tag: string,
 	dockerfileDir: string,
 ): { readonly ok: boolean; readonly detail: string } => {
-	const res = spawnSync('docker', ['build', '-t', tag, dockerfileDir], {
-		encoding: 'utf8',
-		timeout: 120_000,
-	});
+	const res = dockerSpawnSync(['build', '-t', tag, dockerfileDir], { timeout: 120_000 });
 	if (res.status !== 0) {
 		return {
 			ok: false,
@@ -279,7 +267,7 @@ const runPrivateContentBoot = async (opts: {
 	let accountFunding: Readonly<Record<string, AccountFundingEvidence>> = {};
 	const result = await runBoot({
 		configPath: CONFIG_PATH,
-		appName: 'private-content',
+		appName: PRIVATE_CONTENT_APP,
 		stackName: 'private-content',
 		runtimeRoot: opts.runtimeRoot,
 		routerStateRoot: opts.routerStateRoot,
@@ -574,6 +562,11 @@ const accountAddress = (values: ReadonlyMap<string, unknown>, key: string): stri
 };
 
 describe('private-content boots end-to-end @e2e', () => {
+	// Sweep the managed build/snapshot images this boot minted (under
+	// `appName: PRIVATE_CONTENT_APP`, across the cold + warm boots). Label-scoped
+	// so it can only reap images THIS test created, never the user's stacks.
+	afterAll(() => pruneManagedImagesForApp(PRIVATE_CONTENT_APP));
+
 	it('every plugin reaches `ready` on cold boot and warm restart', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
@@ -652,8 +645,9 @@ describe('private-content boots end-to-end @e2e', () => {
 			walrusValue(warm.result).walrusPackageId,
 			'walrus package id must survive a warm restart',
 		).toBe(walrusValue(cold.result).walrusPackageId);
-		expect(walrusValue(warm.result).walPackageId, 'WAL package id must survive a warm restart').toBe(
-			walrusValue(cold.result).walPackageId,
-		);
+		expect(
+			walrusValue(warm.result).walPackageId,
+			'WAL package id must survive a warm restart',
+		).toBe(walrusValue(cold.result).walPackageId);
 	}, 600_000);
 });

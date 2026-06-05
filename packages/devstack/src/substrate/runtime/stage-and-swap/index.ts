@@ -29,7 +29,7 @@ import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 import { Effect, FileSystem, Schema } from 'effect';
 
 import { acquireStackLock } from '../cross-process/stack-lock.ts';
-import { SpanAttr } from '../observability/spans.ts';
+import { LogAttr } from '../observability/log-attrs.ts';
 
 // -----------------------------------------------------------------------------
 // Errors
@@ -137,16 +137,14 @@ const restoreBackupRename = (args: {
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		// Reap a non-empty destination so the rollback rename can't ENOTEMPTY.
-		yield* fs
-			.remove(args.targetPath, { recursive: true, force: true })
-			.pipe(Effect.ignore);
+		yield* fs.remove(args.targetPath, { recursive: true, force: true }).pipe(Effect.ignore);
 		yield* fs.rename(args.backupPath, args.targetPath).pipe(
 			Effect.catch((cause) =>
 				Effect.logWarning('stage-and-swap rollback-backup restore did not complete').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.stageAndSwapTargetPath]: args.targetPath,
-						[SpanAttr.stageAndSwapStagingPath]: args.stagingPath,
-						[SpanAttr.errorCode]: errnoCode(cause) ?? 'unknown',
+						[LogAttr.stageAndSwapTargetPath]: args.targetPath,
+						[LogAttr.stageAndSwapStagingPath]: args.stagingPath,
+						[LogAttr.errorCode]: errnoCode(cause) ?? 'unknown',
 					}),
 				),
 			),
@@ -281,10 +279,6 @@ export const stageAndSwap = <A, E>(
 			args.stagingPath ?? `${targetPath}.staging.${(args as { idSuffix: string }).idSuffix}`;
 		const backupPath =
 			args.backupPath ?? `${targetPath}.bak.${(args as { idSuffix: string }).idSuffix}`;
-		yield* Effect.annotateCurrentSpan({
-			'devstack.stage-and-swap.target': targetPath,
-			'devstack.stage-and-swap.staging': stagingPath,
-		});
 
 		// 0. Pre-clean the staging slot (a previous crash may have left
 		//    a sibling). recursive+force is idempotent.
@@ -369,9 +363,9 @@ export const stageAndSwap = <A, E>(
 							return Effect.gen(function* () {
 								yield* Effect.logWarning('stage-and-swap cross-filesystem fallback').pipe(
 									Effect.annotateLogs({
-										[SpanAttr.stageAndSwapTargetPath]: targetPath,
-										[SpanAttr.stageAndSwapStagingPath]: stagingPath,
-										[SpanAttr.errorCode]: 'EXDEV',
+										[LogAttr.stageAndSwapTargetPath]: targetPath,
+										[LogAttr.stageAndSwapStagingPath]: stagingPath,
+										[LogAttr.errorCode]: 'EXDEV',
 									}),
 								);
 								yield* fs.copy(stagingPath, targetPath, { overwrite: false }).pipe(
@@ -416,4 +410,4 @@ export const stageAndSwap = <A, E>(
 		}
 
 		return result;
-	}).pipe(Effect.withSpan('substrate.stage-and-swap'));
+	});

@@ -8,9 +8,8 @@
 // atomic-append bound is only ~512 bytes on macOS, 4096 on Linux), so
 // relying on PIPE_BUF alone would let a large record tear under
 // contention. The tail-reader polls via offset bookkeeping — `fs.watch`
-// is unreliable across platforms for "file grew" notifications
-// (especially over NFS, which the cross-process protocol must remain
-// safe on per architecture § Cross-process safety protocol).
+// is unreliable across platforms for "file grew" notifications, so the
+// cross-process protocol polls rather than relying on it.
 //
 // Records are framed by a literal newline. A partial trailing line
 // (writer mid-flight when reader observed, or a short read bisecting a
@@ -187,10 +186,10 @@ const drainNewLines = (
 			const fd = openSync(path, 'r');
 			try {
 				const buf = Buffer.alloc(grow);
-				// POSIX `read(2)` may short-return (especially across
-				// filesystems like NFS); advance the offset by what was
-				// ACTUALLY read, not what we asked for. A short read just
-				// means the rest will arrive on the next poll iteration.
+				// POSIX `read(2)` may short-return; advance the offset by
+				// what was ACTUALLY read, not what we asked for. A short
+				// read just means the rest will arrive on the next poll
+				// iteration.
 				const bytesRead = readSync(fd, buf, 0, grow, state.offset);
 				if (bytesRead <= 0) return [];
 				state.offset += bytesRead;

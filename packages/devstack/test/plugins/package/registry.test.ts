@@ -1,9 +1,13 @@
 // Package-plugin PackageRegistry — pinned behaviors.
 //
-// The L2 package plugin wraps the L0 ScopedRefMap primitive in a
-// typed `PackageRegistryService` Context.Service. Consumers (mode-local
-// / mode-known acquire bodies, plus future cross-plugin readers) yield
-// `PackageRegistryService` and call `set(name, pkg)` / `find(name)`.
+// The L2 package plugin exposes a typed `PackageRegistryService`
+// Context.Service over a self-contained last-write-wins
+// `PackageKey -> ResolvedPackage` map (formerly the substrate
+// `defineScopedRefMap` single mode, strangled into the plugin).
+// Consumers (mode-local / mode-known acquire bodies, plus future
+// cross-plugin readers) yield `PackageRegistryService` and call
+// `set(name, pkg)` / `find(name)` / `entries()`. Covers round-trip,
+// LWW, insertion order across many writes, and scope-bound lifecycle.
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
@@ -63,6 +67,26 @@ describe('plugins/package — PackageRegistry', () => {
 			yield* reg.set(second.name, second);
 			const found = yield* reg.find('coin_pkg');
 			expect(found).toEqual(second);
+		}).pipe(Effect.provide(layerPackageRegistry)),
+	);
+
+	// Migrated from the substrate single-mode suite ("entries returns all
+	// pairs in insertion order" / "repeated set"): `entries` orders keys
+	// by their latest write — re-setting an existing key advances its seq
+	// and re-sorts it to the END, while keeping one entry per key.
+	it.effect('entries reflects insertion order; re-set re-sorts the key to the end', () =>
+		Effect.gen(function* () {
+			const reg = yield* PackageRegistryService;
+			yield* reg.set('c', localFixture('c', '0xC'));
+			yield* reg.set('a', localFixture('a', '0xA'));
+			yield* reg.set('b', localFixture('b', '0xB'));
+			expect((yield* reg.entries()).map(([k]) => k)).toEqual(['c', 'a', 'b']);
+			// Re-set 'c' — one entry per key, but its seq now leads, so it
+			// moves to the tail of the iteration order.
+			yield* reg.set('c', localFixture('c', '0xC2'));
+			const entries = yield* reg.entries();
+			expect(entries.map(([k]) => k)).toEqual(['a', 'b', 'c']);
+			expect(entries.find(([k]) => k === 'c')?.[1].packageId).toBe('0xC2');
 		}).pipe(Effect.provide(layerPackageRegistry)),
 	);
 

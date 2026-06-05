@@ -57,9 +57,6 @@ import {
 	type ProjectedFundingEntry,
 } from './funding.ts';
 import { resolveEphemeralVariant } from './variants/ephemeral.ts';
-import { resolveKeystoreVariant } from './variants/keystore.ts';
-import { resolveEnvVariant } from './variants/env.ts';
-import { resolveInlineVariant } from './variants/inline.ts';
 import { resolveSignerVariant } from './variants/signer.ts';
 import { resolveImpersonateVariant } from './variants/impersonate.ts';
 import type { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/service.ts';
@@ -69,7 +66,6 @@ import {
 	type TransactionSignerScope,
 	type ForkAdminSurface,
 	type SuiSdkShim,
-	SuiSpans,
 } from '../sui/index.ts';
 import {
 	LeaseBrokerService,
@@ -77,49 +73,55 @@ import {
 } from '../../substrate/runtime/lease-broker/index.ts';
 import { FUNDING_BALANCE_READ_TIMEOUT_MS } from '../../substrate/runtime/retry-policy.ts';
 import { withAddressLease } from './lease.ts';
-import { AccountSpans } from './spans.ts';
 
 // -----------------------------------------------------------------------------
 // User-facing options shape
 // -----------------------------------------------------------------------------
 
+/** The bring-your-own signer shape the `signer` variant binds. Any
+ *  `@mysten/sui/cryptography` `Signer` satisfies it — including every
+ *  `Keypair` (`Ed25519Keypair`, `Secp256k1Keypair`, `Secp256r1Keypair`),
+ *  hardware wallets, and custom KMS adapters. The structural shape is
+ *  pinned here rather than importing the SDK's `Signer` so the substrate
+ *  import surface stays SDK-free; a real `Signer` is assignable to it. */
+export interface AccountSignerInput {
+	readonly toSuiAddress: () => string;
+	readonly getKeyScheme: () => string;
+	readonly getPublicKey: () => { readonly toRawBytes: () => Uint8Array };
+	readonly signTransaction: (
+		tx: Uint8Array,
+	) => Promise<{ readonly bytes: string; readonly signature: string }>;
+	readonly signPersonalMessage: (
+		msg: Uint8Array,
+	) => Promise<{ readonly bytes: string; readonly signature: string }>;
+}
+
 /** Account variant discriminated union. The user-facing factory
  *  takes one of these shapes (or omits `opts` entirely for the
- *  default ephemeral form). */
+ *  default ephemeral form).
+ *
+ *  Three variants:
+ *
+ *   - `ephemeral` — generate-or-recover an Ed25519 keypair under the
+ *     stack runtime root, funded by default. This is the bare-form
+ *     default (`account('alice')`).
+ *   - `signer` — the single bring-your-own door. Pass any
+ *     `@mysten/sui/cryptography` `Signer` (hardware wallet, KMS
+ *     adapter, dApp signer) or any `Keypair`. Loading a secret from an
+ *     env var or an inline `suiprivkey1...` literal is expressed by
+ *     building the `Keypair` yourself, e.g.
+ *     `{ kind: 'signer', signer: Ed25519Keypair.fromSecretKey(process.env.X) }`.
+ *   - `impersonate` — fork-mode only: execute AS a seeded address with
+ *     no secret material (sign-and-execute routes through the fork's
+ *     impersonation submit path). */
 export type AccountOptions<Funding extends AccountFunding = AccountFunding> =
 	| {
 			readonly kind: 'ephemeral';
 			readonly funding?: Funding;
 	  }
 	| {
-			readonly kind: 'keystore';
-			readonly path: string;
-			readonly aliasOrAddress: string;
-			readonly funding?: Funding;
-	  }
-	| {
-			readonly kind: 'env';
-			readonly key: string;
-			readonly funding?: Funding;
-	  }
-	| {
-			readonly kind: 'inline';
-			readonly privateKey: string | Uint8Array;
-			readonly funding?: Funding;
-	  }
-	| {
 			readonly kind: 'signer';
-			readonly signer: {
-				readonly toSuiAddress: () => string;
-				readonly getKeyScheme: () => string;
-				readonly getPublicKey: () => { readonly toRawBytes: () => Uint8Array };
-				readonly signTransaction: (
-					tx: Uint8Array,
-				) => Promise<{ readonly bytes: string; readonly signature: string }>;
-				readonly signPersonalMessage: (
-					msg: Uint8Array,
-				) => Promise<{ readonly bytes: string; readonly signature: string }>;
-			};
+			readonly signer: AccountSignerInput;
 			readonly addressOverride?: string;
 			readonly funding?: Funding;
 	  }
@@ -149,8 +151,8 @@ export interface AccountValue {
 	readonly address: string;
 	readonly scheme: 'ed25519' | 'secp256k1' | 'secp256r1';
 	readonly publicKey: Uint8Array;
-	/** Source discriminator — `'real'` for ephemeral / keystore / env
-	 *  / inline / signer; `'impersonate'` for the fork-only variant. */
+	/** Source discriminator — `'real'` for ephemeral / signer;
+	 *  `'impersonate'` for the fork-only variant. */
 	readonly source: 'real' | 'impersonate';
 	/** Sign + execute (the canonical execution surface — per-address
 	 *  serialized, post-submit transaction-wait included, bounded
@@ -409,22 +411,6 @@ const resolveVariant = (
 				// references"): persisted key lives under the stack's
 				// runtime tree. Path shape mirrors the on-disk convention.
 				secretFilePath: `${ctx.runtimeRoot}/account/${opts.name}.key`,
-			});
-		case 'keystore':
-			return resolveKeystoreVariant({
-				name: opts.name,
-				path: opts.path,
-				aliasOrAddress: opts.aliasOrAddress,
-			});
-		case 'env':
-			return resolveEnvVariant({
-				name: opts.name,
-				varName: opts.key,
-			});
-		case 'inline':
-			return resolveInlineVariant({
-				name: opts.name,
-				privateKey: opts.privateKey,
 			});
 		case 'signer':
 			return resolveSignerVariant({
@@ -714,24 +700,9 @@ const buildClosures = (
 				Effect.gen(function* () {
 					return yield* body(transactionSigner);
 				}),
-			).pipe(
-				Effect.withSpan('devstack.plugin.account.transactionSigner', {
-					attributes: {
-						[AccountSpans.name]: accountName,
-						[AccountSpans.address]: resolved.address,
-					},
-				}),
 			);
 		return {
-			signAndExecute: (tx) =>
-				withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
-					Effect.withSpan('devstack.plugin.account.signAndExecute', {
-						attributes: {
-							[AccountSpans.name]: accountName,
-							[AccountSpans.address]: resolved.address,
-						},
-					}),
-				),
+			signAndExecute: (tx) => withTransactionSigner((locked) => locked.signAndExecute(tx)),
 			withTransactionSigner,
 			signTransaction: refuse<{ readonly bytes: string; readonly signature: string }>,
 			signPersonalMessage: refuse<{ readonly bytes: string; readonly signature: string }>,
@@ -798,24 +769,10 @@ const buildClosures = (
 			Effect.gen(function* () {
 				return yield* body(transactionSigner);
 			}),
-		).pipe(
-			Effect.withSpan('devstack.plugin.account.transactionSigner', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
 		);
 
 	const signTransaction: AccountValue['signTransaction'] = (tx) =>
-		withTransactionSigner((locked) => locked.signTransaction(tx)).pipe(
-			Effect.withSpan('devstack.plugin.account.signTransaction', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
-		);
+		withTransactionSigner((locked) => locked.signTransaction(tx));
 
 	const signPersonalMessage: AccountValue['signPersonalMessage'] = (msg) =>
 		withAddressLease(
@@ -823,24 +780,10 @@ const buildClosures = (
 			accountName,
 			resolved.address,
 			signPersonalWith(signer, msg, accountName, resolved.address),
-		).pipe(
-			Effect.withSpan('devstack.plugin.account.signPersonalMessage', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
 		);
 
 	const signAndExecute: AccountValue['signAndExecute'] = (tx) =>
-		withTransactionSigner((locked) => locked.signAndExecute(tx)).pipe(
-			Effect.withSpan('devstack.plugin.account.signAndExecute', {
-				attributes: {
-					[AccountSpans.name]: accountName,
-					[AccountSpans.address]: resolved.address,
-				},
-			}),
-		);
+		withTransactionSigner((locked) => locked.signAndExecute(tx));
 
 	return { signAndExecute, withTransactionSigner, signTransaction, signPersonalMessage };
 };
@@ -858,19 +801,8 @@ export const acquireAccount = (
 	Effect.gen(function* () {
 		yield* validateAccountName(opts.name);
 
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.name]: opts.name,
-			[AccountSpans.variant]: opts.kind,
-			[SuiSpans.mode]: ctx.sui.mode,
-		});
-
 		// --- variant dispatch ----------------------------------------
 		const resolved = yield* resolveVariant(opts, ctx);
-
-		yield* Effect.annotateCurrentSpan({
-			[AccountSpans.address]: resolved.address,
-			[AccountSpans.scheme]: resolved.scheme,
-		});
 
 		// --- lease broker handle (captured once; both funding and the
 		//     resolved-value closures share this handle so concurrent

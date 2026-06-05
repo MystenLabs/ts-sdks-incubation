@@ -433,6 +433,24 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 			sortVal: (s) => s.participants.length,
 		},
 		{
+			key: 'graphInput',
+			header: 'Inputs',
+			render: (s) => {
+				const stale = s.graphInputStatus === 'stale';
+				const unknown = s.graphInputStatus === 'unknown';
+				return (
+					<Badge
+						style={{
+							color: stale ? 'var(--c-amber)' : unknown ? 'var(--tx-dim)' : 'var(--c-green)',
+						}}
+					>
+						{stale ? 'stale' : unknown ? 'unknown' : 'current'}
+					</Badge>
+				);
+			},
+			sortVal: (s) => s.graphInputStatus,
+		},
+		{
 			key: 'containers',
 			header: 'Containers',
 			align: 'right',
@@ -714,7 +732,8 @@ export const ControlsPanel = ({ projection, endpoint, refresh }: PanelProps) => 
 				}
 				body={
 					snapAction?.kind === 'restore'
-						? 'Replaces the current chain and container state with this snapshot. Unsaved progress is lost.'
+						? (snapAction.snap.graphInputWarning ??
+							'Replaces the current chain and container state with this snapshot. Unsaved progress is lost.')
 						: 'Permanently delete this snapshot. This cannot be undone.'
 				}
 				confirmLabel={snapAction?.kind === 'restore' ? 'Restore' : 'Delete'}

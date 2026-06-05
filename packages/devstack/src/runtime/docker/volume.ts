@@ -9,11 +9,7 @@ import { Effect, Schema } from 'effect';
 
 import type { ContainerLabelTuple } from '../../contracts/snapshotable.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
-import {
-	type DockerRuntimeError,
-	ForeignDockerResource,
-	VolumeOperationFailed,
-} from './errors.ts';
+import { type DockerRuntimeError, ForeignDockerResource, VolumeOperationFailed } from './errors.ts';
 import { dockerInspectAndDecode } from './inspect-and-decode.ts';
 import {
 	expectedVolumeOwnershipLabels,
@@ -91,7 +87,7 @@ export const ensureVolume = (
 			Effect.mapError(wrapVolumeError('create', name)),
 		);
 		return name;
-	}).pipe(Effect.withSpan('runtime.docker.volume.ensure'));
+	});
 
 export const removeVolume = (
 	name: string,
@@ -106,4 +102,4 @@ export const removeVolume = (
 				new VolumeOperationFailed({ op: 'remove', volume: name, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.volume.remove'));
+	});

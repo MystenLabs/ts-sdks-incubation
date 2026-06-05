@@ -86,7 +86,9 @@ const identity = {
 };
 const identityLayer = layerIdentity(identity);
 
-const registryLayer = layerEntrypointRegistry([{ name: 'wallet-app', port: 6173, protocol: 'http' }]);
+const registryLayer = layerEntrypointRegistry([
+	{ name: 'wallet-app', port: 6173, protocol: 'http' },
+]);
 
 const makeTestProfile = (dispatchDir: string): RouterProfile => ({
 	version: 1,

@@ -6,10 +6,7 @@
 
 import { describe, expect, it } from 'vitest';
 
-import {
-	renderCreateArgs,
-	renderRunArgs,
-} from '../../../src/runtime/docker/render-run-args.ts';
+import { renderCreateArgs, renderRunArgs } from '../../../src/runtime/docker/render-run-args.ts';
 
 describe('renderRunArgs', () => {
 	it('emits `--rm --name` for the empty-flag base case', () => {
@@ -36,16 +33,7 @@ describe('renderRunArgs', () => {
 				image: 'alpine:3.20',
 				env: { FOO: '1', BAR: '2' },
 			}),
-		).toEqual([
-			'--rm',
-			'--name',
-			'oneshot',
-			'--env',
-			'FOO=1',
-			'--env',
-			'BAR=2',
-			'alpine:3.20',
-		]);
+		).toEqual(['--rm', '--name', 'oneshot', '--env', 'FOO=1', '--env', 'BAR=2', 'alpine:3.20']);
 	});
 
 	it('flattens mounts into `--mount type=bind,…[,readonly]`', () => {
@@ -131,16 +119,7 @@ describe('renderCreateArgs', () => {
 					{ containerPort: 9001, hostPort: 19001, hostIp: '127.0.0.1' },
 				],
 			}),
-		).toEqual([
-			'-d',
-			'--name',
-			'sui',
-			'-p',
-			'9000:9000',
-			'-p',
-			'127.0.0.1:19001:9001',
-			'sui:test',
-		]);
+		).toEqual(['-d', '--name', 'sui', '-p', '9000:9000', '-p', '127.0.0.1:19001:9001', 'sui:test']);
 	});
 
 	it('emits the first network attach with per-network aliases', () => {

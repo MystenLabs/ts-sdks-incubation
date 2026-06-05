@@ -10,10 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { Effect } from 'effect';
 
-import type {
-	AggregateContribution,
-	CodegenableDecl,
-} from '../../src/contracts/codegenable.ts';
+import type { AggregateContribution, CodegenableDecl } from '../../src/contracts/codegenable.ts';
 
 describe('contracts/codegenable — structural pins', () => {
 	it('discriminated-union `kind` is the literal `"codegenable"`', () => {
@@ -60,8 +57,7 @@ describe('contracts/codegenable — structural pins', () => {
 	it('`AggregateContribution.project` returns a shallow-mergeable record or null', () => {
 		const agg: AggregateContribution = {
 			bucket: 'services.ts',
-			project: (exported) =>
-				exported['rpc'] === undefined ? null : { rpc: exported['rpc'] },
+			project: (exported) => (exported['rpc'] === undefined ? null : { rpc: exported['rpc'] }),
 			kind: 'sui-network',
 		};
 		expect(agg.bucket).toBe('services.ts');

@@ -82,8 +82,10 @@ export const deepbookConfigError = (
 /** Union of every error a deepbook-plugin caller may encounter. */
 export type DeepbookError = DeepbookPluginError | ForkIncompatibleError | DeepbookConfigError;
 
-/** Error tags this plugin contributes — surfaced to the cause walker
- *  via `PluginErrorContribution`. */
+/** The catchable error tags this plugin exposes. Consumed by the
+ *  acquire-body `passthroughOrWrap` (to let typed deepbook failures
+ *  through unwrapped) and pinned against the user-facing error catalog
+ *  by the error-catalog-parity test. */
 export const DEEPBOOK_ERROR_TAGS: ReadonlyArray<DeepbookError['_tag']> = [
 	'DeepbookPluginError',
 	'ForkIncompatibleError',

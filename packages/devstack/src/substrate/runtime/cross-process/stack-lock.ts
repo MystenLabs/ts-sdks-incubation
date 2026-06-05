@@ -27,7 +27,6 @@ import { Data, Effect, Schema, Scope } from 'effect';
 
 import { type RosterHolder } from '../../cross-process.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../versioned-doc-sync.ts';
-import { SpanAttr } from '../observability/spans.ts';
 import { underLiveClock } from './live-clock.ts';
 import { checkHolderLiveness, ownHolder } from './liveness.ts';
 import { reclaimUnparseableStaleFile } from './reclaim-stale-file.ts';
@@ -162,10 +161,6 @@ export const acquireStackLock = (
 	timeoutMillis: number = DEFAULT_ACQUIRE_TIMEOUT_MILLIS,
 ): Effect.Effect<void, StackLockError, Scope.Scope> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			[SpanAttr.stackLockPath]: path,
-			[SpanAttr.stackLockTimeoutMillis]: timeoutMillis,
-		});
 		const addUnlinkFinalizer = Effect.addFinalizer(() =>
 			Effect.sync(() => {
 				try {
@@ -224,10 +219,7 @@ export const acquireStackLock = (
 				// Dead-PID reclaim: gated on a liveness probe, so the
 				// holder cannot have written a fresh body — a plain
 				// unlink is safe here (no TOCTOU). An alive holder falls
-				// through to the backoff below. `checkHolderLiveness`
-				// carries the foreign-host short-circuit (a holder on a
-				// remote host is treated as alive), so a cross-host body
-				// is never reclaimed here.
+				// through to the backoff below.
 				const status = yield* checkHolderLiveness(lastHolder).pipe(
 					Effect.catch(() => Effect.succeed('alive' as const)),
 				);
@@ -273,4 +265,4 @@ export const acquireStackLock = (
 			yield* underLiveClock(Effect.sleep(`${backoff} millis`));
 			backoff = Math.min(backoff * 2, MAX_BACKOFF_MILLIS);
 		}
-	}).pipe(Effect.withSpan('cross-process.stack-lock.acquire'));
+	});

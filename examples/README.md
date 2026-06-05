@@ -9,12 +9,13 @@ be committed.
 
 ## Runnable Apps
 
-| App                                    | What it shows                                                                                                                   | Command                                                |
-| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.                                 | `pnpm --filter @mysten-incubation/connect-four dev`    |
-| [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader with dev-wallet connection, local DeepBook publish, DEEP/SUI pool seeding, and live SUI-to-DEEP swaps. | `pnpm --filter @mysten-incubation/deepbook-trader dev` |
-| [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.                                 | `pnpm --filter @mysten-incubation/private-content dev` |
-| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint and transfer flows.                                                             | `pnpm --filter @mysten-incubation/token-studio dev`    |
+| App                                    | What it shows                                                                                                                   | Command                                                      |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| [`connect-four`](./connect-four)       | On-chain Connect Four lobby, join, and move flow using managed accounts and dev wallet signing.                                 | `pnpm --filter @mysten-incubation/connect-four dev`          |
+| [`deepbook-trader`](./deepbook-trader) | Localnet DeepBook trader with dev-wallet connection, local DeepBook publish, DEEP/SUI pool seeding, and live SUI-to-DEEP swaps. | `pnpm --filter @mysten-incubation/deepbook-trader dev`       |
+| [`fork-greeting`](./fork-greeting)     | Testnet fork replay with fork-faucet funding, local package publish, and managed dev-wallet accounts.                           | `pnpm --filter @mysten-incubation/example-fork-greeting dev` |
+| [`private-content`](./private-content) | Primary Sui + Walrus + Seal app: encrypted content grants, Walrus storage, and Seal decryption.                                 | `pnpm --filter @mysten-incubation/private-content dev`       |
+| [`token-studio`](./token-studio)       | Single managed coin with TreasuryCap-gated mint and transfer flows.                                                             | `pnpm --filter @mysten-incubation/token-studio dev`          |
 
 The `dev` scripts run the built workspace devstack CLI directly. Turbo builds workspace
 dependencies when needed, and devstack supervises the local services plus each
@@ -23,12 +24,6 @@ images; subsequent runs should reuse Docker cache.
 Each runnable app also has a `test:e2e` script backed by
 `@mysten-incubation/devstack/playwright`, so Playwright starts the app's stack
 through `pnpm dev` rather than requiring a separate `devstack up` session.
-
-## Coming Soon
-
-| Example                            | Planned coverage                           |
-| ---------------------------------- | ------------------------------------------ |
-| [`fork-greeting`](./fork-greeting) | Forked-network package capture and replay. |
 
 ## Adding An Example
 

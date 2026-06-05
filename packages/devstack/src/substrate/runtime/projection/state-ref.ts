@@ -86,34 +86,6 @@ export const makeProjectionRef = (): Effect.Effect<
 export const makeProjectionRefSync = (): SubscriptionRef.SubscriptionRef<SubscribableState> =>
 	Effect.runSync(makeProjectionRef());
 
-/**
- * Compile-time guard: the projection shape MUST NOT contain display
- * vocabulary. These conditional types resolve to `never` (and would
- * fail to assign anywhere they're used) if `title`/`primary`/
- * `extras` were ever added to `SubscribableState` or `Row`.
- *
- * The architecture's invariant becomes a TS error at the boundary
- * — the projection layer can't be wired up if a renderer-display
- * concept leaks into the engine's data model.
- */
-type _NoDisplayVocabAtTop = 'title' extends keyof SubscribableState
-	? never
-	: 'primary' extends keyof SubscribableState
-		? never
-		: 'extras' extends keyof SubscribableState
-			? never
-			: true;
-type _NoDisplayVocabInRow = 'title' extends keyof Row
-	? never
-	: 'primary' extends keyof Row
-		? never
-		: 'extras' extends keyof Row
-			? never
-			: true;
-export type __NoDisplayVocab = _NoDisplayVocabAtTop & _NoDisplayVocabInRow extends true
-	? true
-	: never;
-
 // Re-export the sub-types renderers reach for so they don't import
 // across the substrate boundary directly — `state-ref.ts` is the
 // renderer-facing entry point.

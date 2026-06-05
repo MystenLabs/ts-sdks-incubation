@@ -4,7 +4,7 @@
 // `<runtime-root>/stacks/<stack>/`:
 //
 //   - `stack.lock`              → stack-lock.ts
-//   - `roster.json`             → roster.ts (+ container-claims.json sibling)
+//   - `roster.json`             → roster.ts
 //   - `commands.ndjson` /
 //     `events.ndjson`           → command-channel/
 //

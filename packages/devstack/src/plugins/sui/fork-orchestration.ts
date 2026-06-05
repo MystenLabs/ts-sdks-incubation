@@ -20,7 +20,7 @@ import {
 } from '../../substrate/runtime/cross-process/index.ts';
 import { selfPid } from '../../substrate/runtime/cross-process/self-pid.ts';
 import { mintRandomSuffix } from '../../substrate/runtime/random-suffix.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 import { parseVersionedDocumentBodyOrNull } from '../../substrate/versioned-doc-sync.ts';
 import {
 	forkUnsupportedError,
@@ -62,10 +62,9 @@ export interface ForkLockHolder {
 
 /** Heartbeat cadence — refresh `startedAt` every 10s. Matches the
  *  roster's `heartbeatIntervalMillis`. The heartbeat keeps the holder's
- *  `startedAt`/`startTime` fresh for diagnostics and so a peer that DOES
- *  later add a foreign-host liveness signal has recent data; with the
- *  current conservative foreign-host policy (always-alive) it is not a
- *  reclaim gate, mirroring the roster heartbeat fiber. */
+ *  `startedAt`/`startTime` fresh for diagnostics; it is not a reclaim
+ *  gate (the pid + start-time check is), mirroring the roster heartbeat
+ *  fiber. */
 const FORK_HOLDER_HEARTBEAT_INTERVAL_MILLIS = 10_000;
 
 /** Brief acquire timeout for the holder critical section. The OS lock
@@ -96,20 +95,13 @@ const ForkLockHolderSchema = Schema.Struct({
 export const forkHolderPath = (dataDir: string): string => join(dataDir, 'holder.json');
 
 /** Is an existing holder alive? Mirrors `liveness.checkHolderLiveness`
- *  exactly (the `RosterHolder` shape doesn't fit — that carries
+ *  (the `RosterHolder` shape doesn't fit — that carries
  *  `hostname`/`heartbeatAt`, not our `host`/`startedAt` — so we
  *  replicate its logic against the `ForkLockHolder` fields):
  *
- *   - Foreign-host → ALWAYS ALIVE. Cross-host pid comparison is
- *     meaningless, and comparing our `Date.now()` to the holder's
- *     `startedAt` (a different host's clock) is clock-skew-unsafe — a
- *     >~20s skew on an NFS root could reclaim a LIVE foreign holder and
- *     produce dual-writer RocksDB corruption. The NFS-safe trade is to
- *     never auto-reclaim a foreign holder; a truly-abandoned one needs
- *     manual cleanup (`rm <dataDir>/holder.json`).
- *   - Same-host → pid must be live AND its start-time must match, so a
- *     crashed-then-recycled pid (an abandoned dir whose pid the kernel
- *     handed to an unrelated process) no longer reads as "in use".
+ *  The pid must be live AND its start-time must match, so a
+ *  crashed-then-recycled pid (an abandoned dir whose pid the kernel
+ *  handed to an unrelated process) no longer reads as "in use".
  *
  *  A `null` start-time on either side is handled conservatively the
  *  same way roster does — ALIVE — because we have nothing to dispute
@@ -117,7 +109,6 @@ export const forkHolderPath = (dataDir: string): string => join(dataDir, 'holder
  *  recorded `null`, or vice versa, would falsely harvest a live
  *  holder). */
 const isForkHolderAlive = (holder: ForkLockHolder): boolean => {
-	if (holder.host !== nodeHostname()) return true;
 	if (!isPidAlive(holder.pid)) return false;
 	const probedStart = processStartTime(holder.pid);
 	if (probedStart === null) return true;
@@ -278,9 +269,8 @@ const writeForkHolder = (
  *   3. Register a finalizer that removes our holder file on scope
  *      close (wipe / restart / Ctrl-C) — but ONLY if the on-disk holder
  *      is still ours, so a legitimate peer reclaim is never clobbered.
- *      A crash that skips the finalizer is recovered same-host by the
- *      next peer's liveness check (foreign-host needs manual cleanup —
- *      the NFS-safe trade in `isForkHolderAlive`).
+ *      A crash that skips the finalizer is recovered by the next peer's
+ *      liveness check (pid + start-time, see `isForkHolderAlive`).
  */
 export const acquireForkDataDirHolder = (
 	stackLockFile: string,
@@ -294,8 +284,8 @@ export const acquireForkDataDirHolder = (
 			Effect.catch((err) =>
 				Effect.logWarning('sui fork data-dir holder heartbeat failed; next tick will retry').pipe(
 					Effect.annotateLogs({
-						[SpanAttr.phase]: err.phase,
-						[SpanAttr.errorMessage]: err.message,
+						[LogAttr.phase]: err.phase,
+						[LogAttr.errorMessage]: err.message,
 					}),
 				),
 			),
@@ -305,7 +295,7 @@ export const acquireForkDataDirHolder = (
 			Effect.forkScoped,
 		);
 		return self;
-	}).pipe(Effect.withSpan('devstack.plugin.sui.fork.acquireDataDirHolder'));
+	});
 
 /** Surfaces that the sui-fork binary explicitly panics on. New
  *  upstream additions fail OPEN by default — architecture

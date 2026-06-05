@@ -12,8 +12,7 @@
 // equivalent "absent" sentinels.
 
 export const readEnv = (name: string): string | undefined => {
-	const process = (
-		globalThis as { process?: { env?: Record<string, string | undefined> } }
-	).process;
+	const process = (globalThis as { process?: { env?: Record<string, string | undefined> } })
+		.process;
 	return process?.env?.[name];
 };

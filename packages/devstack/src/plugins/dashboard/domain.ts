@@ -5,11 +5,9 @@
 // `resolvedValues` accessor (see `substrate/runtime/control-plane/`). This
 // module — which lives in the PLUGIN layer and is allowed to name plugins —
 // owns ALL plugin-name-aware shaping: it matches resolved plugin values by
-// resource id (`deepbook/`-prefix, `seal:`-prefix, `coin:`-prefix,
-// `id === 'sui'`, `id === 'postgres'`) and projects them into the
-// app-agnostic shapes the
-// GraphQL schema renders. It also owns the `mode` derivation, the coin
-// `mint` action, and the Postgres `psql`-exec wire-protocol stats.
+// resource id (`deepbook/`-prefix, `seal:`-prefix, `coin:`-prefix, `id ===
+// 'sui'`) and projects them into the app-agnostic shapes the GraphQL schema
+// renders. It also owns the `mode` derivation and the coin `mint` action.
 //
 // Design discipline (mirrors the old substrate seam, one layer up):
 //   - We import NO plugin types — we narrow the opaque `unknown` resolved
@@ -21,14 +19,12 @@
 //     query (`E = never` on the public surface).
 //   - We match plugins by RESOURCE ID — a prefix for the multi-instance
 //     kinds (`deepbook/`, `seal:`, `coin:`) and an exact id for the
-//     singletons (`id === 'postgres'`, `id === 'sui'`) — rather than
+//     singletons (`id === 'sui'`) — rather than
 //     plugin-key substrings: the resource id is the stable identity the
 //     plugin factories mint.
 
 import { Effect } from 'effect';
 
-import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
-import type { Identity } from '../../substrate/identity.ts';
 import type {
 	ControlPlaneDomain,
 	ControlPlaneResolvedValue,
@@ -169,29 +165,6 @@ export interface DashboardFundableCoin {
 	readonly requiresAccountSigner: boolean;
 }
 
-export interface DashboardPostgresTable {
-	readonly schema: string;
-	readonly name: string;
-	readonly rowEstimate: number;
-	readonly totalBytes: number;
-}
-
-export interface DashboardPostgresStats {
-	readonly pluginKey: string;
-	readonly database: string;
-	/** Plain (password-less) DSN — the credentialed form NEVER leaves the
-	 *  backend. */
-	readonly plainUrl: string;
-	readonly databaseBytes: number;
-	readonly connectionCount: number;
-	readonly tables: ReadonlyArray<DashboardPostgresTable>;
-	/** `false` when stats could not be gathered (container down, exec
-	 *  failure). The dashboard renders a degraded state rather than
-	 *  failing the whole query. */
-	readonly available: boolean;
-	readonly detail: string | null;
-}
-
 /** The dashboard plugin-domain accessor surface. Each member is a
  *  self-contained Effect that never fails (`E = never`); they degrade to
  *  empty/`null` so a single missing plugin can't take down the dashboard
@@ -207,8 +180,6 @@ export interface DashboardDomain {
 	readonly seal: Effect.Effect<ReadonlyArray<DashboardSealInfo>>;
 	/** Coin treasury caps (drives Mint). */
 	readonly coinCaps: Effect.Effect<ReadonlyArray<DashboardCoinCap>>;
-	/** Postgres wire-protocol stats per postgres plugin instance. */
-	readonly postgresStats: Effect.Effect<ReadonlyArray<DashboardPostgresStats>>;
 	/** Mint ACTION — mints `amountBaseUnits` of `coinType` to `recipient`,
 	 *  signed in-process by the treasury-cap-owning publisher signer the
 	 *  resolved coin value's self-contained `mintFromCap` closure holds. */
@@ -277,15 +248,6 @@ interface CoinShape {
 		readonly to: string;
 		readonly amount: bigint;
 	}) => Effect.Effect<{ readonly digest: string }, { readonly message?: unknown }>;
-}
-
-interface PostgresShape {
-	readonly name?: unknown;
-	readonly user?: unknown;
-	readonly databases?: ReadonlyArray<unknown>;
-	readonly plainEndpoint?: unknown;
-	readonly networkAlias?: unknown;
-	readonly port?: unknown;
 }
 
 interface SuiShape {
@@ -447,30 +409,6 @@ const optNum = (v: unknown): number | null =>
 	typeof v === 'number' && Number.isFinite(v) ? v : null;
 const bool = (v: unknown): boolean => v === true;
 
-/** Narrow a postgres resolved value's five fields in ONE place — the single
- *  fail-loud enforcement point shared by `parsePgStats`, `unavailablePgStats`,
- *  and the `postgresStats` exec setup. `database`/`host` use `reqStr`,
- *  `port` uses `reqNum`; `user`/`name` are required-with-fallback (they drive
- *  the exec role/auth, so a missing value is a real fault, not a silent
- *  'postgres'). */
-interface NarrowedPostgres {
-	readonly database: string;
-	readonly host: string;
-	readonly port: number;
-	readonly pgUser: string;
-	readonly role: string;
-	readonly plainUrl: string;
-}
-
-const narrowPostgres = (pg: PostgresShape, faults: FaultSink): NarrowedPostgres => {
-	const database = reqStr((pg.databases ?? [])[0], 'postgres.database', faults) || 'postgres';
-	const host = reqStr(pg.networkAlias, 'postgres.networkAlias', faults) || 'postgres';
-	const port = reqNum(pg.port, 'postgres.port', faults, 5432);
-	const pgUser = reqStr(pg.user, 'postgres.user', faults) || 'postgres';
-	const role = reqStr(pg.name, 'postgres.name', faults) || 'postgres';
-	return { database, host, port, pgUser, role, plainUrl: `postgres://${host}:${port}` };
-};
-
 /** Filter the generic resolved values down to those whose resource id
  *  matches a predicate, in graph order. Returns the `{ pluginKey, value }`
  *  the shaping functions consume. */
@@ -480,112 +418,12 @@ const matching = (
 ): ReadonlyArray<ControlPlaneResolvedValue> => values.filter((v) => matches(v.id));
 
 // -----------------------------------------------------------------------------
-// Postgres wire-protocol stats via `psql` exec inside the container
-// -----------------------------------------------------------------------------
-
-/** SQL that emits a single line of JSON the dashboard can parse without a
- *  PG client. Keeps the round trip to one exec. */
-const PG_STATS_SQL = `SELECT json_build_object(
-  'db_bytes', pg_database_size(current_database()),
-  'connections', (SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()),
-  'tables', COALESCE((
-    SELECT json_agg(t) FROM (
-      SELECT schemaname AS schema, relname AS name,
-             n_live_tup AS row_estimate,
-             pg_total_relation_size(relid) AS total_bytes
-      FROM pg_stat_user_tables
-      ORDER BY pg_total_relation_size(relid) DESC
-      LIMIT 200
-    ) t
-  ), '[]'::json)
-)`;
-
-/** Compose the narrowing-fault prefix into a detail string so the (already
- *  present) postgres `detail` channel carries fail-loud narrowing faults
- *  alongside any exec/parse detail — no new top-level failure invented. */
-const withFaultDetail = (faults: FaultSink, detail: string | null): string | null => {
-	const fault = faultDetail(faults);
-	if (fault === null) return detail;
-	return detail === null ? `narrowing: ${fault}` : `narrowing: ${fault}; ${detail}`;
-};
-
-const parsePgStats = (
-	pluginKey: string,
-	pg: NarrowedPostgres,
-	faults: FaultSink,
-	stdout: string,
-): DashboardPostgresStats => {
-	const base = {
-		pluginKey,
-		database: pg.database,
-		plainUrl: pg.plainUrl,
-	} as const;
-	try {
-		const trimmed = stdout.trim();
-		const parsed = JSON.parse(trimmed) as {
-			db_bytes?: number;
-			connections?: number;
-			tables?: ReadonlyArray<{
-				schema?: string;
-				name?: string;
-				row_estimate?: number;
-				total_bytes?: number;
-			}>;
-		};
-		const tables: DashboardPostgresTable[] = (parsed.tables ?? []).map((t) => ({
-			schema: t.schema ?? 'public',
-			name: t.name ?? '',
-			rowEstimate: optNum(t.row_estimate) ?? 0,
-			totalBytes: optNum(t.total_bytes) ?? 0,
-		}));
-		return {
-			...base,
-			databaseBytes: optNum(parsed.db_bytes) ?? 0,
-			connectionCount: optNum(parsed.connections) ?? 0,
-			tables,
-			available: true,
-			detail: withFaultDetail(faults, null),
-		};
-	} catch (cause) {
-		return {
-			...base,
-			databaseBytes: 0,
-			connectionCount: 0,
-			tables: [],
-			available: false,
-			detail: withFaultDetail(faults, `failed to parse psql output: ${String(cause)}`),
-		};
-	}
-};
-
-const unavailablePgStats = (
-	pluginKey: string,
-	pg: NarrowedPostgres,
-	faults: FaultSink,
-	detail: string,
-): DashboardPostgresStats => ({
-	pluginKey,
-	database: pg.database,
-	plainUrl: pg.plainUrl,
-	databaseBytes: 0,
-	connectionCount: 0,
-	tables: [],
-	available: false,
-	detail: withFaultDetail(faults, detail),
-});
-
-// -----------------------------------------------------------------------------
 // Builder
 // -----------------------------------------------------------------------------
 
 export interface DashboardDomainDeps {
 	/** The generic, name-blind control-plane domain (resolved values). */
 	readonly control: ControlPlaneDomain;
-	/** Stack identity, used for the postgres container label probe. */
-	readonly identity: Identity;
-	/** Container runtime for the Postgres `psql` exec-probe. `null` in bare
-	 *  test paths; `postgresStats` degrades to an unavailable entry then. */
-	readonly containerRuntime: ContainerRuntime | null;
 	/** The scope-local strategy registry — the SAME registry the boot-time
 	 *  account funding pass dispatches through (`plugins/account/funding.ts`).
 	 *  Drives `fundableCoins` + `fundAccount`: SUI via `faucet:request:<chainId>`,
@@ -595,7 +433,7 @@ export interface DashboardDomainDeps {
 }
 
 export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain => {
-	const { control, identity, containerRuntime, strategyRegistry } = deps;
+	const { control, strategyRegistry } = deps;
 
 	const mode: DashboardDomain['mode'] = control.resolvedValues.pipe(
 		Effect.map((values) => {
@@ -1023,66 +861,11 @@ export const buildDashboardDomain = (deps: DashboardDomainDeps): DashboardDomain
 				);
 		});
 
-	const postgresStats: DashboardDomain['postgresStats'] = Effect.gen(function* () {
-		const values = yield* control.resolvedValues;
-		const instances = matching(values, (id) => id === 'postgres');
-		if (instances.length === 0) return [];
-		const out: DashboardPostgresStats[] = [];
-		for (const { pluginKey, value } of instances) {
-			// ONE postgres narrow (single fail-loud enforcement point). The
-			// accumulated faults ride into every result via the `detail` channel.
-			const faults = newFaults();
-			const pg = narrowPostgres(value as PostgresShape, faults);
-			if (containerRuntime === null) {
-				out.push(unavailablePgStats(pluginKey, pg, faults, 'container runtime unavailable'));
-				continue;
-			}
-			const probe = Effect.gen(function* () {
-				const handles = yield* containerRuntime.inspectByLabels({
-					app: String(identity.app),
-					stack: String(identity.stack),
-					plugin: 'postgres',
-					role: pg.role,
-				});
-				const running = handles.find((h) => h.status === 'running') ?? handles[0];
-				if (running === undefined) {
-					return unavailablePgStats(pluginKey, pg, faults, 'no running postgres container found');
-				}
-				const result = yield* containerRuntime.exec(running, [
-					'psql',
-					'-U',
-					pg.pgUser,
-					'-d',
-					pg.database,
-					'-tAc',
-					PG_STATS_SQL,
-				]);
-				if (result.exitCode !== 0) {
-					return unavailablePgStats(
-						pluginKey,
-						pg,
-						faults,
-						`psql exited ${result.exitCode}: ${result.stderr.trim().slice(0, 200)}`,
-					);
-				}
-				return parsePgStats(pluginKey, pg, faults, result.stdout);
-			});
-			const stats = yield* probe.pipe(
-				Effect.catchCause((cause) =>
-					Effect.succeed(unavailablePgStats(pluginKey, pg, faults, String(cause))),
-				),
-			);
-			out.push(stats);
-		}
-		return out;
-	});
-
 	return {
 		mode,
 		deepbook,
 		seal,
 		coinCaps,
-		postgresStats,
 		mintCoin,
 		fundableCoins,
 		fundAccount,
@@ -1097,7 +880,6 @@ export const emptyDashboardDomain: DashboardDomain = {
 	deepbook: Effect.succeed([]),
 	seal: Effect.succeed([]),
 	coinCaps: Effect.succeed([]),
-	postgresStats: Effect.succeed([]),
 	mintCoin: () => Effect.succeed({ ok: false, detail: 'unavailable', digest: null }),
 	fundableCoins: Effect.succeed([]),
 	fundAccount: () => Effect.succeed({ ok: false, detail: 'unavailable' }),

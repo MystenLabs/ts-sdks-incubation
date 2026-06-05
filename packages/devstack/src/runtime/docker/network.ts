@@ -1,9 +1,8 @@
 // Docker network lifecycle.
 //
 // Architecture § Docker backend § Networking:
-//   - ONE shared `devstack` network per host (cross-stack). Other
-//     per-stack secondary networks are allowed by callers, but the
-//     default surface assumes the shared bridge.
+//   - Per-stack networks: each stack ensures its own bridge, named
+//     `<app>-<stack>-…`. Callers may attach secondary networks too.
 //   - `network connect` is idempotent — "already exists in network"
 //     stderr is success (see `wrap.ts` classifier).
 //   - `network connect` settle is ASYNCHRONOUS in docker — the
@@ -43,11 +42,6 @@ import {
 	isNetworkAlreadyExistsStderr,
 	wrapNetworkError,
 } from './wrap.ts';
-
-/** The cross-host shared network name. Architecture-mandated single
- *  bridge per host. Callers can target other networks (per-stack) but
- *  this is the constant for the shared one. */
-export const SHARED_NETWORK_NAME = 'devstack';
 
 export interface EnsureNetworkOptions {
 	readonly app: string;
@@ -181,7 +175,7 @@ export const ensureNetwork = (
 			),
 		);
 		return created.stdout.trim();
-	}).pipe(Effect.withSpan('runtime.docker.network.ensure'));
+	});
 
 /** Concurrent-create-loses recovery: a peer created the network between
  *  our inspect-miss and our `create`. Re-inspect, assert it carries our
@@ -229,7 +223,7 @@ export const connect = (
 		return yield* Effect.fail(
 			new NetworkOperationFailed({ op: 'connect', network, stderr: res.stderr }),
 		);
-	}).pipe(Effect.withSpan('runtime.docker.network.connect'));
+	});
 
 export const disconnect = (
 	containerNameOrId: string,
@@ -247,7 +241,7 @@ export const disconnect = (
 				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.disconnect'));
+	});
 
 /** Force-disconnect — `docker network disconnect -f`. Used by prune
  *  to evict our own endpoints from an in-use network before retrying
@@ -268,7 +262,7 @@ export const forceDisconnect = (
 				new NetworkOperationFailed({ op: 'disconnect', network, stderr: res.stderr }),
 			);
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.forceDisconnect'));
+	});
 
 /** List the endpoints currently attached to a network. Returns an
  *  empty list when the network is missing. Used by prune to decide
@@ -294,7 +288,7 @@ export const listAttachedContainers = (
 		});
 		if (decoded === null) return [];
 		return readContainers(decoded.Containers);
-	}).pipe(Effect.withSpan('runtime.docker.network.listAttachedContainers'));
+	});
 
 // -----------------------------------------------------------------------------
 // IP readback
@@ -373,7 +367,6 @@ export const waitForIp = (
 			}
 			return cause;
 		}),
-		Effect.withSpan('runtime.docker.network.waitForIp'),
 	);
 };
 
@@ -400,4 +393,4 @@ export const readIps = (
 		} catch {
 			return [];
 		}
-	}).pipe(Effect.withSpan('runtime.docker.network.readIps'));
+	});

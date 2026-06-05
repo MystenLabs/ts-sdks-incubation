@@ -212,3 +212,32 @@ type _VerifyRow = keyof Row extends _RowKeysClosed
 	: false;
 
 export type __RowFieldsClosed = _VerifyRow extends true ? true : never;
+
+// --- No display vocabulary --------------------------------------------------
+//
+// Compile-time guard: the projection shape MUST NOT contain display
+// vocabulary. These conditional types resolve to `never` (and would
+// fail to assign anywhere they're used) if `title`/`primary`/`extras`
+// were ever added to `SubscribableState` or `Row`.
+//
+// The architecture's invariant becomes a TS error at the boundary —
+// the projection layer can't be wired up if a renderer-display concept
+// leaks into the engine's data model.
+
+type _NoDisplayVocabAtTop = 'title' extends keyof SubscribableState
+	? never
+	: 'primary' extends keyof SubscribableState
+		? never
+		: 'extras' extends keyof SubscribableState
+			? never
+			: true;
+type _NoDisplayVocabInRow = 'title' extends keyof Row
+	? never
+	: 'primary' extends keyof Row
+		? never
+		: 'extras' extends keyof Row
+			? never
+			: true;
+export type __NoDisplayVocab = _NoDisplayVocabAtTop & _NoDisplayVocabInRow extends true
+	? true
+	: never;

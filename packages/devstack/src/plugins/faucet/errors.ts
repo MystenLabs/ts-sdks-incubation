@@ -108,8 +108,4 @@ export interface FaucetConfigError extends ConfigIssue {
 export const faucetConfigError = defineConfigError('FaucetConfigError');
 
 /** Union of every error a faucet caller may encounter. */
-export type FaucetError =
-	| FaucetUnreachable
-	| FaucetExhausted
-	| FaucetBodyError
-	| FaucetConfigError;
+export type FaucetError = FaucetUnreachable | FaucetExhausted | FaucetBodyError | FaucetConfigError;

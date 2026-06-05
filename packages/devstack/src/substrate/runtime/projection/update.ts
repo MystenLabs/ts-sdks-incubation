@@ -23,7 +23,7 @@ import { Effect, Schema, SubscriptionRef } from 'effect';
 import type { PluginKey } from '../../brand.ts';
 import type { EngineEvent } from '../../events.ts';
 import { eventAtOrNull } from '../../event-time.ts';
-import type { LifecycleStatus } from '../../lifecycle.ts';
+import type { LifecycleFact, LifecycleStatus } from '../../lifecycle.ts';
 import type {
 	AccountProjection,
 	BuildEntry,
@@ -33,9 +33,73 @@ import type {
 	StructuredError,
 	SubscribableState,
 } from '../../projection.ts';
-import { applyLifecycleFact, factFromEvent } from '../lifecycle/lifecycle-fact.ts';
-import { SpanAttr } from '../observability/spans.ts';
-import { AccountProjectionSchema, PackageProjectionSchema } from './persisted.ts';
+import { LogAttr } from '../observability/log-attrs.ts';
+
+// -----------------------------------------------------------------------------
+// Per-kind `projection.updated` payload schemas
+// -----------------------------------------------------------------------------
+//
+// The reducer is the projection orchestrator and owns the per-`kind`
+// structural decode of `projection.updated` payloads (STYLE_GUIDE §20:
+// a misbehaving plugin emitting a malformed payload must NOT crash the
+// reducer or the surrounding projection stream — the decode acts as a
+// structural guard so a bad slice is dropped, not applied). These two
+// schemas mirror `AccountProjection` / `PackageProjection` in
+// `substrate/projection.ts`; the runtime brand on `key`
+// (`account/${string}` / `package/${string}`) is TS-only and Schema
+// can't express it, so callers forward the original `event.payload`
+// after a successful decode rather than the decoded (brand-stripped)
+// copy.
+//
+// The plain-renderer reads the raw event stream (not the reduced
+// state) and re-runs the same decode for the same payloads; it imports
+// these schemas from here, the single canonical definition.
+
+/** Structural schema for a `projection.updated[account]` payload. */
+export const AccountProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	address: Schema.NullOr(Schema.String),
+	scheme: Schema.NullOr(Schema.Literals(['ed25519', 'secp256k1', 'secp256r1'])),
+	source: Schema.NullOr(Schema.Literals(['real', 'impersonate'])),
+	funding: Schema.Struct({
+		status: Schema.Literals(['pending', 'funded', 'skipped', 'failed', 'unknown']),
+		balanceMist: Schema.NullOr(Schema.String),
+		requestedMist: Schema.NullOr(Schema.String),
+		entries: Schema.optional(
+			Schema.Array(
+				Schema.Struct({
+					coin: Schema.String,
+					fullCoinType: Schema.String,
+					amount: Schema.String,
+					// Mirrors `AccountProjection.funding.entries[].status` in
+					// `substrate/projection.ts`. `'already-satisfied'` is
+					// the pre-existing-balance short-circuit emitted by the
+					// account funding pass — semantically a success, kept
+					// distinct from `'funded'` so renderers can surface the
+					// cached-vs-fresh distinction.
+					status: Schema.Literals(['funded', 'already-satisfied', 'skipped']),
+				}),
+			),
+		),
+	}),
+	walletVisible: Schema.Boolean,
+	updatedAt: Schema.Number,
+});
+
+/** Structural schema for a `projection.updated[package]` payload. */
+export const PackageProjectionSchema = Schema.Struct({
+	key: Schema.String,
+	rowKey: Schema.NullOr(Schema.String),
+	name: Schema.String,
+	kind: Schema.Literals(['local', 'known']),
+	packageId: Schema.String,
+	upgradeCapId: Schema.NullOr(Schema.String),
+	mvrPlaceholder: Schema.String,
+	sourcePath: Schema.NullOr(Schema.String),
+	updatedAt: Schema.Number,
+});
 
 // -----------------------------------------------------------------------------
 // Capacity policy
@@ -57,6 +121,67 @@ const MAX_ROW_LOG_LINES = 100;
 type DecodeResult<T> =
 	| { readonly ok: true; readonly value: T }
 	| { readonly ok: false; readonly cause: unknown };
+
+// -----------------------------------------------------------------------------
+// LifecycleFact bridge
+// -----------------------------------------------------------------------------
+//
+// `substrate/lifecycle.ts` declares `LifecycleFact` — the merge-not-
+// replace per-plugin lifecycle slice the projection consumes. The
+// reducer routes lifecycle-shaped events through this typed bridge
+// instead of writing each status / phase / restart field
+// independently. The reducer for non-lifecycle events is unchanged.
+
+/** Per-plugin fact delta. Each field is optional — only the fields the
+ *  source event carries are populated. `applyLifecycleFact` merges a
+ *  delta into the existing `Row`. */
+export interface LifecycleFactDelta {
+	readonly status?: LifecycleStatus;
+	readonly phase?: LifecycleFact['phase'];
+	readonly selectiveRestartHighlight?: boolean;
+}
+
+/** Project a lifecycle-shaped `EngineEvent` into a per-plugin delta.
+ *  Returns `null` for events that don't carry lifecycle information so
+ *  the reducer can short-circuit. The substrate stays event-name-blind
+ *  by routing through this single mapping table. */
+export const factFromEvent = (
+	event: EngineEvent,
+): { readonly pluginKey: PluginKey; readonly delta: LifecycleFactDelta } | null => {
+	switch (event.tag) {
+		case 'lifecycle.statusChanged':
+			return {
+				pluginKey: event.pluginKey,
+				delta: { status: event.to },
+			};
+		case 'lifecycle.phaseSet':
+			return {
+				pluginKey: event.pluginKey,
+				delta: { phase: event.phase },
+			};
+		default:
+			// `restart.requested` ALSO updates cycle.phase + clears
+			// other rows' highlights — that's a multi-row reducer
+			// concern the projection handles directly. We deliberately
+			// keep the bridge scoped to the closed `LifecycleFact`
+			// shape (status / phase / selectiveRestartHighlight) so
+			// callers can derive per-plugin facts without rebuilding
+			// the cycle phase too.
+			return null;
+	}
+};
+
+/** Apply a fact delta to a row. Pure. Fields not in the delta are
+ *  preserved verbatim — the merge-not-replace shape `LifecycleFact`
+ *  promises. */
+export const applyLifecycleFact = (row: Row, delta: LifecycleFactDelta): Row => ({
+	...row,
+	...(delta.status !== undefined ? { status: delta.status } : {}),
+	...(delta.phase !== undefined ? { phase: delta.phase } : {}),
+	...(delta.selectiveRestartHighlight !== undefined
+		? { selectiveRestartHighlight: delta.selectiveRestartHighlight }
+		: {}),
+});
 
 // -----------------------------------------------------------------------------
 // Pure reducer
@@ -327,7 +452,7 @@ export const updateRef = (
 						`projection.updated: dropping malformed ${event.kind} payload for key=${event.key}`,
 					).pipe(
 						Effect.annotateLogs({
-							[SpanAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
+							[LogAttr.errorMessage]: formatDecodeIssue(prevalidated.cause),
 						}),
 					);
 				}

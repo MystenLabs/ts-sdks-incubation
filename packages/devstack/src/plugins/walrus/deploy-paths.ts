@@ -14,9 +14,8 @@ export interface WalrusDeployMountPaths {
  *  input (e.g. a single-segment path under `/`) would silently
  *  return `/`, and the bind-mount would mount the host root into
  *  the container — a load-bearing footgun. We now require the
- *  caller to pass `stackRoot` explicitly (matching the existing
- *  `paths.stackRoot` injection pattern across the postgres / sui /
- *  seal / wallet plugins) and assert the deploy dir lives under it.
+ *  caller to pass `stackRoot` explicitly and assert the deploy dir
+ *  lives under it.
  *
  *  The mount source is `stackRoot`; the in-container path is
  *  re-derived through `relative(stackRoot, deployOutputDirHostPath)`. */

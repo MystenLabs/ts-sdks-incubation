@@ -39,8 +39,7 @@ describe('supervisor acquire pipeline', () => {
 		Effect.gen(function* () {
 			// Order of `start` body entry, captured as plugins acquire.
 			const startOrder = yield* Ref.make<ReadonlyArray<string>>([]);
-			const recordStart = (id: string) =>
-				Ref.update(startOrder, (prev) => [...prev, id]);
+			const recordStart = (id: string) => Ref.update(startOrder, (prev) => [...prev, id]);
 
 			// base -> mid -> leaf. Each upstream resolves a value the
 			// downstream reads from its `deps`.
@@ -170,9 +169,9 @@ describe('supervisor acquire pipeline', () => {
 						yield* startup.handle.registry.getStatus(pluginKey('test:failing-upstream#2')),
 					).toBe('failed');
 					// Healthy upstream still reached `ready`.
-					expect(
-						yield* startup.handle.registry.getStatus(pluginKey('test:ok-upstream#1')),
-					).toBe('ready');
+					expect(yield* startup.handle.registry.getStatus(pluginKey('test:ok-upstream#1'))).toBe(
+						'ready',
+					);
 					// Downstream `start` body NEVER ran (skipped on upstream fail).
 					expect(yield* Ref.get(downstreamStarted)).toBe(false);
 					// acquireNode's upstream-wait branch marks the skipped node
@@ -217,8 +216,7 @@ describe('supervisor acquire pipeline', () => {
 	it.effect('tears plugins down in reverse-dependency order on scope close', () =>
 		Effect.gen(function* () {
 			const teardownOrder = yield* Ref.make<ReadonlyArray<string>>([]);
-			const recordTeardown = (id: string) =>
-				Ref.update(teardownOrder, (prev) => [...prev, id]);
+			const recordTeardown = (id: string) => Ref.update(teardownOrder, (prev) => [...prev, id]);
 
 			const base = definePlugin({
 				id: 'test:td-base',

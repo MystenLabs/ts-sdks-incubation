@@ -6,7 +6,6 @@ import type { AccountValue } from '../account/index.ts';
 import { formatExecutedFailure, signAndDispatch, type SuiSdkShim } from '../sui/index.ts';
 import { SUI_FULL_COIN_TYPE } from '../account/index.ts';
 import { walrusPluginError, type WalrusPluginError } from './errors.ts';
-import { WalrusSpans } from './spans.ts';
 
 /** Conservative reserve held back from the gas coin for transaction
  *  gas itself. The swap call splits `paymentMist` off the gas coin
@@ -185,12 +184,4 @@ export const swapAccountSuiForWal = (
 				),
 			onSuccess: (ok) => Effect.succeed({ digest: ok.digest }),
 		});
-	}).pipe(
-		Effect.withSpan('devstack.plugin.walrus.fundWal', {
-			attributes: {
-				[WalrusSpans.fundAccount]: args.account.name,
-				[WalrusSpans.fundAddress]: args.recipientAddress,
-				[WalrusSpans.fundExchange]: args.exchange.objectId,
-			},
-		}),
-	);
+	});

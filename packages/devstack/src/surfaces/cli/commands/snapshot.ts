@@ -90,7 +90,7 @@ export const runSnapshot = (
 					}),
 				);
 		}
-	}).pipe(Effect.withSpan('cli.snapshot'));
+	});
 
 const runSnapshotSave = (
 	deps: SnapshotDeps,

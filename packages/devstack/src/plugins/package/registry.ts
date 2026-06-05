@@ -1,27 +1,22 @@
 // Per-stack PackageRegistry — owned by the L2 Package plugin.
 //
-// Architecture (ARCHITECTURE.md § Substrate name-blindness): the
-// substrate exposes ONLY the generic `defineScopedRefMap<K, V>` factory;
-// the package-domain shape (`ResolvedLocalPackage` / `ResolvedKnownPackage`)
-// lives here at L2 where it belongs. Two `localPackage(...)` calls in
-// the same stack see the same Service instance (one per stack scope),
-// so cross-plugin lookups stay consistent and warm-restart verify can
-// use the previously-resolved `packageId` as a hint.
+// The package-domain shape (`ResolvedLocalPackage` /
+// `ResolvedKnownPackage`) lives here at L2 where it belongs. Two
+// `localPackage(...)` calls in the same stack see the same Service
+// instance (one per stack scope), so cross-plugin lookups stay
+// consistent and warm-restart verify can use the previously-resolved
+// `packageId` as a hint.
 //
-// Wrapper-service pattern (STYLE_GUIDE §6 / "L2 wrapper-service around
-// defineScopedRefMap"): the module-private inner `PackageRefMap` is the
-// raw substrate primitive; the publicly-exported `PackageRegistryService`
-// is the L2 wrapper that the rest of the plugin (and external siblings)
-// yield. The wrapper re-exposes the substrate ops consumers actually use
-// (`set` / `find` / `entries`), keeping plugin-specific behavior in one
-// place instead of every consumer reaching into the raw map.
+// Storage: a self-contained last-write-wins `PackageKey ->
+// ResolvedPackage` map over a plain `Ref<Map>` (formerly the
+// substrate `defineScopedRefMap` single mode, which had exactly two
+// consumers — coin + package — so it was strangled out and inlined
+// here). LWW semantics: each `set` stamps a fresh monotonic `seq`
+// and replaces the key's lone entry (one entry per key); `entries`
+// orders keys by their entry's seq, so a re-set advances the key's
+// seq and sorts it to the end.
 
-import { Context, Effect, Layer } from 'effect';
-
-import {
-	defineScopedRefMap,
-	type ScopedRefMap,
-} from '../../substrate/runtime/scoped-registry/index.ts';
+import { Context, Effect, Layer, Ref } from 'effect';
 
 /** Resolved package handle for a local (built + published) package. */
 export interface ResolvedLocalPackage {
@@ -52,26 +47,56 @@ export type ResolvedPackage = ResolvedLocalPackage | ResolvedKnownPackage;
  *  out via `entries()` to consumers (codegen, snapshot identity). */
 export type PackageKey = string;
 
-/** L2 wrapper shape — the operations exposed on `PackageRegistryService`.
- *  A 1:1 re-projection of the substrate primitive's generic
- *  `ScopedRefMap<K, V>`, namespaced to the package domain so consumers
- *  share one shape. */
+/** L2 registry shape — the operations exposed on
+ *  `PackageRegistryService`. A last-write-wins `PackageKey ->
+ *  ResolvedPackage` map, namespaced to the package domain so
+ *  consumers share one shape. */
 export interface PackageRegistry {
 	readonly set: (key: PackageKey, value: ResolvedPackage) => Effect.Effect<void>;
 	readonly find: (key: PackageKey) => Effect.Effect<ResolvedPackage | null>;
 	readonly entries: () => Effect.Effect<ReadonlyArray<readonly [PackageKey, ResolvedPackage]>>;
 }
 
-// Module-private inner substrate primitive — instantiated once per
-// logical registry. The service identity is namespaced by the `name`
-// argument; substrate stays name-blind (it sees only `K` and `V`).
-const PackageRefMap = defineScopedRefMap<PackageKey, ResolvedPackage>('PackageRegistry');
+/** One stored entry: the package plus the monotonic `seq` the last
+ *  `set` stamped it with. The `seq` drives last-write-wins (highest
+ *  seq under a key wins) and `entries` insertion order. */
+interface SeqEntry {
+	readonly value: ResolvedPackage;
+	readonly seq: number;
+}
 
-const wrapRefMap = (refMap: ScopedRefMap<PackageKey, ResolvedPackage>): PackageRegistry => ({
-	set: refMap.set,
-	find: refMap.find,
-	entries: refMap.entries,
-});
+/** Build a self-contained last-write-wins `PackageKey ->
+ *  ResolvedPackage` registry over a plain `Ref<Map>`. One entry per
+ *  key (each `set` replaces the key's lone entry under a fresh seq),
+ *  and `entries` returns pairs ordered by their entry's seq — a
+ *  re-set of an existing key advances its seq and re-sorts it to the
+ *  end. */
+const makePackageRegistry = (): Effect.Effect<PackageRegistry> =>
+	Effect.gen(function* () {
+		const store = yield* Ref.make<ReadonlyMap<PackageKey, SeqEntry>>(new Map());
+		const seqRef = yield* Ref.make(0);
+
+		return {
+			set: (key, value) =>
+				Effect.gen(function* () {
+					const seq = yield* Ref.updateAndGet(seqRef, (n) => n + 1);
+					yield* Ref.update(store, (current) => {
+						const next = new Map(current);
+						next.set(key, { value, seq });
+						return next;
+					});
+				}),
+			find: (key) => Ref.get(store).pipe(Effect.map((state) => state.get(key)?.value ?? null)),
+			entries: () =>
+				Ref.get(store).pipe(
+					Effect.map((state) =>
+						[...state.entries()]
+							.sort(([, a], [, b]) => a.seq - b.seq)
+							.map(([key, e]) => [key, e.value] as const),
+					),
+				),
+		};
+	});
 
 /** Context.Service tag for the per-stack `PackageRegistry`. Plugins
  *  yield this in their acquire body. */
@@ -86,11 +111,8 @@ export class PackageRegistryService extends Context.Service<
  *  SAME instance via Context. */
 export const layerPackageRegistry: Layer.Layer<PackageRegistryService> = Layer.effect(
 	PackageRegistryService,
-	Effect.gen(function* () {
-		const refMap = yield* PackageRefMap.Service;
-		return PackageRegistryService.of(wrapRefMap(refMap));
-	}),
-).pipe(Layer.provide(PackageRefMap.layer));
+	makePackageRegistry().pipe(Effect.map(PackageRegistryService.of)),
+);
 
 /** Capability-key constant for the per-stack registry — siblings
  *  (Coin, Action, manifest emitter, faucet strategies) look it up

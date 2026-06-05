@@ -47,6 +47,7 @@ import {
 	parseSnapshotId,
 	type SnapshotId,
 	type SnapshotCatalogEntry,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 } from './descriptor.ts';
 import {
@@ -122,6 +123,8 @@ export interface SnapshotOrchestrator {
 	readonly capture: (args: {
 		readonly id?: string;
 		readonly label?: string;
+		readonly graphInput: SnapshotGraphInputIdentity;
+		readonly replaceExistingLabel?: boolean;
 		readonly participants?: ReadonlyArray<SnapshotParticipant>;
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
@@ -132,6 +135,8 @@ export interface SnapshotOrchestrator {
 	 *  rm → resume = recreate (the next boot / the injected converge). */
 	readonly restore: (args: {
 		readonly id: string;
+		readonly currentGraphInput?: SnapshotGraphInputIdentity;
+		readonly graphInputMismatchPolicy?: 'warn' | 'block';
 		readonly participants?: ReadonlyArray<RestoreParticipant>;
 		readonly resume?: Effect.Effect<void>;
 	}) => Effect.Effect<SnapshotMetadata, SnapshotOrchestratorError, FileSystem.FileSystem>;
@@ -334,17 +339,16 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				yield* Effect.addFinalizer(() =>
 					Ref.update(participantsRef, (xs) => xs.filter((e) => e.seq !== seq)),
 				);
-				yield* Effect.annotateCurrentSpan({
-					'snapshot.participant.plugin': pluginKey,
-					'snapshot.participant.subtrees': decl.subtrees.length,
-				});
-			}).pipe(Effect.withSpan('orchestrator.snapshot.registerParticipant')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
+			}) as Effect.Effect<void, never, Scope.Scope>;
 
-		const capture: SnapshotOrchestrator['capture'] = ({ id, label, participants, resume }) =>
+		const capture: SnapshotOrchestrator['capture'] = ({
+			id,
+			label,
+			graphInput,
+			replaceExistingLabel,
+			participants,
+			resume,
+		}) =>
 			Effect.gen(function* () {
 				const snapshotId =
 					id === undefined ? yield* mintSnapshotId() : yield* validateSnapshotId('capture', id);
@@ -376,7 +380,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				// contributions never re-register → empty `config.ts`). Scoping the
 				// lock to the publish and running `resumeAfterCapture` AFTER it
 				// releases lets the re-acquire claim containers normally.
-				const meta = yield* Effect.scoped(
+				const { meta, replacedSnapshotIds } = yield* Effect.scoped(
 					Effect.gen(function* () {
 						yield* acquireStackLock(paths.stackLockFile);
 						const fs = yield* FileSystem.FileSystem;
@@ -398,7 +402,10 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						// gen; no TDZ fires because `capture` is invoked only after
 						// the outer gen has resolved all `const` bindings.
 						const existing = yield* list;
-						if (existing.some((entry) => entry.metadata?.label === snapshotName)) {
+						const duplicateLabels = existing.filter(
+							(entry) => entry.metadata?.label === snapshotName,
+						);
+						if (duplicateLabels.length > 0 && replaceExistingLabel !== true) {
 							return yield* Effect.fail(
 								new SnapshotIdError({
 									operation: 'capture',
@@ -408,11 +415,14 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								}),
 							);
 						}
+						const replacedSnapshotIds = duplicateLabels
+							.map((entry) => entry.id)
+							.filter((entryId) => entryId !== snapshotId);
 
 						// Build + publish the artifact (gather → stop → commit +
 						// tar + meta), atomically via stage-and-swap so watchers /
 						// `list` never observe a half-written tree.
-						return yield* stageAndSwap({
+						const meta = yield* stageAndSwap({
 							targetPath: artifactDir,
 							stagingPath: stagingDir,
 							backupPath: backupDir,
@@ -423,11 +433,13 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								app: identity.app,
 								stack: identity.stack,
 								network: identity.chain,
+								graphInput,
 								runtimeStackRoot: paths.stackRoot,
 								participants: effectiveParticipants,
 								runtime,
 							}),
 						});
+						return { meta, replacedSnapshotIds };
 					}),
 				);
 				// Post-publish bounce tail — runs with `stack.lock` RELEASED (see
@@ -442,13 +454,29 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					stack: identity.stack,
 					...(resume === undefined ? {} : { resume }),
 				});
+				yield* Effect.forEach(replacedSnapshotIds, del, { discard: true });
 				return meta;
-			}).pipe(Effect.withSpan('orchestrator.snapshot.capture.entry'));
+			});
 
-		const restore: SnapshotOrchestrator['restore'] = ({ id, participants, resume }) =>
+		const restore: SnapshotOrchestrator['restore'] = ({
+			id,
+			currentGraphInput,
+			graphInputMismatchPolicy,
+			participants,
+			resume,
+		}) =>
 			Effect.gen(function* () {
 				const snapshotId = yield* validateSnapshotId('restore', id);
 				const artifactDir = `${paths.snapshotDir}/${snapshotId}`;
+				// The effective participant set is the live registered set (or an
+				// explicit override). During startup restore, interrupted-restore
+				// recovery, and offline CLI restore, no plugin has registered yet,
+				// so this is EMPTY. `runRestore` reads an empty
+				// participant set as "no live stack to compare against" and skips
+				// ONLY the cross-plugin contribution guard (the runtime app/stack/
+				// network guard + the snapshot-side emptiness refusal still fire).
+				// A LIVE-supervisor restore (operator-triggered while the stack is up)
+				// has a populated registered set, so the real contribution guard runs.
 				const effectiveParticipants =
 					participants ?? (yield* Ref.get(participantsRef)).map((e) => e.restore);
 				// Hold `stack.lock` ONLY across the destructive swap+load+hard-rm
@@ -478,6 +506,8 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 								stack: identity.stack,
 								network: identity.chain,
 							},
+							...(currentGraphInput === undefined ? {} : { currentGraphInput }),
+							...(graphInputMismatchPolicy === undefined ? {} : { graphInputMismatchPolicy }),
 						});
 					}),
 				);
@@ -497,7 +527,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 					);
 				}
 				return meta;
-			}).pipe(Effect.withSpan('orchestrator.snapshot.restore.entry'));
+			});
 
 		const list: SnapshotOrchestrator['list'] = Effect.gen(function* () {
 			const fs = yield* FileSystem.FileSystem;
@@ -546,7 +576,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				entries.push({ id: parsedId, directory: dir, metadata: decoded });
 			}
 			return entries;
-		}).pipe(Effect.withSpan('orchestrator.snapshot.list'));
+		});
 
 		const del: SnapshotOrchestrator['delete'] = (id) =>
 			Effect.gen(function* () {
@@ -559,7 +589,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						yield* fs.remove(dir, { recursive: true, force: true }).pipe(Effect.ignore);
 					}),
 				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.delete'));
+			});
 
 		const wipe: SnapshotOrchestrator['wipe'] = (args) =>
 			Effect.gen(function* () {
@@ -574,7 +604,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						});
 					}),
 				);
-			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.entry'));
+			});
 
 		const wipePlan: SnapshotOrchestrator['wipePlan'] = (args) =>
 			// Read-only: no stack-lock. `planWipe` only lists matching
@@ -586,7 +616,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 				stackRoot: paths.stackRoot,
 				runtime,
 				keepSnapshots: args.keepSnapshots,
-			}).pipe(Effect.withSpan('orchestrator.snapshot.wipe.plan.entry'));
+			});
 
 		const prune: SnapshotOrchestrator['prune'] = () =>
 			Effect.scoped(
@@ -598,7 +628,7 @@ export const layerSnapshotOrchestrator: Layer.Layer<
 						runtime,
 					});
 				}),
-			).pipe(Effect.withSpan('orchestrator.snapshot.prune.entry'));
+			);
 
 		return SnapshotOrchestratorService.of({
 			registerParticipant,

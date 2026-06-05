@@ -12,7 +12,7 @@
 
 import { Effect, FileSystem, Logger } from 'effect';
 
-import { buildDirectSnapshotLayers } from '../../../src/cli/wirings/build-verb-layers.ts';
+import { buildDirectSnapshotLayers } from '../../../src/orchestrators/layers.ts';
 import { provideFileSystem } from '../../../src/cli/wirings/provide-file-system.ts';
 import {
 	SnapshotOrchestratorService,

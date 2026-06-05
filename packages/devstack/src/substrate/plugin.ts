@@ -122,19 +122,31 @@ type StartValue<Start> = Start extends (
 	? Value
 	: never;
 
-export interface PluginErrorContribution {
-	readonly _tag: 'PluginErrorContribution';
-	readonly errorTags: ReadonlyArray<string>;
-	readonly formatter?: (
-		value: { readonly _tag: string } & Readonly<Record<string, unknown>>,
-		recurse: (inner: unknown) => string,
-	) => string | null;
-}
-
 export interface WatchDecl {
 	readonly paths: ReadonlyArray<string>;
 	readonly cascade?: boolean;
 }
+
+export interface StaticNodeInputContribution {
+	readonly kind: 'static';
+	readonly value: unknown;
+}
+
+export interface ComputedNodeInputContribution {
+	readonly kind: 'computed';
+	readonly compute: () => Effect.Effect<unknown, unknown, never>;
+}
+
+export type NodeInputContribution = StaticNodeInputContribution | ComputedNodeInputContribution;
+
+export const staticInputIdentity = (value: unknown): StaticNodeInputContribution => ({
+	kind: 'static',
+	value,
+});
+
+export const computedInputIdentity = (
+	compute: () => Effect.Effect<unknown, unknown, never>,
+): ComputedNodeInputContribution => ({ kind: 'computed', compute });
 
 interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	readonly id: Id;
@@ -142,7 +154,6 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	readonly pluginKey?: PluginKey | string;
 	readonly watch?: WatchDecl;
 	readonly start: Start;
-	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	/** Dashboard section bucket the plugin's rows belong to. Required so
 	 *  the renderer never has to pattern-match on plugin name substrings
 	 *  to compute it. The supervisor stamps this onto every row at
@@ -161,6 +172,10 @@ interface PluginSpecBase<Id extends string, Start extends AnyPluginStart> {
 	 *  plugins set it. Full restart (`stack.restart` / CLI) drains
 	 *  everything regardless. */
 	readonly keepAliveOnRestore?: true;
+	/** Desired-state inputs folded into this node's substrate input id.
+	 *  Dependencies' node input ids are included automatically; this field is
+	 *  for inputs owned by the node itself, including file hashes. */
+	readonly inputIdentity?: NodeInputContribution;
 }
 
 export type PluginSpec<
@@ -185,10 +200,10 @@ export interface Plugin<
 	readonly start: (
 		deps: ResolvedDependencies<DependencyInput | undefined>,
 	) => Effect.Effect<Value, unknown, unknown>;
-	readonly errorContributions?: ReadonlyArray<PluginErrorContribution>;
 	readonly section: RowSection;
 	readonly endpointSection?: RowSection;
 	readonly keepAliveOnRestore?: true;
+	readonly inputIdentity?: NodeInputContribution;
 }
 
 export type AnyPlugin = Plugin<
@@ -327,13 +342,11 @@ export function definePlugin(
 		start: spec.start as AnyPlugin['start'],
 		...(spec.pluginKey === undefined ? {} : { pluginKey: spec.pluginKey }),
 		...(spec.watch === undefined ? {} : { watch: spec.watch }),
-		...(spec.errorContributions === undefined
-			? {}
-			: { errorContributions: spec.errorContributions }),
 		...(spec.endpointSection === undefined ? {} : { endpointSection: spec.endpointSection }),
 		...(spec.keepAliveOnRestore === undefined
 			? {}
 			: { keepAliveOnRestore: spec.keepAliveOnRestore }),
+		...(spec.inputIdentity === undefined ? {} : { inputIdentity: spec.inputIdentity }),
 	} as AnyPlugin;
 }
 

@@ -98,10 +98,9 @@ describe('README build-integrations subpath parity', () => {
 		const missing = [...readmeSet].filter(
 			(subpath) => !packageSet.has(subpath) && !PACKAGE_OMITTED_SUBPATHS.includes(subpath),
 		);
-		expect(
-			missing,
-			`README subpaths not in package.json exports: ${missing.join(', ')}`,
-		).toEqual([]);
+		expect(missing, `README subpaths not in package.json exports: ${missing.join(', ')}`).toEqual(
+			[],
+		);
 	});
 
 	it('every package.json export subpath is documented in the README', () => {

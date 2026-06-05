@@ -162,7 +162,9 @@ export const runMatrix = async (params: {
 	// restore.test.ts against the preflight + untar.)
 	const liveCacheBeforeRestore = join(runtimeRoot, 'stacks', params.stack, 'cache');
 	rmSync(liveCacheBeforeRestore, { recursive: true, force: true });
-	console.log('[snapshot-matrix] live deploy cache wiped — simulating a fresh cross-machine runner');
+	console.log(
+		'[snapshot-matrix] live deploy cache wiped — simulating a fresh cross-machine runner',
+	);
 	await restoreSnapshotOffline({
 		runtimeRoot,
 		app: params.app,
@@ -170,7 +172,9 @@ export const runMatrix = async (params: {
 		network: 'sui:local',
 		snapshotId: params.snapshotId,
 	});
-	console.log('[snapshot-matrix] offline restore complete (cache recovered from snapshot host-tree)');
+	console.log(
+		'[snapshot-matrix] offline restore complete (cache recovered from snapshot host-tree)',
+	);
 
 	// BOOT 2 — assert S1 survived, S2 rolled back, S3 writable.
 	const outcomes = new Map<string, ProbeOutcome>();

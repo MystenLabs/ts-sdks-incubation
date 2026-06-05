@@ -13,8 +13,6 @@
 import { Effect } from 'effect';
 import { type AnyPlugin, definePlugin, resource } from '../../api/define-plugin.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
-import { ContainerRuntimeService } from '../../runtime/docker/service.ts';
-import type { ContainerRuntime } from '../../contracts/container-runtime.ts';
 import type { StrategyRegistry } from '../../contracts/strategy-contributor.ts';
 import { StrategyRegistryService } from '../../substrate/runtime/strategy-registry/index.ts';
 import { ControlPlaneService } from '../../substrate/runtime/control-plane/service.ts';
@@ -88,14 +86,6 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 				const portBroker = yield* PortBrokerService;
 				const control = yield* ControlPlaneService;
 				const identity = yield* IdentityContext;
-				// The ContainerRuntime drives the Postgres `psql` exec-probe.
-				// It is in the base substrate plugin context in production
-				// wiring; read it optionally so bare smoke-test paths that
-				// don't layer it degrade `postgresStats` to unavailable
-				// rather than failing acquisition.
-				const containerRuntimeOpt = yield* Effect.serviceOption(ContainerRuntimeService);
-				const containerRuntime: ContainerRuntime | null =
-					containerRuntimeOpt._tag === 'Some' ? containerRuntimeOpt.value : null;
 
 				// The scope-local strategy registry — the SAME registry the
 				// boot-time account funding pass dispatches through. Drives the
@@ -109,11 +99,9 @@ export function dashboard(opts: DashboardOptions = {}): AnyPlugin {
 
 				// Plugin-name-aware shaping lives HERE (the plugin layer is
 				// allowed to name plugins), built off the generic, name-blind
-				// control-plane `resolvedValues` seam + the container runtime.
+				// control-plane `resolvedValues` seam.
 				const pluginDomain = buildDashboardDomain({
 					control: control.domain,
-					identity,
-					containerRuntime,
 					strategyRegistry,
 				});
 

@@ -26,14 +26,9 @@
 //     world-readable manifest — only the tightened codegen file carries
 //     it.
 
-import { Effect } from 'effect';
-
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 
 import { defineSimpleConstExport } from '../internal/codegen-helpers.ts';
-
-import { redactToken } from './pairing.ts';
-import { WalletSpans } from './spans.ts';
 
 // ----------------------------------------------------------------------
 // Emitted shape
@@ -85,9 +80,7 @@ export interface DevWalletConfig {
  *  placeholder so the type plumbing works; at codegen time the
  *  substrate re-evaluates with the resolved values.
  */
-export const makeWalletCodegen = (
-	resolved: DevWalletConfig,
-): CodegenableDecl<'dapp-kit-config'> =>
+export const makeWalletCodegen = (resolved: DevWalletConfig): CodegenableDecl<'dapp-kit-config'> =>
 	defineSimpleConstExport({
 		emitterName: 'dapp-kit-config',
 		outputPath: 'dev-wallet.ts',
@@ -102,10 +95,4 @@ export const makeWalletCodegen = (
 		// `generated-extras` is already gitignored at the `.devstack`
 		// level, so the codegen `.gitignore` does not list it.
 		sensitive: true,
-		// Span annotation logs ONLY the redacted form — defense-in-
-		// depth so any debug-mode span dump doesn't leak the token.
-		preEmit: Effect.annotateCurrentSpan({
-			[WalletSpans.codegenPairUrl]: redactToken(resolved.pairUrl),
-			[WalletSpans.codegenWalletUrl]: resolved.walletUrl,
-		}),
 	});

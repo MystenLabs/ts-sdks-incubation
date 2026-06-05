@@ -18,9 +18,8 @@
 //      RecreatePolicy is `on-failure` so the writable layer (chain
 //      state at `/root/.sui`) survives clean stop/start cycles, but an
 //      unclean SIGKILL/137 exit recreates instead of resuming a suspect
-//      RocksDB/checkpoint state. The image's entrypoint forwards SIGINT
-//      to a non-PID-1 sui child so clean shutdown (RocksDB checkpoint
-//      drain → exit 0/130) is the normal case.
+//      RocksDB/checkpoint state. The runtime stops the container with
+//      SIGINT so sui runs its ctrl-c shutdown path.
 //   3. Ready probe — RPC `getChainIdentifier`, faucet `GET /`, and
 //      GraphQL HTTP liveness. Per-fetch deadline + outer deadline.
 //   4. Fetch chain id from the now-responsive client (bounded timeout).
@@ -69,13 +68,12 @@ import { waitForHttpEndpoint } from '../../../substrate/runtime/http-probe.ts';
 import { waitForProbe } from '../../../substrate/runtime/probes.ts';
 import { setCurrentPluginPhase } from '../../../substrate/runtime/current-plugin.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import { renderUrl, routedHostname } from '../../../substrate/runtime/routed-url.ts';
 import { suiCliImageBuildContext } from '../move/index.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import { formatUnknownError } from '../../../substrate/runtime/format-unknown-error.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
-import { SuiSpans } from '../spans.ts';
+import { SuiLogAttr } from '../log-attrs.ts';
 import {
 	SUI_FAUCET_ENTRYPOINT_PORT,
 	SUI_FAUCET_ENDPOINT_NAME,
@@ -146,11 +144,10 @@ export const SUI_INDEXER_DB_ROLE = 'indexer-db' as const;
  *  (sui-owned sidecar by default, or the caller's BYO DB); `network` is
  *  the container network the validator joins to reach it.
  *
- *  A chain re-genesis resets the sui-owned sidecar DB NATIVELY: the
- *  sidecar's `configHash` keys off the validator's chain identity, so
- *  `decideRunAction` recreates the mount-less sidecar (→ empty DB) on a
- *  chain change and resumes it (→ rows preserved) otherwise. No post-boot
- *  marker reconcile. */
+ *  A chain re-genesis resets the sui-owned sidecar DB before boot:
+ *  absent or SIGKILLed validators cause the sidecar container to be
+ *  removed, while validator image identity is folded into the sidecar
+ *  `configHash` for image-driven re-genesis. Clean restarts resume it. */
 export interface LocalIndexer {
 	readonly url: string;
 	readonly network: string;
@@ -243,7 +240,7 @@ export const bootLocalMode = (
 			directFaucetUrl,
 			graphqlEnabled ? directGraphqlUrl : undefined,
 			readyTimeout,
-		).pipe(Effect.annotateLogs({ [SuiSpans.container]: handle.name }));
+		).pipe(Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }));
 
 		// Head-stabilization gate. `waitForReady` only proves the RPC
 		// listener is BOUND, not that it serves the committed head. With the
@@ -259,16 +256,14 @@ export const bootLocalMode = (
 		// committed id as not-found and spuriously re-deploy with fresh ids.
 		yield* setCurrentPluginPhase('waiting for Sui checkpoint head to stabilize');
 		yield* waitForCheckpointCatchUp(directRpcUrl, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
 
 		const sdkClient = new SuiGrpcClient({ baseUrl: directRpcUrl, network: 'localnet' });
 
 		// ----- 4. Resolve chain id ------------------------------------------
 		yield* setCurrentPluginPhase('fetching Sui chain id');
-		const chain = yield* sharedFetchChainId(sdkClient, {
-			span: 'devstack.plugin.sui.local.fetchChainId',
-		});
+		const chain = yield* sharedFetchChainId(sdkClient);
 
 		// ----- 5. waitForTransactionsReady (memoised) -----------------------
 		yield* setCurrentPluginPhase('preparing Sui funds-ready gate');
@@ -307,9 +302,7 @@ export const bootLocalMode = (
 			resolved,
 			client,
 		};
-	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.local.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
-	);
+	});
 
 // ---------------------------------------------------------------------------
 // Image resolution — vendored Dockerfile build via `ContainerRuntime`
@@ -370,7 +363,7 @@ export const resolveImage = (
 					),
 				),
 			);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.resolveImage'));
+	});
 
 interface LocalValidatorContainerResult {
 	readonly handle: ContainerHandle;
@@ -463,13 +456,11 @@ const ensureLocalValidatorContainerAttempt = (
 			name: params.containerName,
 			image: params.image,
 			// Keep the writable layer only after clean exits. If Docker
-			// escalates a previous stop to SIGKILL (137), resume can hang
-			// in RocksDB/checkpoint recovery with no RPC/faucet probes.
-			// `on-failure` routes that stale layer to recreate while still
-			// warm-resuming normal exit 0 / 130 stops. The longer grace
-			// gives the entrypoint time to flush RocksDB on stop.
+			// escalates stop to SIGKILL (137), recreate on the next boot
+			// instead of resuming suspect RocksDB/checkpoint state.
 			recreate: 'on-failure',
 			stopGraceSeconds: LOCAL_VALIDATOR_STOP_GRACE_SECONDS,
+			stopSignal: 'SIGINT',
 			ports: params.ports,
 			portBindingReconciliation: params.reconciliation,
 			// Indexer (when on): join the indexer DB's network + hand the
@@ -715,7 +706,6 @@ const waitForReady = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.rpc'),
 		);
 
 		// Faucet socket-level liveness — `GET /` returns "OK" as soon as
@@ -737,7 +727,6 @@ const waitForReady = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.probe.faucet'),
 		);
 
 		const graphqlProbe: ReadonlyArray<Effect.Effect<void, SuiPluginError>> =
@@ -760,14 +749,13 @@ const waitForReady = (
 										cause,
 									),
 							),
-							Effect.withSpan('devstack.plugin.sui.local.probe.graphql'),
 						),
 					];
 
 		yield* Effect.all([rpcProbe, faucetProbe, ...graphqlProbe], { concurrency: 'unbounded' }).pipe(
 			Effect.asVoid,
 		);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForReady'));
+	});
 
 // ---------------------------------------------------------------------------
 // Caught-up-to-head gate
@@ -944,9 +932,8 @@ const waitForCheckpointCatchUp = (
 						cause,
 					),
 			),
-			Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp'),
 		);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.local.waitForCheckpointCatchUp.gen'));
+	});
 
 // Chain-id fetch + waitForTransactionsReady builders live in
 // `shared-boot.ts` — see imports at the top of this file.

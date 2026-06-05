@@ -150,9 +150,7 @@ export const layerCodegenPaths: Layer.Layer<CodegenPathsService, never, CodegenR
 			// (the extras tree is OUTSIDE the staging swap of `outputDir`,
 			// so the rebased view must keep naming the real extras dir).
 			const extrasDir = root.extrasDir;
-			const resolveExtras = (
-				outputPath: string,
-			): Effect.Effect<string, CodegenPathConflict> =>
+			const resolveExtras = (outputPath: string): Effect.Effect<string, CodegenPathConflict> =>
 				Effect.gen(function* () {
 					yield* assertRelativeCodegenOutputPath(outputPath);
 					return path.join(extrasDir, outputPath);

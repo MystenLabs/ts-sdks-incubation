@@ -4,7 +4,7 @@
 // away from 9000/9123. Explicit `opts.ports` remains an exact static
 // mapping, including the historical partial-override fallback.
 
-import { Effect, Exit, Stream } from 'effect';
+import { Effect, Exit } from 'effect';
 import { describe, expect, it } from '@effect/vitest';
 
 import type {
@@ -12,6 +12,7 @@ import type {
 	ContainerRuntimeError,
 	EnsureContainerSpec,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import type {
 	AllocateOptions,
 	AllocatedPort,
@@ -79,29 +80,7 @@ const publishPortConflict = (port: number): ContainerRuntimeError => ({
 const unusedRuntime = (
 	ensureContainer: ContainerRuntime['ensureContainer'],
 	inspectByLabels: ContainerRuntime['inspectByLabels'] = () => Effect.succeed([]),
-): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer,
-	inspectByLabels,
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	followLogs: () => Stream.die('followLogs not used'),
-	pause: () => Effect.die('pause not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.die('saveImage not used'),
-	saveImages: () => Stream.die('saveImages not used'),
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	unpause: () => Effect.die('unpause not used'),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-});
+): ContainerRuntime => makeContainerRuntimeStub({ ensureContainer, inspectByLabels });
 
 describe('Sui local port mapping', () => {
 	it.effect('brokered defaults allocate replacements for other-stack collisions', () =>
@@ -303,6 +282,7 @@ describe('Sui local port mapping', () => {
 				expect(specs).toHaveLength(1);
 				expect(specs[0]?.recreate).toBe('on-failure');
 				expect(specs[0]?.stopGraceSeconds).toBe(LOCAL_VALIDATOR_STOP_GRACE_SECONDS);
+				expect(specs[0]?.stopSignal).toBe('SIGINT');
 				// External indexer: join the postgres network + hand the DSN
 				// to the entrypoint.
 				expect(specs[0]?.networkAttach).toEqual([TEST_INDEXER.network]);

@@ -124,7 +124,9 @@ const runReapMetaMissing = <E>(
 			const dir = `${op.catalogDir}/${id}`;
 			const metaMissing = yield* op.isMetaMissing(dir);
 			if (metaMissing) {
-				yield* fs.remove(dir, { recursive: true, force: true }).pipe(Effect.catch(op.onRemoveError));
+				yield* fs
+					.remove(dir, { recursive: true, force: true })
+					.pipe(Effect.catch(op.onRemoveError));
 				reaped.push(id);
 			}
 		}
@@ -175,19 +177,16 @@ const runSwapTree = <E>(
 	// own `E` errors pass straight through). `catchAll` + an explicit
 	// `_tag` guard keeps this fully typed without `catchTag` widening the
 	// failer's parameter when `E` is generic.
-	const swapped: Effect.Effect<unknown, E | StageAndSwapError, FileSystem.FileSystem> = stageAndSwap(
-		{
+	const swapped: Effect.Effect<unknown, E | StageAndSwapError, FileSystem.FileSystem> =
+		stageAndSwap({
 			targetPath: op.targetPath,
 			stagingPath: op.stagingPath,
 			backupPath: op.backupPath,
 			build: op.buildEffect,
-			...(op.preserveFromTarget === undefined
-				? {}
-				: { preserveFromTarget: op.preserveFromTarget }),
+			...(op.preserveFromTarget === undefined ? {} : { preserveFromTarget: op.preserveFromTarget }),
 			...(op.preserveOnPreseed === undefined ? {} : { preserveOnPreseed: op.preserveOnPreseed }),
 			...(op.publishLockPath === undefined ? {} : { publishLockPath: op.publishLockPath }),
-		},
-	);
+		});
 	return swapped.pipe(
 		Effect.catch((error: E | StageAndSwapError) =>
 			error instanceof StageAndSwapError ? op.onSwapError(error) : Effect.fail(error),
@@ -260,4 +259,4 @@ export const executeFsPlan = <E>(
 		}
 
 		return { inspected, reapedIds, imagesSwept } satisfies FsPlanResult;
-	}).pipe(Effect.withSpan('substrate.reconcile.fs-plan'));
+	});

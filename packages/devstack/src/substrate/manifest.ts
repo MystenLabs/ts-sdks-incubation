@@ -6,8 +6,8 @@
 // envelope; codegen output carries the typed per-service slice.
 //
 // L0 owns:
-//   - the envelope (identity tuple, manifestVersion, services slot,
-//     endpoints lookup, opaque extras),
+//   - the envelope (identity tuple, manifestVersion, endpoints lookup,
+//     opaque extras),
 //   - the endpoint-declaration shape (decl emitted by Routable; the
 //     manifest writer at L3 walks them).
 
@@ -63,10 +63,7 @@ export interface ManifestCodegen {
 	readonly extrasDir?: string;
 }
 
-/** Manifest envelope. The `services` slot is open (`unknown`) at
- *  the envelope level; each plugin's Codegenable contribution
- *  emits a typed file the consumer imports for the typed shape.
- */
+/** Manifest envelope. */
 export interface ManifestEnvelope {
 	readonly identity: {
 		readonly app: string;
@@ -74,11 +71,12 @@ export interface ManifestEnvelope {
 		readonly chain: string;
 	};
 	readonly manifestVersion: number;
-	readonly services: Readonly<Record<string, unknown>>;
+	/** Optional per-plugin service slot. The read-side build-integration API
+	 *  surfaces `{}` when absent. */
+	readonly services?: Readonly<Record<string, unknown>>;
 	readonly endpoints: Readonly<Record<string, EndpointEntry>>;
 	readonly extras: Readonly<Record<string, unknown>>;
-	/** Per-stack codegen metadata. Optional — absent in older
-	 *  manifests; the reader falls back to `src/generated/`. */
+	/** Per-stack codegen metadata. When absent, readers use `src/generated/`. */
 	readonly codegen?: ManifestCodegen;
 }
 
@@ -158,7 +156,8 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		chain: Schema.String,
 	}),
 	manifestVersion: Schema.Number,
-	services: Schema.Record(Schema.String, Schema.Unknown),
+	// Optional service map for read-side integrations.
+	services: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
 	endpoints: Schema.Record(
 		Schema.String,
 		Schema.Struct({
@@ -171,9 +170,8 @@ export const ManifestEnvelopeSchema = Schema.Struct({
 		}),
 	),
 	extras: Schema.Record(Schema.String, Schema.Unknown),
-	// Optional + additive — a manifest written before this field
-	// existed still decodes (the key is simply absent). The Vite plugin
-	// reads `codegen.generatedDir` to point its `@generated` alias; on a
+	// Optional codegen metadata. The Vite plugin reads
+	// `codegen.generatedDir` to point its `@generated` alias; on a
 	// miss it falls back to `src/generated/`.
 	codegen: Schema.optional(
 		Schema.Struct({

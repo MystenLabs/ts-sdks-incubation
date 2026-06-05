@@ -20,10 +20,7 @@ import type { EntrypointDecl, RoutableDecl } from '../../contracts/routable.ts';
 // contract so L5 build integrations can consume them without importing
 // this L2 plugin module; re-exported here so plugin-internal callers
 // (and the conventional-routes alias table) keep one source of truth.
-export {
-	WALLET_ENDPOINT_NAME,
-	WALLET_ENDPOINT_KEY,
-} from '../../contracts/wallet-protocol.ts';
+export { WALLET_ENDPOINT_NAME, WALLET_ENDPOINT_KEY } from '../../contracts/wallet-protocol.ts';
 
 import { WALLET_ENDPOINT_NAME } from '../../contracts/wallet-protocol.ts';
 

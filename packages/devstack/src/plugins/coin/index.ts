@@ -30,7 +30,6 @@ import { createHash } from 'node:crypto';
 import { Effect } from 'effect';
 
 import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import type { StrategyContributorDecl } from '../../contracts/strategy-contributor.ts';
@@ -44,13 +43,10 @@ import type { AccountFundingStrategy } from '../../contracts/funding-strategy.ts
 import { makeCoinCodegen, type CoinBindings } from './codegen.ts';
 import { makeCoinSnapshotable } from './snapshot.ts';
 import { CoinRegistryService } from './registry.ts';
-import { COIN_ERROR_TAGS } from './errors.ts';
 import { acquireCoin, type CoinAddressForm, type CoinValue } from './service.ts';
 import { BUILTIN_COINS } from './address-resolution.ts';
 import type { MetadataSdkShim } from './metadata.ts';
 import type { MintSdkShim } from './mint.ts';
-
-const coinErrorContributions = pluginErrorContributions(COIN_ERROR_TAGS);
 
 export const coinFundingCapabilityKey = <FullType extends string>(
 	fullCoinType: FullType,
@@ -302,7 +298,6 @@ export const fromPackage = <const Pkg extends PackageMember, Wit extends string>
 				emitContributions(ctx, coinContributions(symbol, value));
 				return value;
 			}),
-		errorContributions: coinErrorContributions,
 	});
 };
 
@@ -350,7 +345,6 @@ export const known = <FullType extends string>(fullCoinType: FullType) => {
 				emitContributions(ctx, coinContributions(id, value));
 				return value;
 			}),
-		errorContributions: coinErrorContributions,
 	});
 };
 
@@ -386,7 +380,6 @@ export const builtin = <Name extends keyof typeof BUILTIN_COINS>(name: Name) => 
 				emitContributions(ctx, coinContributions(symbol, value));
 				return value;
 			}),
-		errorContributions: coinErrorContributions,
 	});
 };
 
@@ -435,6 +428,4 @@ export type { MintInputs, MintResult, MintSigner, MintSdkShim, CachedMint } from
 export { performMint, MintedCoinVerifyShape, mintTxError, mintParseError } from './mint.ts';
 
 export type { CoinError, CoinPhase } from './errors.ts';
-export { coinError, COIN_ERROR_TAGS } from './errors.ts';
-
-export { CoinSpans } from './spans.ts';
+export { coinError } from './errors.ts';

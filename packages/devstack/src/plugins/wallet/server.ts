@@ -31,10 +31,9 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import { listenScopedHttpServer } from '../../substrate/runtime/scoped-http-server.ts';
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 import { decodeJsonText } from '../../substrate/runtime/runtime-decode.ts';
 import { formatUnknownError } from '../../substrate/runtime/format-unknown-error.ts';
-import { WalletSpans } from './spans.ts';
 import type { AccountValue } from '../account/index.ts';
 import {
 	walletBootError,
@@ -139,7 +138,7 @@ export const startHttpServer = (
 					phase: 'listen',
 					message:
 						`wallet HTTP server listen failed on ${config.bindAddress}:${config.port} — ` +
-						(formatUnknownError(cause)),
+						formatUnknownError(cause),
 					hint:
 						'check that the port broker did not hand out a busy port; ' +
 						'a sibling devstack on the same address would also explain this.',
@@ -149,8 +148,8 @@ export const startHttpServer = (
 
 		yield* Effect.logInfo('wallet HTTP server listening').pipe(
 			Effect.annotateLogs({
-				[SpanAttr.host]: config.bindAddress,
-				[SpanAttr.port]: config.port,
+				[LogAttr.host]: config.bindAddress,
+				[LogAttr.port]: config.port,
 			}),
 		);
 
@@ -239,8 +238,8 @@ const makeRequestListener =
 					onFailure: (cause) =>
 						Effect.logError('wallet dispatcher defect').pipe(
 							Effect.annotateLogs({
-								[WalletSpans.requestMethod]: walletReq.method,
-								[WalletSpans.requestUrl]: walletReq.url,
+								'wallet.request.method': walletReq.method,
+								'wallet.request.url': walletReq.url,
 								cause: Cause.pretty(cause),
 							}),
 							Effect.flatMap(() =>
@@ -371,12 +370,6 @@ export const dispatch = (
 ): Effect.Effect<WalletResponse> =>
 	Effect.gen(function* () {
 		const requestId = randomUUID();
-		yield* Effect.annotateCurrentSpan({
-			[WalletSpans.requestId]: requestId,
-			[WalletSpans.requestMethod]: req.method,
-			[WalletSpans.requestUrl]: req.url,
-		});
-
 		// 1. Path-prefix gate. Runs BEFORE the OPTIONS preflight so an
 		//    allowed origin cannot pull a `204 + CORS` response for an
 		//    arbitrary path — preflight success is scoped to the protocol
@@ -403,9 +396,9 @@ export const dispatch = (
 			// Log the BEARER-VALIDITY only, never the token itself.
 			yield* Effect.logWarning('wallet origin missing').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.requestId]: requestId,
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return text(403, 'Origin header required');
@@ -413,10 +406,10 @@ export const dispatch = (
 		if (originResult === 'forbidden') {
 			yield* Effect.logWarning('wallet origin forbidden').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
-					[WalletSpans.origin]: req.headers.origin ?? '(missing)',
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.requestId]: requestId,
+					'wallet.origin': req.headers.origin ?? '(missing)',
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return text(403, 'forbidden origin');
@@ -427,14 +420,13 @@ export const dispatch = (
 		//    boolean validity.
 		const bearer = parseBearerHeader(req.headers[WALLET_AUTH_HEADER]);
 		const bearerValid = bearer !== null && safeBearerEquals(bearer, config.token);
-		yield* Effect.annotateCurrentSpan({ [WalletSpans.bearerValid]: bearerValid });
 		if (!bearerValid) {
 			yield* Effect.logWarning('wallet bearer check failed').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.requestId]: requestId,
-					[WalletSpans.bearerValid]: bearerValid,
-					[SpanAttr.httpMethod]: req.method,
-					[SpanAttr.httpPath]: path,
+					[LogAttr.requestId]: requestId,
+					'wallet.auth.bearerValid': bearerValid,
+					[LogAttr.httpMethod]: req.method,
+					[LogAttr.httpPath]: path,
 				}),
 			);
 			return errorEnvelope(

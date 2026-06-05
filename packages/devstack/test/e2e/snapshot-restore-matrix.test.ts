@@ -31,15 +31,15 @@
 // vault (a seal-encrypted blob — survives AND still decrypts). A separate test
 // proves codegen output tracks the restored packageId across a restore.
 
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { Effect } from 'effect';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
 import { readStackEngine } from '../../src/api/define-devstack.ts';
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot } from './boot-config-impl.ts';
 import { vaultPackageIdOf } from './snapshot-matrix/clients.ts';
 import { restoreSnapshotOffline } from './snapshot-matrix/offline-restore.ts';
@@ -49,17 +49,6 @@ import { suiProbe } from './snapshot-matrix/probes/sui.ts';
 import { vaultSealProbe } from './snapshot-matrix/probes/vault-seal.ts';
 import { walrusProbe } from './snapshot-matrix/probes/walrus.ts';
 import { buildMatrixStack, STACK_APP, STACK_NAME } from './snapshot-matrix/stack.ts';
-
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
 
 // Force the REAL walrus + seal images. Other e2e tests set these stub
 // overrides; vitest forks should be clean, but delete defensively so a leaked
@@ -88,6 +77,10 @@ const ensureRealImages = (): void => {
 const PACKAGE_ID_RE = /packageId:\s*['"](0x[0-9a-fA-F]+)['"]/;
 const CONFIG_FILE = 'config.ts';
 
+// The codegen test boots under this app (`appName: CODEGEN_APP`); the matrix
+// invariant boots under `STACK_APP`. Both must be swept in `afterAll`.
+const CODEGEN_APP = 'snapshot-matrix-codegen';
+
 const readCodegenPackageId = (outputDir: string): string => {
 	const file = join(outputDir, CONFIG_FILE);
 	const m = PACKAGE_ID_RE.exec(readFileSync(file, 'utf8'));
@@ -107,6 +100,14 @@ const corruptCodegenPackageId = (outputDir: string): void => {
 };
 
 describe('snapshot/restore matrix — real services @e2e', () => {
+	// Sweep the managed build/snapshot images this file's boots minted, scoped
+	// to the two test-owned apps (codegen test + matrix invariant). Label-scoped
+	// so it can only reap images THIS file created, never the user's stacks.
+	afterAll(() => {
+		pruneManagedImagesForApp(CODEGEN_APP);
+		pruneManagedImagesForApp(STACK_APP);
+	});
+
 	// Codegen output is a pure projection of the deployed packageId — NOT
 	// snapshot state. It lives OUTSIDE the runtime stack root (`<runtimeRoot>/
 	// codegen` here; `<appRoot>/src/generated` in production), so a restore does
@@ -128,7 +129,7 @@ describe('snapshot/restore matrix — real services @e2e', () => {
 		}
 		ensureRealImages();
 
-		const ident = 'snapshot-matrix-codegen';
+		const ident = CODEGEN_APP;
 		const runtimeRoot = mkdtempSync(join(tmpdir(), 'snapshot-matrix-codegen-runtime-'));
 		const routerStateRoot = mkdtempSync(join(tmpdir(), 'snapshot-matrix-codegen-router-'));
 		const engine = readStackEngine(buildMatrixStack({ deepbook: false, stackName: ident }));

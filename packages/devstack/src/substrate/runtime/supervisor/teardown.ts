@@ -12,6 +12,7 @@ import type { EngineEvent } from '../../events.ts';
 import type { Identity } from '../../identity.ts';
 import type { LifecycleStatus } from '../../lifecycle.ts';
 import type { SubscribableState } from '../../projection.ts';
+import { acquireKeys } from './acquire-node.ts';
 import { type ContributionDispatcher } from './contribution-dispatcher.ts';
 import type { LoggerShape } from '../observability/index.ts';
 import {
@@ -20,8 +21,6 @@ import {
 	type ResolvedGraph,
 	type RestartTargetMissing,
 } from '../lifecycle/index.ts';
-import { reconcileGraph, type ReconcileGraphDeps } from '../reconcile/graph.ts';
-import { graphKeysScope, reconcileSpec } from '../reconcile/spec.ts';
 import { bestEffort, publish } from './wiring.ts';
 
 // -----------------------------------------------------------------------------
@@ -57,7 +56,7 @@ export const teardownKeys = (
 				{ concurrency: 'unbounded', discard: true },
 			);
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.teardownKeys'));
+	});
 
 export const teardownNode = (
 	registry: PluginRegistry,
@@ -66,6 +65,7 @@ export const teardownNode = (
 	Effect.gen(function* () {
 		const entry = registry.entries.get(key);
 		if (entry === undefined) return;
+		yield* registry.interruptAcquire(key).pipe(Effect.catch(() => Effect.void));
 		const status = yield* registry
 			.getStatus(key)
 			.pipe(Effect.catch(() => Effect.succeed<LifecycleStatus>('pending')));
@@ -85,7 +85,7 @@ export const teardownNode = (
 		if (status === 'ready') {
 			yield* bestEffort(registry.transition(key, 'stopped'));
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.teardownNode'));
+	});
 
 // -----------------------------------------------------------------------------
 // Selective restart
@@ -106,25 +106,12 @@ export const doSelectiveRestart = (
 	Effect.gen(function* () {
 		// `planRestart` computes the downstream-closure slice (and validates
 		// every root is in the graph → `RestartTargetMissing`). The reconcile
-		// of that slice is then a `drain ∘ converge` over the SAME graph-keys
-		// scope, sequenced through `reconcileGraph` (which wraps the
-		// `teardownKeys` / `acquireKeys` primitives; selective-restart does
-		// not call them directly). The `restart.*` settle events + the
-		// `resetForRestart`
-		// reset between drain and converge stay HERE — that choreography is
-		// selective-restart-specific, not part of the generic graph reconcile.
+		// of that slice is then a `drain ∘ converge` over the SAME slice: the
+		// kept `teardownKeys` over reverse-dep order, then `acquireKeys` over
+		// forward-dep order. The `restart.*` settle events + the
+		// `resetForRestart` reset between drain and converge stay HERE — that
+		// choreography is selective-restart-specific.
 		const restartPlan = yield* planRestart(graph, roots);
-		const scope = graphKeysScope(restartPlan.acquireOrder);
-		const deps: ReconcileGraphDeps = {
-			graph,
-			registry,
-			ref,
-			hub,
-			pluginContext,
-			dispatcher,
-			logger,
-			identity,
-		};
 		const at = Date.now();
 		for (const root of roots) {
 			yield* publish(ref, hub, {
@@ -133,14 +120,8 @@ export const doSelectiveRestart = (
 				at,
 			});
 		}
-		yield* reconcileGraph(
-			reconcileSpec({
-				target: 'absent',
-				scope,
-				direction: 'drain',
-			}),
-			deps,
-		);
+		// Drain: tear the slice down in reverse-dep order.
+		yield* teardownKeys(graph, registry, restartPlan.teardownOrder);
 		// Re-acquire the slice in parallel. Each node waits on its own
 		// upstream ready gate, so a downstream node in the slice can't
 		// acquire until its upstream is back to `ready`; unrelated
@@ -154,13 +135,17 @@ export const doSelectiveRestart = (
 		for (const key of restartPlan.acquireOrder) {
 			yield* registry.resetForRestart(key, parentScope).pipe(Effect.catch(() => Effect.void));
 		}
-		yield* reconcileGraph(
-			reconcileSpec({
-				target: 'running',
-				scope,
-				direction: 'converge',
-			}),
-			deps,
+		// Converge: re-acquire the slice in forward-dep order.
+		yield* acquireKeys(
+			registry,
+			restartPlan.acquireOrder,
+			ref,
+			hub,
+			pluginContext,
+			dispatcher,
+			logger,
+			identity,
+			parentScope,
 		);
 		for (const root of roots) {
 			yield* publish(ref, hub, {
@@ -169,4 +154,4 @@ export const doSelectiveRestart = (
 				at: Date.now(),
 			});
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.selectiveRestart'));
+	});

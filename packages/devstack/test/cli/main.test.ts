@@ -7,27 +7,24 @@ import * as NodeFileSystem from '@effect/platform-node/NodeFileSystem';
 import { Effect, Fiber, Stream } from 'effect';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
+import { degradedStatusFromContext, identityInputsFromArgv, runCli } from '../../src/cli/main.ts';
+import { readStackContext } from '../../src/build-integrations/runtime/read-stack-context.ts';
 import {
 	CACHE_DIR_NAME,
 	contributionPath,
 	DEPLOY_CACHE_NAMESPACES,
 	SNAPSHOT_CONTRIBUTION_VERSION,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SnapshotLayout,
 	SNAPSHOT_META_VERSION,
 	writeArtifactIntegrity,
 } from '../../src/orchestrators/snapshot/index.ts';
-import type { SubscribableState } from '../../src/substrate/projection.ts';
 import {
 	commandChannelPaths,
 	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
 	makeCommandChannelSubscriber,
 } from '../../src/substrate/runtime/cross-process/index.ts';
 import { processStartTime } from '../../src/substrate/runtime/cross-process/liveness.ts';
-import {
-	readProjectionSnapshot,
-	writeProjectionSnapshot,
-} from '../../src/substrate/runtime/projection/index.ts';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const tempRoots: Array<string> = [];
@@ -87,21 +84,44 @@ const OFFLINE_RESTORE_SUI_SNAPSHOT_IDENTITY = JSON.stringify({
 	kind: 'sui-chain',
 });
 
-const makeProjectionState = (params: {
-	readonly app: string;
-	readonly stack: string;
-	readonly network: string;
-}): SubscribableState => ({
-	identity: params,
-	cycle: { id: 1, startedAt: 123, phase: 'running' },
-	rows: [],
-	endpoints: [],
-	accounts: [],
-	packages: [],
-	errors: [],
-	lastEvent: { seq: 1, at: 124 },
-	stackBuild: [],
-});
+/** Writes a minimal on-disk manifest at `<stackRoot>/manifest.json` — the
+ *  durable record the offline `status` projects when the stack is down.
+ *  The manifest identity tuple is `{ app, stack, chain }`; the degraded
+ *  status maps `chain` → the projection's `network`. Endpoints are seeded
+ *  so the status output can assert the endpoint slice survives offline. */
+const seedManifest = (
+	stackRoot: string,
+	params: {
+		readonly app: string;
+		readonly stack: string;
+		readonly network: string;
+		readonly endpoints?: Readonly<
+			Record<
+				string,
+				{
+					readonly name: string;
+					readonly url: string;
+					readonly displayUrl: string | null;
+					readonly wireProtocol: 'http' | 'h2c' | 'tcp';
+					readonly pluginKey: string;
+					readonly endpointKey: string;
+				}
+			>
+		>;
+	},
+): void => {
+	mkdirSync(stackRoot, { recursive: true });
+	writeFileSync(
+		join(stackRoot, 'manifest.json'),
+		JSON.stringify({
+			identity: { app: params.app, stack: params.stack, chain: params.network },
+			manifestVersion: 1,
+			endpoints: params.endpoints ?? {},
+			extras: {},
+		}),
+		'utf8',
+	);
+};
 
 const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
 	const snapshotDir = join(stackRoot, 'snapshots', snapshotId);
@@ -117,6 +137,11 @@ const writeSnapshotMetadata = (stackRoot: string, snapshotId: string): void => {
 				app: 'labeled-app',
 				stack: 'alpha',
 				network: 'sui:local',
+				graphInput: {
+					version: SNAPSHOT_GRAPH_INPUT_VERSION,
+					graphInputId: 'graph-fixture',
+					nodes: [],
+				},
 				hostTreeIncluded: false,
 				subtrees: [],
 				containers: [],
@@ -155,6 +180,11 @@ const writeRestorableSnapshotArtifact = async (
 				app: 'labeled-app',
 				stack: 'alpha',
 				network: 'sui:local',
+				graphInput: {
+					version: SNAPSHOT_GRAPH_INPUT_VERSION,
+					graphInputId: 'graph-fixture',
+					nodes: [],
+				},
 				hostTreeIncluded: false,
 				subtrees: [],
 				containers: [],
@@ -412,16 +442,24 @@ describe('cli/main', () => {
 			delete process.env.DEVSTACK_CONFIG;
 			process.env.HOME = homeRoot;
 			process.chdir(appRoot);
-			await Effect.runPromise(
-				writeProjectionSnapshot(
-					stackRoot,
-					makeProjectionState({
-						app: 'local-app',
-						stack: 'main',
-						network: 'sui:local',
-					}),
-				),
-			);
+			// Offline status now projects the on-disk MANIFEST (the projection
+			// twin was deleted). Seed a manifest with one endpoint at the
+			// cwd-local `.devstack/stacks/main` location.
+			seedManifest(stackRoot, {
+				app: 'local-app',
+				stack: 'main',
+				network: 'sui:local',
+				endpoints: {
+					'rpc#0:rpc': {
+						name: 'rpc',
+						url: 'http://127.0.0.1:9000',
+						displayUrl: null,
+						wireProtocol: 'http',
+						pluginKey: 'rpc#0',
+						endpointKey: 'rpc#0:rpc',
+					},
+				},
+			});
 
 			await runCli(['status', '--app', 'local-app', '--stack', 'main', '--json']);
 
@@ -429,14 +467,29 @@ describe('cli/main', () => {
 			expect(process.exitCode).toBe(0);
 			const envelope = JSON.parse(stdout.join('')) as {
 				readonly ok: true;
-				readonly data: { readonly present: boolean; readonly identity: unknown };
+				readonly data: {
+					readonly present: boolean;
+					readonly identity: unknown;
+					readonly rowCount: number;
+					readonly accountCount: number;
+					readonly packageCount: number;
+					readonly endpoints: ReadonlyArray<{ readonly name: string; readonly url: string }>;
+				};
 			};
 			expect(envelope.data.present).toBe(true);
+			// Degraded offline status: identity + endpoints come from the
+			// manifest; the live-only slices (rows/accounts/packages) are empty.
 			expect(envelope.data.identity).toEqual({
 				app: 'local-app',
 				stack: 'main',
 				network: 'sui:local',
 			});
+			expect(envelope.data.rowCount).toBe(0);
+			expect(envelope.data.accountCount).toBe(0);
+			expect(envelope.data.packageCount).toBe(0);
+			expect(envelope.data.endpoints).toEqual([
+				{ endpointKey: 'rpc#0:rpc', name: 'rpc', url: 'http://127.0.0.1:9000' },
+			]);
 			expect(existsSync(join(homeRoot, '.devstack', 'stacks', 'main'))).toBe(false);
 		} finally {
 			process.chdir(previousCwd);
@@ -731,8 +784,13 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 			]);
 
 			expect(process.exitCode).toBe(0);
-			const snapshot = readProjectionSnapshot(join(stateRoot, 'stacks', 'main'));
-			expect(snapshot?.identity).toEqual({
+			// `apply` flushes the manifest during its one-shot boot. The
+			// degraded status builder projects that manifest's identity
+			// (mapping `chain` → `network`).
+			const ctx = readStackContext({
+				manifestPath: join(stateRoot, 'stacks', 'main', 'manifest.json'),
+			});
+			expect(degradedStatusFromContext(ctx).identity).toEqual({
 				app: 'inferred-cli-app',
 				stack: 'main',
 				network: 'localnet',
@@ -749,7 +807,7 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 		}
 	}, 60_000);
 
-	it('status reads persisted projection from the runtime stacks root', async () => {
+	it('status projects the on-disk manifest from the runtime stacks root', async () => {
 		const stateRoot = makeTempRoot('cli-status-state');
 		const stackRoot = join(stateRoot, 'stacks', 'alpha');
 		const previousExitCode = process.exitCode;
@@ -764,16 +822,11 @@ export default defineDevstack({ members: [cliApplyCodegenPlugin], stackName: 'ma
 
 		try {
 			process.exitCode = undefined;
-			await Effect.runPromise(
-				writeProjectionSnapshot(
-					stackRoot,
-					makeProjectionState({
-						app: 'labeled-app',
-						stack: 'alpha',
-						network: 'sui:local',
-					}),
-				),
-			);
+			seedManifest(stackRoot, {
+				app: 'labeled-app',
+				stack: 'alpha',
+				network: 'sui:local',
+			});
 
 			await runCli([
 				'status',

@@ -1,519 +1,519 @@
-"""A managed or impersonated account."""
+"""
+A managed or impersonated account.
+"""
 type Account implements Node {
-  address: String
-  funding: AccountFunding!
-  id: ID!
-  key: String!
-  name: String!
-  rowKey: String
-  scheme: AccountScheme
-  source: AccountSource
-  updatedAt: Float!
-  walletVisible: Boolean!
+	address: String
+	funding: AccountFunding!
+	id: ID!
+	key: String!
+	name: String!
+	rowKey: String
+	scheme: AccountScheme
+	source: AccountSource
+	updatedAt: Float!
+	walletVisible: Boolean!
 }
 
-"""Funding state for an account."""
+"""
+Funding state for an account.
+"""
 type AccountFunding {
-  balanceMist: String
-  entries: [FundingEntry!]!
-  requestedMist: String
-  status: FundingStatus!
+	balanceMist: String
+	entries: [FundingEntry!]!
+	requestedMist: String
+	status: FundingStatus!
 }
 
 enum AccountScheme {
-  ed25519
-  secp256k1
-  secp256r1
+	ed25519
+	secp256k1
+	secp256r1
 }
 
 enum AccountSource {
-  impersonate
-  real
+	impersonate
+	real
 }
 
-"""A stack build progress entry."""
+"""
+A stack build progress entry.
+"""
 type BuildEntry {
-  phase: String!
-  pluginKey: String
-  progress: String!
-  startedAt: Float!
+	phase: String!
+	pluginKey: String
+	progress: String!
+	startedAt: Float!
 }
 
-"""A coin's treasury-cap id (drives Mint) + addressing facts."""
+"""
+A coin's treasury-cap id (drives Mint) + addressing facts.
+"""
 type CoinCap {
-  decimals: Int!
-  fullCoinType: String!
-  narrowingFault: String
-  packageId: String
-  pluginKey: String!
-  source: String!
-  symbol: String
-  treasuryCapId: String
+	decimals: Int!
+	fullCoinType: String!
+	narrowingFault: String
+	packageId: String
+	pluginKey: String!
+	source: String!
+	symbol: String
+	treasuryCapId: String
 }
 
-"""The outcome of dispatching an engine command."""
+"""
+The outcome of dispatching an engine command.
+"""
 type CommandResult {
-  command: String!
-  message: String
-  ok: Boolean!
+	command: String!
+	message: String
+	ok: Boolean!
 }
 
-"""The current boot/restart cycle."""
+"""
+The current boot/restart cycle.
+"""
 type Cycle {
-  id: Int!
-  phase: String!
-  startedAt: Float!
+	id: Int!
+	phase: String!
+	startedAt: Float!
 }
 
-"""A DeepBook deployment: registry/admin/pool ids + market-maker state."""
+"""
+A DeepBook deployment: registry/admin/pool ids + market-maker state.
+"""
 type DeepbookInfo {
-  adminCapId: String
-  chain: String!
-  deepTreasuryId: String
-  indexerUrl: String
-  marketMakerRunning: Boolean!
-  mode: DeepbookMode!
-  name: String!
-  narrowingFault: String
-  packageId: String!
-  pluginKey: String!
-  pools: [DeepbookPool!]!
-  registryId: String!
-  serverUrl: String
+	adminCapId: String
+	chain: String!
+	deepTreasuryId: String
+	indexerUrl: String
+	marketMakerRunning: Boolean!
+	mode: DeepbookMode!
+	name: String!
+	narrowingFault: String
+	packageId: String!
+	pluginKey: String!
+	pools: [DeepbookPool!]!
+	registryId: String!
+	serverUrl: String
 }
 
 enum DeepbookMode {
-  known
-  local
-  override
+	known
+	local
+	override
 }
 
-"""A DeepBook pool object id + coin types (prices are chain-direct)."""
+"""
+A DeepBook pool object id + coin types (prices are chain-direct).
+"""
 type DeepbookPool {
-  baseCoinType: String!
-  name: String!
-  poolId: String!
-  quoteCoinType: String!
+	baseCoinType: String!
+	name: String!
+	poolId: String!
+	quoteCoinType: String!
 }
 
-"""A routed endpoint contributed by a plugin."""
+"""
+A routed endpoint contributed by a plugin.
+"""
 type Endpoint implements Node {
-  displayUrl: String
-  endpointKey: String!
-  id: ID!
-  name: String!
-  pluginKey: String!
-  registeredAt: Float!
-  url: String!
-  wireProtocol: WireProtocol!
+	displayUrl: String
+	endpointKey: String!
+	id: ID!
+	name: String!
+	pluginKey: String!
+	registeredAt: Float!
+	url: String!
+	wireProtocol: WireProtocol!
 }
 
 enum ErrorSeverity {
-  error
-  fatal
-  warn
+	error
+	fatal
+	warn
 }
 
 """
 The outcome of a faucet fund request (real result — ok reflects whether the in-process funding strategy completed).
 """
 type FundResult {
-  detail: String!
-  ok: Boolean!
+	detail: String!
+	ok: Boolean!
 }
 
 """
 A coin the dashboard faucet can fund right now. SUI is fixed-amount; WAL/DEEP honor an amount and require the recipient to be a resolved account.
 """
 type FundableCoin {
-  coinType: String!
-  honorsAmount: Boolean!
-  requiresAccountSigner: Boolean!
-  symbol: String!
+	coinType: String!
+	honorsAmount: Boolean!
+	requiresAccountSigner: Boolean!
+	symbol: String!
 }
 
-"""One coin-type funding outcome for an account."""
+"""
+One coin-type funding outcome for an account.
+"""
 type FundingEntry {
-  amount: String!
-  coin: String!
-  fullCoinType: String!
-  status: String!
+	amount: String!
+	coin: String!
+	fullCoinType: String!
+	status: String!
 }
 
 enum FundingStatus {
-  failed
-  funded
-  pending
-  skipped
-  unknown
+	failed
+	funded
+	pending
+	skipped
+	unknown
 }
 
 enum Health {
-  active
-  blocked
-  empty
-  ready
+	active
+	blocked
+	empty
+	ready
 }
 
-"""Derived stack health counts."""
+"""
+Derived stack health counts.
+"""
 type HealthSummary {
-  active: Int!
-  failed: Int!
-  health: Health!
-  ready: Int!
-  total: Int!
-  waiting: Int!
+	active: Int!
+	failed: Int!
+	health: Health!
+	ready: Int!
+	total: Int!
+	waiting: Int!
 }
 
-"""Stack identity triple (app/stack/network)."""
+"""
+Stack identity triple (app/stack/network).
+"""
 type Identity {
-  app: String!
-  network: String!
-  stack: String!
+	app: String!
+	network: String!
+	stack: String!
 }
 
-"""The most recent event seq/timestamp the engine emitted."""
+"""
+The most recent event seq/timestamp the engine emitted.
+"""
 type LastEvent {
-  at: Float!
-  seq: Int!
+	at: Float!
+	seq: Int!
 }
 
 enum LifecycleStatus {
-  acquiring
-  done
-  failed
-  pending
-  ready
-  stopped
-  stopping
+	acquiring
+	done
+	failed
+	pending
+	ready
+	stopped
+	stopping
 }
 
 input LogFilter {
-  levels: [String!]
-  limit: Int
-  search: String
-  services: [String!]
-  sinceMillis: Float
+	levels: [String!]
+	limit: Int
+	search: String
+	services: [String!]
+	sinceMillis: Float
 }
 
 enum LogLevel {
-  error
-  info
-  warn
+	error
+	info
+	warn
 }
 
 """
 One cross-service log record (queryable Console "Logs" tab). Fed off the same logger path as the per-row projection tail.
 """
 type LogRecord {
-  fieldsJson: String!
-  level: String!
-  message: String!
-  seq: Float!
-  service: String!
-  timestampMillis: Float!
+	fieldsJson: String!
+	level: String!
+	message: String!
+	seq: Float!
+	service: String!
+	timestampMillis: Float!
 }
 
-"""The tail of a plugin log stream."""
+"""
+The tail of a plugin log stream.
+"""
 type LogTail {
-  level: LogLevel!
-  lines: [String!]!
-  truncated: Boolean!
+	level: LogLevel!
+	lines: [String!]!
+	truncated: Boolean!
 }
 
 """
 The outcome of a coin mint (real result, with the on-chain tx digest on success).
 """
 type MintResult {
-  detail: String!
-  digest: String
-  ok: Boolean!
+	detail: String!
+	digest: String
+	ok: Boolean!
 }
 
 type Mutation {
-  advanceClock(input: MutationAdvanceClockInput!): CommandResult!
-  apply(input: MutationApplyInput!): CommandResult!
-  captureSnapshot(input: MutationCaptureSnapshotInput!): CommandResult!
-  codegen: CommandResult!
-  deleteSnapshot(input: MutationDeleteSnapshotInput!): SnapshotActionResult!
-  fund(input: MutationFundInput!): FundResult!
-  mint(input: MutationMintInput!): MintResult!
-  prune: CommandResult!
-  restart: CommandResult!
-  restartPlugin(input: MutationRestartPluginInput!): CommandResult!
-  restoreSnapshot(input: MutationRestoreSnapshotInput!): SnapshotActionResult!
-  shutdown: CommandResult!
-  wipe: CommandResult!
+	advanceClock(input: MutationAdvanceClockInput!): CommandResult!
+	apply(input: MutationApplyInput!): CommandResult!
+	captureSnapshot(input: MutationCaptureSnapshotInput!): CommandResult!
+	codegen: CommandResult!
+	deleteSnapshot(input: MutationDeleteSnapshotInput!): SnapshotActionResult!
+	fund(input: MutationFundInput!): FundResult!
+	mint(input: MutationMintInput!): MintResult!
+	prune: CommandResult!
+	restart: CommandResult!
+	restartPlugin(input: MutationRestartPluginInput!): CommandResult!
+	restoreSnapshot(input: MutationRestoreSnapshotInput!): SnapshotActionResult!
+	shutdown: CommandResult!
+	wipe: CommandResult!
 }
 
 input MutationAdvanceClockInput {
-  toMillis: Float!
+	toMillis: Float!
 }
 
 input MutationApplyInput {
-  pluginKey: String
+	pluginKey: String
 }
 
 input MutationCaptureSnapshotInput {
-  name: String
+	name: String
 }
 
 input MutationDeleteSnapshotInput {
-  id: String!
+	id: String!
 }
 
 input MutationFundInput {
-  amountBaseUnits: String
-  coinType: String
-  recipient: String!
+	amountBaseUnits: String
+	coinType: String
+	recipient: String!
 }
 
 input MutationMintInput {
-  amountBaseUnits: String!
-  coinType: String!
-  recipient: String!
+	amountBaseUnits: String!
+	coinType: String!
+	recipient: String!
 }
 
 input MutationRestartPluginInput {
-  pluginKey: String!
+	pluginKey: String!
 }
 
 input MutationRestoreSnapshotInput {
-  id: String!
+	id: String!
 }
 
 interface Node {
-  id: ID!
+	id: ID!
 }
 
-"""A local or known on-chain package."""
+"""
+A local or known on-chain package.
+"""
 type Package implements Node {
-  id: ID!
-  key: String!
-  kind: PackageKind!
-  mvrPlaceholder: String!
-  name: String!
-  packageId: String!
-  rowKey: String
-  sourcePath: String
-  updatedAt: Float!
-  upgradeCapId: String
+	id: ID!
+	key: String!
+	kind: PackageKind!
+	mvrPlaceholder: String!
+	name: String!
+	packageId: String!
+	rowKey: String
+	sourcePath: String
+	updatedAt: Float!
+	upgradeCapId: String
 }
 
 enum PackageKind {
-  known
-  local
+	known
+	local
 }
 
 type PageInfo {
-  endCursor: String
-  hasNextPage: Boolean!
-  hasPreviousPage: Boolean!
-  startCursor: String
+	endCursor: String
+	hasNextPage: Boolean!
+	hasPreviousPage: Boolean!
+	startCursor: String
 }
 
 enum PluginRole {
-  service
-  task
-}
-
-"""
-Postgres wire-protocol stats (db size, connections, per-table). Gathered by exec; the browser cannot speak the PG protocol.
-"""
-type PostgresStats {
-  available: Boolean!
-  connectionCount: Int!
-  database: String!
-  databaseBytes: Float!
-  detail: String
-  plainUrl: String!
-  pluginKey: String!
-  tables: [PostgresTable!]!
-}
-
-"""Per-table row estimate + total size (bytes)."""
-type PostgresTable {
-  name: String!
-  rowEstimate: Float!
-  schema: String!
-  totalBytes: Float!
+	service
+	task
 }
 
 type Query {
-  accounts(after: String, before: String, first: Int, last: Int): QueryAccountsConnection!
-  coinCaps: [CoinCap!]!
-  deepbookInfo: [DeepbookInfo!]!
-  fundableCoins: [FundableCoin!]!
-  logServices: [String!]!
-  logs(filter: LogFilter): [LogRecord!]!
-  mode: StackMode
-  node(id: ID!): Node
-  nodes(ids: [ID!]!): [Node]!
-  packages(after: String, before: String, first: Int, last: Int): QueryPackagesConnection!
-  ping: String!
-  postgresStats: [PostgresStats!]!
-  sealInfo: [SealInfo!]!
-  services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
-  snapshots: [SnapshotEntry!]!
-  spanServices: [String!]!
-  spans(filter: SpanFilter): [SpanRecord!]!
-  state: StackState!
+	accounts(after: String, before: String, first: Int, last: Int): QueryAccountsConnection!
+	coinCaps: [CoinCap!]!
+	deepbookInfo: [DeepbookInfo!]!
+	fundableCoins: [FundableCoin!]!
+	logServices: [String!]!
+	logs(filter: LogFilter): [LogRecord!]!
+	mode: StackMode
+	node(id: ID!): Node
+	nodes(ids: [ID!]!): [Node]!
+	packages(after: String, before: String, first: Int, last: Int): QueryPackagesConnection!
+	ping: String!
+	sealInfo: [SealInfo!]!
+	services(after: String, before: String, first: Int, last: Int): QueryServicesConnection!
+	snapshots: [SnapshotEntry!]!
+	state: StackState!
 }
 
 type QueryAccountsConnection {
-  edges: [QueryAccountsConnectionEdge!]!
-  pageInfo: PageInfo!
+	edges: [QueryAccountsConnectionEdge!]!
+	pageInfo: PageInfo!
 }
 
 type QueryAccountsConnectionEdge {
-  cursor: String!
-  node: Account!
+	cursor: String!
+	node: Account!
 }
 
 type QueryPackagesConnection {
-  edges: [QueryPackagesConnectionEdge!]!
-  pageInfo: PageInfo!
+	edges: [QueryPackagesConnectionEdge!]!
+	pageInfo: PageInfo!
 }
 
 type QueryPackagesConnectionEdge {
-  cursor: String!
-  node: Package!
+	cursor: String!
+	node: Package!
 }
 
 type QueryServicesConnection {
-  edges: [QueryServicesConnectionEdge!]!
-  pageInfo: PageInfo!
+	edges: [QueryServicesConnectionEdge!]!
+	pageInfo: PageInfo!
 }
 
 type QueryServicesConnectionEdge {
-  cursor: String!
-  node: Service!
+	cursor: String!
+	node: Service!
 }
 
 enum RowSection {
-  account
-  action
-  app
-  other
-  package
-  service
+	account
+	action
+	app
+	other
+	package
+	service
 }
 
-"""A Seal key-server deployment (objectId/threshold/mode/keyServers)."""
+"""
+A Seal key-server deployment (objectId/threshold/mode/keyServers).
+"""
 type SealInfo {
-  keyServerUrl: String!
-  keyServers: [SealKeyServer!]!
-  mode: String!
-  narrowingFault: String
-  objectId: String!
-  pluginKey: String!
-  threshold: Int!
+	keyServerUrl: String!
+	keyServers: [SealKeyServer!]!
+	mode: String!
+	narrowingFault: String
+	objectId: String!
+	pluginKey: String!
+	threshold: Int!
 }
 
-"""One Seal key-server config (objectId + weight)."""
+"""
+One Seal key-server config (objectId + weight).
+"""
 type SealKeyServer {
-  objectId: String!
-  weight: Int!
+	objectId: String!
+	weight: Int!
 }
 
-"""A visible plugin instance (one projection row)."""
+"""
+A visible plugin instance (one projection row).
+"""
 type Service implements Node {
-  endpointSection: RowSection!
+	endpointSection: RowSection!
 
-  """The row's endpoints, joined from the snapshot by key + pluginKey."""
-  endpoints: [Endpoint!]!
-  id: ID!
-  key: String!
-  lastError: StackError
-  logTail: LogTail!
-  phase: String
-  role: PluginRole!
-  section: RowSection!
-  selectiveRestartHighlight: Boolean!
-  status: LifecycleStatus!
+	"""
+	The row's endpoints, joined from the snapshot by key + pluginKey.
+	"""
+	endpoints: [Endpoint!]!
+	id: ID!
+	key: String!
+	lastError: StackError
+	logTail: LogTail!
+	phase: String
+	role: PluginRole!
+	section: RowSection!
+	selectiveRestartHighlight: Boolean!
+	status: LifecycleStatus!
 }
 
 """
 The outcome of a snapshot restore/delete (real result, not fire-and-forget).
 """
 type SnapshotActionResult {
-  detail: String
-  ok: Boolean!
+	detail: String
+	ok: Boolean!
 }
 
-"""A snapshot catalog entry (orchestrator `list`)."""
+"""
+A snapshot catalog entry (orchestrator `list`).
+"""
 type SnapshotEntry {
-  app: String
-  containerCount: Int!
-  corrupt: Boolean!
-  createdAt: Float
-  id: String!
-  label: String
-  network: String
-  participants: [String!]!
-  stack: String
-  subtreeCount: Int!
-}
-
-input SpanFilter {
-  limit: Int
-  search: String
-  services: [String!]
-  sinceMillis: Float
-  statuses: [String!]
+	app: String
+	containerCount: Int!
+	corrupt: Boolean!
+	createdAt: Float
+	currentGraphInputId: String
+	graphInputStatus: String!
+	graphInputWarning: String
+	id: String!
+	label: String
+	network: String
+	participants: [String!]!
+	snapshotGraphInputId: String
+	stack: String
+	subtreeCount: Int!
 }
 
 """
-One completed span (queryable Console "Traces" tab). Recorded by the supervisor's recording Tracer.
+A structured error reported by a plugin or the engine.
 """
-type SpanRecord {
-  attributesJson: String!
-  durationMillis: Float!
-  name: String!
-  parentId: String
-  service: String
-  spanId: String!
-  startMillis: Float!
-  status: String!
-  traceId: String!
-}
-
-"""A structured error reported by a plugin or the engine."""
 type StackError {
-  at: Float!
-  chain: [String!]!
-  pluginKey: String
-  severity: ErrorSeverity!
-  summary: String!
-  tag: String!
+	at: Float!
+	chain: [String!]!
+	pluginKey: String
+	severity: ErrorSeverity!
+	summary: String!
+	tag: String!
 }
 
 enum StackMode {
-  fork
-  live
-  local
+	fork
+	live
+	local
 }
 
-"""A full live projection snapshot."""
+"""
+A full live projection snapshot.
+"""
 type StackState {
-  accounts: [Account!]!
-  cycle: Cycle!
-  endpoints: [Endpoint!]!
-  errors: [StackError!]!
-  identity: Identity!
-  lastEvent: LastEvent
-  packages: [Package!]!
-  services: [Service!]!
-  stackBuild: [BuildEntry!]!
-  summary: HealthSummary!
+	accounts: [Account!]!
+	cycle: Cycle!
+	endpoints: [Endpoint!]!
+	errors: [StackError!]!
+	identity: Identity!
+	lastEvent: LastEvent
+	packages: [Package!]!
+	services: [Service!]!
+	stackBuild: [BuildEntry!]!
+	summary: HealthSummary!
 }
 
 type Subscription {
-  state: StackState!
+	state: StackState!
 }
 
 enum WireProtocol {
-  h2c
-  http
-  tcp
+	h2c
+	http
+	tcp
 }

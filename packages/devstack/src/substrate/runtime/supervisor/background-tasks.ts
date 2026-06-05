@@ -102,7 +102,7 @@ export const runInjectedCommandHandlerExit = (
 			message: `command handler failed for ${cmd.tag}`,
 		});
 		return { ok: false, cause: exit.cause } as const;
-	}).pipe(Effect.withSpan('lifecycle.supervisor.injectedCommandHandler'));
+	});
 
 /**
  * Fire-and-forget wrapper over {@link runInjectedCommandHandlerExit}:
@@ -147,7 +147,9 @@ const forkIntoSlot = (
 			const selfId = yield* Effect.fiberId;
 			yield* body.pipe(
 				Effect.ensuring(
-					Ref.update(slot, (current) => (current !== null && current.id === selfId ? null : current)),
+					Ref.update(slot, (current) =>
+						current !== null && current.id === selfId ? null : current,
+					),
 				),
 			);
 		});
@@ -200,14 +202,11 @@ export const startBackgroundStackRestart = (
 				message: 'stack restart skipped because one is already running',
 			});
 		}
-	}).pipe(Effect.withSpan('lifecycle.supervisor.backgroundStackRestart'));
+	});
 
 export const requestBackgroundStackRestartInterrupt = (
 	deps: Pick<SupervisorState, 'stackRestartTask'>,
-): Effect.Effect<void, never, never> =>
-	interruptSlot(deps.stackRestartTask).pipe(
-		Effect.withSpan('lifecycle.supervisor.interruptStackRestart'),
-	);
+): Effect.Effect<void, never, never> => interruptSlot(deps.stackRestartTask);
 
 // -----------------------------------------------------------------------------
 // Post-acquire hook
@@ -274,4 +273,4 @@ export const runPostAcquireHook = (
 			taskFailure?.pluginKey ?? null,
 		);
 		return yield* Effect.fail(new SupervisorPostAcquireFailed({ cause: exit.cause }));
-	}).pipe(Effect.withSpan('lifecycle.supervisor.postAcquireHook'));
+	});

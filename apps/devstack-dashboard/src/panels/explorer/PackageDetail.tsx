@@ -90,7 +90,9 @@ export const PackageDetail = ({ chain, projection, id }: PackageDetailProps) => 
 					style={{
 						height: 19,
 						fontSize: 10.5,
-						color: f.isEntry ? 'var(--c-yellow)' : `var(--${VISIBILITY_TOKEN[f.visibility] ?? 'tx-mid'})`,
+						color: f.isEntry
+							? 'var(--c-yellow)'
+							: `var(--${VISIBILITY_TOKEN[f.visibility] ?? 'tx-mid'})`,
 					}}
 				>
 					{f.isEntry ? 'entry' : f.visibility}
@@ -140,12 +142,17 @@ export const PackageDetail = ({ chain, projection, id }: PackageDetailProps) => 
 					</div>
 					<div className="col" style={{ gap: 3 }}>
 						<span style={{ fontSize: 11, color: 'var(--tx-lo)' }}>Modules</span>
-						<span className="mono tnum" style={{ fontSize: 13 }}>{modules.length}</span>
+						<span className="mono tnum" style={{ fontSize: 13 }}>
+							{modules.length}
+						</span>
 					</div>
 					{mine?.upgradeCapId && (
 						<div className="col" style={{ gap: 3 }}>
 							<span style={{ fontSize: 11, color: 'var(--tx-lo)' }}>Upgrade cap</span>
-							<CopyChip text={mine.upgradeCapId} display={truncateMiddle(mine.upgradeCapId, 5, 3)} />
+							<CopyChip
+								text={mine.upgradeCapId}
+								display={truncateMiddle(mine.upgradeCapId, 5, 3)}
+							/>
 						</div>
 					)}
 					{mine?.sourcePath && (

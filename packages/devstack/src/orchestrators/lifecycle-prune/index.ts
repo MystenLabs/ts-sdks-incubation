@@ -44,8 +44,8 @@ import {
 	type StaleNetworkEndpoint,
 } from '../../runtime/docker/index.ts';
 import {
+	layerLivenessProbeScope,
 	LivenessProbeScope,
-	makeReaper,
 	readRoster,
 } from '../../substrate/runtime/cross-process/index.ts';
 import { PER_APP_SHARED_STACK } from '../../substrate/runtime/managed-container.ts';
@@ -248,7 +248,7 @@ const routerStackForContainer = (
  *  decision to key per-stack-disk-state on `stack` alone. (Two stacks
  *  in DIFFERENT apps that pick the SAME stack name would already share
  *  every other on-disk artifact — `state.json`, `cache/`, `snapshots/`,
- *  `stack.lock`, `container-claims.json`. The Docker-level discriminator
+ *  `stack.lock`. The Docker-level discriminator
  *  is the container/network/volume NAME, which IS `<app>-<stack>-…`
  *  composed inside each plugin; so cross-attribution at the daemon
  *  level is prevented by name uniqueness even when disk state collides.)
@@ -259,14 +259,11 @@ const routerStackForContainer = (
  *  itself). Promoting `app` into the stack-state path is an
  *  architectural change that must update all of those call sites in
  *  lockstep — out of scope for this orchestrator. */
-// The cross-stack lifecycle-prune sweep and the docker boot-time orphan
-// sweep are the two "reapers" that consult per-stack liveness. They both
-// run each pass under a FRESH `LivenessProbeScope`; that wiring lives in
-// the shared `makeReaper` combinator (`liveness.ts`) so the
-// `LivenessProbeScope` + `checkHolderLiveness` plumbing has ONE home. The
-// orchestration here is unchanged — same `(app, stack)` grouping, same
-// L4-user-command trigger, same per-stack roster probe.
-const reaper = makeReaper('orchestrator.lifecycle-prune');
+// The cross-stack lifecycle-prune sweep consults per-stack liveness. Each
+// pass runs under a FRESH `LivenessProbeScope` (provided inline below) so
+// a recycled-PID corner case forks the OS liveness probe at most once per
+// pid per pass. Same `(app, stack)` grouping, same L4-user-command
+// trigger, same per-stack roster probe.
 
 const livePidsForStack = (
 	runtimeRoot: string,
@@ -274,35 +271,32 @@ const livePidsForStack = (
 ): Effect.Effect<ReadonlyArray<number>> => {
 	const rosterFile = joinPath(runtimeRoot, 'stacks', stack, 'roster.json');
 	if (!existsSync(rosterFile)) return Effect.succeed([]);
-	// Run under a fresh `LivenessProbeScope` (via the shared reaper) so a
-	// recycled-PID corner case (multiple holders sharing one pid in the
-	// same roster) forks the OS liveness probe once per pid across this
-	// scan.
-	return reaper.withLivenessSweepScope(
-		Effect.gen(function* () {
-			const doc = yield* readRoster(rosterFile).pipe(
-				logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
-					rosterFile,
-				}),
-			);
-			if (doc === null) return [];
-			const probe = yield* LivenessProbeScope;
-			const pids: Array<number> = [];
-			for (const holder of doc.holders) {
-				const live = yield* probe
-					.probeHolderLiveness(holder)
-					.pipe(
-						logDebugAndFallback(
-							'alive' as const,
-							'lifecycle-prune: liveness check failed; assuming alive',
-							{ pid: holder.pid },
-						),
-					);
-				if (live === 'alive') pids.push(holder.pid);
-			}
-			return pids;
-		}),
-	);
+	// Run under a fresh `LivenessProbeScope` so a recycled-PID corner case
+	// (multiple holders sharing one pid in the same roster) forks the OS
+	// liveness probe once per pid across this scan.
+	return Effect.gen(function* () {
+		const doc = yield* readRoster(rosterFile).pipe(
+			logDebugAndFallback(null, 'lifecycle-prune: roster read failed; treating as empty', {
+				rosterFile,
+			}),
+		);
+		if (doc === null) return [];
+		const probe = yield* LivenessProbeScope;
+		const pids: Array<number> = [];
+		for (const holder of doc.holders) {
+			const live = yield* probe
+				.probeHolderLiveness(holder)
+				.pipe(
+					logDebugAndFallback(
+						'alive' as const,
+						'lifecycle-prune: liveness check failed; assuming alive',
+						{ pid: holder.pid },
+					),
+				);
+			if (live === 'alive') pids.push(holder.pid);
+		}
+		return pids;
+	}).pipe(Effect.provide(layerLivenessProbeScope));
 };
 
 /** True when the group is one of the two shared shapes the
@@ -449,7 +443,7 @@ export const collectLifecyclePruneInventory = (
 		});
 
 		return { groups };
-	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.inventory'));
+	});
 
 const selectedGroups = (
 	inventory: LifecyclePruneInventory,
@@ -652,10 +646,7 @@ export const runLifecyclePrune = (
 						routerStack: group.stack,
 					});
 				}
-			}).pipe(
-				Effect.provide(NodeFileSystem.layer),
-				Effect.withSpan('orchestrator.lifecycle-prune.removeRouterProfileState'),
-			);
+			}).pipe(Effect.provide(NodeFileSystem.layer));
 		}
 
 		return {
@@ -672,4 +663,4 @@ export const runLifecyclePrune = (
 			foreignNetworkHolders,
 			staleNetworkEndpoints,
 		};
-	}).pipe(Effect.withSpan('orchestrator.lifecycle-prune.run'));
+	});

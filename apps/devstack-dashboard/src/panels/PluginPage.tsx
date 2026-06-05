@@ -16,7 +16,6 @@ import { DeepBookView } from './plugins/DeepBook.tsx';
 import { WalrusView } from './plugins/Walrus.tsx';
 import { SealView } from './plugins/Seal.tsx';
 import { CoinsView } from './plugins/Coins.tsx';
-import { PostgresView } from './plugins/Postgres.tsx';
 
 /**
  * Props every per-plugin view receives. It is `PanelProps` (projection, chain
@@ -36,7 +35,6 @@ export const PLUGIN_VIEWS: Record<string, ComponentType<PluginViewProps>> = {
 	walrus: WalrusView,
 	seal: SealView,
 	coins: CoinsView,
-	postgres: PostgresView,
 };
 
 const META = new Map(PLUGINS.map((p) => [p.key, p]));

@@ -33,7 +33,6 @@ import {
 import { deepbookPluginError, type DeepbookPluginError } from './errors.ts';
 import type { DeepbookPhase } from './errors.ts';
 import { stableContentHash } from './hash.ts';
-import { DeepbookSpans } from './spans.ts';
 import { isPoolForPair } from './type-strings.ts';
 import type { DeepbookPool, DeepbookPoolSeedLiquidity } from './types.ts';
 
@@ -433,14 +432,7 @@ export const createDeepbookPools = (
 		return fromCachedPools({
 			pools: resolvedPools.filter((pool): pool is CachedDeepbookPool => pool !== undefined),
 		});
-	}).pipe(
-		Effect.withSpan('devstack.plugin.deepbook.createPools', {
-			attributes: {
-				[DeepbookSpans.packageId]: pkg.packageId,
-				[DeepbookSpans.poolCount]: pools.length,
-			},
-		}),
-	);
+	});
 
 // ---------------------------------------------------------------------------
 // Seed local liquidity
@@ -803,11 +795,4 @@ export const seedDeepbookPools = (
 			seeded.push(result);
 		}
 		return seeded;
-	}).pipe(
-		Effect.withSpan('devstack.plugin.deepbook.seedPools', {
-			attributes: {
-				[DeepbookSpans.packageId]: pkg.packageId,
-				[DeepbookSpans.poolCount]: specs.filter((spec) => spec.seed !== undefined).length,
-			},
-		}),
-	);
+	});

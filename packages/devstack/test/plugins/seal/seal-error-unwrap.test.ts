@@ -28,7 +28,7 @@
 // layers) and the assertion `result === innerSealError` would fail.
 
 import { describe, expect, it } from 'vitest';
-import { Effect, Exit, Option, Stream } from 'effect';
+import { Effect, Exit, Option } from 'effect';
 
 import type {
 	ContainerHandle,
@@ -36,6 +36,7 @@ import type {
 	ContainerRuntimeError,
 	ExecResult,
 } from '../../../src/contracts/container-runtime.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { isSealError, sealError, type SealError } from '../../../src/plugins/seal/errors.ts';
 import {
 	buildKeyServerSpec,
@@ -114,30 +115,12 @@ const FAKE_HANDLE: ContainerHandle = {
  *  the `exec` channel is typed `ContainerRuntimeError`, so we widen the
  *  injected value through `unknown` (case (a) deliberately feeds a
  *  SealError-shaped value down the `exec` channel). */
-const runtimeWithFailingProbe = (probeFailure: unknown): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.succeed(FAKE_HANDLE),
-	exec: (): Effect.Effect<ExecResult, ContainerRuntimeError> =>
-		Effect.fail(probeFailure as ContainerRuntimeError),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: () => Effect.die('loadImage not used'),
-	tagImage: () => Effect.die('tagImage not used'),
-	removeImage: () => Effect.die('removeImage not used'),
-	unpause: () => Effect.die('unpause not used'),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: () => Effect.die('removeManagedContainers not used'),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+const runtimeWithFailingProbe = (probeFailure: unknown): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		ensureContainer: () => Effect.succeed(FAKE_HANDLE),
+		exec: (): Effect.Effect<ExecResult, ContainerRuntimeError> =>
+			Effect.fail(probeFailure as ContainerRuntimeError),
+	});
 
 /** A plain `ContainerRuntimeError` probe failure (NOT a SealError). */
 const probeRuntimeError: ContainerRuntimeError = {

@@ -111,8 +111,8 @@ export function DeepbookPanel({ connected }: { connected: boolean }) {
 				</dl>
 
 				<p className="text-xs text-neutral-500">
-					Places a {DEMO_ORDER.quantity} {poolInfo.base} bid at {DEMO_ORDER.price}{' '}
-					{poolInfo.quote} (rests below market — proves the order reaches the pool).
+					Places a {DEMO_ORDER.quantity} {poolInfo.base} bid at {DEMO_ORDER.price} {poolInfo.quote}{' '}
+					(rests below market — proves the order reaches the pool).
 				</p>
 
 				<PanelButton testid="deepbook-place-order" disabled={disabled} onClick={onPlaceOrder}>

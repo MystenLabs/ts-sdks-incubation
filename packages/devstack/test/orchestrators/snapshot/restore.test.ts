@@ -21,6 +21,7 @@ import {
 	RestorePhaseError,
 	runRestore,
 	SNAPSHOT_CONTRIBUTION_VERSION,
+	SNAPSHOT_GRAPH_INPUT_VERSION,
 	SNAPSHOT_META_VERSION,
 	SnapshotLayout,
 	containerImagesBundlePath,
@@ -40,6 +41,7 @@ import {
 	type CommandRecord,
 	type EventRecord,
 } from '../../../src/substrate/runtime/cross-process/command-channel/index.ts';
+import { makeContainerRuntimeStub } from '../../helpers/container-runtime-stub.ts';
 import { withTempRoot } from '../../helpers/with-temp-root.ts';
 import { dockerSaveBundleTarWithLateMetadata, writeImageBundle } from './image-bundle-fixtures.ts';
 
@@ -68,6 +70,11 @@ const metadata = (overrides: Partial<SnapshotMetadata> = {}): SnapshotMetadata =
 	app: runtimeIdentity.app,
 	stack: runtimeIdentity.stack,
 	network: runtimeIdentity.network,
+	graphInput: {
+		version: SNAPSHOT_GRAPH_INPUT_VERSION,
+		graphInputId: 'graph-fixture',
+		nodes: [],
+	},
 	hostTreeIncluded: false,
 	subtrees: [],
 	containers: [],
@@ -110,7 +117,9 @@ const tarWithSingleEntry = (entryPath: string): Buffer => {
  *  preflight. NOT valid enough for system `tar -x` (which DOES check the
  *  checksum) — extraction tests build a real archive via spawn('tar'). Each
  *  entry is either a zero-size path or `{ path, body }` for a regular file. */
-const tarWithEntries = (entries: ReadonlyArray<string | { path: string; body: string }>): Buffer => {
+const tarWithEntries = (
+	entries: ReadonlyArray<string | { path: string; body: string }>,
+): Buffer => {
 	const blocks: Buffer[] = [];
 	for (const entry of entries) {
 		const path = typeof entry === 'string' ? entry : entry.path;
@@ -147,77 +156,79 @@ const runtimeStub = (
 		readonly tagError?: ContainerRuntimeError;
 		readonly tagErrorFor?: (newTag: string) => ContainerRuntimeError | undefined;
 		readonly removeImageCalls?: Array<ImageRef>;
+		readonly removeImageErrorFor?: (ref: ImageRef) => ContainerRuntimeError | undefined;
 		readonly events?: Array<string>;
+		/** Drive the promote-GC: resolves a name to the digest it points at.
+		 *  Each successive call for the same name reads the next element of the
+		 *  queued list (old digest BEFORE promote, new digest AFTER). A name
+		 *  absent from the map resolves to `null` (default — no orphan to GC), so
+		 *  existing tests are unaffected. */
+		readonly inspectDigestsFor?: Map<string, Array<string | null>>;
 	} = {},
-): ContainerRuntime => ({
-	ensureImage: () => Effect.die('ensureImage not used'),
-	ensureNetwork: () => Effect.die('ensureNetwork not used'),
-	ensureContainer: () => Effect.die('ensureContainer not used'),
-	exec: () => Effect.die('exec not used'),
-	runOneShot: () => Effect.die('runOneShot not used'),
-	inspectByLabels: () => Effect.die('inspectByLabels not used'),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.die('pause not used'),
-	pauseAndCommit: () => Effect.die('pauseAndCommit not used'),
-	saveImage: () => Stream.empty,
-	saveImages: () => Stream.empty,
-	loadImage: (tar) =>
-		Stream.runCollect(tar).pipe(
-			Effect.mapError(
-				(cause): ContainerRuntimeError => ({
-					_tag: 'ContainerRuntimeError',
-					reason: 'image-load-failed',
-					detail: String(cause),
+): ContainerRuntime =>
+	makeContainerRuntimeStub({
+		saveImages: () => Stream.empty,
+		loadImage: (tar) =>
+			Stream.runCollect(tar).pipe(
+				Effect.mapError(
+					(cause): ContainerRuntimeError => ({
+						_tag: 'ContainerRuntimeError',
+						reason: 'image-load-failed',
+						detail: String(cause),
+					}),
+				),
+				Effect.flatMap((chunks) => {
+					for (const chunk of chunks) {
+						opts.loadBytes?.push(...chunk);
+					}
+					opts.events?.push('load');
+					return opts.loadError !== undefined
+						? Effect.fail(opts.loadError)
+						: Effect.succeed({
+								refs: opts.loadedRefs ?? [
+									opts.loadedRef ?? {
+										digest: 'sha256:loaded-postgres-db',
+										tag: 'devstack-snapshot:postgres-db',
+									},
+									{
+										digest: 'sha256:loaded-postgres-worker',
+										tag: 'devstack-snapshot:postgres-worker',
+									},
+								],
+							});
 				}),
 			),
-			Effect.flatMap((chunks) => {
-				for (const chunk of chunks) {
-					opts.loadBytes?.push(...chunk);
+		tagImage: (src, newTag, tagOpts) =>
+			Effect.gen(function* () {
+				opts.events?.push(`tag:${newTag}`);
+				opts.tagCalls?.push({ src, newTag, opts: tagOpts });
+				const tagError = opts.tagErrorFor?.(newTag) ?? opts.tagError;
+				if (tagError !== undefined) {
+					return yield* Effect.fail(tagError);
 				}
-				opts.events?.push('load');
-				return opts.loadError !== undefined
-					? Effect.fail(opts.loadError)
-					: Effect.succeed({
-							refs: opts.loadedRefs ?? [
-								opts.loadedRef ?? {
-									digest: 'sha256:loaded-postgres-db',
-									tag: 'devstack-snapshot:postgres-db',
-								},
-								{
-									digest: 'sha256:loaded-postgres-worker',
-									tag: 'devstack-snapshot:postgres-worker',
-								},
-							],
-						});
 			}),
-		),
-	tagImage: (src, newTag, tagOpts) =>
-		Effect.gen(function* () {
-			opts.events?.push(`tag:${newTag}`);
-			opts.tagCalls?.push({ src, newTag, opts: tagOpts });
-			const tagError = opts.tagErrorFor?.(newTag) ?? opts.tagError;
-			if (tagError !== undefined) {
-				return yield* Effect.fail(tagError);
-			}
-		}),
-	removeImage: (ref) =>
-		Effect.sync(() => {
-			opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
-			opts.removeImageCalls?.push(ref);
-		}),
-	unpause: () => Effect.die('unpause not used'),
-	stop: () => Effect.die('stop not used'),
-	sweepOrphans: () => Effect.die('sweepOrphans not used'),
-	removeManagedContainers: (labelMatch) =>
-		Effect.sync(() => {
-			opts.events?.push(`remove:${labelMatch.plugin}/${labelMatch.role}`);
-			sweepCalls.push(labelMatch);
-			return 1;
-		}),
-	removeManagedImages: () => Effect.die('removeManagedImages not used'),
-	removeManagedNetworks: () => Effect.die('removeManagedNetworks not used'),
-	removeManagedVolumes: () => Effect.die('removeManagedVolumes not used'),
-});
+		removeImage: (ref) =>
+			Effect.gen(function* () {
+				opts.events?.push(`remove-image:${ref.tag ?? ref.digest}`);
+				opts.removeImageCalls?.push(ref);
+				const removeError = opts.removeImageErrorFor?.(ref);
+				if (removeError !== undefined) {
+					return yield* Effect.fail(removeError);
+				}
+			}),
+		inspectImageDigest: (ref) =>
+			Effect.sync(() => {
+				const queue = opts.inspectDigestsFor?.get(ref);
+				if (queue === undefined || queue.length === 0) return null;
+				return queue.shift() ?? null;
+			}),
+		removeManagedContainers: (labelMatch) =>
+			Effect.sync(() => {
+				opts.events?.push(`remove:${labelMatch.plugin}/${labelMatch.role}`);
+				sweepCalls.push(labelMatch);
+				return 1;
+			}),
+	});
 
 /** Seed a live deploy-cache namespace under a runtime-stack root so the
  *  PR#1 cache-existence preflight (fail-closed when the sole source of the
@@ -233,6 +244,11 @@ const runRestoreExit = (
 	identity: SnapshotRuntimeIdentity,
 	sweepCalls: Array<Partial<ContainerLabelTuple>>,
 	runtime: ContainerRuntime = runtimeStub(sweepCalls),
+	participants: ReadonlyArray<RestoreParticipant> = restoreIdentityParticipants(),
+	graphInputCheck?: {
+		readonly currentGraphInput: SnapshotMetadata['graphInput'];
+		readonly graphInputMismatchPolicy: 'warn' | 'block';
+	},
 ) =>
 	Effect.gen(function* () {
 		seedDeployCacheAt(join(root, 'runtime-stack'));
@@ -245,14 +261,53 @@ const runRestoreExit = (
 				runtimeStackRoot: join(root, 'runtime-stack'),
 				runtimeStagingPath: join(root, 'runtime-stack.staging'),
 				runtimeBackupPath: join(root, 'runtime-stack.bak'),
-				participants: restoreIdentityParticipants(),
+				participants,
 				runtime,
 				runtimeIdentity: identity,
+				...(graphInputCheck ?? {}),
 			}),
 		);
 	});
 
 describe('snapshot restore safety', () => {
+	it.effect('blocks graph input mismatches before filesystem or container mutation', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const meta = metadata();
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					restoreIdentityParticipants(),
+					{
+						currentGraphInput: {
+							version: SNAPSHOT_GRAPH_INPUT_VERSION,
+							graphInputId: 'different-graph',
+							nodes: [],
+						},
+						graphInputMismatchPolicy: 'block',
+					},
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(RestorePhaseError);
+					if (error.value instanceof RestorePhaseError) {
+						expect(error.value.phase).toBe('graph-input-mismatch');
+					}
+				}
+				expect(sweepCalls).toEqual([]);
+				expect(existsSync(join(root, 'runtime-stack.bak'))).toBe(false);
+				expect(existsSync(join(root, 'runtime-stack.staging'))).toBe(false);
+			}),
+		),
+	);
+
 	it.effect('refuses mismatched metadata runtime identity before cleanup', () =>
 		Effect.gen(function* () {
 			const fields: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
@@ -320,6 +375,140 @@ describe('snapshot restore safety', () => {
 					emptyIdentityMeta,
 					runtimeIdentity,
 					sweepCalls,
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isFailure(exit)).toBe(true);
+				const error = Exit.findErrorOption(exit);
+				expect(error._tag).toBe('Some');
+				if (error._tag === 'Some') {
+					expect(error.value).toBeInstanceOf(IdentityEmptyError);
+					if (error.value instanceof IdentityEmptyError) {
+						expect(error.value.source).toBe('snapshot');
+					}
+				}
+				expect(sweepCalls).toEqual([]);
+			}),
+		),
+	);
+
+	// -------------------------------------------------------------------------
+	// Boot-time / offline restore — NO live participants.
+	//
+	// Startup restore, interrupted-restore recovery, and the offline CLI verb
+	// all run restore BEFORE the supervisor registers any snapshot participant,
+	// so `participants === []`. The contract: with no live stack the
+	// cross-plugin contribution guard is SKIPPED (vacuously satisfied), but
+	// the runtime guard (app/stack/network) and the snapshot-side emptiness
+	// refusal STILL fire.
+	// -------------------------------------------------------------------------
+
+	it.effect('boot-time restore (no live participants) clears the contribution guard', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const meta = metadata({
+					containers: [
+						capturedContainer({
+							plugin: 'postgres#0',
+							imageName: 'postgres:test',
+						}),
+					],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// NO participants — the boot-time path. Previously this failed
+				// `IdentityMissingLive`; now the contribution guard is skipped and
+				// the restore proceeds to the swap + container replacement.
+				const exit = yield* runRestoreExit(
+					root,
+					meta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					[],
+				).pipe(Effect.provide(NodeFileSystem.layer));
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres#0',
+						role: 'db',
+					},
+				]);
+			}),
+		),
+	);
+
+	it.effect('boot-time restore still refuses a foreign runtime identity', () =>
+		Effect.gen(function* () {
+			const fields: ReadonlyArray<keyof SnapshotRuntimeIdentity> = ['app', 'stack', 'network'];
+			for (const field of fields) {
+				yield* withTempRoot(TEMP_PREFIX, (root) =>
+					Effect.gen(function* () {
+						const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+						const foreignMeta = metadata({
+							[field]: `${runtimeIdentity[field]}-foreign`,
+							containers: [
+								capturedContainer({
+									plugin: 'postgres#0',
+									imageName: 'postgres:test',
+								}),
+							],
+						});
+						// NO participants → contribution guard skipped, but the runtime
+						// guard's live side is `runtimeIdentity` (NOT the snapshot), so a
+						// foreign app/stack/network is still refused before any mutation.
+						const exit = yield* runRestoreExit(
+							root,
+							foreignMeta,
+							runtimeIdentity,
+							sweepCalls,
+							runtimeStub(sweepCalls),
+							[],
+						).pipe(Effect.provide(NodeFileSystem.layer));
+
+						expect(Exit.isFailure(exit)).toBe(true);
+						const error = Exit.findErrorOption(exit);
+						expect(error._tag).toBe('Some');
+						if (error._tag === 'Some') {
+							expect(error.value).toBeInstanceOf(IdentityMismatchError);
+							if (error.value._tag === 'SnapshotIdentityMismatch') {
+								expect(error.value.key).toBe(field);
+							}
+						}
+						// Refused before any mutation.
+						expect(sweepCalls).toEqual([]);
+					}),
+				);
+			}
+		}),
+	);
+
+	it.effect('boot-time restore still refuses a snapshot with no recorded identity', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const emptyIdentityMeta = metadata({
+					identity: {},
+					containers: [
+						capturedContainer({
+							plugin: 'postgres#0',
+							imageName: 'postgres:test',
+						}),
+					],
+				});
+				// NO participants, but an empty `meta.identity` is untrusted
+				// regardless of a live stack — the snapshot-side emptiness refusal
+				// (`requireIdentity`) still fires before any mutation.
+				const exit = yield* runRestoreExit(
+					root,
+					emptyIdentityMeta,
+					runtimeIdentity,
+					sweepCalls,
+					runtimeStub(sweepCalls),
+					[],
 				).pipe(Effect.provide(NodeFileSystem.layer));
 
 				expect(Exit.isFailure(exit)).toBe(true);
@@ -573,7 +762,6 @@ describe('snapshot restore safety', () => {
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_COMMANDS_FILE_NAME), 'command-log\n');
 				writeFileSync(join(stackRoot, COMMAND_CHANNEL_EVENTS_FILE_NAME), 'event-log\n');
 				writeFileSync(join(stackRoot, 'roster.json'), '{"version":1,"holders":[]}\n');
-				writeFileSync(join(stackRoot, 'container-claims.json'), '{"version":1,"claims":[]}\n');
 				mkdirSync(join(stackRoot, 'wallet'), { recursive: true });
 				writeFileSync(walletTokenPath, '0123456789abcdef0123456789abcdef');
 				writeFileSync(join(stackRoot, 'wallet', 'session'), 'drop');
@@ -613,9 +801,6 @@ describe('snapshot restore safety', () => {
 				expect(readFileSync(join(stackRoot, 'roster.json'), 'utf8')).toBe(
 					'{"version":1,"holders":[]}\n',
 				);
-				expect(readFileSync(join(stackRoot, 'container-claims.json'), 'utf8')).toBe(
-					'{"version":1,"claims":[]}\n',
-				);
 				// The LIVE deploy cache is NOT preserved from live — the snapshot is
 				// the sole source, and this snapshot carries none, so it is dropped.
 				expect(existsSync(join(stackRoot, CACHE_DIR_NAME, deployNs))).toBe(false);
@@ -638,59 +823,61 @@ describe('snapshot restore safety', () => {
 	// rather than let the next boot re-deploy that namespace with fresh ids and
 	// orphan its pre-snapshot objects. Checked against the SNAPSHOT, not the live
 	// stack — so a cross-machine restore onto an empty live cache is unaffected.
-	it.effect('refuses with cache-missing when the snapshot host-tree omits a recorded cache ns', () =>
-		withTempRoot(TEMP_PREFIX, (root) =>
-			Effect.gen(function* () {
-				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
-				const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
-				// Metadata claims the snapshot captured `cache/<ns>`...
-				const meta = metadata({
-					containers: [capturedContainer()],
-					hostTreeIncluded: true,
-					subtrees: [
-						{
-							plugin: '__deploy-cache__',
-							relPath: `${CACHE_DIR_NAME}/${deployNs}`,
-							missingTolerance: 'fine',
-							secretMaterial: false,
-						},
-					],
-				});
-				const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
-				writeImageBundle(artifactDir);
-				// ...but the host-tree tar carries an UNRELATED entry, not the cache.
-				writeFileSync(
-					join(artifactDir, SnapshotLayout.hostTreeTar),
-					tarWithEntries(['postgres/data/x']),
-				);
-				yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
+	it.effect(
+		'refuses with cache-missing when the snapshot host-tree omits a recorded cache ns',
+		() =>
+			withTempRoot(TEMP_PREFIX, (root) =>
+				Effect.gen(function* () {
+					const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+					const deployNs = DEPLOY_CACHE_NAMESPACES[0]!;
+					// Metadata claims the snapshot captured `cache/<ns>`...
+					const meta = metadata({
+						containers: [capturedContainer()],
+						hostTreeIncluded: true,
+						subtrees: [
+							{
+								plugin: '__deploy-cache__',
+								relPath: `${CACHE_DIR_NAME}/${deployNs}`,
+								missingTolerance: 'fine',
+								secretMaterial: false,
+							},
+						],
+					});
+					const artifactDir = writeArtifact(join(root, 'runtime-stack'), meta);
+					writeImageBundle(artifactDir);
+					// ...but the host-tree tar carries an UNRELATED entry, not the cache.
+					writeFileSync(
+						join(artifactDir, SnapshotLayout.hostTreeTar),
+						tarWithEntries(['postgres/data/x']),
+					);
+					yield* writeArtifactIntegrity(artifactDir).pipe(Effect.provide(NodeFileSystem.layer));
 
-				const exit = yield* Effect.exit(
-					runRestore({
-						snapshotId: snapshotIdFromString(meta.id),
-						artifactDir,
-						runtimeStackRoot: join(root, 'runtime-stack'),
-						runtimeStagingPath: join(root, 'runtime-stack.staging'),
-						runtimeBackupPath: join(root, 'runtime-stack.bak'),
-						participants: restoreIdentityParticipants(),
-						runtime: runtimeStub(sweepCalls),
-						runtimeIdentity,
-					}),
-				).pipe(Effect.provide(NodeFileSystem.layer));
+					const exit = yield* Effect.exit(
+						runRestore({
+							snapshotId: snapshotIdFromString(meta.id),
+							artifactDir,
+							runtimeStackRoot: join(root, 'runtime-stack'),
+							runtimeStagingPath: join(root, 'runtime-stack.staging'),
+							runtimeBackupPath: join(root, 'runtime-stack.bak'),
+							participants: restoreIdentityParticipants(),
+							runtime: runtimeStub(sweepCalls),
+							runtimeIdentity,
+						}),
+					).pipe(Effect.provide(NodeFileSystem.layer));
 
-				expect(Exit.isFailure(exit)).toBe(true);
-				const error = Exit.findErrorOption(exit);
-				expect(error._tag).toBe('Some');
-				if (error._tag === 'Some') {
-					expect(error.value).toBeInstanceOf(RestorePhaseError);
-					if (error.value._tag === 'SnapshotRestorePhaseError') {
-						expect(error.value.phase).toBe('cache-missing');
+					expect(Exit.isFailure(exit)).toBe(true);
+					const error = Exit.findErrorOption(exit);
+					expect(error._tag).toBe('Some');
+					if (error._tag === 'Some') {
+						expect(error.value).toBeInstanceOf(RestorePhaseError);
+						if (error.value._tag === 'SnapshotRestorePhaseError') {
+							expect(error.value.phase).toBe('cache-missing');
+						}
 					}
-				}
-				// Fail-closed BEFORE any mutation — no container sweep ran.
-				expect(sweepCalls).toEqual([]);
-			}),
-		),
+					// Fail-closed BEFORE any mutation — no container sweep ran.
+					expect(sweepCalls).toEqual([]);
+				}),
+			),
 	);
 
 	// The positive companion: when the snapshot's host-tree CARRIES every
@@ -1646,6 +1833,153 @@ describe('snapshot restore safety', () => {
 						stack: runtimeIdentity.stack,
 						plugin: 'postgres',
 						role: 'worker',
+					},
+				]);
+			}),
+		),
+	);
+
+	// -------------------------------------------------------------------------
+	// Promote-time image GC — drop the layer the captured imageName resolved to
+	// BEFORE the promote retag (its superseded prior restore/capture layer).
+	// `promoteStagedImages` retags `image.captured.imageName` onto the freshly-
+	// staged layer; the layer the name USED to resolve to is then orphaned and
+	// would dangle forever. Mirrors capture's `resumeAfterCapture` GC: inspect
+	// old → promote → inspect new → best-effort remove old IFF non-null + !=new.
+	// -------------------------------------------------------------------------
+
+	it.effect('restore promote removes the superseded layer at the captured imageName', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// imageName resolved to an OLD layer before promote; resolves to a
+				// distinct NEW layer after. The old layer is the orphan to GC.
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([[imageName, ['sha256:old-layer', 'sha256:new-layer']]]),
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The superseded old layer is removed exactly once, by digest-only
+				// ref (drops the orphan layer, never the live imageName tag).
+				const gcRemovals = removeImageCalls.filter(
+					(ref) => ref.tag === undefined && ref.digest === 'sha256:old-layer',
+				);
+				expect(gcRemovals).toEqual([{ digest: 'sha256:old-layer' }]);
+				// Ordering: the GC removal runs strictly AFTER the promote retag.
+				const promoteIdx = events.indexOf(`tag:${imageName}`);
+				const gcIdx = events.indexOf('remove-image:sha256:old-layer');
+				expect(promoteIdx).toBeGreaterThanOrEqual(0);
+				expect(gcIdx).toBeGreaterThan(promoteIdx);
+				// Restore still completes — containers swept.
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'db',
+					},
+				]);
+			}),
+		),
+	);
+
+	it.effect('restore promote does not remove an identical (unchanged) layer', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// Old digest === new digest: the staged layer is byte-identical, so
+				// imageName still resolves to it after the promote. Removing the
+				// "old" digest would delete the LIVE layer — the equal-digest guard
+				// must skip it. (A null first read is also a no-GC case, covered by
+				// the default stub in every other passing test.)
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([[imageName, ['sha256:same-layer', 'sha256:same-layer']]]),
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// No GC removal of the captured layer digest.
+				expect(removeImageCalls.some((ref) => ref.digest === 'sha256:same-layer')).toBe(false);
+				expect(events).not.toContain('remove-image:sha256:same-layer');
+			}),
+		),
+	);
+
+	it.effect('restore promote GC failure is swallowed and does not fail the restore', () =>
+		withTempRoot(TEMP_PREFIX, (root) =>
+			Effect.gen(function* () {
+				const sweepCalls: Array<Partial<ContainerLabelTuple>> = [];
+				const events: string[] = [];
+				const removeImageCalls: ImageRef[] = [];
+				const imageName = 'devstack-build:postgres-original';
+				const meta = metadata({
+					containers: [capturedContainer({ imageName })],
+				});
+				const artifactDir = writeArtifact(root, meta);
+				writeImageBundle(artifactDir);
+				// The orphan digest is distinct (GC fires), but removeImage REFUSES
+				// for that digest. The best-effort catch must log+swallow so the
+				// restore still succeeds and the container sweep still runs.
+				const runtime = runtimeStub(sweepCalls, {
+					events,
+					removeImageCalls,
+					inspectDigestsFor: new Map([[imageName, ['sha256:old-layer', 'sha256:new-layer']]]),
+					removeImageErrorFor: (ref) =>
+						ref.digest === 'sha256:old-layer' && ref.tag === undefined
+							? {
+									_tag: 'ContainerRuntimeError',
+									reason: 'image-remove-failed',
+									detail: 'image in use',
+								}
+							: undefined,
+				});
+
+				const exit = yield* runRestoreExit(root, meta, runtimeIdentity, sweepCalls, runtime).pipe(
+					Effect.provide(NodeFileSystem.layer),
+				);
+
+				// Restore SUCCEEDS despite the GC removal failing.
+				expect(Exit.isSuccess(exit)).toBe(true);
+				// The GC removal WAS attempted (then swallowed).
+				expect(
+					removeImageCalls.some(
+						(ref) => ref.tag === undefined && ref.digest === 'sha256:old-layer',
+					),
+				).toBe(true);
+				// And the container sweep — which runs AFTER promotion — still ran.
+				expect(sweepCalls).toEqual([
+					{
+						app: runtimeIdentity.app,
+						stack: runtimeIdentity.stack,
+						plugin: 'postgres',
+						role: 'db',
 					},
 				]);
 			}),

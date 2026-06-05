@@ -14,7 +14,7 @@
 
 import { dirname, resolve as resolvePath } from 'node:path';
 
-import { Cause, Effect, Exit, Logger, SubscriptionRef } from 'effect';
+import { Cause, Effect, Exit, Logger } from 'effect';
 
 import type { Identity } from '../../substrate/identity.ts';
 import { StackPathsService } from '../../substrate/runtime/paths.ts';
@@ -23,16 +23,10 @@ import {
 	makeCommandChannelPublisher,
 	makeProjectionRef,
 	type SupervisedStack,
-	writeProjectionSnapshot,
 } from '../../substrate/runtime/index.ts';
+import { superviseStackWithProductionBoot } from '../../orchestrators/boot.ts';
 import {
-	buildProductionContributionDispatcher,
-	buildProductionPostAcquireHook,
-	extendBuiltInPluginContext,
-	layerBuiltInPluginRuntime,
-	superviseStackEffect,
-} from '../../orchestrators/boot.ts';
-import {
+	computeSnapshotGraphInputFromStack,
 	recoverInterruptedRestore,
 	SnapshotOrchestratorService,
 } from '../../orchestrators/snapshot/index.ts';
@@ -49,7 +43,8 @@ import {
 	stackRootFor,
 	type ResolvedIdentity,
 } from './identity.ts';
-import { buildVerbLayers } from './build-verb-layers.ts';
+import { buildVerbLayers } from '../../orchestrators/layers.ts';
+import { readDevstackVersion } from './read-devstack-version.ts';
 
 const LIVE_APPLY_ACK_TIMEOUT_MILLIS = 10 * 60 * 1000;
 
@@ -115,7 +110,7 @@ export const runApplyLive = (
 			return yield* Effect.fail(cliErrorFromConfigExit(loadExit));
 		}
 		const loaded = loadExit.value;
-		const stack = (loaded as LoadedConfig & { readonly stack: SupervisedStack }).stack;
+		const stack = (loaded as LoadedConfig & { readonly engine: SupervisedStack }).engine;
 		// Re-derive the identity against the EFFECTIVE stack (explicit
 		// `--stack`/`$DEVSTACK_STACK` > `config.stackName` > inferred) so
 		// the live-supervisor probe + roster paths target the same stack
@@ -141,11 +136,11 @@ export const runApplyLive = (
 
 		const program = Effect.gen(function* () {
 			const state = yield* makeProjectionRef();
-			const contributionDispatcher = yield* buildProductionContributionDispatcher();
-			const postAcquireHook = yield* buildProductionPostAcquireHook({
-				extras: stack.options.extras,
-			});
 			const stackPaths = yield* StackPathsService;
+			const computeGraphInput = computeSnapshotGraphInputFromStack({
+				stack,
+				devstackVersion: readDevstackVersion(),
+			});
 			// Mirror the up-path recovery: resume any restore interrupted by a
 			// hard kill between the atomic swap and the image-promotion handoff
 			// completing (the interrupted-restore sentinel rode the swap into the
@@ -154,20 +149,33 @@ export const runApplyLive = (
 			const snapshot = yield* SnapshotOrchestratorService;
 			yield* recoverInterruptedRestore({
 				liveRoot: stackPaths.stackRoot,
-				restoreSnapshot: (id) => snapshot.restore({ id }),
+				restoreSnapshot: (id) =>
+					computeGraphInput.pipe(
+						Effect.flatMap((currentGraphInput) =>
+							snapshot.restore({
+								id,
+								currentGraphInput,
+								graphInputMismatchPolicy: 'warn',
+							}),
+						),
+					),
 			});
-			yield* superviseStackEffect(
+			// The contribution dispatcher + post-acquire hook + built-in
+			// plugin-context extension are assembled in ONE place
+			// (`orchestrators/boot.ts superviseStackWithProductionBoot`); this
+			// one-shot verb supplies only the per-caller inputs (`extras`,
+			// `lifetime: 'one-shot'`). Run-to-completion + result semantics are
+			// unchanged: the surrounding `matchCauseEffect` below still maps the
+			// supervised cause/success onto the `CommandResult`.
+			yield* superviseStackWithProductionBoot(
 				{ _tag: 'Stack', members: stack.members, options: stack.options },
 				identityValue,
 				state,
 				{
-					contributionDispatcher,
-					postAcquireHook,
+					extras: stack.options.extras,
 					lifetime: 'one-shot',
-					extendContext: extendBuiltInPluginContext,
 				},
-			).pipe(Effect.provide(layerBuiltInPluginRuntime));
-			yield* writeProjectionSnapshot(stackPaths.stackRoot, yield* SubscriptionRef.get(state));
+			);
 		});
 
 		return yield* program.pipe(

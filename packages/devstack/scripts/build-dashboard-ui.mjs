@@ -38,7 +38,10 @@ const run = (command, args, cwd) =>
 log('exporting GraphQL schema → apps/devstack-dashboard/schema.graphql');
 run(
 	process.execPath,
-	['--experimental-strip-types', join(packageRoot, 'src', 'plugins', 'dashboard', 'print-schema.ts')],
+	[
+		'--experimental-strip-types',
+		join(packageRoot, 'src', 'plugins', 'dashboard', 'print-schema.ts'),
+	],
 	packageRoot,
 );
 

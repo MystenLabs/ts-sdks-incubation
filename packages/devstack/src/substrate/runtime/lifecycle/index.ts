@@ -7,9 +7,9 @@
 
 export * from './state-machine.ts';
 export * from './dep-graph.ts';
+export * from './graph-input-id.ts';
 export * from './plugin-registry.ts';
 export * from './ready-gate.ts';
 export * from './watch-attribution.ts';
 export * from './selective-restart.ts';
 export * from './signals.ts';
-export * from './lifecycle-fact.ts';

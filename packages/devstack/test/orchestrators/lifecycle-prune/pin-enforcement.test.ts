@@ -19,7 +19,9 @@ import {
 } from '../../../src/orchestrators/lifecycle-prune/index.ts';
 import { PER_APP_SHARED_STACK } from '../../../src/substrate/runtime/managed-container.ts';
 
-const group = (over: Partial<LifecyclePruneGroup> & Pick<LifecyclePruneGroup, 'app' | 'stack'>): LifecyclePruneGroup => ({
+const group = (
+	over: Partial<LifecyclePruneGroup> & Pick<LifecyclePruneGroup, 'app' | 'stack'>,
+): LifecyclePruneGroup => ({
 	key: lifecyclePruneGroupKey(over.app, over.stack),
 	live: false,
 	livePids: [],

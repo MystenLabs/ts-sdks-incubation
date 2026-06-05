@@ -59,8 +59,8 @@ rather than calling `ensureContainer` directly — the helper stamps the `Contai
   (`'on-failure' | 'never' | 'on-config-change'`). Returns a `ContainerHandle` whose scope owns the
   finalizer.
 - `exec(handle, argv, opts?)` — one-shot command inside a running container. The runtime does NOT
-  promote a non-zero exit to failure — the caller is the policy holder (Postgres treats `pg_isready`
-  non-zero as "retry", `createdb` non-zero as a typed plugin error).
+  promote a non-zero exit to failure — the caller is the policy holder (for example, Sui's internal
+  indexer-db sidecar treats `pg_isready` non-zero as "retry").
 - `runOneShot(spec)` — `docker run --rm` for transient containers (e.g. the Move build path).
 - `inspectByLabels(labels)` — enumerate by ownership labels, never by tag prefix alone.
 - `followLogs(handle)` — `Stream<string, ContainerRuntimeError>`.
@@ -85,7 +85,7 @@ What `ContainerRuntime` is responsible for:
 What plugins own:
 
 - Whether a non-zero exit means "retry", "fail typed", or "fail config".
-- Schema, init SQL, and ready probes (e.g. Postgres runs `pg_isready` inside its plugin body).
+- Schema, init SQL, and ready probes.
 - Per-container `configHash` for `on-config-change` policy decisions.
 - Whether to publish a host port (`ports`) or stay in-network.
 
@@ -97,6 +97,6 @@ What plugins own:
 `name-collision`, `publish-port-conflict`, `network-address-pool-exhausted`, `ip-readback-timeout`,
 `ready-probe-failed`, `recreate-refused`, `image-remove-failed`.
 
-Plugin code typically wraps `ContainerRuntimeError` in a typed plugin error (`PostgresPluginError`,
-`SuiPluginError`, etc.) at the phase boundary so the cause walker attributes the failure to the
-right plugin.
+Plugin code typically wraps `ContainerRuntimeError` in a typed plugin error (`SuiPluginError`,
+`SealError`, etc.) at the phase boundary so the cause walker attributes the failure to the right
+plugin.

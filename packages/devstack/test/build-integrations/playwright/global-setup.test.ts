@@ -215,9 +215,7 @@ describe('WatchedRecordSchema — drift detection (loud-fail contract)', () => {
 	});
 
 	it('THROWS when the `kind` VALUE is renamed (engine → eng)', () => {
-		expect(() =>
-			decodeWatchedRecord({ kind: 'eng', event: { tag: 'codegen.emitted' } }),
-		).toThrow();
+		expect(() => decodeWatchedRecord({ kind: 'eng', event: { tag: 'codegen.emitted' } })).toThrow();
 	});
 
 	it('THROWS when the `event` KEY is renamed (event → payload)', () => {

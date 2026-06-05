@@ -1,14 +1,11 @@
 // Lease broker — substrate-level service interface.
 //
-// Architecture (`notes/redesign/architecture.md` § "L0 substrate
-// primitives"): the substrate owns a generic lease primitive keyed by
-// an opaque resource identifier. Any caller that needs at-most-one-
-// in-flight serialization on a resource yields this service and calls
-// `acquire(key, owner)`. The first canonical consumer is the per-
-// address sequence-number lock (`plugins/account/address-lock.ts`,
-// today plugin-local; PR3 lifts it to consume this primitive);
-// callers in the same shape — sign+execute pipelines, per-connection
-// gate, per-slot work queue — share the same seam.
+// Generic lease primitive keyed by an opaque resource identifier. Any caller
+// that needs at-most-one-in-flight serialization on a resource yields this
+// service and calls `acquire(key, owner)`. The first canonical consumer is the
+// per-address sequence-number lock (`plugins/account/address-lock.ts`);
+// callers in the same shape — sign+execute pipelines, per-connection gate,
+// per-slot work queue — share the same seam.
 //
 // Substrate name-blindness: the broker has no concept of what a
 // `LeaseKey` represents. The plugin author chooses the key shape; the
@@ -258,14 +255,9 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 					}
 
 					yield* installReleaseFinalizer(key);
-					yield* Effect.annotateCurrentSpan({
-						'leaseBroker.key': key,
-						'leaseBroker.owner': owner,
-						'leaseBroker.contended': !becameHolder,
-					});
 					return { key, owner } satisfies Lease;
 				}),
-			).pipe(Effect.withSpan('substrate.leaseBroker.acquire'));
+			);
 
 		const tryAcquire: LeaseBroker['tryAcquire'] = (key, owner) =>
 			Effect.gen(function* () {
@@ -276,19 +268,9 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 					return [true, next];
 				});
 				if (!claimed) {
-					yield* Effect.annotateCurrentSpan({
-						'leaseBroker.key': key,
-						'leaseBroker.owner': owner,
-						'leaseBroker.claimed': false,
-					});
 					return null;
 				}
 				yield* installReleaseFinalizer(key);
-				yield* Effect.annotateCurrentSpan({
-					'leaseBroker.key': key,
-					'leaseBroker.owner': owner,
-					'leaseBroker.claimed': true,
-				});
 				return { key, owner } satisfies Lease;
 			}).pipe(
 				// Make the claim-and-install-finalizer pair atomic w.r.t.
@@ -298,7 +280,6 @@ export const layerLeaseBroker: Layer.Layer<LeaseBrokerService> = Layer.effect(
 				// transition, so wrapping the whole pipeline uninterruptibly
 				// is safe.
 				Effect.uninterruptible,
-				Effect.withSpan('substrate.leaseBroker.tryAcquire'),
 			);
 
 		const holders: LeaseBroker['holders'] = () =>

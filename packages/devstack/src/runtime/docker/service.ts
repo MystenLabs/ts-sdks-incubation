@@ -43,30 +43,27 @@ import {
 	pause,
 	type PerNameLockState,
 	stop as stopContainer,
-	unpause,
 } from './container.ts';
 import { toContractError } from './errors.ts';
 import { dockerExec, dockerRunOneShot } from './exec.ts';
 import {
 	ensureImageCached,
+	imageExists,
 	loadImage as loadImageImpl,
 	pull as pullImageImpl,
 	refOf,
 	removeImage as removeImageImpl,
-	saveImage as saveImageStream,
 	saveImages as saveImagesStream,
 	tagImage as tagImageImpl,
 } from './image.ts';
 import { listContainers } from './inventory.ts';
-import { expectedImageOwnershipLabels } from './labels.ts';
-import { followLogs as followLogsStream } from './logs.ts';
+import { expectedImageOwnershipLabels, sanitizeTagSegment } from './labels.ts';
 import { ensureNetwork as ensureNetworkImpl } from './network.ts';
 import {
 	removeManagedContainers,
 	removeManagedImages,
 	removeManagedNetworks,
 	removeManagedVolumes,
-	sweepOrphans,
 } from './sweep.ts';
 
 // -----------------------------------------------------------------------------
@@ -304,8 +301,32 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				// is honoured as the on-host tag; absent, we derive a tag
 				// from the content hash so two unrelated contexts cannot
 				// collide on the sanitized contextPath form.
+				//
+				// (app, stack) TAG SCOPING. The derived tag is scoped by the
+				// owner's `(app, stack)` — `devstack-build:<app>-<stack>-<hash16>`.
+				// The CACHE KEY below stays content-only (`{namespace, chain,
+				// contentHash}`), so two stacks with identical build context
+				// still SHARE the build (no redundant rebuild) — only the on-host
+				// TAG differs. This is load-bearing for snapshot/restore: each
+				// running container commits its writable layer onto its own
+				// `imageName` (this tag). Without scoping, two stacks whose build
+				// context is byte-identical share ONE tag, so capture/restore's
+				// per-container image-promote collapses their committed layers
+				// onto that single name (last-write-wins) — e.g. app A's sui
+				// indexer-db PGDATA gets aliased under app B's container and the
+				// db rejects auth ("FATAL: password authentication failed").
+				// Stays aligned with #23's sidecar-password fix
+				// (`deriveSidecarPassword(app, stack, role)`): both keyed on
+				// (app, stack). Label-free builds (no owner — e.g.
+				// `move-summary-runner`) stay UNSCOPED.
+				//
 				const hash = buildContentHash(effectiveCtx);
-				const tag = expected?.tag ?? `devstack-build:${hash.slice(0, 16)}`;
+				const owner = effectiveCtx.owner;
+				const scope =
+					owner !== undefined
+						? `${sanitizeTagSegment(owner.app)}-${sanitizeTagSegment(owner.stack)}-`
+						: '';
+				const tag = expected?.tag ?? `devstack-build:${scope}${hash.slice(0, 16)}`;
 				// Owner identity flows through as `--label` flags on
 				// `docker build`, making the resulting image visible to
 				// label-driven prune. Labels are metadata, NOT part of
@@ -333,7 +354,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 					Effect.map((digest) => refOf(digest, tag)),
 					mapToContractError,
 					Effect.provide(baseCtx),
-					Effect.withSpan('runtime.docker.contract.ensureImage'),
 				);
 			});
 
@@ -345,18 +365,13 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				stack: spec.stack,
 				...(spec.subnet === undefined ? {} : { subnet: spec.subnet }),
 				...(spec.gateway === undefined ? {} : { gateway: spec.gateway }),
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.ensureNetwork'),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const pullImageContractImpl = (ref: string): Effect.Effect<ImageRef, ContainerRuntimeError> =>
 			pullImageImpl(ref).pipe(
 				Effect.map((digest) => refOf(digest, ref)),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pullImage'),
 			);
 
 		const ensureContainerImpl = (
@@ -365,11 +380,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			Effect.gen(function* () {
 				const cycle = yield* Ref.get(cycleRef);
 				return yield* ensureContainer(spec, { cycle, perNameLock });
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.ensureContainer'),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const inspectByLabels = (
 			labels: ContainerLabelTuple,
@@ -409,25 +420,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 						),
 					{ concurrency: 'unbounded' },
 				);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.inspectByLabels'),
-			);
-
-		const followLogsImpl = (
-			handle: ContainerHandle,
-		): Stream.Stream<string, ContainerRuntimeError> =>
-			followLogsStream(handle.name).pipe(
-				Stream.mapError(toContractError),
-				// R-channel: the underlying stream needs DockerHost +
-				// DockerSpawner from the spawn step. Provide the
-				// snapshotted base context so the contract surface is
-				// `R = never`. `Stream.mapError` does NOT drop R; the
-				// `as`-cast in the previous shape was a release-blocker
-				// per runtime-docker review issue #3.
-				Stream.provideContext(baseCtx),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const pauseAndCommitImpl = (
 			handle: ContainerHandle,
@@ -441,31 +434,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				const tag = snapshotTempTag(handle.name);
 				const digest = yield* commit(handle.name, tag);
 				return { digest, tag };
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pauseAndCommit'),
-			);
-
-		const pauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
-			Effect.gen(function* () {
-				yield* assertContainerHandleOwned(handle);
-				yield* pause(handle.name);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.pause'),
-			);
-
-		const unpauseImpl = (handle: ContainerHandle): Effect.Effect<void, ContainerRuntimeError> =>
-			Effect.gen(function* () {
-				yield* assertContainerHandleOwned(handle);
-				yield* unpause(handle.name);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.unpause'),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const stopImpl = (
 			handle: ContainerHandle,
@@ -475,57 +444,28 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			return Effect.gen(function* () {
 				yield* assertContainerHandleOwned(handle);
 				yield* stopContainer(handle.name, seconds);
-			}).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.stop'),
-			);
+			}).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
-
-		const sweepOrphansImpl = (
-			labelMatch: Partial<ContainerLabelTuple>,
-		): Effect.Effect<number, ContainerRuntimeError> =>
-			sweepOrphans(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.sweepOrphans'),
-			);
 
 		const removeManagedContainersImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedContainers(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedContainers'),
-			);
+			removeManagedContainers(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedImagesImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedImages(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedImages'),
-			);
+			removeManagedImages(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedNetworksImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedNetworks(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedNetworks'),
-			);
+			removeManagedNetworks(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const removeManagedVolumesImpl = (
 			labelMatch: Partial<ContainerLabelTuple>,
 		): Effect.Effect<number, ContainerRuntimeError> =>
-			removeManagedVolumes(labelMatch).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeManagedVolumes'),
-			);
+			removeManagedVolumes(labelMatch).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const execImpl = (
 			handle: ContainerHandle,
@@ -551,19 +491,8 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.exec'),
 			);
 
-		const saveImageImpl = (
-			ref: ImageRef,
-			opts?: SaveImageOptions,
-		): Stream.Stream<Uint8Array, ContainerRuntimeError> => {
-			const resolved = ref.tag ?? ref.digest;
-			return saveImageStream(resolved, opts).pipe(
-				Stream.mapError(toContractError),
-				Stream.provideContext(baseCtx),
-			);
-		};
 		const saveImagesImpl = (
 			refs: ReadonlyArray<ImageRef>,
 			opts?: SaveImageOptions,
@@ -578,11 +507,7 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 		const loadImageContractImpl = (
 			tar: Stream.Stream<Uint8Array, unknown>,
 		): Effect.Effect<LoadedImageBundle, ContainerRuntimeError> =>
-			loadImageImpl(tar).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.loadImage'),
-			);
+			loadImageImpl(tar).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const tagImageContractImpl = (
 			src: ImageRef,
@@ -590,21 +515,22 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			opts?: TagImageOptions,
 		): Effect.Effect<void, ContainerRuntimeError> => {
 			const resolved = src.tag ?? src.digest;
-			return tagImageImpl(resolved, newTag, opts).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.tagImage'),
-			);
+			return tagImageImpl(resolved, newTag, opts).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
 
 		const removeImageContractImpl = (ref: ImageRef): Effect.Effect<void, ContainerRuntimeError> => {
 			const resolved = ref.tag ?? ref.digest;
-			return removeImageImpl(resolved).pipe(
-				mapToContractError,
-				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.removeImage'),
-			);
+			return removeImageImpl(resolved).pipe(mapToContractError, Effect.provide(baseCtx));
 		};
+
+		// Reuse `image.ts::imageExists` — `docker image inspect --format
+		// {{.Id}}`, returning the resolved id or null. No new docker
+		// invocation logic; the contract entry point just projects the
+		// subsystem's narrow error to the contract error.
+		const inspectImageDigestContractImpl = (
+			ref: string,
+		): Effect.Effect<string | null, ContainerRuntimeError> =>
+			imageExists(ref).pipe(mapToContractError, Effect.provide(baseCtx));
 
 		const runOneShotImpl = (
 			spec: OneShotSpec,
@@ -630,7 +556,6 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 				),
 				mapToContractError,
 				Effect.provide(baseCtx),
-				Effect.withSpan('runtime.docker.contract.runOneShot'),
 			);
 
 		return ContainerRuntimeService.of({
@@ -641,17 +566,13 @@ export const layerContainerRuntimeDocker: Layer.Layer<
 			exec: execImpl,
 			runOneShot: runOneShotImpl,
 			inspectByLabels,
-			followLogs: followLogsImpl,
-			pause: pauseImpl,
 			pauseAndCommit: pauseAndCommitImpl,
-			saveImage: saveImageImpl,
 			saveImages: saveImagesImpl,
 			loadImage: loadImageContractImpl,
 			tagImage: tagImageContractImpl,
 			removeImage: removeImageContractImpl,
-			unpause: unpauseImpl,
+			inspectImageDigest: inspectImageDigestContractImpl,
 			stop: stopImpl,
-			sweepOrphans: sweepOrphansImpl,
 			removeManagedContainers: removeManagedContainersImpl,
 			removeManagedImages: removeManagedImagesImpl,
 			removeManagedNetworks: removeManagedNetworksImpl,

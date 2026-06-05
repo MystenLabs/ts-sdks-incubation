@@ -119,8 +119,7 @@ const projectPackageConfig = (
 	// Active-network objects: local = captured ids. (Prod object
 	// selection happens at consume-time by flipping `config.network`;
 	// the local entry is what the dev runtime reads.)
-	const objects =
-		Object.keys(input.captured).length > 0 ? { ...input.captured } : undefined;
+	const objects = Object.keys(input.captured).length > 0 ? { ...input.captured } : undefined;
 
 	const packageEntry: PackageConfigEntry = {
 		mvr: input.mvrPlaceholder,

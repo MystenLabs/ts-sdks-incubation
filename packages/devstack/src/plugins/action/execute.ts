@@ -35,7 +35,6 @@ import { formatUnknownError } from '../../substrate/runtime/format-unknown-error
 
 import { actionError, type ActionError } from './errors.ts';
 import type { ActionReceipt } from './service.ts';
-import { ActionSpans } from './spans.ts';
 
 // ---------------------------------------------------------------------------
 // Receipt object-change projection
@@ -229,9 +228,5 @@ export const signAndExecute = (params: {
 				}),
 			),
 		onSuccess: (txResult) => Effect.succeed(receiptFromTxResult(txResult)),
-	}).pipe(
-		Effect.withSpan('devstack.plugin.action.signAndExecute', {
-			attributes: { [ActionSpans.name]: actionName },
-		}),
-	);
+	});
 };

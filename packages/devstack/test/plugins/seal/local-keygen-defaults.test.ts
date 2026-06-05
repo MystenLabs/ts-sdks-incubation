@@ -1,10 +1,10 @@
 // Regression test for the seal local-keygen default version.
 //
-// Pins: the default `version` flowed into the local-keygen plan +
-// OTEL span attrs MUST be the real pinned version constant
-// (`DEFAULT_SEAL_VERSION` from bootstrap-assets/source-fetch.ts), NOT
-// a sentinel placeholder string. Distilled-doc invariant #11 — the
-// version moves in lockstep with the cargo binary's `SEAL_VERSION`.
+// Pins: the default `version` flowed into the local-keygen plan MUST
+// be the real pinned version constant (`DEFAULT_SEAL_VERSION` from
+// bootstrap-assets/source-fetch.ts), NOT a sentinel placeholder
+// string. Distilled-doc invariant #11 — the version moves in lockstep
+// with the cargo binary's `SEAL_VERSION`.
 //
 // `resolveLocalKeygenOptions` is a pure synchronous defaults helper —
 // no Effect harness required.

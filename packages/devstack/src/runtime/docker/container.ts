@@ -32,13 +32,6 @@ import type {
 	PortBindingReconciliation,
 	RecreatePolicy,
 } from '../../contracts/container-runtime.ts';
-import {
-	addClaim,
-	removeClaim,
-	type RosterError,
-} from '../../substrate/runtime/cross-process/roster.ts';
-import type { StackLockError } from '../../substrate/runtime/cross-process/stack-lock.ts';
-import { StackPathsService } from '../../substrate/runtime/paths.ts';
 import { DockerHost, DockerSpawner, dockerRun, dockerRunOk } from './client.ts';
 import {
 	ContainerCreateFailed,
@@ -432,7 +425,7 @@ export const inspectContainer = (
 			networks,
 			networkAttachments,
 		};
-	}).pipe(Effect.withSpan('runtime.docker.container.inspect'));
+	});
 
 // -----------------------------------------------------------------------------
 // Argv construction
@@ -504,15 +497,10 @@ const forceRemove = (
 	name: string,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
-		const res = yield* dockerRunOk('rm', ['-f', name]).pipe(
-			Effect.mapError(wrapGeneric('docker.rm')),
-		);
-		if (res.exitCode !== 0 && !isNoSuchContainerStderr(res.stderr)) {
-			// best-effort; we surface as a span event but do not fail
-			// the rm step (the next create will collision-recover).
-			yield* Effect.annotateCurrentSpan({ 'docker.rm.warning': res.stderr });
-		}
-	}).pipe(Effect.withSpan('runtime.docker.container.forceRemove'));
+		// best-effort; a non-"no such container" failure does not fail the
+		// rm step (the next create will collision-recover).
+		yield* dockerRunOk('rm', ['-f', name]).pipe(Effect.mapError(wrapGeneric('docker.rm')));
+	});
 
 const ownershipFailure = (
 	name: string,
@@ -575,7 +563,7 @@ export const assertContainerHandleOwned = (
 			);
 		}
 		yield* assertOwnedFacts(handle.name, facts, handle.labels);
-	}).pipe(Effect.withSpan('runtime.docker.container.assertOwned'));
+	});
 
 const forceRemoveOwned = (
 	name: string,
@@ -758,7 +746,8 @@ const recreateAfterResumeFailure = (
 			return yield* Effect.fail(new RecreateRefused({ name: spec.name, reason: routed.reason }));
 		}
 		yield* forceRemoveOwned(spec.name, id, spec.labels);
-		return yield* createWithCollisionRecovery(spec, deps);
+		const created = yield* createWithCollisionRecovery(spec, deps);
+		return created;
 	});
 
 const effectivePortsCompatible = (facts: InspectFacts, spec: EnsureContainerSpec): boolean => {
@@ -970,25 +959,20 @@ export const withSerializedContainerOp = <A, E, R>(
 	);
 
 /** Idempotent ensure: apply the state machine, register a scope
- *  finalizer that stops the container + releases the cross-process
- *  claim.
+ *  finalizer that stops the container.
  *
  *  Returns the running container handle (id + name + status + ips). */
 export const ensureContainer = (
 	spec: EnsureContainerSpec,
 	deps: EnsureContainerDeps,
-): Effect.Effect<
-	ContainerHandle,
-	DockerRuntimeError,
-	DockerHost | DockerSpawner | StackPathsService | Scope.Scope
-> =>
+): Effect.Effect<ContainerHandle, DockerRuntimeError, DockerHost | DockerSpawner | Scope.Scope> =>
 	Effect.gen(function* () {
 		// Per-name lock holds the inspect → applyAction → finalizer-registration
 		// window. The lock CANNOT be released before the stop-on-scope-close
-		// finalizer is armed: an interrupt or `addClaim` failure in that gap
-		// would strand a running container with no scope-bound cleanup until
-		// label-driven sweep ran later (per-scope contract: one
-		// `Effect.scoped` ⇒ one container managed).
+		// finalizer is armed: an interrupt in that gap would strand a running
+		// container with no scope-bound cleanup until label-driven sweep ran
+		// later (per-scope contract: one `Effect.scoped` ⇒ one container
+		// managed).
 		//
 		// The uninterruptible window is NARROWED to the orphan-safety
 		// prefix: inspect → applyAction → ensureEffectivePublishedPorts →
@@ -997,63 +981,13 @@ export const ensureContainer = (
 		// armed" (which would strand a running container with no scope-bound
 		// cleanup). Once the stop-on-scope-close finalizer is armed, the
 		// remaining work (assertOwned → secondary network attach → IP
-		// readback → refresh inspect → `addClaim`) runs INTERRUPTIBLY via
-		// `restore(...)`: an interrupt there simply triggers the armed
-		// finalizer (stop + idempotent removeClaim), which is the desired
-		// cleanup — so keeping that ~8s tail uninterruptible would only defer
-		// Ctrl-C/shutdown for a bounded window with no orphan-safety benefit.
-		// The finalizer itself is uninterruptible (Architecture §13).
+		// readback → refresh inspect) runs INTERRUPTIBLY via `restore(...)`:
+		// an interrupt there simply triggers the armed finalizer (stop),
+		// which is the desired cleanup — so keeping that ~8s tail
+		// uninterruptible would only defer Ctrl-C/shutdown for a bounded
+		// window with no orphan-safety benefit. The finalizer itself is
+		// uninterruptible (Architecture §13).
 		const desiredImageRef = spec.image.tag ?? spec.image.digest;
-		const paths = yield* StackPathsService;
-		// Preserve the substrate-side error taxonomy by surfacing a
-		// distinct `op` per known cause tag. Labeling every roster/lock
-		// failure as "docker daemon unreachable" misleads operators —
-		// `RosterIoError` is a state-dir IO problem, `StackLockTimeoutError`
-		// is a peer-holding-the-lock problem, neither of which has
-		// anything to do with the docker socket. We still emit a typed
-		// `DaemonUnreachable` envelope (substrate→docker channel needs
-		// ONE bridging shape per the DockerRuntimeError union) but the
-		// `op` / `detail` fields keep the original tag visible. A truly
-		// unknown cause falls through to the generic fallback mapping.
-		const mapSubstrateClaimError = <A, R>(
-			eff: Effect.Effect<A, RosterError | StackLockError, R>,
-		): Effect.Effect<A, DockerRuntimeError, R> =>
-			eff.pipe(
-				Effect.catchTags({
-					RosterIoError: (cause) =>
-						Effect.fail(
-							new DaemonUnreachable({
-								op: 'cross-process.claim.roster-io',
-								detail: `roster IO failed at ${cause.path}`,
-								cause,
-							}),
-						),
-					RosterCorruptError: (cause) =>
-						Effect.fail(
-							new DaemonUnreachable({
-								op: 'cross-process.claim.roster-corrupt',
-								detail: `roster ledger corrupt at ${cause.path}`,
-								cause,
-							}),
-						),
-					StackLockTimeoutError: (cause) =>
-						Effect.fail(
-							new DaemonUnreachable({
-								op: 'cross-process.claim.stack-lock-timeout',
-								detail: `stack-lock acquire timed out after ${cause.waitedMillis}ms at ${cause.path}`,
-								cause,
-							}),
-						),
-					StackLockIoError: (cause) =>
-						Effect.fail(
-							new DaemonUnreachable({
-								op: 'cross-process.claim.stack-lock-io',
-								detail: `stack-lock IO failed at ${cause.path}`,
-								cause,
-							}),
-						),
-				}),
-			);
 		const registerStopFinalizer = (
 			id: string,
 		): Effect.Effect<void, never, Scope.Scope | DockerHost | DockerSpawner> =>
@@ -1073,24 +1007,8 @@ export const ensureContainer = (
 						Effect.catch(() => Effect.succeed(null)),
 					);
 					if (current?.id === id) {
-						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10);
+						yield* stopWithGrace(spec.name, spec.stopGraceSeconds ?? 10, spec.stopSignal);
 					}
-					yield* removeClaim(
-						{
-							stackLockFile: paths.stackLockFile,
-							rosterFile: paths.rosterFile,
-							containerClaimsFile: paths.containerClaimsFile,
-						},
-						spec.name,
-					).pipe(
-						Effect.tapCause((cause) =>
-							Effect.logDebug('removeClaim during scope-close failed', {
-								name: spec.name,
-								cause,
-							}),
-						),
-						Effect.catch(() => Effect.succeed({ lastClaimReleased: false })),
-					);
 				}).pipe(Effect.uninterruptible),
 			);
 		const { id, ips, ports } = yield* withSerializedContainerOp(
@@ -1120,17 +1038,16 @@ export const ensureContainer = (
 					const id = yield* ensureEffectivePublishedPorts(initialId, spec, deps);
 
 					// Arm the stop-on-scope-close finalizer BEFORE we
-					// release the per-name lock and BEFORE we call
-					// `addClaim`. If anything below this point fails OR is
-					// interrupted (assert, network attach, addClaim) the
+					// release the per-name lock. If anything below this point
+					// fails OR is interrupted (assert, network attach) the
 					// container will still be stopped at scope close.
 					yield* registerStopFinalizer(id);
 
 					// --- Interruptible tail (restore) ---
 					// The finalizer is now armed, so an interrupt here is
-					// safe: it triggers the scope finalizer (stop + idempotent
-					// removeClaim). Running this ~8s tail interruptibly keeps
-					// Ctrl-C/shutdown responsive during bring-up.
+					// safe: it triggers the scope finalizer (stop). Running
+					// this ~8s tail interruptibly keeps Ctrl-C/shutdown
+					// responsive during bring-up.
 					const tail = yield* restore(
 						Effect.gen(function* () {
 							yield* assertContainerHandleOwned({
@@ -1158,21 +1075,6 @@ export const ensureContainer = (
 							const refreshedFacts = yield* inspectContainer(spec.name);
 							const ports = refreshedFacts?.effectivePorts ?? refreshedFacts?.ports ?? spec.ports;
 
-							// Record cross-process claim. The scope finalizer
-							// (already registered) will release it on scope
-							// close. If this fails, the container is still
-							// cleaned up at scope close.
-							yield* mapSubstrateClaimError(
-								addClaim(
-									{
-										stackLockFile: paths.stackLockFile,
-										rosterFile: paths.rosterFile,
-										containerClaimsFile: paths.containerClaimsFile,
-									},
-									spec.name,
-								),
-							);
-
 							return { ips, ports };
 						}),
 					);
@@ -1191,7 +1093,7 @@ export const ensureContainer = (
 			ports,
 			spec.labels,
 		);
-	}).pipe(Effect.withSpan('runtime.docker.container.ensure'));
+	});
 
 /** Apply the decided action. Recovers from name-collision via
  *  one-shot start-and-adopt; second collision surfaces typed. */
@@ -1232,10 +1134,12 @@ const applyAction = (
 			}
 			case 'recreate': {
 				yield* forceRemoveOwned(spec.name, action.id, spec.labels);
+				const created = yield* createWithCollisionRecovery(spec, deps);
+				return created;
+			}
+			case 'fresh': {
 				return yield* createWithCollisionRecovery(spec, deps);
 			}
-			case 'fresh':
-				return yield* createWithCollisionRecovery(spec, deps);
 			case 'refuse':
 				return yield* Effect.fail(new RecreateRefused({ name: spec.name, reason: action.reason }));
 		}
@@ -1275,14 +1179,14 @@ export const pause = (
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		yield* dockerRun('pause', [name]).pipe(Effect.mapError(wrapGeneric('docker.pause')));
-	}).pipe(Effect.withSpan('runtime.docker.container.pause'));
+	});
 
 export const unpause = (
 	name: string,
 ): Effect.Effect<void, DockerRuntimeError, DockerHost | DockerSpawner> =>
 	Effect.gen(function* () {
 		yield* dockerRun('unpause', [name]).pipe(Effect.mapError(wrapGeneric('docker.unpause')));
-	}).pipe(Effect.withSpan('runtime.docker.container.unpause'));
+	});
 
 /** Reserved `devstack.role` value stamped on every committed snapshot
  *  byproduct image. Plugin BUILD images carry the source plugin's real
@@ -1355,4 +1259,4 @@ export const commit = (
 			);
 		}
 		return digest;
-	}).pipe(Effect.withSpan('runtime.docker.container.commit'));
+	});

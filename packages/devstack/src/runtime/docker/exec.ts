@@ -117,7 +117,7 @@ export const dockerExec = (
 			);
 		}
 		return res;
-	}).pipe(Effect.withSpan('runtime.docker.exec'));
+	});
 
 // -----------------------------------------------------------------------------
 // One-shot — `docker run --rm`
@@ -212,4 +212,4 @@ export const dockerRunOneShot = (
 			);
 		}
 		return yield* baseInvocation;
-	}).pipe(Effect.withSpan('runtime.docker.oneShot'));
+	});

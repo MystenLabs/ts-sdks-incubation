@@ -36,7 +36,6 @@ import { Effect } from 'effect';
 
 import { defineModeNamespace } from '../../api/mode-narrowed-factory.ts';
 import { definePlugin, resource, type ResourceValueOf } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import type { SnapshotableDecl } from '../../contracts/snapshotable.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
@@ -48,7 +47,6 @@ import type { CoinValue } from '../coin/index.ts';
 import type { LocalPackageResolved } from '../package/index.ts';
 
 import { deepbookPluginKey } from './plugin-key.ts';
-import { DeepbookSpans } from './spans.ts';
 import {
 	DEEPBOOK_ERROR_TAGS,
 	deepbookConfigError,
@@ -71,7 +69,6 @@ import {
 	type ResolvedDeepbookPoolSpec,
 } from './deploy.ts';
 import { initLocalPythFeeds } from './pyth/index.ts';
-import { synthesizeLocalDeepbook } from './synthesize.ts';
 import type {
 	AccountMemberAlias,
 	DeepbookPackageMember,
@@ -135,29 +132,27 @@ export interface DeepbookOverrideOptions extends DeepbookCommonOptions {
 
 /** Local mode wraps an explicitly supplied local DeepBook package.
  *
- *  Zero-arg ergonomics: `publisher`, `package`, `pyth`, and `pools` are all
- *  OPTIONAL. When omitted, the plugin synthesizes them from the bundled
- *  DeepBook + sandbox-Pyth Move sources (see `synthesize.ts`) — a no-arg
- *  `deepbook()` provisions an ephemeral funded publisher, publishes the
- *  vendored packages, and creates a seeded default DEEP/SUI pool. Pass any of
- *  these to override the corresponding default while keeping the rest
- *  synthesized. */
+ *  Explicit-config discipline: `publisher`, `package`, and `pools` are all
+ *  REQUIRED — the caller publishes the DeepBook Move tree, funds a publisher,
+ *  and declares the pools. There is no zero-arg auto-synthesis; an
+ *  under-specified `deepbook({ mode: 'local' })` fails fast with a tagged
+ *  config error (see the guard in `resolveLocalOptions`). `pyth` stays
+ *  optional — pass it to seed local mock price feeds, omit it for a
+ *  feed-less DeX. */
 export interface DeepbookLocalOptions<
 	Publisher extends AccountMemberAlias = AccountMemberAlias,
 	Package extends DeepbookPackageMember = DeepbookPackageMember,
 	Pools extends ReadonlyArray<DeepbookPoolSpec> = readonly [],
 	Pyth extends PythOptions | undefined = undefined,
 > extends DeepbookCommonOptions {
-	/** Publisher account — Direct Member Ref (locked API decision). Optional:
-	 *  when omitted, an ephemeral funded publisher is synthesized. */
-	readonly publisher?: Publisher;
+	/** Publisher account — Direct Member Ref (locked API decision). Required. */
+	readonly publisher: Publisher;
 	/** Published DeepBook package member. The package must capture the
 	 *  `registry::Registry` and `registry::DeepbookAdminCap` object ids.
-	 *  Optional: when omitted, the bundled DeepBook Move sources are published
-	 *  via an internally synthesized `localPackage`. */
-	readonly package?: Package;
-	/** Optional local mock-Pyth package + feed setup. When omitted alongside
-	 *  `package`, the bundled sandbox-Pyth + default DEEP/SUI feeds are used. */
+	 *  Required. */
+	readonly package: Package;
+	/** Optional local mock-Pyth package + feed setup. Omit for a feed-less
+	 *  local DeX. */
 	readonly pyth?: Pyth;
 	/** Capture key for the package-created `registry::Registry`. */
 	readonly registryIdKey?: string;
@@ -165,10 +160,9 @@ export interface DeepbookLocalOptions<
 	readonly adminCapIdKey?: string;
 	/** Optional capture key for a DEEP treasury object used by SDK bindings. */
 	readonly deepTreasuryIdKey?: string;
-	/** Pools to create after the DeepBook package publishes. Optional: when
-	 *  omitted, a seeded default DEEP/SUI pool is synthesized. Pass `[]`
-	 *  explicitly for composition tests or known-empty deployments. */
-	readonly pools?: Pools;
+	/** Pools to create after the DeepBook package publishes. Required; pass
+	 *  `[]` explicitly for composition tests or a known-empty deployment. */
+	readonly pools: Pools;
 }
 
 export type DeepbookKnownNetwork = 'mainnet' | 'testnet';
@@ -212,15 +206,6 @@ export type DeepbookOptions<
 // ---------------------------------------------------------------------------
 
 const DEFAULT_NAME = 'deepbook';
-const deepbookErrorContributions = pluginErrorContributions(DEEPBOOK_ERROR_TAGS);
-
-type DeepbookLocalEmptyPoolOptions<
-	Publisher extends AccountMemberAlias,
-	Package extends DeepbookPackageMember,
-	Pyth extends PythOptions | undefined = undefined,
-> = Omit<DeepbookLocalOptions<Publisher, Package, readonly [], Pyth>, 'pools'> & {
-	readonly pools: readonly [];
-};
 
 const KNOWN_DEEPBOOK_DEPLOYMENTS: Record<
 	DeepbookKnownNetwork,
@@ -488,12 +473,11 @@ const buildOverridePlugin = (opts: DeepbookOverrideOptions) => {
 				ctx.codegen(makeDeepbookCodegenable(bindings));
 				return resolved;
 			}),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
-/** Concrete local options after defaults/synthesis: `publisher`, `package`,
- *  and `pools` are guaranteed present. */
+/** Concrete local options after the explicit-config guard: `publisher`,
+ *  `package`, and `pools` are guaranteed present. */
 type ResolvedLocalOptions = DeepbookLocalOptions<
 	AccountMemberAlias,
 	DeepbookPackageMember,
@@ -505,11 +489,12 @@ type ResolvedLocalOptions = DeepbookLocalOptions<
 	readonly pools: ReadonlyArray<DeepbookPoolSpec>;
 };
 
-/** Fill in publisher / package / pyth / pools from the bundled Move sources
- *  when the caller omitted them. Explicit values always win (callers like
- *  `examples/deepbook-trader` keep passing their own package + pools). An
- *  explicit empty `pools: []` is respected and NOT replaced by the default
- *  pool. */
+/** Fail-fast guard for local mode: `publisher`, `package`, and `pools` are
+ *  REQUIRED. A bare `deepbook()` / `deepbook({ mode: 'local' })` no longer
+ *  auto-synthesizes a DeX from the bundled Move sources — the caller must
+ *  publish the DeepBook package, fund a publisher, and declare the pools
+ *  explicitly (see `examples/deepbook-trader`). Missing any of these raises a
+ *  tagged `DeepbookConfigError` naming what to pass. `pyth` stays optional. */
 const resolveLocalOptions = (
 	opts: DeepbookLocalOptions<
 		AccountMemberAlias,
@@ -519,29 +504,25 @@ const resolveLocalOptions = (
 	>,
 ): ResolvedLocalOptions => {
 	const name = opts.name ?? DEFAULT_NAME;
-	// Fully explicit — nothing to synthesize.
-	if (opts.package && opts.publisher && opts.pools !== undefined) {
-		return opts as ResolvedLocalOptions;
+	const missing: string[] = [];
+	if (!opts.publisher) {
+		missing.push('publisher');
 	}
-	// Partial override: synthesize ONLY the genuinely-missing pieces, RELATIVE
-	// to whatever the caller already supplied. Passing the explicit
-	// `package`/`publisher`/`pyth` into synthesis means the default pool's DEEP
-	// coin, registry and admin-cap all come from the EXPLICIT package (no
-	// phantom hidden-package coin type) and no duplicate `package`/`pyth`
-	// provider enters the resolved dependency closure.
-	const synth = synthesizeLocalDeepbook(name, {
-		...(opts.publisher === undefined ? {} : { publisher: opts.publisher }),
-		...(opts.package === undefined ? {} : { package: opts.package }),
-		...(opts.pyth === undefined ? {} : { pyth: opts.pyth }),
-	});
-	return {
-		...opts,
-		publisher: opts.publisher ?? synth.publisher,
-		package: opts.package ?? synth.package,
-		pools: opts.pools ?? synth.pools,
-		pyth: opts.pyth ?? synth.pyth,
-		deepTreasuryIdKey: opts.deepTreasuryIdKey ?? 'deepTreasuryId',
-	} as ResolvedLocalOptions;
+	if (!opts.package) {
+		missing.push('package');
+	}
+	if (opts.pools === undefined) {
+		missing.push('pools');
+	}
+	if (missing.length > 0) {
+		throw deepbookConfigError(
+			missing[0] as string,
+			`deepbook({mode:'local', name:'${name}'}) requires explicit ${missing.join(', ')}.`,
+			`Publish the DeepBook Move package and pass { publisher, package, pools } ` +
+				`(see examples/deepbook-trader). Local DeepBook is no longer auto-synthesized.`,
+		);
+	}
+	return opts as ResolvedLocalOptions;
 };
 
 const buildLocalPlugin = <
@@ -564,14 +545,11 @@ const buildLocalPlugin = <
 	assertUniquePoolNames(name, opts.pools);
 
 	const deepbookResource = makeDeepbookResource(name);
-	// Runtime `dependsOn` carries the resolved (possibly synthesized) member
-	// refs so `defineDevstack`'s dependency-closure expander pulls the bundled
-	// publisher / package / coin / pyth members into the stack automatically.
-	// The STATIC type stays keyed to the caller's narrow generics: explicit
-	// callers keep their exact closure (no generic `coin:`/`package:` provider
-	// demands), and no-arg callers declare a thin closure whose synthesized
-	// members are concrete plugins resolved at runtime — so no missing-provider
-	// diagnostic fires either way.
+	// Runtime `dependsOn` carries the caller's explicit member refs so
+	// `defineDevstack`'s dependency-closure expander pulls the publisher /
+	// package / coin / pyth members into the stack. The STATIC type stays keyed
+	// to the caller's narrow generics so explicit callers keep their exact
+	// closure (no generic `coin:`/`package:` provider demands).
 	const dependsOn = localDependsOn(opts) as unknown as LocalDependsOn<
 		Publisher,
 		Package,
@@ -602,11 +580,6 @@ const buildLocalPlugin = <
 				const pythValues = extraValues.slice(0, pythValueCount);
 				const coinValues = extraValues.slice(pythValueCount) as CoinValue[];
 
-				yield* Effect.annotateCurrentSpan({
-					[DeepbookSpans.name]: name,
-					[DeepbookSpans.chain]: sui.chain,
-					[DeepbookSpans.publisher]: publisher.address,
-				});
 				yield* setCurrentPluginPhase('reading deployment captures');
 
 				const registryId = yield* requireCapturedId(
@@ -746,7 +719,6 @@ const buildLocalPlugin = <
 					}),
 				),
 			),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
@@ -766,37 +738,6 @@ function buildLocalPluginPublic<
 >(opts: DeepbookLocalOptions<Publisher, Package, Pools, Pyth>) {
 	return buildLocalPlugin(opts);
 }
-
-/** Synthesized local DeepBook member. When `publisher`/`package` are omitted,
- *  the bundled publisher / DeepBook / Pyth / coin members are created INSIDE
- *  the plugin and attached to the runtime `dependsOn` (so the stack closure
- *  pulls them in), while the STATIC closure stays `[sui]` — the app declares
- *  only `sui()` + `deepbook()`. */
-type DeepbookSynthesizedMember = Omit<ReturnType<typeof buildLocalPlugin>, 'dependsOn'> & {
-	readonly dependsOn: readonly [typeof suiResource];
-};
-
-/** Options for a synthesized local DeepBook (everything optional). */
-export interface DeepbookSynthesizedOptions extends DeepbookCommonOptions {
-	readonly publisher?: AccountMemberAlias;
-	readonly pyth?: PythOptions;
-	readonly pools?: ReadonlyArray<DeepbookPoolSpec>;
-	readonly registryIdKey?: string;
-	readonly adminCapIdKey?: string;
-	readonly deepTreasuryIdKey?: string;
-}
-
-const buildSynthesizedLocalPlugin = (opts: DeepbookSynthesizedOptions): DeepbookSynthesizedMember =>
-	// Runtime is the full local plugin (synthesis happens in
-	// `resolveLocalOptions`); only the declared closure type is narrowed.
-	buildLocalPlugin(
-		opts as DeepbookLocalOptions<
-			AccountMemberAlias,
-			DeepbookPackageMember,
-			ReadonlyArray<DeepbookPoolSpec>,
-			PythOptions | undefined
-		>,
-	) as unknown as DeepbookSynthesizedMember;
 
 // ---------------------------------------------------------------------------
 // Plugin construction — known
@@ -887,7 +828,6 @@ const buildKnownPlugin = (opts: DeepbookKnownOptions) => {
 				}
 				return resolved;
 			}),
-		errorContributions: deepbookErrorContributions,
 	});
 };
 
@@ -906,11 +846,9 @@ const resolveDefaultMode = <
 	const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
 		?.env?.DEVSTACK_NETWORK;
 	if (env === undefined || env === 'localnet') {
-		// No-arg / partial-arg local DeepBook: the local plugin synthesizes the
-		// publisher + bundled DeepBook/Pyth packages + default pool from the
-		// vendored Move sources (see `resolveLocalOptions` / `synthesize.ts`).
-		// `deepbook()` and `deepbook({ mode: 'local' })` both provision a
-		// working local DeX with zero further config.
+		// Local DeepBook: default to local mode on localnet. The caller must
+		// supply explicit `{ publisher, package, pools }`; `resolveLocalOptions`
+		// fails fast otherwise (no auto-synthesis).
 		return { mode: 'local', ...(opts ?? {}) } as DeepbookOptions<Publisher, Pyth>;
 	}
 	// Non-local default: refuse — known mode requires explicit
@@ -938,21 +876,9 @@ type DeepbookLocalMember<
 type DeepbookOverrideMember = ReturnType<typeof buildOverridePlugin>;
 type DeepbookKnownMember = ReturnType<typeof buildKnownPlugin>;
 
-// Zero-arg / synthesized local DeepBook — bundled Move sources, default
-// publisher + DEEP/SUI pool. The static closure is `[sui]`; everything else
-// is synthesized and pulled in at runtime.
-export function deepbookCore(): DeepbookSynthesizedMember;
-export function deepbookCore(
-	opts: { readonly mode: 'local' } & DeepbookSynthesizedOptions,
-): DeepbookSynthesizedMember;
-export function deepbookCore(opts: DeepbookSynthesizedOptions): DeepbookSynthesizedMember;
-export function deepbookCore<
-	const Publisher extends AccountMemberAlias,
-	const Package extends DeepbookPackageMember,
-	const Pyth extends PythOptions | undefined = undefined,
->(
-	opts: { readonly mode: 'local' } & DeepbookLocalEmptyPoolOptions<Publisher, Package, Pyth>,
-): DeepbookLocalMember<Publisher, Package, readonly [], Pyth>;
+// Local DeepBook requires explicit `{ publisher, package, pools }`. There is
+// no zero-arg/synthesized overload — an under-specified call fails fast (see
+// `resolveLocalOptions`).
 export function deepbookCore<
 	const Publisher extends AccountMemberAlias,
 	const Package extends DeepbookPackageMember,
@@ -967,13 +893,6 @@ export function deepbookCore(
 export function deepbookCore(
 	opts: { readonly mode: 'known' } & DeepbookKnownOptions,
 ): DeepbookKnownMember;
-export function deepbookCore<
-	const Publisher extends AccountMemberAlias,
-	const Package extends DeepbookPackageMember,
-	const Pyth extends PythOptions | undefined = undefined,
->(
-	opts: DeepbookLocalEmptyPoolOptions<Publisher, Package, Pyth>,
-): DeepbookLocalMember<Publisher, Package, readonly [], Pyth>;
 export function deepbookCore<
 	const Publisher extends AccountMemberAlias,
 	const Package extends DeepbookPackageMember,
@@ -1007,14 +926,8 @@ export function deepbookCore<
 				Pools,
 				Pyth
 			>;
-			// Synthesized path: when the caller omitted both `publisher` and
-			// `package`, the declared closure is `[sui]` (bundled members are
-			// attached at runtime). This is the no-arg `deepbook()` ergonomics.
-			if (!localOpts.publisher && !localOpts.package) {
-				return buildSynthesizedLocalPlugin(
-					localOpts as DeepbookSynthesizedOptions,
-				) as unknown as DeepbookLocalMember<Publisher, Package, Pools, Pyth>;
-			}
+			// Explicit-config path only; `buildLocalPlugin` -> `resolveLocalOptions`
+			// fails fast when `publisher`/`package`/`pools` are missing.
 			return buildLocalPluginPublic(localOpts) as DeepbookLocalMember<
 				Publisher,
 				Package,
@@ -1076,7 +989,6 @@ export {
 	DEEPBOOK_TESTNET_DEEP_COIN_TYPE,
 } from './faucet-strategy.ts';
 export {
-	DEEPBOOK_ERROR_TAGS,
 	type DeepbookError,
 	type DeepbookPluginError,
 	type DeepbookConfigError,

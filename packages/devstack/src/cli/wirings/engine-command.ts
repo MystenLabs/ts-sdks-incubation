@@ -42,7 +42,8 @@ export const isEngineCommand = (value: unknown): value is EngineCommand => {
 		case 'snapshot.capture':
 			return (
 				(record.snapshotId === undefined || typeof record.snapshotId === 'string') &&
-				(record.name === undefined || typeof record.name === 'string')
+				(record.name === undefined || typeof record.name === 'string') &&
+				(record.replaceExisting === undefined || typeof record.replaceExisting === 'boolean')
 			);
 		default: {
 			const _exhaustive: never = knownTag;

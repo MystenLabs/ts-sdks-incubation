@@ -27,12 +27,12 @@
 // managed_coin move build (~10-20s with sui-move local). Subsequent
 // runs hit the docker layer cache + the on-disk move build cache.
 
-import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
 
+import { dockerReachable, pruneManagedImagesForApp } from './docker-prune.ts';
 import { runBoot } from './boot-config-impl.ts';
 import type {
 	LocalPackageResolved,
@@ -51,21 +51,18 @@ const CONFIG_PATH = resolve(
 	'devstack.config.ts',
 );
 
-const dockerReachable = (): { ok: boolean; detail: string } => {
-	const res = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'], {
-		encoding: 'utf8',
-		timeout: 5_000,
-	});
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
-
 const TREASURY_CAP_RE = /::coin::TreasuryCap<.+>$/;
 const COIN_METADATA_RE = /::coin::CoinMetadata<.+>$/;
 
+// The app this boot runs under (`runBoot({ appName: TOKEN_STUDIO_APP })`).
+const TOKEN_STUDIO_APP = 'token-studio';
+
 describe('token-studio boots end-to-end', () => {
+	// Sweep the managed build/snapshot images this boot minted (under
+	// `appName: TOKEN_STUDIO_APP`). Label-scoped so it can only reap images
+	// THIS test created, never the user's stacks.
+	afterAll(() => pruneManagedImagesForApp(TOKEN_STUDIO_APP));
+
 	it('every plugin reaches `ready` and managed_coin publish output carries TreasuryCap + CoinMetadata', async () => {
 		const docker = dockerReachable();
 		if (!docker.ok) {
@@ -75,7 +72,7 @@ describe('token-studio boots end-to-end', () => {
 
 		const result = await runBoot({
 			configPath: CONFIG_PATH,
-			appName: 'token-studio',
+			appName: TOKEN_STUDIO_APP,
 			stackName: 'main',
 		});
 

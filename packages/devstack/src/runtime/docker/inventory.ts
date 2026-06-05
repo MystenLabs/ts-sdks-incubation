@@ -188,7 +188,7 @@ export const listContainers = (
 			Effect.mapError(wrapGeneric('docker.ps')),
 		);
 		return toContainerSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.containers'));
+	});
 
 export const listDevstackContainers = (): Effect.Effect<
 	ReadonlyArray<ContainerSummary>,
@@ -203,7 +203,7 @@ export const listDevstackContainers = (): Effect.Effect<
 			...devstackAppFilterArgs,
 		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
 		return toContainerSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainers'));
+	});
 
 /** List devstack-managed containers whose generic `kind` label matches.
  *
@@ -225,7 +225,7 @@ export const listDevstackContainersByKind = (
 			`label=${LabelKey.kind}=${kind}`,
 		]).pipe(Effect.mapError(wrapGeneric('docker.ps')));
 		return toContainerSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackContainersByKind'));
+	});
 
 export const listImages = (
 	match: Partial<ContainerLabelTuple>,
@@ -236,7 +236,7 @@ export const listImages = (
 			Effect.mapError(wrapGeneric('docker.images')),
 		);
 		return toImageSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.images'));
+	});
 
 export const listDevstackImages = (): Effect.Effect<
 	ReadonlyArray<ImageSummary>,
@@ -250,7 +250,7 @@ export const listDevstackImages = (): Effect.Effect<
 			...devstackAppFilterArgs,
 		]).pipe(Effect.mapError(wrapGeneric('docker.images')));
 		return toImageSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackImages'));
+	});
 
 export const listNetworks = (
 	match: Partial<ContainerLabelTuple>,
@@ -261,7 +261,7 @@ export const listNetworks = (
 			Effect.mapError(wrapGeneric('docker.network.ls')),
 		);
 		return toNetworkSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.networks'));
+	});
 
 export const listDevstackNetworks = (): Effect.Effect<
 	ReadonlyArray<NetworkSummary>,
@@ -276,7 +276,7 @@ export const listDevstackNetworks = (): Effect.Effect<
 			...devstackAppFilterArgs,
 		]).pipe(Effect.mapError(wrapGeneric('docker.network.ls')));
 		return toNetworkSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackNetworks'));
+	});
 
 export const listVolumes = (
 	match: Partial<ContainerLabelTuple>,
@@ -287,7 +287,7 @@ export const listVolumes = (
 			Effect.mapError(wrapGeneric('docker.volume.ls')),
 		);
 		return toVolumeSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.volumes'));
+	});
 
 export const listDevstackVolumes = (): Effect.Effect<
 	ReadonlyArray<VolumeSummary>,
@@ -302,4 +302,4 @@ export const listDevstackVolumes = (): Effect.Effect<
 			...devstackAppFilterArgs,
 		]).pipe(Effect.mapError(wrapGeneric('docker.volume.ls')));
 		return toVolumeSummaries(res.stdout);
-	}).pipe(Effect.withSpan('runtime.docker.inventory.devstackVolumes'));
+	});

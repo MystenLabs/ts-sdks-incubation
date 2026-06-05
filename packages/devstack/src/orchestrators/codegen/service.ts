@@ -112,9 +112,7 @@ const resolveAt = (
 	location: OutputLocation,
 	outputPath: string,
 ): Effect.Effect<string, CodegenPathConflict> =>
-	location === 'generated-extras'
-		? paths.resolveExtras(outputPath)
-		: paths.resolve(outputPath);
+	location === 'generated-extras' ? paths.resolveExtras(outputPath) : paths.resolve(outputPath);
 
 const declLocation = (decl: Pick<Codegenable, 'outputLocation'>): OutputLocation =>
 	decl.outputLocation ?? 'generated';
@@ -275,13 +273,6 @@ const runEmitCycleLocked = (
 					});
 				}
 				return e;
-			}),
-			Effect.withSpan('codegen.runEmitCycle', {
-				attributes: {
-					'codegen.contributions': input.contributions.length,
-					'codegen.cycleId': cycleId,
-					'codegen.stagingDir': stagingPaths.outputDir,
-				},
 			}),
 		);
 	});
@@ -523,9 +514,7 @@ const runEmitCycleInner = (
 			...fileEmitters
 				.filter(
 					(d) =>
-						d.sensitive === true &&
-						d.aggregateOnly !== true &&
-						declLocation(d) === 'generated',
+						d.sensitive === true && d.aggregateOnly !== true && declLocation(d) === 'generated',
 				)
 				.map((d) => d.outputPath),
 			...aggregateFiles
@@ -848,16 +837,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 				yield* Effect.addFinalizer(() =>
 					Ref.update(contributionsRef, (xs) => xs.filter((e) => e.seq !== seq)),
 				);
-				yield* Effect.annotateCurrentSpan({
-					'codegen.contribution.plugin': pluginKey,
-					'codegen.contribution.emitter': decl.emitterName,
-					'codegen.contribution.outputPath': decl.outputPath,
-				});
-			}).pipe(Effect.withSpan('orchestrator.codegen.registerContribution')) as Effect.Effect<
-				void,
-				never,
-				Scope.Scope
-			>;
+			}) as Effect.Effect<void, never, Scope.Scope>;
 
 		const runCycle: CodegenOrchestrator['runCycle'] = (args) =>
 			Effect.gen(function* () {
@@ -869,7 +849,7 @@ export const layerCodegenOrchestrator: Layer.Layer<CodegenOrchestratorService> =
 					contributions: merged,
 					bindingsImportExtension: args?.bindingsImportExtension,
 				});
-			}).pipe(Effect.withSpan('orchestrator.codegen.runCycle'));
+			});
 
 		return CodegenOrchestratorService.of({
 			registerContribution,

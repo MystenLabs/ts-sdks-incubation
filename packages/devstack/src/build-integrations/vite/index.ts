@@ -1,14 +1,12 @@
 // Vite build-integration — `@generated` alias plugin.
 //
-// notes/per-stack-codegen-design.md §"Import mapping via a customizable
-// alias": app source imports its Move codegen through a configurable
-// alias prefix (default `@generated`) instead of `./generated`. This
-// plugin points that alias at the ACTIVE stack's output dir — the EXACT
-// dir codegen wrote to for the current stack — so two stacks of the
-// same app (`pnpm dev` on the home stack + `pnpm test:e2e` on a
-// `--stack e2e` override) resolve `@generated/*` to different
-// directories and never read each other's clobbered package-id /
-// wallet-pair-token literals.
+// App source imports Move codegen through a configurable alias prefix
+// (default `@generated`) instead of `./generated`. This plugin points
+// that alias at the ACTIVE stack's output dir — the EXACT dir codegen
+// wrote to for the current stack — so two stacks of the same app
+// (`pnpm dev` on the home stack + `pnpm test:e2e` on a `--stack e2e`
+// override) resolve `@generated/*` to different directories and never
+// read each other's clobbered package-id / wallet-pair-token literals.
 //
 // The target is the manifest-recorded `codegen.generatedDir` (the
 // single source of truth — the supervisor wrote it at flush time; see

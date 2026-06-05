@@ -438,4 +438,4 @@ export const untarHostTree = <R>(
 		if (status.code !== 0 || status.signal !== null) {
 			return yield* Effect.fail(tarExitError('untar', status, stderrChunks));
 		}
-	}).pipe(Effect.withSpan('substrate.host-tree-tar.untar'));
+	});

@@ -44,7 +44,6 @@ import { hashMoveSources, scrubLocksHost, type BuildOutput } from './build.ts';
 import { mvrNamedForm } from './dep-resolution.ts';
 import { type PackageRegistry, type ResolvedLocalPackage } from './registry.ts';
 import { publishError, type PublishError } from './errors.ts';
-import { PackageSpans } from './spans.ts';
 
 /** Cache-stored payload — the stable id verify re-confirms on
  *  every cycle. Distilled doc Invariant 8: the probe MUST consume
@@ -323,13 +322,6 @@ export const acquireLocal = (
 			// PublishError is the plugin-internal phase taxonomy; we map
 			// it to `ArtifactPublishError` at the substrate boundary.
 			produce: Effect.gen(function* () {
-				yield* Effect.annotateCurrentSpan({
-					[PackageSpans.publish.package]: inputs.packageName,
-					[PackageSpans.publish.sourcePath]: inputs.sourcePath,
-					[PackageSpans.publish.chainId]: inputs.chainId,
-					[PackageSpans.publish.publisher]: inputs.publisherAddress,
-				});
-
 				// Produce 1/5 — scrub locks. Distilled doc §Move-specific
 				// concerns + Invariant 14: strip pinned sections from every
 				// `~/.move/git/**/Move.lock` (vendored dep caches) before
@@ -338,13 +330,11 @@ export const acquireLocal = (
 				// checked-in source is left untouched host-side. Uses the
 				// unified `stripPinnedSections` (re-exported through `build.ts`
 				// → from `../sui/move-lock-scrub.ts`) — NO duplicate.
-				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'scrub' });
 				yield* scrubLocksHost(inputs.sourcePath, '~/.move');
 
 				// Produce 2/5 — build. Executor dispatches between (a)
 				// per-app build container, (b) `docker run --rm`, (c) host
 				// `sui` CLI.
-				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'build' });
 				const buildOutput: BuildOutput = yield* inputs.executor
 					.build({
 						sourcePath: inputs.sourcePath,
@@ -373,7 +363,6 @@ export const acquireLocal = (
 				// Produce 3/5 — publish-tx. Construct `Transaction.publish`,
 				// sign + execute via the publisher's account signer, decode
 				// the output.
-				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'publish-tx' });
 				const output: LocalPackagePublishOutput = yield* inputs.executor.publishTx({
 					modules: buildOutput.modules,
 					dependencies: buildOutput.dependencies,
@@ -388,7 +377,6 @@ export const acquireLocal = (
 				// `PublishExecutor`): the publisher account's
 				// `signAndExecute` already awaits `waitForTransaction`, so
 				// the typical race is closed before we reach here.
-				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'waiting-for-index' });
 				// Best-effort only: the executor's hint swallows transient
 				// `getObject` misses and logs at debug, so its error channel
 				// collapses to `never` (see `publish-executor.ts →
@@ -400,7 +388,6 @@ export const acquireLocal = (
 				// concerns: pick the `'published'` change for packageId;
 				// pick the `UpgradeCap`-typed `'created'` change for the
 				// upgrade cap.
-				yield* Effect.annotateCurrentSpan({ [PackageSpans.publish.phase]: 'parse' });
 				const published = pickPublishedChange(output.objectChanges);
 				if (!published?.objectId) {
 					return yield* Effect.fail(

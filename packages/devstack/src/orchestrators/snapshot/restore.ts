@@ -40,6 +40,7 @@ import {
 	type SnapshotId,
 	type CapturedContainer,
 	type IdentitySlice,
+	type SnapshotGraphInputIdentity,
 	type SnapshotMetadata,
 	isRestorableContainerImageName,
 	isSafeSnapshotPathSegment,
@@ -57,6 +58,7 @@ import {
 import { makePhaseFailer } from './phase-error.ts';
 import {
 	mergeContributions,
+	requireIdentity,
 	runIdentityGuard,
 	runRuntimeIdentityGuard,
 	type IdentityContribution,
@@ -68,10 +70,7 @@ import {
 	type StageAndSwapError,
 	type StageAndSwapPreservedPath,
 } from '../../substrate/runtime/stage-and-swap/index.ts';
-import {
-	executeFsPlan,
-	type ReconcileFsOp,
-} from '../../substrate/runtime/reconcile/index.ts';
+import { executeFsPlan, type ReconcileFsOp } from '../../substrate/runtime/reconcile/index.ts';
 import {
 	COMMAND_CHANNEL_COMMANDS_FILE_NAME,
 	COMMAND_CHANNEL_EVENTS_FILE_NAME,
@@ -112,6 +111,7 @@ export class RestorePhaseError extends Schema.TaggedErrorClass<RestorePhaseError
 			'pre-cleanup',
 			'resume',
 			'missing-subtree-fatal',
+			'graph-input-mismatch',
 		]),
 		plugin: Schema.optional(Schema.String),
 		detail: Schema.String,
@@ -148,7 +148,7 @@ export interface RestoreParticipant {
 	 *  side-state). Identity-guard runs FIRST and unilaterally; this
 	 *  is the plugin's extra hook. */
 	readonly preRestore?: Effect.Effect<void>;
-	/** Post-restore hook: re-validate, warm caches, etc. */
+	/** Post-restore hook: re-validate caches or plugin side state. */
 	readonly postRestore?: Effect.Effect<void>;
 }
 
@@ -207,7 +207,7 @@ const readMeta = (
 			);
 		}
 		return meta;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.read-meta'));
+	});
 
 const verifyIntegrity = (
 	artifactDir: string,
@@ -256,7 +256,7 @@ const removeCapturedContainers = (
 					),
 				);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.remove-containers'));
+	});
 
 // -----------------------------------------------------------------------------
 // Post-publish Docker image finalization.
@@ -457,7 +457,7 @@ const preflightArtifact = (
 				Effect.catch(failPhase('untar-host-tree', `host-tree tar entry validation failed`)),
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.preflight'));
+	});
 
 // -----------------------------------------------------------------------------
 // Image load + staged re-tag.
@@ -514,7 +514,7 @@ const loadImageBundle = (
 			refsByTag.set(ref.tag, ref);
 		}
 		return refsByTag;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.load-image-bundle'));
+	});
 
 const expectedSnapshotTagsByBundle = (
 	containers: ReadonlyArray<CapturedContainer>,
@@ -557,7 +557,7 @@ const stageLoadedImage = (
 				),
 			);
 		return stagedImage;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.stage-image'));
+	});
 
 const cleanupRestoreStagingImages = (
 	runtime: ContainerRuntime,
@@ -594,6 +594,17 @@ const promoteStagedImages = (
 ): Effect.Effect<void, RestorePhaseError> =>
 	Effect.gen(function* () {
 		for (const image of images) {
+			// Image GC: the promote below moves `image.captured.imageName` from
+			// the layer it currently resolves to (a prior restore/capture of the
+			// same name, now superseded) onto the freshly-staged snapshot layer.
+			// The previous layer is then orphaned — no tag references it — and
+			// would dangle forever. Read the old layer's digest BEFORE the promote
+			// so we can drop it AFTER. A null here (first restore: nothing tagged
+			// that name yet) means there is no orphan to collect. Mirrors capture's
+			// `resumeAfterCapture` GC exactly.
+			const oldDigest = yield* runtime
+				.inspectImageDigest(image.captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
 			yield* runtime
 				.tagImage(image.stagedRef, image.captured.imageName, {
 					removeSourceAfterTag: true,
@@ -607,8 +618,39 @@ const promoteStagedImages = (
 						),
 					),
 				);
+			// ORDERING INVARIANT: GC runs strictly AFTER the promote succeeds.
+			// Removing the old layer before the promote would destroy the live
+			// image if the promote then failed. Now `imageName` resolves to the
+			// new staged layer; read that digest to confirm the orphan is
+			// genuinely distinct.
+			const newDigest = yield* runtime
+				.inspectImageDigest(image.captured.imageName)
+				.pipe(Effect.catch(() => Effect.succeed(null)));
+			// Two guards before removal:
+			//   - null guard: no previous layer to collect (first restore).
+			//   - equal-digest guard: the staged image is an identical layer id,
+			//     so `imageName` still resolves to it — removing `oldDigest` would
+			//     delete the LIVE layer. Skip the no-op case.
+			if (oldDigest !== null && oldDigest !== newDigest) {
+				// Digest-only target: `removeImage` resolves `tag ?? digest`, so a
+				// digest-only ref drops the orphaned layer by id, NOT the live
+				// `imageName` tag. Best-effort — any failure (image-in-use,
+				// multiple tags, ImageRemoveFailed) is logged and swallowed; it
+				// must NEVER fail the restore. Mirrors capture's GC swallow.
+				yield* runtime
+					.removeImage({ digest: oldDigest })
+					.pipe(
+						Effect.catch((cause) =>
+							Effect.logWarning(
+								`GC of superseded image layer ${oldDigest} for ${image.captured.imageName} failed (best-effort): ${String(
+									cause,
+								)}`,
+							),
+						),
+					);
+			}
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.promote-images'));
+	});
 
 const restoreHostTree = (
 	artifactDir: string,
@@ -640,14 +682,13 @@ const restoreHostTree = (
 		yield* Effect.scoped(untarHostTree(tarStream, { target })).pipe(
 			Effect.catch(failPhase('untar-host-tree', `untar ${tarPath} to ${target} failed`)),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.host-tree'));
+	});
 
 const LIVE_RESTORE_PRESERVED_PATHS: ReadonlyArray<StageAndSwapPreservedPath> = [
 	{ relativePath: SNAPSHOTS_DIR_NAME },
 	{ relativePath: COMMAND_CHANNEL_COMMANDS_FILE_NAME },
 	{ relativePath: COMMAND_CHANNEL_EVENTS_FILE_NAME },
 	{ relativePath: 'roster.json' },
-	{ relativePath: 'container-claims.json' },
 	// Deploy/mint caches (DEPLOY_CACHE_NAMESPACES) are DELIBERATELY ABSENT from
 	// this preserve list. The snapshot's host-tree tar now CARRIES `cache/<ns>`
 	// (see `deployCacheSubtreeRelPaths` in descriptor.ts + capture's gather), so
@@ -790,7 +831,7 @@ const requireSnapshotDeployCache = (
 					`missing namespaces with FRESH ids and orphan their pre-snapshot objects. Refusing.`,
 			);
 		}
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.cache-preflight'));
+	});
 
 // -----------------------------------------------------------------------------
 // Top-level restore — bracketed-atomic via stage-and-swap.
@@ -802,9 +843,21 @@ export interface RestoreInputs {
 	readonly runtimeStackRoot: string;
 	readonly runtimeStagingPath: string;
 	readonly runtimeBackupPath: string;
+	/** Live-stack participants whose `liveIdentity` probes feed the
+	 *  cross-plugin CONTRIBUTION guard (`runIdentityGuard`). An EMPTY list
+	 *  means "no live stack to compare against" — startup restore,
+	 *  interrupted-restore recovery, the offline CLI verb, or the live
+	 *  supervisor's own first acquire. In that case the
+	 *  contribution guard is satisfied tautologically (there is nothing live
+	 *  to disagree with the snapshot's recorded identity) and is SKIPPED;
+	 *  the snapshot-side emptiness refusal (`requireIdentity`) and the
+	 *  runtime guard (`runRuntimeIdentityGuard`, app/stack/network) STILL
+	 *  fire. See the step0 body for the rationale. */
 	readonly participants: ReadonlyArray<RestoreParticipant>;
 	readonly runtime: ContainerRuntime;
 	readonly runtimeIdentity: SnapshotRuntimeIdentity;
+	readonly currentGraphInput?: SnapshotGraphInputIdentity;
+	readonly graphInputMismatchPolicy?: 'warn' | 'block';
 	// RESUME is intentionally NOT a field here. `runRestore` performs the
 	// destructive swap+load+hard-rm UNDER `stack.lock` (held by the caller).
 	// The resume re-converges the stack, and each plugin's re-acquire takes
@@ -814,6 +867,26 @@ export interface RestoreInputs {
 	// the lock scope closes; `runRestore` owns only the locked half of the
 	// bounce. NEVER `docker start` — the resume is recreate-from-restored-image.
 }
+
+export const graphInputMismatchDetail = (
+	snapshotGraphInputId: string,
+	currentGraphInputId: string,
+): string =>
+	`snapshot graph input id ${snapshotGraphInputId} does not match current graph input id ${currentGraphInputId}; restoring may create inconsistent state`;
+
+const checkGraphInputCompatibility = (
+	meta: SnapshotMetadata,
+	current: SnapshotGraphInputIdentity | undefined,
+	policy: 'warn' | 'block' | undefined,
+): Effect.Effect<void, RestorePhaseError> => {
+	if (current === undefined) return Effect.void;
+	if (meta.graphInput.graphInputId === current.graphInputId) return Effect.void;
+	const detail = graphInputMismatchDetail(meta.graphInput.graphInputId, current.graphInputId);
+	if (policy === 'block') {
+		return Effect.fail(new RestorePhaseError({ phase: 'graph-input-mismatch', detail }));
+	}
+	return Effect.logWarning(detail);
+};
 
 /**
  * Run the full restore. Routed through the unified reconcile as an
@@ -861,11 +934,6 @@ export const runRestore = (
 	FileSystem.FileSystem
 > =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'restore',
-			'devstack.snapshot.artifact': inputs.artifactDir,
-		});
-
 		// Authoritative meta read (PURE — no mutation), then re-verify the
 		// artifact's per-file SHA-256 integrity before any mutation. The
 		// artifact is being RESTORED here, so `integrity.json` is re-hashed
@@ -875,23 +943,49 @@ export const runRestore = (
 		// docker load, or container replacement.
 		const meta = yield* readMeta(inputs.artifactDir, inputs.snapshotId);
 		yield* verifyIntegrity(inputs.artifactDir);
+		yield* checkGraphInputCompatibility(
+			meta,
+			inputs.currentGraphInput,
+			inputs.graphInputMismatchPolicy,
+		);
 
 		// step0 — PRECONDITION: identity guard, FAIL-CLOSED before the FIRST
 		//    mutation. Compare the metadata's runtime identity and the merged
 		//    plugin-contributed identity; on disagreement restore refuses
 		//    HERE, before the swap-tree build's docker load/tag runs (guardrail
 		//    §3.2; restore.test sweep/load/tag === [] on mismatch).
+		//
+		//    The RUNTIME guard (app/stack/network) ALWAYS fires — its `live`
+		//    side is `inputs.runtimeIdentity`, sourced from the live process's
+		//    `IdentityContext`, never from the snapshot — so a boot against a
+		//    foreign app/stack/network still refuses.
 		yield* runRuntimeIdentityGuard(
 			{ app: meta.app, stack: meta.stack, network: meta.network },
 			inputs.runtimeIdentity,
 		);
-		const liveContributions: IdentityContribution[] = [];
-		for (const participant of inputs.participants) {
-			const slice = yield* participant.liveIdentity;
-			liveContributions.push({ plugin: participant.plugin, slice });
+		// The cross-plugin CONTRIBUTION guard is conditional on there being a
+		// LIVE stack to compare against. Startup/offline restore
+		// (interrupted-restore recovery, the offline CLI verb, or the live
+		// supervisor's own initial acquire) runs with `participants === []`:
+		// the supervisor has not yet registered any snapshot participant, so
+		// there is no live identity to contribute. Running `runIdentityGuard`
+		// against an empty live slice would ALWAYS fail `IdentityMissingLive`
+		// because the snapshot recorded keys that no live participant has
+		// contributed yet. With no live stack the comparison is vacuously
+		// satisfied, so skip it.
+		// The snapshot-side emptiness refusal still fires: a snapshot that
+		// recorded NO identity is untrusted regardless of a live stack.
+		if (inputs.participants.length === 0) {
+			yield* requireIdentity(meta.identity, 'snapshot');
+		} else {
+			const liveContributions: IdentityContribution[] = [];
+			for (const participant of inputs.participants) {
+				const slice = yield* participant.liveIdentity;
+				liveContributions.push({ plugin: participant.plugin, slice });
+			}
+			const live = yield* mergeContributions(liveContributions);
+			yield* runIdentityGuard(meta.identity, live);
 		}
-		const live = yield* mergeContributions(liveContributions);
-		yield* runIdentityGuard(meta.identity, live);
 
 		// step0b — cache-existence preflight, ALSO fail-closed before any
 		//    mutation. The SNAPSHOT's host-tree cache is the SOLE source of the
@@ -1105,4 +1199,4 @@ export const runRestore = (
 		// (the next boot is the resume). NEVER `docker start`.
 
 		return meta;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore'));
+	});

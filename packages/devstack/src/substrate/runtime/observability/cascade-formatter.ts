@@ -10,9 +10,9 @@
 //   - No service names: the formatter inspects `_tag` strings and
 //     structured fields verbatim, never branches on a specific
 //     concrete plugin error class.
-//   - Pluggable per-error-class formatters via a `formatters` map
-//     keyed by `_tag`. The default formatter handles tagged errors,
-//     plain `Error`, defects, and Interrupts.
+//   - Discover-by-shape: the default rendering handles tagged errors,
+//     plain `Error`, defects, and Interrupts. A tagged error's extra
+//     plain-data fields render automatically (see `formatTagged`).
 //
 // Output shape:
 //
@@ -33,34 +33,6 @@ import { Cause } from 'effect';
 import { redactText, redactValue, type RedactionRule } from './redaction.ts';
 
 // -----------------------------------------------------------------------------
-// Plug-in formatter API
-// -----------------------------------------------------------------------------
-
-/**
- * Per-tag formatter override. Receives the tagged-error-like value
- * and the default formatter (so a plugin formatter can recurse on a
- * nested `cause` field without re-implementing the walk).
- *
- * Return `null` to fall back to the default rendering.
- *
- * Architecture: the formatter registry is keyed by `_tag` string —
- * the substrate never imports a concrete plugin error class. Plugins
- * register their custom renderer via the supervisor harvest loop over
- * `errorContributions` (see `substrate/plugin.ts:PluginErrorContribution`).
- */
-export type TagFormatter = (
-	value: TaggedErrorLike,
-	recurse: (inner: unknown) => string,
-) => string | null;
-
-/** Per-tag formatter map. */
-export type FormatterRegistry = ReadonlyMap<string, TagFormatter>;
-
-/** Empty registry — the formatter falls back to the default
- *  rendering for every value. */
-export const emptyFormatterRegistry: FormatterRegistry = new Map();
-
-// -----------------------------------------------------------------------------
 // Render budget
 // -----------------------------------------------------------------------------
 
@@ -68,8 +40,6 @@ const DEFAULT_FIELD_TRUNCATE = 8192;
 const DEFAULT_MAX_DEPTH = 12;
 
 export interface FormatOptions {
-	/** Per-tag override registry. Defaults to the empty registry. */
-	readonly formatters?: FormatterRegistry;
 	/** Truncate individual fields (stderr/stdout/detail) past this
 	 *  length. Default 8 KiB. */
 	readonly fieldTruncate?: number;
@@ -121,7 +91,6 @@ export const isTaggedError = (value: unknown): value is TaggedErrorLike =>
  */
 export const formatCause = <E>(cause: Cause.Cause<E>, options?: FormatOptions): string => {
 	const opts: Required<FormatOptions> = {
-		formatters: options?.formatters ?? emptyFormatterRegistry,
 		fieldTruncate: options?.fieldTruncate ?? DEFAULT_FIELD_TRUNCATE,
 		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
 		redactions: options?.redactions ?? [],
@@ -142,7 +111,6 @@ export const formatCause = <E>(cause: Cause.Cause<E>, options?: FormatOptions): 
  */
 export const formatValue = (value: unknown, options?: FormatOptions): string => {
 	const opts: Required<FormatOptions> = {
-		formatters: options?.formatters ?? emptyFormatterRegistry,
 		fieldTruncate: options?.fieldTruncate ?? DEFAULT_FIELD_TRUNCATE,
 		maxDepth: options?.maxDepth ?? DEFAULT_MAX_DEPTH,
 		redactions: options?.redactions ?? [],
@@ -220,12 +188,6 @@ const formatTagged = (
 	visited: WeakSet<object>,
 	depth: number,
 ): string => {
-	const override = opts.formatters.get(value._tag);
-	if (override) {
-		const result = override(value, (inner) => formatAny(inner, opts, visited, depth + 1));
-		if (result !== null) return result;
-	}
-
 	const qualifier =
 		typeof value.phase === 'string'
 			? `(${value.phase})`

@@ -16,6 +16,12 @@ export interface ConfigLoader {
 
 /** Minimum shape command surfaces need from a loaded config. */
 export interface LoadedConfig {
-	readonly stack: { readonly _tag: 'Stack' };
+	readonly stack: {
+		readonly _tag: 'Stack';
+		readonly options?: {
+			readonly stateDir?: string;
+		};
+	};
+	readonly engine: { readonly _tag: 'Stack' };
 	readonly resolvedConfigPath: string;
 }

@@ -1,10 +1,12 @@
 // Coin plugin — CoinRegistry tests.
 //
-// Covers the L2 `CoinRegistry` wrapper that sits on top of the
-// generic `ScopedRefMap<CoinKey, CoinRecord>` substrate primitive:
+// Covers the L2 `CoinRegistry` and its self-contained last-write-wins
+// `CoinKey -> CoinRecord` backing (formerly the substrate
+// `defineScopedRefMap` single mode, strangled into the plugin):
 // register, lookup-by-witness (package-scoped), lookup-by-type
-// (exact full-coin-type), list, and scope-bound lifecycle (each
-// Layer build materializes an independent registry).
+// (exact full-coin-type), list, LWW + one-entry-per-key + insertion
+// order across many writes, and scope-bound lifecycle (each Layer
+// build materializes an independent registry).
 
 import { describe, expect, it } from '@effect/vitest';
 import { Effect } from 'effect';
@@ -132,6 +134,28 @@ describe('plugins/coin/registry', () => {
 			expect(all).toHaveLength(1);
 			expect(all[0]?.decimals).toBe(6);
 			expect(all[0]?.symbol).toBe('USDC-v2');
+		}).pipe(Effect.provide(layerCoinRegistry)),
+	);
+
+	// Migrated from the substrate single-mode suite (`setSingleEntry` /
+	// "repeated set keeps LWW + insertion order across many writes"):
+	// re-registering a key must keep exactly one entry for it (no history
+	// leak) AND advance its position to the END of `list` (its seq
+	// overtook the sibling registered after it).
+	it.effect('re-register keeps one entry per key and re-sorts it to the end of list', () =>
+		Effect.gen(function* () {
+			const registry = yield* CoinRegistryService;
+			yield* registry.register(makeRecord({ type: '0xabc::x::X', decimals: 0 }));
+			yield* registry.register(makeRecord({ type: '0xabc::y::Y', decimals: 0 }));
+			// Hammer 'x' 50 times — the backing store must stay at one entry
+			// per key, and the final list orders by latest seq: y, then x.
+			for (let i = 1; i <= 50; i++) {
+				yield* registry.register(makeRecord({ type: '0xabc::x::X', decimals: i }));
+			}
+			const all = yield* registry.list();
+			expect(all).toHaveLength(2);
+			expect(all.map((r) => r.type)).toEqual(['0xabc::y::Y', '0xabc::x::X']);
+			expect(all[1]?.decimals).toBe(50);
 		}).pipe(Effect.provide(layerCoinRegistry)),
 	);
 

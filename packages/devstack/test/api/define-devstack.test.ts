@@ -21,7 +21,6 @@ import { account } from '../../src/plugins/account/index.ts';
 import { coin } from '../../src/plugins/coin/index.ts';
 import { hostService } from '../../src/plugins/host-service/index.ts';
 import { localPackage } from '../../src/plugins/package/index.ts';
-import { postgres } from '../../src/plugins/postgres/index.ts';
 import { sui } from '../../src/plugins/sui/index.ts';
 import { wallet } from '../../src/plugins/wallet/index.ts';
 
@@ -129,14 +128,6 @@ describe('defineDevstack — plugin entrypoint expansion', () => {
 		expect(isResourceRef(plugin)).toBe(true);
 		expect(plugin.id).toBe('sui');
 		expect(plugin.dependsOn).toEqual([]);
-	});
-
-	it('treats dependency-free service factories as definePlugin resource refs', () => {
-		for (const plugin of [postgres()] as const) {
-			expect(isPlugin(plugin)).toBe(true);
-			expect(isResourceRef(plugin)).toBe(true);
-			expect(plugin.dependsOn).toEqual([]);
-		}
 	});
 
 	it('recursively includes plugin-valued dependencies before validation and runtime boot', () => {

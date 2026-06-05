@@ -22,7 +22,7 @@
 
 import { Effect } from 'effect';
 
-import { SpanAttr } from '../../substrate/runtime/observability/spans.ts';
+import { LogAttr } from '../../substrate/runtime/observability/log-attrs.ts';
 
 /** Result of resolving the origin allowlist at boot. Captured into the
  *  server closure so per-request checks are pure string comparison. */
@@ -78,8 +78,8 @@ export const resolveOriginPolicy = (inputs: OriginPolicyInputs): Effect.Effect<O
 		if (allowed.size === 0) {
 			yield* Effect.logWarning('dashboard origin allowlist is empty').pipe(
 				Effect.annotateLogs({
-					[SpanAttr.app]: inputs.app,
-					[SpanAttr.stack]: inputs.stack,
+					[LogAttr.app]: inputs.app,
+					[LogAttr.stack]: inputs.stack,
 				}),
 			);
 		}

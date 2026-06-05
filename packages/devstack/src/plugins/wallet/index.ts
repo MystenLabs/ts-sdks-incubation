@@ -28,7 +28,6 @@
 import { Effect } from 'effect';
 
 import { definePlugin, resource } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { attachPluginExpander } from '../../contracts/plugin-expander.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
 import {
@@ -44,7 +43,7 @@ import {
 } from '../host-service/index.ts';
 
 import { makeWalletCodegen } from './codegen.ts';
-import { WALLET_ERROR_TAGS, walletBootError } from './errors.ts';
+import { walletBootError } from './errors.ts';
 import { makeWalletRoutable, WALLET_ENTRYPOINT_PORT, WALLET_ROUTE_ROLE } from './routable.ts';
 import { makeWalletSnapshotable } from './snapshot.ts';
 import {
@@ -91,7 +90,6 @@ const isAccountResourceMember = (
 /** The wallet plugin's resource identity. ONE per stack (15-wallet.md
  *  "singleton per stack"). The id is `'wallet'` (singular). */
 const walletResource = resource<'wallet', WalletValue>('wallet');
-const walletErrorContributions = pluginErrorContributions(WALLET_ERROR_TAGS);
 
 // ----------------------------------------------------------------------
 // User-facing factory
@@ -333,7 +331,6 @@ function makeWalletMember<Accounts extends ReadonlyArray<WalletAccountMember>>(
 
 				return resolved;
 			}),
-		errorContributions: walletErrorContributions,
 	});
 }
 
@@ -381,7 +378,6 @@ export type {
 	WalletRequestError,
 	WalletRequestPhase,
 } from './errors.ts';
-export { WALLET_ERROR_TAGS } from './errors.ts';
 export type { OriginPolicy, OriginPolicyInputs, OriginCheckResult } from './origin-policy.ts';
 export { resolveOriginPolicy, checkOrigin, corsHeadersFor } from './origin-policy.ts';
 export type { PairingToken } from './pairing.ts';
@@ -396,7 +392,6 @@ export {
 	redactToken,
 } from './pairing.ts';
 export { WALLET_ENDPOINT_NAME, WALLET_ENDPOINT_KEY, makeWalletRoutable } from './routable.ts';
-export { WalletSpans } from './spans.ts';
 export {
 	dispatch,
 	startHttpServer,

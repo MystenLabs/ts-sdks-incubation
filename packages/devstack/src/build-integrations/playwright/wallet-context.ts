@@ -239,6 +239,9 @@ export const createWalletAdapter = (options: WalletAdapterOptions = {}): WalletA
  *  in-spec-helpers' import path. */
 export const DAPP_KIT_SLOT = DAPP_KIT_SLOT_KEY;
 
+const SELECT_ACCOUNT_SLOT_TIMEOUT_MS = 10_000;
+const SELECT_ACCOUNT_SLOT_POLL_MS = 50;
+
 /**
  * Connect/switch the app's active dev-wallet account through the dapp-kit
  * slot the app populates at boot.
@@ -268,27 +271,53 @@ export const selectAccount = async (
 	page: PlaywrightPageLike,
 	accountName: string,
 ): Promise<void> => {
+	const deadline = Date.now() + SELECT_ACCOUNT_SLOT_TIMEOUT_MS;
+	let lastEvaluateError: unknown;
 	// `evaluate`'s closure is serialized into the browser; the slot
 	// shape (`DAppKitSlot`) lives in `runtime/dapp-kit-slot.ts` — the
 	// in-browser closure can't import it, but the global-augmentation
 	// `globalThis.__devstackDAppKit__` is the typed contract both sides
 	// rely on.
-	const result = await page.evaluate(async (name): Promise<{ ok: boolean; reason?: string }> => {
-		const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
-		if (slot === undefined || slot.selectAccount === undefined) {
-			return { ok: false, reason: 'slot-not-populated' };
-		}
+	for (;;) {
+		let result: { ok: boolean; reason?: string };
 		try {
-			await slot.selectAccount(name as string);
-			return { ok: true };
-		} catch (err) {
-			return {
-				ok: false,
-				reason: err instanceof Error ? err.message : String(err),
-			};
+			result = await page.evaluate(async (name): Promise<{ ok: boolean; reason?: string }> => {
+				const slot = (globalThis as { __devstackDAppKit__?: DAppKitSlot }).__devstackDAppKit__;
+				if (slot === undefined || slot.selectAccount === undefined) {
+					return { ok: false, reason: 'slot-not-populated' };
+				}
+				try {
+					await slot.selectAccount(name as string);
+					return { ok: true };
+				} catch (err) {
+					return {
+						ok: false,
+						reason: err instanceof Error ? err.message : String(err),
+					};
+				}
+			}, accountName);
+		} catch (cause) {
+			lastEvaluateError = cause;
+			if (Date.now() < deadline) {
+				await new Promise((resolve) => setTimeout(resolve, SELECT_ACCOUNT_SLOT_POLL_MS));
+				continue;
+			}
+			throw new PlaywrightWalletAdapterError({
+				message:
+					`selectAccount("${accountName}") failed: page evaluation did not settle before ` +
+					`${SELECT_ACCOUNT_SLOT_TIMEOUT_MS}ms. Confirm the app finished loading before ` +
+					`calling connectAs().`,
+				operation: 'switch-account',
+				cause: lastEvaluateError,
+			});
 		}
-	}, accountName);
-	if (!result.ok) {
+
+		if (result.ok) return;
+		if (result.reason === 'slot-not-populated' && Date.now() < deadline) {
+			await new Promise((resolve) => setTimeout(resolve, SELECT_ACCOUNT_SLOT_POLL_MS));
+			continue;
+		}
+
 		throw new PlaywrightWalletAdapterError({
 			message:
 				`selectAccount("${accountName}") failed: ${result.reason ?? 'unknown'}. ` +

@@ -40,7 +40,6 @@ import { WalletHttpPath } from './protocol.ts';
 // ----------------------------------------------------------------------
 
 import type { ResourceRef } from '../../api/define-plugin.ts';
-import { WalletSpans } from './spans.ts';
 
 /** Literal sentinel for `WalletOptions.accounts: 'all'` — every account
  *  member in the stack. Expanded by the composer at `defineDevstack`
@@ -178,22 +177,10 @@ export const acquireWallet = (
 	ctx: WalletAcquireContext,
 ): Effect.Effect<WalletValue, WalletBootError, Scope.Scope | FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			[WalletSpans.app]: ctx.app,
-			[WalletSpans.stack]: ctx.stack,
-			[WalletSpans.chain]: ctx.chain,
-		});
-
 		// 1. Resolve the dependency account values. The barrel sets up
 		//    `resolveAccounts` to walk the BuildContext via resolved dependencies in
 		//    `opts.accounts`; we just project to the address-keyed map.
-		//    Count is annotated AFTER resolution — `opts.accounts` may
-		//    be the `'all'` sentinel before composer expansion, so the
-		//    resolved-array length is the load-bearing value.
 		const accounts = yield* ctx.resolveAccounts();
-		yield* Effect.annotateCurrentSpan({
-			[WalletSpans.accountCount]: accounts.length,
-		});
 		if (accounts.length === 0) {
 			return yield* Effect.fail(
 				walletBootError({
@@ -273,16 +260,11 @@ export const acquireWallet = (
 			},
 		};
 
-		yield* Effect.annotateCurrentSpan({
-			[WalletSpans.url]: walletUrl,
-			[WalletSpans.localPort]: port,
-		});
-
 		// Defensive: NEVER log `pairUrl` directly. It carries the token.
 		yield* Effect.logInfo('wallet ready').pipe(
 			Effect.annotateLogs({
-				[WalletSpans.url]: walletUrl,
-				[WalletSpans.token]: 'redacted-fragment',
+				'wallet.url': walletUrl,
+				'wallet.token': 'redacted-fragment',
 			}),
 		);
 

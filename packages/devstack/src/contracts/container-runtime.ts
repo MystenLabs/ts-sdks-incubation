@@ -97,6 +97,9 @@ export interface EnsureContainerSpec {
 	 *  with RocksDB/WAL-backed data should request enough time to flush
 	 *  cleanly; the runtime default is 10 seconds. */
 	readonly stopGraceSeconds?: number;
+	/** Optional signal for the scope finalizer's `docker stop` call.
+	 *  Omit to use Docker's image/default stop signal. */
+	readonly stopSignal?: string;
 	/** How published host ports participate in existing-container
 	 *  reconciliation. Default `exact` treats a binding mismatch as
 	 *  config drift. `adopt-existing` lets a same-name, image-matching
@@ -240,10 +243,8 @@ export interface ContainerRuntime {
 
 	/** Run a one-shot command inside a running container and capture
 	 *  its output. The runtime does NOT promote a non-zero exit to
-	 *  failure — the caller is the policy holder (the postgres plugin
-	 *  treats non-zero from `pg_isready` as "retry", but non-zero from
-	 *  `createdb` as a typed plugin error). Only daemon-level failures
-	 *  (no such container, daemon unreachable) surface as
+	 *  failure — the caller is the policy holder. Only daemon-level
+	 *  failures (no such container, daemon unreachable) surface as
 	 *  `ContainerRuntimeError`. */
 	readonly exec: (
 		handle: ContainerHandle,
@@ -264,27 +265,12 @@ export interface ContainerRuntime {
 		labels: ContainerLabelTuple,
 	) => Effect.Effect<ReadonlyArray<ContainerHandle>, ContainerRuntimeError>;
 
-	readonly followLogs: (handle: ContainerHandle) => Stream.Stream<string, ContainerRuntimeError>;
-
-	/** Pause a running container. Snapshot capture uses this to establish
-	 *  one stack-wide quiescence window before any artifact is written. */
-	readonly pause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
-
 	/** Commit a container's writable layer to a snapshot image. Running
 	 *  containers are paused first; paused, exited, and created
 	 *  containers are already quiescent and are committed as-is. */
 	readonly pauseAndCommit: (
 		handle: ContainerHandle,
 	) => Effect.Effect<TaggedImageRef, ContainerRuntimeError>;
-
-	/** Stream an image's bytes as if produced by `docker save <ref>`.
-	 *  Used by the snapshot orchestrator to persist committed images to
-	 *  tar files; consumers compose with a file-write sink so large
-	 *  images don't materialise in memory. */
-	readonly saveImage: (
-		ref: ImageRef,
-		opts?: SaveImageOptions,
-	) => Stream.Stream<Uint8Array, ContainerRuntimeError>;
 
 	/** Stream a deduplicated `docker save <ref...>` bundle. Snapshot
 	 *  capture uses this for multi-container stacks so shared base layers
@@ -317,18 +303,18 @@ export interface ContainerRuntime {
 	 *  treated as already-cleaned. */
 	readonly removeImage: (ref: ImageRef) => Effect.Effect<void, ContainerRuntimeError>;
 
-	readonly unpause: (handle: ContainerHandle) => Effect.Effect<void, ContainerRuntimeError>;
+	/** Resolve a ref (tag or digest) to the image id/digest it currently
+	 *  points at, or `null` when the ref does not exist on-host. Snapshot
+	 *  capture-resume uses this to identify the layer a name resolved to
+	 *  BEFORE a retag (the soon-to-be-superseded layer) and the layer it
+	 *  resolves to AFTER (the freshly-committed one), so the orphaned
+	 *  previous layer can be GC'd without touching the live tag. */
+	readonly inspectImageDigest: (ref: string) => Effect.Effect<string | null, ContainerRuntimeError>;
 
 	readonly stop: (
 		handle: ContainerHandle,
 		grace: Duration.Duration,
 	) => Effect.Effect<void, ContainerRuntimeError>;
-
-	/** Boot-time orphan cleanup. This is container-only and skips names
-	 *  still present in the cross-process claim ledger. */
-	readonly sweepOrphans: (
-		labelMatch: Partial<ContainerLabelTuple>,
-	) => Effect.Effect<number, ContainerRuntimeError>;
 
 	/** Force-remove managed containers matching the partial label tuple,
 	 *  regardless of claim-ledger entries. Wipe uses this for explicit

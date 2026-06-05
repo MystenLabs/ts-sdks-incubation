@@ -49,7 +49,7 @@ import {
 	layerDockerCycleInitial,
 	layerDockerHostDefault,
 } from '../runtime/docker/index.ts';
-import { awaitAll, readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
+import { readResolvedSync } from '../substrate/runtime/lifecycle/index.ts';
 import { operationalEndpointEventsFromResolvedValue } from '../substrate/runtime/projection/operational-endpoints.ts';
 import { Logger, layerLogger } from '../substrate/runtime/observability/index.ts';
 import {
@@ -57,6 +57,7 @@ import {
 	layerPostAcquireTasks,
 } from '../substrate/runtime/post-acquire-tasks.ts';
 import {
+	allReadyOrTerminal,
 	startSupervisor,
 	type ContributionDispatcher,
 	type SupervisedStack,
@@ -219,6 +220,7 @@ const buildPluginContext = (): Effect.Effect<
  *  the supervisor-boot site. */
 export interface SuperviseStackOptions<R = Scope.Scope, ExtendR = never, HookE = never> {
 	readonly lifetime?: 'long-running' | 'one-shot';
+	readonly devstackVersion?: string;
 	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, R>;
 	readonly commandHandler?: SupervisorCommandHandler;
@@ -259,15 +261,30 @@ export const superviseStackEffect = <R = Scope.Scope, ExtendR = never, HookE = n
 					opts.contributionDispatcher,
 					opts.commandHandler,
 					opts.postAcquireHook,
-					{ commandLoop: opts.lifetime !== 'one-shot' },
+					{
+						commandLoop: opts.lifetime !== 'one-shot',
+						...(opts.devstackVersion === undefined
+							? {}
+							: { devstackVersion: opts.devstackVersion }),
+					},
 				);
 				const { handle } = startup;
 				if (opts.beforeInitialAcquire !== undefined) {
 					yield* opts.beforeInitialAcquire(handle);
 				}
 				if (opts.lifetime === 'one-shot') {
+					// `runInitialAcquire` runs `acquireFullGraph` to completion (every
+					// node reaches a terminal status) before it returns. Gate the
+					// one-shot `withinScope` on the SUPERVISOR-OWNED readiness signal
+					// — `allReadyOrTerminal` (`ready || done`) — NOT a per-node
+					// `awaitReady` watcher. A run-to-completion `task` node lands in
+					// `done`; the registry contract admits a `done`-status node whose
+					// `readyGate` is unresolved (only `markReady`/`markFailed` resolve
+					// it), so a per-node gate HANGS on it. This is the SAME
+					// `done`-tolerant gate S1 gave the long-running path; reading
+					// statuses never suspends, so it is hang-free.
 					yield* startup.runInitialAcquire;
-					yield* awaitAll(startup.handle.registry, [...startup.handle.graph.nodes.keys()]);
+					yield* allReadyOrTerminal(startup.handle.graph, startup.handle.registry);
 					if (opts.withinScope !== undefined) {
 						yield* opts.withinScope(handle);
 					}
@@ -306,7 +323,7 @@ export interface ProductionCodegenOptions {
 /**
  * The ONE boot seam that maps a stack's codegen config to the production
  * codegen orchestrator options. Both composition entry points
- * (`api/run-stack.ts` and `cli/wirings/build-verb-layers.ts`) call this so
+ * (`api/run-stack.ts` and `orchestrators/layers.ts`) call this so
  * the primary-vs-secondary output-dir branch (via `resolveCodegenOutput`)
  * is wired exactly once: primary run → `<appRoot>/src/generated`; a
  * secondary `--stack` run → `<appRoot>/.devstack/stacks/<stack>/generated`,
@@ -703,18 +720,15 @@ export const buildProductionPostAcquireHook = (
 						stack: ctx.identity.stack,
 						chain: ctx.identity.chain,
 					},
-					contributions: [],
 					endpoints,
 					extras,
 					// Record the EXACT dirs codegen emits into for this stack so
 					// the read-side `@generated` / `@devstack-dev` aliases (the
 					// Vite plugin) point where the files actually are — one
-					// decision, one source of truth
-					// (notes/per-stack-codegen-design.md §"Resolved: read and
-					// write share one gate"). `paths.outputDir` is the resolved,
-					// stack-subdir-applied absolute path the runtime tree writes
-					// to; `paths.extrasDir` is the dev-only `generated-extras`
-					// tree the `@devstack-dev` alias resolves.
+					// decision, one source of truth. `paths.outputDir` is the
+					// resolved, stack-subdir-applied absolute path the runtime tree
+					// writes to; `paths.extrasDir` is the dev-only
+					// `generated-extras` tree the `@devstack-dev` alias resolves.
 					codegen: { generatedDir: paths.outputDir, extrasDir: paths.extrasDir },
 				});
 				const manifestPath = join(stackPaths.stackRoot, 'manifest.json');
@@ -787,4 +801,94 @@ export const extendBuiltInPluginContext = (
 			Context.add(SnapshotOrchestratorService, snapshotOrchestrator),
 			Context.add(FileSystem.FileSystem, fileSystem),
 		) as Context.Context<never>;
+	});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Production supervised-boot assembly — THE single dedup site
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The per-caller inputs to {@link superviseStackWithProductionBoot} — the
+ *  fields that GENUINELY differ between the long-running programmatic seam
+ *  (`api/run-stack-internal.ts`) and the one-shot CLI verbs (`apply` /
+ *  `snapshot`). Everything else — the contribution dispatcher, the
+ *  post-acquire hook, and the built-in plugin-context extension — is
+ *  assembled identically by the helper, so it lives in ONE place. */
+export interface ProductionBootOptions<HookR = Scope.Scope, HookE = never, ExtendR = never> {
+	/** `'one-shot'` runs the acquire/codegen cycle then returns; the default
+	 *  `'long-running'` supervises until shutdown. */
+	readonly lifetime?: 'long-running' | 'one-shot';
+	readonly devstackVersion?: string;
+	/** Threaded into `buildProductionPostAcquireHook` — the stack's manifest
+	 *  `extras`. All three callers pass `stack.options.extras`. */
+	readonly extras?: ManifestExtrasInput;
+	/** The resolved supervisor command handler (run-stack's snapshot bridge).
+	 *  One-shot verbs run no command loop, so they pass nothing. */
+	readonly commandHandler?: SupervisorCommandHandler;
+	readonly beforeInitialAcquire?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, HookR>;
+	readonly withinScope?: (handle: SupervisorHandle) => Effect.Effect<void, HookE, HookR>;
+	/** Caller plugin-context extension layered AFTER the built-in
+	 *  (`extendBuiltInPluginContext`). Only the programmatic seam uses it (to
+	 *  honor the public `runStack({ extendContext })`); the CLI verbs omit it
+	 *  and get the built-in extension alone. */
+	readonly extendContextAfterBuiltIn?: (
+		ctx: Context.Context<never>,
+	) => Effect.Effect<Context.Context<never>, never, ExtendR>;
+}
+
+/**
+ * THE single site that assembles the production supervised body. It builds
+ * the contribution dispatcher + post-acquire hook + built-in plugin-context
+ * extension ONCE and hands them to {@link superviseStackEffect}, then
+ * provides {@link layerBuiltInPluginRuntime}. Before this helper, the same
+ * three-piece assembly was hand-rolled in three call sites
+ * (`api/run-stack-internal.ts`, `cli/wirings/apply.ts`,
+ * `cli/wirings/snapshot.ts`); now they all route through here and only
+ * supply what genuinely differs ({@link ProductionBootOptions}).
+ *
+ * Each caller keeps its OWN lifetime-specific wrapping: the programmatic
+ * seam wraps the returned effect in a `forkDetach` handle (long-running);
+ * the CLI verbs run it to completion with their existing teardown + result
+ * semantics (one-shot). This helper does NOT collapse those — it only
+ * dedups the assembly the `superviseStackEffect` call sites shared.
+ *
+ * The return type is inferred (like `superviseStackEffect`): its R-channel
+ * is the union of every substrate/orchestrator service the dispatcher /
+ * hook / extension read, MINUS the built-in registries `layerBuiltInPluginRuntime`
+ * supplies, PLUS the caller hook `HookR` / extend `ExtendR` channels.
+ */
+export const superviseStackWithProductionBoot = <
+	HookR = Scope.Scope,
+	HookE = never,
+	ExtendR = never,
+>(
+	stack: SupervisedStack,
+	identity: Identity,
+	state: SubscriptionRef.SubscriptionRef<import('../substrate/projection.ts').SubscribableState>,
+	opts: ProductionBootOptions<HookR, HookE, ExtendR> = {},
+) =>
+	Effect.gen(function* () {
+		const contributionDispatcher = yield* buildProductionContributionDispatcher();
+		const postAcquireHook = yield* buildProductionPostAcquireHook(
+			opts.extras === undefined ? {} : { extras: opts.extras },
+		);
+		yield* superviseStackEffect(stack, identity, state, {
+			contributionDispatcher,
+			postAcquireHook,
+			...(opts.lifetime === undefined ? {} : { lifetime: opts.lifetime }),
+			...(opts.devstackVersion === undefined ? {} : { devstackVersion: opts.devstackVersion }),
+			...(opts.commandHandler === undefined ? {} : { commandHandler: opts.commandHandler }),
+			...(opts.beforeInitialAcquire === undefined
+				? {}
+				: { beforeInitialAcquire: opts.beforeInitialAcquire }),
+			...(opts.withinScope === undefined ? {} : { withinScope: opts.withinScope }),
+			// Built-in plugin-context extension ALWAYS runs; a caller extension
+			// (the programmatic seam's `opts.extendContext`) chains AFTER it.
+			extendContext: (ctx) =>
+				Effect.gen(function* () {
+					const builtInContext = yield* extendBuiltInPluginContext(ctx);
+					return opts.extendContextAfterBuiltIn === undefined
+						? builtInContext
+						: yield* opts.extendContextAfterBuiltIn(builtInContext);
+				}),
+		}).pipe(Effect.provide(layerBuiltInPluginRuntime));
 	});

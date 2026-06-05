@@ -20,8 +20,7 @@
 //                               replays each plugin's ctx buffer through.
 //   - `acquire-node.ts`       — per-plugin acquire pipeline +
 //                               buildRegistry + acquireFullGraph + the
-//                               static dispatch (dual-catch + error-
-//                               contribution → FormatterRegistry feed).
+//                               static dispatch (dual-catch).
 //   - `teardown.ts`           — slice teardown + selective restart.
 //   - `background-tasks.ts`   — injected command handler, snapshot
 //                               capture, stack restart, post-acquire
@@ -47,6 +46,11 @@ export type {
 	SupervisorPostAcquireContext,
 	SupervisorPostAcquireHook,
 } from './state.ts';
+// The supervisor-owned readiness signal: `true` once every node is
+// ready-or-terminal (`ready || done`). The one-shot supervise path gates
+// on THIS rather than a per-node `awaitReady` (which hangs on a `done`-
+// status node whose ready-gate is unresolved — the S1 divergence).
+export { allReadyOrTerminal } from './state.ts';
 export { runToShutdown, startSupervisor, supervise } from './start-supervisor.ts';
 export type {
 	SupervisorHandle,

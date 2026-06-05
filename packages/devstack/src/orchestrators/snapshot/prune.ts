@@ -40,12 +40,7 @@ import { SNAPSHOTS_DIR_NAME } from './wipe.ts';
 export class PrunePhaseError extends Schema.TaggedErrorClass<PrunePhaseError>()(
 	'SnapshotPrunePhaseError',
 	{
-		phase: Schema.Literals([
-			'enumerate-catalog',
-			'read-meta',
-			'sweep-images',
-			'sweep-directories',
-		]),
+		phase: Schema.Literals(['enumerate-catalog', 'read-meta', 'sweep-images', 'sweep-directories']),
 		detail: Schema.String,
 		cause: Schema.optional(Schema.Defect),
 	},
@@ -128,9 +123,6 @@ export const runPrune = (
 	inputs: PruneInputs,
 ): Effect.Effect<PruneResult, PrunePhaseError, FileSystem.FileSystem> =>
 	Effect.gen(function* () {
-		yield* Effect.annotateCurrentSpan({
-			'devstack.snapshot.phase': 'prune',
-		});
 		const catalogDir = `${inputs.stackRoot}/${SNAPSHOTS_DIR_NAME}`;
 
 		// Catalog GC — reap partial artifacts (no readable meta). The
@@ -177,4 +169,4 @@ export const runPrune = (
 			reaped: result.reapedIds.map((id) => ({ id, classification: 'abandoned' as const })),
 			imagesSwept: result.imagesSwept,
 		} satisfies PruneResult;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.prune'));
+	});

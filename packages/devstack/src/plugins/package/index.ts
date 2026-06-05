@@ -24,8 +24,13 @@
 import { Effect } from 'effect';
 
 import { projection } from '../../api/define-capabilities.ts';
-import { definePlugin, resource, type ResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import {
+	computedInputIdentity,
+	definePlugin,
+	resource,
+	staticInputIdentity,
+	type ResourceRef,
+} from '../../api/define-plugin.ts';
 import type { Contribution } from '../../substrate/plugin-ctx.ts';
 import type { CodegenableDecl } from '../../contracts/codegenable.ts';
 import type { ProjectionDecl } from '../../contracts/projection.ts';
@@ -45,6 +50,7 @@ import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.t
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 import type { AccountResourceId, AccountValue } from '../account/index.ts';
 import { makeKnownCodegenable, makeLocalCodegenable, type PackageNetworks } from './codegen.ts';
+import { hashMoveSources } from './build.ts';
 import { makePublishExecutor } from './publish-executor.ts';
 import { bootPackageService, type PackageMode } from './service.ts';
 import {
@@ -54,9 +60,6 @@ import {
 	type ResolvedLocalPackage,
 } from './registry.ts';
 import { makeSnapshotable } from './snapshot.ts';
-import { PACKAGE_ERROR_TAGS } from './errors.ts';
-
-const packageErrorContributions = pluginErrorContributions(PACKAGE_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Publisher account ref — explicit upstream
@@ -95,10 +98,8 @@ export type {
 } from './publish-output.ts';
 export { pickCreatedByType } from './publish-output.ts';
 export type { PublishError } from './errors.ts';
-export { PACKAGE_ERROR_TAGS } from './errors.ts';
 export type { PackageBindings, PackageNetworks, PackageNetworkEntry } from './codegen.ts';
 export type { PublishExecutor } from './mode-local.ts';
-export { PackageSpans } from './spans.ts';
 
 /** Resolved value carried by the package resource. Local packages also
  *  expose the publish output so manifest emitters and capture-spec
@@ -258,6 +259,23 @@ const buildLocalPlugin = <
 		dependsOn: { sui: suiResource, publisher: opts.publisher },
 		role: 'task',
 		section: 'package',
+		inputIdentity: computedInputIdentity(() =>
+			hashMoveSources(opts.sourcePath).pipe(
+				Effect.map((sourceHash) => ({
+					plugin: 'package',
+					kind: 'local',
+					name,
+					sourcePath: opts.sourcePath,
+					sourceHash,
+					publisher: opts.publisher.id,
+					mvrPlaceholder: opts.mvrPlaceholder ?? null,
+					excludeFromCodegen: opts.excludeFromCodegen === true,
+					capture: opts.capture ?? null,
+					networks: opts.networks ?? null,
+				})),
+				Effect.orDie,
+			),
+		),
 		watch: {
 			// File-watcher contribution — restart on Move source edits.
 			// Distilled doc §Outputs: literal-path Packages contribute
@@ -279,8 +297,8 @@ const buildLocalPlugin = <
 				// ChainProbe is looked up via the StrategyRegistry
 				// (Sui registered itself there at acquire). The
 				// PackageRegistry is a per-stack plugin-owned service
-				// (instantiated from the substrate's generic
-				// ScopedRefMap primitive — see `registry.ts`) — every
+				// (a self-contained last-write-wins map — see
+				// `registry.ts`) — every
 				// package plugin in the stack yields the SAME instance
 				// via `PackageRegistryService`, so cross-plugin lookups
 				// stay consistent and warm-restart verify can use the
@@ -352,7 +370,6 @@ const buildLocalPlugin = <
 				}
 				return projected;
 			}),
-		errorContributions: packageErrorContributions,
 	});
 };
 
@@ -365,6 +382,15 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 		dependsOn: { sui: suiResource },
 		role: 'task',
 		section: 'package',
+		inputIdentity: staticInputIdentity({
+			plugin: 'package',
+			kind: 'known',
+			name,
+			packageId: opts.packageId,
+			upgradeCapId: opts.upgradeCapId ?? null,
+			mvrPlaceholder: opts.mvrPlaceholder ?? null,
+			networks: opts.networks ?? null,
+		}),
 		start: ({ sui }) =>
 			Effect.gen(function* () {
 				const ctx = yield* PluginContext;
@@ -393,7 +419,6 @@ const buildKnownPlugin = <Name extends string>(name: Name, opts: KnownPackageOpt
 				// output-walker.
 				return resolved;
 			}),
-		errorContributions: packageErrorContributions,
 	});
 };
 

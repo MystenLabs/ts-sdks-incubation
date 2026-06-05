@@ -16,12 +16,13 @@ import {
 	knownPackage,
 	wallet,
 } from '@mysten-incubation/devstack';
+import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
 
 const DEV_PORT = 5173;
 
 const alice = account('alice', {
-	kind: 'env',
-	key: 'ALICE_PRIVATE_KEY',
+	kind: 'signer',
+	signer: Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!),
 });
 
 const registry = knownPackage('registry', {
@@ -103,6 +104,60 @@ export default defineDevstack({
 which is useful for deterministic local replay, but no private key exists and direct signing APIs
 intentionally fail.
 
+Fork mode is for replaying against real upstream state while keeping writes local. Use it when a
+bug, package interaction, or funding shape only appears on a public network, but the test still
+needs repeatable local transactions and local snapshot/dev-wallet workflows. The
+`examples/fork-greeting` example is the smallest runnable stack: it forks testnet, faucet-funds
+ephemeral accounts from a default whale, publishes a Move package, and captures the published object
+id.
+
+The fork-specific knobs are:
+
+- `checkpoint` — pin the upstream checkpoint used to initialize the fork.
+- `seed.addresses` / `seed.objects` — preload upstream addresses or objects the local fork should
+  materialize.
+- `autoTick` — advance the fork clock periodically; pass `true` for the default cadence or
+  `{ intervalMs }` for a custom interval.
+
+```ts
+const forkedTestnet = sui({
+	mode: 'fork',
+	upstream: 'testnet',
+	checkpoint: 64_000_000,
+	seed: { addresses: [publisherAddress] },
+	autoTick: { intervalMs: 1_000 },
+});
+```
+
+Plugins that depend on the forked Sui member can use the mode-narrowed `ForkAdminSurface` through
+`sui.fork`: `status`, `advanceClock`, `advanceCheckpoint`, and `impersonate`.
+
+```ts
+import { Effect } from 'effect';
+import { definePlugin } from '@mysten-incubation/devstack';
+
+const forkProbe = definePlugin({
+	id: 'fork-probe',
+	role: 'task',
+	section: 'action',
+	dependsOn: { sui: forkedTestnet },
+	start: ({ sui }) =>
+		Effect.gen(function* () {
+			const fork = sui.fork;
+			if (fork === null) return null;
+			const before = yield* fork.status;
+			yield* fork.advanceCheckpoint;
+			yield* fork.advanceClock(1_000);
+			return { before, after: yield* fork.status };
+		}),
+});
+```
+
+Use `impersonate` when the test must act as a specific upstream address; use ephemeral accounts when
+the test only needs funded local signers. Ephemeral accounts have local private keys, work with the
+dev wallet, and receive SUI from the fork faucet. Impersonated accounts have no private key:
+devstack builds a transaction and submits it through the fork admin surface with an empty signature.
+
 ### Funding test accounts (fork faucet)
 
 Fork networks have no HTTP faucet, so devstack funds accounts by **impersonating a large-reserve
@@ -181,6 +236,7 @@ const dex = deepbookFor(live).known({
 });
 ```
 
-Live accounts should use `env`, `keystore`, `inline`, or `signer` as appropriate. Fork replay
-accounts can use `impersonate`. The default ephemeral form is designed for local development, not
-custody of real assets.
+Live accounts should use the `signer` variant: pass a `Keypair` built from an env-var secret, an
+inline `suiprivkey1...` literal, or a hardware/KMS `Signer`. Fork replay accounts can use
+`impersonate`. The default ephemeral form is designed for local development, not custody of real
+assets.

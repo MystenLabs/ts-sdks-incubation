@@ -21,7 +21,6 @@ import type {
 import type { ContainerLabelTuple } from '../../../contracts/snapshotable.ts';
 import type { Identity } from '../../../substrate/identity.ts';
 import { ensureManagedContainer } from '../../../substrate/runtime/managed-container.ts';
-import { SpanAttr } from '../../../substrate/runtime/observability/spans.ts';
 import type { StackPaths } from '../../../substrate/runtime/paths.ts';
 import type { AllocatedPort, PortBroker } from '../../../substrate/runtime/port-broker/index.ts';
 import { ProbeTimeoutError, waitForProbe } from '../../../substrate/runtime/probes.ts';
@@ -33,7 +32,7 @@ import { resolveAutoTickIntervalMs, runAutoTickClock } from '../auto-tick.ts';
 import { suiPluginError, type SuiConfigError, type SuiPluginError } from '../errors.ts';
 import type { ResolvedSuiNetwork } from '../network-resolver.ts';
 import { SUI_RPC_ENDPOINT_NAME, SUI_RPC_ENTRYPOINT_PORT } from '../routable.ts';
-import { SuiSpans } from '../spans.ts';
+import { SuiLogAttr } from '../log-attrs.ts';
 import { acquireForkDataDirHolder, wrapWithForkGuard } from '../fork-orchestration.ts';
 import {
 	FORK_IMPERSONATION_GAS_BUDGET,
@@ -204,11 +203,9 @@ export const bootForkMode = (
 		const readyTimeout = opts.readyTimeout ?? DEFAULT_FORK_READY_TIMEOUT;
 
 		const status = yield* waitForForkReady(sdkClient, readyTimeout).pipe(
-			Effect.annotateLogs({ [SuiSpans.container]: handle.name }),
+			Effect.annotateLogs({ [SuiLogAttr.container]: handle.name }),
 		);
-		const chain = yield* sharedFetchChainId(sdkClient, {
-			span: 'devstack.plugin.sui.fork.fetchChainId',
-		});
+		const chain = yield* sharedFetchChainId(sdkClient);
 
 		const fork = makeForkAdminSurface(sdkClient);
 		const assembled = yield* assembleSuiClient({
@@ -245,9 +242,7 @@ export const bootForkMode = (
 			client,
 			autoTickIntervalMs,
 		};
-	}).pipe(
-		Effect.withSpan('devstack.plugin.sui.fork.boot', { attributes: { [SpanAttr.plugin]: 'sui' } }),
-	);
+	});
 
 export const suiForkImageBuildContext = (rev = DEFAULT_SUI_FORK_REV) => ({
 	// `fileURLToPath` normalises the URL → host-path conversion across
@@ -349,7 +344,7 @@ export const resolveForkImage = (
 			);
 		}
 		return yield* buildForkImage(runtime, { ...suiForkImageBuildContext(rev), owner });
-	}).pipe(Effect.withSpan('devstack.plugin.sui.fork.resolveImage'));
+	});
 
 interface ForkContainerResult {
 	readonly handle: ContainerHandle;
@@ -588,7 +583,7 @@ const waitForForkReady = (
 			),
 		);
 		return yield* readForkStatus(sdkClient);
-	}).pipe(Effect.withSpan('devstack.plugin.sui.fork.waitForReady'));
+	});
 
 const makeForkAdminSurface = (sdkClient: SuiGrpcClient): ForkAdminSurface => ({
 	status: readForkStatus(sdkClient).pipe(

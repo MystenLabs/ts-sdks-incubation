@@ -1,4 +1,4 @@
-import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import type { SpawnSyncReturns } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,26 +8,26 @@ import { describe, expect, it } from 'vitest';
 
 import type { ContainerLabelTuple } from '../../src/contracts/snapshotable.ts';
 import {
+	SNAPSHOT_GRAPH_INPUT_VERSION,
+	resumeAfterCapture,
 	runCapture,
 	runRestore,
 	snapshotIdFromString,
 } from '../../src/orchestrators/snapshot/index.ts';
 import { ContainerRuntimeService } from '../../src/runtime/docker/index.ts';
 import { appName, stackName } from '../../src/substrate/brand.ts';
-import { readClaims } from '../../src/substrate/runtime/cross-process/roster.ts';
 import { buildSubstrateLayers } from '../../src/orchestrators/boot.ts';
 import { StackPathsService } from '../../src/substrate/runtime/paths.ts';
+import { dockerReachable, dockerSpawnSync, pruneManagedImagesForApp } from './docker-prune.ts';
+
+const graphInput = {
+	version: SNAPSHOT_GRAPH_INPUT_VERSION,
+	graphInputId: 'graph-fixture',
+	nodes: [],
+} as const;
 
 const docker = (args: ReadonlyArray<string>, timeout = 60_000): SpawnSyncReturns<string> =>
-	spawnSync('docker', [...args], { encoding: 'utf8', timeout });
-
-const dockerReachable = (): { readonly ok: boolean; readonly detail: string } => {
-	const res = docker(['info', '--format', '{{.ServerVersion}}'], 5_000);
-	if (res.status !== 0) {
-		return { ok: false, detail: `docker info failed: status=${res.status}: ${res.stderr}` };
-	}
-	return { ok: true, detail: res.stdout.trim() };
-};
+	dockerSpawnSync(args, { timeout });
 
 const prepareImage = (
 	sourceTag: string,
@@ -59,12 +59,16 @@ const snapshotTempTagsFor = (containerName: string): ReadonlyArray<string> => {
 		.filter((line) => line.length > 0 && line.includes(containerName));
 };
 
-const cleanupDockerArtifacts = (containerName: string, imageTag: string): void => {
+const cleanupDockerArtifacts = (containerName: string, imageTag: string, app: string): void => {
 	docker(['rm', '-f', containerName], 20_000);
 	for (const tag of snapshotTempTagsFor(containerName)) {
 		docker(['image', 'rm', '-f', tag], 20_000);
 	}
 	docker(['image', 'rm', '-f', imageTag], 20_000);
+	// Sweep the managed build/snapshot images this test minted (label-scoped
+	// to its unique app), so committed `devstack-build:*` / `devstack-snapshot:*`
+	// layers don't accumulate across runs.
+	pruneManagedImagesForApp(app);
 };
 
 describe('snapshot container image roundtrip', () => {
@@ -136,14 +140,6 @@ describe('snapshot container image roundtrip', () => {
 				const marker = yield* Effect.scoped(
 					Effect.gen(function* () {
 						const handle = yield* runtime.ensureContainer(spec);
-						const claimsBeforeRestore = yield* readClaims({
-							stackLockFile: paths.stackLockFile,
-							rosterFile: paths.rosterFile,
-							containerClaimsFile: paths.containerClaimsFile,
-						});
-						expect(claimsBeforeRestore.claims.map((claim) => claim.containerKey)).toContain(
-							containerName,
-						);
 						const writeMarker = yield* runtime.exec(handle, [
 							'sh',
 							'-c',
@@ -158,6 +154,7 @@ describe('snapshot container image roundtrip', () => {
 							app,
 							stack,
 							network: 'sui:local',
+							graphInput,
 							runtimeStackRoot: paths.stackRoot,
 							participants: [participant],
 							runtime,
@@ -168,11 +165,18 @@ describe('snapshot container image roundtrip', () => {
 						const tarPath = join(artifactDir, captured.containers[0]!.tarPath);
 						expect(statSync(tarPath).size).toBeGreaterThan(0);
 
+						yield* resumeAfterCapture(captured, {
+							runtime,
+							app,
+							stack,
+						});
+
+						const resumedHandle = yield* runtime.ensureContainer(spec);
 						const inspected = yield* runtime.inspectByLabels(labels);
 						expect(inspected[0]?.status).toBe('running');
 						expect(snapshotTempTagsFor(containerName)).toEqual([]);
 
-						const dirtyMarker = yield* runtime.exec(handle, [
+						const dirtyMarker = yield* runtime.exec(resumedHandle, [
 							'sh',
 							'-c',
 							'printf dirty > /snapshot-marker',
@@ -208,7 +212,7 @@ describe('snapshot container image roundtrip', () => {
 				program.pipe(Effect.provide(buildSubstrateLayers(identity, runtimeRoot))),
 			);
 		} finally {
-			cleanupDockerArtifacts(containerName, imageTag);
+			cleanupDockerArtifacts(containerName, imageTag, app);
 			rmSync(runtimeRoot, { recursive: true, force: true });
 		}
 	}, 180_000);

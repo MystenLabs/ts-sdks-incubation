@@ -6,7 +6,6 @@
 //
 //   - The new methods exist on the interface (type-level check).
 //   - Their return shapes are the documented narrow envelope:
-//       saveImage → Stream<Uint8Array, ContainerRuntimeError>
 //       saveImages → Stream<Uint8Array, ContainerRuntimeError>
 //       pauseAndCommit → Effect<TaggedImageRef, ContainerRuntimeError>
 //       loadImage → Effect<LoadedImageBundle, ContainerRuntimeError>
@@ -52,14 +51,11 @@ const stubRuntime: ContainerRuntime = {
 		Effect.succeed({ exitCode: 0, stdout: 'ok', stderr: '' }),
 	runOneShot: () => Effect.succeed({ exitCode: 0, stdout: '', stderr: '' }),
 	inspectByLabels: () => Effect.succeed([]),
-	followLogs: () => Stream.empty,
-	pause: () => Effect.void,
 	pauseAndCommit: () =>
 		Effect.succeed<TaggedImageRef>({
 			digest: 'sha256:committed',
 			tag: 'devstack-snapshot:committed',
 		}),
-	saveImage: () => Stream.empty,
 	saveImages: () => Stream.empty,
 	loadImage: () =>
 		Effect.succeed<LoadedImageBundle>({
@@ -67,9 +63,8 @@ const stubRuntime: ContainerRuntime = {
 		}),
 	tagImage: () => Effect.void,
 	removeImage: () => Effect.void,
-	unpause: () => Effect.void,
+	inspectImageDigest: (ref) => Effect.succeed(ref === 'present:latest' ? 'sha256:resolved' : null),
 	stop: () => Effect.void,
-	sweepOrphans: () => Effect.succeed(0),
 	removeManagedContainers: () => Effect.succeed(0),
 	removeManagedImages: () => Effect.succeed(0),
 	removeManagedNetworks: () => Effect.succeed(0),
@@ -85,16 +80,6 @@ const handle: ContainerHandle = {
 };
 
 describe('ContainerRuntime contract surface', () => {
-	it.effect('saveImage returns a Uint8Array stream projected to contract error', () =>
-		Effect.gen(function* () {
-			const ref: ImageRef = { digest: 'sha256:x', tag: 'foo:1' };
-			const stream = stubRuntime.saveImage(ref);
-			// Drain to assert it yields (empty array under the stub).
-			const out = yield* Stream.runCollect(stream);
-			expect(out).toEqual([]);
-		}),
-	);
-
 	it.effect('loadImage accepts a Stream<Uint8Array, unknown>', () =>
 		Effect.gen(function* () {
 			const tar = Stream.make(new Uint8Array([1, 2, 3]));
@@ -124,6 +109,13 @@ describe('ContainerRuntime contract surface', () => {
 	it.effect('removeImage returns Effect<void, ContainerRuntimeError>', () =>
 		Effect.gen(function* () {
 			yield* stubRuntime.removeImage({ digest: 'sha256:abc', tag: 'devstack-snapshot:abc' });
+		}),
+	);
+
+	it.effect('inspectImageDigest resolves a ref to its digest or null', () =>
+		Effect.gen(function* () {
+			expect(yield* stubRuntime.inspectImageDigest('present:latest')).toBe('sha256:resolved');
+			expect(yield* stubRuntime.inspectImageDigest('absent:latest')).toBe(null);
 		}),
 	);
 

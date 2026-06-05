@@ -30,7 +30,6 @@ import { fileURLToPath } from 'node:url';
 import type { ContainerRuntime } from '../../../contracts/container-runtime.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { walrusPluginError, type WalrusPluginError } from '../errors.ts';
-import { WalrusSpans } from '../spans.ts';
 
 const WALRUS_CARGO_IMAGE_OVERRIDE_ENV = 'WALRUS_CARGO_IMAGE_OVERRIDE' as const;
 
@@ -138,11 +137,4 @@ export const resolveCargoImage = (
 				),
 			);
 		return { digest: built.digest, tag: built.tag ?? built.digest };
-	}).pipe(
-		Effect.withSpan('devstack.plugin.walrus.cargoImage.resolve', {
-			attributes: {
-				[WalrusSpans.ref]: inputs.walrusRef,
-				[WalrusSpans.suiVersion]: inputs.suiVersion,
-			},
-		}),
-	);
+	});

@@ -43,13 +43,12 @@ import {
 	type DependencyInput,
 	type ResolvedDependencies,
 } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
 import { CacheService } from '../../substrate/runtime/cache/index.ts';
 import { chainProbeFor } from '../../substrate/runtime/strategy-registry/index.ts';
 import { suiResource, type SuiProbeKey } from '../sui/index.ts';
 
 import type { ActionBuildContext } from './build-context.ts';
-import { actionError, ACTION_ERROR_TAGS, type ActionError } from './errors.ts';
+import { actionError, type ActionError } from './errors.ts';
 import type { DynamicDiscriminator } from './discriminator.ts';
 import { signAndExecute as signAndExecuteImpl } from './execute.ts';
 import {
@@ -58,8 +57,6 @@ import {
 	type ActionAcquireInputs,
 	type ActionReceipt,
 } from './service.ts';
-
-const actionErrorContributions = pluginErrorContributions(ACTION_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Resource — one per declared action, keyed by symbolic name
@@ -245,11 +242,6 @@ export const action = <const Name extends string, const DependsOn extends Action
 				);
 				return receipt;
 			}),
-		// Plugin-side error vocabulary. The supervisor's harvest loop
-		// folds this into the substrate's FormatterRegistry; the
-		// cascade formatter then renders `ActionError`-tagged failures
-		// with the action's phase/message header.
-		errorContributions: actionErrorContributions,
 	});
 };
 
@@ -259,11 +251,8 @@ export const action = <const Name extends string, const DependsOn extends Action
 
 export type { ActionBuildContext } from './build-context.ts';
 export type { ActionError, ActionPhase } from './errors.ts';
-export { ACTION_ERROR_TAGS } from './errors.ts';
 export type { DynamicDiscriminator, StaticDiscriminator } from './discriminator.ts';
 export type { ActionReceipt } from './service.ts';
 export { ActionReceiptSchema } from './service.ts';
 export type { ActionObjectChange } from './execute.ts';
 export { signAndExecute } from './execute.ts';
-
-export { ActionSpans } from './spans.ts';

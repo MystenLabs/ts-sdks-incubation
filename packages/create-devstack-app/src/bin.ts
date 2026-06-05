@@ -3,12 +3,8 @@
 // pnpm/npm look up `@mysten-incubation/create-devstack-app` and run this
 // bin with `<name>` as the first positional argument.
 //
-// `bin.ts` owns all interactivity (flag parsing + the @clack/prompts plugin
-// picker); `scaffold()` in `index.ts` stays prompt-free/pure so it remains
-// unit-testable. The picker resolves to a plugin Set that ALWAYS contains
-// `core`, then hands it to `scaffold({ plugins })`.
-
-import { isCancel, multiselect, outro } from '@clack/prompts';
+// `bin.ts` owns the CLI shell (flag parsing + routing). Interactive prompts
+// lazy-load the Ink picker, matching devstack prune's non-interactive fast path.
 
 import { scaffold } from './index.js';
 import { OPTIONAL_PLUGINS, type PluginId } from './plugin-manifest.js';
@@ -30,7 +26,7 @@ Options:
   -h, --help          Show this help.
 `;
 
-/** Human-readable labels for the interactive multiselect. */
+/** Human-readable labels for the interactive plugin picker. */
 const PLUGIN_LABELS: Record<PluginId, { label: string; hint: string }> = {
 	core: { label: 'core', hint: 'on-chain counter' },
 	walrus: { label: 'walrus', hint: 'upload & read a blob' },
@@ -47,34 +43,10 @@ function parsePluginList(value: string): Set<PluginId> {
 		const id = raw.trim();
 		if (id === '') continue;
 		if (!VALID_PLUGINS.has(id)) {
-			throw new Error(
-				`unknown plugin '${id}'. Valid: core, ${OPTIONAL_PLUGINS.join(', ')}.`,
-			);
+			throw new Error(`unknown plugin '${id}'. Valid: core, ${OPTIONAL_PLUGINS.join(', ')}.`);
 		}
 		selected.add(id as PluginId);
 	}
-	return selected;
-}
-
-/** Interactive multiselect picker. `core` is shown pre-checked and is forced
- *  into the result regardless of selection (it isn't togglable in spirit —
- *  clack can't lock a single option, so we re-add it after). Returns the
- *  resolved Set, or undefined if the user cancelled. */
-async function promptPlugins(): Promise<Set<PluginId> | undefined> {
-	const all: PluginId[] = ['core', ...OPTIONAL_PLUGINS];
-	const result = await multiselect({
-		message: 'Which demo panels should the app include? (core is always included)',
-		options: all.map((id) => ({
-			value: id,
-			label: PLUGIN_LABELS[id].label,
-			hint: PLUGIN_LABELS[id].hint,
-		})),
-		initialValues: all,
-		required: false,
-	});
-	if (isCancel(result)) return undefined;
-	const selected = new Set<PluginId>(result as PluginId[]);
-	selected.add('core');
 	return selected;
 }
 
@@ -160,9 +132,17 @@ async function main(): Promise<number> {
 	} else if (all || yes || !process.stdin.isTTY) {
 		plugins = new Set<PluginId>(['core', ...OPTIONAL_PLUGINS]);
 	} else {
-		const picked = await promptPlugins();
+		const { promptPlugins } = await import('./plugin-picker.js');
+		const picked = await promptPlugins(
+			(['core', ...OPTIONAL_PLUGINS] as const).map((id) => ({
+				id,
+				label: PLUGIN_LABELS[id].label,
+				hint: PLUGIN_LABELS[id].hint,
+				locked: id === 'core',
+			})),
+		);
 		if (picked === undefined) {
-			outro('Cancelled.');
+			process.stderr.write('Cancelled.\n');
 			return 1;
 		}
 		plugins = picked;

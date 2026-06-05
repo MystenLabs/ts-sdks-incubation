@@ -108,7 +108,7 @@ export const writeRestoreSentinel = (
 					),
 				),
 			);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.sentinel.write'));
+	});
 
 /** Read the sentinel from the LIVE runtime root. Returns `null` when the
  *  sentinel is absent (the common case — no interrupted restore) or
@@ -146,7 +146,7 @@ export const readRestoreSentinel = (
 			return null;
 		}
 		return decodeExit.value;
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.sentinel.read'));
+	});
 
 /** Remove the sentinel from the LIVE runtime root. Idempotent
  *  (`force: true`) — a missing sentinel is a no-op. Called on the restore
@@ -158,7 +158,7 @@ export const clearRestoreSentinel = (
 	Effect.gen(function* () {
 		const fs = yield* FileSystem.FileSystem;
 		yield* fs.remove(sentinelPath(liveRoot), { force: true }).pipe(Effect.ignore);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.sentinel.clear'));
+	});
 
 // -----------------------------------------------------------------------------
 // Boot-time recovery
@@ -251,4 +251,4 @@ export const recoverInterruptedRestore = (
 		yield* Effect.logInfo(`interrupted restore ${snapshotId} recovered`).pipe(
 			Effect.annotateLogs({ 'devstack.snapshot.id': snapshotId }),
 		);
-	}).pipe(Effect.withSpan('orchestrator.snapshot.restore.recover-interrupted'));
+	});

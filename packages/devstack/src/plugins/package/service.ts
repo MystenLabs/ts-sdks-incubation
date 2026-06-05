@@ -17,8 +17,8 @@
 //   - artifact-publisher     — the ArtifactPublisher (substrate
 //                             primitive, available everywhere)
 //
-// And via the plugin-owned PackageRegistry service (instantiated from
-// the substrate's generic ScopedRefMap primitive — see `registry.ts`).
+// And via the plugin-owned PackageRegistry service (a self-contained
+// last-write-wins `PackageKey -> ResolvedPackage` map — see `registry.ts`).
 //
 // The wiring of these lookups happens at the barrel (`index.ts`); this
 // file accepts them as parameters so it stays testable.

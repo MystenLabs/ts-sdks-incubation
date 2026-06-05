@@ -23,7 +23,6 @@ import { tailOutput } from '../../../substrate/runtime/observability/index.ts';
 import { stageAndSwap } from '../../../substrate/runtime/stage-and-swap/index.ts';
 import { readEnv } from '../../../substrate/runtime/typed-env.ts';
 import { sealError, type SealError } from '../errors.ts';
-import { SealSpans } from '../spans.ts';
 
 // ---------------------------------------------------------------------------
 // Constants — distilled-doc §"External / upstream sources"
@@ -204,15 +203,7 @@ export const resolveSealSource = (
 			subdir: inputs.subdir,
 			path: subdirPath,
 		} satisfies SealSourceFetchResolved;
-	}).pipe(
-		Effect.withSpan('devstack.plugin.seal.moveSource.resolve', {
-			attributes: {
-				[SealSpans.repo]: inputs.repo,
-				[SealSpans.ref]: inputs.ref,
-				[SealSpans.subdir]: inputs.subdir,
-			},
-		}),
-	);
+	});
 
 /** Convenience: resolve via the default inputs. */
 export const resolveDefaultSealSource = (

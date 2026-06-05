@@ -5,15 +5,20 @@
 // it (default + cross-cutting), registers `{name, address}`, and
 // publishes a per-account resolved value via a unique resource id.
 //
-// User-facing factory shape:
+// User-facing factory shape — THREE variants:
 //
 //   account('alice')                                  // default ephemeral
 //   account('alice', { kind: 'ephemeral', funding: [{ coin: 'sui', amount: 5_000_000_000n }] })
-//   account('alice', { kind: 'keystore', path: '~/.sui/keystore', aliasOrAddress: 'alice' })
-//   account('alice', { kind: 'env',      key: 'ALICE_PRIVATE_KEY' })
-//   account('alice', { kind: 'inline',   privateKey: 'suiprivkey1...' })
 //   account('alice', { kind: 'signer',   signer: hardwareWallet })
-//   account('alice', { kind: 'impersonate', address: '0xabc...' })
+//   account('alice', { kind: 'impersonate', address: '0xabc...' })  // fork-mode only
+//
+// The `signer` variant is the single bring-your-own door. Pass any
+// `@mysten/sui/cryptography` `Signer` or `Keypair`. Loading a secret
+// from an env var or an inline literal is expressed by constructing
+// the keypair yourself and passing it as the signer:
+//
+//   account('ci',   { kind: 'signer', signer: Ed25519Keypair.fromSecretKey(process.env.ALICE_PRIVATE_KEY!) })
+//   account('demo', { kind: 'signer', signer: Ed25519Keypair.fromSecretKey('suiprivkey1...') })
 //
 // **Bare-form default**: `account('alice')` is shorthand for
 //
@@ -33,25 +38,23 @@
 //   1. `ctx.snapshotExtra` — secret-material subtree (ephemeral only).
 //   2. `ctx.codegen`       — `account-map` bindings (name → address).
 //   3. `ctx.provides`      — per-stack `account:<name>` registry entry.
-//
-// Plus `errorContributions: [{ errorTags: ACCOUNT_ERROR_TAGS }]` —
-// harvested by the supervisor into the FormatterRegistry so the
-// cascade formatter renders account-tagged failures with the right
-// taxonomy header.
 
 import { Effect } from 'effect';
 
-import { definePlugin, resource, type AnyResourceRef } from '../../api/define-plugin.ts';
-import { pluginErrorContributions } from '../../api/plugin-errors.ts';
+import {
+	definePlugin,
+	resource,
+	staticInputIdentity,
+	type AnyResourceRef,
+} from '../../api/define-plugin.ts';
 import { PluginContext } from '../../substrate/plugin-ctx.ts';
 import { IdentityContext, StackPathsService } from '../../substrate/runtime/paths.ts';
-import { suiResource, SuiSpans } from '../sui/index.ts';
-
-import { AccountSpans } from './spans.ts';
+import { suiResource, SuiLogAttr } from '../sui/index.ts';
 
 import { makeAccountCodegen } from './codegen.ts';
-import { ACCOUNT_ERROR_TAGS, accountAcquireError, type AccountAcquireError } from './errors.ts';
+import { accountAcquireError, type AccountAcquireError } from './errors.ts';
 import {
+	DEFAULT_EPHEMERAL_FUND_MIST,
 	SUI_FULL_COIN_TYPE,
 	type AccountFunding,
 	type AccountFundingEntry,
@@ -76,8 +79,6 @@ import {
 	type ResolvedAccountOptions,
 	type AccountValue,
 } from './service.ts';
-
-const accountErrorContributions = pluginErrorContributions(ACCOUNT_ERROR_TAGS);
 
 // ---------------------------------------------------------------------------
 // Resource construction
@@ -200,6 +201,62 @@ const fundingAmountToBigInt = (
 const coinLabelFor = (coin: { readonly fullCoinType: string; readonly symbol?: string }): string =>
 	coin.symbol ?? coin.fullCoinType.split('::').at(-1) ?? coin.fullCoinType;
 
+const inputAmount = (amount: number | bigint): string => amount.toString();
+
+const inputFundingProviderIds = (
+	provider: CrossCuttingFundingProvider | undefined,
+): ReadonlyArray<string> =>
+	fundingProviders(provider)
+		.map((ref) => ref.id)
+		.sort((a, b) => a.localeCompare(b));
+
+const inputFundingIdentityFor = (entry: AccountFundingEntry): unknown => {
+	if (entry.coin === 'sui') {
+		return { coin: 'sui', amountMist: inputAmount(entry.amount) };
+	}
+	const via = inputFundingProviderIds(entry.via);
+	return {
+		coin: entry.coin.id,
+		amountMist: entry.amount.toString(),
+		...(via.length === 0 ? {} : { via }),
+	};
+};
+
+const accountFundingInputIdentity = (
+	opts: ResolvedAccountOptions,
+	fundingEntries: AccountFunding,
+): ReadonlyArray<unknown> => {
+	const explicit = fundingEntries.map(inputFundingIdentityFor);
+	if (opts.kind === 'ephemeral' && opts.funding === undefined) {
+		return [{ coin: 'sui', amountMist: DEFAULT_EPHEMERAL_FUND_MIST.toString() }, ...explicit];
+	}
+	return explicit;
+};
+
+const accountVariantInputIdentity = (opts: ResolvedAccountOptions): unknown => {
+	switch (opts.kind) {
+		case 'ephemeral':
+			return { kind: 'ephemeral' };
+		case 'impersonate':
+			return { kind: 'impersonate', address: opts.address };
+		case 'signer':
+			return {
+				kind: 'signer',
+				address: opts.addressOverride ?? opts.signer.toSuiAddress(),
+			};
+	}
+};
+
+const accountInputIdentity = (
+	opts: ResolvedAccountOptions,
+	fundingEntries: AccountFunding,
+): unknown => ({
+	plugin: 'account',
+	name: opts.name,
+	variant: accountVariantInputIdentity(opts),
+	funding: accountFundingInputIdentity(opts, fundingEntries),
+});
+
 // ---------------------------------------------------------------------------
 // Capability emission — dynamic (POST-acquire). Receives the resolved
 // `AccountValue` + the identity so snapshot + codegen + registry + projection
@@ -253,6 +310,7 @@ export const account = <const N extends string, const Funding extends AccountFun
 		// `done`.
 		role: 'task',
 		section: 'account',
+		inputIdentity: staticInputIdentity(accountInputIdentity(opts2, fundingEntryList)),
 		// `deps` auto-infers from the resolved `dependsOn`; `ctx` arrives
 		// via the `PluginContext` service.
 		start: (deps) =>
@@ -314,10 +372,10 @@ export const account = <const N extends string, const Funding extends AccountFun
 					emitAutoPromotionEvent: () =>
 						Effect.logWarning('account funding auto-promoted for fork mode').pipe(
 							Effect.annotateLogs({
-								[AccountSpans.name]: name,
-								[AccountSpans.fundingFrom]: 'faucet',
-								[AccountSpans.fundingTo]: 'pay-from-seed-via-impersonate',
-								[SuiSpans.mode]: 'fork',
+								'account.name': name,
+								'account.funding.from': 'faucet',
+								'account.funding.to': 'pay-from-seed-via-impersonate',
+								[SuiLogAttr.mode]: 'fork',
 							}),
 						),
 					projectedFunding,
@@ -370,7 +428,6 @@ export const account = <const N extends string, const Funding extends AccountFun
 
 				return resolved;
 			}),
-		errorContributions: accountErrorContributions,
 	});
 };
 
@@ -447,6 +504,7 @@ export const fundingProjectionForResult = (
 
 export type {
 	AccountOptions,
+	AccountSignerInput,
 	ResolvedAccountOptions,
 	AccountValue,
 	SignAndExecuteResult,
@@ -460,7 +518,6 @@ export type {
 	AccountSignPhase,
 	AccountVariantKind,
 } from './errors.ts';
-export { ACCOUNT_ERROR_TAGS } from './errors.ts';
 export type {
 	AccountFunding,
 	AccountFundingEntry,
@@ -489,4 +546,3 @@ export type {
 export { accountRegistryKey } from './registry.ts';
 export type { SyntheticImpersonationSigner } from './variants/impersonate.ts';
 export type { SignatureScheme, ResolvedKeypair } from './keypair.ts';
-export { AccountSpans } from './spans.ts';

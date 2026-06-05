@@ -425,8 +425,16 @@ function LocalnetPanel() {
 			</div>
 			<div className="space-y-3 text-sm">
 				<KeyValue label="RPC" value={networkEndpoints.rpc} testId="localnet-rpc" />
-				<KeyValue label="Faucet" value={networkEndpoints.faucet ?? 'none'} testId="localnet-faucet" />
-				<KeyValue label="GraphQL" value={networkEndpoints.graphql ?? 'none'} testId="localnet-graphql" />
+				<KeyValue
+					label="Faucet"
+					value={networkEndpoints.faucet ?? 'none'}
+					testId="localnet-faucet"
+				/>
+				<KeyValue
+					label="GraphQL"
+					value={networkEndpoints.graphql ?? 'none'}
+					testId="localnet-graphql"
+				/>
 			</div>
 		</section>
 	);

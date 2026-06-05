@@ -96,11 +96,7 @@ export const emitOne = (
 			),
 		);
 		return { path: input.path, outcome: 'wrote' as const };
-	}).pipe(
-		Effect.withSpan('codegen.emitOne', {
-			attributes: { 'codegen.path': input.path },
-		}),
-	);
+	});
 
 /**
  * Check the file's current mode and restore it if drifted. Returns

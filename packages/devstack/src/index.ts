@@ -37,14 +37,12 @@ export {
 	type DependencyInput,
 	type DependencyList,
 	type Plugin,
-	type PluginErrorContribution,
 	type PluginSpec,
 	type ResourceRef,
 	type ResolvedDependencies,
 	type ResourceIdOf,
 	type ResourceValueOf,
 } from './api/define-plugin.ts';
-export { pluginErrorContributions } from './api/plugin-errors.ts';
 export { PluginContext, type PluginCtx } from './substrate/plugin-ctx.ts';
 export {
 	DEFAULT_DEVSTACK_NETWORK,
@@ -288,23 +286,6 @@ export {
 	type HostServiceReadyProbe,
 	type HostServiceValue,
 } from './plugins/host-service/index.ts';
-
-// --- Postgres -----------------------------------------------------------
-
-export {
-	postgres,
-	type PostgresPluginOptions,
-	type Postgres,
-	type PostgresServiceOptions,
-	type PostgresConnectionBindings,
-	type PostgresConnectionParts,
-	type PostgresError,
-	type PostgresPluginError,
-	type PostgresConfigError,
-	type PostgresConnectionTimeout,
-	type DatabaseCreateFailed,
-	type PostgresPhase,
-} from './plugins/postgres/index.ts';
 
 // --- Faucet -------------------------------------------------------------
 

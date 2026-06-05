@@ -3,7 +3,7 @@
 // ARCHITECTURE.md §"Substrate name-blindness" requires substrate code
 // (`src/substrate/**`) to NEVER mention plugin names — `sui`, `walrus`,
 // `seal`, `wallet`, `account`, `coin`, `package`, `faucet`, `deepbook`,
-// `pyth`, `postgres`, `action`, `host`. A small permanent allowlist
+// `pyth`, `action`, `host`. A small permanent allowlist
 // covers (a) network-host overloads (NOT the plugin-host), (b) substrate
 // field shapes that name plugin-domain values by design (projection
 // field set, supervisor's branded account-resource-id literal). Each
@@ -37,7 +37,6 @@ const PLUGIN_NAMES = [
 	'faucet',
 	'deepbook',
 	'pyth',
-	'postgres',
 	'action',
 	'host',
 ] as const;
@@ -92,7 +91,7 @@ const ALLOWED_FILES: ReadonlyArray<{
 	{
 		// `host: 'server.address'` is the OTEL semantic convention
 		// constant, not the host-service plugin name.
-		path: 'src/substrate/runtime/observability/spans.ts',
+		path: 'src/substrate/runtime/observability/log-attrs.ts',
 		reason: 'OTEL "server.address" key alias (network-host), not host-service plugin.',
 	},
 	{
@@ -110,12 +109,6 @@ const ALLOWED_FILES: ReadonlyArray<{
 		// values by design.
 		path: 'src/substrate/projection.ts',
 		reason: 'Projection field set names account/package plugin-domain shapes by design.',
-	},
-	{
-		// Projection persistence inherits plugin-named field shapes from
-		// `projection.ts`.
-		path: 'src/substrate/runtime/projection/persisted.ts',
-		reason: 'Projection persistence inherits account/package shapes from projection.ts.',
 	},
 	{
 		// Projection update reducer dispatches on the kind→decoder
